@@ -1,9 +1,14 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { applyRowPermutation, createRowPermutationPlan, type RangeRef, WorkbookModel } from './index';
+import { applyRowPermutation, createRowPermutationPlan, rowPermutationAffectedColumnEnd, type RangeRef, WorkbookModel } from './index';
 
 function range(sheetId: string, startRow: number, endRow: number, startColumn: number, endColumn: number): RangeRef {
   return { sheetId, startRow, endRow, startColumn, endColumn };
+}
+
+function applyPermutation(workbook: WorkbookModel, selected: RangeRef, sourceRows: readonly number[]): void {
+  const affectedColumnEnd = rowPermutationAffectedColumnEnd(workbook, selected);
+  applyRowPermutation(workbook, createRowPermutationPlan(selected, sourceRows, affectedColumnEnd));
 }
 
 describe('canonical row permutation metadata plan', () => {
@@ -26,7 +31,7 @@ describe('canonical row permutation metadata plan', () => {
     });
     sheet.cells.set(1, 0, { value: 'second row' });
 
-    applyRowPermutation(sheet, createRowPermutationPlan(range(sheet.id, 0, 1, 0, 0), [1, 0]));
+    applyPermutation(workbook, range(sheet.id, 0, 1, 0, 0), [1, 0]);
 
     assert.equal(sheet.cells.get(1, 0)?.formula, '=C3+$D$1');
     assert.equal(sheet.cells.get(1, 0)?.formulaMetadata?.sourceFormula, '=C3+$D$1');
@@ -38,6 +43,172 @@ describe('canonical row permutation metadata plan', () => {
     }
   });
 
+  it('rebases rule, defined-name, and reusable-template formulas when their anchors move outside the sorted columns', () => {
+    const workbook = new WorkbookModel('permutation-workbook-owners', 'Permutation workbook owners');
+    const sheet = workbook.getSheet('sheet-1');
+    const otherSheet = workbook.addSheet('sheet-2', 'Other sheet', 4, 2);
+    sheet.rowCount = 4;
+    sheet.columnCount = 2;
+    sheet.cells.set(0, 0, { value: 'first' });
+    sheet.cells.set(1, 0, { value: 'second' });
+    sheet.conditionalFormats.push({
+      id: 'cf-anchored',
+      sheetId: sheet.id,
+      ranges: [range(sheet.id, 0, 0, 4, 4)],
+      formulaAnchor: { sheetId: sheet.id, row: 0, column: 4 },
+      type: 'highlight',
+      operator: 'formula',
+      value1: '=A1>0',
+    });
+    sheet.conditionalFormats.push({
+      id: 'cf-implicit-anchor',
+      sheetId: sheet.id,
+      ranges: [range(sheet.id, 0, 0, 8, 8)],
+      type: 'highlight',
+      operator: 'formula',
+      value1: '=A1>0',
+    });
+    sheet.dataValidations.push({
+      id: 'dv-anchored',
+      sheetId: sheet.id,
+      ranges: [range(sheet.id, 0, 0, 5, 5)],
+      formulaAnchor: { sheetId: sheet.id, row: 0, column: 5 },
+      type: 'custom',
+      formula1: '=A1>0',
+      formula2: '=B1',
+      listSource: { kind: 'formula', formula: '=C1:C2' },
+    });
+    workbook.definedNameModels.push({
+      name: 'RelativeOwner',
+      scope: 'workbook',
+      formula: '=A1',
+      anchor: { sheetId: sheet.id, row: 0, column: 6 },
+    });
+    workbook.definedNameModels.push({
+      name: 'OtherSheetOwner',
+      scope: 'workbook',
+      formula: '=A1',
+      anchor: { sheetId: otherSheet.id, row: 0, column: 9 },
+    });
+    workbook.setCellStyleTemplate({
+      id: 'template-anchored',
+      name: 'Anchored validation',
+      style: {},
+      dataValidation: {
+        type: 'custom',
+        formula1: '=A1>0',
+        formula2: '=B1',
+        listSource: { kind: 'formula', formula: '=C1:C2' },
+        formulaAnchor: { sheetId: sheet.id, row: 0, column: 7 },
+      },
+    });
+    workbook.setCellStyleTemplate({
+      id: 'template-other-sheet',
+      name: 'Other sheet validation',
+      style: {},
+      dataValidation: {
+        type: 'custom',
+        formula1: '=A1>0',
+        formulaAnchor: { sheetId: otherSheet.id, row: 0, column: 10 },
+      },
+    });
+
+    assert.equal(rowPermutationAffectedColumnEnd(workbook, range(sheet.id, 0, 1, 0, 0)), 8);
+    applyPermutation(workbook, range(sheet.id, 0, 1, 0, 0), [1, 0]);
+
+    assert.equal(sheet.conditionalFormats[0]?.formulaAnchor?.row, 1);
+    assert.equal(sheet.conditionalFormats[0]?.value1, '=A2>0');
+    assert.equal(sheet.conditionalFormats[1]?.formulaAnchor?.row, 1);
+    assert.equal(sheet.conditionalFormats[1]?.value1, '=A2>0');
+    assert.equal(sheet.dataValidations[0]?.formulaAnchor?.row, 1);
+    assert.equal(sheet.dataValidations[0]?.formula1, '=A2>0');
+    assert.equal(sheet.dataValidations[0]?.formula2, '=B2');
+    assert.equal(sheet.dataValidations[0]?.listSource?.kind, 'formula');
+    if (sheet.dataValidations[0]?.listSource?.kind === 'formula') assert.equal(sheet.dataValidations[0].listSource.formula, '=C2:C3');
+    assert.equal(workbook.definedNameModels[0]?.formula, '=A2');
+    assert.equal(workbook.definedNameModels[0]?.anchor?.row, 1);
+    assert.equal(workbook.definedNameModels[1]?.formula, '=A1');
+    assert.equal(workbook.definedNameModels[1]?.anchor?.row, 0);
+    const templateValidation = workbook.cellStyleTemplates.get('template-anchored')?.dataValidation;
+    assert.equal(templateValidation?.formulaAnchor?.row, 1);
+    assert.equal(templateValidation?.formula1, '=A2>0');
+    assert.equal(templateValidation?.formula2, '=B2');
+    assert.equal(templateValidation?.listSource?.kind, 'formula');
+    if (templateValidation?.listSource?.kind === 'formula') assert.equal(templateValidation.listSource.formula, '=C2:C3');
+    const otherTemplateValidation = workbook.cellStyleTemplates.get('template-other-sheet')?.dataValidation;
+    assert.equal(otherTemplateValidation?.formulaAnchor?.row, 0);
+    assert.equal(otherTemplateValidation?.formula1, '=A1>0');
+  });
+
+  it('rejects invalid anchored-name offsets before mutating cells or workbook formula owners', () => {
+    const workbook = new WorkbookModel('permutation-owner-reject', 'Permutation owner rejection');
+    const sheet = workbook.getSheet('sheet-1');
+    sheet.rowCount = 4;
+    sheet.columnCount = 2;
+    sheet.cells.set(0, 0, { value: 'first' });
+    sheet.cells.set(1, 0, { value: 'second' });
+    workbook.definedNameModels.push({
+      name: 'OutOfBoundsOwner',
+      scope: 'workbook',
+      formula: '=A1',
+      anchor: { sheetId: sheet.id, row: 1, column: 8 },
+    });
+    const cellsBefore = sheet.cells.toJSON();
+
+    assert.throws(() => applyPermutation(workbook, range(sheet.id, 0, 1, 0, 0), [1, 0]), /outside worksheet bounds/);
+    assert.deepEqual(sheet.cells.toJSON(), cellsBefore);
+    assert.equal(workbook.definedNameModels[0]?.formula, '=A1');
+    assert.equal(workbook.definedNameModels[0]?.anchor?.row, 1);
+  });
+
+  it('rejects metadata extents beyond the Excel worksheet column limit', () => {
+    const workbook = new WorkbookModel('permutation-column-bound', 'Permutation column bound');
+    const sheet = workbook.getSheet('sheet-1');
+    assert.throws(
+      () => createRowPermutationPlan(range(sheet.id, 0, 1, 0, 0), [1, 0], 16_384),
+      /metadata extent is outside worksheet bounds/,
+    );
+  });
+
+  it('rejects fragmented row outline groups before mutating sorted cells', () => {
+    const workbook = new WorkbookModel('permutation-outline-reject', 'Permutation outline rejection');
+    const sheet = workbook.getSheet('sheet-1');
+    sheet.rowCount = 8;
+    sheet.columnCount = 4;
+    sheet.cells.set(0, 0, { value: 'first' });
+    sheet.cells.set(1, 0, { value: 'second' });
+    sheet.outline = { groups: [{ id: 'group-1', axis: 'row', start: 0, end: 1, level: 1, collapsed: false }] };
+    const cellsBefore = sheet.cells.toJSON();
+    const outlineBefore = structuredClone(sheet.outline);
+
+    assert.throws(
+      () => applyPermutation(workbook, range(sheet.id, 0, 3, 0, 1), [2, 0, 3, 1]),
+      /cannot exactly remap an outline group/,
+    );
+    assert.deepEqual(sheet.cells.toJSON(), cellsBefore);
+    assert.deepEqual(sheet.outline, outlineBefore);
+  });
+
+  it('materializes an implicit rule anchor before transformed range fragments reorder it', () => {
+    const workbook = new WorkbookModel('permutation-implicit-rule-anchor', 'Permutation implicit rule anchor');
+    const sheet = workbook.getSheet('sheet-1');
+    sheet.rowCount = 8;
+    sheet.columnCount = 4;
+    sheet.conditionalFormats.push({
+      id: 'cf-implicit-fixed-anchor',
+      sheetId: sheet.id,
+      ranges: [range(sheet.id, 2, 5, 3, 3)],
+      type: 'highlight',
+      operator: 'formula',
+      value1: '=A1>0',
+    });
+
+    applyPermutation(workbook, range(sheet.id, 0, 4, 0, 1), [3, 0, 2, 1, 4]);
+
+    assert.equal(sheet.conditionalFormats[0]?.formulaAnchor?.row, 2);
+    assert.equal(sheet.conditionalFormats[0]?.value1, '=A1>0');
+  });
+
   it('rejects formula groups and references whose row semantics cannot be remapped before changing cells', () => {
     const groupedWorkbook = new WorkbookModel('permutation-group-reject', 'Formula group rejection');
     const groupedSheet = groupedWorkbook.getSheet('sheet-1');
@@ -47,7 +218,7 @@ describe('canonical row permutation metadata plan', () => {
     groupedSheet.cells.set(1, 0, { value: 'second row' });
     const groupedBefore = groupedSheet.cells.toJSON();
     assert.throws(
-      () => applyRowPermutation(groupedSheet, createRowPermutationPlan(range(groupedSheet.id, 0, 1, 0, 0), [1, 0])),
+      () => applyPermutation(groupedWorkbook, range(groupedSheet.id, 0, 1, 0, 0), [1, 0]),
       /UNSUPPORTED_STRUCTURAL_REFERENCE: row sort cannot remap formula-group metadata/,
     );
     assert.deepEqual(groupedSheet.cells.toJSON(), groupedBefore);
@@ -61,7 +232,7 @@ describe('canonical row permutation metadata plan', () => {
       sheet.cells.set(1, 0, { value: 'second row' });
       const before = sheet.cells.toJSON();
       assert.throws(
-        () => applyRowPermutation(sheet, createRowPermutationPlan(range(sheet.id, 0, 1, 0, 0), [1, 0])),
+        () => applyPermutation(workbook, range(sheet.id, 0, 1, 0, 0), [1, 0]),
         /cannot safely offset an external-workbook or whole-row reference/,
       );
       assert.deepEqual(sheet.cells.toJSON(), before);
@@ -75,7 +246,7 @@ describe('canonical row permutation metadata plan', () => {
     boundsSheet.cells.set(1, 0, { value: null, formula: '=A1' });
     const boundsBefore = boundsSheet.cells.toJSON();
     assert.throws(
-      () => applyRowPermutation(boundsSheet, createRowPermutationPlan(range(boundsSheet.id, 0, 1, 0, 0), [1, 0])),
+      () => applyPermutation(boundsWorkbook, range(boundsSheet.id, 0, 1, 0, 0), [1, 0]),
       /would move a formula reference outside worksheet bounds/,
     );
     assert.deepEqual(boundsSheet.cells.toJSON(), boundsBefore);
@@ -98,7 +269,7 @@ describe('canonical row permutation metadata plan', () => {
       { id: 'outside-drawing', sheetId: sheet.id, kind: 'shape', anchor: { kind: 'one-cell', row: 0, column: 25 }, transform: { x: 0, y: 0, width: 10, height: 10 }, zIndex: 0, payloadId: 'outside' },
     );
 
-    applyRowPermutation(sheet, createRowPermutationPlan(range(sheet.id, 0, 1, 0, 1), [1, 0]));
+    applyPermutation(workbook, range(sheet.id, 0, 1, 0, 1), [1, 0]);
 
     assert.equal(sheet.cells.get(0, 0)?.value, 'second');
     assert.equal(sheet.review.getNoteAt(1, 1)?.id, 'inside-note');
@@ -118,7 +289,7 @@ describe('canonical row permutation metadata plan', () => {
     sheet.columnCount = 8;
     sheet.conditionalFormats.push({ id: 'cf-1', sheetId: sheet.id, ranges: [range(sheet.id, 0, 1, 0, 1)], type: 'highlight', style: { bold: true } });
 
-    applyRowPermutation(sheet, createRowPermutationPlan(range(sheet.id, 0, 3, 0, 1), [2, 0, 3, 1]));
+    applyPermutation(workbook, range(sheet.id, 0, 3, 0, 1), [2, 0, 3, 1]);
 
     assert.deepEqual(sheet.conditionalFormats[0]?.ranges, [range(sheet.id, 1, 1, 0, 1), range(sheet.id, 3, 3, 0, 1)]);
   });
@@ -132,7 +303,7 @@ describe('canonical row permutation metadata plan', () => {
     sheet.cells.set(1, 0, { value: 'b' });
     sheet.protectionRules.push({ id: 'protected', scope: 'range', sheetId: sheet.id, range: range(sheet.id, 0, 1, 0, 1), locked: true, allow: {} });
 
-    assert.throws(() => applyRowPermutation(sheet, createRowPermutationPlan(range(sheet.id, 0, 3, 0, 1), [2, 0, 3, 1])), /cannot exactly remap protection/);
+    assert.throws(() => applyPermutation(workbook, range(sheet.id, 0, 3, 0, 1), [2, 0, 3, 1]), /cannot exactly remap protection/);
     assert.equal(sheet.cells.get(0, 0)?.value, 'a');
     assert.equal(sheet.cells.get(1, 0)?.value, 'b');
     assert.deepEqual(sheet.protectionRules[0]?.range, range(sheet.id, 0, 1, 0, 1));

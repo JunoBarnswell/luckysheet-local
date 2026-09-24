@@ -87,7 +87,8 @@ final class SheetRuleLifecycle {
         }
     }
 
-    static int affectedColumnEnd(ObjectNode root, ObjectNode sheet, int baseline) {
+    static int affectedColumnEnd(ObjectNode root, ObjectNode sheet, int baseline, int startRow, int endRow) {
+        String sheetId = SnapshotMutationSupport.text(sheet, "id");
         int end = Math.max(baseline, sheet.path("columnCount").asInt(1) - 1);
         for (String property : List.of("conditionalFormats", "dataValidations")) {
             JsonNode rules = sheet.get(property);
@@ -98,13 +99,49 @@ final class SheetRuleLifecycle {
                 JsonNode ranges = rule.get("ranges");
                 if (ranges == null || !ranges.isArray()) throw ServiceException.validation(property + " rule ranges must be an array");
                 for (JsonNode candidate : ranges) end = Math.max(end, SnapshotMutationSupport.range(root, candidate).endColumn());
+                end = affectedAnchorColumnEnd(rule.get("formulaAnchor"), sheetId, startRow, endRow, end);
             }
         }
         JsonNode protections = sheet.get("protectionRules");
         if (protections != null && protections.isArray()) {
             for (JsonNode raw : protections) if (raw.isObject() && raw.has("range")) end = Math.max(end, SnapshotMutationSupport.range(root, raw.get("range")).endColumn());
         }
+        JsonNode models = root.get("definedNameModels");
+        if (models != null && !models.isNull()) {
+            if (!models.isArray()) throw ServiceException.validation("definedNameModels must be an array");
+            for (JsonNode raw : models) {
+                if (!raw.isObject()) throw ServiceException.validation("Defined name model must be an object");
+                end = affectedAnchorColumnEnd(raw.get("anchor"), sheetId, startRow, endRow, end);
+            }
+        }
+        JsonNode templates = root.get("cellStyleTemplates");
+        if (templates != null && !templates.isNull()) {
+            if (!templates.isArray()) throw ServiceException.validation("cellStyleTemplates must be an array");
+            for (JsonNode raw : templates) {
+                if (!raw.isObject()) throw ServiceException.validation("Cell style template must be an object");
+                JsonNode validation = raw.get("dataValidation");
+                if (validation != null && !validation.isNull()) {
+                    if (!validation.isObject()) throw ServiceException.validation("Cell style template validation must be an object");
+                    end = affectedAnchorColumnEnd(validation.get("formulaAnchor"), sheetId, startRow, endRow, end);
+                }
+            }
+        }
         return end;
+    }
+
+    private static int affectedAnchorColumnEnd(JsonNode raw, String sheetId, int startRow, int endRow, int end) {
+        if (raw == null || raw.isNull()) return end;
+        if (!raw.isObject() || !raw.path("sheetId").isTextual()) {
+            throw ServiceException.validation("Structural formula anchor is invalid");
+        }
+        if (!sheetId.equals(raw.path("sheetId").asText())) return end;
+        if (!raw.path("row").canConvertToInt() || !raw.path("column").canConvertToInt()) throw ServiceException.validation("Structural formula anchor is invalid");
+        int row = raw.path("row").asInt(-1);
+        int column = raw.path("column").asInt(-1);
+        if (row < 0 || row > SnapshotMutationSupport.MAX_ROW || column < 0 || column > SnapshotMutationSupport.MAX_COLUMN) {
+            throw ServiceException.validation("Structural formula anchor is outside worksheet bounds");
+        }
+        return row >= startRow && row <= endRow ? Math.max(end, column) : end;
     }
 
     static void transformStructuralFields(ObjectNode root, ObjectNode sheet, String sheetId, RangeRef scope,

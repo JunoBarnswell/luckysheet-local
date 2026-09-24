@@ -35,7 +35,7 @@ final class StructuralMutationDescriptor extends CanonicalJsonMutationDescriptor
                 DataRegionContextValidator.validateSort(root, mutation.sheetId(), params);
                 RangeRef selected = ownRange(root, mutation.sheetId(), params);
                 int declaredEndColumn = integer(params.get("affectedColumnEnd"), "Rows permutation affected column end");
-                int canonicalEndColumn = SheetRuleLifecycle.affectedColumnEnd(root, SnapshotMutationSupport.sheet(root, mutation.sheetId()), selected.endColumn());
+                int canonicalEndColumn = SheetRuleLifecycle.affectedColumnEnd(root, SnapshotMutationSupport.sheet(root, mutation.sheetId()), selected.endColumn(), selected.startRow(), selected.endRow());
                 if (declaredEndColumn < canonicalEndColumn || declaredEndColumn > SnapshotMutationSupport.MAX_COLUMN) {
                     throw ServiceException.validation("Rows permutation affected column extent does not cover current worksheet metadata");
                 }
@@ -65,7 +65,7 @@ final class StructuralMutationDescriptor extends CanonicalJsonMutationDescriptor
                 DataRegionContextValidator.validateSort(root, mutation.sheetId(), params);
                 RangeRef selected = ownRange(root, mutation.sheetId(), params);
                 int declaredEndColumn = integer(params.get("affectedColumnEnd"), "Rows permutation affected column end");
-                int canonicalEndColumn = SheetRuleLifecycle.affectedColumnEnd(root, SnapshotMutationSupport.sheet(root, mutation.sheetId()), selected.endColumn());
+                int canonicalEndColumn = SheetRuleLifecycle.affectedColumnEnd(root, SnapshotMutationSupport.sheet(root, mutation.sheetId()), selected.endColumn(), selected.startRow(), selected.endRow());
                 if (declaredEndColumn < canonicalEndColumn || declaredEndColumn > SnapshotMutationSupport.MAX_COLUMN) {
                     throw ServiceException.validation("Rows permutation affected column extent does not cover current worksheet metadata");
                 }

@@ -2256,6 +2256,7 @@ final class StructuralSnapshotReducer {
             if (contains(range, anchor.path("row").asInt(-1), anchor.path("column").asInt(-1))) anchor.put("row", remapRow(anchor.path("row").asInt(), range, rowMap));
             writeSingleRange(spill.get("range"), range, rowMap, "spill range");
         }
+        remapPermutationRuleFormulaOwners(sheet, range.sheetId(), metadataScope, rowMap);
         for (String property : List.of("conditionalFormats", "dataValidations")) {
             for (JsonNode rule : SnapshotMutationSupport.array(sheet, property)) {
                 ArrayNode ranges = (ArrayNode) requireObject(rule, "Range rule").path("ranges");
@@ -2265,6 +2266,10 @@ final class StructuralSnapshotReducer {
         SheetRuleLifecycle.transformStructuralFields(root, sheet, range.sheetId(), metadataScope,
                 candidate -> remapRangeExact(rangeNode(candidate), metadataScope, rowMap),
                 row -> remapRow(row, metadataScope, rowMap));
+        JsonNode namesProjectionRaw = root.get("definedNames");
+        ObjectNode namesProjection = namesProjectionRaw != null && namesProjectionRaw.isObject() ? (ObjectNode) namesProjectionRaw : null;
+        remapPermutationDefinedNames(existingArray(root, "definedNameModels"), namesProjection, range.sheetId(), metadataScope, rowMap);
+        remapPermutationCellStyleTemplates(existingArray(root, "cellStyleTemplates"), range.sheetId(), metadataScope, rowMap);
         JsonNode filter = sheet.get("autoFilter");
         if (filter != null && filter.isObject()) writeSingleRange(filter.get("range"), range, rowMap, "auto filter");
         for (JsonNode rawTable : SnapshotMutationSupport.array(sheet, "sheetTables")) {
@@ -2293,10 +2298,14 @@ final class StructuralSnapshotReducer {
         JsonNode outline = sheet.get("outline");
         if (outline != null && outline.isObject()) {
             for (JsonNode group : ((ObjectNode) outline).path("groups")) {
-                if (!"row".equals(group.path("axis").asText()) || group.path("start").asInt() < range.startRow() || group.path("end").asInt() > range.endRow()) continue;
-                int start = remapRow(group.path("start").asInt(), range, rowMap);
-                int end = remapRow(group.path("end").asInt(), range, rowMap);
-                ((ObjectNode) group).put("start", Math.min(start, end)).put("end", Math.max(start, end));
+                if (!"row".equals(group.path("axis").asText())) continue;
+                int start = group.path("start").asInt(-1);
+                int end = group.path("end").asInt(-1);
+                if (start > range.endRow() || end < range.startRow()) continue;
+                RangeRef groupRange = new RangeRef(range.sheetId(), start, end, range.startColumn(), range.endColumn());
+                List<RangeRef> mapped = remapRangeExact(rangeNode(groupRange), range, rowMap);
+                if (mapped.size() != 1) throw ServiceException.validation("Row permutation cannot exactly remap an outline group");
+                ((ObjectNode) group).put("start", mapped.get(0).startRow()).put("end", mapped.get(0).endRow());
             }
         }
         for (JsonNode rule : SnapshotMutationSupport.array(sheet, "protectionRules")) if (rule.has("range")) writeSingleRange(rule.get("range"), metadataScope, rowMap, "protection rule");
@@ -2428,6 +2437,169 @@ final class StructuralSnapshotReducer {
         for (JsonNode raw : SnapshotMutationSupport.array(sheet, "pivots")) PivotMutationDescriptor.forEachWorksheetSourceRange(requireObject(raw, "Pivot"), source -> requireSingleRange(source, range, rowMap, "pivot source"));
         for (JsonNode raw : SnapshotMutationSupport.array(sheet, "merges")) requireSingleRange(requireObject(raw, "Merge").get("range"), range, rowMap, "merge");
         for (JsonNode raw : SnapshotMutationSupport.array(sheet, "protectionRules")) if (raw.has("range")) requireSingleRange(raw.get("range"), metadataScope, rowMap, "protection rule");
+        JsonNode outline = sheet.get("outline");
+        if (outline != null && !outline.isNull()) {
+            if (!outline.isObject() || !outline.path("groups").isArray()) throw ServiceException.validation("Worksheet outline groups must be an array");
+            for (JsonNode rawGroup : outline.path("groups")) {
+                ObjectNode group = requireObject(rawGroup, "Outline group");
+                if (!"row".equals(group.path("axis").asText())) continue;
+                int start = group.path("start").asInt(-1);
+                int end = group.path("end").asInt(-1);
+                if (start < 0 || end < start || end > SnapshotMutationSupport.MAX_ROW) throw ServiceException.validation("Outline group row bounds are invalid");
+                if (start > range.endRow() || end < range.startRow()) continue;
+                if (start < range.startRow() || end > range.endRow()) throw ServiceException.validation("Row permutation cannot partially intersect an outline group");
+                RangeRef groupRange = new RangeRef(range.sheetId(), start, end, range.startColumn(), range.endColumn());
+                if (remapRangeExact(rangeNode(groupRange), range, rowMap).size() != 1) {
+                    throw ServiceException.validation("Row permutation cannot exactly remap an outline group");
+                }
+            }
+        }
+        validatePermutationFormulaOwners(root, sheet, range.sheetId(), metadataScope, rowMap);
+    }
+
+    private static void validatePermutationFormulaOwners(ObjectNode root, ObjectNode sheet, String sheetId, RangeRef scope, int[] rowMap) {
+        for (String property : List.of("conditionalFormats", "dataValidations")) {
+            ObjectNode stagedSheet = JsonNodeFactory.instance.objectNode();
+            stagedSheet.set(property, SnapshotMutationSupport.array(sheet, property).deepCopy());
+            remapPermutationRuleFormulaOwners(stagedSheet, sheetId, scope, rowMap);
+        }
+        ArrayNode stagedNames = existingArray(root, "definedNameModels").deepCopy();
+        JsonNode namesRaw = root.get("definedNames");
+        if (namesRaw != null && !namesRaw.isNull() && !namesRaw.isObject()) throw ServiceException.validation("definedNames must be an object");
+        ObjectNode stagedProjection = namesRaw != null && namesRaw.isObject() ? ((ObjectNode) namesRaw).deepCopy() : null;
+        remapPermutationDefinedNames(stagedNames, stagedProjection, sheetId, scope, rowMap);
+        remapPermutationCellStyleTemplates(existingArray(root, "cellStyleTemplates").deepCopy(), sheetId, scope, rowMap);
+    }
+
+    private static ArrayNode existingArray(ObjectNode parent, String property) {
+        JsonNode value = parent.get(property);
+        if (value == null || value.isNull()) return JsonNodeFactory.instance.arrayNode();
+        if (!value.isArray()) throw ServiceException.validation(property + " must be an array");
+        return (ArrayNode) value;
+    }
+
+    private static void remapPermutationRuleFormulaOwners(ObjectNode sheet, String sheetId, RangeRef scope, int[] rowMap) {
+        boolean changesRows = false;
+        for (int index = 0; index < rowMap.length; index++) {
+            if (rowMap[index] != scope.startRow() + index) {
+                changesRows = true;
+                break;
+            }
+        }
+        for (String property : List.of("conditionalFormats", "dataValidations")) {
+            for (JsonNode raw : SnapshotMutationSupport.array(sheet, property)) {
+                ObjectNode rule = requireObject(raw, property + " rule");
+                ArrayNode ranges = SnapshotMutationSupport.requiredArray(rule, "ranges");
+                if (ranges.isEmpty()) throw ServiceException.validation(property + " rule ranges must not be empty");
+                JsonNode rawAnchor = rule.get("formulaAnchor");
+                boolean explicitAnchor = rawAnchor != null && !rawAnchor.isNull();
+                JsonNode source = explicitAnchor ? rawAnchor : ranges.get(0);
+                if (source == null || !source.isObject()) throw ServiceException.validation("Sheet rule formula anchor is invalid");
+                String anchorSheetId = explicitAnchor ? SnapshotMutationSupport.text((ObjectNode) source, "sheetId") : source.path("sheetId").asText();
+                if (!sheetId.equals(anchorSheetId)) throw ServiceException.validation("Sheet rule formula anchor targets another sheet");
+                JsonNode rowNode = explicitAnchor ? source.get("row") : source.get("startRow");
+                JsonNode columnNode = explicitAnchor ? source.get("column") : source.get("startColumn");
+                if (rowNode == null || !rowNode.canConvertToInt() || columnNode == null || !columnNode.canConvertToInt()) {
+                    throw ServiceException.validation("Sheet rule formula anchor is invalid");
+                }
+                int row = rowNode.asInt(-1);
+                int column = columnNode.asInt(-1);
+                if (row < 0 || row > SnapshotMutationSupport.MAX_ROW || column < 0 || column > SnapshotMutationSupport.MAX_COLUMN) {
+                    throw ServiceException.validation("Sheet rule formula anchor is outside worksheet bounds");
+                }
+                if (!contains(scope, row, column)) continue;
+                int targetRow = remapRow(row, scope, rowMap);
+                int rowDelta = targetRow - row;
+                if (rowDelta != 0) {
+                    String identity = property + " " + rule.path("id").asText("<unknown>");
+                    rewriteRuleFormulas(rule, formula -> offsetPermutationFormula(formula, rowDelta, identity));
+                }
+                if (!explicitAnchor && changesRows) {
+                    ObjectNode mappedAnchor = JsonNodeFactory.instance.objectNode();
+                    mappedAnchor.put("sheetId", sheetId).put("row", row).put("column", column);
+                    rule.set("formulaAnchor", mappedAnchor);
+                }
+            }
+        }
+    }
+
+    private static void remapPermutationDefinedNames(ArrayNode models, ObjectNode projection, String sheetId, RangeRef scope, int[] rowMap) {
+        for (JsonNode raw : models) {
+            ObjectNode name = requireObject(raw, "Defined name");
+            JsonNode rawAnchor = name.get("anchor");
+            if (rawAnchor == null || rawAnchor.isNull()) continue;
+            ObjectNode anchor = requireObject(rawAnchor, "Defined-name anchor");
+            if (!sheetId.equals(anchor.path("sheetId").asText())) continue;
+            JsonNode rowNode = anchor.get("row");
+            JsonNode columnNode = anchor.get("column");
+            if (rowNode == null || !rowNode.canConvertToInt() || columnNode == null || !columnNode.canConvertToInt()) {
+                throw ServiceException.validation("Defined-name anchor is invalid");
+            }
+            int row = rowNode.asInt(-1);
+            int column = columnNode.asInt(-1);
+            if (row < 0 || row > SnapshotMutationSupport.MAX_ROW || column < 0 || column > SnapshotMutationSupport.MAX_COLUMN) {
+                throw ServiceException.validation("Defined-name anchor is outside worksheet bounds");
+            }
+            if (!contains(scope, row, column)) continue;
+            int targetRow = remapRow(row, scope, rowMap);
+            int rowDelta = targetRow - row;
+            if (rowDelta == 0) continue;
+            JsonNode formula = name.get("formula");
+            if (formula == null || !formula.isTextual()) throw ServiceException.validation("Defined-name formula must be text");
+            String nameText = SnapshotMutationSupport.text(name, "name");
+            String mappedFormula = offsetPermutationFormula(formula.asText(), rowDelta, "defined name " + nameText);
+            name.put("formula", mappedFormula);
+            anchor.put("row", targetRow);
+            if (projection != null && "workbook".equals(name.path("scope").asText())) {
+                JsonNode projectedFormula = projection.get(nameText);
+                if (projectedFormula != null) {
+                    if (!projectedFormula.isTextual()) throw ServiceException.validation("Defined-name projection formula must be text");
+                    projection.put(nameText, mappedFormula);
+                }
+            }
+        }
+    }
+
+    private static void remapPermutationCellStyleTemplates(ArrayNode templates, String sheetId, RangeRef scope, int[] rowMap) {
+        for (JsonNode raw : templates) {
+            ObjectNode template = requireObject(raw, "Cell style template");
+            JsonNode rawValidation = template.get("dataValidation");
+            if (rawValidation == null || rawValidation.isNull()) continue;
+            ObjectNode validation = requireObject(rawValidation, "Cell style template validation");
+            JsonNode rawAnchor = validation.get("formulaAnchor");
+            if (rawAnchor == null || rawAnchor.isNull()) continue;
+            ObjectNode anchor = requireObject(rawAnchor, "Cell style template formula anchor");
+            if (!sheetId.equals(anchor.path("sheetId").asText())) continue;
+            JsonNode rowNode = anchor.get("row");
+            JsonNode columnNode = anchor.get("column");
+            if (rowNode == null || !rowNode.canConvertToInt() || columnNode == null || !columnNode.canConvertToInt()) {
+                throw ServiceException.validation("Cell style template formula anchor is invalid");
+            }
+            int row = rowNode.asInt(-1);
+            int column = columnNode.asInt(-1);
+            if (row < 0 || row > SnapshotMutationSupport.MAX_ROW || column < 0 || column > SnapshotMutationSupport.MAX_COLUMN) {
+                throw ServiceException.validation("Cell style template formula anchor is outside worksheet bounds");
+            }
+            if (!contains(scope, row, column)) continue;
+            int targetRow = remapRow(row, scope, rowMap);
+            int rowDelta = targetRow - row;
+            if (rowDelta == 0) continue;
+            String identity = "cell-style template " + template.path("id").asText("<unknown>");
+            rewriteRuleFormulas(validation, formula -> offsetPermutationFormula(formula, rowDelta, identity));
+            anchor.put("row", targetRow);
+        }
+    }
+
+    private static String offsetPermutationFormula(String formula, int rowDelta, String owner) {
+        try {
+            FormulaReferenceTransformer.assertRowOffsetSupported(formula);
+            return FormulaReferenceTransformer.offsetForPermutation(formula, rowDelta);
+        } catch (ServiceException error) {
+            throw new ServiceException("SERVICE_UNAVAILABLE", 503,
+                    "UNSUPPORTED_STRUCTURAL_REFERENCE: row permutation cannot rewrite formula owner " + owner, error);
+        } catch (RuntimeException error) {
+            throw ServiceException.unavailable("UNSUPPORTED_STRUCTURAL_REFERENCE: row permutation cannot parse formula owner " + owner);
+        }
     }
 
     private static void validateDrawingExact(ObjectNode drawing, RangeRef range) {

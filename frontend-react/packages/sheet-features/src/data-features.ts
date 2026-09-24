@@ -11,11 +11,12 @@ import type {
   FilterScalar,
   RangeRef,
   StructuralTransformResult,
+  WorkbookModel,
   WorksheetModel,
 } from "@react-sheets/core-model";
-import { clearFormulaProvenance, hasFormulaGroupMetadata, StructuralTransform, applyRowPermutation, columnLabel, createRowPermutationPlan, isDynamicFilterType, resolveFilterCellValue, sheetRuleRegistry } from "@react-sheets/core-model";
+import { clearFormulaProvenance, hasFormulaGroupMetadata, StructuralTransform, applyRowPermutation, columnLabel, createRowPermutationPlan, isDynamicFilterType, resolveFilterCellValue, rowPermutationAffectedColumnEnd, sheetRuleRegistry } from "@react-sheets/core-model";
 import { canonicalExcelDateDayOfWeek, canonicalExcelDateFromParts, canonicalExcelDateFromUtcDate, canonicalExcelDateFromValue, canonicalExcelDateToUtcDate, shiftCanonicalExcelDate, type CanonicalExcelDate, type CanonicalExcelDateParts } from '@react-sheets/formula-engine';
-import { compareWorkbookValues } from '@react-sheets/formula-engine';
+import { compareWorkbookValues, MAX_COLUMN_INDEX } from '@react-sheets/formula-engine';
 import { clearCellContents } from './clear-planner';
 import { resolveAutoFilters } from './sheet-table-features';
 import { assertDataRegionContextMatches, resolveDataRegionContext, type DataRegionContext } from './data-region-context';
@@ -103,8 +104,9 @@ function isRowsPermutedMutation(value: unknown): value is RowsPermutedMutationPa
     && Number(candidate.startRow) >= 0 && Number(candidate.endRow) >= Number(candidate.startRow)
     && Number(candidate.startColumn) >= 0 && Number(candidate.endColumn) >= Number(candidate.startColumn)
     && Array.isArray(params.sourceRows)
-    && Number.isInteger(params.affectedColumnEnd)
+    && Number.isSafeInteger(params.affectedColumnEnd)
     && Number(params.affectedColumnEnd) >= Number(candidate.endColumn)
+    && Number(params.affectedColumnEnd) <= MAX_COLUMN_INDEX
     && params.sourceRows.length === Number(candidate.endRow) - Number(candidate.startRow) + 1
     && new Set(params.sourceRows).size === params.sourceRows.length
     && params.sourceRows.every((row) => Number.isInteger(row) && Number(row) >= Number(candidate.startRow) && Number(row) <= Number(candidate.endRow));
@@ -116,8 +118,8 @@ function setAppliedSortState(sheet: WorksheetModel, state: AppliedSortState | un
   else target.appliedSortState = structuredClone(state);
 }
 
-function rowsPermutedAffectedColumnEnd(sheet: WorksheetModel, range: RangeRef): number {
-  return sheetRuleRegistry.affectedColumnEnd(sheet, range.endColumn);
+function rowsPermutedAffectedColumnEnd(workbook: WorkbookModel, range: RangeRef): number {
+  return rowPermutationAffectedColumnEnd(workbook, range);
 }
 
 function inRange(range: RangeRef, row: number, column: number): boolean {
@@ -1771,7 +1773,7 @@ export function registerDataToolCommands(runtime: CommandRuntime): void {
       const params = item.params;
       const range = params.range;
       const sheet = context.workbook.getSheet(params.sheetId);
-      applyRowPermutation(sheet, createRowPermutationPlan(range, params.sourceRows));
+      applyRowPermutation(context.workbook, createRowPermutationPlan(range, params.sourceRows, params.affectedColumnEnd));
       setAppliedSortState(sheet, params.sortState);
       return rowPermutationCalculationEffect(range);
     },
@@ -1814,7 +1816,7 @@ export function registerDataToolCommands(runtime: CommandRuntime): void {
       const bodyRange: RangeRef = { ...range, startRow };
       const inverseRows = new Array<number>(sourceRows.length);
       sourceRows.forEach((sourceRow, offset) => { inverseRows[sourceRow - startRow] = startRow + offset; });
-      const affectedColumnEnd = rowsPermutedAffectedColumnEnd(sheet, bodyRange);
+      const affectedColumnEnd = rowsPermutedAffectedColumnEnd(context.workbook, bodyRange);
       const affectedRanges = rowsPermutedAffectedRanges({ sheetId: params.sheetId, range: bodyRange, sourceRows, affectedColumnEnd });
       const previousSortState = (sheet as WorksheetModel & { appliedSortState?: AppliedSortState }).appliedSortState;
       const sortState: AppliedSortState = {
@@ -1860,7 +1862,7 @@ export function registerDataToolCommands(runtime: CommandRuntime): void {
           affectedRanges,
         }],
         apply: () => {
-          applyRowPermutation(sheet, createRowPermutationPlan(bodyRange, sourceRows));
+          applyRowPermutation(context.workbook, createRowPermutationPlan(bodyRange, sourceRows, affectedColumnEnd));
           setAppliedSortState(sheet, sortState);
           return rowPermutationCalculationEffect(bodyRange);
         },
