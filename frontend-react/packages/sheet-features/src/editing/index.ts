@@ -415,6 +415,13 @@ function isDefaultMoveSpec(spec: PasteSpecialSpec): boolean {
 
 function isPasteSnapshot(value: unknown): value is PasteSnapshot {
   if (!isRecord(value) || !Array.isArray(value.cells)) return false;
+  const workbookTheme = value.workbookTheme;
+  const validWorkbookTheme = workbookTheme === undefined
+    || (isRecord(workbookTheme)
+      && typeof workbookTheme.id === 'string'
+      && workbookTheme.id.trim().length > 0
+      && isRecord(workbookTheme.colors)
+      && Object.values(workbookTheme.colors).every((color) => typeof color === 'string' && /^#[0-9a-f]{6}$/i.test(color)));
   return (value.clearRanges === undefined || (Array.isArray(value.clearRanges) && value.clearRanges.every(isRange)))
     && (value.clearMetadataRanges === undefined || (Array.isArray(value.clearMetadataRanges) && value.clearMetadataRanges.every(isRange)))
     && value.cells.every((entry) => isRecord(entry) && Number.isInteger(entry.row) && Number.isInteger(entry.column) && (entry.value === undefined || isCellData(entry.value)))
@@ -429,7 +436,7 @@ function isPasteSnapshot(value: unknown): value is PasteSnapshot {
     && (value.columnWidths === undefined || (Array.isArray(value.columnWidths) && value.columnWidths.every((entry) => isRecord(entry)
       && Number.isSafeInteger(entry.column) && Number(entry.column) >= 0 && Number(entry.column) < MAX_SHEET_COLUMN_COUNT
       && (entry.widthPx === undefined || (typeof entry.widthPx === 'number' && Number.isFinite(entry.widthPx) && entry.widthPx > 0)))))
-    && (value.workbookTheme === undefined || (isRecord(value.workbookTheme) && typeof value.workbookTheme.id === 'string' && value.workbookTheme.id.trim().length > 0 && isRecord(value.workbookTheme.colors) && Object.values(value.workbookTheme.colors).every((color) => typeof color === 'string' && /^#[0-9a-f]{6}$/i.test(color))));
+    && validWorkbookTheme;
 }
 
 function isCellNoteSnapshot(value: unknown): value is CellNote {
