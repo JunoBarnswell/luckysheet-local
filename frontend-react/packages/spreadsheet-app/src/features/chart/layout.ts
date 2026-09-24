@@ -500,8 +500,9 @@ function pieSlices(payload: ChartDrawingPayload, data: ResolvedChartData, plot: 
   const maxRadius = Math.min(plot.width, plot.height) * 0.43;
   const hole = payload.chartType === 'doughnut' ? 0.55 : 0;
   for (let ringIndex = 0; ringIndex < ringCount; ringIndex += 1) {
-    const seriesIndex = visibleSeriesIndexes[ringIndex] ?? visibleSeriesIndexes[0];
-    const series = seriesIndex === undefined ? undefined : data.series[seriesIndex];
+    const seriesIndex = visibleSeriesIndexes[ringIndex];
+    if (seriesIndex === undefined) continue;
+    const series = data.series[seriesIndex];
     if (!series) continue;
     const values = series.values.map((raw) => {
       const value = chartNumericValue(raw);
