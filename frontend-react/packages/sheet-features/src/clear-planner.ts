@@ -8,7 +8,7 @@ import type {
   RangeRef,
   WorksheetModel,
 } from '@react-sheets/core-model';
-import { sheetRuleRegistry } from '@react-sheets/core-model';
+import { clearFormulaProvenance, sheetRuleRegistry } from '@react-sheets/core-model';
 
 /** The only clear semantics accepted by the worksheet range command. */
 export type ClearFamily = 'contents' | 'formats' | 'all' | 'comments-and-notes' | 'hyperlinks';
@@ -89,9 +89,10 @@ export function createClearRangePlan(sheet: WorksheetModel, input: ClearRangePar
   };
 }
 
-function clearCellContents(cell: CellData): CellData {
-  const next = { ...cell, value: null };
+export function clearCellContents(cell: CellData): CellData {
+  const next = clearFormulaProvenance({ ...cell, value: null });
   delete next.formula;
+  delete next.formulaValue;
   delete next.displayValue;
   return next;
 }

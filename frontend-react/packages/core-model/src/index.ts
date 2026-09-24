@@ -497,6 +497,7 @@ export {
 export {
   StructuralTransform,
   planCellShift,
+  hasFormulaGroupMetadata,
   type StructuralTransformResult,
   type StructuralReferenceOwnerAddress,
   type StructuralReferenceOwnerIndex,

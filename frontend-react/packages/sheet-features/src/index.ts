@@ -1599,7 +1599,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
         const rowValues = params.values[rowOffset] ?? [];
         for (let columnOffset = 0; columnOffset < rowValues.length; columnOffset += 1) {
           const value = rowValues[columnOffset];
-          if (value) sheet.cells.set(params.startRow + rowOffset, params.startColumn + columnOffset, clearFormulaProvenance(value));
+          if (value) sheet.cells.set(params.startRow + rowOffset, params.startColumn + columnOffset, structuredClone(value));
         }
       }
     },

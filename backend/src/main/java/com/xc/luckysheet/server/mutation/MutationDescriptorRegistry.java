@@ -662,6 +662,8 @@ public class MutationDescriptorRegistry {
                         if ("contents".equals(family)) {
                             next.putNull("value");
                             next.remove("formula");
+                            next.remove("formulaValue");
+                            next.remove("formulaMetadata");
                             next.remove("displayValue");
                         } else {
                             next.remove("style");

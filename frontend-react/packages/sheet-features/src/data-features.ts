@@ -12,9 +12,10 @@ import type {
   RangeRef,
   WorksheetModel,
 } from "@react-sheets/core-model";
-import { clearFormulaProvenance, StructuralTransform, applyRowPermutation, columnLabel, createRowPermutationPlan, isDynamicFilterType, resolveFilterCellValue, sheetRuleRegistry } from "@react-sheets/core-model";
+import { clearFormulaProvenance, hasFormulaGroupMetadata, StructuralTransform, applyRowPermutation, columnLabel, createRowPermutationPlan, isDynamicFilterType, resolveFilterCellValue, sheetRuleRegistry } from "@react-sheets/core-model";
 import { canonicalExcelDateDayOfWeek, canonicalExcelDateFromParts, canonicalExcelDateFromUtcDate, canonicalExcelDateFromValue, canonicalExcelDateToUtcDate, shiftCanonicalExcelDate, type CanonicalExcelDate, type CanonicalExcelDateParts } from '@react-sheets/formula-engine';
 import { compareWorkbookValues } from '@react-sheets/formula-engine';
+import { clearCellContents } from './clear-planner';
 import { resolveAutoFilters } from './sheet-table-features';
 import { assertDataRegionContextMatches, resolveDataRegionContext, type DataRegionContext } from './data-region-context';
 import type { CommandContext, CommandRuntime } from "@react-sheets/command-runtime";
@@ -136,8 +137,15 @@ function snapshotOccupiedCells(sheet: WorksheetModel, range: RangeRef): Array<{ 
 
 function applyRangeValues(
   context: CommandContext,
-  params: { sheetId: string; startRow: number; startColumn: number; values: CellData[][] },
+  params: {
+    sheetId: string;
+    startRow: number;
+    startColumn: number;
+    values: CellData[][];
+    formulaProvenance?: 'clear' | 'preserve';
+  },
 ): void {
+  const { formulaProvenance = 'clear', ...mutationParams } = params;
   const sheet = context.workbook.getSheet(params.sheetId);
   const range: RangeRef = {
     sheetId: params.sheetId,
@@ -146,7 +154,9 @@ function applyRangeValues(
     startColumn: params.startColumn,
     endColumn: params.startColumn + Math.max(0, Math.max(0, ...params.values.map((line) => line.length)) - 1),
   };
-  const values = params.values.map((row) => row.map((value) => value ? clearFormulaProvenance(value) : value));
+  const values = formulaProvenance === 'preserve'
+    ? params.values
+    : params.values.map((row) => row.map((value) => value ? clearFormulaProvenance(value) : value));
   const previous = snapshotCells(sheet, range);
   const affectedRanges = [range];
   context.applyMutation({
@@ -154,7 +164,7 @@ function applyRangeValues(
     unitId: context.workbook.unitId,
     sheetId: params.sheetId,
     params: {
-      ...params,
+      ...mutationParams,
       values,
     },
     affectedRanges,
@@ -198,10 +208,7 @@ function clearRangeContents(context: CommandContext, range: RangeRef): void {
         for (let column = range.startColumn; column <= range.endColumn; column += 1) {
           const current = sheet.cells.get(row, column);
           if (!current) continue;
-          const next = { ...current, value: null };
-          delete next.formula;
-          delete next.displayValue;
-          sheet.cells.set(row, column, next);
+          sheet.cells.set(row, column, clearCellContents(current));
         }
       }
     },
@@ -1619,6 +1626,11 @@ function assertMatrixTransformSupported(sheet: WorksheetModel, range: RangeRef):
     && candidate.startRow <= range.endRow && candidate.endRow >= range.startRow
     && candidate.startColumn <= range.endColumn && candidate.endColumn >= range.startColumn;
   if (sheet.merges.some((merge) => intersects(merge.range))) throw new Error('Matrix transform cannot partially or silently rewrite merged cells');
+  sheet.cells.forEachInRange(range.startRow, range.endRow, range.startColumn, range.endColumn, (cell, row, column) => {
+    if (hasFormulaGroupMetadata(cell)) {
+      throw new Error(`UNSUPPORTED_MATRIX_FORMULA_GROUP: formula metadata at ${sheet.id}!${row}:${column} requires an explicit formula-group transform`);
+    }
+  });
   if (sheet.sheetTables.some((table) => intersects(table.range))) throw new Error('Matrix transform cannot rewrite a Sheet Table');
   if (sheet.conditionalFormats.some((rule) => rule.ranges.some(intersects))) throw new Error('Matrix transform cannot rewrite conditional-format ranges');
   if (sheet.dataValidations.some((rule) => rule.ranges.some(intersects))) throw new Error('Matrix transform cannot rewrite validation ranges');
@@ -1647,16 +1659,6 @@ function matrixTargetRange(range: RangeRef, transpose: boolean): RangeRef {
     : structuredClone(range);
 }
 
-function matrixClearRange(source: RangeRef, target: RangeRef): RangeRef {
-  return {
-    sheetId: source.sheetId,
-    startRow: Math.min(source.startRow, target.startRow),
-    endRow: Math.max(source.endRow, target.endRow),
-    startColumn: Math.min(source.startColumn, target.startColumn),
-    endColumn: Math.max(source.endColumn, target.endColumn),
-  };
-}
-
 function executeMatrixTransform(
   runtime: CommandRuntime,
   context: CommandContext,
@@ -1668,7 +1670,7 @@ function executeMatrixTransform(
   assertMatrixTransformSupported(sheet, range);
   const target = matrixTargetRange(range, transpose);
   if (target.endRow >= sheet.rowCount || target.endColumn >= sheet.columnCount) throw new Error('Matrix transform exceeds worksheet bounds');
-  const clearRange = matrixClearRange(range, target);
+  const clearRange = range;
   if (target.startRow !== range.startRow || target.startColumn !== range.startColumn
     || target.endRow !== range.endRow || target.endColumn !== range.endColumn) {
     for (let row = target.startRow; row <= target.endRow; row += 1) {
@@ -1693,8 +1695,19 @@ function executeMatrixTransform(
       const sourceColumn = transpose ? range.startColumn + (row - target.startRow) : (
         params.direction === 'horizontal' ? range.endColumn - (column - target.startColumn) : column);
       const source = structuredClone(sheet.cells.get(sourceRow, sourceColumn) ?? { value: null });
-      if (source.formula) {
-        source.formula = mapFormula(source.formula);
+      if (source.formula !== undefined || source.formulaMetadata?.sourceFormula !== undefined) {
+        const formula = source.formula === undefined ? undefined : mapFormula(source.formula);
+        const sourceFormula = source.formulaMetadata?.sourceFormula === undefined
+          ? undefined
+          : mapFormula(source.formulaMetadata.sourceFormula);
+        const formulaChanged = formula !== undefined && formula !== source.formula;
+        const sourceFormulaChanged = sourceFormula !== undefined
+          && sourceFormula !== source.formulaMetadata?.sourceFormula;
+        const metadata = source.formulaMetadata;
+        if (formulaChanged && formula !== undefined) source.formula = formula;
+        if (sourceFormulaChanged && sourceFormula !== undefined && metadata) {
+          source.formulaMetadata = { ...metadata, sourceFormula };
+        }
       }
       if (source.presentation?.kind === 'barcode' && source.presentation.source.kind === 'formula') {
         source.presentation = {
@@ -1712,6 +1725,7 @@ function executeMatrixTransform(
     startRow: target.startRow,
     startColumn: target.startColumn,
     values,
+    formulaProvenance: 'preserve',
   });
   return { operationId: context.operationId, mutationCount: 2, affectedRanges: [clearRange, target] };
 }

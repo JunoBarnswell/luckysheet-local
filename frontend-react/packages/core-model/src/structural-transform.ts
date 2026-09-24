@@ -1716,7 +1716,7 @@ function structuralOwnerKey(owner: StructuralReferenceOwnerAddress): string {
   return `${owner.sheetId}\u0000${owner.row}\u0000${owner.column}`;
 }
 
-function hasFormulaGroupMetadata(cell: CellData): boolean {
+export function hasFormulaGroupMetadata(cell: CellData): boolean {
   const metadata = cell.formulaMetadata;
   return metadata !== undefined
     && (metadata.preservedOnly === true || metadata.kind !== 'normal' || metadata.range !== undefined);

@@ -253,6 +253,28 @@ class MutationDescriptorRegistryTest {
     }
 
     @Test
+    void clearContentsRemovesFormulaDefinitionProvenanceAndCachedResult() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        var snapshot = mapper.readTree("""
+                {"sheets":[{"id":"sheet-1","rowCount":1,"columnCount":1,"cells":{"0":{"0":{
+                  "value":7,"formula":"=1+6","formulaValue":7,"displayValue":"7",
+                  "formulaMetadata":{"kind":"normal","sourceFormula":"=1+6"}
+                }}}}]}
+                """);
+        var mutation = new OperationMutation("range.clear", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0},"family":"contents"}
+                """));
+
+        var next = registry.applyPublicMutations(snapshot, List.of(mutation));
+        var cell = next.path("sheets").get(0).path("cells").path("0").path("0");
+        assertTrue(cell.path("value").isNull());
+        assertTrue(cell.path("formula").isMissingNode());
+        assertTrue(cell.path("formulaValue").isMissingNode());
+        assertTrue(cell.path("formulaMetadata").isMissingNode());
+        assertTrue(cell.path("displayValue").isMissingNode());
+    }
+
+    @Test
     void rangePasteAcceptsMetadataWhoseEveryOwnedRangeIsInsideTheTarget() throws Exception {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         var snapshot = mapper.readTree("""
