@@ -42,6 +42,8 @@ export interface PivotBlockSourceReadOptions {
   sourceRowStart?: number;
   /** Sparse canonical CellPatch values, resolved after all source blocks load. */
   resolveCellOverlays?: () => readonly PivotBlockSourceCellOverlay[];
+  /** Cancels block acquisition before the source index is published. */
+  signal?: AbortSignal;
   onState?: (state: PivotBlockSourceState) => void;
 }
 
@@ -87,6 +89,13 @@ function validateOptions(options: PivotBlockSourceReadOptions): string | undefin
   return undefined;
 }
 
+function assertBlockReadActive(signal?: AbortSignal): void {
+  if (!signal?.aborted) return;
+  const error = new Error('Pivot source block read was cancelled');
+  error.name = 'AbortError';
+  throw error;
+}
+
 function canonicalFields(fields: readonly DataSourceField[]): PivotBlockSourceField[] {
   const ids = new Set<string>();
   return fields.map((field, ordinal) => {
@@ -130,6 +139,7 @@ export async function readPivotBlockSource(
 ): Promise<PivotBlockSourceReadResult> {
   const queryManifest = query.manifest;
   const sourceId = pivot.source.kind === 'data-source' ? pivot.source.dataSourceId : queryManifest.id;
+  assertBlockReadActive(options.signal);
   const optionError = validateOptions(options);
   if (optionError !== undefined) return failure('error', sourceId, optionError);
   if (pivot.source.kind !== 'data-source') {
@@ -159,9 +169,11 @@ export async function readPivotBlockSource(
     options.onState?.(state);
   });
   try {
+    assertBlockReadActive(options.signal);
     const columnValues = fields.map(() => [] as PivotScalar[]);
     let scannedRowCount = 0;
     const scanned = await query.scanRows((values, logicalRow) => {
+      assertBlockReadActive(options.signal);
       if (values.length !== fields.length) {
         throw new Error(`Data source row ${String(logicalRow)} has ${String(values.length)} fields; expected ${String(fields.length)}`);
       }
@@ -172,6 +184,7 @@ export async function readPivotBlockSource(
         columnValues[ordinal]!.push(values[ordinal] ?? null);
       }
     });
+    assertBlockReadActive(options.signal);
     const scanState = stateFromQuery(scanned.state);
     if (scanned.value === undefined || scanState.status !== 'ready') {
       const status = scanState.status === 'ready' ? 'error' : scanState.status;
@@ -183,26 +196,31 @@ export async function readPivotBlockSource(
     if (scannedRowCount !== queryManifest.rowCount) {
       return failure('error', sourceId, 'Pivot data source row count changed while block rows were loading');
     }
-    const logicalByPhysicalRow = new Map<number, number>();
-    for (let logicalRow = 0; logicalRow < queryManifest.rowCount; logicalRow += 1) {
-      const physicalRow = query.getPhysicalRow(logicalRow);
-      if (physicalRow === undefined) throw new Error(`Data source logical row ${String(logicalRow)} has no physical source row`);
-      if (logicalByPhysicalRow.has(physicalRow)) throw new Error(`Data source row order maps multiple logical rows to physical row ${String(physicalRow)}`);
-      logicalByPhysicalRow.set(physicalRow, logicalRow);
-    }
+    const overlays = options.resolveCellOverlays?.() ?? [];
     const overlayCells = new Set<string>();
-    for (const overlay of options.resolveCellOverlays?.() ?? []) {
-      if (!Number.isSafeInteger(overlay.rowIndex) || overlay.rowIndex < 0 || overlay.rowIndex >= queryManifest.rowCount
-        || !Number.isSafeInteger(overlay.fieldOrdinal) || overlay.fieldOrdinal < 0 || overlay.fieldOrdinal >= fields.length) {
-        throw new Error('Pivot source CellPatch overlay is outside the canonical data region');
+    if (overlays.length > 0) {
+      const logicalByPhysicalRow = new Map<number, number>();
+      for (let logicalRow = 0; logicalRow < queryManifest.rowCount; logicalRow += 1) {
+        const physicalRow = query.getPhysicalRow(logicalRow);
+        if (physicalRow === undefined) throw new Error(`Data source logical row ${String(logicalRow)} has no physical source row`);
+        if (logicalByPhysicalRow.has(physicalRow)) throw new Error(`Data source row order maps multiple logical rows to physical row ${String(physicalRow)}`);
+        logicalByPhysicalRow.set(physicalRow, logicalRow);
       }
-      const logicalRow = logicalByPhysicalRow.get(overlay.rowIndex);
-      if (logicalRow === undefined) throw new Error(`Pivot source physical row ${String(overlay.rowIndex)} is absent from the current row order`);
-      const cellKey = `${String(overlay.rowIndex)}:${String(overlay.fieldOrdinal)}`;
-      if (overlayCells.has(cellKey)) throw new Error('Pivot source has duplicate CellPatch overlays for one cell');
-      overlayCells.add(cellKey);
-      columnValues[overlay.fieldOrdinal]![logicalRow] = overlay.value;
+      for (const overlay of overlays) {
+        assertBlockReadActive(options.signal);
+        if (!Number.isSafeInteger(overlay.rowIndex) || overlay.rowIndex < 0 || overlay.rowIndex >= queryManifest.rowCount
+          || !Number.isSafeInteger(overlay.fieldOrdinal) || overlay.fieldOrdinal < 0 || overlay.fieldOrdinal >= fields.length) {
+          throw new Error('Pivot source CellPatch overlay is outside the canonical data region');
+        }
+        const logicalRow = logicalByPhysicalRow.get(overlay.rowIndex);
+        if (logicalRow === undefined) throw new Error(`Pivot source physical row ${String(overlay.rowIndex)} is absent from the current row order`);
+        const cellKey = `${String(overlay.rowIndex)}:${String(overlay.fieldOrdinal)}`;
+        if (overlayCells.has(cellKey)) throw new Error('Pivot source has duplicate CellPatch overlays for one cell');
+        overlayCells.add(cellKey);
+        columnValues[overlay.fieldOrdinal]![logicalRow] = overlay.value;
+      }
     }
+    assertBlockReadActive(options.signal);
     const readyState: PivotBlockSourceState = {
       status: 'ready',
       sourceId,
@@ -223,6 +241,7 @@ export async function readPivotBlockSource(
       sourceRevision: sourceRevision(query),
     };
   } catch (error) {
+    if (options.signal?.aborted || (error instanceof Error && error.name === 'AbortError')) throw error;
     const message = error instanceof Error ? error.message : String(error);
     const current = latestState;
     return failure(current?.status === 'missing' ? 'missing' : 'error', sourceId, message, current?.blockId ?? null);

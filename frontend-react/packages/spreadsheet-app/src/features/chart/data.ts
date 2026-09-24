@@ -210,6 +210,49 @@ function containsHidden(collection: ReadonlySet<number> | readonly number[], val
   return 'has' in collection ? collection.has(value) : collection.indexOf(value) >= 0;
 }
 
+/**
+ * Return every worksheet range that can affect a chart projection. Keeping
+ * this dependency calculation next to the resolver prevents cache invalidation
+ * and active-sheet projection planning from drifting apart as chart families
+ * add specialised ranges (stock roles, error bars, and label sources).
+ */
+export function chartSourceRanges(payload: ChartDrawingPayload, tables: readonly WorkbookTableModel[] = []): RangeRef[] {
+  const ranges: RangeRef[] = [];
+  const seen = new Set<string>();
+  const add = (range: RangeRef | undefined): void => {
+    if (!range) return;
+    const key = `${range.sheetId}:${range.startRow}:${range.endRow}:${range.startColumn}:${range.endColumn}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    ranges.push({ ...range });
+  };
+  if (payload.source.kind === 'worksheet-ranges') {
+    for (const range of payload.source.ranges) add(range);
+  } else if (payload.source.kind === 'table') {
+    const tableId = payload.source.tableId;
+    add(tables.find((table) => table.id === tableId)?.sourceRange);
+  } else if (payload.source.kind === 'report-range') {
+    add(payload.source.range);
+  }
+  add(payload.categoryRange);
+  for (const series of payload.series ?? []) {
+    add(series.range);
+    add(series.xRange);
+    add(series.yRange);
+    add(series.sizeRange);
+    add(series.categoryRange);
+    add(series.stockRoles?.open);
+    add(series.stockRoles?.high);
+    add(series.stockRoles?.low);
+    add(series.stockRoles?.close);
+    add(series.stockRoles?.volume);
+    add(series.errorBars?.plusRange);
+    add(series.errorBars?.minusRange);
+    add(series.dataLabels?.valuesFromCells);
+  }
+  return ranges;
+}
+
 function isMissing(value: PivotScalar | undefined): boolean {
   return value == null
     || (typeof value === 'object' && value.kind === 'error')
@@ -460,11 +503,26 @@ export function resolveStructuredChartBindings(payload: ChartDrawingPayload, tab
   if (source.kind === 'table' && !table) throw new Error(`Chart table binding not found: ${source.tableId}`);
   const sourceRange = table?.sourceRange ?? (source.kind === 'report-range' ? source.range : undefined);
   if (!sourceRange) throw new Error(`Chart source ${source.kind} has no worksheet-backed range`);
+  if (!Number.isSafeInteger(sourceRange.startRow) || !Number.isSafeInteger(sourceRange.endRow)
+    || !Number.isSafeInteger(sourceRange.startColumn) || !Number.isSafeInteger(sourceRange.endColumn)
+    || sourceRange.startRow < 0 || sourceRange.startColumn < 0
+    || sourceRange.endRow < sourceRange.startRow || sourceRange.endColumn < sourceRange.startColumn) {
+    throw new Error('INVALID_CHART_SOURCE: structured chart source range is invalid');
+  }
   const sheet = getSheet(sourceRange.sheetId);
   if (!sheet) throw new Error(`Chart source sheet not found: ${sourceRange.sheetId}`);
   const fields = source.kind === 'table'
     ? table!.fields.map((field) => ({ id: field.id, name: field.name, ordinal: field.ordinal }))
     : Array.from({ length: sourceRange.endColumn - sourceRange.startColumn + 1 }, (_, offset) => ({ id: `report-column-${offset}`, name: String(sheet.getCell(sourceRange.startRow, sourceRange.startColumn + offset)?.value ?? `Column ${offset + 1}`), ordinal: offset }));
+  const sourceWidth = sourceRange.endColumn - sourceRange.startColumn + 1;
+  const fieldIds = new Set<string>();
+  for (const field of fields) {
+    if (!field.id.trim() || fieldIds.has(field.id)) throw new Error(`INVALID_CHART_SOURCE: duplicate field identity ${field.id}`);
+    if (!Number.isSafeInteger(field.ordinal) || field.ordinal < 0 || field.ordinal >= sourceWidth) {
+      throw new Error(`INVALID_CHART_SOURCE: field ${field.id} ordinal is outside the source range`);
+    }
+    fieldIds.add(field.id);
+  }
   const fieldById = new Map(fields.map((field) => [field.id, field]));
   const bindingAreas = ['values', 'category', 'details', 'color', 'size', 'tooltip', 'filter'] as const;
   for (const area of bindingAreas) {
@@ -484,6 +542,11 @@ export function resolveStructuredChartBindings(payload: ChartDrawingPayload, tab
   }
   if (source.bindings.category.length > 1) throw new Error('INVALID_CHART_SOURCE: only one category binding is supported');
   if (source.bindings.values.length === 0) throw new Error(`Chart source ${source.kind} has no value bindings`);
+  const valueFieldIds = new Set<string>();
+  for (const binding of source.bindings.values) {
+    if (valueFieldIds.has(binding.fieldId)) throw new Error(`INVALID_CHART_SOURCE: duplicate value binding ${binding.fieldId}`);
+    valueFieldIds.add(binding.fieldId);
+  }
   if (source.bindings.values.filter((binding) => binding.sort !== undefined).length > 1) {
     throw new Error('INVALID_CHART_SOURCE: only one sorted value binding is supported');
   }

@@ -99,6 +99,8 @@ interface SourceTable {
   rows: SourceRow[];
   /** Bounded, lazy indexes for low-cardinality manual filters. */
   memberIndexes: Map<number, ReadonlyMap<string, readonly number[]> | null>;
+  /** Fields that have already been scanned, including high-cardinality fields. */
+  memberIndexAttempts: Set<number>;
 }
 
 interface SourceRow {
@@ -118,12 +120,22 @@ const MAX_SOURCE_MEMBER_INDEX_FIELDS = 4;
 const MAX_SOURCE_MEMBER_INDEX_MEMBERS = 20_000;
 
 function openSourceTable(index: PivotSourceIndex): SourceTable {
-  assertPivotSourceIndex(index);
   const cached = sourceTableCache.get(index);
   if (cached) return cached;
+  // A source index is immutable after registration. Validate it once before
+  // publishing the cached row wrappers instead of rescanning every typed cell
+  // on every layout/filter calculation.
+  assertPivotSourceIndex(index);
   const fields = index.fields.map((field) => ({ ...field }));
   const fieldOrdinals = new Map(fields.map((field, ordinal) => [field.fieldId, ordinal] as const));
-  const table = { index, fields, fieldOrdinals, rows: [] as SourceRow[], memberIndexes: new Map<number, ReadonlyMap<string, readonly number[]> | null>() };
+  const table = {
+    index,
+    fields,
+    fieldOrdinals,
+    rows: [] as SourceRow[],
+    memberIndexes: new Map<number, ReadonlyMap<string, readonly number[]> | null>(),
+    memberIndexAttempts: new Set<number>(),
+  };
   table.rows = Array.from({ length: index.rowCount }, (_, row) => ({ source: table, row }));
   sourceTableCache.set(index, table);
   return table;
@@ -131,6 +143,8 @@ function openSourceTable(index: PivotSourceIndex): SourceTable {
 
 function sourceMemberIndex(table: SourceTable, ordinal: number): ReadonlyMap<string, readonly number[]> | undefined {
   if (table.memberIndexes.has(ordinal)) return table.memberIndexes.get(ordinal) ?? undefined;
+  if (table.memberIndexAttempts.has(ordinal)) return undefined;
+  table.memberIndexAttempts.add(ordinal);
   if (table.memberIndexes.size >= MAX_SOURCE_MEMBER_INDEX_FIELDS) return undefined;
   const index = new Map<string, number[]>();
   const addRow = (key: string, row: number): boolean => {
@@ -2922,9 +2936,25 @@ function computePivotResultFromTable(
   revisions: PivotRevisionKey,
   targetBounds: { rowCount: number; columnCount: number },
 ): PivotResultTree {
-  const collator = createPivotCollator(definition.layout.collation);
   const calculatedFieldIds = new Set((definition.layout.calculatedFields ?? []).map((field) => field.fieldId));
   const calculatedItemIds = new Set((definition.layout.calculatedItems ?? []).map((field) => field.fieldId));
+  const sourceFieldIds = new Set(rawTable.fields.map((field) => field.fieldId));
+  const sourceReferences = [
+    ...definition.layout.rows.map((entry) => entry.fieldId),
+    ...definition.layout.columns.map((entry) => entry.fieldId),
+    ...definition.layout.filters.flatMap((filter) => {
+      if (filter.kind === 'top-items') return [filter.fieldId, valueSourceFieldId(filter.valueId, definition.layout.values)];
+      if (filter.kind === 'condition' && filter.valueId !== undefined) return [filter.fieldId, valueSourceFieldId(filter.valueId, definition.layout.values)];
+      return [filter.fieldId];
+    }),
+    ...definition.layout.values.map((entry) => entry.fieldId),
+  ];
+  const missingSourceField = sourceReferences.find((fieldId) => fieldId
+    && !sourceFieldIds.has(fieldId)
+    && !calculatedFieldIds.has(fieldId)
+    && !calculatedItemIds.has(fieldId));
+  if (missingSourceField !== undefined) throw new Error(`Pivot source is missing field: ${missingSourceField}`);
+  const collator = createPivotCollator(definition.layout.collation);
   const structuralReferences: string[] = [
     ...definition.layout.rows.map((entry) => entry.fieldId),
     ...definition.layout.columns.map((entry) => entry.fieldId),

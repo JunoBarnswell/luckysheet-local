@@ -914,33 +914,78 @@ function drawChartLegend(context: CanvasRenderingContext2D, layout: ChartLayout)
 
 function drawChartAxes(context: CanvasRenderingContext2D, layout: ChartLayout, categories: readonly PivotScalar[]): void {
   const { plot } = layout;
+  const horizontalBar = layout.kind === 'cartesian' && layout.series.some((series) => series.chartType === 'bar');
   const valueAxis = layout.valueAxis;
-  if (!valueAxis) return;
-  const valueAxisModel = valueAxis.model;
-  const grid = valueAxisModel.majorGridlines;
-  for (const tick of valueAxis.ticks) {
-    const y = plot.top + plot.height * (1 - chartScale(tick, valueAxis));
-    if (grid?.visible !== false) {
-      context.save();
-      context.strokeStyle = grid?.color ?? '#e2e8f0';
-      context.lineWidth = grid?.width ?? 1;
-      if (grid?.dash === 'dash') context.setLineDash([4, 3]);
-      if (grid?.dash === 'dot') context.setLineDash([1, 3]);
-      context.beginPath();
-      context.moveTo(plot.left, y);
-      context.lineTo(plot.left + plot.width, y);
-      context.stroke();
-      context.restore();
+  if (valueAxis) {
+    const valueAxisModel = valueAxis.model;
+    const grid = valueAxisModel.majorGridlines;
+    for (const tick of valueAxis.ticks) {
+      const ratio = chartScale(tick, valueAxis);
+      const coordinate = horizontalBar ? plot.left + plot.width * ratio : plot.top + plot.height * (1 - ratio);
+      if (grid?.visible !== false) {
+        context.save();
+        context.strokeStyle = grid?.color ?? '#e2e8f0';
+        context.lineWidth = grid?.width ?? 1;
+        if (grid?.dash === 'dash') context.setLineDash([4, 3]);
+        if (grid?.dash === 'dot') context.setLineDash([1, 3]);
+        context.beginPath();
+        if (horizontalBar) {
+          context.moveTo(coordinate, plot.top);
+          context.lineTo(coordinate, plot.top + plot.height);
+        } else {
+          context.moveTo(plot.left, coordinate);
+          context.lineTo(plot.left + plot.width, coordinate);
+        }
+        context.stroke();
+        context.restore();
+      }
+      drawChartText(
+        context,
+        String(Math.round(tick * 100000) / 100000),
+        horizontalBar ? coordinate : plot.left - 8,
+        horizontalBar ? plot.top + plot.height + 12 : coordinate,
+        { color: '#64748b', size: 9, align: horizontalBar ? 'center' : 'right' },
+      );
     }
-    drawChartText(context, String(Math.round(tick * 100000) / 100000), plot.left - 8, y, { color: '#64748b', size: 9, align: 'right' });
+    if (valueAxisModel.visible !== false) {
+      context.strokeStyle = valueAxisModel.line?.color ?? '#94a3b8';
+      context.lineWidth = valueAxisModel.line?.width ?? 1;
+      context.beginPath();
+      if (horizontalBar) {
+        context.moveTo(plot.left, plot.top + plot.height);
+        context.lineTo(plot.left + plot.width, plot.top + plot.height);
+      } else {
+        context.moveTo(plot.left, plot.top);
+        context.lineTo(plot.left, plot.top + plot.height);
+      }
+      context.stroke();
+    }
+    if (valueAxisModel.title) drawChartText(context, valueAxisModel.title, horizontalBar ? plot.left + plot.width / 2 : 12, horizontalBar ? layout.height - 6 : plot.top + plot.height / 2, { color: '#475569', size: 10, align: horizontalBar ? 'center' : 'left' });
   }
-  if (valueAxisModel.visible !== false) {
-    context.strokeStyle = valueAxisModel.line?.color ?? '#94a3b8';
-    context.lineWidth = valueAxisModel.line?.width ?? 1;
-    context.beginPath();
-    context.moveTo(plot.left, plot.top);
-    context.lineTo(plot.left, plot.top + plot.height);
-    context.stroke();
+  const secondaryValueAxis = layout.secondaryValueAxis;
+  if (secondaryValueAxis) {
+    const secondaryModel = secondaryValueAxis.model;
+    const axisX = plot.left + plot.width;
+    if (secondaryModel.visible !== false) {
+      context.strokeStyle = secondaryModel.line?.color ?? '#94a3b8';
+      context.lineWidth = secondaryModel.line?.width ?? 1;
+      context.beginPath();
+      if (horizontalBar) {
+        context.moveTo(plot.left, plot.top);
+        context.lineTo(plot.left + plot.width, plot.top);
+      } else {
+        context.moveTo(axisX, plot.top);
+        context.lineTo(axisX, plot.top + plot.height);
+      }
+      context.stroke();
+    }
+    for (const tick of secondaryValueAxis.ticks) {
+      const ratio = chartScale(tick, secondaryValueAxis);
+      const x = plot.left + plot.width * ratio;
+      const y = plot.top + plot.height * (1 - ratio);
+      drawChartText(context, String(Math.round(tick * 100000) / 100000), horizontalBar ? x : axisX + 8, horizontalBar ? plot.top - 6 : y, { color: '#64748b', size: 9, align: horizontalBar ? 'center' : 'left' });
+    }
+    if (secondaryModel.title) drawChartText(context, secondaryModel.title, horizontalBar ? plot.left + plot.width / 2 : layout.width - 12, horizontalBar ? plot.top - 14 : plot.top + plot.height / 2, { color: '#475569', size: 10, align: horizontalBar ? 'center' : 'right' });
   }
   const categoryAxis = layout.categoryAxis;
   const categoryAxisModel = categoryAxis?.model;
@@ -948,10 +993,24 @@ function drawChartAxes(context: CanvasRenderingContext2D, layout: ChartLayout, c
     context.strokeStyle = categoryAxisModel?.line?.color ?? '#94a3b8';
     context.lineWidth = categoryAxisModel?.line?.width ?? 1;
     context.beginPath();
-    context.moveTo(plot.left, plot.top + plot.height);
-    context.lineTo(plot.left + plot.width, plot.top + plot.height);
+    if (horizontalBar) {
+      context.moveTo(plot.left, plot.top);
+      context.lineTo(plot.left, plot.top + plot.height);
+    } else {
+      context.moveTo(plot.left, plot.top + plot.height);
+      context.lineTo(plot.left + plot.width, plot.top + plot.height);
+    }
     context.stroke();
-    if (categoryAxisModel?.axisType === 'value' && categoryAxis) {
+    if (horizontalBar) {
+      const interval = Math.max(1, categoryAxisModel?.labelInterval ?? 1);
+      const count = Math.max(1, categories.length);
+      categories.forEach((category, index) => {
+        if (index % interval !== 0) return;
+        const slot = categoryAxisModel?.reverseOrder ? count - index - 1 : index;
+        const y = plot.top + (slot + 0.5) * plot.height / count;
+        drawChartText(context, String(category ?? ''), plot.left - 8, y, { color: '#64748b', size: 9, align: 'right' });
+      });
+    } else if (categoryAxisModel?.axisType === 'value' && categoryAxis) {
       for (const tick of categoryAxis.ticks) {
         const x = plot.left + plot.width * chartScale(tick, categoryAxis);
         drawChartText(context, String(Math.round(tick * 100000) / 100000), x, plot.top + plot.height + 12, { color: '#64748b', size: 9, align: 'center' });
@@ -967,8 +1026,7 @@ function drawChartAxes(context: CanvasRenderingContext2D, layout: ChartLayout, c
       });
     }
   }
-  if (valueAxisModel.title) drawChartText(context, valueAxisModel.title, 12, plot.top + plot.height / 2, { color: '#475569', size: 10 });
-  if (categoryAxisModel?.title) drawChartText(context, categoryAxisModel.title, plot.left + plot.width / 2, layout.height - 6, { color: '#475569', size: 10, align: 'center' });
+  if (categoryAxisModel?.title) drawChartText(context, categoryAxisModel.title, horizontalBar ? 12 : plot.left + plot.width / 2, horizontalBar ? plot.top + plot.height / 2 : layout.height - 6, { color: '#475569', size: 10, align: horizontalBar ? 'left' : 'center' });
 }
 
 function drawChartLine(context: CanvasRenderingContext2D, series: ChartLayout['series'][number], area: boolean, smooth: boolean, baseline = 0, emptyCells: NonNullable<ChartDrawingPayload['elements']['emptyCells']> = 'gap', pixelsPerValue = 1): void {
@@ -1057,6 +1115,7 @@ function drawScatterSeries(context: CanvasRenderingContext2D, series: ChartLayou
 
 function drawChartDataLabels(context: CanvasRenderingContext2D, payload: ChartDrawingPayload, series: ChartLayout['series'][number]): void {
   const chartLabels = payload.elements.dataLabels;
+  const percentageTotal = series.points.reduce((sum, point) => sum + (point.visible && point.value !== null ? Math.abs(point.value) : 0), 0);
   for (const point of series.points) {
     const labels = payload.series?.find((entry) => entry.id === series.id || entry.name === series.name)?.dataLabels ?? chartLabels;
     if (!labels?.visible || point.value === null) continue;
@@ -1064,7 +1123,10 @@ function drawChartDataLabels(context: CanvasRenderingContext2D, payload: ChartDr
     if (labels.showSeriesName) parts.push(series.name);
     if (labels.showCategoryName) parts.push(String(point.category));
     if (labels.showValue !== false) parts.push(String(point.value));
-    if (labels.showPercentage) parts.push(`${Math.round(Math.abs(point.value) * 100) / 100}%`);
+    if (labels.showPercentage) {
+      const percentage = percentageTotal > 0 ? Math.abs(point.value) / percentageTotal * 100 : 0;
+      parts.push(`${Math.round(percentage * 100) / 100}%`);
+    }
     if (!parts.length) parts.push(String(point.value));
     const bar = series.bars.find((candidate) => candidate.index === point.index);
     const anchor = bar
@@ -1342,6 +1404,7 @@ function chartPointSelection(series: ChartLayout['series'][number], pointIndex: 
 }
 
 function chartHitTest(layout: ChartLayout, point: { x: number; y: number }, dataTableVisible = false): { action: string; data: unknown } | null {
+  const horizontalBar = layout.kind === 'cartesian' && layout.series.some((series) => series.chartType === 'bar');
   if (layout.title && point.x >= layout.title.x - 4 && point.x <= layout.title.x + Math.max(40, layout.title.text.length * 9)
     && point.y >= layout.title.y - 14 && point.y <= layout.title.y + 6) return { action: 'chart.select-element', data: { kind: 'title' } };
   if (layout.legend.visible) {
@@ -1524,8 +1587,15 @@ function chartHitTest(layout: ChartLayout, point: { x: number; y: number }, data
     }
     if (series.points.some((candidate) => candidate.visible && Math.hypot(point.x - candidate.x, point.y - candidate.y) <= 10)) return { action: 'chart.select-element', data: { kind: 'series', seriesId: series.id } };
   }
-  if (layout.kind === 'cartesian' && layout.valueAxis && point.x >= layout.plot.left - 12 && point.x <= layout.plot.left + 12 && point.y >= layout.plot.top && point.y <= layout.plot.top + layout.plot.height) return { action: 'chart.select-element', data: { kind: 'axis' } };
-  if (layout.kind === 'cartesian' && layout.categoryAxis && point.y >= layout.plot.top + layout.plot.height - 12 && point.y <= layout.plot.top + layout.plot.height + 18 && point.x >= layout.plot.left && point.x <= layout.plot.left + layout.plot.width) return { action: 'chart.select-element', data: { kind: 'axis' } };
+  if (layout.kind === 'cartesian' && layout.valueAxis && (horizontalBar
+    ? point.y >= layout.plot.top + layout.plot.height - 12 && point.y <= layout.plot.top + layout.plot.height + 18 && point.x >= layout.plot.left && point.x <= layout.plot.left + layout.plot.width
+    : point.x >= layout.plot.left - 12 && point.x <= layout.plot.left + 12 && point.y >= layout.plot.top && point.y <= layout.plot.top + layout.plot.height)) return { action: 'chart.select-element', data: { kind: 'axis' } };
+  if (layout.kind === 'cartesian' && layout.secondaryValueAxis && (horizontalBar
+    ? point.y >= layout.plot.top - 18 && point.y <= layout.plot.top + 8 && point.x >= layout.plot.left && point.x <= layout.plot.left + layout.plot.width
+    : point.x >= layout.plot.left + layout.plot.width - 12 && point.x <= layout.plot.left + layout.plot.width + 16 && point.y >= layout.plot.top && point.y <= layout.plot.top + layout.plot.height)) return { action: 'chart.select-element', data: { kind: 'axis' } };
+  if (layout.kind === 'cartesian' && layout.categoryAxis && (horizontalBar
+    ? point.x >= layout.plot.left - 54 && point.x <= layout.plot.left + 8 && point.y >= layout.plot.top && point.y <= layout.plot.top + layout.plot.height
+    : point.y >= layout.plot.top + layout.plot.height - 12 && point.y <= layout.plot.top + layout.plot.height + 18 && point.x >= layout.plot.left && point.x <= layout.plot.left + layout.plot.width)) return { action: 'chart.select-element', data: { kind: 'axis' } };
   if (point.x >= layout.plot.left && point.x <= layout.plot.left + layout.plot.width && point.y >= layout.plot.top && point.y <= layout.plot.top + layout.plot.height) return { action: 'chart.select-element', data: { kind: 'plot-area' } };
   return { action: 'chart.select-element', data: { kind: 'chart-area' } };
 }
