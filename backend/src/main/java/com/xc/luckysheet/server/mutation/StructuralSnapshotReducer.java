@@ -68,6 +68,7 @@ final class StructuralSnapshotReducer {
         int count = "row".equals(axis) ? selection.endRow() - selection.startRow() + 1 : selection.endColumn() - selection.startColumn() + 1;
         int delta = "insert".equals(operation) ? count : -count;
         validateCellShiftBounds(sheet, selection, expectedBand, axis, operation, count);
+        rejectFormulaGroupMetadataInRange(sheet, expectedBand, "cell shift");
 
         List<CellEntry> sourceCells = cellsInRange(sheet, expectedBand);
         SnapshotMutationSupport.clearCells(sheet, expectedBand);
@@ -106,8 +107,8 @@ final class StructuralSnapshotReducer {
             throw ServiceException.validation("Move destination exceeds worksheet bounds");
         }
         if (intersects(selected, destination)) throw ServiceException.validation("Move source and destination cannot overlap");
-        rejectMoveFormulaGroups(sheet, selected, "source");
-        rejectMoveFormulaGroups(sheet, destination, "destination");
+        rejectFormulaGroupMetadataInRange(sheet, selected, "range.move source");
+        rejectFormulaGroupMetadataInRange(sheet, destination, "range.move destination");
         int rowDelta = destination.startRow() - selected.startRow();
         int columnDelta = destination.startColumn() - selected.startColumn();
 
@@ -423,38 +424,9 @@ final class StructuralSnapshotReducer {
         for (JsonNode raw : SnapshotMutationSupport.sheets(root)) {
             ObjectNode owner = requireObject(raw, "Sheet");
             FormulaReferenceTransformer.SheetIdentity ownerIdentity = identity(owner);
-            forEachCell(owner, entry -> {
-                ObjectNode cell = entry.cell();
-                String original = cell.path("formula").isTextual() ? cell.path("formula").asText() : null;
-                String sourceFormula = cell.path("formulaMetadata").path("sourceFormula").isTextual()
-                        ? cell.path("formulaMetadata").path("sourceFormula").asText() : null;
-                JsonNode rawPresentation = cell.get("presentation");
-                JsonNode rawBarcodeSource = rawPresentation != null && rawPresentation.isObject()
-                        && "barcode".equals(rawPresentation.path("kind").asText())
-                        ? rawPresentation.get("source") : null;
-                String barcodeFormula = rawBarcodeSource != null && rawBarcodeSource.isObject()
-                        && "formula".equals(rawBarcodeSource.path("kind").asText())
-                        && rawBarcodeSource.path("formula").isTextual()
-                        ? rawBarcodeSource.path("formula").asText() : null;
-                String rewrittenFormula = original == null ? null
-                        : FormulaReferenceTransformer.remapMovedRegion(original, ownerIdentity, targetIdentity, selected, rowDelta, columnDelta, sheetOrder);
-                String rewrittenSourceFormula = sourceFormula == null ? null
-                        : FormulaReferenceTransformer.remapMovedRegion(sourceFormula, ownerIdentity, targetIdentity, selected, rowDelta, columnDelta, sheetOrder);
-                String rewrittenBarcodeFormula = barcodeFormula == null ? null
-                        : FormulaReferenceTransformer.remapMovedRegion(barcodeFormula, ownerIdentity, targetIdentity, selected, rowDelta, columnDelta, sheetOrder);
-                boolean formulaChanged = original != null && !original.equals(rewrittenFormula);
-                boolean sourceFormulaChanged = sourceFormula != null && !sourceFormula.equals(rewrittenSourceFormula);
-                boolean barcodeFormulaChanged = barcodeFormula != null && !barcodeFormula.equals(rewrittenBarcodeFormula);
-                if ((formulaChanged || sourceFormulaChanged || barcodeFormulaChanged) && hasFormulaGroupMetadata(cell)) {
-                    throw ServiceException.unavailable("UNSUPPORTED_STRUCTURAL_REFERENCE: formula group at "
-                            + ownerIdentity.id() + "!" + entry.row() + ":" + entry.column()
-                            + " requires an explicit formula-group operation before range.move");
-                }
-                if (formulaChanged) cell.put("formula", rewrittenFormula);
-                if (sourceFormulaChanged) SnapshotMutationSupport.requiredObject(cell, "formulaMetadata").put("sourceFormula", rewrittenSourceFormula);
-                if (barcodeFormulaChanged) ((ObjectNode) rawBarcodeSource).put("formula", rewrittenBarcodeFormula);
-                if (original != null) cell.remove("formulaValue");
-            });
+            rewriteCellFormulaOwners(owner,
+                    formula -> FormulaReferenceTransformer.remapMovedRegion(formula, ownerIdentity, targetIdentity, selected, rowDelta, columnDelta, sheetOrder),
+                    "range.move");
             for (String property : List.of("conditionalFormats", "dataValidations")) {
                 for (JsonNode rawRule : SnapshotMutationSupport.array(owner, property)) {
                     ObjectNode rule = requireObject(rawRule, "Range rule");
@@ -1770,13 +1742,46 @@ final class StructuralSnapshotReducer {
         });
     }
 
-    private static void rejectMoveFormulaGroups(ObjectNode sheet, RangeRef range, String role) {
+    private static void rewriteCellFormulaOwners(ObjectNode sheet, Function<String, String> mapper, String operation) {
+        String sheetId = sheet.path("id").asText();
+        forEachCell(sheet, entry -> {
+            ObjectNode cell = entry.cell();
+            String original = cell.path("formula").isTextual() ? cell.path("formula").asText() : null;
+            String sourceFormula = cell.path("formulaMetadata").path("sourceFormula").isTextual()
+                    ? cell.path("formulaMetadata").path("sourceFormula").asText() : null;
+            JsonNode rawPresentation = cell.get("presentation");
+            JsonNode rawBarcodeSource = rawPresentation != null && rawPresentation.isObject()
+                    && "barcode".equals(rawPresentation.path("kind").asText())
+                    ? rawPresentation.get("source") : null;
+            String barcodeFormula = rawBarcodeSource != null && rawBarcodeSource.isObject()
+                    && "formula".equals(rawBarcodeSource.path("kind").asText())
+                    && rawBarcodeSource.path("formula").isTextual()
+                    ? rawBarcodeSource.path("formula").asText() : null;
+            String rewritten = original == null ? null : mapper.apply(original);
+            String rewrittenSourceFormula = sourceFormula == null ? null : mapper.apply(sourceFormula);
+            String rewrittenBarcodeFormula = barcodeFormula == null ? null : mapper.apply(barcodeFormula);
+            boolean formulaChanged = original != null && !original.equals(rewritten);
+            boolean sourceFormulaChanged = sourceFormula != null && !sourceFormula.equals(rewrittenSourceFormula);
+            boolean barcodeFormulaChanged = barcodeFormula != null && !barcodeFormula.equals(rewrittenBarcodeFormula);
+            if ((formulaChanged || sourceFormulaChanged || barcodeFormulaChanged) && hasFormulaGroupMetadata(cell)) {
+                throw ServiceException.unavailable("UNSUPPORTED_STRUCTURAL_REFERENCE: formula group at "
+                        + sheetId + "!" + entry.row() + ":" + entry.column()
+                        + " requires an explicit formula-group operation before " + operation);
+            }
+            if (formulaChanged) cell.put("formula", rewritten);
+            if (sourceFormulaChanged) SnapshotMutationSupport.requiredObject(cell, "formulaMetadata").put("sourceFormula", rewrittenSourceFormula);
+            if (barcodeFormulaChanged) ((ObjectNode) rawBarcodeSource).put("formula", rewrittenBarcodeFormula);
+            if (original != null) cell.remove("formulaValue");
+        });
+    }
+
+    private static void rejectFormulaGroupMetadataInRange(ObjectNode sheet, RangeRef range, String operation) {
         for (CellEntry entry : cellsInRange(sheet, range)) {
             if (hasFormulaGroupMetadata(entry.cell())) {
                 throw ServiceException.unavailable("UNSUPPORTED_STRUCTURAL_REFERENCE: "
                         + entry.cell().path("formulaMetadata").path("kind").asText("unknown")
                         + " formula metadata at " + range.sheetId() + "!" + entry.row() + ":" + entry.column()
-                        + " requires an explicit formula-group operation before range.move " + role);
+                        + " requires an explicit formula-group operation before " + operation);
             }
         }
     }
@@ -1829,12 +1834,9 @@ final class StructuralSnapshotReducer {
         for (JsonNode raw : SnapshotMutationSupport.sheets(root)) {
             ObjectNode owner = requireObject(raw, "Sheet");
             FormulaReferenceTransformer.SheetIdentity ownerIdentity = identity(owner);
-            forEachFormulaCell(owner, cell -> {
-                String original = cell.path("formula").asText();
-                String rewritten = FormulaReferenceTransformer.remapCellShift(original, ownerIdentity, target, selected, shiftAxis, direction, sheetOrder);
-                if (!original.equals(rewritten)) cell.put("formula", rewritten);
-                cell.remove("formulaValue");
-            });
+            rewriteCellFormulaOwners(owner,
+                    formula -> FormulaReferenceTransformer.remapCellShift(formula, ownerIdentity, target, selected, shiftAxis, direction, sheetOrder),
+                    "cell shift");
             for (String property : List.of("conditionalFormats", "dataValidations")) {
                 for (JsonNode ruleRaw : SnapshotMutationSupport.array(owner, property)) {
                     ObjectNode rule = requireObject(ruleRaw, "Range rule");

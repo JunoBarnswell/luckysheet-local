@@ -1294,7 +1294,7 @@ class MutationDescriptorRegistryTest {
                   {"name":"OtherRelative","formula":"=A1","scope":"workbook","anchor":{"sheetId":"sheet-2","row":0,"column":0}},
                   {"name":"SheetScopedReference","formula":"=Sheet1!A1","scope":"sheet","sheetId":"sheet-2","anchor":{"sheetId":"sheet-2","row":0,"column":0}},
                   {"name":"LocalAnchor","formula":"=A2","scope":"workbook","anchor":{"sheetId":"sheet-1","row":1,"column":0}}],"sheets":[
-                  {"id":"sheet-1","name":"Sheet1","rowCount":5,"columnCount":3,"cells":{"0":{"0":{"value":null,"formula":"=A1","formulaValue":5}},"1":{"0":{"value":"drop"}}},"pane":{"kind":"none"},"defaultRowHeightPx":20,"defaultColumnWidthPx":64,"review":{"notesByCell":{"0:0":"n1"},"notesById":{"n1":{"id":"n1"}},"threadIdsByCell":{},"threadsById":{}},"merges":[],"conditionalFormats":[],"dataValidations":[],"pivots":[],"sparklines":[],"drawings":[],"drawingPayloads":{},"sheetTables":[],"spillRanges":[],"protectionRules":[]},
+                  {"id":"sheet-1","name":"Sheet1","rowCount":5,"columnCount":3,"cells":{"0":{"0":{"value":null,"formula":"=A1","formulaValue":5,"formulaMetadata":{"kind":"normal","sourceFormula":"=A1"},"presentation":{"kind":"barcode","symbology":"qr","source":{"kind":"formula","formula":"=A1"},"parameters":{"symbology":"qr"},"options":{"foreground":"#000000","background":"#ffffff","showText":false,"labelPosition":"none","quietZone":0}}},"1":{"value":null,"formulaMetadata":{"kind":"normal","sourceFormula":"=Sheet1!A1"},"presentation":{"kind":"barcode","symbology":"qr","source":{"kind":"formula","formula":"=Sheet1!A1"},"parameters":{"symbology":"qr"},"options":{"foreground":"#000000","background":"#ffffff","showText":false,"labelPosition":"none","quietZone":0}}}},"1":{"0":{"value":"drop"}}},"pane":{"kind":"none"},"defaultRowHeightPx":20,"defaultColumnWidthPx":64,"review":{"notesByCell":{"0:0":"n1"},"notesById":{"n1":{"id":"n1"}},"threadIdsByCell":{},"threadsById":{}},"merges":[],"conditionalFormats":[],"dataValidations":[],"pivots":[],"sparklines":[],"drawings":[],"drawingPayloads":{},"sheetTables":[],"spillRanges":[],"protectionRules":[]},
                   {"id":"sheet-2","name":"Other","rowCount":5,"columnCount":3,"cells":{"0":{"0":{"value":null,"formula":"=A1","formulaValue":6}}}}]}
                 """);
         OperationMutation shift = new OperationMutation("cells.inserted", "sheet-1", mapper.readTree("""
@@ -1302,6 +1302,10 @@ class MutationDescriptorRegistryTest {
                 """));
         JsonNode current = registry.prepare(snapshot, shift, WorkbookAclRole.EDITOR).descriptor().apply(snapshot, shift);
         assertEquals("=A2", current.path("sheets").get(0).path("cells").path("1").path("0").path("formula").asText());
+        assertEquals("=A2", current.path("sheets").get(0).path("cells").path("1").path("0").path("formulaMetadata").path("sourceFormula").asText());
+        assertEquals("=A2", current.path("sheets").get(0).path("cells").path("1").path("0").path("presentation").path("source").path("formula").asText());
+        assertEquals("=Sheet1!A2", current.path("sheets").get(0).path("cells").path("0").path("1").path("formulaMetadata").path("sourceFormula").asText());
+        assertEquals("=Sheet1!A2", current.path("sheets").get(0).path("cells").path("0").path("1").path("presentation").path("source").path("formula").asText());
         assertEquals("=A1", current.path("definedNames").path("OtherRelative").asText());
         assertEquals("=A1", current.path("definedNameModels").get(0).path("formula").asText());
         assertEquals("=Sheet1!A2", current.path("definedNameModels").get(1).path("formula").asText());
@@ -1309,6 +1313,29 @@ class MutationDescriptorRegistryTest {
         assertEquals("=A3", current.path("definedNameModels").get(2).path("formula").asText());
         assertEquals(2, current.path("definedNameModels").get(2).path("anchor").path("row").asInt());
         assertEquals("n1", current.path("sheets").get(0).path("review").path("notesByCell").path("1:0").asText());
+
+        ObjectNode groupedBandSnapshot = (ObjectNode) snapshot.deepCopy();
+        ((ObjectNode) groupedBandSnapshot.path("sheets").get(0).path("cells").path("0").path("0"))
+                .set("formulaMetadata", mapper.readTree("""
+                        {"kind":"shared","range":"A1:A2","sourceFormula":"=A1"}
+                        """));
+        JsonNode groupedBandBefore = groupedBandSnapshot.deepCopy();
+        ServiceException groupedBandRejection = assertThrows(ServiceException.class,
+                () -> registry.applyPublicMutations(groupedBandSnapshot, List.of(shift)));
+        assertEquals("SERVICE_UNAVAILABLE", groupedBandRejection.code());
+        assertEquals(groupedBandBefore, groupedBandSnapshot);
+
+        ObjectNode groupedDependentSnapshot = (ObjectNode) snapshot.deepCopy();
+        ObjectNode groupedDependent = (ObjectNode) groupedDependentSnapshot.path("sheets").get(0).path("cells").path("0").path("1");
+        groupedDependent.put("formula", "=Sheet1!A1");
+        groupedDependent.set("formulaMetadata", mapper.readTree("""
+                {"kind":"shared","range":"B1:B2","sourceFormula":"=Sheet1!A1"}
+                """));
+        JsonNode groupedDependentBefore = groupedDependentSnapshot.deepCopy();
+        ServiceException groupedDependentRejection = assertThrows(ServiceException.class,
+                () -> registry.applyPublicMutations(groupedDependentSnapshot, List.of(shift)));
+        assertEquals("SERVICE_UNAVAILABLE", groupedDependentRejection.code());
+        assertEquals(groupedDependentBefore, groupedDependentSnapshot);
 
         OperationMutation deleteAnchoredCell = new OperationMutation("cells.deleted", "sheet-1", mapper.readTree("""
                 {"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":2,"endRow":2,"startColumn":0,"endColumn":0},"operation":"delete","axis":"row","affectedBand":{"sheetId":"sheet-1","startRow":2,"endRow":4,"startColumn":0,"endColumn":0}}
