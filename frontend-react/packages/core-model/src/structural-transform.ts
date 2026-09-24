@@ -1,5 +1,6 @@
 import type { CellAddress, CellData, RangeRef, Row, Column } from './index';
 import type { CellHyperlink, DrawingObject, StructuralTransformParams, SheetTableModel, SpillRange, ProtectionRule, OutlineGroup, CellShiftSpec } from './domain';
+import { mapAxisCoordinate as shiftIndex } from './axis-coordinate-transform';
 import type { WorkbookTableModel } from './data-model';
 import type { DataSourceManifest } from './data-source';
 import type { PrintDocumentSnapshot } from './workbook-state';
@@ -1317,13 +1318,6 @@ function remapSizeMap(map: Record<number, number>, at: number, count: number, di
   }
   for (const key of Object.keys(map)) delete map[Number(key)];
   Object.assign(map, next);
-}
-
-function shiftIndex(value: number, at: number, count: number, direction: 1 | -1): number | null {
-  if (direction === 1) return value >= at ? value + count : value;
-  if (value < at) return value;
-  if (value < at + count) return null;
-  return value - count;
 }
 
 function shiftSparklines(

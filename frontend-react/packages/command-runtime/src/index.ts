@@ -1,4 +1,4 @@
-import { WorkbookModel, type ProtectionAction, type RangeRef, type StructuralReferenceOwnerIndex, type WorksheetModel } from '@react-sheets/core-model';
+import { mapAxisCoordinate, WorkbookModel, type ProtectionAction, type RangeRef, type StructuralReferenceOwnerIndex, type WorksheetModel } from '@react-sheets/core-model';
 import { collectFormulaDependencies, formatFormula, mapAstStructuralReferences, parseFormula, RangeIndex } from '@react-sheets/formula-engine';
 
 export interface MutationInfo<P = unknown> {
@@ -637,13 +637,10 @@ function structuralDelta(mutation: MutationInfo, policy: MutationHistoryRebasePo
 function transformIndex(index: number, delta: StructuralDelta): number | undefined {
   const maximum = delta.axis === 'row' ? MAX_ROW_INDEX : MAX_COLUMN_INDEX;
   if (!Number.isSafeInteger(index) || index < 0 || index > maximum) return undefined;
-  if (delta.direction === 1) {
-    const mapped = index >= delta.at ? index + delta.count : index;
-    return Number.isSafeInteger(mapped) && mapped <= maximum ? mapped : undefined;
-  }
-  const deletedEnd = delta.at + delta.count - 1;
-  if (index >= delta.at && index <= deletedEnd) return undefined;
-  return index > deletedEnd ? index - delta.count : index;
+  const mapped = mapAxisCoordinate(index, delta.at, delta.count, delta.direction);
+  return mapped !== null && Number.isSafeInteger(mapped) && mapped >= 0 && mapped <= maximum
+    ? mapped
+    : undefined;
 }
 
 function transformRange(range: RangeRef, delta: StructuralDelta): RangeRef | undefined {
