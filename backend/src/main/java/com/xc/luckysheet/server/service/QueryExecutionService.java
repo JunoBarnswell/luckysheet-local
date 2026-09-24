@@ -10,6 +10,8 @@ import com.xc.luckysheet.server.contract.QueryExecutionRequest;
 import com.xc.luckysheet.server.contract.QueryExecutionResponse;
 import com.xc.luckysheet.server.contract.QueryBlockExecutionResponse;
 import com.xc.luckysheet.server.contract.QueryBlockResponse;
+import com.xc.luckysheet.server.contract.QueryDataSourceBlock;
+import com.xc.luckysheet.server.contract.QueryDataSourceExecutionResponse;
 import com.xc.luckysheet.server.contract.QueryStep;
 import com.xc.luckysheet.server.contract.WorkbookAclRole;
 import com.xc.luckysheet.server.store.WorkbookStore;
@@ -20,6 +22,7 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.io.ByteArrayInputStream;
 import java.nio.charset.StandardCharsets;
 import java.sql.Connection;
 import java.sql.DriverManager;
@@ -58,11 +61,13 @@ public class QueryExecutionService {
     private static final Set<String> STEP_KINDS = Set.of("source", "filter", "select-columns", "rename-column", "trim-text", "split-column", "remove-duplicates", "sort", "group-by", "join", "pivot");
     private static final Set<String> FILTER_OPERATORS = Set.of("eq", "neq", "contains", "startsWith", "endsWith", "gt", "gte", "lt", "lte", "isNull", "notNull");
     private static final Set<String> AGGREGATIONS = Set.of("sum", "count", "average", "min", "max");
+    private static final ColumnarBlockEncoder COLUMNAR_BLOCK_ENCODER = new ColumnarBlockEncoder();
 
     private final QueryProperties properties;
     private final AccessControlService access;
     private final WorkbookLifecycleService lifecycle;
     private final WorkbookStore store;
+    private final WorkbookDataBlockService dataBlocks;
     private final AuditRecorder audit;
     private final ObjectMapper mapper;
     private final ExecutorService workers;
@@ -75,6 +80,7 @@ public class QueryExecutionService {
             AccessControlService access,
             WorkbookLifecycleService lifecycle,
             WorkbookStore store,
+            WorkbookDataBlockService dataBlocks,
             AuditRecorder audit,
             ObjectMapper mapper
     ) {
@@ -82,6 +88,7 @@ public class QueryExecutionService {
         this.access = access;
         this.lifecycle = lifecycle;
         this.store = store;
+        this.dataBlocks = dataBlocks;
         this.audit = audit;
         this.mapper = mapper;
         this.workers = new ThreadPoolExecutor(properties.workerThreads(), properties.workerThreads(), 0, TimeUnit.MILLISECONDS,
@@ -246,6 +253,142 @@ public class QueryExecutionService {
         } finally {
             active.remove(executionKey, new ActiveQuery(actor, future));
         }
+    }
+
+    /**
+     * Execute a server query and persist its bounded columnar blocks without
+     * sending the result rows through the browser. The returned descriptors are
+     * committed into the DataSource manifest; bytes remain lazy behind the
+     * normal data-block reader boundary.
+     */
+    public QueryDataSourceExecutionResponse executeDataSource(String unitId, QueryExecutionRequest request, String actor) {
+        access.require(unitId, actor, WorkbookAclRole.EDITOR);
+        lifecycle.requireActive(unitId);
+        if (!properties.enabled()) throw ServiceException.unavailable("Server query execution is disabled");
+        QuerySource source;
+        try {
+            source = properties.requireSource(request.sourceRef(), request.connectorId());
+            validateRequest(request, source);
+        } catch (IllegalArgumentException error) {
+            audit.rejected(request.queryId(), unitId, actor, "QUERY_DATA_SOURCE_EXECUTION", error.getMessage());
+            throw ServiceException.validation(error.getMessage());
+        }
+
+        String sourceId;
+        try {
+            sourceId = queryDataSourceId(request.queryId());
+        } catch (ServiceException error) {
+            audit.rejected(request.queryId(), unitId, actor, "QUERY_DATA_SOURCE_EXECUTION", error.getMessage());
+            throw error;
+        }
+        Instant started = Instant.now();
+        Future<QueryDataSourceExecutionResponse> future;
+        try {
+            String finalSourceId = sourceId;
+            future = workers.submit(() -> materializeDataSource(unitId, request, source, finalSourceId, actor, started));
+        } catch (RejectedExecutionException error) {
+            throw ServiceException.unavailable("Query execution queue is full");
+        }
+        String executionKey = unitId + ":" + request.queryId();
+        ActiveQuery previous = active.putIfAbsent(executionKey, new ActiveQuery(actor, future));
+        if (previous != null) {
+            future.cancel(true);
+            throw ServiceException.conflict("A query with this id is already running");
+        }
+        try {
+            return future.get(properties.timeout().toMillis(), TimeUnit.MILLISECONDS);
+        } catch (TimeoutException error) {
+            future.cancel(true);
+            audit.rejected(request.queryId(), unitId, actor, "QUERY_DATA_SOURCE_EXECUTION", "Query timed out");
+            throw ServiceException.timeout("Query timed out");
+        } catch (InterruptedException error) {
+            future.cancel(true);
+            Thread.currentThread().interrupt();
+            audit.rejected(request.queryId(), unitId, actor, "QUERY_DATA_SOURCE_EXECUTION", "Query was cancelled");
+            throw ServiceException.timeout("Query was cancelled");
+        } catch (CancellationException error) {
+            audit.rejected(request.queryId(), unitId, actor, "QUERY_DATA_SOURCE_EXECUTION", "Query was cancelled");
+            throw ServiceException.timeout("Query was cancelled");
+        } catch (ExecutionException error) {
+            Throwable cause = error.getCause() == null ? error : error.getCause();
+            String reason = cause instanceof QueryFailure failure
+                    ? failure.safeMessage()
+                    : cause instanceof ServiceException service ? service.getMessage() : "Query data-source execution failed";
+            audit.rejected(request.queryId(), unitId, actor, "QUERY_DATA_SOURCE_EXECUTION", reason);
+            if (cause instanceof QueryFailure failure) throw failure.exception();
+            if (cause instanceof ServiceException service) throw service;
+            throw ServiceException.validation(reason);
+        } finally {
+            active.remove(executionKey, new ActiveQuery(actor, future));
+        }
+    }
+
+    private QueryDataSourceExecutionResponse materializeDataSource(
+            String unitId,
+            QueryExecutionRequest request,
+            QuerySource source,
+            String sourceId,
+            String actor,
+            Instant started
+    ) {
+        QueryTable table = executeInternal(request, source, false);
+        List<String> columnTypes = inferColumnTypes(table);
+        DataSourceBlockPlan plan = planDataSourceBlocks(sourceId, table, columnTypes);
+        int blockRowCount = plan.blockRowCount();
+        if (plan.blocks().size() > WorkbookDataBlockService.MAX_WORKBOOK_BLOCK_COUNT) {
+            throw QueryFailure.validation("Query result requires too many data blocks");
+        }
+        List<QueryDataSourceBlock> blocks = new ArrayList<>();
+        try {
+            for (int index = 0; index < plan.blocks().size(); index += 1) {
+                if (Thread.currentThread().isInterrupted()) throw ServiceException.timeout("Query was cancelled");
+                String blockId = "query-block:" + UUID.randomUUID();
+                int start = index * blockRowCount;
+                int rowCount = Math.min(blockRowCount, table.rows.size() - start);
+                ColumnarBlockEncoder.EncodedBlock encoded = plan.blocks().get(index);
+                QueryDataSourceBlock block = new QueryDataSourceBlock(
+                        blockId, start, rowCount, encoded.checksum(), encoded.content().length, ColumnarBlockEncoder.ENCODING);
+                blocks.add(block);
+                dataBlocks.put(unitId, sourceId, blockId, encoded.checksum(), encoded.content().length,
+                        () -> new ByteArrayInputStream(encoded.content()), actor);
+            }
+            if (Thread.currentThread().isInterrupted()) throw ServiceException.timeout("Query was cancelled");
+        } catch (RuntimeException error) {
+            cleanupGeneratedDataBlocks(unitId, sourceId, blocks, actor, error);
+            throw error;
+        }
+
+        long duration = Duration.between(started, Instant.now()).toMillis();
+        audit.accepted(request.queryId(), unitId, actor, "QUERY_DATA_SOURCE_EXECUTION", null, mapper.createObjectNode()
+                .put("connectorId", request.connectorId())
+                .put("sourceRef", request.sourceRef())
+                .put("rowCount", table.rows.size())
+                .put("blockRowCount", blockRowCount)
+                .put("blockCount", blocks.size())
+                .put("durationMs", duration));
+        long sourceRevision = store.find(unitId).map(row -> row.revision()).orElse(0L);
+        return new QueryDataSourceExecutionResponse(
+                request.queryId(), request.connectorId(), request.sourceRef(), sourceRevision,
+                table.columns, columnTypes, table.rows.size(), blockRowCount, blocks, Instant.now(), duration);
+    }
+
+    private DataSourceBlockPlan planDataSourceBlocks(String sourceId, QueryTable table, List<String> columnTypes) {
+        int candidate = resolveBlockRowCount(table);
+        while (candidate >= 1) {
+            try {
+                List<ColumnarBlockEncoder.EncodedBlock> blocks = new ArrayList<>();
+                for (int start = 0; start < table.rows.size(); start += candidate) {
+                    if (Thread.currentThread().isInterrupted()) throw ServiceException.timeout("Query was cancelled");
+                    int end = Math.min(start + candidate, table.rows.size());
+                    blocks.add(COLUMNAR_BLOCK_ENCODER.encode(sourceId, table.columns, columnTypes, table.rows.subList(start, end)));
+                }
+                return new DataSourceBlockPlan(candidate, blocks);
+            } catch (ColumnarBlockEncoder.BlockTooLargeException error) {
+                if (candidate == 1) throw QueryFailure.validation("A query data block exceeds the configured byte limit");
+                candidate = Math.max(1, candidate / 2);
+            }
+        }
+        throw QueryFailure.validation("A query data block size could not be resolved");
     }
 
     public QueryBlockResponse readBlock(String unitId, String queryId, String executionId, long offset, String actor) {
@@ -809,6 +952,25 @@ public class QueryExecutionService {
 
     private String nullToEmpty(String value) { return value == null ? "" : value; }
 
+    private String queryDataSourceId(String queryId) {
+        String sourceId = "query:" + queryId.trim();
+        if (!queryId.equals(queryId.trim()) || !sourceId.matches("[A-Za-z0-9._:-]{1,180}")) {
+            throw ServiceException.validation("Query id cannot be used as a data source identity");
+        }
+        return sourceId;
+    }
+
+    private void cleanupGeneratedDataBlocks(String unitId, String sourceId, List<QueryDataSourceBlock> blocks,
+                                            String actor, RuntimeException failure) {
+        for (QueryDataSourceBlock block : blocks) {
+            try {
+                dataBlocks.delete(unitId, sourceId, block.blockId(), actor);
+            } catch (RuntimeException cleanupFailure) {
+                failure.addSuppressed(cleanupFailure);
+            }
+        }
+    }
+
     private void checkSize(QueryTable table, boolean enforceResponseLimit) {
         if (table.columns.isEmpty()) throw QueryFailure.validation("Query must return at least one column");
         if (table.columns.size() > properties.maxColumns()) throw QueryFailure.validation("Query returned too many columns");
@@ -927,7 +1089,13 @@ public class QueryExecutionService {
         }
     }
 
-    private record ActiveQuery(String actor, Future<QueryTable> future) {}
+    private record ActiveQuery(String actor, Future<?> future) {}
+
+    private record DataSourceBlockPlan(int blockRowCount, List<ColumnarBlockEncoder.EncodedBlock> blocks) {
+        private DataSourceBlockPlan {
+            blocks = List.copyOf(blocks);
+        }
+    }
 
     private record BlockQuery(String unitId, String queryId, String actor, QueryTable table, int blockRowCount, Instant expiresAt) {}
 

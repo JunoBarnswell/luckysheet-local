@@ -1550,6 +1550,31 @@ export interface ServerQueryBlockExecutionResponse {
   durationMs: number;
 }
 
+/** Descriptor for a query block already stored in the workbook data-block store. */
+export interface ServerQueryDataSourceBlock {
+  blockId: string;
+  startRow: number;
+  rowCount: number;
+  checksum: string;
+  byteLength: number;
+  encoding: 'columnar-v1';
+}
+
+/** Metadata for a query whose blocks are fetched lazily through DataSource. */
+export interface ServerQueryDataSourceExecutionResponse {
+  queryId: string;
+  connectorId: string;
+  sourceRef: string;
+  sourceRevision: number;
+  columns: string[];
+  columnTypes: ServerQueryColumnType[];
+  rowCount: number;
+  blockRowCount: number;
+  blocks: ServerQueryDataSourceBlock[];
+  executedAt: string;
+  durationMs: number;
+}
+
 /** One bounded page from an explicit server-query block session. */
 export interface ServerQueryBlockResponse {
   queryId: string;
@@ -1595,6 +1620,64 @@ function validateServerQueryBlockExecutionResponse(value: unknown): ServerQueryB
     throw new Error('Server query block execution metadata is invalid');
   }
   return { ...response, columns, columnTypes } as unknown as ServerQueryBlockExecutionResponse;
+}
+
+function validateServerQueryDataSourceExecutionResponse(value: unknown): ServerQueryDataSourceExecutionResponse {
+  const response = requireRecord(value, 'Server query data-source execution response');
+  validateExactKeys(response, ['queryId', 'connectorId', 'sourceRef', 'sourceRevision', 'columns', 'columnTypes', 'rowCount', 'blockRowCount', 'blocks', 'executedAt', 'durationMs'], 'Server query data-source execution response');
+  if (!isNonEmptyString(response.queryId) || response.queryId.length > 200
+    || !isNonEmptyString(response.connectorId) || !isNonEmptyString(response.sourceRef) || response.sourceRef.length > 200) {
+    throw new Error('Server query data-source execution identity is invalid');
+  }
+  const { columns, columnTypes } = validateServerQueryColumns(response, 'Server query data-source execution response');
+  if (!columnTypes || !Number.isSafeInteger(response.sourceRevision) || Number(response.sourceRevision) < 0
+    || !Number.isSafeInteger(response.rowCount) || Number(response.rowCount) < 0
+    || !Number.isSafeInteger(response.blockRowCount) || Number(response.blockRowCount) < 1 || Number(response.blockRowCount) > 65_536
+    || !Array.isArray(response.blocks) || response.blocks.length > 10_000
+    || !isNonEmptyString(response.executedAt) || !Number.isFinite(Date.parse(response.executedAt))
+    || !Number.isSafeInteger(response.durationMs) || Number(response.durationMs) < 0) {
+    throw new Error('Server query data-source execution metadata is invalid');
+  }
+  const blocks = response.blocks.map((rawBlock, index) => {
+    const block = requireRecord(rawBlock, `Server query data-source block ${String(index)}`);
+    validateExactKeys(block, ['blockId', 'startRow', 'rowCount', 'checksum', 'byteLength', 'encoding'], `Server query data-source block ${String(index)}`);
+    if (!isNonEmptyString(block.blockId) || block.blockId.length > 200
+      || !Number.isSafeInteger(block.startRow) || Number(block.startRow) < 0
+      || !Number.isSafeInteger(block.rowCount) || Number(block.rowCount) < 1 || Number(block.rowCount) > Number(response.blockRowCount)
+      || typeof block.checksum !== 'string' || !/^[A-Fa-f0-9]{64}$/.test(block.checksum)
+      || !Number.isSafeInteger(block.byteLength) || Number(block.byteLength) < 1
+      || block.encoding !== 'columnar-v1') {
+      throw new Error(`Server query data-source block ${String(index)} is invalid`);
+    }
+    return {
+      blockId: block.blockId,
+      startRow: Number(block.startRow),
+      rowCount: Number(block.rowCount),
+      checksum: block.checksum,
+      byteLength: Number(block.byteLength),
+      encoding: 'columnar-v1',
+    } satisfies ServerQueryDataSourceBlock;
+  });
+  let covered = 0;
+  const ids = new Set<string>();
+  for (const block of blocks) {
+    if (!ids.add(block.blockId) || block.startRow !== covered) throw new Error('Server query data-source blocks do not provide contiguous coverage');
+    covered += block.rowCount;
+  }
+  if (covered !== Number(response.rowCount)) throw new Error('Server query data-source blocks do not cover the result');
+  return {
+    queryId: response.queryId,
+    connectorId: response.connectorId,
+    sourceRef: response.sourceRef,
+    sourceRevision: Number(response.sourceRevision),
+    columns,
+    columnTypes,
+    rowCount: Number(response.rowCount),
+    blockRowCount: Number(response.blockRowCount),
+    blocks,
+    executedAt: response.executedAt,
+    durationMs: Number(response.durationMs),
+  };
 }
 
 function validateServerQueryBlockResponse(value: unknown): ServerQueryBlockResponse {
@@ -2189,6 +2272,14 @@ export class WorkbookApiClient {
 
   async startServerQueryBlocks(unitId: string, request: ServerQueryRequest): Promise<ServerQueryBlockExecutionResponse> {
     return validateServerQueryBlockExecutionResponse(await this.json<unknown>(`/api/workbooks/${encodeURIComponent(unitId)}/queries/execute-blocks`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(request),
+    }));
+  }
+
+  async startServerQueryDataSource(unitId: string, request: ServerQueryRequest): Promise<ServerQueryDataSourceExecutionResponse> {
+    return validateServerQueryDataSourceExecutionResponse(await this.json<unknown>(`/api/workbooks/${encodeURIComponent(unitId)}/queries/execute-data-source`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(request),
