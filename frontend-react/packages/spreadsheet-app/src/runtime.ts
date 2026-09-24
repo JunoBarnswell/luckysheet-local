@@ -443,7 +443,11 @@ function rangeContainsOwner(
     && range.startColumn <= owner.column && range.endColumn >= owner.column;
 }
 
-function reindexAuxiliaryFormulaOwnerAt(engine: FormulaEngine, workbook: WorkbookModel, owner: CellAddressInput): void {
+function reindexAuxiliaryFormulaOwnerAt(
+  engine: FormulaEngine,
+  workbook: WorkbookModel,
+  owner: StructuralTransformResult['rewrittenFormulaOwners'][number],
+): void {
   const point = {
     sheetId: owner.sheetId,
     startRow: owner.row,
