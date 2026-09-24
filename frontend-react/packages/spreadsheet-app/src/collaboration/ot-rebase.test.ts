@@ -27,6 +27,44 @@ test('fails closed when a structural revision would move an unclassified mutatio
   assert.throws(() => rebaseMutation(pending, committed), /Cannot rebase unknown mutation/);
 });
 
+test('fails closed when a committed mutation has no registered transform', () => {
+  const committed = classifyMutation('extension.structural.change', { row: 2 }, 's1', []);
+  const pending = classifyMutation('cell.set', { row: 9, column: 0 }, 's1', [{
+    sheetId: 's1', startRow: 9, endRow: 9, startColumn: 0, endColumn: 0,
+  }]);
+
+  assert.throws(() => rebaseMutation(pending, committed), /committed extension\.structural\.change has no registered structural transform/);
+});
+
+test('classifies worksheet identity changes and fails closed without a canonical patch', () => {
+  for (const mutationId of ['sheet.add', 'sheet.remove', 'sheet.rename', 'sheet.duplicated', 'sheet.restore', 'sheet.reordered']) {
+    assert.equal(classifyMutation(mutationId, {}, 's1', []).kind, 'sheet-identity');
+  }
+  const committed = classifyMutation('sheet.rename', { sheetId: 's1', name: 'Renamed' }, 's1', []);
+  const pending = classifyMutation('cell.set', { row: 0, column: 0, formula: '=Sheet1!A1' }, 's1', [{
+    sheetId: 's1', startRow: 0, endRow: 0, startColumn: 0, endColumn: 0,
+  }]);
+
+  assert.throws(() => rebaseMutation(pending, committed), /no canonical structural patch/);
+  const rowInsert = classifyMutation('row.insert', { at: 2, count: 1 }, 's1', []);
+  const pendingRename = classifyMutation('sheet.rename', { sheetId: 's1', name: 'Local name' }, 's1', []);
+  assert.throws(() => rebaseMutation(pendingRename, rowInsert), /pending sheet\.rename has no canonical structural patch/);
+});
+
+test('does not infer pending move, sort, or table-resize transforms from coordinate field names', () => {
+  const committed = classifyMutation('row.insert', { at: 2, count: 1 }, 's1', []);
+  const unsupported = [
+    ['range.move', { sourceRange: { sheetId: 's1', startRow: 4, endRow: 4, startColumn: 0, endColumn: 0 }, targetOrigin: { row: 8, column: 2 } }, 'move-range'],
+    ['sort.apply', { range: { sheetId: 's1', startRow: 4, endRow: 8, startColumn: 0, endColumn: 2 }, sourceRows: [5, 4, 6, 7, 8] }, 'sort'],
+    ['table.resize', { tableId: 'table-1', range: { sheetId: 's1', startRow: 4, endRow: 8, startColumn: 0, endColumn: 2 } }, 'table-resize'],
+  ] as const;
+  for (const [mutationId, params, kind] of unsupported) {
+    const pending = classifyMutation(mutationId, params, 's1', [{ sheetId: 's1', startRow: 4, endRow: 8, startColumn: 0, endColumn: 2 }]);
+    assert.equal(pending.kind, kind);
+    assert.throws(() => rebaseMutation(pending, committed), new RegExp(`pending ${mutationId.replace('.', '\\.')} has no canonical structural patch`));
+  }
+});
+
 test('rebases explicitly qualified formulas using canonical worksheet identities', () => {
   const committed = classifyMutation('row.insert', { at: 5, count: 1 }, 'source-id', []);
   const pending = classifyMutation('cell.set', { row: 0, column: 0, formula: '=Source!A10' }, 'owner-id', [{

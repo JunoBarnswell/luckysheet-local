@@ -15,6 +15,7 @@ export type CollaborationOperationKind =
   | 'sort'
   | 'merge'
   | 'table-resize'
+  | 'sheet-identity'
   | 'drawing'
   | 'comment'
   | 'pivot-config'
@@ -68,6 +69,12 @@ const MUTATION_KIND_MAP: Readonly<Record<string, CollaborationOperationKind>> = 
   'sort.apply': 'sort',
   'merge.set': 'merge',
   'table.resize': 'table-resize',
+  'sheet.add': 'sheet-identity',
+  'sheet.remove': 'sheet-identity',
+  'sheet.rename': 'sheet-identity',
+  'sheet.duplicated': 'sheet-identity',
+  'sheet.restore': 'sheet-identity',
+  'sheet.reordered': 'sheet-identity',
   'drawing.update': 'drawing',
   'comment.add': 'comment',
   'comment.update': 'comment',

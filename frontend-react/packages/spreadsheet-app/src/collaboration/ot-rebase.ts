@@ -84,7 +84,9 @@ function isRange(value: Record<string, unknown>): value is Record<string, unknow
 
 const ADDRESS_FIELDS = new Set(['address', 'anchor', 'cellAddress', 'formulaAnchor', 'from', 'origin', 'source', 'target', 'to']);
 const ADDRESS_RANGE_FIELDS = new Set(['sourceOrigin', 'targetOrigin']);
-const UNSUPPORTED_STRUCTURAL_KINDS = new Set<CollaborationOperationKind>(['move-range', 'sort', 'table-resize']);
+const UNSUPPORTED_STRUCTURAL_KINDS = new Set<CollaborationOperationKind>([
+  'move-range', 'sort', 'table-resize', 'sheet-identity',
+]);
 
 function transformParams(
   value: unknown,
@@ -293,6 +295,9 @@ export function rebaseMutation(
   committed: ClassifiedMutation,
   context: StructuralRebaseContext = { sheetOrder: [] },
 ): RebaseResult {
+  if (committed.kind === 'unknown') {
+    rebaseConflict(`committed ${committed.mutationId} has no registered structural transform`);
+  }
   const delta = extractStructuralDelta(committed);
   if (!delta) {
     if (STRUCTURAL_KINDS.has(committed.kind)) rebaseConflict(`committed ${committed.mutationId} has no structural bounds`);
@@ -305,7 +310,10 @@ export function rebaseMutation(
     return { rebased: pending, transformed: false };
   }
   if (pending.kind === 'unknown') {
-    throw new Error(`Cannot rebase unknown mutation ${pending.mutationId} across ${committed.mutationId}`);
+    rebaseConflict(`Cannot rebase unknown mutation ${pending.mutationId} across ${committed.mutationId}`);
+  }
+  if (UNSUPPORTED_STRUCTURAL_KINDS.has(pending.kind)) {
+    rebaseConflict(`pending ${pending.mutationId} has no canonical structural patch for ${committed.mutationId}`);
   }
 
   const rebasedRanges = pending.affectedRanges.map((range) => {
