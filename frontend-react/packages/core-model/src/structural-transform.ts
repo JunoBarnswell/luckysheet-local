@@ -955,7 +955,8 @@ function rewriteReferencesForMovedRegion(
     if (next !== cell.formula) plan.cells.push({ sheetId: owner.id, row: formulaOwner.row, column: formulaOwner.column, formula: next });
   }
   for (const owner of workbook.getSheets()) {
-    for (const rule of [...owner.conditionalFormats, ...owner.dataValidations]) {
+    for (const storedRule of [...owner.conditionalFormats, ...owner.dataValidations]) {
+      const rule = storedRule as MoveFormulaRule;
       const ownerSheetId = rule.formulaAnchor?.sheetId ?? rule.sheetId;
       const addRuleFormula = (field: MoveRuleFormulaField, formula: string): void => {
         const next = transformMovedFormula(formula, ownerSheetId);
@@ -1050,7 +1051,6 @@ function applyMovedFormulaRewritePlan(workbook: WorkbookModel, plan: MovedFormul
         case 'value2': change.rule.value2 = change.formula; break;
         case 'formula1': change.rule.formula1 = change.formula; break;
         case 'formula2': change.rule.formula2 = change.formula; break;
-        case 'listSource.formula': break;
       }
     }
   }
@@ -1314,21 +1314,21 @@ function shiftDrawingPayloadReferences(
   direction: 1 | -1,
   targetSheetId: string = sheet.id,
 ): void {
-  for (const payload of sheet.drawingPayloads.values()) {
+  for (const [payloadId, payload] of sheet.drawingPayloads) {
     if (payload.kind === 'camera' || payload.kind === 'screenshot') {
       if (payload.sourceRange.sheetId === targetSheetId
         && !shiftRangeRef(payload.sourceRange, axis, at, count, direction)) {
-        throw new Error(`Structural mutation removes ${payload.kind} source range ${payload.id}`);
+        throw new Error(`Structural mutation removes ${payload.kind} source range ${payloadId}`);
       }
     } else if (payload.kind === 'chart') {
       const requireRange = (range: RangeRef, label: string): void => {
         if (range.sheetId === targetSheetId && !shiftRangeRef(range, axis, at, count, direction)) {
-          throw new Error(`Structural mutation removes ${label} for chart ${payload.id}`);
+          throw new Error(`Structural mutation removes ${label} for chart ${payloadId}`);
         }
       };
       if (payload.source.kind === 'worksheet-ranges') {
         for (const range of payload.source.ranges) requireRange(range, 'worksheet source range');
-        if (payload.source.ranges.length === 0) throw new Error(`Chart ${payload.id} has no worksheet source ranges`);
+        if (payload.source.ranges.length === 0) throw new Error(`Chart ${payloadId} has no worksheet source ranges`);
       } else if (payload.source.kind === 'report-range') requireRange(payload.source.range, 'report binding');
       if (payload.categoryRange) requireRange(payload.categoryRange, 'category range');
       for (const series of payload.series ?? []) {
@@ -1341,7 +1341,7 @@ function shiftDrawingPayloadReferences(
         }
       }
     } else if (payload.kind === 'form-control') {
-      if (payload.cellLink?.sheetId === targetSheetId) {
+      if ('cellLink' in payload && payload.cellLink?.sheetId === targetSheetId) {
         const row = axis === 'row' ? shiftIndex(payload.cellLink.row, at, count, direction) : payload.cellLink.row;
         const column = axis === 'column' ? shiftIndex(payload.cellLink.column, at, count, direction) : payload.cellLink.column;
         if (row === null || column === null) throw new Error(`Structural mutation removes form-control cell link ${payload.cellLink.sheetId}`);
@@ -1806,7 +1806,7 @@ function applyMoveRange(
   for (const owner of workbook.getSheets()) {
     for (const rule of [...owner.conditionalFormats, ...owner.dataValidations]) {
       for (const range of rule.ranges) relocate(range);
-      if (rule.listSource?.kind === 'range') relocate(rule.listSource.range);
+      if ('listSource' in rule && rule.listSource?.kind === 'range') relocate(rule.listSource.range);
       if (rule.formulaAnchor?.sheetId === sheet.id && insideCell(normalizedSource, rule.formulaAnchor.row, rule.formulaAnchor.column)) {
         rule.formulaAnchor = { ...rule.formulaAnchor, row: rule.formulaAnchor.row + rowDelta, column: rule.formulaAnchor.column + colDelta };
       }
@@ -1843,7 +1843,7 @@ function applyMoveRange(
         if (series.errorBars?.minusRange) relocate(series.errorBars.minusRange);
       }
     } else if (payload.kind === 'form-control') {
-      if (payload.cellLink?.sheetId === sheet.id && insideCell(normalizedSource, payload.cellLink.row, payload.cellLink.column)) {
+      if ('cellLink' in payload && payload.cellLink?.sheetId === sheet.id && insideCell(normalizedSource, payload.cellLink.row, payload.cellLink.column)) {
         payload.cellLink = {
           ...payload.cellLink,
           row: payload.cellLink.row + rowDelta,
@@ -1999,7 +1999,7 @@ function validateMoveMetadataPreservation(workbook: WorkbookModel, sheet: Worksh
   for (const owner of workbook.getSheets()) {
     for (const rule of [...owner.conditionalFormats, ...owner.dataValidations]) {
       for (const range of rule.ranges) validateRange(range, `rule ${rule.id} range`);
-      if (rule.listSource?.kind === 'range') validateRange(rule.listSource.range, `validation ${rule.id} list source`);
+      if ('listSource' in rule && rule.listSource?.kind === 'range') validateRange(rule.listSource.range, `validation ${rule.id} list source`);
     }
     for (const pivot of owner.pivots) {
       if (pivot.source.kind === 'worksheet-range') validateRange(pivot.source.range, `pivot ${pivot.id} source`);
@@ -2036,7 +2036,7 @@ function validateMoveMetadataPreservation(workbook: WorkbookModel, sheet: Worksh
         }
       } else if (payload.kind === 'form-control') {
         if ('inputRange' in payload) validateRange(payload.inputRange, 'form-control input range');
-        if (payload.cellLink?.sheetId === sheet.id
+        if ('cellLink' in payload && payload.cellLink?.sheetId === sheet.id
           && insideCell(target, payload.cellLink.row, payload.cellLink.column)
           && !insideCell(source, payload.cellLink.row, payload.cellLink.column)) {
           throw new Error('Cannot move range: form-control cell link would be overwritten');

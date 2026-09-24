@@ -263,7 +263,7 @@ describe('structural operations', () => {
       type: 'custom', formula1: '=Sheet1!A1',
     });
     other.hyperlinks.set('0:0', {
-      id: 'link-1', target: { kind: 'sheet', sheetId: sheet.id, address: '=Sheet1!A1' },
+      id: 'link-1', target: { kind: 'sheet', sheetId: sheet.id, address: 'A1' },
     });
 
     StructuralTransform.apply(workbook, {
@@ -275,7 +275,7 @@ describe('structural operations', () => {
     assert.equal(other.conditionalFormats[0]?.value1, '=Sheet1!C3');
     assert.equal(other.dataValidations[0]?.formula1, '=Sheet1!C3');
     const target = other.hyperlinks.get('0:0')?.target;
-    assert.equal(target?.kind === 'sheet' ? target.address : undefined, '=Sheet1!C3');
+    assert.equal(target?.kind === 'sheet' ? target.address : undefined, 'C3');
   });
 
   it('rejects moving over destination-anchored hyperlinks without mutating either range', () => {
