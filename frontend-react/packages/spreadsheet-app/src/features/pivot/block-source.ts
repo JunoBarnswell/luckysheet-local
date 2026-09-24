@@ -183,7 +183,7 @@ export async function readPivotBlockSource(
       for (let ordinal = 0; ordinal < fields.length; ordinal += 1) {
         columnValues[ordinal]!.push(values[ordinal] ?? null);
       }
-    });
+    }, { signal: options.signal, prefetchAllBlocks: true });
     assertBlockReadActive(options.signal);
     const scanState = stateFromQuery(scanned.state);
     if (scanned.value === undefined || scanState.status !== 'ready') {

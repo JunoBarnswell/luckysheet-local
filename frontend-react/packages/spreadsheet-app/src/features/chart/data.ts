@@ -516,11 +516,14 @@ export function resolveStructuredChartBindings(payload: ChartDrawingPayload, tab
     : Array.from({ length: sourceRange.endColumn - sourceRange.startColumn + 1 }, (_, offset) => ({ id: `report-column-${offset}`, name: String(sheet.getCell(sourceRange.startRow, sourceRange.startColumn + offset)?.value ?? `Column ${offset + 1}`), ordinal: offset }));
   const sourceWidth = sourceRange.endColumn - sourceRange.startColumn + 1;
   const fieldIds = new Set<string>();
+  const fieldOrdinals = new Set<number>();
   for (const field of fields) {
     if (!field.id.trim() || fieldIds.has(field.id)) throw new Error(`INVALID_CHART_SOURCE: duplicate field identity ${field.id}`);
     if (!Number.isSafeInteger(field.ordinal) || field.ordinal < 0 || field.ordinal >= sourceWidth) {
       throw new Error(`INVALID_CHART_SOURCE: field ${field.id} ordinal is outside the source range`);
     }
+    if (fieldOrdinals.has(field.ordinal)) throw new Error(`INVALID_CHART_SOURCE: duplicate field ordinal ${field.ordinal}`);
+    fieldOrdinals.add(field.ordinal);
     fieldIds.add(field.id);
   }
   const fieldById = new Map(fields.map((field) => [field.id, field]));
@@ -556,8 +559,10 @@ export function resolveStructuredChartBindings(payload: ChartDrawingPayload, tab
   for (const area of ['details', 'color', 'size', 'tooltip', 'filter'] as const) {
     if (source.bindings[area].length > 0) throw new Error(`UNSUPPORTED_FEATURE: structured chart binding area ${area} is not supported by the canonical renderer`);
   }
-  const showHiddenData = payload.elements.hiddenData === 'show';
-  const visible = (field: { ordinal: number } | undefined): boolean => Boolean(field && (showHiddenData || !containsHidden(sheet.hiddenColumns, sourceRange.startColumn + field.ordinal)));
+  const hiddenData = payload.elements.hiddenData ?? 'show';
+  const hideRows = hiddenData === 'hideRows';
+  const hideColumns = hiddenData === 'hideColumns';
+  const visible = (field: { ordinal: number } | undefined): boolean => Boolean(field && (!hideColumns || !containsHidden(sheet.hiddenColumns, sourceRange.startColumn + field.ordinal)));
   const categoryBinding = source.bindings.category[0];
   const categoryField = categoryBinding && visible(fieldById.get(categoryBinding.fieldId)) ? fieldById.get(categoryBinding.fieldId) : undefined;
   const valueBindings = source.bindings.values.filter((binding) => visible(fieldById.get(binding.fieldId)));
@@ -565,7 +570,7 @@ export function resolveStructuredChartBindings(payload: ChartDrawingPayload, tab
   const rows: Array<{ category: string; categoryKey: string; values: Map<string, number[]> }> = [];
   const buckets = new Map<string, Array<{ category: string; categoryKey: string; values: Map<string, number[]> }>>();
   for (let row = sourceRange.startRow + 1; row <= sourceRange.endRow; row += 1) {
-    if (!showHiddenData && containsHidden(sheet.hiddenRows, row)) continue;
+    if (hideRows && containsHidden(sheet.hiddenRows, row)) continue;
     const rawCategory = categoryField ? sheet.getCell(row, sourceRange.startColumn + categoryField.ordinal)?.value ?? '' : row - sourceRange.startRow;
     const category = String(rawCategory);
     const categoryKey = `${typeof rawCategory}:${JSON.stringify(rawCategory)}`;

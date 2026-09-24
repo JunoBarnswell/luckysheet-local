@@ -155,6 +155,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
 
+function findUniqueSeriesIndex(series: readonly ChartSeries[], selector: string): number {
+  const idIndex = series.findIndex((entry) => entry.id === selector);
+  if (idIndex >= 0) return idIndex;
+  const nameIndexes = series.flatMap((entry, index) => entry.name === selector ? [index] : []);
+  if (nameIndexes.length > 1) throw new Error(`AMBIGUOUS_CHART_SERIES: ${selector}`);
+  return nameIndexes[0] ?? -1;
+}
+
 const CHART_BINDING_AREAS = ['values', 'category', 'details', 'color', 'size', 'tooltip', 'filter'] as const;
 const CHART_AGGREGATES = ['sum', 'average', 'count', 'min', 'max', 'none'] as const;
 
@@ -570,33 +578,32 @@ export function registerChartCommands(runtime: CommandRuntime): string[] {
   runtime.registry.registerCommand<ChartSetAxesParams>({ id: 'chart.setAxes', execute: (params, context) => executeChartUpdate(params, context, (payload, input) => ({ ...payload, elements: { ...payload.elements, categoryAxis: input.categoryAxis ? structuredClone(input.categoryAxis) : payload.elements.categoryAxis, valueAxis: input.valueAxis ? structuredClone(input.valueAxis) : payload.elements.valueAxis, secondaryCategoryAxis: input.secondaryCategoryAxis ? structuredClone(input.secondaryCategoryAxis) : payload.elements.secondaryCategoryAxis, secondaryValueAxis: input.secondaryValueAxis ? structuredClone(input.secondaryValueAxis) : payload.elements.secondaryValueAxis } })) });
   commandIds.push('chart.setAxes');
   runtime.registry.registerCommand<ChartSetSecondaryAxisParams>({ id: 'chart.setSecondaryAxis', execute: (params, context) => executeChartUpdate(params, context, (payload, input) => {
-    let found = false;
-    const series: ChartSeries[] = (payload.series ?? []).map((entry) => entry.name === input.seriesName ? (found = true, { ...entry, axis: (input.enabled ? 'secondary' : 'primary') as 'primary' | 'secondary' }) : entry);
-    if (!found) throw new Error(`Unknown chart series: ${input.seriesName}`);
+    const series = [...(payload.series ?? [])];
+    const index = findUniqueSeriesIndex(series, input.seriesName);
+    if (index < 0) throw new Error(`Unknown chart series: ${input.seriesName}`);
+    series[index] = { ...series[index]!, axis: (input.enabled ? 'secondary' : 'primary') as 'primary' | 'secondary' };
     return { ...payload, series };
   }) });
   commandIds.push('chart.setSecondaryAxis');
   runtime.registry.registerCommand<ChartSetElementsParams>({ id: 'chart.setElements', execute: (params, context) => executeChartUpdate(params, context, (payload, input) => ({ ...payload, elements: { ...payload.elements, ...structuredClone(input.elements), legend: input.elements.legend ? structuredClone(input.elements.legend) : payload.elements.legend, dataLabels: input.elements.dataLabels ? structuredClone(input.elements.dataLabels) : payload.elements.dataLabels, categoryAxis: input.elements.categoryAxis ? structuredClone(input.elements.categoryAxis) : payload.elements.categoryAxis, valueAxis: input.elements.valueAxis ? structuredClone(input.elements.valueAxis) : payload.elements.valueAxis, secondaryCategoryAxis: input.elements.secondaryCategoryAxis ? structuredClone(input.elements.secondaryCategoryAxis) : payload.elements.secondaryCategoryAxis, secondaryValueAxis: input.elements.secondaryValueAxis ? structuredClone(input.elements.secondaryValueAxis) : payload.elements.secondaryValueAxis, plotArea: input.elements.plotArea ? structuredClone(input.elements.plotArea) : payload.elements.plotArea, chartArea: input.elements.chartArea ? structuredClone(input.elements.chartArea) : payload.elements.chartArea } })) });
   commandIds.push('chart.setElements');
   runtime.registry.registerCommand<ChartSetSeriesStyleParams>({ id: 'chart.setSeriesStyle', execute: (params, context) => executeChartUpdate(params, context, (payload, input) => {
-    let found = false;
-    const series = (payload.series ?? []).map((entry) => {
-      if (entry.name !== input.seriesName && entry.id !== input.seriesName) return entry;
-      found = true;
-      const style = input.style;
-      return {
-        ...entry,
-        ...(style.color === undefined ? {} : { color: style.color }),
-        ...(style.chartType === undefined ? {} : { chartType: style.chartType }),
-        ...(style.axis === undefined ? {} : { axis: style.axis }),
-        ...(style.smooth === undefined ? {} : { smooth: style.smooth }),
-        ...(style.marker === undefined ? {} : { marker: structuredClone(style.marker) }),
-        ...(style.dataLabels === undefined ? {} : { dataLabels: structuredClone(style.dataLabels) }),
-        ...(style.trendlines === undefined ? {} : { trendlines: structuredClone(style.trendlines) }),
-        ...(style.errorBars === undefined ? {} : { errorBars: structuredClone(style.errorBars) }),
-      };
-    });
-    if (!found) throw new Error(`Unknown chart series: ${input.seriesName}`);
+    const series = [...(payload.series ?? [])];
+    const index = findUniqueSeriesIndex(series, input.seriesName);
+    if (index < 0) throw new Error(`Unknown chart series: ${input.seriesName}`);
+    const entry = series[index]!;
+    const style = input.style;
+    series[index] = {
+      ...entry,
+      ...(style.color === undefined ? {} : { color: style.color }),
+      ...(style.chartType === undefined ? {} : { chartType: style.chartType }),
+      ...(style.axis === undefined ? {} : { axis: style.axis }),
+      ...(style.smooth === undefined ? {} : { smooth: style.smooth }),
+      ...(style.marker === undefined ? {} : { marker: structuredClone(style.marker) }),
+      ...(style.dataLabels === undefined ? {} : { dataLabels: structuredClone(style.dataLabels) }),
+      ...(style.trendlines === undefined ? {} : { trendlines: structuredClone(style.trendlines) }),
+      ...(style.errorBars === undefined ? {} : { errorBars: structuredClone(style.errorBars) }),
+    };
     return { ...payload, series };
   }) });
   commandIds.push('chart.setSeriesStyle');

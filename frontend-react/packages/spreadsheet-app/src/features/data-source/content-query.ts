@@ -43,6 +43,13 @@ export interface DataSourceContentResult<T> {
   value?: T;
 }
 
+export interface DataSourceScanOptions {
+  /** Stop waiting for block reads when the consumer has been superseded. */
+  signal?: AbortSignal;
+  /** Load the complete immutable block set before visiting the first row. */
+  prefetchAllBlocks?: boolean;
+}
+
 /** Read-only views over decoded blocks. Row arrays are shared with the cache. */
 export interface DataSourceLoadedBlockView {
   readonly ref: DataBlockRef;
@@ -103,6 +110,47 @@ function isSafeRowIndex(value: number): boolean {
   return Number.isSafeInteger(value) && value >= 0;
 }
 
+function abortError(): Error {
+  const error = new Error('Data source scan was cancelled');
+  error.name = 'AbortError';
+  return error;
+}
+
+function assertNotAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw abortError();
+}
+
+function awaitWithoutCancelling<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (signal === undefined) return promise;
+  assertNotAborted(signal);
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    let cleanup = (): void => undefined;
+    const onAbort = (): void => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(abortError());
+    };
+    cleanup = (): void => signal.removeEventListener('abort', onAbort);
+    signal.addEventListener('abort', onAbort, { once: true });
+    promise.then(
+      (value) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolve(value);
+      },
+      (error: unknown) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(error);
+      },
+    );
+  });
+}
+
 /**
  * Asynchronous content access for a block-backed data source. It is the
  * read-side boundary used by renderers, formulas, and Pivot computation:
@@ -116,6 +164,8 @@ export class DataSourceContentQuery {
   private readonly loadStates = new Map<string, DataSourceContentLoadState>();
   private readonly loadPromises = new Map<string, Promise<LoadedBlock>>();
   private readonly loadedBlocks = new Map<string, LoadedBlock>();
+  private readonly blockRefsById = new Map<string, DataBlockRef>();
+  private readonly blockIndexesById = new Map<string, number>();
   private readonly listeners = new Set<DataSourceContentStateListener>();
 
   constructor(
@@ -137,6 +187,10 @@ export class DataSourceContentQuery {
     }
     this.source = normalized;
     this.store = store;
+    normalized.blocks.forEach((block, index) => {
+      this.blockRefsById.set(block.id, block);
+      this.blockIndexesById.set(block.id, index);
+    });
     const overlayMap = new Map<string, SparseCellOverlay>();
     for (const [blockId, inputOverlay] of options.overlays ?? new Map<string, SparseCellOverlay>()) {
       const block = this.source.blocks.find((entry) => entry.id === blockId);
@@ -187,6 +241,12 @@ export class DataSourceContentQuery {
     for (const [blockId, current] of this.loadStates) {
       this.loadStates.set(blockId, { ...current, sourceId: normalized.id });
     }
+    this.blockRefsById.clear();
+    this.blockIndexesById.clear();
+    normalized.blocks.forEach((ref, index) => {
+      this.blockRefsById.set(ref.id, ref);
+      this.blockIndexesById.set(ref.id, index);
+    });
     this.source = normalized;
     return true;
   }
@@ -258,11 +318,12 @@ export class DataSourceContentQuery {
       const first = this.findBlock(startRow);
       const last = this.findBlock(startRow + rowCount - 1);
       if (!first || !last) return;
-      const firstIndex = this.source.blocks.indexOf(first);
-      const lastIndex = this.source.blocks.indexOf(last);
+      const firstIndex = this.blockIndexesById.get(first.id);
+      const lastIndex = this.blockIndexesById.get(last.id);
+      if (firstIndex === undefined || lastIndex === undefined) return;
       for (let index = firstIndex; index <= lastIndex; index += 1) {
         const ref = this.source.blocks[index]!;
-        if (!this.loadedBlocks.has(ref.id) && !this.loadStates.has(ref.id)) refs.push(ref);
+        if (!this.loadedBlocks.has(ref.id) && !this.loadPromises.has(ref.id)) refs.push(ref);
       }
     } else {
       const scheduled = new Set<string>();
@@ -270,7 +331,7 @@ export class DataSourceContentQuery {
         const ref = this.findBlock(this.physicalRow(row));
         if (ref && !scheduled.has(ref.id)) {
           scheduled.add(ref.id);
-          if (!this.loadedBlocks.has(ref.id) && !this.loadStates.has(ref.id)) refs.push(ref);
+          if (!this.loadedBlocks.has(ref.id) && !this.loadPromises.has(ref.id)) refs.push(ref);
         }
       }
     }
@@ -352,23 +413,46 @@ export class DataSourceContentQuery {
    */
   async scanRows(
     visitor: (row: readonly TableScalar[], logicalRow: number) => boolean | void,
+    options: DataSourceScanOptions = {},
   ): Promise<DataSourceContentResult<boolean>> {
     const source = this.source;
+    const { signal, prefetchAllBlocks = false } = options;
+    assertNotAborted(signal);
     let lastState = state(source.id, null, 'ready');
     const visit = (row: readonly TableScalar[], logicalRow: number): DataSourceContentResult<boolean> | undefined => {
       try {
+        assertNotAborted(signal);
         return visitor(row, logicalRow) === false ? { state: lastState, value: false } : undefined;
       } catch (error) {
+        if (error instanceof Error && error.name === 'AbortError') throw error;
         return this.errorResult(`Data source row ${String(logicalRow)} scan failed: ${errorMessage(error)}`);
       }
     };
+    let prefetched: Map<string, LoadedBlock> | undefined;
+    if (prefetchAllBlocks) {
+      try {
+        prefetched = await this.loadBlockSet(source.blocks, signal);
+      } catch (error) {
+        if (error instanceof Error && error.name === 'AbortError') throw error;
+        const failed = source.blocks.find((ref) => {
+          const availability = this.loadStates.get(ref.id)?.availability;
+          return availability === 'missing' || availability === 'error';
+        });
+        const current = failed === undefined
+          ? state(source.id, null, 'error', errorMessage(error))
+          : this.loadStates.get(failed.id)!;
+        return { state: { ...current } };
+      }
+      if (this.source !== source) return this.errorResult('Data source changed while rows were scanning');
+    }
     if (source.rowOrder === undefined) {
       let logicalRow = 0;
       for (const ref of source.blocks) {
         let block: LoadedBlock;
         try {
-          block = await this.loadBlock(ref);
+          block = prefetched?.get(ref.id) ?? await this.loadBlock(ref, signal);
         } catch (error) {
+          if (error instanceof Error && error.name === 'AbortError') throw error;
           const current = this.loadStates.get(ref.id) ?? state(source.id, ref.id, 'error', errorMessage(error));
           return { state: { ...current } };
         }
@@ -382,13 +466,15 @@ export class DataSourceContentQuery {
       return { state: lastState, value: true };
     }
     for (let logicalRow = 0; logicalRow < source.rowCount; logicalRow += 1) {
+      assertNotAborted(signal);
       const physicalRow = this.physicalRowFor(source, logicalRow);
       const ref = this.findBlockIn(source, physicalRow);
       if (!ref) return this.missingResult(`No data block covers source row ${String(logicalRow)}`);
       let block: LoadedBlock;
       try {
-        block = await this.loadBlock(ref);
+        block = prefetched?.get(ref.id) ?? await this.loadBlock(ref, signal);
       } catch (error) {
+        if (error instanceof Error && error.name === 'AbortError') throw error;
         const current = this.loadStates.get(ref.id) ?? state(source.id, ref.id, 'error', errorMessage(error));
         return { state: { ...current } };
       }
@@ -571,8 +657,9 @@ export class DataSourceContentQuery {
       const first = this.findBlockIn(source, startRow);
       const last = this.findBlockIn(source, startRow + rowCount - 1);
       if (!first || !last) return undefined;
-      const firstIndex = source.blocks.indexOf(first);
-      const lastIndex = source.blocks.indexOf(last);
+      const firstIndex = this.blockIndexesById.get(first.id);
+      const lastIndex = this.blockIndexesById.get(last.id);
+      if (firstIndex === undefined || lastIndex === undefined) return undefined;
       return source.blocks.slice(firstIndex, lastIndex + 1);
     }
     const refs: DataBlockRef[] = [];
@@ -609,36 +696,48 @@ export class DataSourceContentQuery {
     return undefined;
   }
 
-  private async loadBlockSet(refs: readonly DataBlockRef[]): Promise<Map<string, LoadedBlock>> {
+  private async loadBlockSet(refs: readonly DataBlockRef[], signal?: AbortSignal): Promise<Map<string, LoadedBlock>> {
+    assertNotAborted(signal);
+    const uniqueRefs: DataBlockRef[] = [];
+    const seen = new Set<string>();
+    for (const ref of refs) {
+      if (seen.has(ref.id)) continue;
+      seen.add(ref.id);
+      uniqueRefs.push(ref);
+    }
     const loaded = new Map<string, LoadedBlock>();
     let nextIndex = 0;
-    let failure: unknown;
+    let stopScheduling = false;
+    const failures = new Map<number, unknown>();
     const worker = async (): Promise<void> => {
-      while (failure === undefined) {
+      while (!stopScheduling) {
         const index = nextIndex;
         nextIndex += 1;
-        if (index >= refs.length) return;
-        const ref = refs[index]!;
+        if (index >= uniqueRefs.length) return;
+        const ref = uniqueRefs[index]!;
         try {
-          loaded.set(ref.id, await this.loadBlock(ref));
+          loaded.set(ref.id, await this.loadBlock(ref, signal));
         } catch (error) {
-          failure = error;
+          failures.set(index, error);
+          stopScheduling = true;
         }
       }
     };
-    await Promise.all(Array.from({ length: Math.min(MAX_CONCURRENT_BLOCK_READS, refs.length) }, () => worker()));
-    if (failure !== undefined) throw failure;
+    await Promise.all(Array.from({ length: Math.min(MAX_CONCURRENT_BLOCK_READS, uniqueRefs.length) }, () => worker()));
+    assertNotAborted(signal);
+    const firstFailure = [...failures.entries()].sort(([left], [right]) => left - right)[0];
+    if (firstFailure !== undefined) throw firstFailure[1];
     return loaded;
   }
 
-  private async loadBlock(ref: DataBlockRef): Promise<LoadedBlock> {
+  private async loadBlock(ref: DataBlockRef, signal?: AbortSignal): Promise<LoadedBlock> {
     const cached = this.loadedBlocks.get(ref.id);
-    if (cached !== undefined) return cached;
+    if (cached !== undefined) return awaitWithoutCancelling(Promise.resolve(cached), signal);
     const existing = this.loadPromises.get(ref.id);
-    if (existing !== undefined) return existing;
+    if (existing !== undefined) return awaitWithoutCancelling(existing, signal);
 
     const promise = Promise.resolve().then(() => this.readBlock(ref)).then((block) => {
-      const currentRef = this.source.blocks.find((candidate) => candidate.id === ref.id);
+      const currentRef = this.blockRefsById.get(ref.id);
       if (currentRef === undefined) throw new ContentQueryFailure('error', `Data block ${ref.id} was removed while loading`);
       const currentBlock = block.ref === currentRef ? block : { ...block, ref: currentRef };
       this.loadedBlocks.set(ref.id, currentBlock);
@@ -657,7 +756,7 @@ export class DataSourceContentQuery {
     // Subscribers may synchronously read again. Register the flight before
     // notifying them so every reader shares this request, including retries.
     this.publishState(state(this.source.id, ref.id, 'loading'));
-    return promise;
+    return awaitWithoutCancelling(promise, signal);
   }
 
   private async readBlock(ref: DataBlockRef): Promise<LoadedBlock> {
