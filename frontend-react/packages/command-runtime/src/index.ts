@@ -573,15 +573,31 @@ function isValidHistoryRebasePolicy(value: unknown): value is MutationHistoryReb
 function buildStructuralReferenceIndex(workbook: WorkbookModel): StructuralReferenceOwnerIndex {
   const sheetOrder = workbook.sheetOrder.map((id) => ({ id, name: workbook.getSheet(id).name }));
   const index = new RangeIndex(sheetOrder);
+  const addFormulaOwner = (owner: { sheetId: string; row: number; column: number }, formula: string, sourceId?: string): void => {
+    try {
+      const normalized = formula.trimStart().startsWith('=') ? formula : `=${formula}`;
+      const dependencies = collectFormulaDependencies(parseFormula(normalized), owner, { sheetOrder });
+      if (sourceId === undefined) index.set(owner, dependencies);
+      else index.setStructuralReference(owner, sourceId, dependencies);
+    } catch {
+      if (sourceId === undefined) index.set(owner, [], true);
+      else index.setStructuralReference(owner, sourceId, [], true);
+    }
+  };
   for (const sheet of workbook.getSheets()) {
     sheet.cells.forEach((cell, row, column) => {
-      if (cell.formula === undefined) return;
       const owner = { sheetId: sheet.id, row, column };
-      try {
-        const formula = cell.formula.trimStart().startsWith('=') ? cell.formula : `=${cell.formula}`;
-        index.set(owner, collectFormulaDependencies(parseFormula(formula), owner, { sheetOrder }));
-      } catch {
-        index.set(owner, [], true);
+      if (cell.formula !== undefined) {
+        const sourceId = cell.formulaMetadata?.preservedOnly
+          ? 'structural:preserved-formula'
+          : undefined;
+        addFormulaOwner(owner, cell.formula, sourceId);
+      }
+      if (cell.formulaMetadata?.sourceFormula !== undefined) {
+        addFormulaOwner(owner, cell.formulaMetadata.sourceFormula, 'structural:formula-provenance');
+      }
+      if (cell.presentation?.kind === 'barcode' && cell.presentation.source.kind === 'formula') {
+        addFormulaOwner(owner, cell.presentation.source.formula, 'structural:barcode');
       }
     });
   }

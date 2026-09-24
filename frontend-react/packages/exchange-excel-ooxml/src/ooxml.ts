@@ -454,7 +454,7 @@ export function exportSnapshotToOpcPackageGraph(
       ...sheetParts.map((part) => ({ id: '', type: REL_WORKSHEET, target: relativeTarget(workbookPart, part) })),
     ],
   );
-  files.set(workbookPart, strToU8(buildWorkbookXml(snapshot, workbookPart, workbookRelations, descriptorsForSnapshot(snapshot), options.dateSystem, nativeUpdate.graph, preserved)));
+  files.set(workbookPart, strToU8(buildWorkbookXml(snapshot, workbookPart, workbookRelations, descriptorsForSnapshot(snapshot, sheetParts), options.dateSystem, nativeUpdate.graph, preserved)));
   files.set(relationshipPartName(workbookPart), strToU8(buildRelationshipsXml(workbookRelations)));
   files.set(REACT_SHEETS_METADATA_PART, strToU8(buildReactSheetsMetadata(snapshot)));
   const rootRelationships = mergeRelationships(
@@ -3353,6 +3353,6 @@ function serializeAlignment(style: CellStyle): string {
   return serialized ? `<alignment${serialized}/>` : '';
 }
 
-function descriptorsForSnapshot(snapshot: WorkbookSnapshot): SheetDescriptor[] {
-  return snapshot.sheets.map((sheet, index) => ({ id: sheet.id, name: sheet.name, part: `xl/worksheets/sheet${index + 1}.xml`, hidden: Boolean(sheet.hidden) }));
+function descriptorsForSnapshot(snapshot: WorkbookSnapshot, sheetParts: readonly string[]): SheetDescriptor[] {
+  return snapshot.sheets.map((sheet, index) => ({ id: sheet.id, name: sheet.name, part: sheetParts[index]!, hidden: Boolean(sheet.hidden) }));
 }
