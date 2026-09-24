@@ -1760,6 +1760,11 @@ export function registerDataToolCommands(runtime: CommandRuntime): void {
       const range = params.range;
       const sheet = context.workbook.getSheet(params.sheetId);
       applyRowPermutation(sheet, createRowPermutationPlan(range, params.sourceRows));
+      for (const worksheet of context.workbook.getSheets()) {
+        worksheet.cells.forEachFormulaOwner((cell) => {
+          if (cell.formula !== undefined) delete cell.formulaValue;
+        });
+      }
       setAppliedSortState(sheet, params.sortState);
     },
     metadata: {

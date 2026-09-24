@@ -136,6 +136,66 @@ final class FormulaReferenceTransformer {
         });
     }
 
+    static String offsetForPermutation(String formula, int rowOffset) {
+        return rewrite(formula, reference -> {
+            long row = reference.absoluteRow() ? reference.row() : (long) reference.row() + rowOffset;
+            if (row < 0 || row > MAX_ROW) {
+                throw ServiceException.unavailable("UNSUPPORTED_STRUCTURAL_REFERENCE: row permutation would move a formula reference outside worksheet bounds");
+            }
+            return reference.withCoordinates((int) row, reference.column());
+        });
+    }
+
+    static void assertRowOffsetSupported(String formula) {
+        if (formula == null) return;
+        int index = 0;
+        while (index < formula.length()) {
+            if (formula.charAt(index) == '"') {
+                index = consumeString(formula, index);
+                continue;
+            }
+            if (formula.charAt(index) == '[') {
+                int externalEnd = consumeExternalReference(formula, index);
+                if (externalEnd > index) {
+                    throw ServiceException.unavailable("UNSUPPORTED_STRUCTURAL_REFERENCE: row permutation cannot offset an external-workbook formula reference");
+                }
+                index = consumeBracketedReference(formula, index);
+                continue;
+            }
+
+            SheetPrefix prefix = parseSheetPrefix(formula, index);
+            if (prefix != null) {
+                if (prefix.name().indexOf('[') >= 0 && prefix.name().indexOf(']') > prefix.name().indexOf('[')) {
+                    throw ServiceException.unavailable("UNSUPPORTED_STRUCTURAL_REFERENCE: row permutation cannot offset an external-workbook formula reference");
+                }
+                if (prefix.afterPrefix() < formula.length() && formula.charAt(prefix.afterPrefix()) == '!') {
+                    WholeAxisReference qualified = parseWholeAxisReference(formula, prefix.afterPrefix() + 1);
+                    if (qualified != null) {
+                        assertRowAxisOffsetSupported(qualified);
+                        index = qualified.endIndex();
+                        continue;
+                    }
+                }
+            }
+
+            if (prefix == null || (prefix.afterPrefix() < formula.length() && formula.charAt(prefix.afterPrefix()) == ':')) {
+                WholeAxisReference wholeAxis = parseWholeAxisReference(formula, index);
+                if (wholeAxis != null) {
+                    assertRowAxisOffsetSupported(wholeAxis);
+                    index = wholeAxis.endIndex();
+                    continue;
+                }
+            }
+            index = nextReferenceCandidate(formula, index, prefix);
+        }
+    }
+
+    private static void assertRowAxisOffsetSupported(WholeAxisReference reference) {
+        if (reference.axis() == Axis.ROW) {
+            throw ServiceException.unavailable("UNSUPPORTED_STRUCTURAL_REFERENCE: row permutation cannot offset a whole-row formula reference");
+        }
+    }
+
     static String remapMovedRegion(
             String formula,
             SheetIdentity owner,
@@ -414,6 +474,11 @@ final class FormulaReferenceTransformer {
                     index = threeDimensionalEnd;
                     continue;
                 }
+            }
+            if (index > 0 && isReferenceNamePart(formula.charAt(index - 1))) {
+                output.append(current);
+                index += 1;
+                continue;
             }
             ParsedReference parsed = parseQualifiedReference(formula, index);
             if (parsed == null) parsed = parseReference(formula, index, null, null);

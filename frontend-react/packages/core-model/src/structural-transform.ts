@@ -3,7 +3,7 @@ import type { CellHyperlink, DrawingObject, StructuralTransformParams, SheetTabl
 import type { WorkbookTableModel } from './data-model';
 import type { DataSourceManifest } from './data-source';
 import type { PrintDocumentSnapshot } from './workbook-state';
-import { WorkbookModel, WorksheetModel, cellKey } from './index';
+import { WorkbookModel, WorksheetModel, cellKey, hasFormulaGroupMetadata } from './index';
 import {
   formatFormula,
   mapAstMovedReferences,
@@ -1714,12 +1714,6 @@ function preflightFormulaRewrite(
 
 function structuralOwnerKey(owner: StructuralReferenceOwnerAddress): string {
   return `${owner.sheetId}\u0000${owner.row}\u0000${owner.column}`;
-}
-
-export function hasFormulaGroupMetadata(cell: CellData): boolean {
-  const metadata = cell.formulaMetadata;
-  return metadata !== undefined
-    && (metadata.preservedOnly === true || metadata.kind !== 'normal' || metadata.range !== undefined);
 }
 
 function rejectFormulaGroupMetadataInRange(sheet: WorksheetModel, range: RangeRef, operation: string): void {

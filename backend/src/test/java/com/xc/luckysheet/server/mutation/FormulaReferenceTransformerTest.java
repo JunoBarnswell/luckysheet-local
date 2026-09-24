@@ -183,4 +183,13 @@ class FormulaReferenceTransformerTest {
         assertTimeout(Duration.ofSeconds(2), () -> FormulaReferenceTransformer.invalidateSheet(
                 formula, "missing-sheet", "Missing"));
     }
+
+    @Test
+    void rowPermutationFormulaPreflightAndOffsetScanLongNonReferenceIdentifiersInLinearTime() {
+        String formula = "=" + "A".repeat(128_000);
+
+        assertTimeout(Duration.ofSeconds(2), () -> FormulaReferenceTransformer.assertRowOffsetSupported(formula));
+        assertEquals(formula, assertTimeout(Duration.ofSeconds(2),
+                () -> FormulaReferenceTransformer.offsetForPermutation(formula, 1)));
+    }
 }

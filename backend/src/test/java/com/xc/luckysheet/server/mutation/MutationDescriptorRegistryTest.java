@@ -1294,8 +1294,8 @@ class MutationDescriptorRegistryTest {
                   {"name":"OtherRelative","formula":"=A1","scope":"workbook","anchor":{"sheetId":"sheet-2","row":0,"column":0}},
                   {"name":"SheetScopedReference","formula":"=Sheet1!A1","scope":"sheet","sheetId":"sheet-2","anchor":{"sheetId":"sheet-2","row":0,"column":0}},
                   {"name":"LocalAnchor","formula":"=A2","scope":"workbook","anchor":{"sheetId":"sheet-1","row":1,"column":0}}],"sheets":[
-                  {"id":"sheet-1","name":"Sheet1","rowCount":5,"columnCount":3,"cells":{"0":{"0":{"value":null,"formula":"=A1"}},"1":{"0":{"value":"drop"}}},"pane":{"kind":"none"},"defaultRowHeightPx":20,"defaultColumnWidthPx":64,"review":{"notesByCell":{"0:0":"n1"},"notesById":{"n1":{"id":"n1"}},"threadIdsByCell":{},"threadsById":{}},"merges":[],"conditionalFormats":[],"dataValidations":[],"pivots":[],"sparklines":[],"drawings":[],"drawingPayloads":{},"sheetTables":[],"spillRanges":[],"protectionRules":[]},
-                  {"id":"sheet-2","name":"Other","rowCount":5,"columnCount":3,"cells":{}}]}
+                  {"id":"sheet-1","name":"Sheet1","rowCount":5,"columnCount":3,"cells":{"0":{"0":{"value":null,"formula":"=A1","formulaValue":5}},"1":{"0":{"value":"drop"}}},"pane":{"kind":"none"},"defaultRowHeightPx":20,"defaultColumnWidthPx":64,"review":{"notesByCell":{"0:0":"n1"},"notesById":{"n1":{"id":"n1"}},"threadIdsByCell":{},"threadsById":{}},"merges":[],"conditionalFormats":[],"dataValidations":[],"pivots":[],"sparklines":[],"drawings":[],"drawingPayloads":{},"sheetTables":[],"spillRanges":[],"protectionRules":[]},
+                  {"id":"sheet-2","name":"Other","rowCount":5,"columnCount":3,"cells":{"0":{"0":{"value":null,"formula":"=A1","formulaValue":6}}}}]}
                 """);
         OperationMutation shift = new OperationMutation("cells.inserted", "sheet-1", mapper.readTree("""
                 {"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0},"operation":"insert","axis":"row","affectedBand":{"sheetId":"sheet-1","startRow":0,"endRow":4,"startColumn":0,"endColumn":0}}
@@ -1320,11 +1320,12 @@ class MutationDescriptorRegistryTest {
         assertEquals(2, current.path("definedNameModels").get(2).path("anchor").path("row").asInt());
 
         OperationMutation restore = new OperationMutation("cells.inserted.restore", "sheet-1", mapper.readTree("""
-                {"spec":{"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0},"operation":"insert","axis":"row","affectedBand":{"sheetId":"sheet-1","startRow":0,"endRow":4,"startColumn":0,"endColumn":0}},"cells":[{"row":0,"column":0,"cell":{"value":null,"formula":"=A1"}},{"row":1,"column":0,"cell":{"value":"drop"}}]}
+                {"spec":{"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0},"operation":"insert","axis":"row","affectedBand":{"sheetId":"sheet-1","startRow":0,"endRow":4,"startColumn":0,"endColumn":0}},"cells":[{"row":0,"column":0,"cell":{"value":null,"formula":"=A1","formulaValue":7,"formulaMetadata":{"kind":"normal","sourceFormula":"=A1"},"presentation":{"kind":"barcode","symbology":"qr","source":{"kind":"formula","formula":"=B1"},"parameters":{"symbology":"qr"},"options":{"foreground":"#000000","background":"#ffffff","showText":false,"labelPosition":"none","quietZone":0}}}},{"row":1,"column":0,"cell":{"value":"drop"}}]}
                 """));
         current = registry.prepare(current, restore, WorkbookAclRole.EDITOR).descriptor().apply(current, restore);
         assertEquals("=A1", current.path("sheets").get(0).path("cells").path("0").path("0").path("formula").asText());
         assertEquals("drop", current.path("sheets").get(0).path("cells").path("1").path("0").path("value").asText());
+        ((ObjectNode) current.path("sheets").get(1).path("cells").path("0").path("0")).put("formulaValue", 6);
 
         OperationMutation permutation = new OperationMutation("rows.permuted", "sheet-1", mapper.readTree("""
                 {"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":0,"endRow":1,"startColumn":0,"endColumn":0},"sourceRows":[1,0]}
@@ -1332,7 +1333,76 @@ class MutationDescriptorRegistryTest {
         permutation = withSortContext(permutation, range(0, 1, 0, 0), "worksheet", null, false, 2);
         current = registry.prepare(current, permutation, WorkbookAclRole.EDITOR).descriptor().apply(current, permutation);
         assertEquals("drop", current.path("sheets").get(0).path("cells").path("0").path("0").path("value").asText());
-        assertEquals("=A1", current.path("sheets").get(0).path("cells").path("1").path("0").path("formula").asText());
+        JsonNode movedFormula = current.path("sheets").get(0).path("cells").path("1").path("0");
+        assertEquals("=A2", movedFormula.path("formula").asText());
+        assertEquals("=A2", movedFormula.path("formulaMetadata").path("sourceFormula").asText());
+        assertEquals("=B2", movedFormula.path("presentation").path("source").path("formula").asText());
+        assertTrue(movedFormula.path("formulaValue").isMissingNode());
+        assertTrue(current.path("sheets").get(1).path("cells").path("0").path("0").path("formulaValue").isMissingNode());
+
+        OperationMutation rawInversePermutation = new OperationMutation("rows.permuted", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":0,"endRow":1,"startColumn":0,"endColumn":0},"sourceRows":[1,0]}
+                """));
+        OperationMutation inversePermutation = withSortContext(rawInversePermutation, range(0, 1, 0, 0), "worksheet", null, false, 0);
+        current = registry.prepare(current, inversePermutation, WorkbookAclRole.EDITOR).descriptor().apply(current, inversePermutation);
+        JsonNode restoredFormula = current.path("sheets").get(0).path("cells").path("0").path("0");
+        assertEquals("=A1", restoredFormula.path("formula").asText());
+        assertEquals("=A1", restoredFormula.path("formulaMetadata").path("sourceFormula").asText());
+        assertEquals("=B1", restoredFormula.path("presentation").path("source").path("formula").asText());
+    }
+
+    @Test
+    void rowPermutationRejectsFormulaGroupsAndUnsupportedReferenceKindsAtomically() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        for (String formula : List.of("=A1", "=[Book]Sheet1!A1", "=SUM(Sheet1!1:3)")) {
+            ObjectNode snapshot = (ObjectNode) mapper.readTree("""
+                    {"sheets":[
+                      {"id":"sheet-1","name":"Sheet1","rowCount":4,"columnCount":2,
+                       "cells":{"0":{"0":{"value":null,"formula":"=A1","formulaValue":7}},"1":{"0":{"value":"second"}}},
+                       "pane":{"kind":"none"},"defaultRowHeightPx":20,"defaultColumnWidthPx":64,
+                       "review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}},
+                       "merges":[],"conditionalFormats":[],"dataValidations":[],"pivots":[],"sparklines":[],
+                       "drawings":[],"drawingPayloads":{},"sheetTables":[],"spillRanges":[],"protectionRules":[]}]}
+                    """);
+            ObjectNode formulaCell = (ObjectNode) snapshot.path("sheets").get(0).path("cells").path("0").path("0");
+            formulaCell.put("formula", formula);
+            if ("=A1".equals(formula)) formulaCell.set("formulaMetadata", mapper.readTree("""
+                    {"kind":"shared","range":"A1:A2","sourceFormula":"=A1"}
+                    """));
+            JsonNode before = snapshot.deepCopy();
+            OperationMutation rawPermutation = new OperationMutation("rows.permuted", "sheet-1", mapper.readTree("""
+                    {"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":0,"endRow":1,"startColumn":0,"endColumn":0},"sourceRows":[1,0]}
+                    """));
+            OperationMutation permutation = withSortContext(rawPermutation, range(0, 1, 0, 0), "worksheet", null, false, 0);
+
+            ServiceException rejection = assertThrows(ServiceException.class,
+                    () -> registry.prepare(snapshot, permutation, WorkbookAclRole.EDITOR).descriptor().apply(snapshot, permutation));
+            assertEquals("SERVICE_UNAVAILABLE", rejection.code());
+            assertEquals(before, snapshot);
+        }
+    }
+
+    @Test
+    void rowPermutationRejectsFormulaOffsetsThatWouldMakeTheInverseIrreversible() throws Exception {
+        ObjectNode snapshot = (ObjectNode) mapper.readTree("""
+                {"sheets":[
+                  {"id":"sheet-1","name":"Sheet1","rowCount":4,"columnCount":2,
+                   "cells":{"0":{"0":{"value":"first"}},"1":{"0":{"value":null,"formula":"=A1","formulaValue":7}}},
+                   "pane":{"kind":"none"},"defaultRowHeightPx":20,"defaultColumnWidthPx":64,
+                   "review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}},
+                   "merges":[],"conditionalFormats":[],"dataValidations":[],"pivots":[],"sparklines":[],
+                   "drawings":[],"drawingPayloads":{},"sheetTables":[],"spillRanges":[],"protectionRules":[]}]}
+                """);
+        JsonNode before = snapshot.deepCopy();
+        OperationMutation rawPermutation = new OperationMutation("rows.permuted", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":0,"endRow":1,"startColumn":0,"endColumn":0},"sourceRows":[1,0]}
+                """));
+        OperationMutation permutation = withSortContext(rawPermutation, range(0, 1, 0, 0), "worksheet", null, false, 0);
+
+        ServiceException rejection = assertThrows(ServiceException.class,
+                () -> new MutationDescriptorRegistry().prepare(snapshot, permutation, WorkbookAclRole.EDITOR).descriptor().apply(snapshot, permutation));
+        assertEquals("SERVICE_UNAVAILABLE", rejection.code());
+        assertEquals(before, snapshot);
     }
 
     @Test

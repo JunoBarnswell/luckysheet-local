@@ -266,6 +266,12 @@ export interface FormulaMetadata {
   sourceFormula?: string;
 }
 
+export function hasFormulaGroupMetadata(cell: Pick<CellData, 'formulaMetadata'>): boolean {
+  const metadata = cell.formulaMetadata;
+  return metadata !== undefined
+    && (metadata.preservedOnly === true || metadata.kind !== 'normal' || metadata.range !== undefined);
+}
+
 /**
  * User-authored cell writes replace the formula definition; OOXML provenance
  * belongs only to the imported definition that is being replaced.
@@ -497,7 +503,6 @@ export {
 export {
   StructuralTransform,
   planCellShift,
-  hasFormulaGroupMetadata,
   type StructuralTransformResult,
   type StructuralReferenceOwnerAddress,
   type StructuralReferenceOwnerIndex,

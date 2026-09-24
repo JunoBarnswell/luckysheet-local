@@ -40,6 +40,12 @@ test('sorting uses resolved formula results, keeps stable ties, and replays/undo
       [{ formula: '=B4+10', value: null }, { value: 'third' }],
     ],
   });
+  sheet.cells.set(1, 0, { ...sheet.cells.get(1, 0)!, formulaValue: 11 });
+  sheet.cells.set(2, 0, { ...sheet.cells.get(2, 0)!, formulaValue: 22 });
+  sheet.cells.set(3, 0, { ...sheet.cells.get(3, 0)!, formulaValue: 33 });
+  const primarySheetReference = sheet.name.replaceAll("'", "''");
+  const dependentSheet = workbook.addSheet('sheet-2', 'Dependent');
+  dependentSheet.cells.set(0, 0, { value: null, formula: `='${primarySheetReference}'!A2`, formulaValue: 99 });
   const beforeSort = workbook.snapshot();
   const formulaResults = new Map([[1, 20], [2, 5], [3, 5]]);
   commands.setCellValueResolver((_currentSheet, row, column) => column === 0 ? formulaResults.get(row) ?? null : undefined);
@@ -58,6 +64,11 @@ test('sorting uses resolved formula results, keeps stable ties, and replays/undo
   assert.equal(sheet.cells.get(1, 1)?.value, 'second');
   assert.equal(sheet.cells.get(2, 1)?.value, 'third');
   assert.equal(sheet.cells.get(3, 1)?.value, 'first');
+  assert.equal(sheet.cells.get(3, 0)?.formula, '=B4+10');
+  assert.equal(sheet.cells.get(1, 0)?.formulaValue, undefined);
+  assert.equal(sheet.cells.get(2, 0)?.formulaValue, undefined);
+  assert.equal(sheet.cells.get(3, 0)?.formulaValue, undefined);
+  assert.equal(dependentSheet.cells.get(0, 0)?.formulaValue, undefined);
 
   const remoteWorkbook = WorkbookModel.fromSnapshot(beforeSort);
   const remoteCommands = new CommandRuntime(remoteWorkbook);
@@ -71,9 +82,11 @@ test('sorting uses resolved formula results, keeps stable ties, and replays/undo
   assert.equal(sheet.cells.get(1, 1)?.value, 'first');
   assert.equal(sheet.cells.get(2, 1)?.value, 'second');
   assert.equal(sheet.cells.get(3, 1)?.value, 'third');
+  assert.equal(sheet.cells.get(1, 0)?.formula, '=B2+10');
   assert.equal(commands.redo(), true);
   assert.equal(sheet.cells.get(1, 1)?.value, 'second');
   assert.equal(sheet.cells.get(3, 1)?.value, 'first');
+  assert.equal(sheet.cells.get(3, 0)?.formula, '=B4+10');
 });
 
 test('sort keys retain canonical typed formula results and reject unresolved values', () => {

@@ -7,6 +7,80 @@ function range(sheetId: string, startRow: number, endRow: number, startColumn: n
 }
 
 describe('canonical row permutation metadata plan', () => {
+  it('rebases moved formula owners, provenance formulas, and barcode formulas', () => {
+    const workbook = new WorkbookModel('permutation-formulas', 'Permutation formulas');
+    const sheet = workbook.getSheet('sheet-1');
+    sheet.rowCount = 4;
+    sheet.columnCount = 8;
+    sheet.cells.set(0, 0, {
+      value: null,
+      formula: '=C2+$D$1',
+      formulaMetadata: { kind: 'normal', sourceFormula: '=C2+$D$1' },
+      presentation: {
+        kind: 'barcode',
+        symbology: 'qr',
+        source: { kind: 'formula', formula: '=E2' },
+        parameters: { symbology: 'qr' },
+        options: { foreground: '#000000', background: '#ffffff', showText: false, labelPosition: 'none', quietZone: 0 },
+      },
+    });
+    sheet.cells.set(1, 0, { value: 'second row' });
+
+    applyRowPermutation(sheet, createRowPermutationPlan(range(sheet.id, 0, 1, 0, 0), [1, 0]));
+
+    assert.equal(sheet.cells.get(1, 0)?.formula, '=C3+$D$1');
+    assert.equal(sheet.cells.get(1, 0)?.formulaMetadata?.sourceFormula, '=C3+$D$1');
+    const movedPresentation = sheet.cells.get(1, 0)?.presentation;
+    assert.equal(movedPresentation?.kind, 'barcode');
+    if (movedPresentation?.kind === 'barcode') {
+      assert.equal(movedPresentation.source.kind, 'formula');
+      if (movedPresentation.source.kind === 'formula') assert.equal(movedPresentation.source.formula, '=E3');
+    }
+  });
+
+  it('rejects formula groups and references whose row semantics cannot be remapped before changing cells', () => {
+    const groupedWorkbook = new WorkbookModel('permutation-group-reject', 'Formula group rejection');
+    const groupedSheet = groupedWorkbook.getSheet('sheet-1');
+    groupedSheet.rowCount = 4;
+    groupedSheet.columnCount = 4;
+    groupedSheet.cells.set(0, 0, { value: null, formula: '=A1', formulaMetadata: { kind: 'shared', range: 'A1:A2', sourceFormula: '=A1' } });
+    groupedSheet.cells.set(1, 0, { value: 'second row' });
+    const groupedBefore = groupedSheet.cells.toJSON();
+    assert.throws(
+      () => applyRowPermutation(groupedSheet, createRowPermutationPlan(range(groupedSheet.id, 0, 1, 0, 0), [1, 0])),
+      /UNSUPPORTED_STRUCTURAL_REFERENCE: row sort cannot remap formula-group metadata/,
+    );
+    assert.deepEqual(groupedSheet.cells.toJSON(), groupedBefore);
+
+    for (const formula of ['=[Book]Sheet1!A1', '=SUM(Sheet1!1:3)']) {
+      const workbook = new WorkbookModel('permutation-reference-reject', 'Formula reference rejection');
+      const sheet = workbook.getSheet('sheet-1');
+      sheet.rowCount = 4;
+      sheet.columnCount = 4;
+      sheet.cells.set(0, 0, { value: null, formula });
+      sheet.cells.set(1, 0, { value: 'second row' });
+      const before = sheet.cells.toJSON();
+      assert.throws(
+        () => applyRowPermutation(sheet, createRowPermutationPlan(range(sheet.id, 0, 1, 0, 0), [1, 0])),
+        /cannot safely offset an external-workbook or whole-row reference/,
+      );
+      assert.deepEqual(sheet.cells.toJSON(), before);
+    }
+
+    const boundsWorkbook = new WorkbookModel('permutation-bounds-reject', 'Formula bounds rejection');
+    const boundsSheet = boundsWorkbook.getSheet('sheet-1');
+    boundsSheet.rowCount = 4;
+    boundsSheet.columnCount = 4;
+    boundsSheet.cells.set(0, 0, { value: 'first row' });
+    boundsSheet.cells.set(1, 0, { value: null, formula: '=A1' });
+    const boundsBefore = boundsSheet.cells.toJSON();
+    assert.throws(
+      () => applyRowPermutation(boundsSheet, createRowPermutationPlan(range(boundsSheet.id, 0, 1, 0, 0), [1, 0])),
+      /would move a formula reference outside worksheet bounds/,
+    );
+    assert.deepEqual(boundsSheet.cells.toJSON(), boundsBefore);
+  });
+
   it('moves only metadata whose exact cell is inside the sort rectangle', () => {
     const workbook = new WorkbookModel('permutation-metadata', 'Permutation metadata');
     const sheet = workbook.getSheet('sheet-1');

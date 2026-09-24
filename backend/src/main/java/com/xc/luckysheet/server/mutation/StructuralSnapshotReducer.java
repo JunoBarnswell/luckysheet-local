@@ -510,8 +510,12 @@ final class StructuralSnapshotReducer {
         if (sourceRows.size() != expected) throw ServiceException.validation("Row permutation length does not match range");
         validatePermutationPreservation(sheet, selected);
         int[] mapping = validatePermutation(selected, (ArrayNode) sourceRows);
+        int[] targetRowsBySource = new int[mapping.length];
+        for (int targetOffset = 0; targetOffset < mapping.length; targetOffset++) {
+            targetRowsBySource[mapping[targetOffset] - selected.startRow()] = selected.startRow() + targetOffset;
+        }
         validatePermutationMetadataExact(root, sheet, selected, metadataScope, mapping);
-        remapPermutedCells(sheet, selected, mapping);
+        remapPermutedCells(sheet, selected, targetRowsBySource);
         remapPermutationMetadata(root, sheet, selected, metadataScope, mapping);
         invalidateFormulaCaches(root);
         AutoFilterOwnershipValidator.resolveOwners(sheet, sheetId);
@@ -1900,7 +1904,7 @@ final class StructuralSnapshotReducer {
         }
     }
 
-    private static void remapPermutedCells(ObjectNode sheet, RangeRef range, int[] sourceRows) {
+    private static void remapPermutedCells(ObjectNode sheet, RangeRef range, int[] targetRowsBySource) {
         ObjectNode cells = SnapshotMutationSupport.cells(sheet);
         List<CellEntry> entries = new ArrayList<>();
         for (int row = range.startRow(); row <= range.endRow(); row++) {
@@ -1909,19 +1913,65 @@ final class StructuralSnapshotReducer {
             int sourceRow = row;
             current.fields().forEachRemaining(column -> {
                 int columnIndex = integerKey(column.getKey(), SnapshotMutationSupport.MAX_COLUMN, "Cell column");
-                if (columnIndex >= range.startColumn() && columnIndex <= range.endColumn()) entries.add(new CellEntry(sourceRow, columnIndex, requireObject(column.getValue(), "Cell").deepCopy()));
+                if (columnIndex < range.startColumn() || columnIndex > range.endColumn()) return;
+                ObjectNode cell = requireObject(column.getValue(), "Cell").deepCopy();
+                int targetRow = targetRowsBySource[sourceRow - range.startRow()];
+                if (targetRow != sourceRow) {
+                    if (hasFormulaGroupMetadata(cell)) {
+                        throw ServiceException.unavailable("UNSUPPORTED_STRUCTURAL_REFERENCE: row permutation cannot remap formula-group metadata at " + range.sheetId() + "!" + sourceRow + ":" + columnIndex);
+                    }
+                    remapPermutedFormulaOwner(cell, targetRow - sourceRow, range.sheetId(), sourceRow, columnIndex);
+                }
+                entries.add(new CellEntry(sourceRow, columnIndex, cell));
             });
         }
-        for (int row = range.startRow(); row <= range.endRow(); row++) {
-            ObjectNode current = SnapshotMutationSupport.cellRow(cells, row, false);
-            if (current == null) continue;
-            for (int column = range.startColumn(); column <= range.endColumn(); column++) current.remove(Integer.toString(column));
-            if (current.isEmpty()) cells.remove(Integer.toString(row));
+        for (CellEntry entry : entries) {
+            ObjectNode current = SnapshotMutationSupport.cellRow(cells, entry.row(), false);
+            if (current == null) throw ServiceException.validation("Row permutation cell owner disappeared before remap");
+            current.remove(Integer.toString(entry.column()));
+            if (current.isEmpty()) cells.remove(Integer.toString(entry.row()));
         }
-        for (int targetOffset = 0; targetOffset < sourceRows.length; targetOffset++) {
-            int source = sourceRows[targetOffset];
-            int target = range.startRow() + targetOffset;
-            for (CellEntry entry : entries) if (entry.row() == source) SnapshotMutationSupport.putCell(sheet, new SnapshotMutationSupport.CellCoordinate(target, entry.column()), entry.cell());
+        for (CellEntry entry : entries) {
+            int target = targetRowsBySource[entry.row() - range.startRow()];
+            SnapshotMutationSupport.putCell(sheet, new SnapshotMutationSupport.CellCoordinate(target, entry.column()), entry.cell());
+        }
+    }
+
+    private static boolean hasFormulaGroupMetadata(ObjectNode cell) {
+        JsonNode metadata = cell.get("formulaMetadata");
+        if (metadata == null || metadata.isNull()) return false;
+        if (!metadata.isObject()) throw ServiceException.validation("Cell formulaMetadata must be an object");
+        return metadata.path("preservedOnly").asBoolean(false)
+                || !"normal".equals(metadata.path("kind").asText())
+                || (metadata.has("range") && !metadata.path("range").isNull());
+    }
+
+    private static void remapPermutedFormulaOwner(ObjectNode cell, int rowDelta, String sheetId, int row, int column) {
+        remapFormulaField(cell, "formula", rowDelta, sheetId, row, column);
+        JsonNode rawMetadata = cell.get("formulaMetadata");
+        if (rawMetadata != null && rawMetadata.isObject()) {
+            remapFormulaField((ObjectNode) rawMetadata, "sourceFormula", rowDelta, sheetId, row, column);
+        }
+        JsonNode rawPresentation = cell.get("presentation");
+        if (rawPresentation != null && rawPresentation.isObject() && "barcode".equals(rawPresentation.path("kind").asText())) {
+            JsonNode rawSource = rawPresentation.get("source");
+            if (rawSource != null && rawSource.isObject() && "formula".equals(rawSource.path("kind").asText())) {
+                remapFormulaField((ObjectNode) rawSource, "formula", rowDelta, sheetId, row, column);
+            }
+        }
+    }
+
+    private static void remapFormulaField(ObjectNode owner, String field, int rowDelta, String sheetId, int row, int column) {
+        JsonNode rawFormula = owner.get(field);
+        if (rawFormula == null || !rawFormula.isTextual()) return;
+        String formula = rawFormula.asText();
+        try {
+            FormulaReferenceTransformer.assertRowOffsetSupported(formula);
+            owner.put(field, FormulaReferenceTransformer.offsetForPermutation(formula, rowDelta));
+        } catch (ServiceException error) {
+            throw error;
+        } catch (RuntimeException error) {
+            throw ServiceException.unavailable("UNSUPPORTED_STRUCTURAL_REFERENCE: row permutation cannot parse formula owner " + sheetId + "!" + row + ":" + column);
         }
     }
 

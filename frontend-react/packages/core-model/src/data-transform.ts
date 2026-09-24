@@ -1,7 +1,8 @@
 import type { CellData, RangeRef, Row, WorksheetModel } from './index';
-import { cellKey } from './index';
+import { cellKey, hasFormulaGroupMetadata } from './index';
 import type { DrawingObject, SpillRange } from './domain';
 import { sheetRuleRegistry, type RuleTransform } from './rule-lifecycle';
+import { formatFormula, offsetAst, parseFormula } from '@react-sheets/formula-engine';
 
 /** Canonical, prevalidated permutation shared by local execution and replay. */
 export interface RowPermutationPlan {
@@ -169,6 +170,15 @@ function remapCellMap<T>(source: ReadonlyMap<string, T>, plan: RowPermutationPla
 export function validatePermutationMetadata(sheet: WorksheetModel, plan: RowPermutationPlan): void {
   const range = plan.range;
   if (range.sheetId !== sheet.id || range.endRow >= sheet.rowCount || range.endColumn >= sheet.columnCount) throw new Error('Row permutation range is outside worksheet bounds');
+  const changesRows = plan.sourceRows.some((sourceRow, targetOffset) => sourceRow !== range.startRow + targetOffset);
+  if (changesRows) {
+    sheet.cells.forEachInRows(new Set(plan.sourceRows), (cell, row, column) => {
+      if (column < range.startColumn || column > range.endColumn) return;
+      if (hasFormulaGroupMetadata(cell)) {
+        throw new Error(`UNSUPPORTED_STRUCTURAL_REFERENCE: row sort cannot remap formula-group metadata at ${sheet.id}!${row}:${column}`);
+      }
+    });
+  }
   // Detect cell-owner collisions before any cell record is cleared. Notes and
   // hyperlinks are single-owner maps, so a collision is an atomic rejection.
   sheet.review.validateRemapCoordinates((row, column) => ({ row: inRange(plan.range, row, column) ? remapRow(row, plan) : row, column }));
@@ -205,12 +215,17 @@ export function applyRowPermutation(sheet: WorksheetModel, plan: RowPermutationP
   validatePermutationMetadata(sheet, plan);
   const { range, sourceRows } = plan;
   const cellsByRow = new Map<number, Array<{ column: number; cell: CellData }>>();
-  for (let row = range.startRow; row <= range.endRow; row += 1) {
-    const entries: Array<{ column: number; cell: CellData }> = [];
-    sheet.cells.forEach((cell, cellRow, column) => { if (cellRow === row && column >= range.startColumn && column <= range.endColumn) entries.push({ column, cell: structuredClone(cell) }); });
+  sheet.cells.forEachInRows(new Set(sourceRows), (cell, row, column) => {
+    if (column < range.startColumn || column > range.endColumn) return;
+    const targetRow = plan.sourceToTarget.get(row);
+    if (targetRow === undefined) throw new Error(`ROW_PERMUTATION_INVARIANT: cell owner row ${row} is outside its source map`);
+    const rowDelta = targetRow - row;
+    const nextCell = rowDelta === 0 ? structuredClone(cell) : remapPermutedFormulaOwner(cell, rowDelta, sheet.id, row, column);
+    const entries = cellsByRow.get(row) ?? [];
+    entries.push({ column, cell: nextCell });
     cellsByRow.set(row, entries);
-  }
-  for (let row = range.startRow; row <= range.endRow; row += 1) for (let column = range.startColumn; column <= range.endColumn; column += 1) sheet.cells.delete(row, column);
+  });
+  for (const [row, entries] of cellsByRow) for (const entry of entries) sheet.cells.delete(row, entry.column);
   sourceRows.forEach((sourceRow, targetOffset) => { for (const entry of cellsByRow.get(sourceRow) ?? []) sheet.cells.set(range.startRow + targetOffset, entry.column, entry.cell); });
 
   sheet.review.remapCoordinates((row, column) => ({ row: inRange(plan.range, row, column) ? remapRow(row, plan) : row, column }));
@@ -234,4 +249,50 @@ export function applyRowPermutation(sheet: WorksheetModel, plan: RowPermutationP
   for (const group of sheet.outline?.groups ?? []) if (group.axis === 'row' && group.start >= range.startRow && group.end <= range.endRow) { const mapped = remapRangeExact({ sheetId: sheet.id, startRow: group.start, endRow: group.end, startColumn: range.startColumn, endColumn: range.endColumn }, plan); if (mapped.length !== 1) throw new Error('Sort cannot exactly remap outline group'); group.start = mapped[0]!.startRow; group.end = mapped[0]!.endRow; }
   for (const rule of sheet.protectionRules) if (rule.range) rule.range = remapSingleRange(`protection ${rule.id}`, rule.range, plan);
   if (sheet.bandedRule) sheet.bandedRule.range = remapSingleRange('banded rule', sheet.bandedRule.range, plan);
+}
+
+function remapPermutedFormulaOwner(cell: CellData, rowDelta: number, sheetId: string, row: number, column: number): CellData {
+  const next = structuredClone(cell);
+  const remap = (formula: string): string => {
+    try {
+      const hasPrefix = formula.startsWith('=');
+      const ast = parseFormula(hasPrefix ? formula : `=${formula}`);
+      if (containsUnsupportedRowOffsetReference(ast)) {
+        throw new Error(`UNSUPPORTED_STRUCTURAL_REFERENCE: row sort cannot safely offset an external-workbook or whole-row reference at ${sheetId}!${row}:${column}`);
+      }
+      const shifted = offsetAst(ast, rowDelta, 0);
+      if (countInvalidReferenceNodes(shifted) > countInvalidReferenceNodes(ast)) {
+        throw new Error(`UNSUPPORTED_STRUCTURAL_REFERENCE: row sort would move a formula reference outside worksheet bounds at ${sheetId}!${row}:${column}`);
+      }
+      const formatted = formatFormula(shifted);
+      return hasPrefix ? formatted : formatted.slice(1);
+    } catch (error) {
+      if (error instanceof Error && error.message.startsWith('UNSUPPORTED_STRUCTURAL_REFERENCE:')) throw error;
+      throw new Error(`UNSUPPORTED_STRUCTURAL_REFERENCE: row sort cannot parse and safely offset formula at ${sheetId}!${row}:${column}`);
+    }
+  };
+  if (next.formula !== undefined) next.formula = remap(next.formula);
+  if (next.formulaMetadata?.sourceFormula !== undefined) {
+    next.formulaMetadata = { ...next.formulaMetadata, sourceFormula: remap(next.formulaMetadata.sourceFormula) };
+  }
+  if (next.presentation?.kind === 'barcode' && next.presentation.source.kind === 'formula') {
+    next.presentation = { ...next.presentation, source: { ...next.presentation.source, formula: remap(next.presentation.source.formula) } };
+  }
+  return next;
+}
+
+function containsUnsupportedRowOffsetReference(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some(containsUnsupportedRowOffsetReference);
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as { readonly type?: unknown };
+  if (candidate.type === 'external-reference' || candidate.type === 'whole-row-reference') return true;
+  return Object.values(value).some(containsUnsupportedRowOffsetReference);
+}
+
+function countInvalidReferenceNodes(value: unknown): number {
+  if (Array.isArray(value)) return value.reduce((count, child) => count + countInvalidReferenceNodes(child), 0);
+  if (!value || typeof value !== 'object') return 0;
+  const candidate = value as { readonly type?: unknown };
+  const ownInvalidReference = candidate.type === 'invalid-reference' ? 1 : 0;
+  return ownInvalidReference + Object.values(value).reduce<number>((count, child) => count + countInvalidReferenceNodes(child), 0);
 }
