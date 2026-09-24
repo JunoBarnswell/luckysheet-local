@@ -38,12 +38,6 @@ export function configureWorkbookSpillEnvironments(engine: FormulaEngine, workbo
   }
 }
 
-export function syncWorkbookSpills(engine: FormulaEngine, workbook: WorkbookModel): void {
-  for (const sheet of workbook.getSheets()) {
-    syncFormulaSpillsToSheet(engine, sheet);
-  }
-}
-
 export function workbookSheetTables(workbook: WorkbookModel): SheetTableRef[] {
   const tables: SheetTableRef[] = [];
   for (const sheet of workbook.getSheets()) {
@@ -62,6 +56,6 @@ export function workbookSheetTables(workbook: WorkbookModel): SheetTableRef[] {
   return tables;
 }
 
-export function syncWorkbookSheetTables(engine: FormulaEngine, workbook: WorkbookModel): void {
-  engine.setSheetTables(workbookSheetTables(workbook));
+export function syncWorkbookSheetTables(engine: FormulaEngine, workbook: WorkbookModel, recalculate = true): void {
+  engine.setSheetTables(workbookSheetTables(workbook), recalculate);
 }

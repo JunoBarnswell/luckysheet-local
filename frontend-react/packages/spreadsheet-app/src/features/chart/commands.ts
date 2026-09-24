@@ -365,7 +365,9 @@ function isChartPayload(value: unknown): value is ChartPayload {
     && (payload.waterfallOptions === undefined || isRecord(payload.waterfallOptions))
     && (payload.mapOptions === undefined || isMapOptions(payload.mapOptions))
     && (payload.dataOrientation === undefined || payload.dataOrientation === 'rows' || payload.dataOrientation === 'columns')
-    && (payload.chartType !== 'combo' || (Array.isArray(series) && series.every((entry) => entry.chartType !== undefined)));
+    && (payload.chartType !== 'combo'
+      || payload.source.kind === 'pivot' && series === undefined
+      || Array.isArray(series) && series.length > 0 && series.every((entry) => entry.chartType !== undefined));
 }
 
 function validateChartSemantics(payload: ChartPayload): void {
@@ -375,13 +377,15 @@ function validateChartSemantics(payload: ChartPayload): void {
     throw new Error(`INVALID_CHART_SOURCE: ${payload.chartType} charts require explicit role-bound series`);
   }
   if (payload.chartType === 'combo') {
-    if (!payload.series?.length || payload.series.some((series) => !series.chartType)) throw new Error('INVALID_CHART_SOURCE: Combo charts require an explicit type for every series');
-    for (const series of payload.series) {
+    const comboSeries = payload.series ?? [];
+    if (payload.source.kind !== 'pivot' && !payload.series?.length) throw new Error('INVALID_CHART_SOURCE: Combo charts require an explicit type for every series');
+    if (payload.series?.some((series) => !series.chartType)) throw new Error('INVALID_CHART_SOURCE: Combo charts require an explicit type for every series');
+    for (const series of comboSeries) {
       if (series.chartType && !['column', 'bar', 'line', 'area'].includes(series.chartType)) throw new Error(`INVALID_CHART_SOURCE: Combo series type ${series.chartType} is not supported by the canonical combo layout`);
       if (series.subtype && series.chartType && !isChartSubtypeForType(series.chartType, series.subtype)) throw new Error(`Chart series subtype ${series.subtype} does not belong to ${series.chartType}`);
     }
-    const hasBar = payload.series.some((series) => series.chartType === 'bar');
-    const hasNonBar = payload.series.some((series) => series.chartType !== 'bar');
+    const hasBar = comboSeries.some((series) => series.chartType === 'bar');
+    const hasNonBar = comboSeries.some((series) => series.chartType !== 'bar');
     if (hasBar && hasNonBar) throw new Error('UNSUPPORTED_FEATURE: Mixed horizontal-bar combo charts are not supported by the canonical layout');
   }
   if (payload.chartType !== 'combo' && payload.series?.some((series) => series.chartType && series.chartType !== payload.chartType)) {

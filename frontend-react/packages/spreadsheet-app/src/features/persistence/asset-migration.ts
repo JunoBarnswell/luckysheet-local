@@ -17,6 +17,7 @@ export async function normalizeWorkspaceRecordWithAssets(record: WorkspaceRecord
   const pendingPayload = {
     schema: normalizedRecord.pending.schema,
     unitId: normalizedRecord.pending.unitId,
+    snapshotRevision: normalizedRecord.pending.snapshotRevision,
     nextClientSequence: normalizedRecord.pending.nextClientSequence,
     operations: normalizedRecord.pending.operations,
   };

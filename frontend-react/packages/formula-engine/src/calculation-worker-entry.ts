@@ -9,7 +9,6 @@ import {
   type CalculationTaskResult,
 } from './calculation-task-port';
 import { FormulaEngine } from './formula-engine';
-import { assertFormulaCalculationSnapshot } from './calculation-state';
 import type { CalculationWorkerTaskRequest } from './calculation-browser-task-port';
 
 /** Minimal Worker-like surface used by the entry point; no DOM/global is required. */
@@ -65,6 +64,19 @@ export function consumeCalculationTask(engine: FormulaEngine, payload: unknown):
  * snapshot. The FormulaEngine constructed here is isolated to this Worker.
  */
 export function consumeBrowserCalculationTask(payload: unknown): CalculationTaskResult {
+  return consumeBrowserCalculationTaskWithEngine(payload, null).result;
+}
+
+/**
+ * Persistent Worker boundary.  The first task bootstraps an engine from a
+ * snapshot; later tasks apply only authored input deltas to the same engine.
+ * A new snapshot is an explicit calculation-context boundary (names, tables,
+ * visibility, settings, or structural rebuild), not the normal edit path.
+ */
+export function consumeBrowserCalculationTaskWithEngine(
+  payload: unknown,
+  existingEngine: FormulaEngine | null,
+): { result: CalculationTaskResult; engine: FormulaEngine | null } {
   const request = payload as Partial<CalculationWorkerTaskRequest> | null;
   const taskId = typeof request?.taskId === 'string' && request.taskId.length > 0 ? request.taskId : 'invalid-task';
   const revision = Number.isSafeInteger(request?.revision) && (request?.revision ?? -1) >= 0
@@ -72,20 +84,26 @@ export function consumeBrowserCalculationTask(payload: unknown): CalculationTask
     : 0;
   try {
     assertCalculationTaskRequest(request as CalculationTaskRequest);
-    assertFormulaCalculationSnapshot(request?.snapshot);
-    const engine = FormulaEngine.fromCalculationSnapshot(request.snapshot);
-    return consumeCalculationTask(engine, request);
+    const engine = request?.snapshot
+      ? FormulaEngine.fromCalculationSnapshot(request.snapshot)
+      : existingEngine;
+    if (!engine) throw new Error('CALCULATION_WORKER_NOT_INITIALIZED: calculation context is missing');
+    if (!request?.snapshot && request?.inputs && request.inputs.length > 0) engine.applyCalculationTaskInputs(request.inputs);
+    return { result: consumeCalculationTask(engine, request), engine };
   } catch (error) {
     return {
-      protocol: CALCULATION_TASK_PROTOCOL,
-      version: CALCULATION_TASK_VERSION,
-      taskId,
-      revision,
-      status: 'failed',
-      error: {
-        code: 'CALCULATION_TASK_FAILED',
-        message: error instanceof Error ? error.message : 'Calculation task failed',
+      result: {
+        protocol: CALCULATION_TASK_PROTOCOL,
+        version: CALCULATION_TASK_VERSION,
+        taskId,
+        revision,
+        status: 'failed',
+        error: {
+          code: 'CALCULATION_TASK_FAILED',
+          message: error instanceof Error ? error.message : 'Calculation task failed',
+        },
       },
+      engine: existingEngine,
     };
   }
 }
@@ -112,6 +130,7 @@ export function installCalculationWorkerEntry(
 export function installBrowserCalculationWorkerEntry(scope: BrowserCalculationWorkerScope): () => void {
   const previous = scope.onmessage;
   const cancelled = new Set<string>();
+  let engine: FormulaEngine | null = null;
   scope.onmessage = (event) => {
     if (isCalculationTaskCancellation(event.data)) {
       cancelled.add(event.data.taskId);
@@ -123,7 +142,9 @@ export function installBrowserCalculationWorkerEntry(scope: BrowserCalculationWo
       scope.postMessage(cancelledResult(taskId, revision));
       return;
     }
-    const result = consumeBrowserCalculationTask(event.data);
+    const consumed = consumeBrowserCalculationTaskWithEngine(event.data, engine);
+    engine = consumed.engine;
+    const result = consumed.result;
     if (cancelled.delete(result.taskId)) {
       scope.postMessage(cancelledResult(result.taskId, result.revision));
       return;

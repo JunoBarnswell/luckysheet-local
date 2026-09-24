@@ -202,6 +202,7 @@ export class CanvasRenderEngine {
 
   setSkeleton(skeleton: SheetSkeleton): void {
     this.assertActive();
+    if (this.skeletonModel === skeleton) return;
     this.skeletonModel = skeleton;
     this.viewport.clampTo(skeleton.contentSize);
     this.forceFullRedraw = true;
@@ -211,7 +212,15 @@ export class CanvasRenderEngine {
   setCellProvider(cellProvider: CellProvider): void {
     this.assertActive();
     this.cellProvider = cellProvider;
-    this.forceFullRedraw = true;
+    // Provider identity changes are normal when a lazy worksheet projection
+    // publishes a new formula/result revision.  Redraw only the panes that are
+    // already visible; geometry/layer changes still use their explicit full
+    // invalidation paths.
+    const visibleRanges = this.lastPlan?.panes
+      .map((pane) => pane.visibleRange)
+      .filter((range): range is CellRange => range !== null) ?? [];
+    if (visibleRanges.length > 0) this.dirtyRanges.addMany(visibleRanges);
+    else this.forceFullRedraw = true;
     this.requestRender();
   }
 
