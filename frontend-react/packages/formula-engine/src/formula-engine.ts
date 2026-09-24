@@ -169,7 +169,7 @@ interface StoredCell {
 export class FormulaEngine {
   readonly defaultSheetId: string;
   readonly dependencies: RangeIndex;
-  private readonly sheetOrder: readonly FormulaSheetIdentity[];
+  private sheetOrder: readonly FormulaSheetIdentity[];
   /** Canonical scoped names. Workbook-only lookup is derived on demand. */
   private definedNameModels: FormulaDefinedName[] = [];
   private spillEnvironments = new Map<string, SpillEnvironment>();
@@ -359,6 +359,19 @@ export class FormulaEngine {
 
   getDateSystem(): ExcelDateSystem {
     return this.dateSystem;
+  }
+
+  updateSheetNames(sheetOrder: readonly FormulaSheetIdentity[]): void {
+    const next = normalizeFormulaSheetOrder(sheetOrder, this.defaultSheetId);
+    if (next.length !== this.sheetOrder.length
+      || next.some((sheet, index) => sheet.id !== this.sheetOrder[index]?.id)) {
+      throw new Error('FORMULA_SHEET_IDENTITY_ORDER_MISMATCH: sheet-name updates cannot change worksheet identity order');
+    }
+    if (next.every((sheet, index) => sheet.name === this.sheetOrder[index]?.name)) return;
+    this.sheetOrder = next;
+    this.dependencies.setSheetOrder(next);
+    this.calculationContextGeneration += 1;
+    this.markCalculationStateChanged();
   }
 
   getNumericContext(): ExcelNumericContext {

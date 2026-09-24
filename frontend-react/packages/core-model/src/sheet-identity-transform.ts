@@ -19,6 +19,7 @@ import type {
   HyperlinkTarget,
 } from './domain';
 import type { PivotModel, PivotSource } from './pivot';
+import type { StructuralTransformResult } from './structural-transform';
 
 export type SheetIdentityTransformKind = 'rename' | 'duplicate' | 'delete';
 
@@ -53,10 +54,19 @@ export class SheetIdentityTransformError extends Error {
   }
 }
 
+export class SheetIdentityTransformInvariantError extends Error {
+  readonly code = 'SHEET_IDENTITY_TRANSFORM_INVARIANT';
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'SheetIdentityTransformInvariantError';
+  }
+}
+
 export interface SheetIdentityTransformPlan {
   readonly spec: Readonly<SheetIdentityTransformSpec>;
   readonly invalidations: readonly SheetReferenceInvalidation[];
-  apply(): void;
+  apply(): StructuralTransformResult | undefined;
 }
 
 type FormulaChange = {
@@ -116,8 +126,13 @@ function mapFormulaReference(
   return mapFormula(formula, oldName, newName, participant);
 }
 
-function collectFormulaChanges(workbook: WorkbookModel, oldName: string, newName: string): FormulaChange[] {
+function collectFormulaChanges(
+  workbook: WorkbookModel,
+  oldName: string,
+  newName: string,
+): { changes: FormulaChange[]; requiresCalculationContextRebuild: boolean } {
   const changes: FormulaChange[] = [];
+  let requiresCalculationContextRebuild = false;
   for (const sheet of workbook.getSheets()) {
     sheet.cells.forEach((cell, row, column) => {
       const hasBarcodeFormula = cell.presentation?.kind === 'barcode' && cell.presentation.source.kind === 'formula';
@@ -125,21 +140,30 @@ function collectFormulaChanges(workbook: WorkbookModel, oldName: string, newName
       const participant = `cell:${sheet.id}!${row},${column}`;
       const change: FormulaChange = { sheetId: sheet.id, row, column };
       if (cell.formula) {
+        if (formulaReferencesSheet(cell.formula, newName, participant, sheet.id)) {
+          requiresCalculationContextRebuild = true;
+        }
         const formula = mapFormula(cell.formula, oldName, newName, participant);
         if (formula !== cell.formula) change.formula = { before: cell.formula, after: formula };
       }
       if (cell.formulaMetadata?.sourceFormula) {
+        if (formulaReferencesSheet(cell.formulaMetadata.sourceFormula, newName, `${participant}.sourceFormula`, sheet.id)) {
+          requiresCalculationContextRebuild = true;
+        }
         const sourceFormula = mapFormulaReference(cell.formulaMetadata.sourceFormula, oldName, newName, `${participant}.sourceFormula`, sheet.id, cell.formulaMetadata.preservedOnly);
         if (sourceFormula !== cell.formulaMetadata.sourceFormula) change.sourceFormula = { before: cell.formulaMetadata.sourceFormula, after: sourceFormula };
       }
       if (cell.presentation?.kind === 'barcode' && cell.presentation.source.kind === 'formula') {
+        if (formulaReferencesSheet(cell.presentation.source.formula, newName, `${participant}.barcode`, sheet.id)) {
+          requiresCalculationContextRebuild = true;
+        }
         const formula = mapFormulaReference(cell.presentation.source.formula, oldName, newName, `${participant}.barcode`, sheet.id);
         if (formula !== cell.presentation.source.formula) change.barcodeFormula = { before: cell.presentation.source.formula, after: formula };
       }
       if (change.formula || change.sourceFormula || change.barcodeFormula) changes.push(change);
     });
   }
-  return changes;
+  return { changes, requiresCalculationContextRebuild };
 }
 
 function transformDefinedNames(workbook: WorkbookModel, oldName: string, newName: string): DefinedNameModel[] {
@@ -582,7 +606,18 @@ export function planSheetIdentityTransform(workbook: WorkbookModel, input: Sheet
     const targetName = spec.targetName?.trim();
     if (!targetName) throw new SheetIdentityTransformError('Sheet rename requires a non-empty targetName');
     const sourceName = source.name;
-    const formulaChanges = targetName === sourceName ? [] : collectFormulaChanges(workbook, sourceName, targetName);
+    const formulaChangePlan = targetName === sourceName
+      ? { changes: [], requiresCalculationContextRebuild: false }
+      : collectFormulaChanges(workbook, sourceName, targetName);
+    const formulaChanges = formulaChangePlan.changes;
+    const definedNameResolvesToRenamedSheet = targetName !== sourceName
+      && workbook.definedNameModels.some((entry) =>
+        formulaReferencesSheet(
+          entry.formula,
+          targetName,
+          `defined-name:${entry.name}`,
+          entry.sheetId,
+        ));
     const definedNames = targetName === sourceName ? workbook.definedNameModels.map((entry) => structuredClone(entry)) : transformDefinedNames(workbook, sourceName, targetName);
     const conditionalFormatChanges = new Map(workbook.getSheets().map((sheet) => [sheet.id, targetName === sourceName ? structuredClone(sheet.conditionalFormats) : sheet.conditionalFormats.map((rule) => rewriteRuleFormulas(rule, sourceName, targetName))] as const));
     const dataValidationChanges = new Map(workbook.getSheets().map((sheet) => [sheet.id, targetName === sourceName ? structuredClone(sheet.dataValidations) : sheet.dataValidations.map((rule) => rewriteRuleFormulas(rule, sourceName, targetName))] as const));
@@ -649,6 +684,20 @@ export function planSheetIdentityTransform(workbook: WorkbookModel, input: Sheet
         for (const change of dataViewChanges) workbook.dataModel.views.set(change.id, change.view);
         for (const template of cellStyleTemplateChanges) workbook.cellStyleTemplates.set(template.id, template);
         for (const change of drawingPayloadChanges) workbook.getSheet(change.sheetId).drawingPayloads.set(change.payloadId, change.payload);
+        return {
+          kind: 'structural-transform',
+          removedCells: [],
+          clearInputRanges: [],
+          populateInputRanges: [],
+          rewrittenFormulaOwners: formulaOwners.map(({ change }) => ({
+            sheetId: change.sheetId,
+            row: change.row,
+            column: change.column,
+          })),
+          ...(formulaChangePlan.requiresCalculationContextRebuild || definedNameResolvesToRenamedSheet
+            ? { requiresCalculationContextRebuild: true }
+            : {}),
+        };
       },
     };
   }

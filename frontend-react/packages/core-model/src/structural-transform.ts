@@ -24,6 +24,8 @@ export interface StructuralTransformResult {
   readonly populateInputRanges: readonly RangeRef[];
   /** Formula-reference owners rewritten outside the cell ranges above. */
   readonly rewrittenFormulaOwners: readonly StructuralReferenceOwnerAddress[];
+  /** A caller must rebuild calculation context when incremental owner updates cannot resolve the new identity. */
+  readonly requiresCalculationContextRebuild?: boolean;
 }
 
 export interface StructuralReferenceOwnerAddress {

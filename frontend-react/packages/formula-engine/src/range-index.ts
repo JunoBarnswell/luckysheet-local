@@ -46,6 +46,10 @@ export class RangeIndex {
     this.referenceIndex = new ReferenceIndex(sheetOrder);
   }
 
+  setSheetOrder(sheetOrder: readonly FormulaSheetIdentity[]): void {
+    this.referenceIndex.setSheetOrder(sheetOrder);
+  }
+
   set(owner: CellAddress, dependencies: readonly FormulaDependency[], invalidFormula = false): void {
     assertCellAddress(owner);
     const normalizedDependencies = deduplicateDependencies(dependencies);

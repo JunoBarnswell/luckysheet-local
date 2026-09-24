@@ -68,7 +68,11 @@ export class ReferenceIndex {
   private readonly sheets = new Map<string, Map<Axis, AxisTrees>>();
   private readonly ownerPositions = new Map<string, IntervalNode>();
 
-  constructor(private readonly sheetOrder: readonly FormulaSheetIdentity[] = []) {}
+  constructor(private sheetOrder: readonly FormulaSheetIdentity[] = []) {}
+
+  setSheetOrder(sheetOrder: readonly FormulaSheetIdentity[]): void {
+    this.sheetOrder = sheetOrder;
+  }
 
   set(owner: CellAddress, dependencies: readonly FormulaDependency[], sourceId = 'formula'): void {
     assertCellAddress(owner);

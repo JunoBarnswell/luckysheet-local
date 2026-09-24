@@ -374,7 +374,6 @@ const DIRECT_CELL_WRITE_MUTATIONS = new Set([
 /** These operations change the dependency address space, not just cell inputs. */
 const CALCULATION_CONTEXT_REBUILDS = new Set([
   'sheet.reordered',
-  'sheet.rename',
   'sheet.remove',
   'sheet.restore',
   'sheet.add',
@@ -944,8 +943,10 @@ export function attachCoreListeners(runtime: SpreadsheetRuntime): void {
       if (runtime.disposed) return;
       let structuralRoots: readonly CellAddressInput[] | undefined;
       const structuralEffect = isStructuralTransformResult(appliedEffect);
+      const rebuildsCalculationContext = CALCULATION_CONTEXT_REBUILDS.has(mutation.id)
+        || structuralEffect && appliedEffect.requiresCalculationContextRebuild === true;
       const changesVisibilityProjection = VISIBILITY_MUTATIONS.has(mutation.id)
-        || CALCULATION_CONTEXT_REBUILDS.has(mutation.id)
+        || rebuildsCalculationContext
         || structuralEffect
         || mutationTouchesFilterCriteria(runtime.model, mutation.affectedRanges);
       if (changesVisibilityProjection) runtime.rowVisibilityResolver.invalidate();
@@ -954,12 +955,17 @@ export function attachCoreListeners(runtime: SpreadsheetRuntime): void {
         if (mode !== 'automatic' && mode !== 'manual' && mode !== 'partial') throw new Error('Workbook calculation mode mutation is invalid');
         runtime.formula.setRecalculationMode(mode);
       }
-      if (CALCULATION_CONTEXT_REBUILDS.has(mutation.id)) {
-        // Worksheet identity changes still require a full address-space
-        // refresh; structural transforms carry exact calculation deltas.
+      if (rebuildsCalculationContext) {
+        // Add/remove/reorder and ambiguous rename references need a full
+        // address-space refresh; exact rename/structural deltas stay incremental.
         rebuildFormulaCalculation(runtime);
         runtime.formula.notifyVisibilityChanged();
       } else if (structuralEffect) {
+        if (mutation.id === 'sheet.rename') {
+          runtime.formula.updateSheetNames(
+            runtime.model.sheetOrder.map((id) => ({ id, name: runtime.model.getSheet(id).name })),
+          );
+        }
         structuralRoots = synchronizeStructuralMutation(runtime, mutation, appliedEffect);
         runtime.formula.notifyVisibilityChanged();
         structuralRoots = [...new Map([
@@ -973,7 +979,7 @@ export function attachCoreListeners(runtime: SpreadsheetRuntime): void {
           syncWorkbookSheetTables(runtime.formula, runtime.model, false);
         }
       }
-      if (changesVisibilityProjection && !CALCULATION_CONTEXT_REBUILDS.has(mutation.id) && !structuralEffect) {
+      if (changesVisibilityProjection && !rebuildsCalculationContext && !structuralEffect) {
         runtime.formula.notifyVisibilityChanged();
       }
       // CommandRuntime invokes listeners after the mutation handler.  Throwing
@@ -996,13 +1002,13 @@ export function attachCoreListeners(runtime: SpreadsheetRuntime): void {
       }
       if (FORMULA_SYNC_MUTATIONS.has(mutation.id)) {
         const isDirectCellWrite = DIRECT_CELL_WRITE_MUTATIONS.has(mutation.id);
-        const roots = CALCULATION_CONTEXT_REBUILDS.has(mutation.id)
+        const roots = rebuildsCalculationContext
           ? undefined
           : structuralRoots
             ?? (isDirectCellWrite ? synchronizeCellMutation(runtime.formula, runtime.model, mutation) : undefined)
             ?? (changesVisibilityProjection ? runtime.formula.getPendingRecalculationRoots() : undefined);
         const automatic = runtime.formula.getRecalculationMode() === 'automatic';
-        if (automatic || changesVisibilityProjection || !isDirectCellWrite || CALCULATION_CONTEXT_REBUILDS.has(mutation.id)) {
+        if (automatic || changesVisibilityProjection || !isDirectCellWrite || rebuildsCalculationContext) {
           void scheduleFormulaRecalculation(
             runtime,
             VISIBILITY_MUTATIONS.has(mutation.id),
