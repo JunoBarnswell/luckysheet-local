@@ -80,6 +80,7 @@ export function registerSheetTableCommands(runtime: CommandRuntime): void {
       schema: { name: 'SheetTableModel', validate: isSheetTable },
       permission: { capability: 'sheet.table.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: tableRange, mode: 'exact' },
+      historyRebase: { kind: 'invalidate', reason: 'sheet table geometry and structured references have no canonical history transform' },
       inverseIds: ['sheetTable.remove'],
     },
   });
@@ -114,6 +115,7 @@ export function registerSheetTableCommands(runtime: CommandRuntime): void {
       schema: { name: 'SheetTableRemove', validate: isSheetTableRemove },
       permission: { capability: 'sheet.table.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: removedTableRange, mode: 'exact' },
+      historyRebase: { kind: 'invalidate', reason: 'sheet table geometry and structured references have no canonical history transform' },
       inverseIds: ['sheetTable.add'],
     },
   });
@@ -136,6 +138,7 @@ export function registerSheetTableCommands(runtime: CommandRuntime): void {
       schema: { name: 'SheetTableModel', validate: isSheetTable },
       permission: { capability: 'sheet.table.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: tableRange, mode: 'exact' },
+      historyRebase: { kind: 'invalidate', reason: 'sheet table geometry and structured references have no canonical history transform' },
       inverseIds: ['sheetTable.update'],
     },
   });

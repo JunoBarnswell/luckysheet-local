@@ -216,6 +216,7 @@ test('remote structural history resolves formula sheet names before colliding ID
     },
     permission: { capability: 'test.row.write' },
     affectedRanges: { resolve: () => [] },
+    historyRebase: { kind: 'axis', axis: 'row', direction: 1 },
     inversePolicy: { allowedMutationIds: ['rows.deleted'], minCount: 1 },
   } as const;
   runtime.registry.registerMutation({
@@ -231,7 +232,11 @@ test('remote structural history resolves formula sheet names before colliding ID
   runtime.registry.registerMutation({
     id: 'rows.deleted',
     handler: () => undefined,
-    metadata: { ...rowMutationMetadata, inversePolicy: { allowedMutationIds: ['rows.inserted'], minCount: 1 } },
+    metadata: {
+      ...rowMutationMetadata,
+      historyRebase: { kind: 'axis', axis: 'row', direction: -1 },
+      inversePolicy: { allowedMutationIds: ['rows.inserted'], minCount: 1 },
+    },
   });
   runtime.registry.registerCommand({
     id: 'cell.set',

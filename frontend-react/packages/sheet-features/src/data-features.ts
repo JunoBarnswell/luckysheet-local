@@ -1779,6 +1779,7 @@ export function registerDataToolCommands(runtime: CommandRuntime): void {
       schema: { name: 'RowsPermuted', validate: isRowsPermutedMutation },
       permission: { capability: 'sheet.sort.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: rowsPermutedAffectedRanges, mode: 'exact' },
+      historyRebase: { kind: 'invalidate', reason: 'row permutations have no canonical history transform' },
       inverseIds: ['rows.permuted'],
     },
   });

@@ -82,6 +82,65 @@ describe('WorkbookSession collaboration integration', () => {
     assert.equal(runtime.undo(), false);
   });
 
+  it('invalidates overlapping local undo after a committed remote cell write', () => {
+    const workbook = new WorkbookModel('wb-collab-history-overlap', 'Collaboration history overlap');
+    const runtime = new CommandRuntime(workbook);
+    registerSpreadsheetFeatures(runtime, new DrawingRuntime());
+    const session = new CollaborationSession(runtime);
+    const sheetId = workbook.primarySheetId;
+    const range = { sheetId, startRow: 2, endRow: 2, startColumn: 3, endColumn: 3 };
+    runtime.execute('sheet.cell.set', { sheetId, row: 2, column: 3, value: { value: 'local' } });
+    runtime.execute('sheet.cell.set', { sheetId, row: 8, column: 8, value: { value: 'unrelated-local' } });
+
+    session.applyRemote({
+      schema: 'OperationEnvelope', clientSessionId: 'fixture-session', operationId: 'remote-overlap',
+      unitId: workbook.unitId, actorId: 'actor-2', origin: 'client', clientSequence: 1, baseRevision: 0,
+      revision: 1, committedAt: new Date().toISOString(), createdAt: new Date().toISOString(),
+      mutations: [{
+        id: 'cell.set', sheetId,
+        params: createCellSetMutationParams(workbook.getSheet(sheetId), {
+          sheetId, row: 2, column: 3, value: { value: 'remote' },
+        }, 'external-sync'),
+        affectedRanges: [range],
+      }],
+    });
+
+    assert.equal(workbook.getSheet(sheetId).cells.get(2, 3)?.value, 'remote');
+    assert.equal(runtime.getHistoryDepth().undo, 1);
+    assert.equal(runtime.undo(), true);
+    assert.equal(workbook.getSheet(sheetId).cells.get(2, 3)?.value, 'remote');
+    assert.equal(runtime.undo(), false);
+    assert.equal(runtime.getInvalidHistoryEntries()[0]?.status, 'invalid');
+  });
+
+  it('invalidates local undo after a committed range move without a canonical history transform', () => {
+    const workbook = new WorkbookModel('wb-collab-history-move', 'Collaboration history move');
+    const runtime = new CommandRuntime(workbook);
+    registerSpreadsheetFeatures(runtime, new DrawingRuntime());
+    const session = new CollaborationSession(runtime);
+    const sheet = workbook.getSheet(workbook.primarySheetId);
+    const sourceRange = { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 };
+    const targetRange = { sheetId: sheet.id, startRow: 1, endRow: 1, startColumn: 1, endColumn: 1 };
+    sheet.cells.set(0, 0, { value: 'source' });
+    sheet.cells.set(1, 1, { value: 'previous-target' });
+    runtime.execute('sheet.cell.set', { sheetId: sheet.id, row: 1, column: 1, value: { value: 'local' } });
+
+    session.applyRemote({
+      schema: 'OperationEnvelope', clientSessionId: 'fixture-session', operationId: 'remote-range-move',
+      unitId: workbook.unitId, actorId: 'actor-2', origin: 'client', clientSequence: 1, baseRevision: 0,
+      revision: 1, committedAt: new Date().toISOString(), createdAt: new Date().toISOString(),
+      mutations: [{
+        id: 'range.move', sheetId: sheet.id,
+        params: { sheetId: sheet.id, sourceRange, targetOrigin: { row: 1, column: 1 } },
+        affectedRanges: [sourceRange, targetRange],
+      }],
+    });
+
+    assert.equal(sheet.cells.get(1, 1)?.value, 'source');
+    assert.equal(runtime.undo(), false);
+    assert.equal(runtime.getInvalidHistoryEntries()[0]?.status, 'invalid');
+  });
+
   it('replays a canonical bulk row visibility mutation without splitting history semantics', () => {
     const workbook = new WorkbookModel('wb-rows-visibility-replay', 'Rows visibility replay');
     const runtime = new CommandRuntime(workbook);

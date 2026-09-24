@@ -1054,6 +1054,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       schema: { name: 'AddSheet', validate: isAddSheetMutation },
       permission: { capability: 'sheet.structure.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: () => [], mode: 'exact' },
+      historyRebase: { kind: 'invalidate', reason: 'worksheet identity changes have no canonical history transform' },
       inverseIds: ['sheet.remove'],
     },
   });
@@ -1067,6 +1068,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       schema: { name: 'RemoveSheet', validate: isSheetIdMutation },
       permission: { capability: 'sheet.structure.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: () => [], mode: 'exact' },
+      historyRebase: { kind: 'invalidate', reason: 'worksheet identity changes have no canonical history transform' },
       inverseIds: ['sheet.restore'],
     },
   });
@@ -1081,6 +1083,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       schema: { name: 'RenameSheet', validate: isRenameSheetMutation },
       permission: { capability: 'sheet.structure.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: () => [], mode: 'exact' },
+      historyRebase: { kind: 'invalidate', reason: 'worksheet identity changes have no canonical history transform' },
       inverseIds: ['sheet.rename'],
     },
   });
@@ -1094,6 +1097,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       schema: { name: 'RestoreSheet', validate: isSheetRestoreMutation },
       permission: { capability: 'sheet.structure.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: () => [], mode: 'exact' },
+      historyRebase: { kind: 'invalidate', reason: 'worksheet identity changes have no canonical history transform' },
       inverseIds: ['sheet.remove'],
     },
   });
@@ -2173,6 +2177,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       schema: { name: 'RowsInserted', validate: isSheetAtCountMutation },
       permission: { capability: 'sheet.structure.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: structuralAffectedRanges, mode: 'declared' },
+      historyRebase: { kind: 'axis', axis: 'row', direction: 1 },
       inverseIds: ['rows.deleted'],
     },
   });
@@ -2187,6 +2192,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       schema: { name: 'RowsDeleted', validate: isSheetAtCountMutation },
       permission: { capability: 'sheet.structure.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: structuralAffectedRanges, mode: 'declared' },
+      historyRebase: { kind: 'axis', axis: 'row', direction: -1 },
       inverseIds: ['rows.inserted', 'cell.restore'],
     },
   });
@@ -2201,6 +2207,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       schema: { name: 'ColumnsInserted', validate: isSheetAtCountMutation },
       permission: { capability: 'sheet.structure.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: columnStructuralAffectedRanges, mode: 'declared' },
+      historyRebase: { kind: 'axis', axis: 'column', direction: 1 },
       inverseIds: ['columns.deleted'],
     },
   });
@@ -2215,6 +2222,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       schema: { name: 'ColumnsDeleted', validate: isSheetAtCountMutation },
       permission: { capability: 'sheet.structure.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: columnStructuralAffectedRanges, mode: 'declared' },
+      historyRebase: { kind: 'axis', axis: 'column', direction: -1 },
       inverseIds: ['columns.inserted', 'cell.restore'],
     },
   });

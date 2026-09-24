@@ -59,6 +59,8 @@ export interface MutationRegistrationMetadata<P = unknown> {
   readonly inversePolicy?: MutationInversePolicy;
   /** Explicit inverse allow-list accepted by the registry and normalized to `inversePolicy`. */
   readonly inverseIds?: readonly string[];
+  /** How remote application transforms or invalidates existing local undo/redo entries. */
+  readonly historyRebase?: MutationHistoryRebasePolicy;
 }
 
 /** Short public name for feature packages that expose a mutation contract. */
@@ -69,6 +71,10 @@ export interface MutationInversePolicy {
   readonly minCount: number;
   readonly maxCount?: number;
 }
+
+export type MutationHistoryRebasePolicy =
+  | { readonly kind: 'axis'; readonly axis: 'row' | 'column'; readonly direction: 1 | -1 }
+  | { readonly kind: 'invalidate'; readonly reason: string; readonly when?: (mutation: MutationInfo) => boolean };
 
 export interface CommandResult {
   operationId: string;
@@ -252,6 +258,9 @@ function validateRegistrationMetadata(
     issues.push(issue('missing-affected-ranges', id, `Mutation ${id} must declare an affected-range resolver`));
   } else if (affectedRanges.mode !== undefined && affectedRanges.mode !== 'exact' && affectedRanges.mode !== 'declared') {
     issues.push(issue('invalid-registration', id, `Mutation ${id} declares an invalid affected-range mode`));
+  }
+  if (!isValidHistoryRebasePolicy(metadata.historyRebase)) {
+    issues.push(issue('invalid-registration', id, `Mutation ${id} declares an invalid history rebase policy`));
   }
   const inversePolicy = metadata.inversePolicy;
   const inverseIds = metadata.inverseIds;
@@ -542,6 +551,19 @@ interface StructuralDelta {
   readonly sheetId: string;
 }
 
+function isValidHistoryRebasePolicy(value: unknown): value is MutationHistoryRebasePolicy {
+  if (value === undefined) return true;
+  if (!isRecord(value)) return false;
+  if (value.kind === 'axis') {
+    return (value.axis === 'row' || value.axis === 'column')
+      && (value.direction === 1 || value.direction === -1);
+  }
+  return value.kind === 'invalidate'
+    && typeof value.reason === 'string'
+    && value.reason.trim().length > 0
+    && (value.when === undefined || typeof value.when === 'function');
+}
+
 function buildStructuralReferenceIndex(workbook: WorkbookModel): StructuralReferenceOwnerIndex {
   const sheetOrder = workbook.sheetOrder.map((id) => ({ id, name: workbook.getSheet(id).name }));
   const index = new RangeIndex(sheetOrder);
@@ -582,15 +604,12 @@ interface InvalidHistoryTransform {
 
 type HistoryTransformResult = TransformedHistoryEntry | InvalidHistoryTransform;
 
-function structuralDelta(mutation: MutationInfo): StructuralDelta | undefined {
-  const axis = mutation.id.includes('column') ? 'column' : mutation.id.includes('row') ? 'row' : undefined;
-  if (!axis) return undefined;
-  const direction = mutation.id.includes('insert') ? 1 : mutation.id.includes('delete') ? -1 : undefined;
-  if (!direction || !isRecord(mutation.params)) return undefined;
+function structuralDelta(mutation: MutationInfo, policy: MutationHistoryRebasePolicy | undefined): StructuralDelta | undefined {
+  if (policy?.kind !== 'axis' || !isRecord(mutation.params)) return undefined;
   const at = mutation.params.at;
   const count = mutation.params.count;
   if (typeof at !== 'number' || typeof count !== 'number' || !Number.isSafeInteger(at) || !Number.isSafeInteger(count) || at < 0 || count < 1) return undefined;
-  return { axis, at, count, direction, sheetId: mutation.sheetId };
+  return { axis: policy.axis, at, count, direction: policy.direction, sheetId: mutation.sheetId };
 }
 
 function transformIndex(index: number, delta: StructuralDelta): number | undefined {
@@ -753,14 +772,35 @@ function transformHistoryEntry(
   entry: HistoryEntry,
   remote: MutationInfo,
   sheetOrder: readonly { readonly id: string; readonly name: string }[],
+  policy: MutationHistoryRebasePolicy | undefined,
 ): HistoryTransformResult {
-  const delta = structuralDelta(remote);
-  if (!delta) return {
-    ok: true,
-    inversePlan: [...entry.inversePlan],
-    forwardMutations: [...entry.forwardMutations],
-    affectedRanges: [...entry.affectedRanges],
+  if (policy?.kind === 'invalidate' && (!policy.when || policy.when(remote))) return {
+    ok: false,
+    reason: `History ${entry.operationId} cannot be safely rebased across ${remote.id}: ${policy.reason}`,
   };
+  const activePolicy = policy?.kind === 'axis' ? policy : undefined;
+  const delta = structuralDelta(remote, activePolicy);
+  if (activePolicy?.kind === 'axis' && !delta) return {
+    ok: false,
+    reason: `History ${entry.operationId} cannot be safely rebased across ${remote.id}: its axis transform payload is invalid`,
+  };
+  if (!delta) {
+    const overlapsRemote = entry.affectedRanges.some((left) => remote.affectedRanges.some((right) => (
+      left.sheetId === right.sheetId
+      && left.startRow <= right.endRow && left.endRow >= right.startRow
+      && left.startColumn <= right.endColumn && left.endColumn >= right.startColumn
+    )));
+    if (overlapsRemote) return {
+      ok: false,
+      reason: `History ${entry.operationId} overlaps remote mutation ${remote.id} and has no canonical rebase`,
+    };
+    return {
+      ok: true,
+      inversePlan: [...entry.inversePlan],
+      forwardMutations: [...entry.forwardMutations],
+      affectedRanges: [...entry.affectedRanges],
+    };
+  }
   const inversePlan: MutationInfo[] = [];
   const forwardMutations: MutationInfo[] = [];
   for (const mutation of entry.inversePlan) {
@@ -1083,10 +1123,11 @@ export class CommandRuntime {
   private transformHistoryAgainstRemote(remote: MutationInfo): void {
     const stacks = [this.undoStack, this.redoStack];
     const sheetOrder = this.workbook.sheetOrder.map((id) => ({ id, name: this.workbook.getSheet(id).name }));
+    const policy = this.registry.getMutationMetadata(remote.id).historyRebase;
     for (const stack of stacks) {
       for (let index = stack.length - 1; index >= 0; index -= 1) {
         const entry = stack[index]!;
-        const transformed = transformHistoryEntry(entry, remote, sheetOrder);
+        const transformed = transformHistoryEntry(entry, remote, sheetOrder, policy);
         if (!transformed.ok) {
           stack.splice(index, 1);
           entry.status = 'invalid';
