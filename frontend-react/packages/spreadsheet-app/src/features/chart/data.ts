@@ -564,14 +564,19 @@ export function resolveStructuredChartBindings(payload: ChartDrawingPayload, tab
   const hideColumns = hiddenData === 'hideColumns';
   const visible = (field: { ordinal: number } | undefined): boolean => Boolean(field && (!hideColumns || !containsHidden(sheet.hiddenColumns, sourceRange.startColumn + field.ordinal)));
   const categoryBinding = source.bindings.category[0];
-  const categoryField = categoryBinding && visible(fieldById.get(categoryBinding.fieldId)) ? fieldById.get(categoryBinding.fieldId) : undefined;
+  const categoryField = categoryBinding ? fieldById.get(categoryBinding.fieldId) : undefined;
+  if (categoryBinding && !categoryField) throw new Error(`INVALID_CHART_SOURCE: binding field not found: ${categoryBinding.fieldId}`);
+  if (categoryBinding && categoryBinding.aggregate !== 'none') throw new Error('INVALID_CHART_SOURCE: category bindings cannot aggregate values');
+  if (categoryBinding?.sort !== undefined) throw new Error('UNSUPPORTED_FEATURE: category binding sorting is not supported by the canonical renderer');
+  if (categoryField && !visible(categoryField)) throw new Error('INVALID_CHART_SOURCE: the bound category field is hidden by the chart visibility policy');
   const valueBindings = source.bindings.values.filter((binding) => visible(fieldById.get(binding.fieldId)));
   if (!valueBindings.length) throw new Error(`Chart source ${source.kind} has no visible numeric value bindings`);
   const rows: Array<{ category: string; categoryKey: string; values: Map<string, number[]> }> = [];
   const buckets = new Map<string, Array<{ category: string; categoryKey: string; values: Map<string, number[]> }>>();
+  let categoryOrdinal = 0;
   for (let row = sourceRange.startRow + 1; row <= sourceRange.endRow; row += 1) {
     if (hideRows && containsHidden(sheet.hiddenRows, row)) continue;
-    const rawCategory = categoryField ? sheet.getCell(row, sourceRange.startColumn + categoryField.ordinal)?.value ?? '' : row - sourceRange.startRow;
+    const rawCategory = categoryField ? sheet.getCell(row, sourceRange.startColumn + categoryField.ordinal)?.value ?? '' : ++categoryOrdinal;
     const category = String(rawCategory);
     const categoryKey = `${typeof rawCategory}:${JSON.stringify(rawCategory)}`;
     const byField = new Map<string, number[]>();
@@ -668,18 +673,22 @@ export function resolveSparklineSeries(
   const sheet = getSheet(source.sheetId);
   if (!sheet) throw new Error(`Unknown sparkline source sheet: ${source.sheetId}`);
   const orientation = group?.dataOrientation ?? sparkline.dataOrientation ?? 'rows';
+  const hideCells = (group?.hiddenCells ?? sparkline.hiddenCells ?? 'show') === 'hide';
+  const visibleColumns: number[] = [];
+  for (let column = source.startColumn; column <= source.endColumn; column += 1) {
+    if (!hideCells || !containsHidden(sheet.hiddenColumns, column)) visibleColumns.push(column);
+  }
   const rows: Array<Array<PivotScalar>> = [];
   for (let row = source.startRow; row <= source.endRow; row += 1) {
-    if ((group?.hiddenCells ?? sparkline.hiddenCells ?? 'show') === 'hide' && containsHidden(sheet.hiddenRows, row)) continue;
+    if (hideCells && containsHidden(sheet.hiddenRows, row)) continue;
     const values: PivotScalar[] = [];
-    for (let column = source.startColumn; column <= source.endColumn; column += 1) {
-      if ((group?.hiddenCells ?? sparkline.hiddenCells ?? 'show') === 'hide' && containsHidden(sheet.hiddenColumns, column)) continue;
+    for (const column of visibleColumns) {
       values.push(scalarValue(sheet, row, column));
     }
     rows.push(values);
   }
   const values = orientation === 'columns'
-    ? Array.from({ length: Math.max(0, source.endColumn - source.startColumn + 1) }, (_, column) => rows.map((row) => row[column] ?? null)).flat()
+    ? visibleColumns.map((_column, column) => rows.map((row) => row[column] ?? null)).flat()
     : rows.flat();
   const emptyMode = group?.emptyCells ?? sparkline.emptyCells ?? 'gap';
   const resolved = values.map((value) => {

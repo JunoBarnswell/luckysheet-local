@@ -41,8 +41,8 @@ function put(
   (cells[String(row)] ??= {})[String(column)] = value;
 }
 
-test('large data import is gated strictly above the non-empty cell threshold', async () => {
-  assert.equal(qualifiesForDataSourceImport(100_000), false);
+test('large data import follows the canonical inclusive non-empty cell threshold', async () => {
+  assert.equal(qualifiesForDataSourceImport(100_000), true);
   assert.equal(qualifiesForDataSourceImport(100_001), true);
 
   const cells: Record<string, Record<string, CellData>> = {
