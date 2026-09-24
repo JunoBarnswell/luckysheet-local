@@ -11,9 +11,11 @@ import type { ExcelNumericContext } from './numeric';
 import type { WorkbookCollationContext } from './collation';
 import type { CanonicalExcelDateParts, ExcelDateSystem } from './excel-date';
 import { createReferenceCursor, type ReferenceFormulaKind, type RowVisibilityResolver } from './reference-cursor';
+import type { FormulaSheetIdentity } from './sheet-reference';
 
 export interface FormulaEvaluationContext {
   readonly currentCell: CellAddress;
+  readonly sheetOrder?: readonly FormulaSheetIdentity[];
   readCell(address: CellAddress): FormulaValue;
   readRange(range: RangeDependency): Iterable<FormulaValue>;
   readRangeMatrix?(range: RangeDependency): ArrayValue;
@@ -125,10 +127,10 @@ function evaluateNode(node: FormulaAst, context: FormulaEvaluationContext, trace
       result = createFormulaError('#REF!', 'Reference was deleted by a structural mutation');
       break;
     case 'cell-reference':
-      result = context.readCell(resolveCellReference(node.reference, context.currentCell));
+      result = context.readCell(resolveCellReference(node.reference, context.currentCell, context.sheetOrder));
       break;
     case 'range-reference':
-      result = { kind: 'range', range: resolveRangeReference(node, context.currentCell) };
+      result = { kind: 'range', range: resolveRangeReference(node, context.currentCell, context.sheetOrder) };
       break;
     case 'whole-column-reference':
     case 'whole-row-reference':
@@ -210,9 +212,9 @@ function evaluateUnary(operator: '+' | '-' | '%' | '@', operand: EvaluationValue
 function evaluateSpillReference(node: SpillReferenceNode, context: FormulaEvaluationContext): EvaluationValue {
   const operand = node.operand;
   const anchor = operand.type === 'cell-reference'
-    ? resolveCellReference(operand.reference, context.currentCell)
+    ? resolveCellReference(operand.reference, context.currentCell, context.sheetOrder)
     : operand.type === 'range-reference'
-      ? resolveRangeReference(operand, context.currentCell).start
+      ? resolveRangeReference(operand, context.currentCell, context.sheetOrder).start
       : undefined;
   if (!anchor) return createFormulaError('#REF!', 'Spill operator expects a cell or range reference');
   context.readCell(anchor);
@@ -404,10 +406,10 @@ function evaluateReferenceFunction(
       if (args.length === 0) return context.currentCell.row + 1;
       const target = args[0]!;
       if (target.type === 'cell-reference') {
-        return resolveCellReference(target.reference, context.currentCell).row + 1;
+        return resolveCellReference(target.reference, context.currentCell, context.sheetOrder).row + 1;
       }
       if (target.type === 'range-reference') {
-        return resolveRangeReference(target, context.currentCell).start.row + 1;
+        return resolveRangeReference(target, context.currentCell, context.sheetOrder).start.row + 1;
       }
       return createFormulaError('#VALUE!', 'ROW expects a reference');
     }
@@ -415,10 +417,10 @@ function evaluateReferenceFunction(
       if (args.length === 0) return context.currentCell.column + 1;
       const target = args[0]!;
       if (target.type === 'cell-reference') {
-        return resolveCellReference(target.reference, context.currentCell).column + 1;
+        return resolveCellReference(target.reference, context.currentCell, context.sheetOrder).column + 1;
       }
       if (target.type === 'range-reference') {
-        return resolveRangeReference(target, context.currentCell).start.column + 1;
+        return resolveRangeReference(target, context.currentCell, context.sheetOrder).start.column + 1;
       }
       return createFormulaError('#VALUE!', 'COLUMN expects a reference');
     }
@@ -463,8 +465,8 @@ function evaluateReferenceFunction(
       for (const candidate of [rows, columns, height, width]) {
         if (typeof candidate !== 'number') return candidate;
       }
-      const anchorRange = base.type === 'range-reference' ? resolveRangeReference(base, context.currentCell) : undefined;
-      const anchorCell = base.type === 'cell-reference' ? resolveCellReference(base.reference, context.currentCell) : anchorRange!.start;
+      const anchorRange = base.type === 'range-reference' ? resolveRangeReference(base, context.currentCell, context.sheetOrder) : undefined;
+      const anchorCell = base.type === 'cell-reference' ? resolveCellReference(base.reference, context.currentCell, context.sheetOrder) : anchorRange!.start;
       const startRow = anchorCell.row + (rows as number);
       const startColumn = anchorCell.column + (columns as number);
       const endRow = startRow + Math.max(1, height as number) - 1;
@@ -544,7 +546,7 @@ function evaluateSjsTable(
 
 function referenceCellAddress(node: FormulaAst, context: FormulaEvaluationContext): CellAddress | undefined {
   if (node.type !== 'cell-reference') return undefined;
-  return resolveCellReference(node.reference, context.currentCell);
+  return resolveCellReference(node.reference, context.currentCell, context.sheetOrder);
 }
 
 function referenceValues(node: FormulaAst, context: FormulaEvaluationContext, trace?: EvaluationTraceSink): FormulaValue[] | FormulaError {

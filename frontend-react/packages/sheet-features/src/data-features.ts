@@ -613,6 +613,7 @@ function evaluateCfFormula(formula: string, sheet: WorksheetModel, row: number, 
     const ast = anchor ? offsetAst(parsed, row - anchor.row, column - anchor.column) : parsed;
     const result = evaluateFormula(ast, {
       currentCell: { sheetId: sheet.id, row, column },
+      sheetOrder: [{ id: sheet.id, name: sheet.name }],
       readCell: (address): FormulaValue => {
         if (address.sheetId !== sheet.id) return null;
         const target = sheet.cells.get(address.row, address.column);
@@ -1293,6 +1294,7 @@ function evaluateValidationFormula(
     const ast = anchor ? offsetAst(parsed, row - anchor.row, column - anchor.column) : parsed;
     return evaluateFormula(ast, {
       currentCell: { sheetId: sheet.id, row, column },
+      sheetOrder: [{ id: sheet.id, name: sheet.name }],
       readCell: (address): FormulaValue => {
         if (address.sheetId !== sheet.id) return null;
         if (address.row === row && address.column === column && candidate !== undefined) return candidate as FormulaValue;

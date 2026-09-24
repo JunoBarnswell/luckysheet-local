@@ -3,10 +3,12 @@ import { assertCellAddress, cellAddressKey } from './address';
 import { FormulaReferenceError } from './errors';
 import { normalizeRange, type CellDependency, type FormulaDependency, type NameDependency, type RangeDependency } from './range-index';
 import { resolveSheetTableReference, type SheetTableRef } from './sheet-table-resolver';
+import { resolveFormulaSheetId, type FormulaSheetIdentity } from './sheet-reference';
 import { isFormulaError } from './values';
 
 export interface CollectFormulaDependenciesOptions {
   readonly sheetTables?: ReadonlyMap<string, SheetTableRef>;
+  readonly sheetOrder?: readonly FormulaSheetIdentity[];
 }
 
 export function collectFormulaDependencies(
@@ -17,21 +19,30 @@ export function collectFormulaDependencies(
   assertCellAddress(owner);
   const dependencies: FormulaDependency[] = [];
   const seen = new Set<string>();
-  visit(ast, owner, dependencies, seen, options.sheetTables);
+  visit(ast, owner, dependencies, seen, options.sheetTables, options.sheetOrder);
   return dependencies;
 }
 
-export function resolveCellReference(reference: ParsedCellReference, currentCell: CellAddress): CellAddress {
+export function resolveCellReference(
+  reference: ParsedCellReference,
+  currentCell: CellAddress,
+  sheetOrder?: readonly FormulaSheetIdentity[],
+): CellAddress {
   const sheetId = reference.sheetId ?? currentCell.sheetId;
   if (!sheetId) throw new FormulaReferenceError('Cell reference is missing a worksheet');
-  return { sheetId, row: reference.row, column: reference.column };
+  return { sheetId: resolveFormulaSheetId(reference.sheetId, currentCell.sheetId, sheetOrder ?? []), row: reference.row, column: reference.column };
 }
 
-export function resolveRangeReference(node: RangeReferenceNode, currentCell: CellAddress): RangeDependency {
-  const start = resolveCellReference(node.start.reference, currentCell);
+export function resolveRangeReference(
+  node: RangeReferenceNode,
+  currentCell: CellAddress,
+  sheetOrder?: readonly FormulaSheetIdentity[],
+): RangeDependency {
+  const start = resolveCellReference(node.start.reference, currentCell, sheetOrder);
   const end = resolveCellReference(
     node.end.reference,
     node.start.reference.sheetId === undefined ? currentCell : start,
+    sheetOrder,
   );
   return normalizeRange(start, end);
 }
@@ -42,15 +53,16 @@ function visit(
   dependencies: FormulaDependency[],
   seen: Set<string>,
   sheetTables?: ReadonlyMap<string, SheetTableRef>,
+  sheetOrder?: readonly FormulaSheetIdentity[],
 ): void {
   switch (node.type) {
     case 'cell-reference': {
-      const dependency: CellDependency = { kind: 'cell', address: resolveCellReference(node.reference, owner) };
+      const dependency: CellDependency = { kind: 'cell', address: resolveCellReference(node.reference, owner, sheetOrder) };
       addDependency(dependency, dependencies, seen);
       return;
     }
     case 'range-reference': {
-      addDependency(resolveRangeReference(node, owner), dependencies, seen);
+      addDependency(resolveRangeReference(node, owner, sheetOrder), dependencies, seen);
       return;
     }
     case 'whole-column-reference':
@@ -63,20 +75,20 @@ function visit(
     case 'reference-union':
     case 'reference-intersection':
       addDependency({ kind: 'reference', reference: node }, dependencies, seen);
-      collectNestedTableDependencies(node, owner, dependencies, seen, sheetTables);
+      collectNestedTableDependencies(node, owner, dependencies, seen, sheetTables, sheetOrder);
       return;
     case 'unary-expression':
-      visit(node.operand, owner, dependencies, seen, sheetTables);
+      visit(node.operand, owner, dependencies, seen, sheetTables, sheetOrder);
       return;
     case 'spill-reference':
-      visit(node.operand, owner, dependencies, seen, sheetTables);
+      visit(node.operand, owner, dependencies, seen, sheetTables, sheetOrder);
       return;
     case 'binary-expression':
-      visit(node.left, owner, dependencies, seen, sheetTables);
-      visit(node.right, owner, dependencies, seen, sheetTables);
+      visit(node.left, owner, dependencies, seen, sheetTables, sheetOrder);
+      visit(node.right, owner, dependencies, seen, sheetTables, sheetOrder);
       return;
     case 'function-call':
-      for (const argument of node.arguments) visit(argument, owner, dependencies, seen, sheetTables);
+      for (const argument of node.arguments) visit(argument, owner, dependencies, seen, sheetTables, sheetOrder);
       return;
     case 'name-reference': {
       const dependency: NameDependency = { kind: 'name', name: node.name.trim().toUpperCase() };
@@ -123,21 +135,22 @@ function collectNestedTableDependencies(
   dependencies: FormulaDependency[],
   seen: Set<string>,
   sheetTables?: ReadonlyMap<string, SheetTableRef>,
+  sheetOrder?: readonly FormulaSheetIdentity[],
 ): void {
   switch (reference.type) {
     case 'table-reference':
-      visit(reference, owner, dependencies, seen, sheetTables);
+      visit(reference, owner, dependencies, seen, sheetTables, sheetOrder);
       return;
     case 'reference-union':
-      for (const item of reference.references) collectNestedTableDependencies(item, owner, dependencies, seen, sheetTables);
+      for (const item of reference.references) collectNestedTableDependencies(item, owner, dependencies, seen, sheetTables, sheetOrder);
       return;
     case 'reference-intersection':
-      collectNestedTableDependencies(reference.left, owner, dependencies, seen, sheetTables);
-      collectNestedTableDependencies(reference.right, owner, dependencies, seen, sheetTables);
+      collectNestedTableDependencies(reference.left, owner, dependencies, seen, sheetTables, sheetOrder);
+      collectNestedTableDependencies(reference.right, owner, dependencies, seen, sheetTables, sheetOrder);
       return;
     case 'spill-reference':
       if (isFormulaReference(reference.operand)) {
-        collectNestedTableDependencies(reference.operand, owner, dependencies, seen, sheetTables);
+        collectNestedTableDependencies(reference.operand, owner, dependencies, seen, sheetTables, sheetOrder);
       }
       return;
     default:

@@ -14,6 +14,7 @@ import { offsetAst } from './ast-rewrite';
 import { FormulaLexError, FormulaReferenceError, FormulaSyntaxError } from './errors';
 import { parseFormula as parseFormulaSource } from './parser';
 import { RangeIndex, type FormulaDependency, type FormulaSheetIdentity, type RangeDependency } from './range-index';
+import { resolveFormulaSheetId } from './sheet-reference';
 import { createFormulaError, isArrayValue, isFormulaError, type ArrayValue, type FormulaError, type FormulaValue, type ScalarValue } from './values';
 import { normalizeDefinedNameModels, normalizeDefinedNames, parseDefinedNameFormula, resolveDefinedNameSource, type FormulaDefinedName } from './defined-names';
 import { collectNameReferences, collectTableReferences, formulaUsesRowVisibility, formulaUsesVolatile } from './formula-analysis';
@@ -1181,7 +1182,10 @@ export class FormulaEngine {
 
     try {
       const parsed = this.parseFormula(formula);
-      const extractedDependencies = collectFormulaDependencies(parsed, address, { sheetTables: this.sheetTables });
+      const extractedDependencies = collectFormulaDependencies(parsed, address, {
+        sheetTables: this.sheetTables,
+        sheetOrder: this.sheetOrder,
+      });
       const expandedDependencies = this.expandNameDependencies(extractedDependencies, address, new Set<string>());
       this.dependencies.set(address, expandedDependencies);
       ast = parsed;
@@ -1536,6 +1540,7 @@ export class FormulaEngine {
   ): FormulaEvaluationContext {
     return {
         currentCell: cell.address,
+        sheetOrder: this.sheetOrder,
         dateSystem: this.dateSystem,
         canonicalReferenceDate: this.canonicalReferenceDate,
         numericContext: this.numericContext,
@@ -1722,7 +1727,10 @@ export class FormulaEngine {
       const cell = this.cells.get(key);
       if (!cell?.formula || !cell.ast) continue;
       const dependencies = this.expandNameDependencies(
-        collectFormulaDependencies(cell.ast, address, { sheetTables: this.sheetTables }),
+        collectFormulaDependencies(cell.ast, address, {
+          sheetTables: this.sheetTables,
+          sheetOrder: this.sheetOrder,
+        }),
         address,
         new Set<string>(),
       );
@@ -1749,6 +1757,7 @@ export class FormulaEngine {
     try {
       return resolveDefinedNameSource(definition.formula, {
         currentCell,
+        sheetOrder: this.sheetOrder,
         anchor: definition.anchor,
         readCell: (reference) => this.evaluateCell(reference, cache, visiting),
         readRangeMatrix: (range) => this.readRangeMatrix(range, cache, visiting),
@@ -1777,7 +1786,10 @@ export class FormulaEngine {
       const projected = definition.anchor
         ? offsetAst(source, owner.row - definition.anchor.row, owner.column - definition.anchor.column)
         : source;
-      const nested = collectFormulaDependencies(projected, owner, { sheetTables: this.sheetTables });
+      const nested = collectFormulaDependencies(projected, owner, {
+        sheetTables: this.sheetTables,
+        sheetOrder: this.sheetOrder,
+      });
       expanded.push(...this.expandNameDependencies(nested, owner, new Set([...visiting, identity])));
     }
     return expanded;
@@ -1809,7 +1821,7 @@ export class FormulaEngine {
   private resolveReference(reference: FormulaReferenceNode, currentCell: CellAddress): FormulaEvaluationReference | FormulaError {
     switch (reference.type) {
       case 'whole-column-reference': {
-        const sheetId = reference.sheetId ?? currentCell.sheetId;
+        const sheetId = resolveFormulaSheetId(reference.sheetId, currentCell.sheetId, this.sheetOrder);
         const extent = this.spillEnvironments.get(sheetId);
         if (!extent || extent.rowCount < 1) return createFormulaError('#REF!', `Worksheet extent unavailable for ${sheetId}`);
         return {
@@ -1822,7 +1834,7 @@ export class FormulaEngine {
         };
       }
       case 'whole-row-reference': {
-        const sheetId = reference.sheetId ?? currentCell.sheetId;
+        const sheetId = resolveFormulaSheetId(reference.sheetId, currentCell.sheetId, this.sheetOrder);
         const extent = this.spillEnvironments.get(sheetId);
         if (!extent || extent.columnCount < 1) return createFormulaError('#REF!', `Worksheet extent unavailable for ${sheetId}`);
         return {

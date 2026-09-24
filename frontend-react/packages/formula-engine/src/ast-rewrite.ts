@@ -1,4 +1,5 @@
 import type { FormulaAst, ParsedCellReference } from './ast';
+import { formulaSheetReferenceIndex, sameFormulaSheetName } from './sheet-reference';
 
 const MAX_ROW_INDEX = 1_048_575;
 const MAX_COLUMN_INDEX = 16_383;
@@ -79,7 +80,7 @@ export function transformReferenceInterval(
 }
 
 function sameSheet(left: string | undefined, right: string): boolean {
-  return left?.trim().toLowerCase() === right.trim().toLowerCase();
+  return sameFormulaSheetName(left, right);
 }
 
 function referenceTargetsSheet(sheetId: string | undefined, context: StructuralReferenceContext): boolean {
@@ -112,9 +113,7 @@ function sheetReferenceIndex(
   reference: string,
   sheetOrder: readonly { readonly id: string; readonly name: string }[] | undefined,
 ): number {
-  if (!sheetOrder) return -1;
-  const byName = sheetOrder.findIndex((sheet) => sameSheet(sheet.name, reference));
-  return byName >= 0 ? byName : sheetOrder.findIndex((sheet) => sheet.id === reference);
+  return formulaSheetReferenceIndex(reference, sheetOrder);
 }
 
 function mapStructuralCellReference(

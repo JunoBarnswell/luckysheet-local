@@ -543,14 +543,15 @@ interface StructuralDelta {
 }
 
 function buildStructuralReferenceIndex(workbook: WorkbookModel): StructuralReferenceOwnerIndex {
-  const index = new RangeIndex(workbook.sheetOrder.map((id) => ({ id, name: workbook.getSheet(id).name })));
+  const sheetOrder = workbook.sheetOrder.map((id) => ({ id, name: workbook.getSheet(id).name }));
+  const index = new RangeIndex(sheetOrder);
   for (const sheet of workbook.getSheets()) {
     sheet.cells.forEach((cell, row, column) => {
       if (cell.formula === undefined) return;
       const owner = { sheetId: sheet.id, row, column };
       try {
         const formula = cell.formula.trimStart().startsWith('=') ? cell.formula : `=${cell.formula}`;
-        index.set(owner, collectFormulaDependencies(parseFormula(formula), owner));
+        index.set(owner, collectFormulaDependencies(parseFormula(formula), owner, { sheetOrder }));
       } catch {
         index.set(owner, [], true);
       }

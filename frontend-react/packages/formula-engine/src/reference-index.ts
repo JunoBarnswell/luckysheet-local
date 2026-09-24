@@ -2,6 +2,7 @@ import type { CellAddress, FormulaAst, FormulaReferenceNode } from './ast';
 import { assertCellAddress, cellAddressKey, compareCellAddresses } from './address';
 import { FormulaReferenceError } from './errors';
 import type { FormulaDependency } from './range-index';
+import { resolveFormulaSheetId, type FormulaSheetIdentity } from './sheet-reference';
 
 type Axis = 'row' | 'column';
 type TreeKey = 'start' | 'end';
@@ -49,11 +50,6 @@ interface OwnerReferences {
   readonly postings: readonly IndexedReference[];
 }
 
-interface SheetIdentity {
-  readonly id: string;
-  readonly name: string;
-}
-
 /**
  * Incremental spatial index for formula references. Formula load/remove updates
  * only that owner's postings; point and structural queries avoid walking every
@@ -63,7 +59,7 @@ export class ReferenceIndex {
   private readonly owners = new Map<string, OwnerReferences>();
   private readonly sheets = new Map<string, Map<Axis, AxisTrees>>();
 
-  constructor(private readonly sheetOrder: readonly SheetIdentity[] = []) {}
+  constructor(private readonly sheetOrder: readonly FormulaSheetIdentity[] = []) {}
 
   set(owner: CellAddress, dependencies: readonly FormulaDependency[]): void {
     assertCellAddress(owner);
@@ -220,18 +216,18 @@ export class ReferenceIndex {
 function dependencyGeometries(
   dependency: FormulaDependency,
   owner: CellAddress,
-  sheetOrder: readonly SheetIdentity[],
+  sheetOrder: readonly FormulaSheetIdentity[],
 ): ReferenceGeometry[] {
   switch (dependency.kind) {
     case 'cell':
       return [cellGeometry(
-        resolveSheetId(dependency.address.sheetId, owner.sheetId, sheetOrder),
+        dependency.address.sheetId,
         dependency.address.row,
         dependency.address.column,
       )];
     case 'range': {
-      const sheetId = resolveSheetId(dependency.start.sheetId, owner.sheetId, sheetOrder);
-      const endSheetId = resolveSheetId(dependency.end.sheetId, owner.sheetId, sheetOrder);
+      const sheetId = dependency.start.sheetId;
+      const endSheetId = dependency.end.sheetId;
       if (sheetId !== endSheetId) throw new FormulaReferenceError('A range cannot cross worksheets');
       return [rectangleGeometry(sheetId, dependency.start.row, dependency.end.row, dependency.start.column, dependency.end.column, true, true)];
     }
@@ -245,18 +241,18 @@ function dependencyGeometries(
 function referenceGeometries(
   reference: FormulaReferenceNode,
   owner: CellAddress,
-  sheetOrder: readonly SheetIdentity[],
+  sheetOrder: readonly FormulaSheetIdentity[],
 ): ReferenceGeometry[] {
   switch (reference.type) {
     case 'cell-reference': {
       const { sheetId, row, column } = reference.reference;
-      return [cellGeometry(resolveSheetId(sheetId, owner.sheetId, sheetOrder), row, column)];
+      return [cellGeometry(resolveFormulaSheetId(sheetId, owner.sheetId, sheetOrder), row, column)];
     }
     case 'range-reference': {
       const first = reference.start.reference;
       const second = reference.end.reference;
-      const sheetId = resolveSheetId(first.sheetId, owner.sheetId, sheetOrder);
-      const endSheetId = resolveSheetId(second.sheetId ?? first.sheetId, owner.sheetId, sheetOrder);
+      const sheetId = resolveFormulaSheetId(first.sheetId, owner.sheetId, sheetOrder);
+      const endSheetId = resolveFormulaSheetId(second.sheetId ?? first.sheetId, owner.sheetId, sheetOrder);
       if (sheetId !== endSheetId) throw new FormulaReferenceError('A range cannot cross worksheets');
       return [rectangleGeometry(
         sheetId,
@@ -269,9 +265,9 @@ function referenceGeometries(
       )];
     }
     case 'whole-row-reference':
-      return [rectangleGeometry(resolveSheetId(reference.sheetId, owner.sheetId, sheetOrder), reference.startRow, reference.endRow, 0, Number.MAX_SAFE_INTEGER, true, false)];
+      return [rectangleGeometry(resolveFormulaSheetId(reference.sheetId, owner.sheetId, sheetOrder), reference.startRow, reference.endRow, 0, Number.MAX_SAFE_INTEGER, true, false)];
     case 'whole-column-reference':
-      return [rectangleGeometry(resolveSheetId(reference.sheetId, owner.sheetId, sheetOrder), 0, Number.MAX_SAFE_INTEGER, reference.startColumn, reference.endColumn, false, true)];
+      return [rectangleGeometry(resolveFormulaSheetId(reference.sheetId, owner.sheetId, sheetOrder), 0, Number.MAX_SAFE_INTEGER, reference.startColumn, reference.endColumn, false, true)];
     case 'reference-union':
       return reference.references.flatMap((item) => referenceGeometries(item, owner, sheetOrder));
     case 'reference-intersection': {
@@ -287,8 +283,8 @@ function referenceGeometries(
       return intersections;
     }
     case 'sheet-range-reference': {
-      const startSheetId = resolveSheetId(reference.qualifier.startSheetId, owner.sheetId, sheetOrder);
-      const endSheetId = resolveSheetId(reference.qualifier.endSheetId, owner.sheetId, sheetOrder);
+      const startSheetId = resolveFormulaSheetId(reference.qualifier.startSheetId, owner.sheetId, sheetOrder);
+      const endSheetId = resolveFormulaSheetId(reference.qualifier.endSheetId, owner.sheetId, sheetOrder);
       const start = sheetOrder.findIndex((sheet) => sheet.id === startSheetId);
       const end = sheetOrder.findIndex((sheet) => sheet.id === endSheetId);
       if (start < 0 || end < 0) throw new FormulaReferenceError('3-D reference sheet boundary is unresolved');
@@ -353,16 +349,6 @@ function rectangleGeometry(
     rowStructural,
     columnStructural,
   };
-}
-
-function resolveSheetId(reference: string | undefined, ownerSheetId: string, sheetOrder: readonly SheetIdentity[]): string {
-  const token = reference ?? ownerSheetId;
-  const normalized = token.trim().toLowerCase();
-  const sheet = sheetOrder.find((candidate) => candidate.name.toLowerCase() === normalized)
-    ?? sheetOrder.find((candidate) => candidate.id === token);
-  if (!sheet && sheetOrder.length === 0) return token;
-  if (!sheet) throw new FormulaReferenceError(`Reference worksheet cannot be resolved: ${token}`);
-  return sheet.id;
 }
 
 function intersectGeometry(left: ReferenceGeometry, right: ReferenceGeometry): ReferenceGeometry | undefined {

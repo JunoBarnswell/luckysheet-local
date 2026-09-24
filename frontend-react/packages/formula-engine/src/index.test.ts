@@ -78,18 +78,18 @@ test('structural reference index selects affected owners and retains invalid for
   assert.deepEqual(index.getInvalidFormulaOwners(), []);
 });
 
-test('reference index resolves worksheet names without host-locale casing', () => {
+test('reference index preserves exact canonical worksheet IDs', () => {
   const index = new RangeIndex([
     { id: 'sheet-1', name: 'INTEREST' },
     { id: 'sheet-2', name: 'Owner' },
   ]);
   const owner = address('sheet-2', 8, 5);
-  index.set(owner, [{ kind: 'cell', address: address('interest', 4, 2) }]);
+  index.set(owner, [{ kind: 'cell', address: address('sheet-1', 4, 2) }]);
 
   assert.deepEqual(index.getDependents(address('sheet-1', 4, 2)), [owner]);
 });
 
-test('reference index resolves display names before colliding worksheet IDs', () => {
+test('reference index never remaps a canonical ID that collides with another display name', () => {
   const index = new RangeIndex([
     { id: 'owner-id', name: 'Owner' },
     { id: 'Target', name: 'Other' },
@@ -98,8 +98,8 @@ test('reference index resolves display names before colliding worksheet IDs', ()
   const owner = address('owner-id', 8, 5);
   index.set(owner, [{ kind: 'cell', address: address('Target', 4, 2) }]);
 
-  assert.deepEqual(index.getDependents(address('target-id', 4, 2)), [owner]);
-  assert.deepEqual(index.getDependents(address('Target', 4, 2)), []);
+  assert.deepEqual(index.getDependents(address('Target', 4, 2)), [owner]);
+  assert.deepEqual(index.getDependents(address('target-id', 4, 2)), []);
 });
 
 test('range moves fail closed when whole-axis references would become non-contiguous', () => {
@@ -361,7 +361,13 @@ test('calculation task port is versioned and serializable without pretending to 
 });
 
 test('FormulaEngine supports qualified references and detects cycles', () => {
-  const engine = new FormulaEngine({ defaultSheetId: 'Sheet1' });
+  const engine = new FormulaEngine({
+    defaultSheetId: 'Sheet1',
+    sheetOrder: [
+      { id: 'Sheet1', name: 'Sheet1' },
+      { id: 'Sheet2', name: 'Sheet2' },
+    ],
+  });
   engine.setValue({ sheetId: 'Sheet2', row: 0, column: 0 }, 7);
   assert.equal(engine.setFormula('A1', '=Sheet2!A1 + 1').value, 8);
 
@@ -370,6 +376,33 @@ test('FormulaEngine supports qualified references and detects cycles', () => {
   assert.equal(firstCycle, 1);
   assertError(secondCycle, '#NUM!');
   assertError(engine.getCellValue('B1'), '#NUM!');
+});
+
+test('FormulaEngine evaluates qualified display names against canonical worksheet IDs', () => {
+  const engine = new FormulaEngine({
+    defaultSheetId: 'owner-id',
+    sheetOrder: [
+      { id: 'owner-id', name: 'Owner' },
+      { id: 'Target', name: 'Other' },
+      { id: 'target-id', name: 'Target' },
+      { id: 'space-id', name: ' Target ' },
+    ],
+  });
+  const owner = address('owner-id', 0, 1);
+  const targetA1 = address('target-id', 0, 0);
+  const targetA2 = address('target-id', 1, 0);
+  const spacedNameA1 = address('space-id', 0, 0);
+  engine.setValue(address('Target', 0, 0), 100);
+  engine.setValue(targetA1, 7);
+  engine.setValue(targetA2, 11);
+  engine.setValue(spacedNameA1, 4);
+
+  assert.equal(engine.setFormula(owner, '=tArGeT!A1+1').value, 8);
+  assert.deepEqual(engine.getDependencies(owner), [{ kind: 'cell', address: targetA1 }]);
+  assert.deepEqual(engine.getDependents(targetA1), [owner]);
+  assert.equal(engine.setFormula(address('owner-id', 1, 1), '=SUM(Target!A1:A2)').value, 18);
+  assert.equal(engine.setFormula(address('owner-id', 2, 1), "=' Target '!A1+1").value, 5);
+  assertError(engine.setFormula(address('owner-id', 3, 1), '=Missing!A1').value, '#REF!');
 });
 
 function address(sheetId: string, row: number, column: number): CellAddress {

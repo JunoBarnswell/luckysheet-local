@@ -2,6 +2,9 @@ import type { CellAddress, FormulaReferenceNode } from './ast';
 import { assertCellAddress, cellAddressKey, compareCellAddresses } from './address';
 import { FormulaReferenceError } from './errors';
 import { ReferenceIndex } from './reference-index';
+import type { FormulaSheetIdentity } from './sheet-reference';
+
+export type { FormulaSheetIdentity } from './sheet-reference';
 
 export interface CellDependency {
   readonly kind: 'cell';
@@ -26,11 +29,6 @@ export interface NameDependency {
 }
 
 export type FormulaDependency = CellDependency | RangeDependency | StructuralReferenceDependency | NameDependency;
-
-export interface FormulaSheetIdentity {
-  readonly id: string;
-  readonly name: string;
-}
 
 interface IndexEntry {
   readonly dependencies: readonly FormulaDependency[];

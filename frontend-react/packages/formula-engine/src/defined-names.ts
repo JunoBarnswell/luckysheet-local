@@ -6,6 +6,7 @@ import { offsetAst } from './ast-rewrite';
 import type { FormulaAst } from './ast';
 import { createFormulaError, isArrayValue, type ArrayValue, type FormulaValue } from './values';
 import type { ExcelNumericContext } from './numeric';
+import type { FormulaSheetIdentity } from './sheet-reference';
 
 /** Formula-engine representation of the workbook's canonical scoped names. */
 export interface FormulaDefinedName {
@@ -18,6 +19,7 @@ export interface FormulaDefinedName {
 
 export interface DefinedNameContext {
   currentCell: CellAddress;
+  sheetOrder?: readonly FormulaSheetIdentity[];
   readCell: (address: CellAddress) => FormulaValue;
   readRangeMatrix: (range: RangeDependency) => ArrayValue;
   resolveName?: (name: string) => FormulaValue | undefined;
@@ -82,6 +84,7 @@ export function resolveDefinedNameSource(source: string, context: DefinedNameCon
       : parsed;
     return evaluateFormula(ast, {
       currentCell: context.currentCell,
+      sheetOrder: context.sheetOrder,
       readCell: context.readCell,
       readRange: (rangeRef) => {
         const matrix = context.readRangeMatrix(rangeRef);

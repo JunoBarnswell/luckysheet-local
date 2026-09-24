@@ -624,6 +624,34 @@ test('Validation supports custom AST, formula-backed list, time/date, multi-sele
   assert.equal(validateDataInput(sheet, 0, 3, '25:30').blocking, true);
 });
 
+test('conditional formatting and validation resolve qualified same-sheet names to canonical IDs', () => {
+  const { workbook } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, { value: 'Allowed' });
+  const formula = `=${sheet.name}!A1="Allowed"`;
+  sheet.conditionalFormats.push({
+    id: 'qualified-cf',
+    sheetId: sheet.id,
+    ranges: [{ sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 1, endColumn: 1 }],
+    type: 'highlight',
+    operator: 'formula',
+    value1: formula,
+    priority: 1,
+    style: { background: '#abcdef' },
+  });
+  assert.deepEqual(computeConditionalOverlays(sheet).get('0:1')?.style, { background: '#abcdef' });
+
+  const validation = normalizeDataValidationRule({
+    id: 'qualified-validation',
+    sheetId: sheet.id,
+    ranges: [{ sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 2, endColumn: 2 }],
+    type: 'custom',
+    formula1: formula,
+  });
+  sheet.dataValidations.push(validation);
+  assert.equal(validateDataInput(sheet, 0, 2, 'candidate').valid, true);
+});
+
 test('Text Columns, Split and Flip are one undoable transaction and clear stale output', () => {
   const { workbook, commands } = runtime();
   const sheet = workbook.getSheet(workbook.primarySheetId);
