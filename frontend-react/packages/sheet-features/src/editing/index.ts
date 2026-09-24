@@ -718,6 +718,15 @@ function applyPasteCell(
   }
   const next = clearFormulaProvenance(source);
   if (sourceFormula) next.formula = sourceFormula;
+  if (transfer === 'copy' && next.presentation?.kind === 'barcode' && next.presentation.source.kind === 'formula') {
+    next.presentation = {
+      ...next.presentation,
+      source: {
+        ...next.presentation.source,
+        formula: shiftFormula(next.presentation.source.formula, rowDelta, colDelta),
+      },
+    };
+  }
   if (spec.formatting === 'all-except-borders' && next.style) {
     next.style = { ...next.style, borders: destination.style?.borders };
   }

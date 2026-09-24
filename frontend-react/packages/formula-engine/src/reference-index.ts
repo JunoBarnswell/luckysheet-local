@@ -20,6 +20,7 @@ interface ReferenceGeometry {
 interface IndexedReference {
   readonly id: string;
   readonly ownerKey: string;
+  readonly sourceId: string;
   readonly owner: CellAddress;
   readonly sheetId: string;
   readonly axis: Axis;
@@ -47,23 +48,33 @@ interface AxisTrees {
 
 interface OwnerReferences {
   readonly address: CellAddress;
+  readonly sourceId: string;
   readonly postings: readonly IndexedReference[];
+  readonly position?: IndexedReference;
+}
+
+export interface IndexedReferenceOwnerSource {
+  readonly address: CellAddress;
+  readonly sourceId: string;
 }
 
 /**
- * Incremental spatial index for formula references. Formula load/remove updates
- * only that owner's postings; point and structural queries avoid walking every
- * formula dependency in the workbook.
+ * Incremental spatial index for formula-reference owners. Calculation and
+ * structural-only sources have separate identities; point queries expose only
+ * calculation formulas while structural queries include every source.
  */
 export class ReferenceIndex {
   private readonly owners = new Map<string, OwnerReferences>();
   private readonly sheets = new Map<string, Map<Axis, AxisTrees>>();
+  private readonly ownerPositions = new Map<string, IntervalNode>();
 
   constructor(private readonly sheetOrder: readonly FormulaSheetIdentity[] = []) {}
 
-  set(owner: CellAddress, dependencies: readonly FormulaDependency[]): void {
+  set(owner: CellAddress, dependencies: readonly FormulaDependency[], sourceId = 'formula'): void {
     assertCellAddress(owner);
+    assertSourceId(sourceId);
     const ownerKey = cellAddressKey(owner);
+    const storageKey = ownerSourceKey(ownerKey, sourceId);
     const postings: IndexedReference[] = [];
     let sequence = 0;
 
@@ -74,8 +85,9 @@ export class ReferenceIndex {
         for (const axis of ['row', 'column'] as const) {
           const structural = axis === 'row' ? geometry.rowStructural : geometry.columnStructural;
           const posting: IndexedReference = {
-            id: `${ownerKey}\u0000${sequence++}`,
+            id: `${storageKey}\u0000${sequence++}`,
             ownerKey,
+            sourceId,
             owner: copyAddress(owner),
             sheetId: geometry.sheetId,
             axis,
@@ -91,32 +103,55 @@ export class ReferenceIndex {
       }
     }
 
-    const previous = this.owners.get(ownerKey);
-    if (previous) this.remove(owner);
+    const position: IndexedReference | undefined = sourceId.startsWith('structural:') ? {
+      id: `${storageKey}\u0000position`,
+      ownerKey,
+      sourceId,
+      owner: copyAddress(owner),
+      sheetId: owner.sheetId,
+      axis: 'row',
+      start: owner.row,
+      end: owner.row,
+      crossStart: owner.column,
+      crossEnd: owner.column,
+      structural: false,
+      point: false,
+    } : undefined;
+    const previous = this.owners.get(storageKey);
+    if (previous) this.remove(owner, sourceId);
     const inserted: IndexedReference[] = [];
+    let positionInserted = false;
     try {
       for (const posting of postings) {
         this.insert(posting);
         inserted.push(posting);
       }
-      this.owners.set(ownerKey, { address: copyAddress(owner), postings });
+      if (position) {
+        this.insertOwnerPosition(position);
+        positionInserted = true;
+      }
+      this.owners.set(storageKey, { address: copyAddress(owner), sourceId, postings, position });
     } catch (error) {
+      if (positionInserted && position) this.eraseOwnerPosition(position);
       for (const posting of inserted.reverse()) this.erase(posting);
       if (previous) {
         for (const posting of previous.postings) this.insert(posting);
-        this.owners.set(ownerKey, previous);
+        if (previous.position) this.insertOwnerPosition(previous.position);
+        this.owners.set(storageKey, previous);
       }
       throw error;
     }
   }
 
-  remove(owner: CellAddress): boolean {
+  remove(owner: CellAddress, sourceId = 'formula'): boolean {
     assertCellAddress(owner);
-    const ownerKey = cellAddressKey(owner);
-    const entry = this.owners.get(ownerKey);
+    assertSourceId(sourceId);
+    const storageKey = ownerSourceKey(cellAddressKey(owner), sourceId);
+    const entry = this.owners.get(storageKey);
     if (!entry) return false;
     for (const posting of entry.postings) this.erase(posting);
-    this.owners.delete(ownerKey);
+    if (entry.position) this.eraseOwnerPosition(entry.position);
+    this.owners.delete(storageKey);
     return true;
   }
 
@@ -127,7 +162,7 @@ export class ReferenceIndex {
     queryPoint(tree, address.row, matches);
     const owners = new Map<string, CellAddress>();
     for (const posting of matches) {
-      if (!posting.point || address.column < posting.crossStart || address.column > posting.crossEnd) continue;
+      if (posting.sourceId !== 'formula' || !posting.point || address.column < posting.crossStart || address.column > posting.crossEnd) continue;
       owners.set(posting.ownerKey, posting.owner);
     }
     return [...owners.values()].map(copyAddress).sort(compareCellAddresses);
@@ -170,9 +205,42 @@ export class ReferenceIndex {
     return [...owners.values()].map(copyAddress).sort(compareCellAddresses);
   }
 
+  getOwnersInRange(
+    sheetId: string,
+    range: { readonly startRow: number; readonly endRow: number; readonly startColumn: number; readonly endColumn: number },
+  ): readonly IndexedReferenceOwnerSource[] {
+    if (!sheetId.trim()
+      || !Number.isSafeInteger(range.startRow) || range.startRow < 0
+      || !Number.isSafeInteger(range.endRow) || range.endRow < range.startRow
+      || !Number.isSafeInteger(range.startColumn) || range.startColumn < 0
+      || !Number.isSafeInteger(range.endColumn) || range.endColumn < range.startColumn) {
+      throw new FormulaReferenceError('Reference owner range query bounds are invalid');
+    }
+    const matches: IndexedReference[] = [];
+    queryOverlap(this.ownerPositions.get(sheetId), range.startRow, range.endRow, matches);
+    return matches
+      .filter((posting) => posting.crossStart >= range.startColumn && posting.crossStart <= range.endColumn)
+      .map((posting) => ({ address: copyAddress(posting.owner), sourceId: posting.sourceId }))
+      .sort((left, right) => compareCellAddresses(left.address, right.address)
+        || (left.sourceId < right.sourceId ? -1 : left.sourceId > right.sourceId ? 1 : 0));
+  }
+
   clear(): void {
     this.owners.clear();
     this.sheets.clear();
+    this.ownerPositions.clear();
+  }
+
+  private insertOwnerPosition(position: IndexedReference): void {
+    this.ownerPositions.set(position.sheetId, insertNode(this.ownerPositions.get(position.sheetId), position, 'start'));
+  }
+
+  private eraseOwnerPosition(position: IndexedReference): void {
+    const root = this.ownerPositions.get(position.sheetId);
+    if (!root) throw new Error('REFERENCE_INDEX_INVARIANT: owner position has no sheet index');
+    const next = removeNode(root, position, 'start');
+    if (next) this.ownerPositions.set(position.sheetId, next);
+    else this.ownerPositions.delete(position.sheetId);
   }
 
   private insert(posting: IndexedReference): void {
@@ -211,6 +279,16 @@ export class ReferenceIndex {
     }
     return trees;
   }
+}
+
+function assertSourceId(sourceId: string): void {
+  if (typeof sourceId !== 'string' || sourceId.trim().length === 0 || sourceId.includes('\u0000')) {
+    throw new FormulaReferenceError('Reference owner source identity is invalid');
+  }
+}
+
+function ownerSourceKey(ownerKey: string, sourceId: string): string {
+  return `${ownerKey}\u0000${sourceId}`;
 }
 
 function dependencyGeometries(

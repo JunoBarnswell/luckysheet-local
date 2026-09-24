@@ -1,7 +1,7 @@
 import type { CellAddress, FormulaReferenceNode } from './ast';
 import { assertCellAddress, cellAddressKey, compareCellAddresses } from './address';
 import { FormulaReferenceError } from './errors';
-import { ReferenceIndex } from './reference-index';
+import { ReferenceIndex, type IndexedReferenceOwnerSource } from './reference-index';
 import type { FormulaSheetIdentity } from './sheet-reference';
 
 export type { FormulaSheetIdentity } from './sheet-reference';
@@ -34,9 +34,12 @@ interface IndexEntry {
   readonly dependencies: readonly FormulaDependency[];
 }
 
+export type StructuralReferenceOwnerSource = IndexedReferenceOwnerSource;
+
 export class RangeIndex {
   private readonly entries = new Map<string, IndexEntry>();
   private readonly invalidFormulaOwners = new Map<string, CellAddress>();
+  private readonly invalidStructuralFormulaOwners = new Map<string, CellAddress>();
   private readonly referenceIndex: ReferenceIndex;
 
   constructor(sheetOrder: readonly FormulaSheetIdentity[] = []) {
@@ -51,6 +54,42 @@ export class RangeIndex {
     this.entries.set(ownerKey, { dependencies: normalizedDependencies });
     if (invalidFormula) this.invalidFormulaOwners.set(ownerKey, copyAddress(owner));
     else this.invalidFormulaOwners.delete(ownerKey);
+  }
+
+  setStructuralReference(
+    owner: CellAddress,
+    sourceId: string,
+    dependencies: readonly FormulaDependency[],
+    invalidFormula = false,
+  ): void {
+    assertCellAddress(owner);
+    assertStructuralSourceId(sourceId);
+    const normalizedDependencies = deduplicateDependencies(dependencies);
+    const ownerKey = cellAddressKey(owner);
+    const sourceKey = `${ownerKey}\u0000${sourceId}`;
+    this.referenceIndex.set(owner, normalizedDependencies, sourceId);
+    if (invalidFormula) this.invalidStructuralFormulaOwners.set(sourceKey, copyAddress(owner));
+    else this.invalidStructuralFormulaOwners.delete(sourceKey);
+  }
+
+  removeStructuralReference(owner: CellAddress, sourceId: string): boolean {
+    assertCellAddress(owner);
+    assertStructuralSourceId(sourceId);
+    const sourceKey = `${cellAddressKey(owner)}\u0000${sourceId}`;
+    const removed = this.referenceIndex.remove(owner, sourceId);
+    const invalidRemoved = this.invalidStructuralFormulaOwners.delete(sourceKey);
+    if (invalidRemoved && !removed) {
+      throw new Error('REFERENCE_INDEX_INVARIANT: invalid structural formula owner is missing from reference postings');
+    }
+    return removed;
+  }
+
+  getStructuralReferenceOwnersInRange(
+    sheetId: string,
+    range: { readonly startRow: number; readonly endRow: number; readonly startColumn: number; readonly endColumn: number },
+  ): readonly StructuralReferenceOwnerSource[] {
+    return this.referenceIndex.getOwnersInRange(sheetId, range)
+      .filter(({ sourceId }) => sourceId.startsWith('structural:'));
   }
 
   add(owner: CellAddress, dependencies: readonly FormulaDependency[]): void {
@@ -81,6 +120,7 @@ export class RangeIndex {
   clear(): void {
     this.entries.clear();
     this.invalidFormulaOwners.clear();
+    this.invalidStructuralFormulaOwners.clear();
     this.referenceIndex.clear();
   }
 
@@ -100,7 +140,16 @@ export class RangeIndex {
   }
 
   getInvalidFormulaOwners(): readonly CellAddress[] {
-    return [...this.invalidFormulaOwners.values()].map(copyAddress).sort(compareCellAddresses);
+    const owners = new Map<string, CellAddress>();
+    for (const owner of this.invalidFormulaOwners.values()) owners.set(cellAddressKey(owner), owner);
+    for (const owner of this.invalidStructuralFormulaOwners.values()) owners.set(cellAddressKey(owner), owner);
+    return [...owners.values()].map(copyAddress).sort(compareCellAddresses);
+  }
+}
+
+function assertStructuralSourceId(sourceId: string): void {
+  if (typeof sourceId !== 'string' || !sourceId.startsWith('structural:') || sourceId.length === 'structural:'.length) {
+    throw new FormulaReferenceError('Structural reference owner source identity is invalid');
   }
 }
 

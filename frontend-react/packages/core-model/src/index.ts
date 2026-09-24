@@ -1120,6 +1120,26 @@ export class CellMatrix {
     }
   }
 
+  /** Enumerate persisted cells that own any formula text, without hydrating deferred JSON. */
+  forEachFormulaOwner(callback: (cell: CellData, row: Row, column: Column) => void): void {
+    const hasFormulaOwner = (cell: CellData): boolean => cell.formula !== undefined
+      || cell.formulaMetadata?.sourceFormula !== undefined
+      || (cell.presentation?.kind === 'barcode' && cell.presentation.source.kind === 'formula');
+    if (this.deferredJSON !== undefined) {
+      for (const [row, columns] of Object.entries(this.deferredJSON)) {
+        for (const [column, cell] of Object.entries(columns)) {
+          if (hasFormulaOwner(cell)) callback(cell, Number(row), Number(column));
+        }
+      }
+      return;
+    }
+    for (const [row, columns] of this.rows) {
+      for (const [column, cell] of columns) {
+        if (hasFormulaOwner(cell)) callback(cell, row, column);
+      }
+    }
+  }
+
   forEachInRows(rows: ReadonlySet<Row>, callback: (cell: CellData, row: Row, column: Column) => void): void {
     this.hydrate();
     for (const row of rows) {

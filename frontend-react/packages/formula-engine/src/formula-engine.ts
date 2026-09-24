@@ -904,6 +904,34 @@ export class FormulaEngine {
   }
 
   /**
+   * Index a non-calculation formula owner for structural rewrites without
+   * adding it to the calculation dependency graph. Names and table references
+   * remain owned by their canonical name/table models; only explicit cell
+   * references are spatially indexed here.
+   */
+  setStructuralFormulaReference(addressInput: CellAddressInput, sourceId: string, formula: string): void {
+    const address = this.resolveAddress(addressInput);
+    let dependencies: readonly FormulaDependency[];
+    try {
+      const ast = this.parseFormula(formula);
+      dependencies = collectFormulaDependencies(ast, address, { sheetOrder: this.sheetOrder });
+    } catch {
+      this.dependencies.setStructuralReference(address, sourceId, [], true);
+      return;
+    }
+    try {
+      this.dependencies.setStructuralReference(address, sourceId, dependencies);
+    } catch (error) {
+      if (!(error instanceof FormulaReferenceError)) throw error;
+      this.dependencies.setStructuralReference(address, sourceId, [], true);
+    }
+  }
+
+  removeStructuralFormulaReference(addressInput: CellAddressInput, sourceId: string): boolean {
+    return this.dependencies.removeStructuralReference(this.resolveAddress(addressInput), sourceId);
+  }
+
+  /**
    * Set the canonical scoped name collection. A workbook Record remains a
    * narrow input compatibility form; it is immediately normalized into the
    * same scoped collection and is never stored separately.

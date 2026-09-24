@@ -702,3 +702,28 @@ test('Text Columns, Split and Flip are one undoable transaction and clear stale 
   commands.execute('matrix.flip', { sheetId: sheet.id, range: { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 1 }, direction: 'horizontal' });
   assert.equal(sheet.cells.get(0, 0)?.value, 'b');
 });
+
+test('matrix flip remaps barcode formula references with the transformed cell coordinates', () => {
+  const { workbook, commands } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, {
+    value: null,
+    presentation: {
+      kind: 'barcode',
+      symbology: 'qr',
+      source: { kind: 'formula', formula: '=B1' },
+      parameters: { symbology: 'qr' },
+      options: { foreground: '#000000', background: '#ffffff', showText: true, labelPosition: 'below', quietZone: 2 },
+    },
+  });
+  sheet.cells.set(0, 1, { value: 'other' });
+
+  commands.execute('matrix.flip', {
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 1 },
+    direction: 'horizontal',
+  });
+
+  const flippedPresentation = sheet.cells.get(0, 1)?.presentation;
+  assert.equal(flippedPresentation?.kind === 'barcode' && flippedPresentation.source.kind === 'formula' ? flippedPresentation.source.formula : undefined, '=A1');
+});

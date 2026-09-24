@@ -116,6 +116,59 @@ describe('structural operations', () => {
     assert.equal(sheet.cells.get(5, 1)?.formulaMetadata?.sourceFormula, '=_XLFN.SUM(A2:A2)');
   });
 
+  it('rewrites provenance-only and barcode formula owners at the same cell address', () => {
+    const workbook = new WorkbookModel('unit-auxiliary-formula-owners', 'Auxiliary Formula Owners');
+    const sheet = workbook.getSheet('sheet-1');
+    const owner = { sheetId: sheet.id, row: 4, column: 1 };
+    const sheetOrder = workbook.sheetOrder.map((id) => ({ id, name: workbook.getSheet(id).name }));
+    sheet.cells.set(owner.row, owner.column, {
+      value: null,
+      formulaMetadata: { kind: 'normal', sourceFormula: '=A1' },
+      presentation: {
+        kind: 'barcode',
+        symbology: 'qr',
+        source: { kind: 'formula', formula: '=A1' },
+        parameters: { symbology: 'qr' },
+        options: { foreground: '#000000', background: '#ffffff', showText: true, labelPosition: 'below', quietZone: 2 },
+      },
+    });
+    const index = new RangeIndex(sheetOrder);
+    for (const [sourceId, formula] of [
+      ['structural:formula-provenance', '=A1'],
+      ['structural:barcode', '=A1'],
+    ] as const) {
+      index.setStructuralReference(owner, sourceId, collectFormulaDependencies(parseFormula(formula), owner, { sheetOrder }));
+    }
+
+    CoreStructuralTransform.apply(workbook, { kind: 'insert-rows', sheetId: sheet.id, at: 0, count: 1 }, index);
+
+    const moved = sheet.cells.get(owner.row + 1, owner.column);
+    assert.equal(moved?.formulaMetadata?.sourceFormula, '=A2');
+    assert.equal(moved?.presentation?.kind === 'barcode' && moved.presentation.source.kind === 'formula' ? moved.presentation.source.formula : undefined, '=A2');
+  });
+
+  it('rejects preserved-only auxiliary formulas before changing worksheet coordinates', () => {
+    const workbook = new WorkbookModel('unit-preserved-only-auxiliary-formula', 'Preserved Formula Owner');
+    const sheet = workbook.getSheet('sheet-1');
+    const owner = { sheetId: sheet.id, row: 4, column: 1 };
+    const sheetOrder = workbook.sheetOrder.map((id) => ({ id, name: workbook.getSheet(id).name }));
+    sheet.cells.set(owner.row, owner.column, {
+      value: null,
+      formulaMetadata: { kind: 'array', preservedOnly: true, sourceFormula: '=A1' },
+    });
+    const index = new RangeIndex(sheetOrder);
+    index.setStructuralReference(owner, 'structural:formula-provenance', collectFormulaDependencies(parseFormula('=A1'), owner, { sheetOrder }));
+    const originalRowCount = sheet.rowCount;
+
+    assert.throws(
+      () => CoreStructuralTransform.apply(workbook, { kind: 'insert-rows', sheetId: sheet.id, at: 0, count: 1 }, index),
+      /formula group.*requires an explicit formula-group transform/,
+    );
+    assert.equal(sheet.cells.get(owner.row, owner.column)?.formulaMetadata?.sourceFormula, '=A1');
+    assert.equal(sheet.cells.get(owner.row + 1, owner.column), undefined);
+    assert.equal(sheet.rowCount, originalRowCount);
+  });
+
   it('keeps OOXML formula provenance aligned through cell-shift rewrites', () => {
     const workbook = new WorkbookModel('unit-cell-shift-formula-provenance', 'Cell Shift Formula Provenance');
     const sheet = workbook.getSheet('sheet-1');

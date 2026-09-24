@@ -407,16 +407,67 @@ function calculationInputUpdate(
   return { address, input };
 }
 
+const STRUCTURAL_FORMULA_SOURCE_IDS = {
+  preservedFormula: 'structural:preserved-formula',
+  formulaProvenance: 'structural:formula-provenance',
+  barcode: 'structural:barcode',
+} as const;
+
+function indexAuxiliaryFormulaOwners(engine: FormulaEngine, address: CellAddressInput, cell: CellData): void {
+  if (cell.formulaMetadata?.preservedOnly && cell.formula !== undefined) {
+    engine.setStructuralFormulaReference(address, STRUCTURAL_FORMULA_SOURCE_IDS.preservedFormula, cell.formula);
+  }
+  if (cell.formulaMetadata?.sourceFormula !== undefined) {
+    engine.setStructuralFormulaReference(address, STRUCTURAL_FORMULA_SOURCE_IDS.formulaProvenance, cell.formulaMetadata.sourceFormula);
+  }
+  if (cell.presentation?.kind === 'barcode' && cell.presentation.source.kind === 'formula') {
+    engine.setStructuralFormulaReference(address, STRUCTURAL_FORMULA_SOURCE_IDS.barcode, cell.presentation.source.formula);
+  }
+}
+
+function removeAuxiliaryFormulaOwnersInRange(
+  engine: FormulaEngine,
+  range: StructuralTransformResult['clearInputRanges'][number],
+): void {
+  for (const owner of engine.dependencies.getStructuralReferenceOwnersInRange(range.sheetId, range)) {
+    engine.removeStructuralFormulaReference(owner.address, owner.sourceId);
+  }
+}
+
+function rangeContainsOwner(
+  range: StructuralTransformResult['clearInputRanges'][number],
+  owner: StructuralTransformResult['rewrittenFormulaOwners'][number],
+): boolean {
+  return range.sheetId === owner.sheetId
+    && range.startRow <= owner.row && range.endRow >= owner.row
+    && range.startColumn <= owner.column && range.endColumn >= owner.column;
+}
+
+function reindexAuxiliaryFormulaOwnerAt(engine: FormulaEngine, workbook: WorkbookModel, owner: CellAddressInput): void {
+  const point = {
+    sheetId: owner.sheetId,
+    startRow: owner.row,
+    endRow: owner.row,
+    startColumn: owner.column,
+    endColumn: owner.column,
+  };
+  removeAuxiliaryFormulaOwnersInRange(engine, point);
+  const cell = workbook.getSheet(owner.sheetId).cells.get(owner.row, owner.column);
+  if (cell) indexAuxiliaryFormulaOwners(engine, owner, cell);
+}
+
 function synchronizeCellMutation(engine: FormulaEngine, workbook: WorkbookModel, mutation: MutationInfo): readonly CellAddressInput[] {
   const hadFormulaInputs = engine.getFormulaCount() > 0;
   const cleared = new Map<string, CalculationInputUpdate>();
   const populated = new Map<string, CalculationInputUpdate>();
   for (const range of mutation.affectedRanges) {
     const sheet = workbook.getSheet(range.sheetId);
+    removeAuxiliaryFormulaOwnersInRange(engine, range);
     for (const address of engine.getInputAddressesInRange(range)) {
       cleared.set(`${address.sheetId}:${address.row}:${address.column}`, { address, input: null });
     }
     sheet.cells.forEachInRange(range.startRow, range.endRow, range.startColumn, range.endColumn, (cell, row, column) => {
+      indexAuxiliaryFormulaOwners(engine, { sheetId: sheet.id, row, column }, cell);
       const update = calculationInputUpdate(sheet.id, row, column, cell);
       if (update.input !== null) populated.set(`${sheet.id}:${row}:${column}`, update);
     });
@@ -477,6 +528,7 @@ function synchronizeStructuralMutation(
     `${address.sheetId}:${address.row}:${address.column}`;
 
   for (const range of effect.clearInputRanges) {
+    removeAuxiliaryFormulaOwnersInRange(engine, range);
     for (const address of engine.getInputAddressesInRange(range)) {
       cleared.set(keyOf(address), { address, input: null });
     }
@@ -484,20 +536,20 @@ function synchronizeStructuralMutation(
   for (const range of effect.populateInputRanges) {
     const sheet = workbook.getSheet(range.sheetId);
     sheet.cells.forEachInRange(range.startRow, range.endRow, range.startColumn, range.endColumn, (cell, row, column) => {
+      indexAuxiliaryFormulaOwners(engine, { sheetId: sheet.id, row, column }, cell);
       const update = calculationInputUpdate(sheet.id, row, column, cell);
       if (update.input !== null) populated.set(keyOf(update.address), update);
     });
   }
   for (const owner of effect.rewrittenFormulaOwners) {
     const ownerKey = keyOf(owner);
-    if (populated.has(ownerKey)) continue;
+    if (effect.populateInputRanges.some((range) => rangeContainsOwner(range, owner))) continue;
     const sheet = workbook.getSheet(owner.sheetId);
     const cell = sheet.cells.get(owner.row, owner.column);
-    if (!cell || cell.formula === undefined) {
-      throw new Error(`STRUCTURAL_PATCH_INVARIANT: rewritten formula owner ${owner.sheetId}!${owner.row}:${owner.column} is not a live formula`);
-    }
+    if (!cell) throw new Error(`STRUCTURAL_PATCH_INVARIANT: rewritten reference owner ${owner.sheetId}!${owner.row}:${owner.column} is not a live cell`);
     const update = calculationInputUpdate(owner.sheetId, owner.row, owner.column, cell);
-    if (update.input !== null) populated.set(ownerKey, update);
+    if (update.input !== null && !populated.has(ownerKey)) populated.set(ownerKey, update);
+    reindexAuxiliaryFormulaOwnerAt(engine, workbook, owner);
   }
 
   const hadFormulaInputs = engine.getFormulaCount() > 0;
@@ -538,10 +590,17 @@ function loadFormulaInputs(engine: FormulaEngine, workbook: WorkbookModel): numb
   syncWorkbookSheetTables(engine, workbook);
   let formulaCount = 0;
   for (const sheet of workbook.getSheets()) {
-    sheet.cells.forEachFormula((cell, row, column) => {
+    sheet.cells.forEachFormulaOwner((cell, row, column) => {
       const address = { sheetId: sheet.id, row, column };
-      formulaCount += 1;
-      engine.setFormula(address, cell.formula);
+      if (cell.formula !== undefined) {
+        if (cell.formulaMetadata?.preservedOnly) {
+          engine.setStructuralFormulaReference(address, STRUCTURAL_FORMULA_SOURCE_IDS.preservedFormula, cell.formula);
+        } else {
+          formulaCount += 1;
+          engine.setFormula(address, cell.formula);
+        }
+      }
+      indexAuxiliaryFormulaOwners(engine, address, cell);
     });
   }
   // A value-only workbook has no formula dependency graph. Keeping tens of

@@ -20,7 +20,7 @@ export interface StructuralTransformResult {
   /** Sparse calculation inputs to clear and repopulate after this applied patch. */
   readonly clearInputRanges: readonly RangeRef[];
   readonly populateInputRanges: readonly RangeRef[];
-  /** Formula owners rewritten outside the cell ranges above. */
+  /** Formula-reference owners rewritten outside the cell ranges above. */
   readonly rewrittenFormulaOwners: readonly StructuralReferenceOwnerAddress[];
 }
 
@@ -30,7 +30,7 @@ export interface StructuralReferenceOwnerAddress {
   readonly column: number;
 }
 
-/** Formula-owner queries supplied by the canonical formula runtime. */
+/** Formula-reference-owner queries supplied by the canonical formula runtime. */
 export interface StructuralReferenceOwnerIndex {
   getStructuralDependents(sheetId: string, axis: 'row' | 'column', at: number): readonly StructuralReferenceOwnerAddress[];
   getRangeDependents(sheetId: string, range: Pick<RangeRef, 'startRow' | 'endRow' | 'startColumn' | 'endColumn'>): readonly StructuralReferenceOwnerAddress[];
@@ -940,39 +940,46 @@ function rewriteReferencesForMovedRegion(
     sheetOrder,
   }));
 
-  const formulaOwners = new Map<string, StructuralReferenceOwnerAddress>();
+  const referenceOwnersByAddress = new Map<string, StructuralReferenceOwnerAddress>();
   for (const owner of referenceOwners.getRangeDependents(targetSheet.id, selection)) {
-    formulaOwners.set(structuralOwnerKey(owner), owner);
+    referenceOwnersByAddress.set(structuralOwnerKey(owner), owner);
   }
   for (const owner of referenceOwners.getInvalidFormulaOwners()) {
-    formulaOwners.set(structuralOwnerKey(owner), owner);
+    referenceOwnersByAddress.set(structuralOwnerKey(owner), owner);
   }
-  for (const formulaOwner of formulaOwners.values()) {
-    const owner = workbook.getSheet(formulaOwner.sheetId);
-    const cell = owner.cells.get(formulaOwner.row, formulaOwner.column);
-    if (cell?.formula === undefined) {
-      throw new Error(`STRUCTURAL_REFERENCE_INDEX_INVARIANT: formula owner ${formulaOwner.sheetId}!${formulaOwner.row}:${formulaOwner.column} is missing from the workbook`);
+  for (const referenceOwner of referenceOwnersByAddress.values()) {
+    const owner = workbook.getSheet(referenceOwner.sheetId);
+    const cell = owner.cells.get(referenceOwner.row, referenceOwner.column);
+    if (!cell) {
+      throw new Error(`STRUCTURAL_REFERENCE_INDEX_INVARIANT: formula reference owner ${referenceOwner.sheetId}!${referenceOwner.row}:${referenceOwner.column} is missing from the workbook`);
     }
     if (owner.id === targetSheet.id
-      && (insideCell(selection, formulaOwner.row, formulaOwner.column) || insideCell(destination, formulaOwner.row, formulaOwner.column))) continue;
-    const next = transformMovedFormula(cell.formula, owner.id);
-    const sourceFormula = cell.formulaMetadata?.sourceFormula && !cell.formulaMetadata.preservedOnly
+      && (insideCell(selection, referenceOwner.row, referenceOwner.column) || insideCell(destination, referenceOwner.row, referenceOwner.column))) continue;
+    const formula = cell.formula === undefined ? undefined : transformMovedFormula(cell.formula, owner.id);
+    const formulaChanged = formula !== undefined && formula !== cell.formula;
+    const sourceFormula = cell.formulaMetadata?.sourceFormula !== undefined
       ? transformMovedFormula(cell.formulaMetadata.sourceFormula, owner.id)
       : undefined;
-    if ((next !== cell.formula || (sourceFormula !== undefined && sourceFormula !== cell.formulaMetadata?.sourceFormula))
+    const sourceFormulaChanged = sourceFormula !== undefined && sourceFormula !== cell.formulaMetadata?.sourceFormula;
+    if ((formulaChanged || sourceFormulaChanged)
       && hasFormulaGroupMetadata(cell)) {
-      throw new Error(`UNSUPPORTED_STRUCTURAL_REFERENCE: formula group at ${owner.id}!${formulaOwner.row}:${formulaOwner.column} requires an explicit formula-group transform before a moved range`);
+      throw new Error(`UNSUPPORTED_STRUCTURAL_REFERENCE: formula group at ${owner.id}!${referenceOwner.row}:${referenceOwner.column} requires an explicit formula-group transform before a moved range`);
     }
-    if (next !== cell.formula && cell.formulaMetadata?.preservedOnly) {
-      throw new Error(`UNSUPPORTED_STRUCTURAL_REFERENCE: preserved-only formula at ${owner.id}!${formulaOwner.row}:${formulaOwner.column} cannot be rewritten for a moved range`);
-    }
-    if (next !== cell.formula || (sourceFormula !== undefined && sourceFormula !== cell.formulaMetadata?.sourceFormula)) {
+    const barcode = cell.presentation?.kind === 'barcode' && cell.presentation.source.kind === 'formula'
+      ? transformMovedFormula(cell.presentation.source.formula, owner.id)
+      : undefined;
+    const barcodeFormulaChanged = barcode !== undefined
+      && cell.presentation?.kind === 'barcode'
+      && cell.presentation.source.kind === 'formula'
+      && barcode !== cell.presentation.source.formula;
+    if (formulaChanged || sourceFormulaChanged || barcodeFormulaChanged) {
       plan.cells.push({
         sheetId: owner.id,
-        row: formulaOwner.row,
-        column: formulaOwner.column,
-        formula: next,
-        ...(sourceFormula === undefined ? {} : { sourceFormula }),
+        row: referenceOwner.row,
+        column: referenceOwner.column,
+        ...(formulaChanged && formula !== undefined ? { formula } : {}),
+        ...(sourceFormulaChanged && sourceFormula !== undefined ? { sourceFormula } : {}),
+        ...(barcodeFormulaChanged && barcode !== undefined ? { barcodeFormula: barcode } : {}),
       });
     }
   }
@@ -1040,7 +1047,14 @@ interface MoveFormulaRule {
 type MoveRuleFormulaField = 'value1' | 'value2' | 'formula1' | 'formula2' | 'listSource.formula';
 
 interface MovedFormulaRewritePlan {
-  cells: Array<{ sheetId: string; row: number; column: number; formula: string; sourceFormula?: string }>;
+  cells: Array<{
+    sheetId: string;
+    row: number;
+    column: number;
+    formula?: string;
+    sourceFormula?: string;
+    barcodeFormula?: string;
+  }>;
   names: Array<{
     entry: WorkbookModel['definedNameModels'][number];
     formula: string;
@@ -1055,13 +1069,22 @@ function applyMovedFormulaRewritePlan(workbook: WorkbookModel, plan: MovedFormul
   for (const change of plan.cells) {
     const sheet = workbook.getSheet(change.sheetId);
     const cell = sheet.cells.get(change.row, change.column);
-    if (!cell) throw new Error(`STRUCTURAL_PATCH_INVARIANT: moved-range formula owner ${change.sheetId}!${change.row}:${change.column} disappeared`);
-    const next = { ...cell, formula: change.formula };
+    if (!cell) throw new Error(`STRUCTURAL_PATCH_INVARIANT: moved-range reference owner ${change.sheetId}!${change.row}:${change.column} disappeared`);
+    const next: CellData = {
+      ...cell,
+      ...(change.formula === undefined ? {} : { formula: change.formula }),
+    };
     if (change.sourceFormula !== undefined) {
       if (!cell.formulaMetadata || cell.formulaMetadata.preservedOnly) {
         throw new Error('STRUCTURAL_PATCH_INVARIANT: moved formula provenance changed owner type during apply');
       }
       next.formulaMetadata = { ...cell.formulaMetadata, sourceFormula: change.sourceFormula };
+    }
+    if (change.barcodeFormula !== undefined) {
+      if (cell.presentation?.kind !== 'barcode' || cell.presentation.source.kind !== 'formula') {
+        throw new Error('STRUCTURAL_PATCH_INVARIANT: moved-range barcode formula changed owner type during apply');
+      }
+      next.presentation = { ...cell.presentation, source: { ...cell.presentation.source, formula: change.barcodeFormula } };
     }
     sheet.cells.set(change.row, change.column, next);
     rewrittenOwners.push({ sheetId: change.sheetId, row: change.row, column: change.column });
@@ -1586,7 +1609,14 @@ function shiftOutline(sheet: WorksheetModel, axis: 'row' | 'column', at: number,
 }
 
 interface FormulaRewritePlan {
-  readonly cells: Array<{ sheetId: string; row: number; column: number; formula: string; sourceFormula?: string }>;
+  readonly cells: Array<{
+    sheetId: string;
+    row: number;
+    column: number;
+    formula?: string;
+    sourceFormula?: string;
+    barcodeFormula?: string;
+  }>;
   readonly names: Array<{
     entry: WorkbookModel['definedNameModels'][number];
     formula: string;
@@ -1613,8 +1643,8 @@ function preflightFormulaRewrite(
   for (const owner of owners.values()) {
     const sheet = workbook.getSheet(owner.sheetId);
     const cell = sheet.cells.get(owner.row, owner.column);
-    if (cell?.formula === undefined) {
-      throw new Error(`STRUCTURAL_REFERENCE_INDEX_INVARIANT: formula owner ${owner.sheetId}!${owner.row}:${owner.column} is missing from the workbook`);
+    if (!cell) {
+      throw new Error(`STRUCTURAL_REFERENCE_INDEX_INVARIANT: formula reference owner ${owner.sheetId}!${owner.row}:${owner.column} is missing from the workbook`);
     }
     const transformReferences = (ast: ReturnType<typeof parseFormula>) => mapAstStructuralReferences(ast, {
       shift,
@@ -1624,24 +1654,31 @@ function preflightFormulaRewrite(
       targetSheetName: targetSheet.name,
       sheetOrder,
     });
-    const formula = transformFormula(cell.formula, transformReferences);
-    const sourceFormula = cell.formulaMetadata?.sourceFormula && !cell.formulaMetadata.preservedOnly
+    const formula = cell.formula === undefined ? undefined : transformFormula(cell.formula, transformReferences);
+    const sourceFormula = cell.formulaMetadata?.sourceFormula !== undefined
       ? transformFormula(cell.formulaMetadata.sourceFormula, transformReferences)
       : undefined;
-    if ((formula !== cell.formula || (sourceFormula !== undefined && sourceFormula !== cell.formulaMetadata?.sourceFormula))
+    const formulaChanged = formula !== undefined && formula !== cell.formula;
+    const sourceFormulaChanged = sourceFormula !== undefined && sourceFormula !== cell.formulaMetadata?.sourceFormula;
+    if ((formulaChanged || sourceFormulaChanged)
       && hasFormulaGroupMetadata(cell)) {
       throw new Error(`UNSUPPORTED_STRUCTURAL_REFERENCE: formula group at ${sheet.id}!${owner.row}:${owner.column} requires an explicit formula-group transform`);
     }
-    if (formula !== cell.formula && cell.formulaMetadata?.preservedOnly) {
-      throw new Error(`UNSUPPORTED_STRUCTURAL_REFERENCE: preserved-only formula at ${sheet.id}!${owner.row}:${owner.column} cannot be rewritten`);
-    }
-    if (formula !== cell.formula || (sourceFormula !== undefined && sourceFormula !== cell.formulaMetadata?.sourceFormula)) {
+    const barcode = cell.presentation?.kind === 'barcode' && cell.presentation.source.kind === 'formula'
+      ? transformFormula(cell.presentation.source.formula, transformReferences)
+      : undefined;
+    const barcodeFormulaChanged = barcode !== undefined
+      && cell.presentation?.kind === 'barcode'
+      && cell.presentation.source.kind === 'formula'
+      && barcode !== cell.presentation.source.formula;
+    if (formulaChanged || sourceFormulaChanged || barcodeFormulaChanged) {
       plan.cells.push({
         sheetId: sheet.id,
         row: owner.row,
         column: owner.column,
-        formula,
-        ...(sourceFormula === undefined ? {} : { sourceFormula }),
+        ...(formulaChanged && formula !== undefined ? { formula } : {}),
+        ...(sourceFormulaChanged && sourceFormula !== undefined ? { sourceFormula } : {}),
+        ...(barcodeFormulaChanged && barcode !== undefined ? { barcodeFormula: barcode } : {}),
       });
     }
   }
@@ -1735,13 +1772,22 @@ function applyFormulaRewritePlan(
     }
     if (!coordinate) continue;
     const cell = sheet.cells.get(coordinate.row, coordinate.column);
-    if (!cell) throw new Error(`STRUCTURAL_PATCH_INVARIANT: formula owner ${sheet.id}!${coordinate.row}:${coordinate.column} was not preserved`);
-    const next = { ...cell, formula: change.formula };
+    if (!cell) throw new Error(`STRUCTURAL_PATCH_INVARIANT: formula reference owner ${sheet.id}!${coordinate.row}:${coordinate.column} was not preserved`);
+    const next: CellData = {
+      ...cell,
+      ...(change.formula === undefined ? {} : { formula: change.formula }),
+    };
     if (change.sourceFormula !== undefined) {
       if (!cell.formulaMetadata || cell.formulaMetadata.preservedOnly) {
         throw new Error('STRUCTURAL_PATCH_INVARIANT: formula provenance changed owner type during apply');
       }
       next.formulaMetadata = { ...cell.formulaMetadata, sourceFormula: change.sourceFormula };
+    }
+    if (change.barcodeFormula !== undefined) {
+      if (cell.presentation?.kind !== 'barcode' || cell.presentation.source.kind !== 'formula') {
+        throw new Error('STRUCTURAL_PATCH_INVARIANT: barcode formula changed owner type during apply');
+      }
+      next.presentation = { ...cell.presentation, source: { ...cell.presentation.source, formula: change.barcodeFormula } };
     }
     sheet.cells.set(coordinate.row, coordinate.column, next);
     rewrittenOwners.push({ sheetId: sheet.id, row: coordinate.row, column: coordinate.column });
@@ -1822,12 +1868,21 @@ function applyMoveRange(
     let cell = formula === undefined || formula === entry.cell.formula
       ? entry.cell
       : { ...entry.cell, formula };
-    const sourceFormula = entry.cell.formulaMetadata?.sourceFormula
+    const sourceFormula = entry.cell.formulaMetadata?.sourceFormula !== undefined
       ? transformFormula(entry.cell.formulaMetadata.sourceFormula, mapMovedReferences)
       : undefined;
     if (sourceFormula !== undefined && sourceFormula !== entry.cell.formulaMetadata?.sourceFormula) {
       if (!entry.cell.formulaMetadata) throw new Error('STRUCTURAL_PATCH_INVARIANT: formula provenance disappeared during move preflight');
       cell = { ...cell, formulaMetadata: { ...entry.cell.formulaMetadata, sourceFormula } };
+    }
+    if (entry.cell.presentation?.kind === 'barcode' && entry.cell.presentation.source.kind === 'formula') {
+      const barcodeFormula = transformFormula(entry.cell.presentation.source.formula, mapMovedReferences);
+      if (barcodeFormula !== entry.cell.presentation.source.formula) {
+        cell = {
+          ...cell,
+          presentation: { ...entry.cell.presentation, source: { ...entry.cell.presentation.source, formula: barcodeFormula } },
+        };
+      }
     }
     return { ...entry, cell };
   });

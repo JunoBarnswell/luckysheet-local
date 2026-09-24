@@ -79,6 +79,33 @@ test('structural reference index selects affected owners and retains invalid for
   assert.deepEqual(index.getInvalidFormulaOwners(), []);
 });
 
+test('structural-only formula sources coexist with calculation owners and retain invalid source failures', () => {
+  const index = new RangeIndex([{ id: 'Sheet1', name: 'Sheet1' }]);
+  const owner = address('Sheet1', 8, 5);
+  const calculationTarget = address('Sheet1', 1, 0);
+  const structuralTarget = address('Sheet1', 4, 2);
+  index.set(owner, [{ kind: 'cell', address: calculationTarget }]);
+  index.setStructuralReference(owner, 'structural:barcode', [{ kind: 'cell', address: structuralTarget }]);
+  index.setStructuralReference(owner, 'structural:formula-provenance', [{ kind: 'cell', address: structuralTarget }]);
+
+  assert.deepEqual(index.getDependents(calculationTarget), [owner]);
+  assert.deepEqual(index.getDependents(structuralTarget), []);
+  assert.deepEqual(index.getStructuralDependents('Sheet1', 'row', 4), [owner]);
+  assert.deepEqual(index.getStructuralReferenceOwnersInRange('Sheet1', {
+    startRow: owner.row, endRow: owner.row, startColumn: owner.column, endColumn: owner.column,
+  }), [
+    { address: owner, sourceId: 'structural:barcode' },
+    { address: owner, sourceId: 'structural:formula-provenance' },
+  ]);
+
+  const engine = new FormulaEngine({ defaultSheetId: 'Sheet1', sheetOrder: [{ id: 'Sheet1', name: 'Sheet1' }] });
+  engine.setStructuralFormulaReference(owner, 'structural:barcode', '=A1+');
+  assert.deepEqual(engine.dependencies.getInvalidFormulaOwners(), [owner]);
+  engine.setStructuralFormulaReference(owner, 'structural:barcode', '=A1');
+  assert.deepEqual(engine.dependencies.getInvalidFormulaOwners(), []);
+  assert.deepEqual(engine.dependencies.getStructuralDependents('Sheet1', 'row', 0), [owner]);
+});
+
 test('reference index preserves exact canonical worksheet IDs', () => {
   const index = new RangeIndex([
     { id: 'sheet-1', name: 'INTEREST' },

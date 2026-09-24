@@ -1679,6 +1679,11 @@ function executeMatrixTransform(
       }
     }
   }
+  const mapFormula = (formula: string): string => transformMatrixFormula(formula, range, (refRow, refColumn) => transpose
+    ? { row: range.startRow + (refColumn - range.startColumn), column: range.startColumn + (refRow - range.startRow) }
+    : params.direction === 'horizontal'
+      ? { row: refRow, column: range.startColumn + range.endColumn - refColumn }
+      : { row: range.startRow + range.endRow - refRow, column: refColumn });
   const values: CellData[][] = [];
   for (let row = target.startRow; row <= target.endRow; row += 1) {
     const line: CellData[] = [];
@@ -1689,11 +1694,13 @@ function executeMatrixTransform(
         params.direction === 'horizontal' ? range.endColumn - (column - target.startColumn) : column);
       const source = structuredClone(sheet.cells.get(sourceRow, sourceColumn) ?? { value: null });
       if (source.formula) {
-        source.formula = transformMatrixFormula(source.formula, range, (refRow, refColumn) => transpose
-          ? { row: range.startRow + (refColumn - range.startColumn), column: range.startColumn + (refRow - range.startRow) }
-          : params.direction === 'horizontal'
-            ? { row: refRow, column: range.startColumn + range.endColumn - refColumn }
-            : { row: range.startRow + range.endRow - refRow, column: refColumn });
+        source.formula = mapFormula(source.formula);
+      }
+      if (source.presentation?.kind === 'barcode' && source.presentation.source.kind === 'formula') {
+        source.presentation = {
+          ...source.presentation,
+          source: { ...source.presentation.source, formula: mapFormula(source.presentation.source.formula) },
+        };
       }
       line.push(source);
     }

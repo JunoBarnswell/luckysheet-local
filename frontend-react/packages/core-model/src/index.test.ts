@@ -94,6 +94,34 @@ test('CellMatrix range iteration visits only persisted cells', () => {
   assert.deepEqual(entries, ['2:3']);
 });
 
+test('CellMatrix enumerates non-calculation formula owners without hydrating deferred cells', () => {
+  const matrix = new CellMatrix();
+  matrix.deferJSON({
+    '2': {
+      '3': {
+        value: null,
+        formula: '=A1',
+        formulaMetadata: { kind: 'array', preservedOnly: true, sourceFormula: '=A1' },
+      },
+      '4': {
+        value: null,
+        presentation: {
+          kind: 'barcode',
+          symbology: 'qr',
+          source: { kind: 'formula', formula: '=A1' },
+          parameters: { symbology: 'qr' },
+          options: { foreground: '#000000', background: '#ffffff', showText: true, labelPosition: 'below', quietZone: 2 },
+        },
+      },
+    },
+  });
+
+  const owners: string[] = [];
+  matrix.forEachFormulaOwner((_cell, row, column) => owners.push(`${row}:${column}`));
+  assert.deepEqual(owners, ['2:3', '2:4']);
+  assert.equal(matrix.isHydrated, false);
+});
+
 test('CellMatrix maintains sparse occupied bounds through overwrite, delete, and clear', () => {
   const matrix = new CellMatrix();
   matrix.set(100_000, 2, { value: 'tail-row' });

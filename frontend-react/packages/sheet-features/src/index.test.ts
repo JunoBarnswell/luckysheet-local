@@ -532,15 +532,29 @@ test('sheet commands: sort and canonical fill', () => {
 
   // Canonical fill formula copy
   sheet.cells.set(5, 0, { value: null, formula: '=A1+B1' });
+  sheet.cells.set(5, 1, {
+    value: null,
+    presentation: {
+      kind: 'barcode',
+      symbology: 'qr',
+      source: { kind: 'formula', formula: '=A1' },
+      parameters: { symbology: 'qr' },
+      options: { foreground: '#000000', background: '#ffffff', showText: true, labelPosition: 'below', quietZone: 2 },
+    },
+  });
   runtime.execute('sheet.range.fill', {
     sheetId: 'sheet-1',
-    sourceRange: { sheetId: 'sheet-1', startRow: 5, endRow: 5, startColumn: 0, endColumn: 0 },
-    targetRange: { sheetId: 'sheet-1', startRow: 5, endRow: 7, startColumn: 0, endColumn: 0 },
+    sourceRange: { sheetId: 'sheet-1', startRow: 5, endRow: 5, startColumn: 0, endColumn: 1 },
+    targetRange: { sheetId: 'sheet-1', startRow: 5, endRow: 7, startColumn: 0, endColumn: 1 },
     direction: 'down',
     mode: 'copy',
   });
   assert.equal(sheet.cells.get(6, 0)?.formula, '=A2+B2');
   assert.equal(sheet.cells.get(7, 0)?.formula, '=A3+B3');
+  const filledBarcode6 = sheet.cells.get(6, 1)?.presentation;
+  const filledBarcode7 = sheet.cells.get(7, 1)?.presentation;
+  assert.equal(filledBarcode6?.kind === 'barcode' && filledBarcode6.source.kind === 'formula' ? filledBarcode6.source.formula : undefined, '=A2');
+  assert.equal(filledBarcode7?.kind === 'barcode' && filledBarcode7.source.kind === 'formula' ? filledBarcode7.source.formula : undefined, '=A3');
 });
 
 test('clipboard: TSV format, parse, and formula shifting', () => {
@@ -601,6 +615,41 @@ test('clipboard payload carries provenance and PasteSpecialSpec preserves its co
   assert.equal(sheet.cells.get(0, 1)?.formula, '=A1');
   assert.equal(sheet.cells.get(0, 1)?.style?.bold, true);
   assert.equal(sheet.cells.get(0, 1)?.numberFormat, '0.00');
+});
+
+test('copy paste translates barcode formula references with the copied cell', () => {
+  const workbook = new WorkbookModel('unit-paste-barcode-formula', 'Paste Barcode Formula');
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const sheet = workbook.getSheet(sheetId(workbook));
+  sheet.cells.set(0, 0, {
+    value: null,
+    presentation: {
+      kind: 'barcode',
+      symbology: 'qr',
+      source: { kind: 'formula', formula: '=A1' },
+      parameters: { symbology: 'qr' },
+      options: { foreground: '#000000', background: '#ffffff', showText: true, labelPosition: 'below', quietZone: 2 },
+    },
+  });
+  const clipboard = copyRangeToClipboardData(workbook, {
+    sheetId: sheet.id,
+    startRow: 0,
+    endRow: 0,
+    startColumn: 0,
+    endColumn: 0,
+  });
+
+  runtime.execute('sheet.range.paste', {
+    sheetId: sheet.id,
+    targetOrigin: { row: 1, column: 1 },
+    clipboard,
+    transfer: 'copy',
+    spec: createPasteSpecialSpec(),
+  });
+
+  const copiedPresentation = sheet.cells.get(1, 1)?.presentation;
+  assert.equal(copiedPresentation?.kind === 'barcode' && copiedPresentation.source.kind === 'formula' ? copiedPresentation.source.formula : undefined, '=B2');
 });
 
 test('clipboard uses quoted TSV and host-neutral HTML representations', () => {
