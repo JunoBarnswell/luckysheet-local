@@ -1117,9 +1117,15 @@ export class WorkbookSession {
       this.refresh();
     };
     this.runtime.handlers.onDataSourceContentChanged = (sourceId) => {
-      const hasLoadFailure = this.runtime.dataContent.get(sourceId)?.getLoadStates()
-        .some((state) => state.availability === 'missing' || state.availability === 'error');
-      if (!hasLoadFailure) {
+      const loadStates = this.runtime.dataContent.get(sourceId)?.getLoadStates() ?? [];
+      const hasLoadFailure = loadStates.some((state) => state.availability === 'missing' || state.availability === 'error');
+      const hasPendingLoad = loadStates.some((state) => state.availability === 'loading');
+      // A large source publishes one state transition per block. Do not start
+      // a new Pivot calculation while the same prefetch wave is still in
+      // flight; the final ready transition is the single authoritative
+      // content-change boundary. Loading/error states remain observable to
+      // the projection without discarding the last valid Pivot result.
+      if (!hasLoadFailure && !hasPendingLoad) {
         this.refreshPivotsForTrigger({ kind: 'source-content-change', sourceId, sheetIds: this.getActiveProjectionSheetIds(this.runtime.model.getSheet(this.activeSheetId)) });
       }
       this.invalidateDataSourceProjection(sourceId);

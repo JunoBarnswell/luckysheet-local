@@ -1116,8 +1116,12 @@ function drawScatterSeries(context: CanvasRenderingContext2D, series: ChartLayou
 function drawChartDataLabels(context: CanvasRenderingContext2D, payload: ChartDrawingPayload, series: ChartLayout['series'][number]): void {
   const chartLabels = payload.elements.dataLabels;
   const percentageTotal = series.points.reduce((sum, point) => sum + (point.visible && point.value !== null ? Math.abs(point.value) : 0), 0);
+  const declaredSeries = payload.series?.find((entry) => entry.id === series.id)
+    ?? (payload.series?.filter((entry) => entry.name === series.name).length === 1
+      ? payload.series.find((entry) => entry.name === series.name)
+      : undefined);
+  const labels = declaredSeries?.dataLabels ?? chartLabels;
   for (const point of series.points) {
-    const labels = payload.series?.find((entry) => entry.id === series.id || entry.name === series.name)?.dataLabels ?? chartLabels;
     if (!labels?.visible || point.value === null) continue;
     const parts: string[] = [];
     if (labels.showSeriesName) parts.push(series.name);
@@ -1247,18 +1251,29 @@ function drawChartSpecial(context: CanvasRenderingContext2D, payload: ChartDrawi
   }
   if (layout.kind === 'stock') {
     const points = layout.stockPoints ?? [];
+    const volume = layout.stockVolume;
     const values = points.flatMap((point) => [point.high, point.low, point.close, point.open ?? point.close]);
     const minimum = Math.min(...values, 0);
     const maximum = Math.max(...values, 1);
     const span = Math.max(1, maximum - minimum);
     const slot = plot.width / Math.max(1, points.length);
+    const priceHeight = volume?.priceHeight ?? plot.height;
     for (const point of points) {
       const x = plot.left + (point.index + 0.5) * slot;
-      const y = (value: number) => plot.top + plot.height * (1 - (value - minimum) / span);
+      const y = (value: number) => plot.top + priceHeight * (1 - (value - minimum) / span);
       context.strokeStyle = point.color;
       context.beginPath(); context.moveTo(x, y(point.high)); context.lineTo(x, y(point.low)); context.stroke();
       if (point.open !== undefined) { const top = Math.min(y(point.open), y(point.close)); context.fillStyle = point.color; context.fillRect(x - slot * 0.2, top, Math.max(2, slot * 0.4), Math.max(1, Math.abs(y(point.open) - y(point.close)))); }
       else { context.fillStyle = point.color; context.fillRect(x - 2, y(point.close) - 2, 4, 4); }
+      if (volume && point.volume !== undefined) {
+        const barHeight = point.volume / volume.maximum * volume.height;
+        context.fillStyle = `${point.color}99`;
+        context.fillRect(x - slot * 0.3, volume.top + volume.height - barHeight, Math.max(2, slot * 0.6), Math.max(1, barHeight));
+      }
+    }
+    if (volume) {
+      context.strokeStyle = '#cbd5e1';
+      context.beginPath(); context.moveTo(plot.left, volume.top - 4); context.lineTo(plot.left + plot.width, volume.top - 4); context.stroke();
     }
     return;
   }
@@ -1493,6 +1508,7 @@ function chartHitTest(layout: ChartLayout, point: { x: number; y: number }, data
   }
   if (layout.kind === 'stock') {
     const points = layout.stockPoints ?? [];
+    const volume = layout.stockVolume;
     const values = points.flatMap((entry) => [entry.high, entry.low, entry.close, entry.open ?? entry.close]);
     const minimum = Math.min(...values, 0);
     const maximum = Math.max(...values, 1);
@@ -1500,11 +1516,20 @@ function chartHitTest(layout: ChartLayout, point: { x: number; y: number }, data
     const slot = layout.plot.width / Math.max(1, points.length);
     for (const entry of points) {
       const x = layout.plot.left + (entry.index + 0.5) * slot;
-      const high = layout.plot.top + layout.plot.height * (1 - (entry.high - minimum) / span);
-      const low = layout.plot.top + layout.plot.height * (1 - (entry.low - minimum) / span);
+      const priceHeight = volume?.priceHeight ?? layout.plot.height;
+      const high = layout.plot.top + priceHeight * (1 - (entry.high - minimum) / span);
+      const low = layout.plot.top + priceHeight * (1 - (entry.low - minimum) / span);
       if (Math.abs(point.x - x) <= Math.max(4, slot * 0.24) && point.y >= high - 3 && point.y <= low + 3) {
         const series = layout.specialSeriesIndex === undefined ? undefined : layout.series[layout.specialSeriesIndex];
         if (series?.visible) return chartPointSelection(series, entry.index);
+      }
+      if (volume && entry.volume !== undefined) {
+        const barHeight = entry.volume / volume.maximum * volume.height;
+        const top = volume.top + volume.height - barHeight;
+        if (point.x >= x - slot * 0.3 && point.x <= x + slot * 0.3 && point.y >= top && point.y <= volume.top + volume.height) {
+          const series = layout.specialSeriesIndex === undefined ? undefined : layout.series[layout.specialSeriesIndex];
+          if (series?.visible) return chartPointSelection(series, entry.index);
+        }
       }
     }
   }

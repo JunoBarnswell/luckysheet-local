@@ -140,6 +140,7 @@ export interface ChartLayout {
   waterfallBars?: ChartWaterfallBarLayout[];
   funnelStages?: Array<{ index: number; value: number; nextValue: number; label: string; color: string; visible: boolean }>;
   stockPoints?: Array<{ index: number; open?: number; high: number; low: number; close: number; volume?: number; color: string }>;
+  stockVolume?: { maximum: number; top: number; height: number; priceHeight: number };
   surfaceCells?: Array<{ row: number; column: number; seriesIndex: number; value: number | null; color: string; visible: boolean }>;
   radar?: { count: number; maximum: number; points: Array<{ seriesIndex: number; values: number[]; visible: boolean[]; color: string }> };
   map?: ChartMapOptions & ({ resolved: false; reason: string } | { resolved: true; featureCount: number });
@@ -692,6 +693,11 @@ export function buildChartLayout(payload: ChartDrawingPayload, data: ResolvedCha
     layout.status = statusError('invalid', 'INVALID_CHART_SOURCE', 'INVALID_CHART_SOURCE: chart has no visible series');
     return layout;
   }
+  if (['histogram', 'pareto', 'waterfall', 'funnel', 'stock', 'map'].includes(payload.chartType)
+    && layout.series.filter((series) => series.visible).length > 1) {
+    layout.status = statusError('invalid', 'INVALID_CHART_SOURCE', `${payload.chartType} charts require exactly one visible series`);
+    return layout;
+  }
   if (kind === 'map') {
     const map = mapLayouts(payload, data, layout.plot, specialSeriesIndex);
     if ('kind' in map) {
@@ -779,7 +785,19 @@ export function buildChartLayout(payload: ChartDrawingPayload, data: ResolvedCha
   if (kind === 'stock') {
     const error = stockValidationError(data, specialSeriesIndex);
     if (error) layout.status = statusError('invalid', 'INVALID_CHART_SOURCE', error);
-    else layout.stockPoints = stockLayouts(data, specialSeriesIndex);
+    else {
+      layout.stockPoints = stockLayouts(data, specialSeriesIndex);
+      const stockSubtype = layout.series[specialSeriesIndex]?.subtype ?? payload.subtype;
+      if (stockSubtype.includes('volume')) {
+        const maximum = Math.max(1, ...(layout.stockPoints ?? []).map((point) => point.volume ?? 0));
+        layout.stockVolume = {
+          maximum,
+          top: layout.plot.top + layout.plot.height * 0.78,
+          height: layout.plot.height * 0.18,
+          priceHeight: layout.plot.height * 0.72,
+        };
+      }
+    }
     return layout;
   }
   if (kind === 'surface') {

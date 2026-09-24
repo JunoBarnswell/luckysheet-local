@@ -132,13 +132,21 @@ function openSourceTable(index: PivotSourceIndex): SourceTable {
     index,
     fields,
     fieldOrdinals,
+    // Keep the row wrapper collection cold. Field catalog construction and
+    // source registration only need typed columns; materialize wrappers when
+    // the evaluator actually enters a row-oriented operation.
     rows: [] as SourceRow[],
     memberIndexes: new Map<number, ReadonlyMap<string, readonly number[]> | null>(),
     memberIndexAttempts: new Set<number>(),
   };
-  table.rows = Array.from({ length: index.rowCount }, (_, row) => ({ source: table, row }));
   sourceTableCache.set(index, table);
   return table;
+}
+
+function sourceRows(table: SourceTable): SourceRow[] {
+  if (table.rows.length === table.index.rowCount) return table.rows;
+  table.rows = Array.from({ length: table.index.rowCount }, (_, row) => ({ source: table, row }));
+  return table.rows;
 }
 
 function sourceMemberIndex(table: SourceTable, ordinal: number): ReadonlyMap<string, readonly number[]> | undefined {
@@ -687,7 +695,7 @@ function joinKey(value: PivotScalar): string {
 
 function assertUniqueLookupKeys(table: SourceTable, fieldId: string, sourceId: string): void {
   const keys = new Set<string>();
-  for (const row of table.rows) {
+  for (const row of sourceRows(table)) {
     const key = joinKey(sourceRowValue(row, fieldId));
     if (keys.has(key)) throw new Error(`Pivot relationship lookup key is not unique: ${sourceId}:${fieldId}`);
     keys.add(key);
@@ -753,11 +761,11 @@ function validateRelationshipGraph(nodes: LocalSourceNode[], relationships: read
 
 function joinSourceTables(current: SourceTable, attached: SourceTable, currentFieldId: string, attachedFieldId: string, join: 'inner' | 'left'): SourceTable {
   const lookup = new Map<string, SourceRow>();
-  for (const row of attached.rows) lookup.set(joinKey(sourceRowValue(row, attachedFieldId)), row);
+  for (const row of sourceRows(attached)) lookup.set(joinKey(sourceRowValue(row, attachedFieldId)), row);
   const fields = [...current.fields, ...attached.fields].map((field, ordinal) => ({ ...field, ordinal }));
   const columnValues = fields.map(() => [] as PivotScalar[]);
   const rowPaths: PivotSourceRowPath[][] = [];
-  for (const left of current.rows) {
+  for (const left of sourceRows(current)) {
     const match = lookup.get(joinKey(sourceRowValue(left, currentFieldId)));
     if (!match) {
       if (join === 'left') {
@@ -2217,7 +2225,7 @@ function indexedManualFilterRows(rows: SourceRow[], matchers: readonly PivotSour
       if (matches) rowNumbers.push(...matches);
     }
     rowNumbers.sort((left, right) => left - right);
-    const candidates = rowNumbers.map((row) => table.rows[row]!);
+    const candidates = rowNumbers.map((row) => sourceRows(table)[row]!);
     if (!best || candidates.length < best.rows.length) best = { rows: candidates, satisfiedMatcher: matcher };
   }
   return best;
@@ -2972,7 +2980,7 @@ function computePivotResultFromTable(
   const calculatedPlan = createCalculatedFieldPlan(definition.fieldCatalog.fields, definition.layout.calculatedFields);
   const calculatedFields = createCalculatedFieldEvaluator(calculatedPlan, aggregates);
   const resultFields = resultValueFields(definition.layout);
-  const rows = applyCalculatedItems(rawTable.rows, definition.fieldCatalog.fields, definition.layout, resultFields);
+  const rows = applyCalculatedItems(sourceRows(rawTable), definition.fieldCatalog.fields, definition.layout, resultFields);
   const references = [
     ...definition.layout.rows.map((entry) => entry.fieldId),
     ...definition.layout.columns.map((entry) => entry.fieldId),
