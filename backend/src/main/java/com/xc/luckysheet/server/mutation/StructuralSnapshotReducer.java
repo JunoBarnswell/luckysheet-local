@@ -44,6 +44,14 @@ final class StructuralSnapshotReducer {
         validateAxisBounds(limit, maximum, at, count, direction);
         if (direction == FormulaReferenceTransformer.Direction.DELETE) validateDeletePreservation(root, target, axis, at, count);
         validateAxisDataRegionPreservation(root, target, axis, at, count, direction);
+        if (at < limit) {
+            int rowCount = dimension(target, FormulaReferenceTransformer.Axis.ROW);
+            int columnCount = dimension(target, FormulaReferenceTransformer.Axis.COLUMN);
+            RangeRef affectedBand = axis == FormulaReferenceTransformer.Axis.ROW
+                    ? new RangeRef(sheetId, at, rowCount - 1, 0, columnCount - 1)
+                    : new RangeRef(sheetId, 0, rowCount - 1, at, columnCount - 1);
+            rejectFormulaGroupMetadataInRange(target, affectedBand, "axis shift");
+        }
 
         remapCells(target, axis, at, count, direction);
         setDimension(target, axis, direction == FormulaReferenceTransformer.Direction.INSERT ? limit + count : Math.max(1, limit - count));
@@ -1594,12 +1602,9 @@ final class StructuralSnapshotReducer {
         for (JsonNode raw : SnapshotMutationSupport.sheets(root)) {
             ObjectNode owner = requireObject(raw, "Sheet");
             FormulaReferenceTransformer.SheetIdentity ownerIdentity = identity(owner);
-            forEachFormulaCell(owner, cell -> {
-                String original = cell.path("formula").asText();
-                String rewritten = FormulaReferenceTransformer.remapAxis(original, ownerIdentity, target, axis, at, count, direction, sheetOrder);
-                if (!original.equals(rewritten)) cell.put("formula", rewritten);
-                cell.remove("formulaValue");
-            });
+            rewriteCellFormulaOwners(owner,
+                    formula -> FormulaReferenceTransformer.remapAxis(formula, ownerIdentity, target, axis, at, count, direction, sheetOrder),
+                    "axis shift");
             for (String property : List.of("conditionalFormats", "dataValidations")) {
                 for (JsonNode ruleRaw : SnapshotMutationSupport.array(owner, property)) {
                     ObjectNode rule = requireObject(ruleRaw, "Range rule");

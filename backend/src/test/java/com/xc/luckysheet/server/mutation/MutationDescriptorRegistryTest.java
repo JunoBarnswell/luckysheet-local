@@ -1219,6 +1219,71 @@ class MutationDescriptorRegistryTest {
     }
 
     @Test
+    void axisShiftRewritesAuxiliaryFormulaOwnersAndRejectsFormulaGroups() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        ObjectNode snapshot = (ObjectNode) mapper.readTree("""
+                {"sheets":[
+                  {"id":"sheet-1","name":"Sheet1","rowCount":5,"columnCount":3,"cells":{},"pane":{"kind":"none"},"defaultRowHeightPx":20,"defaultColumnWidthPx":64,"hiddenRows":[],"hiddenColumns":[],"rowHeightsPx":{},"columnWidthsPx":{},"merges":[],"conditionalFormats":[],"dataValidations":[],"pivots":[],"sparklines":[],"drawings":[],"drawingPayloads":{},"sheetTables":[],"review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}},"spillRanges":[],"protectionRules":[]},
+                  {"id":"sheet-2","name":"Other","rowCount":5,"columnCount":3,"cells":{},"pane":{"kind":"none"},"defaultRowHeightPx":20,"defaultColumnWidthPx":64,"review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}}}
+                ]}
+                """);
+        ObjectNode firstRow = ((ObjectNode) snapshot.path("sheets").get(0).path("cells")).putObject("0");
+        ObjectNode movedCell = firstRow.putObject("0");
+        movedCell.putNull("value").put("formula", "=A1");
+        movedCell.set("formulaMetadata", mapper.readTree("""
+                {"kind":"normal","sourceFormula":"=A1"}
+                """));
+        movedCell.set("presentation", mapper.readTree("""
+                {"kind":"barcode","symbology":"qr","source":{"kind":"formula","formula":"=A1"},"parameters":{"symbology":"qr"},"options":{"foreground":"#000000","background":"#ffffff","showText":false,"labelPosition":"none","quietZone":0}}
+                """));
+        ObjectNode auxiliaryOnlyCell = firstRow.putObject("1");
+        auxiliaryOnlyCell.putNull("value");
+        auxiliaryOnlyCell.set("formulaMetadata", mapper.readTree("""
+                {"kind":"normal","sourceFormula":"=Sheet1!A1"}
+                """));
+        auxiliaryOnlyCell.set("presentation", mapper.readTree("""
+                {"kind":"barcode","symbology":"qr","source":{"kind":"formula","formula":"=Sheet1!A1"},"parameters":{"symbology":"qr"},"options":{"foreground":"#000000","background":"#ffffff","showText":false,"labelPosition":"none","quietZone":0}}
+                """));
+        ObjectNode externalFormula = ((ObjectNode) snapshot.path("sheets").get(1).path("cells")).putObject("0").putObject("0");
+        externalFormula.putNull("value").put("formula", "=Sheet1!A1");
+
+        OperationMutation insert = new OperationMutation("rows.inserted", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","at":0,"count":1}
+                """));
+        JsonNode shifted = registry.applyPublicMutations(snapshot, List.of(insert));
+        JsonNode moved = shifted.path("sheets").get(0).path("cells").path("1").path("0");
+        assertEquals("=A2", moved.path("formula").asText());
+        assertEquals("=A2", moved.path("formulaMetadata").path("sourceFormula").asText());
+        assertEquals("=A2", moved.path("presentation").path("source").path("formula").asText());
+        JsonNode auxiliaryOnly = shifted.path("sheets").get(0).path("cells").path("0").path("1");
+        assertEquals("=Sheet1!A2", auxiliaryOnly.path("formulaMetadata").path("sourceFormula").asText());
+        assertEquals("=Sheet1!A2", auxiliaryOnly.path("presentation").path("source").path("formula").asText());
+        assertEquals("=Sheet1!A2", shifted.path("sheets").get(1).path("cells").path("0").path("0").path("formula").asText());
+
+        ObjectNode groupedBandSnapshot = (ObjectNode) snapshot.deepCopy();
+        ((ObjectNode) groupedBandSnapshot.path("sheets").get(0).path("cells").path("0").path("0"))
+                .set("formulaMetadata", mapper.readTree("""
+                        {"kind":"shared","range":"A1:A2","sourceFormula":"=A1"}
+                        """));
+        JsonNode groupedBandBefore = groupedBandSnapshot.deepCopy();
+        ServiceException groupedBandRejection = assertThrows(ServiceException.class,
+                () -> registry.applyPublicMutations(groupedBandSnapshot, List.of(insert)));
+        assertEquals("SERVICE_UNAVAILABLE", groupedBandRejection.code());
+        assertEquals(groupedBandBefore, groupedBandSnapshot);
+
+        ObjectNode groupedDependentSnapshot = (ObjectNode) snapshot.deepCopy();
+        ObjectNode groupedDependent = (ObjectNode) groupedDependentSnapshot.path("sheets").get(1).path("cells").path("0").path("0");
+        groupedDependent.set("formulaMetadata", mapper.readTree("""
+                {"kind":"shared","range":"A1:A2","sourceFormula":"=Sheet1!A1"}
+                """));
+        JsonNode groupedDependentBefore = groupedDependentSnapshot.deepCopy();
+        ServiceException groupedDependentRejection = assertThrows(ServiceException.class,
+                () -> registry.applyPublicMutations(groupedDependentSnapshot, List.of(insert)));
+        assertEquals("SERVICE_UNAVAILABLE", groupedDependentRejection.code());
+        assertEquals(groupedDependentBefore, groupedDependentSnapshot);
+    }
+
+    @Test
     void pivotChartCreateIsNotAWorkbookMutation() {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         ServiceException error = assertThrows(ServiceException.class, () -> registry.require("pivot.chart.create", false));
