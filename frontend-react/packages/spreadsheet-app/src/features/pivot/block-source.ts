@@ -160,14 +160,14 @@ export async function readPivotBlockSource(
   });
   try {
     const columnValues = fields.map(() => [] as PivotScalar[]);
-    const physicalRows: number[] = [];
+    let scannedRowCount = 0;
     const scanned = await query.scanRows((values, logicalRow) => {
       if (values.length !== fields.length) {
         throw new Error(`Data source row ${String(logicalRow)} has ${String(values.length)} fields; expected ${String(fields.length)}`);
       }
       const physicalRow = query.getPhysicalRow(logicalRow);
       if (physicalRow === undefined) throw new Error(`Data source logical row ${String(logicalRow)} has no physical source row`);
-      physicalRows.push(physicalRow);
+      scannedRowCount += 1;
       for (let ordinal = 0; ordinal < fields.length; ordinal += 1) {
         columnValues[ordinal]!.push(values[ordinal] ?? null);
       }
@@ -180,11 +180,16 @@ export async function readPivotBlockSource(
     if (JSON.stringify(query.manifest) !== manifestIdentity) {
       return failure('error', sourceId, 'Pivot data source changed while block rows were loading');
     }
-    if (physicalRows.length !== queryManifest.rowCount) {
+    if (scannedRowCount !== queryManifest.rowCount) {
       return failure('error', sourceId, 'Pivot data source row count changed while block rows were loading');
     }
     const logicalByPhysicalRow = new Map<number, number>();
-    physicalRows.forEach((physicalRow, logicalRow) => logicalByPhysicalRow.set(physicalRow, logicalRow));
+    for (let logicalRow = 0; logicalRow < queryManifest.rowCount; logicalRow += 1) {
+      const physicalRow = query.getPhysicalRow(logicalRow);
+      if (physicalRow === undefined) throw new Error(`Data source logical row ${String(logicalRow)} has no physical source row`);
+      if (logicalByPhysicalRow.has(physicalRow)) throw new Error(`Data source row order maps multiple logical rows to physical row ${String(physicalRow)}`);
+      logicalByPhysicalRow.set(physicalRow, logicalRow);
+    }
     const overlayCells = new Set<string>();
     for (const overlay of options.resolveCellOverlays?.() ?? []) {
       if (!Number.isSafeInteger(overlay.rowIndex) || overlay.rowIndex < 0 || overlay.rowIndex >= queryManifest.rowCount
@@ -210,7 +215,7 @@ export async function readPivotBlockSource(
         columns: fields.map((field, ordinal) => ({ field, values: columnValues[ordinal]! })),
         rowCount: queryManifest.rowCount,
         rowPathAt: (logicalRow) => {
-          const physicalRow = physicalRows[logicalRow];
+          const physicalRow = query.getPhysicalRow(logicalRow);
           if (physicalRow === undefined) throw new Error(`Data source logical row ${String(logicalRow)} has no physical source row`);
           return [rowPath(sourceSheetId, sourceRowStart, physicalRow)];
         },

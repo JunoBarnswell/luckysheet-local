@@ -12,6 +12,7 @@ import {
 
 export const PIVOT_SOURCE_INDEX_SCHEMA = 'PivotSourceIndex' as const;
 export const PIVOT_SOURCE_INDEX_VERSION = 1 as const;
+const MAX_UINT32 = 0xffffffff;
 
 export interface PivotSourceFieldInput {
   fieldId: string;
@@ -91,6 +92,7 @@ export function inferPivotSourceFieldType(values: readonly PivotScalar[]): Pivot
 export function createPivotSourceIndex(input: PivotSourceIndexBuildInput): PivotSourceIndex {
   const rowCount = input.rowPaths === undefined ? input.rowCount : input.rowPaths.length;
   if (!Number.isSafeInteger(rowCount) || rowCount < 0) throw new Error('Pivot source row count is invalid');
+  if (rowCount >= MAX_UINT32) throw new Error('Pivot source row count exceeds the transferable index limit');
   const fieldIds = new Set<string>();
   const fields = input.columns.map(({ field }, ordinal) => {
     if (!field.fieldId.trim()) throw new Error(`Pivot source field ${String(ordinal)} has no stable fieldId`);
@@ -133,14 +135,44 @@ export function assertPivotSourceIndex(index: PivotSourceIndex): void {
     throw new Error('Pivot source index protocol is invalid');
   }
   if (!Number.isSafeInteger(index.rowCount) || index.rowCount < 0) throw new Error('Pivot source index rowCount is invalid');
+  if (index.rowCount >= MAX_UINT32) throw new Error('Pivot source index rowCount exceeds the transferable index limit');
+  if (!Array.isArray(index.fields) || !Array.isArray(index.columns) || !Array.isArray(index.rowPathPool)) throw new Error('Pivot source index collections are invalid');
+  if (!(index.rowPathOffsets instanceof Uint32Array)) throw new Error('Pivot source index row-path offsets are invalid');
   if (index.fields.length !== index.columns.length) throw new Error('Pivot source index field/column count mismatch');
   if (index.rowPathOffsets.length !== index.rowCount + 1) throw new Error('Pivot source index row-path offsets are invalid');
+  if (index.rowPathOffsets[0] !== 0) throw new Error('Pivot source index row-path offsets must start at zero');
   if (index.rowPathOffsets[index.rowCount] !== index.rowPathPool.length) throw new Error('Pivot source index row-path pool is invalid');
+  if (index.rowPathPool.length > MAX_UINT32) throw new Error('Pivot source index row-path pool exceeds the transferable limit');
+  for (let row = 0; row < index.rowCount; row += 1) {
+    const start = index.rowPathOffsets[row]!;
+    const end = index.rowPathOffsets[row + 1]!;
+    if (start > end || end > index.rowPathPool.length) throw new Error(`Pivot source index row-path offsets are invalid at row ${String(row)}`);
+  }
+  const fieldTypes = new Set<PivotFieldDataType>(['number', 'boolean', 'text', 'date', 'mixed', 'error']);
+  const fieldIds = new Set<string>();
   index.fields.forEach((field, ordinal) => {
+    if (typeof field.fieldId !== 'string' || field.fieldId.trim() === '' || fieldIds.has(field.fieldId)) throw new Error(`Pivot source field ${field.fieldId} is invalid`);
+    fieldIds.add(field.fieldId);
+    if (typeof field.name !== 'string' || field.dataType === undefined || !fieldTypes.has(field.dataType)) throw new Error(`Pivot source field ${field.fieldId} metadata is invalid`);
     if (field.ordinal !== ordinal) throw new Error(`Pivot source field ${field.fieldId} has a non-contiguous ordinal`);
     const column = index.columns[ordinal]!;
+    if (!column || !['dictionary', 'number', 'boolean'].includes(column.kind)) throw new Error(`Pivot source column ${field.fieldId} kind is invalid`);
     const length = column.kind === 'dictionary' ? column.codes.length : column.values.length;
     if (length !== index.rowCount) throw new Error(`Pivot source column ${field.fieldId} row count mismatch`);
+    if (column.kind === 'dictionary') {
+      if (!(column.codes instanceof Uint32Array) || !Array.isArray(column.dictionary)) throw new Error(`Pivot source dictionary column ${field.fieldId} is invalid`);
+      for (const code of column.codes) if (code > column.dictionary.length) throw new Error(`Pivot source dictionary code is out of bounds for ${field.fieldId}`);
+    } else {
+      if (!(column.values instanceof (column.kind === 'number' ? Float64Array : Uint8Array))
+        || !(column.validity instanceof Uint8Array)
+        || column.validity.length !== index.rowCount) throw new Error(`Pivot source typed column ${field.fieldId} is invalid`);
+      for (let row = 0; row < index.rowCount; row += 1) {
+        const valid = column.validity[row]!;
+        if (valid !== 0 && valid !== 1) throw new Error(`Pivot source validity bitmap is invalid for ${field.fieldId}`);
+        if (column.kind === 'number' && valid === 1 && !Number.isFinite(column.values[row]!)) throw new Error(`Pivot source number column contains a non-finite value: ${field.fieldId}`);
+        if (column.kind === 'boolean' && column.values[row]! > 1) throw new Error(`Pivot source boolean column contains an invalid value: ${field.fieldId}`);
+      }
+    }
   });
 }
 

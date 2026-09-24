@@ -132,7 +132,7 @@ export function buildPivotChartData(tree: PivotResultTree, pivot?: PivotModel): 
   collectLeaves(tree.rows);
 
   const categories = leaves.map(({ node, path }, index) => ({
-    id: node.path?.join('|') ?? node.nodeId ?? `row:${index}`,
+    id: node.path?.length ? JSON.stringify(node.path) : node.nodeId ?? `row:${index}`,
     path,
     label: path.join(' / ') || node.label || `Row ${index + 1}`,
   }));
@@ -203,7 +203,9 @@ function pivotMemberTokenLabel(token: string): string {
 }
 
 function pivotScalarLabel(value: PivotScalar): string { return formatPivotMember(value); }
-function pivotPathKey(path: readonly PivotScalar[]): string { return path.map((value) => pivotMemberKey(createPivotMemberKey(value))).join('|'); }
+function pivotPathKey(path: readonly PivotScalar[]): string {
+  return JSON.stringify(path.map((value) => pivotMemberKey(createPivotMemberKey(value))));
+}
 function containsHidden(collection: ReadonlySet<number> | readonly number[], value: number): boolean {
   return 'has' in collection ? collection.has(value) : collection.indexOf(value) >= 0;
 }
@@ -223,8 +225,14 @@ function normalizeEmptyValues(values: PivotScalar[], mode: ChartPayload['element
 export function chartNumericValue(value: PivotScalar | undefined): number | undefined {
   if (typeof value === 'number' && Number.isFinite(value)) return value;
   if (typeof value === 'string' && value.trim()) {
-    const numeric = Number(value.replace(/[$,%]/g, ''));
-    return Number.isFinite(numeric) ? numeric : undefined;
+    const trimmed = value.trim();
+    const percent = trimmed.endsWith('%');
+    const accounting = trimmed.startsWith('(') && trimmed.endsWith(')');
+    const source = accounting ? trimmed.slice(1, -1) : trimmed;
+    const numeric = Number(source.replace(/[$,\s]/g, '').replace(/%$/, ''));
+    if (!Number.isFinite(numeric)) return undefined;
+    const normalized = percent ? numeric / 100 : numeric;
+    return accounting ? -normalized : normalized;
   }
   return undefined;
 }
@@ -424,7 +432,8 @@ export function resolveChartDataFromSources(payload: ChartPayload, getSheet: (sh
       dynamicRangeIdentity: payload.source.kind === 'report-range' ? payload.source.identity : undefined,
     });
   } catch (error) {
-    return invalidData(payload.source, 'INVALID_CHART_SOURCE', error instanceof Error ? error.message : String(error));
+    const message = error instanceof Error ? error.message : String(error);
+    return invalidData(payload.source, message.startsWith('UNSUPPORTED_FEATURE') ? 'UNSUPPORTED_FEATURE' : 'INVALID_CHART_SOURCE', message);
   }
 }
 
@@ -457,42 +466,91 @@ export function resolveStructuredChartBindings(payload: ChartDrawingPayload, tab
     ? table!.fields.map((field) => ({ id: field.id, name: field.name, ordinal: field.ordinal }))
     : Array.from({ length: sourceRange.endColumn - sourceRange.startColumn + 1 }, (_, offset) => ({ id: `report-column-${offset}`, name: String(sheet.getCell(sourceRange.startRow, sourceRange.startColumn + offset)?.value ?? `Column ${offset + 1}`), ordinal: offset }));
   const fieldById = new Map(fields.map((field) => [field.id, field]));
+  const bindingAreas = ['values', 'category', 'details', 'color', 'size', 'tooltip', 'filter'] as const;
+  for (const area of bindingAreas) {
+    const bindings = source.bindings[area];
+    if (!Array.isArray(bindings)) throw new Error(`INVALID_CHART_SOURCE: ${area} bindings must be an array`);
+    for (const binding of bindings) {
+      if (!binding || typeof binding.fieldId !== 'string' || binding.fieldId.trim() === '' || binding.area !== area) {
+        throw new Error(`INVALID_CHART_SOURCE: ${area} binding identity is invalid`);
+      }
+      if (!['sum', 'average', 'count', 'min', 'max', 'none'].includes(binding.aggregate)) {
+        throw new Error(`INVALID_CHART_SOURCE: unsupported aggregate ${String(binding.aggregate)}`);
+      }
+      if (binding.sort !== undefined && binding.sort !== 'asc' && binding.sort !== 'desc') {
+        throw new Error(`INVALID_CHART_SOURCE: unsupported sort ${String(binding.sort)}`);
+      }
+    }
+  }
+  if (source.bindings.category.length > 1) throw new Error('INVALID_CHART_SOURCE: only one category binding is supported');
+  if (source.bindings.values.length === 0) throw new Error(`Chart source ${source.kind} has no value bindings`);
+  if (source.bindings.values.filter((binding) => binding.sort !== undefined).length > 1) {
+    throw new Error('INVALID_CHART_SOURCE: only one sorted value binding is supported');
+  }
+  for (const binding of [...source.bindings.category, ...source.bindings.values, ...source.bindings.details, ...source.bindings.color, ...source.bindings.size, ...source.bindings.tooltip, ...source.bindings.filter]) {
+    if (!fieldById.has(binding.fieldId)) throw new Error(`INVALID_CHART_SOURCE: binding field not found: ${binding.fieldId}`);
+  }
+  for (const area of ['details', 'color', 'size', 'tooltip', 'filter'] as const) {
+    if (source.bindings[area].length > 0) throw new Error(`UNSUPPORTED_FEATURE: structured chart binding area ${area} is not supported by the canonical renderer`);
+  }
   const showHiddenData = payload.elements.hiddenData === 'show';
   const visible = (field: { ordinal: number } | undefined): boolean => Boolean(field && (showHiddenData || !containsHidden(sheet.hiddenColumns, sourceRange.startColumn + field.ordinal)));
   const categoryBinding = source.bindings.category[0];
   const categoryField = categoryBinding && visible(fieldById.get(categoryBinding.fieldId)) ? fieldById.get(categoryBinding.fieldId) : undefined;
   const valueBindings = source.bindings.values.filter((binding) => visible(fieldById.get(binding.fieldId)));
   if (!valueBindings.length) throw new Error(`Chart source ${source.kind} has no visible numeric value bindings`);
-  const buckets = new Map<string, Map<string, number[]>>();
+  const rows: Array<{ category: string; categoryKey: string; values: Map<string, number[]> }> = [];
+  const buckets = new Map<string, Array<{ category: string; categoryKey: string; values: Map<string, number[]> }>>();
   for (let row = sourceRange.startRow + 1; row <= sourceRange.endRow; row += 1) {
     if (!showHiddenData && containsHidden(sheet.hiddenRows, row)) continue;
-    const category = String(categoryField ? sheet.getCell(row, sourceRange.startColumn + categoryField.ordinal)?.value ?? '' : row - sourceRange.startRow);
-    const byField = buckets.get(category) ?? new Map<string, number[]>();
+    const rawCategory = categoryField ? sheet.getCell(row, sourceRange.startColumn + categoryField.ordinal)?.value ?? '' : row - sourceRange.startRow;
+    const category = String(rawCategory);
+    const categoryKey = `${typeof rawCategory}:${JSON.stringify(rawCategory)}`;
+    const byField = new Map<string, number[]>();
     for (const binding of valueBindings) {
       const field = fieldById.get(binding.fieldId);
       if (!field) throw new Error(`Chart binding field not found: ${binding.fieldId}`);
-      const numeric = chartNumericValue(sheet.getCell(row, sourceRange.startColumn + field.ordinal)?.value);
+      const rawValue = sheet.getCell(row, sourceRange.startColumn + field.ordinal)?.value ?? null;
+      const numeric = chartNumericValue(rawValue);
       if (numeric !== undefined) {
-        const values = byField.get(binding.fieldId);
-        if (values) values.push(numeric);
-        else byField.set(binding.fieldId, [numeric]);
+        byField.set(binding.fieldId, [numeric]);
+      } else if (binding.aggregate === 'count' && rawValue !== null && rawValue !== '') {
+        byField.set(binding.fieldId, [1]);
       }
     }
-    buckets.set(category, byField);
+    const entry = { category, categoryKey, values: byField };
+    rows.push(entry);
+    const group = buckets.get(categoryKey);
+    if (group) group.push(entry);
+    else buckets.set(categoryKey, [entry]);
   }
   const aggregate = (values: number[], mode: typeof source.bindings.values[number]['aggregate']): number | null => {
-    if (!values.length || mode === 'none') return values.length ? values[values.length - 1]! : payload.elements.emptyCells === 'zero' ? 0 : null;
-    if (mode === 'count') return values.length;
-    if (mode === 'min') return Math.min(...values);
-    if (mode === 'max') return Math.max(...values);
-    if (mode === 'average') return values.reduce((sum, value) => sum + value, 0) / values.length;
-    return values.reduce((sum, value) => sum + value, 0);
+    if (!values.length) return payload.elements.emptyCells === 'zero' ? 0 : null;
+    switch (mode) {
+      case 'none':
+        if (values.length !== 1) throw new Error('INVALID_CHART_SOURCE: none aggregate received multiple values');
+        return values[0]!;
+      case 'count': return values.length;
+      case 'min': return Math.min(...values);
+      case 'max': return Math.max(...values);
+      case 'average': return values.reduce((sum, value) => sum + value, 0) / values.length;
+      case 'sum': return values.reduce((sum, value) => sum + value, 0);
+      default: throw new Error(`INVALID_CHART_SOURCE: unsupported aggregate ${String(mode)}`);
+    }
   };
-  let categories = [...buckets.keys()];
+  const rowLevel = valueBindings.some((binding) => binding.aggregate === 'none');
+  let entries = rowLevel
+    ? rows.map((entry) => ({ category: entry.category, rows: [entry], group: buckets.get(entry.categoryKey) ?? [entry] }))
+    : [...buckets.values()].map((group) => ({ category: group[0]!.category, rows: group, group }));
+  let categories = entries.map((entry) => entry.category);
   let series = valueBindings.map((binding) => ({
     id: binding.fieldId,
     name: fieldById.get(binding.fieldId)!.name,
-    values: categories.map((category) => aggregate(buckets.get(category)?.get(binding.fieldId) ?? [], binding.aggregate)),
+    values: entries.map((entry) => aggregate(
+      (binding.aggregate === 'none' ? entry.rows : entry.group)
+        .flatMap((row) => row.values.get(binding.fieldId) ?? []),
+      binding.aggregate,
+    )),
     categories: [...categories],
   }));
   const sortBinding = valueBindings.find((binding) => binding.sort);

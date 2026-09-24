@@ -516,6 +516,38 @@ function containsLegacyImageDataUrl(value: unknown): boolean {
   return Object.values(record).some(containsLegacyImageDataUrl);
 }
 
+function validateChartBindingShape(bindings: unknown, chartId: string): void {
+  if (!bindings || typeof bindings !== 'object' || Array.isArray(bindings)) throw new Error(`Chart ${chartId} bindings are invalid`);
+  const record = bindings as Record<string, unknown>;
+  for (const area of ['values', 'category', 'details', 'color', 'size', 'tooltip', 'filter'] as const) {
+    const entries = record[area];
+    if (!Array.isArray(entries)) throw new Error(`Chart ${chartId} binding area is invalid: ${area}`);
+    for (const entry of entries) {
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) throw new Error(`Chart ${chartId} binding is invalid: ${area}`);
+      const binding = entry as Record<string, unknown>;
+      if (typeof binding.fieldId !== 'string' || binding.fieldId.trim() === '' || binding.area !== area) {
+        throw new Error(`Chart ${chartId} binding area is inconsistent: ${area}`);
+      }
+      if (!['sum', 'average', 'count', 'min', 'max', 'none'].includes(String(binding.aggregate))) {
+        throw new Error(`Chart ${chartId} binding aggregate is invalid: ${String(binding.fieldId)}`);
+      }
+      if (binding.sort !== undefined && binding.sort !== 'asc' && binding.sort !== 'desc') {
+        throw new Error(`Chart ${chartId} binding sort is invalid: ${String(binding.fieldId)}`);
+      }
+      if (binding.format !== undefined && typeof binding.format !== 'string') {
+        throw new Error(`Chart ${chartId} binding format is invalid: ${String(binding.fieldId)}`);
+      }
+    }
+  }
+  const category = record.category as unknown[];
+  if (category.length > 1) throw new Error(`Chart ${chartId} supports only one category binding`);
+  const values = record.values as unknown[];
+  if (values.length === 0) throw new Error(`Chart ${chartId} requires at least one value binding`);
+  if (values.filter((entry) => (entry as Record<string, unknown>).sort !== undefined).length > 1) {
+    throw new Error(`Chart ${chartId} supports only one sorted value binding`);
+  }
+}
+
 function validateChartSnapshotPayload(payload: ChartDrawingPayload, snapshot: WorkbookSnapshot, ownerSheetId: string): void {
   if (!isChartSubtypeForType(payload.chartType, payload.subtype)) throw new Error(`Chart subtype ${payload.subtype} does not belong to ${payload.chartType}`);
   const owned = payload.nativeIdentity?.status !== 'preserved-native';
@@ -524,8 +556,10 @@ function validateChartSnapshotPayload(payload: ChartDrawingPayload, snapshot: Wo
     for (const range of payload.source.ranges) validateDrawingSourceRange(range, snapshot, `Chart ${payload.chartId}`);
   } else if (payload.source.kind === 'report-range') {
     validateDrawingSourceRange(payload.source.range, snapshot, `Chart ${payload.chartId}`);
+    validateChartBindingShape(payload.source.bindings, payload.chartId);
   } else if (payload.source.kind === 'table') {
     const tableSource = payload.source;
+    validateChartBindingShape(tableSource.bindings, payload.chartId);
     const table = snapshot.dataModel.tables.find((candidate) => candidate.id === tableSource.tableId);
     if (!table) throw new Error(`Chart ${payload.chartId} references missing table ${tableSource.tableId}`);
     if (table.sourceRange) validateDrawingSourceRange(table.sourceRange, snapshot, `Chart ${payload.chartId} table`);

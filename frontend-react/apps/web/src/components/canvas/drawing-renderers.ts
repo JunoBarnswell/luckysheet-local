@@ -1153,6 +1153,7 @@ function drawChartSpecial(context: CanvasRenderingContext2D, payload: ChartDrawi
     const span = Math.max(1, maximum - minimum);
     const slot = plot.width / Math.max(1, bars.length);
     bars.forEach((bar) => {
+      if (!bar.visible) return;
       const x = plot.left + bar.index * slot + slot * 0.16;
       const top = plot.top + plot.height * (1 - (bar.end - minimum) / span);
       const bottom = plot.top + plot.height * (1 - (bar.start - minimum) / span);
@@ -1164,9 +1165,10 @@ function drawChartSpecial(context: CanvasRenderingContext2D, payload: ChartDrawi
   }
   if (layout.kind === 'funnel') {
     const stages = layout.funnelStages ?? [];
-    const maximum = Math.max(1, ...stages.map((stage) => stage.value));
+    const maximum = Math.max(1, ...stages.filter((stage) => stage.visible).map((stage) => stage.value));
     const band = plot.height / Math.max(1, stages.length);
     stages.forEach((stage) => {
+      if (!stage.visible) return;
       const current = plot.width * stage.value / maximum;
       const next = plot.width * stage.nextValue / maximum;
       const center = plot.left + plot.width / 2;
@@ -1202,7 +1204,11 @@ function drawChartSpecial(context: CanvasRenderingContext2D, payload: ChartDrawi
     const cells = layout.surfaceCells ?? [];
     const rows = Math.max(1, ...cells.map((cell) => cell.row + 1));
     const columns = Math.max(1, ...cells.map((cell) => cell.column + 1));
-    for (const cell of cells) { context.fillStyle = cell.color; context.fillRect(plot.left + cell.column * plot.width / columns, plot.top + cell.row * plot.height / rows, Math.ceil(plot.width / columns), Math.ceil(plot.height / rows)); }
+    for (const cell of cells) {
+      if (!cell.visible) continue;
+      context.fillStyle = cell.color;
+      context.fillRect(plot.left + cell.column * plot.width / columns, plot.top + cell.row * plot.height / rows, Math.ceil(plot.width / columns), Math.ceil(plot.height / rows));
+    }
     return;
   }
   if (layout.kind === 'radar') {
@@ -1217,9 +1223,19 @@ function drawChartSpecial(context: CanvasRenderingContext2D, payload: ChartDrawi
       context.closePath(); context.stroke();
     }
     for (const entry of radar.points) {
-      context.strokeStyle = entry.color; context.fillStyle = `${entry.color}22`; context.beginPath();
-      entry.values.forEach((value, index) => { const angle = -Math.PI / 2 + Math.PI * 2 * index / radar.count; const r = radius * Math.abs(value) / radar.maximum; const x = centerX + Math.cos(angle) * r; const y = centerY + Math.sin(angle) * r; index === 0 ? context.moveTo(x, y) : context.lineTo(x, y); });
-      context.closePath(); context.fill(); context.stroke();
+      context.strokeStyle = entry.color; context.fillStyle = `${entry.color}22`;
+      if (entry.visible.every(Boolean)) {
+        context.beginPath();
+        entry.values.forEach((value, index) => { const angle = -Math.PI / 2 + Math.PI * 2 * index / radar.count; const r = radius * Math.abs(value) / radar.maximum; const x = centerX + Math.cos(angle) * r; const y = centerY + Math.sin(angle) * r; index === 0 ? context.moveTo(x, y) : context.lineTo(x, y); });
+        context.closePath(); context.fill(); context.stroke();
+      } else {
+        entry.values.forEach((value, index) => {
+          if (!entry.visible[index]) return;
+          const angle = -Math.PI / 2 + Math.PI * 2 * index / radar.count;
+          const r = radius * Math.abs(value) / radar.maximum;
+          context.beginPath(); context.arc(centerX + Math.cos(angle) * r, centerY + Math.sin(angle) * r, 3, 0, Math.PI * 2); context.fill();
+        });
+      }
     }
     return;
   }
@@ -1362,7 +1378,7 @@ function chartHitTest(layout: ChartLayout, point: { x: number; y: number }, data
       if (point.x >= layout.plot.left + index * width && point.x <= layout.plot.left + (index + 1) * width
         && point.y >= layout.plot.top + layout.plot.height - height && point.y <= layout.plot.top + layout.plot.height) {
         const series = layout.specialSeriesIndex === undefined ? undefined : layout.series[layout.specialSeriesIndex];
-        if (series?.visible) return chartPointSelection(series, index, false);
+        if (series?.visible && bin.count > 0) return { action: 'chart.select-element', data: { kind: 'histogram-bin', seriesId: series.id, binIndex: index, start: bin.start, end: bin.end } };
       }
     }
   }
@@ -1381,6 +1397,7 @@ function chartHitTest(layout: ChartLayout, point: { x: number; y: number }, data
     const span = Math.max(1, maximum - minimum);
     const slot = layout.plot.width / Math.max(1, bars.length);
     for (const bar of bars) {
+      if (!bar.visible) continue;
       const left = layout.plot.left + bar.index * slot + slot * 0.16;
       const top = layout.plot.top + layout.plot.height * (1 - (bar.end - minimum) / span);
       const bottom = layout.plot.top + layout.plot.height * (1 - (bar.start - minimum) / span);
@@ -1392,9 +1409,10 @@ function chartHitTest(layout: ChartLayout, point: { x: number; y: number }, data
   }
   if (layout.kind === 'funnel') {
     const stages = layout.funnelStages ?? [];
-    const maximum = Math.max(1, ...stages.map((stage) => stage.value));
+    const maximum = Math.max(1, ...stages.filter((stage) => stage.visible).map((stage) => stage.value));
     const band = layout.plot.height / Math.max(1, stages.length);
     for (const stage of stages) {
+      if (!stage.visible) continue;
       const current = layout.plot.width * stage.value / maximum;
       const next = layout.plot.width * stage.nextValue / maximum;
       const center = layout.plot.left + layout.plot.width / 2;
@@ -1435,7 +1453,7 @@ function chartHitTest(layout: ChartLayout, point: { x: number; y: number }, data
     const column = Math.floor((point.x - layout.plot.left) * columns / layout.plot.width);
     const cell = cells.find((candidate) => candidate.row === row && candidate.column === column);
     const series = cell ? layout.series[cell.seriesIndex] : undefined;
-    if (series && cell) return chartPointSelection(series, cell.column);
+    if (series && cell?.visible) return chartPointSelection(series, cell.column);
   }
   if (layout.kind === 'radar' && layout.radar) {
     const centerX = layout.plot.left + layout.plot.width / 2;
@@ -1443,6 +1461,7 @@ function chartHitTest(layout: ChartLayout, point: { x: number; y: number }, data
     const radius = Math.min(layout.plot.width, layout.plot.height) * 0.42;
     for (const entry of layout.radar.points) {
       for (const [index, value] of entry.values.entries()) {
+        if (!entry.visible[index]) continue;
         const angle = -Math.PI / 2 + Math.PI * 2 * index / layout.radar.count;
         const target = { x: centerX + Math.cos(angle) * radius * Math.abs(value) / layout.radar.maximum, y: centerY + Math.sin(angle) * radius * Math.abs(value) / layout.radar.maximum };
         if (Math.hypot(point.x - target.x, point.y - target.y) <= 7) {
