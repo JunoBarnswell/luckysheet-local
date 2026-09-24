@@ -238,7 +238,7 @@ final class FormulaReferenceTransformer {
     ) {
         int start = sheetIndex(sheetOrder, startName);
         int end = sheetIndex(sheetOrder, endName);
-        int moved = sheetIndex(sheetOrder, target.id());
+        int moved = sheetIndexById(sheetOrder, target.id());
         if (start < 0 || end < 0 || moved < 0) {
             throw ServiceException.unavailable("UNSUPPORTED_STRUCTURAL_REFERENCE: 3D reference boundary is unresolved");
         }
@@ -249,8 +249,17 @@ final class FormulaReferenceTransformer {
 
     private static int sheetIndex(List<SheetIdentity> sheets, String value) {
         for (int index = 0; index < sheets.size(); index++) {
-            SheetIdentity sheet = sheets.get(index);
-            if (sameName(sheet.id(), value) || sameName(sheet.name(), value)) return index;
+            if (sameName(sheets.get(index).name(), value)) return index;
+        }
+        for (int index = 0; index < sheets.size(); index++) {
+            if (sheets.get(index).id().equals(value)) return index;
+        }
+        return -1;
+    }
+
+    private static int sheetIndexById(List<SheetIdentity> sheets, String id) {
+        for (int index = 0; index < sheets.size(); index++) {
+            if (sheets.get(index).id().equals(id)) return index;
         }
         return -1;
     }
@@ -294,7 +303,7 @@ final class FormulaReferenceTransformer {
             }
             boolean targets = sheetName == null
                     ? owner.id().equals(target.id())
-                    : sameName(sheetName, target.id()) || sameName(sheetName, target.name());
+                    : sameName(sheetName, target.name());
             if (targets && reference.axis() == Axis.ROW && rowDelta != 0) {
                 assertWholeAxisMoveIsRepresentable(reference.start(), reference.end(), selection.startRow(), selection.endRow(), rowDelta, "row");
             } else if (targets && reference.axis() == Axis.COLUMN && columnDelta != 0) {
@@ -353,14 +362,14 @@ final class FormulaReferenceTransformer {
         assertNoThreeDimensionalReference(formula);
         String rewritten = rewrite(formula, reference -> {
             if (reference.sheetName() == null) return reference;
-            return sameName(reference.sheetName(), sheetId) || sameName(reference.sheetName(), sheetName) ? null : reference;
+            return sameName(reference.sheetName(), sheetName) ? null : reference;
         });
-        return rewriteWholeAxisSheetName(rewritten, sheetId, sheetName, true);
+        return rewriteWholeAxisSheetName(rewritten, sheetName, sheetName, true);
     }
 
     private static boolean belongsToTarget(Reference reference, SheetIdentity owner, SheetIdentity target) {
         if (reference.sheetName() == null) return owner.id().equals(target.id());
-        return sameName(reference.sheetName(), target.id()) || sameName(reference.sheetName(), target.name());
+        return sameName(reference.sheetName(), target.name());
     }
 
     private static boolean sameName(String left, String right) {
@@ -464,7 +473,7 @@ final class FormulaReferenceTransformer {
             if (prefix != null && prefix.afterPrefix() < formula.length() && formula.charAt(prefix.afterPrefix()) == '!') {
                 WholeAxisReference qualified = parseWholeAxisReference(formula, prefix.afterPrefix() + 1);
                 if (qualified != null) {
-                    boolean targetsSheet = sameName(prefix.name(), target.id()) || sameName(prefix.name(), target.name());
+                    boolean targetsSheet = sameName(prefix.name(), target.name());
                     if (targetsSheet && qualified.axis() == axis) {
                         int[] interval = remapAxisIntervalCoordinates(qualified.start(), qualified.end(), axis, at, count, direction);
                         output.append(formula, copied, qualified.startIndex());
@@ -871,7 +880,7 @@ final class FormulaReferenceTransformer {
                     throw ServiceException.unavailable("UNSUPPORTED_FEATURE: 3-D references require an ordered worksheet transform");
                 }
             }
-            index += 1;
+            index = nextReferenceCandidate(formula, index, first);
         }
     }
 

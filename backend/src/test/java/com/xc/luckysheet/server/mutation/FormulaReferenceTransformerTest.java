@@ -112,6 +112,34 @@ class FormulaReferenceTransformerTest {
     }
 
     @Test
+    void formulaSheetNamesAreNotConfusedWithOtherWorksheetIds() {
+        FormulaReferenceTransformer.SheetIdentity owner = new FormulaReferenceTransformer.SheetIdentity("owner-id", "Owner");
+        FormulaReferenceTransformer.SheetIdentity target = new FormulaReferenceTransformer.SheetIdentity("End", "Target");
+        List<FormulaReferenceTransformer.SheetIdentity> order = List.of(
+                owner,
+                target,
+                new FormulaReferenceTransformer.SheetIdentity("end-id", "End"));
+
+        assertEquals("=End!A1", FormulaReferenceTransformer.remapAxis(
+                "=End!A1", owner, target, FormulaReferenceTransformer.Axis.ROW, 0, 1,
+                FormulaReferenceTransformer.Direction.INSERT, order));
+    }
+
+    @Test
+    void threeDimensionalBoundariesResolveNamesBeforeCrossCollidingIds() {
+        List<FormulaReferenceTransformer.SheetIdentity> order = List.of(
+                new FormulaReferenceTransformer.SheetIdentity("start-id", "Start"),
+                new FormulaReferenceTransformer.SheetIdentity("End", "Other"),
+                new FormulaReferenceTransformer.SheetIdentity("target-id", "Target"),
+                new FormulaReferenceTransformer.SheetIdentity("end-id", "End"));
+        FormulaReferenceTransformer.SheetIdentity target = order.get(2);
+
+        assertThrows(ServiceException.class, () -> FormulaReferenceTransformer.remapAxis(
+                "=SUM(Start:End!A1)", target, target, FormulaReferenceTransformer.Axis.ROW, 0, 1,
+                FormulaReferenceTransformer.Direction.INSERT, order));
+    }
+
+    @Test
     void renameUpdatesOnlyMatchingEndpointsOfThreeDimensionalReferences() {
         assertEquals("=SUM('New Name:Sheet3'!A1)+Old!B2",
                 FormulaReferenceTransformer.renameSheet("=SUM('Old Name:Sheet3'!A1)+Old!B2", "Old Name", "New Name"));
@@ -143,5 +171,7 @@ class FormulaReferenceTransformerTest {
         assertTimeout(Duration.ofSeconds(2), () -> FormulaReferenceTransformer.remapMovedRegion(
                 formula, sheet, sheet, new FormulaReferenceTransformer.Range(0, 0, 0, 0),
                 0, 1, order));
+        assertTimeout(Duration.ofSeconds(2), () -> FormulaReferenceTransformer.invalidateSheet(
+                formula, "missing-sheet", "Missing"));
     }
 }

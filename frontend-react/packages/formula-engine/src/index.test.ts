@@ -127,6 +127,38 @@ test('3-D structural references require a resolvable target worksheet identity',
   }), /target worksheet identity is unresolved/);
 });
 
+test('structural formula references resolve display names before colliding IDs', () => {
+  const formula = parseFormula('=End!A1');
+  const mapped = mapAstStructuralReferences(formula, {
+    shift: { axis: 'row', at: 0, count: 1, op: 'insert' },
+    ownerSheetId: 'owner-id',
+    targetSheetId: 'End',
+    targetSheetName: 'Target',
+    sheetOrder: [
+      { id: 'owner-id', name: 'Owner' },
+      { id: 'End', name: 'Target' },
+      { id: 'end-id', name: 'End' },
+    ],
+  });
+  assert.equal(formatFormula(mapped), '=End!A1');
+});
+
+test('3-D reference boundaries resolve display names before colliding IDs', () => {
+  const formula = parseFormula('=SUM(Start:End!A1)');
+  assert.throws(() => mapAstStructuralReferences(formula, {
+    shift: { axis: 'row', at: 0, count: 1, op: 'insert' },
+    ownerSheetId: 'target-id',
+    targetSheetId: 'target-id',
+    targetSheetName: 'Target',
+    sheetOrder: [
+      { id: 'start-id', name: 'Start' },
+      { id: 'End', name: 'Other' },
+      { id: 'target-id', name: 'Target' },
+      { id: 'end-id', name: 'End' },
+    ],
+  }), /inside a 3D reference/);
+});
+
 test('FormulaEngine input-address range index follows value, formula, clear and reset lifecycle', () => {
   const engine = new FormulaEngine({ defaultSheetId: 'Sheet1' });
   const valueAddress = address('Sheet1', 4, 2);

@@ -83,9 +83,38 @@ function sameSheet(left: string | undefined, right: string): boolean {
 }
 
 function referenceTargetsSheet(sheetId: string | undefined, context: StructuralReferenceContext): boolean {
-  if (sheetId === undefined) return sameSheet(context.ownerSheetId, context.targetSheetId);
-  return sameSheet(sheetId, context.targetSheetId)
-    || (context.targetSheetName !== undefined && sameSheet(sheetId, context.targetSheetName));
+  return referenceTargetsWorksheet(
+    sheetId,
+    context.ownerSheetId,
+    context.targetSheetId,
+    context.targetSheetName,
+    context.sheetOrder,
+  );
+}
+
+function referenceTargetsWorksheet(
+  reference: string | undefined,
+  ownerSheetId: string,
+  targetSheetId: string,
+  targetSheetName: string | undefined,
+  sheetOrder: readonly { readonly id: string; readonly name: string }[] | undefined,
+): boolean {
+  if (reference === undefined) return ownerSheetId === targetSheetId;
+  if (sheetOrder) {
+    const index = sheetReferenceIndex(reference, sheetOrder);
+    return index >= 0 && sheetOrder[index]?.id === targetSheetId;
+  }
+  return reference === targetSheetId
+    || (targetSheetName !== undefined && sameSheet(reference, targetSheetName));
+}
+
+function sheetReferenceIndex(
+  reference: string,
+  sheetOrder: readonly { readonly id: string; readonly name: string }[] | undefined,
+): number {
+  if (!sheetOrder) return -1;
+  const byName = sheetOrder.findIndex((sheet) => sameSheet(sheet.name, reference));
+  return byName >= 0 ? byName : sheetOrder.findIndex((sheet) => sheet.id === reference);
 }
 
 function mapStructuralCellReference(
@@ -327,8 +356,7 @@ export function mapAstStructuralReferences(
         right: mapAstStructuralReferences(node.right, context) as typeof node.right,
       };
     case 'sheet-range-reference': {
-      const findSheetIndex = (reference: string): number => context.sheetOrder?.findIndex((sheet) =>
-        sameSheet(sheet.id, reference) || sameSheet(sheet.name, reference)) ?? -1;
+      const findSheetIndex = (reference: string): number => sheetReferenceIndex(reference, context.sheetOrder);
       const start = findSheetIndex(node.qualifier.startSheetId);
       const end = findSheetIndex(node.qualifier.endSheetId);
       if (start < 0 || end < 0) throw new Error('UNSUPPORTED_STRUCTURAL_REFERENCE: 3D reference sheet boundary is unresolved');
@@ -359,10 +387,13 @@ export function mapAstStructuralReferences(
  * represented canonically.
  */
 export function mapAstMovedReferences(node: FormulaAst, context: MoveRangeReferenceTransform): FormulaAst {
-  const targetsSheet = (sheetId: string | undefined): boolean => sheetId === undefined
-    ? sameSheet(context.ownerSheetId, context.targetSheetId)
-    : sameSheet(sheetId, context.targetSheetId)
-      || (context.targetSheetName !== undefined && sameSheet(sheetId, context.targetSheetName));
+  const targetsSheet = (sheetId: string | undefined): boolean => referenceTargetsWorksheet(
+    sheetId,
+    context.ownerSheetId,
+    context.targetSheetId,
+    context.targetSheetName,
+    context.sheetOrder,
+  );
   const mapCell = (reference: ParsedCellReference): ParsedCellReference => {
     if (!targetsSheet(reference.sheetId)) return reference;
     const { selection } = context;
@@ -389,8 +420,7 @@ export function mapAstMovedReferences(node: FormulaAst, context: MoveRangeRefere
     return { start: mapCell(start), end: mapCell(end) };
   };
   const map3d = (startSheetId: string, endSheetId: string): void => {
-    const sheetIndex = (reference: string): number => context.sheetOrder?.findIndex((sheet) =>
-      sameSheet(sheet.id, reference) || sameSheet(sheet.name, reference)) ?? -1;
+    const sheetIndex = (reference: string): number => sheetReferenceIndex(reference, context.sheetOrder);
     const start = sheetIndex(startSheetId);
     const end = sheetIndex(endSheetId);
     const target = context.sheetOrder?.findIndex((sheet) => sheet.id === context.targetSheetId) ?? -1;

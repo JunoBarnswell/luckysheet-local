@@ -202,6 +202,78 @@ test('remote mutations reject a different workbook unit', () => {
   }]), /Mutation unit mismatch/);
 });
 
+test('remote structural history resolves formula sheet names before colliding IDs', () => {
+  const workbook = new WorkbookModel('unit-sheet-name-rebase', 'Sheet name rebase');
+  workbook.addSheet('End', 'Target');
+  workbook.addSheet('end-id', 'End');
+  const runtime = new CommandRuntime(workbook);
+  const rowMutationMetadata = {
+    schema: {
+      name: 'RowShift',
+      validate: (value: unknown) => !!value && typeof value === 'object'
+        && Number.isInteger((value as { at?: unknown }).at)
+        && Number.isInteger((value as { count?: unknown }).count),
+    },
+    permission: { capability: 'test.row.write' },
+    affectedRanges: { resolve: () => [] },
+    inversePolicy: { allowedMutationIds: ['rows.deleted'], minCount: 1 },
+  } as const;
+  runtime.registry.registerMutation({
+    id: 'cell.set',
+    handler: (item, context) => {
+      const params = item.params as { row: number; column: number; value: string };
+      context.workbook.getSheet(item.sheetId).cells.set(params.row, params.column, { value: params.value });
+    },
+    metadata: cellSetMetadata,
+  });
+  runtime.registry.registerMutation({ id: 'cell.restore', handler: () => undefined, metadata: cellRestoreMetadata });
+  runtime.registry.registerMutation({ id: 'rows.inserted', handler: () => undefined, metadata: rowMutationMetadata });
+  runtime.registry.registerMutation({
+    id: 'rows.deleted',
+    handler: () => undefined,
+    metadata: { ...rowMutationMetadata, inversePolicy: { allowedMutationIds: ['rows.inserted'], minCount: 1 } },
+  });
+  runtime.registry.registerCommand({
+    id: 'cell.set',
+    execute: (params: { row: number; column: number; value: string }, context) => {
+      const sheet = context.workbook.getSheet('sheet-1');
+      const previous = sheet.cells.get(params.row, params.column);
+      const affectedRanges = cellRange(params);
+      context.applyMutation({
+        id: 'cell.set',
+        unitId: context.workbook.unitId,
+        sheetId: 'sheet-1',
+        params,
+        affectedRanges,
+        inverse: [{
+          id: 'cell.restore',
+          unitId: context.workbook.unitId,
+          sheetId: 'sheet-1',
+          params: { row: params.row, column: params.column, previous },
+          affectedRanges,
+        }],
+        apply: () => {
+          sheet.cells.set(params.row, params.column, { value: params.value });
+        },
+      });
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges };
+    },
+  });
+
+  const localParams = { row: 0, column: 0, value: 'local', formula: '=End!A1' };
+  runtime.execute('cell.set', localParams);
+  runtime.applyRemoteMutations([{
+    id: 'rows.inserted',
+    unitId: workbook.unitId,
+    sheetId: 'End',
+    params: { at: 0, count: 1 },
+    affectedRanges: [],
+  }]);
+
+  const forward = runtime.getUndoEntries()[0]?.forwardMutations[0]?.params as { formula?: string } | undefined;
+  assert.equal(forward?.formula, '=End!A1');
+});
+
 test('CommandRuntime rejects an unregistered mutation before touching the workbook', () => {
   const workbook = new WorkbookModel('unit-unregistered', 'Unregistered');
   const runtime = new CommandRuntime(workbook);

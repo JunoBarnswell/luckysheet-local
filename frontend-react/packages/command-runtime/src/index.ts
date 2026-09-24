@@ -662,6 +662,7 @@ function transformPayload(
   value: unknown,
   delta: StructuralDelta,
   id: string,
+  sheetOrder: readonly { readonly id: string; readonly name: string }[],
   keyHint = '',
   ownerSheetId = delta.sheetId,
 ): TransformValueResult {
@@ -672,6 +673,7 @@ function transformPayload(
         shift: { axis: delta.axis, at: delta.at, count: delta.count, op: delta.direction === 1 ? 'insert' : 'delete' },
         ownerSheetId,
         targetSheetId: delta.sheetId,
+        sheetOrder,
       }));
       return { value: mapped === formatFormula(sourceAst) ? value : mapped, safe: true };
     } catch {
@@ -687,7 +689,7 @@ function transformPayload(
         values.push(mapped);
         continue;
       }
-      const transformed = transformPayload(item, delta, id, keyHint, ownerSheetId);
+      const transformed = transformPayload(item, delta, id, sheetOrder, keyHint, ownerSheetId);
       if (!transformed.safe) return transformed;
       values.push(transformed.value);
     }
@@ -718,7 +720,7 @@ function transformPayload(
       result[key] = mapped;
       continue;
     }
-    const transformed = transformPayload(child, delta, id, key, valueSheetId);
+    const transformed = transformPayload(child, delta, id, sheetOrder, key, valueSheetId);
     if (!transformed.safe) return transformed;
     result[key] = transformed.value;
     if (isFormulaSourceKey(key) && typeof child === 'string' && transformed.value !== child) formulaChanged = true;
@@ -730,19 +732,27 @@ function transformPayload(
   return { value: result, safe: true };
 }
 
-function transformMutation(item: MutationInfo, delta: StructuralDelta): MutationInfo | undefined {
+function transformMutation(
+  item: MutationInfo,
+  delta: StructuralDelta,
+  sheetOrder: readonly { readonly id: string; readonly name: string }[],
+): MutationInfo | undefined {
   const affectedRanges: RangeRef[] = [];
   for (const range of item.affectedRanges) {
     const mapped = transformRange(range, delta);
     if (!mapped) return undefined;
     affectedRanges.push(mapped);
   }
-  const params = transformPayload(item.params, delta, item.id, '', item.sheetId);
+  const params = transformPayload(item.params, delta, item.id, sheetOrder, '', item.sheetId);
   if (!params.safe) return undefined;
   return { ...item, params: params.value, affectedRanges };
 }
 
-function transformHistoryEntry(entry: HistoryEntry, remote: MutationInfo): HistoryTransformResult {
+function transformHistoryEntry(
+  entry: HistoryEntry,
+  remote: MutationInfo,
+  sheetOrder: readonly { readonly id: string; readonly name: string }[],
+): HistoryTransformResult {
   const delta = structuralDelta(remote);
   if (!delta) return {
     ok: true,
@@ -753,12 +763,12 @@ function transformHistoryEntry(entry: HistoryEntry, remote: MutationInfo): Histo
   const inversePlan: MutationInfo[] = [];
   const forwardMutations: MutationInfo[] = [];
   for (const mutation of entry.inversePlan) {
-    const transformed = transformMutation(mutation, delta);
+    const transformed = transformMutation(mutation, delta, sheetOrder);
     if (!transformed) return { ok: false, reason: `History ${entry.operationId} cannot be safely transformed across ${remote.id}` };
     inversePlan.push(transformed);
   }
   for (const mutation of entry.forwardMutations) {
-    const transformed = transformMutation(mutation, delta);
+    const transformed = transformMutation(mutation, delta, sheetOrder);
     if (!transformed) return { ok: false, reason: `History ${entry.operationId} cannot be safely transformed across ${remote.id}` };
     forwardMutations.push(transformed);
   }
@@ -1071,10 +1081,11 @@ export class CommandRuntime {
 
   private transformHistoryAgainstRemote(remote: MutationInfo): void {
     const stacks = [this.undoStack, this.redoStack];
+    const sheetOrder = this.workbook.sheetOrder.map((id) => ({ id, name: this.workbook.getSheet(id).name }));
     for (const stack of stacks) {
       for (let index = stack.length - 1; index >= 0; index -= 1) {
         const entry = stack[index]!;
-        const transformed = transformHistoryEntry(entry, remote);
+        const transformed = transformHistoryEntry(entry, remote, sheetOrder);
         if (!transformed.ok) {
           stack.splice(index, 1);
           entry.status = 'invalid';
