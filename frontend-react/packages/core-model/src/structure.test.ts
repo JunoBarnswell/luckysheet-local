@@ -101,6 +101,93 @@ describe('structural operations', () => {
     assert.equal(sheet.cells.get(6, 0)?.formula, "=SUM($A$2,'Input Sheet'!$B$2,A2)+\"A1\"");
   });
 
+  it('keeps imported OOXML formula provenance aligned with structural reference rewrites', () => {
+    const workbook = new WorkbookModel('unit-formula-provenance-structure', 'Formula Provenance Structure');
+    const sheet = workbook.getSheet('sheet-1');
+    sheet.cells.set(4, 1, {
+      value: null,
+      formula: '=SUM(A1:A1)',
+      formulaMetadata: { kind: 'normal', sourceFormula: '=_xlfn.SUM(A1:A1)' },
+    });
+
+    StructuralTransform.apply(workbook, { kind: 'insert-rows', sheetId: sheet.id, at: 0, count: 1 });
+
+    assert.equal(sheet.cells.get(5, 1)?.formula, '=SUM(A2:A2)');
+    assert.equal(sheet.cells.get(5, 1)?.formulaMetadata?.sourceFormula, '=_XLFN.SUM(A2:A2)');
+  });
+
+  it('keeps OOXML formula provenance aligned through cell-shift rewrites', () => {
+    const workbook = new WorkbookModel('unit-cell-shift-formula-provenance', 'Cell Shift Formula Provenance');
+    const sheet = workbook.getSheet('sheet-1');
+    sheet.cells.set(1, 1, {
+      value: null,
+      formula: '=SUM(A1:A1)',
+      formulaMetadata: { kind: 'normal', sourceFormula: '=_xlfn.SUM(A1:A1)' },
+    });
+
+    StructuralTransform.apply(workbook, {
+      kind: 'cell-shift',
+      sheetId: sheet.id,
+      sourceRange: { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 2 },
+      operation: 'insert',
+      axis: 'row',
+    });
+
+    assert.equal(sheet.cells.get(2, 1)?.formula, '=SUM(A2:A2)');
+    assert.equal(sheet.cells.get(2, 1)?.formulaMetadata?.sourceFormula, '=_XLFN.SUM(A2:A2)');
+  });
+
+  it('rewrites OOXML formula provenance for moved formulas and external formula owners', () => {
+    const workbook = new WorkbookModel('unit-move-formula-provenance', 'Move Formula Provenance');
+    const sheet = workbook.getSheet('sheet-1');
+    sheet.cells.set(0, 0, { value: 7 });
+    sheet.cells.set(0, 1, {
+      value: null,
+      formula: '=SUM(A1:A1)',
+      formulaMetadata: { kind: 'normal', sourceFormula: '=_xlfn.SUM(A1:A1)' },
+    });
+    sheet.cells.set(4, 3, {
+      value: null,
+      formula: '=SUM(A1:A1)',
+      formulaMetadata: { kind: 'normal', sourceFormula: '=_xlfn.SUM(A1:A1)' },
+    });
+
+    StructuralTransform.apply(workbook, {
+      kind: 'move-range',
+      sheetId: sheet.id,
+      sourceRange: { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 1 },
+      targetOrigin: { row: 2, column: 2 },
+    });
+
+    assert.equal(sheet.cells.get(2, 3)?.formula, '=SUM(C3:C3)');
+    assert.equal(sheet.cells.get(2, 3)?.formulaMetadata?.sourceFormula, '=_XLFN.SUM(C3:C3)');
+    assert.equal(sheet.cells.get(4, 3)?.formula, '=SUM(C3:C3)');
+    assert.equal(sheet.cells.get(4, 3)?.formulaMetadata?.sourceFormula, '=_XLFN.SUM(C3:C3)');
+  });
+
+  it('rejects structural edits that would invalidate OOXML formula-group ownership before mutation', () => {
+    const workbook = new WorkbookModel('unit-formula-group-structure', 'Formula Group Structure');
+    const sheet = workbook.getSheet('sheet-1');
+    sheet.cells.set(4, 0, {
+      value: null,
+      formula: '=1',
+      formulaMetadata: { kind: 'shared', sharedIndex: 3, sharedMaster: true, range: 'A5:A6' },
+    });
+
+    assert.throws(
+      () => StructuralTransform.apply(workbook, { kind: 'insert-rows', sheetId: sheet.id, at: 0, count: 1 }),
+      /formula metadata.*requires an explicit formula-group operation/,
+    );
+    assert.throws(() => StructuralTransform.apply(workbook, {
+      kind: 'move-range',
+      sheetId: sheet.id,
+      sourceRange: { sheetId: sheet.id, startRow: 4, endRow: 4, startColumn: 0, endColumn: 0 },
+      targetOrigin: { row: 6, column: 2 },
+    }), /formula metadata.*requires an explicit formula-group operation/);
+    assert.equal(sheet.cells.get(4, 0)?.formula, '=1');
+    assert.equal(sheet.cells.get(4, 0)?.formulaMetadata?.range, 'A5:A6');
+  });
+
   it('cell-shift insert moves the complete affected band by the selection extent', () => {
     const workbook = new WorkbookModel('unit-shift-cells', 'Shift Cells');
     const sheet = workbook.getSheet('sheet-1');

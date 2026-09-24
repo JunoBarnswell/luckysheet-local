@@ -285,6 +285,9 @@ function applyAxis(
     op: direction === 1 ? 'insert' : 'delete',
   };
   const formulaRewrite = preflightFormulaRewrite(workbook, sheet, shift, referenceOwners);
+  rejectFormulaGroupMetadataInRange(sheet, axis === 'row'
+    ? { sheetId: sheet.id, startRow: at, endRow: sheet.rowCount - 1, startColumn: 0, endColumn: Math.max(sheet.columnCount - 1, 0) }
+    : { sheetId: sheet.id, startRow: 0, endRow: Math.max(sheet.rowCount - 1, 0), startColumn: at, endColumn: sheet.columnCount - 1 }, 'axis shift');
   preflightAxisMetadata(workbook, sheet, axis, at, count, direction);
   const end = at + count - 1;
   let removed: Array<{ row: Row; column: Column; cell: CellData }> = [];
@@ -416,6 +419,7 @@ function applyCellShift(
     direction: plan.direction,
   };
   const formulaRewrite = preflightFormulaRewrite(workbook, sheet, shift, referenceOwners, referenceShift);
+  rejectFormulaGroupMetadataInRange(sheet, plan.band, 'cell shift');
   preflightCellShiftMetadata(workbook, sheet, plan);
   const sourceCells = sheet.cells.extractRegion(
     plan.band.startRow,
@@ -952,7 +956,25 @@ function rewriteReferencesForMovedRegion(
     if (owner.id === targetSheet.id
       && (insideCell(selection, formulaOwner.row, formulaOwner.column) || insideCell(destination, formulaOwner.row, formulaOwner.column))) continue;
     const next = transformMovedFormula(cell.formula, owner.id);
-    if (next !== cell.formula) plan.cells.push({ sheetId: owner.id, row: formulaOwner.row, column: formulaOwner.column, formula: next });
+    const sourceFormula = cell.formulaMetadata?.sourceFormula && !cell.formulaMetadata.preservedOnly
+      ? transformMovedFormula(cell.formulaMetadata.sourceFormula, owner.id)
+      : undefined;
+    if ((next !== cell.formula || (sourceFormula !== undefined && sourceFormula !== cell.formulaMetadata?.sourceFormula))
+      && hasFormulaGroupMetadata(cell)) {
+      throw new Error(`UNSUPPORTED_STRUCTURAL_REFERENCE: formula group at ${owner.id}!${formulaOwner.row}:${formulaOwner.column} requires an explicit formula-group transform before a moved range`);
+    }
+    if (next !== cell.formula && cell.formulaMetadata?.preservedOnly) {
+      throw new Error(`UNSUPPORTED_STRUCTURAL_REFERENCE: preserved-only formula at ${owner.id}!${formulaOwner.row}:${formulaOwner.column} cannot be rewritten for a moved range`);
+    }
+    if (next !== cell.formula || (sourceFormula !== undefined && sourceFormula !== cell.formulaMetadata?.sourceFormula)) {
+      plan.cells.push({
+        sheetId: owner.id,
+        row: formulaOwner.row,
+        column: formulaOwner.column,
+        formula: next,
+        ...(sourceFormula === undefined ? {} : { sourceFormula }),
+      });
+    }
   }
   for (const owner of workbook.getSheets()) {
     for (const storedRule of [...owner.conditionalFormats, ...owner.dataValidations]) {
@@ -1018,7 +1040,7 @@ interface MoveFormulaRule {
 type MoveRuleFormulaField = 'value1' | 'value2' | 'formula1' | 'formula2' | 'listSource.formula';
 
 interface MovedFormulaRewritePlan {
-  cells: Array<{ sheetId: string; row: number; column: number; formula: string }>;
+  cells: Array<{ sheetId: string; row: number; column: number; formula: string; sourceFormula?: string }>;
   names: Array<{
     entry: WorkbookModel['definedNameModels'][number];
     formula: string;
@@ -1034,7 +1056,14 @@ function applyMovedFormulaRewritePlan(workbook: WorkbookModel, plan: MovedFormul
     const sheet = workbook.getSheet(change.sheetId);
     const cell = sheet.cells.get(change.row, change.column);
     if (!cell) throw new Error(`STRUCTURAL_PATCH_INVARIANT: moved-range formula owner ${change.sheetId}!${change.row}:${change.column} disappeared`);
-    sheet.cells.set(change.row, change.column, { ...cell, formula: change.formula });
+    const next = { ...cell, formula: change.formula };
+    if (change.sourceFormula !== undefined) {
+      if (!cell.formulaMetadata || cell.formulaMetadata.preservedOnly) {
+        throw new Error('STRUCTURAL_PATCH_INVARIANT: moved formula provenance changed owner type during apply');
+      }
+      next.formulaMetadata = { ...cell.formulaMetadata, sourceFormula: change.sourceFormula };
+    }
+    sheet.cells.set(change.row, change.column, next);
     rewrittenOwners.push({ sheetId: change.sheetId, row: change.row, column: change.column });
   }
   for (const change of plan.names) {
@@ -1557,7 +1586,7 @@ function shiftOutline(sheet: WorksheetModel, axis: 'row' | 'column', at: number,
 }
 
 interface FormulaRewritePlan {
-  readonly cells: Array<{ sheetId: string; row: number; column: number; formula: string }>;
+  readonly cells: Array<{ sheetId: string; row: number; column: number; formula: string; sourceFormula?: string }>;
   readonly names: Array<{
     entry: WorkbookModel['definedNameModels'][number];
     formula: string;
@@ -1587,15 +1616,34 @@ function preflightFormulaRewrite(
     if (cell?.formula === undefined) {
       throw new Error(`STRUCTURAL_REFERENCE_INDEX_INVARIANT: formula owner ${owner.sheetId}!${owner.row}:${owner.column} is missing from the workbook`);
     }
-    const formula = transformFormula(cell.formula, (ast) => mapAstStructuralReferences(ast, {
+    const transformReferences = (ast: ReturnType<typeof parseFormula>) => mapAstStructuralReferences(ast, {
       shift,
       cellShift,
       ownerSheetId: sheet.id,
       targetSheetId: targetSheet.id,
       targetSheetName: targetSheet.name,
       sheetOrder,
-    }));
-    if (formula !== cell.formula) plan.cells.push({ sheetId: sheet.id, row: owner.row, column: owner.column, formula });
+    });
+    const formula = transformFormula(cell.formula, transformReferences);
+    const sourceFormula = cell.formulaMetadata?.sourceFormula && !cell.formulaMetadata.preservedOnly
+      ? transformFormula(cell.formulaMetadata.sourceFormula, transformReferences)
+      : undefined;
+    if ((formula !== cell.formula || (sourceFormula !== undefined && sourceFormula !== cell.formulaMetadata?.sourceFormula))
+      && hasFormulaGroupMetadata(cell)) {
+      throw new Error(`UNSUPPORTED_STRUCTURAL_REFERENCE: formula group at ${sheet.id}!${owner.row}:${owner.column} requires an explicit formula-group transform`);
+    }
+    if (formula !== cell.formula && cell.formulaMetadata?.preservedOnly) {
+      throw new Error(`UNSUPPORTED_STRUCTURAL_REFERENCE: preserved-only formula at ${sheet.id}!${owner.row}:${owner.column} cannot be rewritten`);
+    }
+    if (formula !== cell.formula || (sourceFormula !== undefined && sourceFormula !== cell.formulaMetadata?.sourceFormula)) {
+      plan.cells.push({
+        sheetId: sheet.id,
+        row: owner.row,
+        column: owner.column,
+        formula,
+        ...(sourceFormula === undefined ? {} : { sourceFormula }),
+      });
+    }
   }
   for (const entry of workbook.definedNameModels) {
     const ownerSheetId = entry.anchor?.sheetId ?? entry.sheetId ?? targetSheet.id;
@@ -1629,6 +1677,19 @@ function preflightFormulaRewrite(
 
 function structuralOwnerKey(owner: StructuralReferenceOwnerAddress): string {
   return `${owner.sheetId}\u0000${owner.row}\u0000${owner.column}`;
+}
+
+function hasFormulaGroupMetadata(cell: CellData): boolean {
+  const metadata = cell.formulaMetadata;
+  return metadata !== undefined
+    && (metadata.preservedOnly === true || metadata.kind !== 'normal' || metadata.range !== undefined);
+}
+
+function rejectFormulaGroupMetadataInRange(sheet: WorksheetModel, range: RangeRef, operation: string): void {
+  sheet.cells.forEachInRange(range.startRow, range.endRow, range.startColumn, range.endColumn, (cell, row, column) => {
+    if (!hasFormulaGroupMetadata(cell)) return;
+    throw new Error(`UNSUPPORTED_STRUCTURAL_REFERENCE: ${cell.formulaMetadata?.kind} formula metadata at ${sheet.id}!${row}:${column} requires an explicit formula-group operation before ${operation}`);
+  });
 }
 
 function mapCellShiftCoordinateForOwner(
@@ -1675,7 +1736,14 @@ function applyFormulaRewritePlan(
     if (!coordinate) continue;
     const cell = sheet.cells.get(coordinate.row, coordinate.column);
     if (!cell) throw new Error(`STRUCTURAL_PATCH_INVARIANT: formula owner ${sheet.id}!${coordinate.row}:${coordinate.column} was not preserved`);
-    sheet.cells.set(coordinate.row, coordinate.column, { ...cell, formula: change.formula });
+    const next = { ...cell, formula: change.formula };
+    if (change.sourceFormula !== undefined) {
+      if (!cell.formulaMetadata || cell.formulaMetadata.preservedOnly) {
+        throw new Error('STRUCTURAL_PATCH_INVARIANT: formula provenance changed owner type during apply');
+      }
+      next.formulaMetadata = { ...cell.formulaMetadata, sourceFormula: change.sourceFormula };
+    }
+    sheet.cells.set(coordinate.row, coordinate.column, next);
     rewrittenOwners.push({ sheetId: sheet.id, row: coordinate.row, column: coordinate.column });
   }
   for (const change of plan.names) {
@@ -1719,6 +1787,8 @@ function applyMoveRange(
   if (rangesIntersect(normalizedSource, target)) {
     throw new Error('Move range cannot overlap its source range');
   }
+  rejectFormulaGroupMetadataInRange(sheet, normalizedSource, 'move-range source');
+  rejectFormulaGroupMetadataInRange(sheet, target, 'move-range destination');
   validateMoveMetadataPreservation(workbook, sheet, normalizedSource, target);
   validateDataRegionMovePreservation(sheet, normalizedSource, target);
 
@@ -1730,23 +1800,37 @@ function applyMoveRange(
     normalizedSource.endRow,
     normalizedSource.startColumn,
     normalizedSource.endColumn,
-  ).map((entry) => ({
-    ...entry,
-    cell: entry.cell.formula
-      ? {
-        ...entry.cell,
-        formula: transformFormula(entry.cell.formula, (ast) => mapAstMovedReferences(ast, {
-          selection: normalizedSource,
-          rowDelta,
-          columnDelta: colDelta,
-          ownerSheetId: sheet.id,
-          targetSheetId: sheet.id,
-          targetSheetName: sheet.name,
-          sheetOrder,
-        })),
-      }
-      : entry.cell,
-  }));
+  ).map((entry) => {
+    const mapMovedReferences = (ast: ReturnType<typeof parseFormula>) => mapAstMovedReferences(ast, {
+      selection: normalizedSource,
+      rowDelta,
+      columnDelta: colDelta,
+      ownerSheetId: sheet.id,
+      targetSheetId: sheet.id,
+      targetSheetName: sheet.name,
+      sheetOrder,
+    });
+    const formula = entry.cell.formula === undefined
+      ? undefined
+      : transformFormula(entry.cell.formula, mapMovedReferences);
+    if (formula !== entry.cell.formula && entry.cell.formulaMetadata?.preservedOnly) {
+      throw new Error(`UNSUPPORTED_STRUCTURAL_REFERENCE: preserved-only formula at ${sheet.id}!${entry.row}:${entry.column} cannot be rewritten for a moved range`);
+    }
+    if (entry.cell.formulaMetadata?.preservedOnly && entry.cell.formulaMetadata.sourceFormula) {
+      throw new Error(`UNSUPPORTED_STRUCTURAL_REFERENCE: preserved-only formula provenance at ${sheet.id}!${entry.row}:${entry.column} cannot move safely`);
+    }
+    let cell = formula === undefined || formula === entry.cell.formula
+      ? entry.cell
+      : { ...entry.cell, formula };
+    const sourceFormula = entry.cell.formulaMetadata?.sourceFormula
+      ? transformFormula(entry.cell.formulaMetadata.sourceFormula, mapMovedReferences)
+      : undefined;
+    if (sourceFormula !== undefined && sourceFormula !== entry.cell.formulaMetadata?.sourceFormula) {
+      if (!entry.cell.formulaMetadata) throw new Error('STRUCTURAL_PATCH_INVARIANT: formula provenance disappeared during move preflight');
+      cell = { ...cell, formulaMetadata: { ...entry.cell.formulaMetadata, sourceFormula } };
+    }
+    return { ...entry, cell };
+  });
   const formulaRewrite = rewriteReferencesForMovedRegion(workbook, sheet, normalizedSource, target, rowDelta, colDelta, referenceOwners);
   sheet.ensureRangeExtent(target.startRow, target.endRow, target.startColumn, target.endColumn);
   sheet.cells.extractRegion(
