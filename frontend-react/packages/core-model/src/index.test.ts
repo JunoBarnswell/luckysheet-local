@@ -364,7 +364,7 @@ test('sheet rename and duplication preserve every persisted formula owner identi
     dataValidation: { type: 'custom', formula1: "='Source'!A1" },
   });
   workbook.dataModel.views.set('formula-view', {
-    id: 'formula-view', name: 'Formula view', tableId: 'source-table', marginLeftPx: 0,
+    id: 'formula-view', name: 'Formula view', tableId: 'source-table',
     fields: [{ fieldId: 'calculated', caption: 'Calculated', formula: "='Source'!A1" }],
   });
   const externalOwner = workbook.getSheet('sheet-1');
