@@ -14,6 +14,10 @@ export interface RebaseResult {
   transformed: boolean;
 }
 
+export interface StructuralRebaseContext {
+  readonly sheetOrder: readonly { readonly id: string; readonly name: string }[];
+}
+
 type StructuralAxis = 'row' | 'column';
 const MAX_ROW_INDEX = 1_048_575;
 const MAX_COLUMN_INDEX = 16_383;
@@ -87,19 +91,12 @@ function transformParams(
   delta: StructuralDelta,
   ownerSheetId: string,
   pendingKind: CollaborationOperationKind,
+  context: StructuralRebaseContext,
   field = '',
   root = false,
 ): unknown {
-  if (typeof value === 'string' && field.toLowerCase().includes('formula') && value.trimStart().startsWith('=')) {
-    try {
-      return formatFormula(mapAstStructuralReferences(parseFormula(value), {
-        shift: { axis: deltaAxis(delta), at: delta.at, count: delta.count, op: deltaOperation(delta) },
-        ownerSheetId,
-        targetSheetId: delta.sheetId,
-      }));
-    } catch (error) {
-      rebaseConflict(`pending formula cannot be structurally transformed: ${error instanceof Error ? error.message : String(error)}`);
-    }
+  if (typeof value === 'string' && isFormulaField(field, value) && value.trim() !== '') {
+    return transformFormulaValue(value, delta, ownerSheetId, context);
   }
   if (Array.isArray(value)) {
     if ((field === 'rowIndices' && deltaAxis(delta) === 'row')
@@ -109,11 +106,14 @@ function transformParams(
         return shiftPoint(entry, delta);
       });
     }
-    return value.map((entry) => transformParams(entry, delta, ownerSheetId, pendingKind, field));
+    return value.map((entry) => transformParams(entry, delta, ownerSheetId, pendingKind, context, field));
   }
   if (!isRecord(value)) return value;
 
   const sheetId = typeof value.sheetId === 'string' ? value.sheetId : ownerSheetId;
+  const formulaOwnerSheetId = isRecord(value.formulaAnchor) && typeof value.formulaAnchor.sheetId === 'string'
+    ? value.formulaAnchor.sheetId
+    : sheetId;
   if (isRange(value)) return shiftRange(value, delta);
 
   const isAddress = ADDRESS_FIELDS.has(field) || ADDRESS_RANGE_FIELDS.has(field) || root;
@@ -133,7 +133,11 @@ function transformParams(
       next[key] = entry;
       continue;
     }
-    next[key] = transformParams(entry, delta, sheetId, pendingKind, key);
+    if (typeof entry === 'string' && (isFormulaField(key, entry) || isRuleFormulaField(key, entry, value))) {
+      next[key] = transformFormulaValue(entry, delta, formulaOwnerSheetId, context);
+    } else {
+      next[key] = transformParams(entry, delta, sheetId, pendingKind, context, key);
+    }
   }
 
   if (root && sheetId === delta.sheetId && isStructuralKind(pendingKind, deltaAxis(delta))) {
@@ -142,6 +146,44 @@ function transformParams(
     if (typeof at === 'number') next[atKey] = shiftPoint(at, delta);
   }
   return next;
+}
+
+function isFormulaField(field: string, formula: string): boolean {
+  const normalized = field.toLowerCase();
+  return normalized === 'formula'
+    || ((normalized === 'formula1' || normalized === 'formula2') && formula.trimStart().startsWith('='));
+}
+
+function isRuleFormulaField(field: string, formula: string, rule: Record<string, unknown>): boolean {
+  const startsWithEquals = formula.trimStart().startsWith('=');
+  if ((field === 'value1' || field === 'value2') && startsWithEquals) return true;
+  if (field === 'value1' && rule.operator === 'formula') return true;
+  if (field === 'formula1' && (rule.operator === 'formula' || rule.type === 'custom')) return true;
+  return field === 'formula2' && rule.type === 'custom';
+}
+
+function transformFormulaValue(
+  formula: string,
+  delta: StructuralDelta,
+  ownerSheetId: string,
+  context: StructuralRebaseContext,
+): string {
+  const targetSheet = context.sheetOrder.find((sheet) => sheet.id === delta.sheetId);
+  if (!targetSheet) rebaseConflict(`worksheet identity is missing for formula references on ${delta.sheetId}`);
+  try {
+    const hasPrefix = formula.trimStart().startsWith('=');
+    const source = hasPrefix ? formula : `=${formula}`;
+    const transformed = formatFormula(mapAstStructuralReferences(parseFormula(source), {
+      shift: { axis: deltaAxis(delta), at: delta.at, count: delta.count, op: deltaOperation(delta) },
+      ownerSheetId,
+      targetSheetId: delta.sheetId,
+      targetSheetName: targetSheet.name,
+      sheetOrder: context.sheetOrder,
+    }));
+    return hasPrefix ? transformed : transformed.replace(/^=/, '');
+  } catch (error) {
+    rebaseConflict(`pending formula cannot be structurally transformed: ${error instanceof Error ? error.message : String(error)}`);
+  }
 }
 
 function shiftSnapshotCellKey(value: unknown, sheetId: string, delta: StructuralDelta): string {
@@ -246,7 +288,11 @@ const STRUCTURAL_KINDS = new Set<CollaborationOperationKind>([
 ]);
 
 /** 将 pending 操作按已提交的结构变更 rebase — 例: A 插第 5 行，B 改 A10 → A11 */
-export function rebaseMutation(pending: ClassifiedMutation, committed: ClassifiedMutation): RebaseResult {
+export function rebaseMutation(
+  pending: ClassifiedMutation,
+  committed: ClassifiedMutation,
+  context: StructuralRebaseContext = { sheetOrder: [] },
+): RebaseResult {
   const delta = extractStructuralDelta(committed);
   if (!delta) {
     if (STRUCTURAL_KINDS.has(committed.kind)) rebaseConflict(`committed ${committed.mutationId} has no structural bounds`);
@@ -266,7 +312,7 @@ export function rebaseMutation(pending: ClassifiedMutation, committed: Classifie
     return shiftRange(range, delta);
   });
 
-  const transformedParams = transformParams(pending.params, delta, pending.sheetId, pending.kind, '', true);
+  const transformedParams = transformParams(pending.params, delta, pending.sheetId, pending.kind, context, '', true);
   const rebasedParams = pending.mutationId === 'range.paste'
     ? transformPasteSnapshots(pending.params, transformedParams, pending.sheetId, delta)
     : transformedParams;
@@ -281,11 +327,12 @@ export function rebaseMutation(pending: ClassifiedMutation, committed: Classifie
 export function rebaseAgainstHistory(
   pending: ClassifiedMutation,
   committedHistory: ClassifiedMutation[],
+  context: StructuralRebaseContext = { sheetOrder: [] },
 ): RebaseResult {
   let current = pending;
   let transformed = false;
   for (const committed of committedHistory) {
-    const result = rebaseMutation(current, committed);
+    const result = rebaseMutation(current, committed, context);
     current = result.rebased;
     transformed = transformed || result.transformed;
   }

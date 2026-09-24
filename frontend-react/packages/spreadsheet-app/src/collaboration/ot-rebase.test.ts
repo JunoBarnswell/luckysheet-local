@@ -27,6 +27,51 @@ test('fails closed when a structural revision would move an unclassified mutatio
   assert.throws(() => rebaseMutation(pending, committed), /Cannot rebase unknown mutation/);
 });
 
+test('rebases explicitly qualified formulas using canonical worksheet identities', () => {
+  const committed = classifyMutation('row.insert', { at: 5, count: 1 }, 'source-id', []);
+  const pending = classifyMutation('cell.set', { row: 0, column: 0, formula: '=Source!A10' }, 'owner-id', [{
+    sheetId: 'owner-id', startRow: 0, endRow: 0, startColumn: 0, endColumn: 0,
+  }]);
+
+  assert.throws(() => rebaseMutation(pending, committed), /worksheet identity is missing/);
+
+  const { rebased } = rebaseMutation(pending, committed, {
+    sheetOrder: [
+      { id: 'source-id', name: 'Source' },
+      { id: 'owner-id', name: 'Owner' },
+    ],
+  });
+
+  assert.equal((rebased.params as { formula: string }).formula, '=Source!A11');
+});
+
+test('rebases formula-rule parameters from their formula anchor sheet', () => {
+  const committed = classifyMutation('row.insert', { at: 5, count: 1 }, 'source-id', []);
+  const pending = classifyMutation('range.paste', {
+    transfer: 'copy',
+    clearSource: false,
+    snapshot: {
+      cells: [],
+      validations: [{
+        sheetId: 'owner-id',
+        formulaAnchor: { sheetId: 'source-id', row: 0, column: 0 },
+        operator: 'formula',
+        value1: 'A10',
+      }],
+    },
+  }, 'owner-id', []);
+
+  const { rebased } = rebaseMutation(pending, committed, {
+    sheetOrder: [
+      { id: 'source-id', name: 'Source' },
+      { id: 'owner-id', name: 'Owner' },
+    ],
+  });
+
+  const validations = (rebased.params as { snapshot: { validations: Array<{ value1: string }> } }).snapshot.validations;
+  assert.equal(validations[0]?.value1, 'A11');
+});
+
 test('classifies cut paste as structural and fails closed across a committed cut', () => {
   const committed = classifyMutation('range.paste', { transfer: 'move', clearSource: true }, 's1', []);
   const pending = classifyMutation('cell.set', { row: 9, column: 0 }, 's1', [{

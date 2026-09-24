@@ -211,7 +211,11 @@ export class CollaborationSession {
     history: readonly ReturnType<typeof classifyMutation>[] = this.committedMutations,
   ) {
     const pending = classifyMutation(mutationId, params, sheetId, [...affectedRanges]);
-    return rebaseAgainstHistory(pending, [...history]);
+    return rebaseAgainstHistory(pending, [...history], { sheetOrder: this.currentSheetOrder() });
+  }
+
+  private currentSheetOrder(): readonly { readonly id: string; readonly name: string }[] {
+    return this.runtime.workbook.sheetOrder.map((id) => ({ id, name: this.runtime.workbook.getSheet(id).name }));
   }
 
   recordCommittedMutations(mutations: Array<{ id: string; params: unknown; sheetId: string; affectedRanges: MutationInfo['affectedRanges'] }>): void {
@@ -357,7 +361,7 @@ export class CollaborationSession {
             throw new Error(`COLLABORATION_CONFLICT: ${entry.operation.operationId} 的目标已被其他用户修改，草稿已保留`);
           }
         }
-        rebaseAgainstHistory(mutation, [...committed]);
+        rebaseAgainstHistory(mutation, [...committed], { sheetOrder: this.currentSheetOrder() });
       }
     }
   }
