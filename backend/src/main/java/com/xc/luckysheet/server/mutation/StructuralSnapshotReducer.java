@@ -526,6 +526,7 @@ final class StructuralSnapshotReducer {
         for (int targetOffset = 0; targetOffset < mapping.length; targetOffset++) {
             targetRowsBySource[mapping[targetOffset] - selected.startRow()] = selected.startRow() + targetOffset;
         }
+        rejectMovedFormulaGroups(sheet, selected, targetRowsBySource);
         validatePermutationMetadataExact(root, sheet, selected, metadataScope, mapping);
         remapPermutedCells(sheet, selected, targetRowsBySource);
         remapPermutationMetadata(root, sheet, selected, metadataScope, mapping);
@@ -2157,9 +2158,6 @@ final class StructuralSnapshotReducer {
                 ObjectNode cell = requireObject(column.getValue(), "Cell").deepCopy();
                 int targetRow = targetRowsBySource[sourceRow - range.startRow()];
                 if (targetRow != sourceRow) {
-                    if (hasFormulaGroupMetadata(cell)) {
-                        throw ServiceException.unavailable("UNSUPPORTED_STRUCTURAL_REFERENCE: row permutation cannot remap formula-group metadata at " + range.sheetId() + "!" + sourceRow + ":" + columnIndex);
-                    }
                     remapPermutedFormulaOwner(cell, targetRow - sourceRow, range.sheetId(), sourceRow, columnIndex);
                 }
                 entries.add(new CellEntry(sourceRow, columnIndex, cell));
@@ -2174,6 +2172,24 @@ final class StructuralSnapshotReducer {
         for (CellEntry entry : entries) {
             int target = targetRowsBySource[entry.row() - range.startRow()];
             SnapshotMutationSupport.putCell(sheet, new SnapshotMutationSupport.CellCoordinate(target, entry.column()), entry.cell());
+        }
+    }
+
+    private static void rejectMovedFormulaGroups(ObjectNode sheet, RangeRef range, int[] targetRowsBySource) {
+        ObjectNode cells = SnapshotMutationSupport.cells(sheet);
+        for (int sourceRow = range.startRow(); sourceRow <= range.endRow(); sourceRow++) {
+            ObjectNode row = SnapshotMutationSupport.cellRow(cells, sourceRow, false);
+            if (row == null) continue;
+            for (java.util.Iterator<java.util.Map.Entry<String, JsonNode>> columns = row.fields(); columns.hasNext();) {
+                java.util.Map.Entry<String, JsonNode> column = columns.next();
+                int columnIndex = integerKey(column.getKey(), SnapshotMutationSupport.MAX_COLUMN, "Cell column");
+                if (columnIndex < range.startColumn() || columnIndex > range.endColumn()) continue;
+                if (targetRowsBySource[sourceRow - range.startRow()] != sourceRow
+                        && hasFormulaGroupMetadata(requireObject(column.getValue(), "Cell"))) {
+                    throw ServiceException.unavailable("UNSUPPORTED_STRUCTURAL_REFERENCE: row permutation cannot remap formula-group metadata at "
+                            + range.sheetId() + "!" + sourceRow + ":" + columnIndex);
+                }
+            }
         }
     }
 
@@ -2209,6 +2225,11 @@ final class StructuralSnapshotReducer {
             FormulaReferenceTransformer.assertRowOffsetSupported(formula);
             owner.put(field, FormulaReferenceTransformer.offsetForPermutation(formula, rowDelta));
         } catch (ServiceException error) {
+            if (!"SERVICE_UNAVAILABLE".equals(error.code())) {
+                throw new ServiceException("SERVICE_UNAVAILABLE", 503,
+                        "UNSUPPORTED_STRUCTURAL_REFERENCE: row permutation cannot rewrite formula owner " + sheetId + "!" + row + ":" + column,
+                        error);
+            }
             throw error;
         } catch (RuntimeException error) {
             throw ServiceException.unavailable("UNSUPPORTED_STRUCTURAL_REFERENCE: row permutation cannot parse formula owner " + sheetId + "!" + row + ":" + column);

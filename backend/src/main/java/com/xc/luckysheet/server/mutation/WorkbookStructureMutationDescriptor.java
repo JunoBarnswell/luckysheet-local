@@ -596,7 +596,7 @@ final class WorkbookStructureMutationDescriptor extends CanonicalJsonMutationDes
     }
 
     private boolean containsDeletedRange(JsonNode value, String sourceSheetId) {
-        if (!value.isObject()) return false;
+        if (value == null || value.isNull() || !value.isObject()) return false;
         if (sourceSheetId.equals(value.path("sheetId").asText())) return true;
         if (sourceSheetId.equals(value.path("range").path("sheetId").asText())) return true;
         if (sourceSheetId.equals(value.path("sourceRange").path("sheetId").asText())) return true;

@@ -1255,7 +1255,7 @@ class MutationDescriptorRegistryTest {
         assertEquals("=A2", moved.path("formula").asText());
         assertEquals("=A2", moved.path("formulaMetadata").path("sourceFormula").asText());
         assertEquals("=A2", moved.path("presentation").path("source").path("formula").asText());
-        JsonNode auxiliaryOnly = shifted.path("sheets").get(0).path("cells").path("0").path("1");
+        JsonNode auxiliaryOnly = shifted.path("sheets").get(0).path("cells").path("1").path("1");
         assertEquals("=Sheet1!A2", auxiliaryOnly.path("formulaMetadata").path("sourceFormula").asText());
         assertEquals("=Sheet1!A2", auxiliaryOnly.path("presentation").path("source").path("formula").asText());
         assertEquals("=Sheet1!A2", shifted.path("sheets").get(1).path("cells").path("0").path("0").path("formula").asText());
