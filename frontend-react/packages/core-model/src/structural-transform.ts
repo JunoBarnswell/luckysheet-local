@@ -706,7 +706,7 @@ function shiftCellBandMetadata(
     for (const rule of [...owner.conditionalFormats, ...owner.dataValidations]) {
       rule.ranges = rule.ranges.filter(shiftRange);
       if (rule.ranges.length === 0) throw new Error(`Cell shift removes every range owned by rule ${rule.id}`);
-      if (rule.listSource?.kind === 'range' && rule.listSource.range.sheetId === sheet.id
+      if ('listSource' in rule && rule.listSource?.kind === 'range' && rule.listSource.range.sheetId === sheet.id
         && !shiftRange(rule.listSource.range)) {
         throw new Error(`Cell shift removes the list source for data validation ${rule.id}`);
       }
@@ -742,18 +742,18 @@ function shiftCellBandMetadata(
       }
     }
   }
-  for (const owner of ownerSheets) for (const payload of owner.drawingPayloads.values()) {
+  for (const owner of ownerSheets) for (const [payloadId, payload] of owner.drawingPayloads) {
     if (payload.kind === 'camera' || payload.kind === 'screenshot') {
       if (!shiftRange(payload.sourceRange)) throw new Error(`Cell shift would remove ${payload.kind} source range`);
     } else if (payload.kind === 'chart') {
       if (payload.source.kind === 'worksheet-ranges') {
         for (const range of payload.source.ranges) {
-          if (!shiftRange(range)) throw new Error(`Cell shift removes a worksheet source range for chart ${payload.id}`);
+          if (!shiftRange(range)) throw new Error(`Cell shift removes a worksheet source range for chart ${payloadId}`);
         }
-        if (payload.source.ranges.length === 0) throw new Error(`Chart ${payload.id} has no worksheet source ranges`);
+        if (payload.source.ranges.length === 0) throw new Error(`Chart ${payloadId} has no worksheet source ranges`);
       }
       else if (payload.source.kind === 'report-range' && !shiftRange(payload.source.range)) throw new Error('Cell shift would remove Chart report binding');
-      if (payload.categoryRange && !shiftRange(payload.categoryRange)) throw new Error(`Cell shift removes chart category range ${payload.id}`);
+      if (payload.categoryRange && !shiftRange(payload.categoryRange)) throw new Error(`Cell shift removes chart category range ${payloadId}`);
       for (const series of payload.series ?? []) {
         if (!shiftRange(series.range)) throw new Error(`Cell shift removes chart series range ${series.id}`);
         for (const range of [series.xRange, series.yRange, series.sizeRange, series.categoryRange,
@@ -764,7 +764,7 @@ function shiftCellBandMetadata(
         }
       }
     } else if (payload.kind === 'form-control') {
-      if (payload.cellLink?.sheetId === sheet.id) {
+      if ('cellLink' in payload && payload.cellLink?.sheetId === sheet.id) {
         const anchor = mapAnchor(payload.cellLink.row, payload.cellLink.column);
         if (!anchor) throw new Error(`Cell shift removes form-control cell link ${payload.cellLink.sheetId}`);
         payload.cellLink = { ...payload.cellLink, row: anchor.row, column: anchor.column };
