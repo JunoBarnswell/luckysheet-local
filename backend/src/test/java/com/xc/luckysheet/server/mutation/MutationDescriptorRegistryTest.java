@@ -1215,7 +1215,11 @@ class MutationDescriptorRegistryTest {
     void structuralRowMutationMovesCellsMetadataAndParsedFormulaReferencesTogether() throws Exception {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         JsonNode snapshot = mapper.readTree("""
-                {"definedNames":{"Sales":"=Sheet1!A2"},"definedNameModels":[{"name":"Sales","formula":"=Sheet1!A2","scope":"workbook"}],"sheets":[
+                {"definedNames":{"Sales":"=Sheet1!A2","OtherRelative":"=A2","LocalAnchor":"=A2"},"definedNameModels":[
+                  {"name":"Sales","formula":"=Sheet1!A2","scope":"workbook"},
+                  {"name":"OtherRelative","formula":"=A2","scope":"workbook","anchor":{"sheetId":"sheet-2","row":1,"column":0}},
+                  {"name":"LocalAnchor","formula":"=A2","scope":"workbook","anchor":{"sheetId":"sheet-1","row":3,"column":0}},
+                  {"name":"SheetScopedReference","formula":"=Sheet1!A2","scope":"sheet","sheetId":"sheet-2","anchor":{"sheetId":"sheet-2","row":1,"column":0}}],"sheets":[
                   {"id":"sheet-1","name":"Sheet1","rowCount":5,"columnCount":3,"cells":{"0":{"0":{"value":null,"formula":"=A2"}},"1":{"0":{"value":10}}},"pane":{"kind":"frozen","xSplit":0,"ySplit":1,"startRow":1,"startColumn":0},"defaultRowHeightPx":20,"defaultColumnWidthPx":64,"hiddenRows":[1],"rowHeightsPx":{"1":33},"merges":[],"conditionalFormats":[],"dataValidations":[],"pivots":[],"sparklines":[],"drawings":[],"drawingPayloads":{},"sheetTables":[],"review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}},"spillRanges":[],"protectionRules":[]},
                   {"id":"sheet-2","name":"Other","rowCount":5,"columnCount":3,"cells":{"0":{"0":{"value":null,"formula":"=Sheet1!A2"}}},"pane":{"kind":"none"},"defaultRowHeightPx":20,"defaultColumnWidthPx":64,"review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}}}
                 ]}
@@ -1230,21 +1234,56 @@ class MutationDescriptorRegistryTest {
         assertEquals("=A3", current.path("sheets").get(0).path("cells").path("0").path("0").path("formula").asText());
         assertEquals("=Sheet1!A3", current.path("sheets").get(1).path("cells").path("0").path("0").path("formula").asText());
         assertEquals("=Sheet1!A3", current.path("definedNames").path("Sales").asText());
+        assertEquals("=A2", current.path("definedNames").path("OtherRelative").asText());
+        assertEquals("=A2", current.path("definedNameModels").get(1).path("formula").asText());
+        assertEquals("=A3", current.path("definedNames").path("LocalAnchor").asText());
+        assertEquals("=A3", current.path("definedNameModels").get(2).path("formula").asText());
+        assertEquals(4, current.path("definedNameModels").get(2).path("anchor").path("row").asInt());
+        assertEquals("=Sheet1!A3", current.path("definedNameModels").get(3).path("formula").asText());
+        assertEquals(1, current.path("definedNameModels").get(3).path("anchor").path("row").asInt());
         assertEquals(2, current.path("sheets").get(0).path("hiddenRows").get(0).asInt());
+
+        ObjectNode deletedAnchorSnapshot = (ObjectNode) snapshot.deepCopy();
+        OperationMutation deleteAnchorRow = new OperationMutation("rows.deleted", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","at":3,"count":1}
+                """));
+        ServiceException deletedAnchor = assertThrows(ServiceException.class,
+                () -> registry.applyPublicMutations(deletedAnchorSnapshot, List.of(deleteAnchorRow)));
+        assertEquals("VALIDATION_ERROR", deletedAnchor.code());
+        assertEquals(3, deletedAnchorSnapshot.path("definedNameModels").get(2).path("anchor").path("row").asInt());
     }
 
     @Test
     void cellInsertAndRowPermutationHaveDeterministicInverseFriendlySnapshots() throws Exception {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         JsonNode snapshot = mapper.readTree("""
-                {"sheets":[{"id":"sheet-1","name":"Sheet1","rowCount":5,"columnCount":3,"cells":{"0":{"0":{"value":null,"formula":"=A1"}},"1":{"0":{"value":"drop"}}},"pane":{"kind":"none"},"defaultRowHeightPx":20,"defaultColumnWidthPx":64,"review":{"notesByCell":{"0:0":"n1"},"notesById":{"n1":{"id":"n1"}},"threadIdsByCell":{},"threadsById":{}},"merges":[],"conditionalFormats":[],"dataValidations":[],"pivots":[],"sparklines":[],"drawings":[],"drawingPayloads":{},"sheetTables":[],"spillRanges":[],"protectionRules":[]}]}
+                {"definedNames":{"OtherRelative":"=A1","LocalAnchor":"=A2"},"definedNameModels":[
+                  {"name":"OtherRelative","formula":"=A1","scope":"workbook","anchor":{"sheetId":"sheet-2","row":0,"column":0}},
+                  {"name":"SheetScopedReference","formula":"=Sheet1!A1","scope":"sheet","sheetId":"sheet-2","anchor":{"sheetId":"sheet-2","row":0,"column":0}},
+                  {"name":"LocalAnchor","formula":"=A2","scope":"workbook","anchor":{"sheetId":"sheet-1","row":1,"column":0}}],"sheets":[
+                  {"id":"sheet-1","name":"Sheet1","rowCount":5,"columnCount":3,"cells":{"0":{"0":{"value":null,"formula":"=A1"}},"1":{"0":{"value":"drop"}}},"pane":{"kind":"none"},"defaultRowHeightPx":20,"defaultColumnWidthPx":64,"review":{"notesByCell":{"0:0":"n1"},"notesById":{"n1":{"id":"n1"}},"threadIdsByCell":{},"threadsById":{}},"merges":[],"conditionalFormats":[],"dataValidations":[],"pivots":[],"sparklines":[],"drawings":[],"drawingPayloads":{},"sheetTables":[],"spillRanges":[],"protectionRules":[]},
+                  {"id":"sheet-2","name":"Other","rowCount":5,"columnCount":3,"cells":{}}]}
                 """);
         OperationMutation shift = new OperationMutation("cells.inserted", "sheet-1", mapper.readTree("""
                 {"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0},"operation":"insert","axis":"row","affectedBand":{"sheetId":"sheet-1","startRow":0,"endRow":4,"startColumn":0,"endColumn":0}}
                 """));
         JsonNode current = registry.prepare(snapshot, shift, WorkbookAclRole.EDITOR).descriptor().apply(snapshot, shift);
         assertEquals("=A2", current.path("sheets").get(0).path("cells").path("1").path("0").path("formula").asText());
+        assertEquals("=A1", current.path("definedNames").path("OtherRelative").asText());
+        assertEquals("=A1", current.path("definedNameModels").get(0).path("formula").asText());
+        assertEquals("=Sheet1!A2", current.path("definedNameModels").get(1).path("formula").asText());
+        assertEquals("=A3", current.path("definedNames").path("LocalAnchor").asText());
+        assertEquals("=A3", current.path("definedNameModels").get(2).path("formula").asText());
+        assertEquals(2, current.path("definedNameModels").get(2).path("anchor").path("row").asInt());
         assertEquals("n1", current.path("sheets").get(0).path("review").path("notesByCell").path("1:0").asText());
+
+        OperationMutation deleteAnchoredCell = new OperationMutation("cells.deleted", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":2,"endRow":2,"startColumn":0,"endColumn":0},"operation":"delete","axis":"row","affectedBand":{"sheetId":"sheet-1","startRow":2,"endRow":4,"startColumn":0,"endColumn":0}}
+                """));
+        ServiceException deletedCellAnchor = assertThrows(ServiceException.class,
+                () -> registry.applyPublicMutations(current, List.of(deleteAnchoredCell)));
+        assertEquals("VALIDATION_ERROR", deletedCellAnchor.code());
+        assertEquals(2, current.path("definedNameModels").get(2).path("anchor").path("row").asInt());
 
         OperationMutation restore = new OperationMutation("cells.inserted.restore", "sheet-1", mapper.readTree("""
                 {"spec":{"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0},"operation":"insert","axis":"row","affectedBand":{"sheetId":"sheet-1","startRow":0,"endRow":4,"startColumn":0,"endColumn":0}},"cells":[{"row":0,"column":0,"cell":{"value":null,"formula":"=A1"}},{"row":1,"column":0,"cell":{"value":"drop"}}]}
@@ -1318,6 +1357,28 @@ class MutationDescriptorRegistryTest {
         secondSheet.put("name", "Sheet2");
         ((ArrayNode) threeDimensionalSnapshot.path("sheets")).add(secondSheet);
         assertThrows(ServiceException.class, () -> registry.applyPublicMutations(threeDimensionalSnapshot, List.of(move)));
+    }
+
+    @Test
+    void rangeMovePreservesGlobalNameReferencesRelativeToAnotherSheet() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        JsonNode snapshot = mapper.readTree("""
+                {"dataModel":{"sources":[],"tables":[],"relationships":[],"views":[]},
+                 "definedNames":{"Relative":"=A1"},
+                 "definedNameModels":[{"name":"Relative","formula":"=A1","scope":"workbook","anchor":{"sheetId":"sheet-2","row":0,"column":0}}],
+                 "sheets":[
+                   {"id":"sheet-1","name":"Sheet1","rowCount":6,"columnCount":6,"cells":{"0":{"0":{"value":7}}},"pane":{"kind":"none"},"merges":[],"hiddenRows":[],"hiddenColumns":[],"rowHeightsPx":{},"columnWidthsPx":{},"drawings":[],"drawingPayloads":{},"spillRanges":[],"sheetTables":[],"conditionalFormats":[],"dataValidations":[],"protectionRules":[],"outline":{"groups":[]},"sparklines":[],"pivots":[],"dataRegions":[],"hyperlinks":[],"review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}}},
+                   {"id":"sheet-2","name":"Sheet2","rowCount":6,"columnCount":6,"cells":{},"pane":{"kind":"none"},"merges":[],"hiddenRows":[],"hiddenColumns":[],"rowHeightsPx":{},"columnWidthsPx":{},"drawings":[],"drawingPayloads":{},"spillRanges":[],"sheetTables":[],"conditionalFormats":[],"dataValidations":[],"protectionRules":[],"outline":{"groups":[]},"sparklines":[],"pivots":[],"dataRegions":[],"hyperlinks":[],"review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}}}]}
+                """
+        );
+        OperationMutation move = new OperationMutation("range.move", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","sourceRange":{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0},"targetOrigin":{"row":2,"column":2}}
+                """));
+
+        JsonNode moved = registry.applyPublicMutations(snapshot, List.of(move));
+
+        assertEquals("=A1", moved.path("definedNames").path("Relative").asText());
+        assertEquals("=A1", moved.path("definedNameModels").get(0).path("formula").asText());
     }
 
     @Test

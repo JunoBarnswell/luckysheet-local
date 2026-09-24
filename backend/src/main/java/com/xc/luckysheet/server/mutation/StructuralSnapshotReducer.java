@@ -9,7 +9,9 @@ import com.xc.luckysheet.server.contract.RangeRef;
 import com.xc.luckysheet.server.service.ServiceException;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.function.Function;
 
@@ -410,6 +412,7 @@ final class StructuralSnapshotReducer {
 
     private static void rewriteMovedFormulas(ObjectNode root, ObjectNode targetSheet, RangeRef source, RangeRef destination, int rowDelta, int columnDelta) {
         FormulaReferenceTransformer.SheetIdentity targetIdentity = identity(targetSheet);
+        Map<DefinedNameKey, FormulaReferenceTransformer.SheetIdentity> definedNameOwners = definedNameFormulaOwners(root, targetIdentity);
         FormulaReferenceTransformer.Range selected = formulaRange(source);
         List<FormulaReferenceTransformer.SheetIdentity> sheetOrder = new ArrayList<>();
         for (JsonNode raw : SnapshotMutationSupport.sheets(root)) {
@@ -449,13 +452,15 @@ final class StructuralSnapshotReducer {
         }
         ObjectNode names = SnapshotMutationSupport.object(root, "definedNames");
         names.fields().forEachRemaining(entry -> {
-            if (entry.getValue().isTextual()) names.put(entry.getKey(), FormulaReferenceTransformer.remapMovedRegion(entry.getValue().asText(), targetIdentity, targetIdentity, selected, rowDelta, columnDelta, sheetOrder));
+            if (entry.getValue().isTextual()) {
+                FormulaReferenceTransformer.SheetIdentity owner = definedNameProjectionOwner(definedNameOwners, entry.getKey(), targetIdentity);
+                names.put(entry.getKey(), FormulaReferenceTransformer.remapMovedRegion(entry.getValue().asText(), owner, targetIdentity, selected, rowDelta, columnDelta, sheetOrder));
+            }
         });
         for (JsonNode raw : SnapshotMutationSupport.array(root, "definedNameModels")) {
             ObjectNode name = requireObject(raw, "Defined name");
             if (!name.path("formula").isTextual()) continue;
-            String ownerSheetId = name.path("anchor").path("sheetId").asText(name.path("sheetId").asText(targetIdentity.id()));
-            FormulaReferenceTransformer.SheetIdentity owner = ownerSheetId.equals(targetIdentity.id()) ? targetIdentity : identity(SnapshotMutationSupport.sheet(root, ownerSheetId));
+            FormulaReferenceTransformer.SheetIdentity owner = definedNameFormulaOwner(definedNameOwners, name);
             name.put("formula", FormulaReferenceTransformer.remapMovedRegion(name.path("formula").asText(), owner, targetIdentity, selected, rowDelta, columnDelta, sheetOrder));
         }
     }
@@ -1594,17 +1599,29 @@ final class StructuralSnapshotReducer {
                 }
             }
         }
+        Map<DefinedNameKey, FormulaReferenceTransformer.SheetIdentity> definedNameOwners = definedNameFormulaOwners(root, target);
         ObjectNode names = SnapshotMutationSupport.object(root, "definedNames");
         names.fields().forEachRemaining(entry -> {
             if (!entry.getValue().isTextual()) return;
-            String rewritten = FormulaReferenceTransformer.remapAxis(entry.getValue().asText(), target, target, axis, at, count, direction);
+            FormulaReferenceTransformer.SheetIdentity owner = definedNameProjectionOwner(definedNameOwners, entry.getKey(), target);
+            String rewritten = FormulaReferenceTransformer.remapAxis(entry.getValue().asText(), owner, target, axis, at, count, direction);
             names.put(entry.getKey(), rewritten);
         });
         for (JsonNode raw : SnapshotMutationSupport.array(root, "definedNameModels")) {
             ObjectNode name = requireObject(raw, "Defined name");
-            if ("sheet".equals(name.path("scope").asText()) && !target.id().equals(name.path("sheetId").asText())) continue;
             if (!name.path("formula").isTextual()) continue;
-            String rewritten = FormulaReferenceTransformer.remapAxis(name.path("formula").asText(), target, target, axis, at, count, direction);
+            ObjectNode anchor = definedNameAnchorOnSheet(name, target.id());
+            if (anchor != null) {
+                String coordinateKey = axis == FormulaReferenceTransformer.Axis.ROW ? "row" : "column";
+                int maximum = axis == FormulaReferenceTransformer.Axis.ROW ? SnapshotMutationSupport.MAX_ROW : SnapshotMutationSupport.MAX_COLUMN;
+                int coordinate = definedNameAnchorCoordinate(anchor, coordinateKey, maximum);
+                int shifted = shiftIndex(coordinate, at, count, direction);
+                if (shifted < 0) throw ServiceException.validation("Structural mutation removes defined-name anchor: " + name.path("name").asText());
+                if (shifted > maximum) throw ServiceException.validation("Structural mutation moves defined-name anchor outside worksheet bounds");
+                anchor.put(coordinateKey, shifted);
+            }
+            FormulaReferenceTransformer.SheetIdentity owner = definedNameFormulaOwner(definedNameOwners, name);
+            String rewritten = FormulaReferenceTransformer.remapAxis(name.path("formula").asText(), owner, target, axis, at, count, direction);
             name.put("formula", rewritten);
         }
     }
@@ -1621,6 +1638,70 @@ final class StructuralSnapshotReducer {
 
     private static FormulaReferenceTransformer.SheetIdentity identity(ObjectNode sheet) {
         return new FormulaReferenceTransformer.SheetIdentity(SnapshotMutationSupport.text(sheet, "id"), SnapshotMutationSupport.text(sheet, "name"));
+    }
+
+    private static Map<DefinedNameKey, FormulaReferenceTransformer.SheetIdentity> definedNameFormulaOwners(
+            ObjectNode root,
+            FormulaReferenceTransformer.SheetIdentity fallback
+    ) {
+        Map<String, FormulaReferenceTransformer.SheetIdentity> sheetIdentities = new HashMap<>();
+        for (JsonNode raw : SnapshotMutationSupport.sheets(root)) {
+            ObjectNode sheet = requireObject(raw, "Sheet");
+            FormulaReferenceTransformer.SheetIdentity sheetIdentity = identity(sheet);
+            sheetIdentities.put(sheetIdentity.id(), sheetIdentity);
+        }
+
+        Map<DefinedNameKey, FormulaReferenceTransformer.SheetIdentity> owners = new HashMap<>();
+        for (JsonNode raw : SnapshotMutationSupport.array(root, "definedNameModels")) {
+            ObjectNode name = requireObject(raw, "Defined name");
+            String scope = name.path("scope").asText();
+            String sheetId = name.path("sheetId").asText(null);
+            String ownerSheetId = name.path("anchor").path("sheetId").asText(name.path("sheetId").asText(fallback.id()));
+            FormulaReferenceTransformer.SheetIdentity owner = sheetIdentities.get(ownerSheetId);
+            if (owner != null) owners.put(definedNameKey(scope, sheetId, name.path("name").asText()), owner);
+        }
+        return owners;
+    }
+
+    private static FormulaReferenceTransformer.SheetIdentity definedNameFormulaOwner(
+            Map<DefinedNameKey, FormulaReferenceTransformer.SheetIdentity> owners,
+            JsonNode name
+    ) {
+        String scope = name.path("scope").asText();
+        String sheetId = name.path("sheetId").asText(null);
+        FormulaReferenceTransformer.SheetIdentity owner = owners.get(definedNameKey(scope, sheetId, name.path("name").asText()));
+        if (owner == null) throw ServiceException.validation("Defined-name formula owner is unresolved");
+        return owner;
+    }
+
+    private static FormulaReferenceTransformer.SheetIdentity definedNameProjectionOwner(
+            Map<DefinedNameKey, FormulaReferenceTransformer.SheetIdentity> owners,
+            String name,
+            FormulaReferenceTransformer.SheetIdentity fallback
+    ) {
+        return owners.getOrDefault(definedNameKey("workbook", null, name), fallback);
+    }
+
+    private static ObjectNode definedNameAnchorOnSheet(ObjectNode name, String sheetId) {
+        JsonNode raw = name.get("anchor");
+        if (raw == null || raw.isNull()) return null;
+        ObjectNode anchor = requireObject(raw, "Defined-name anchor");
+        return sheetId.equals(SnapshotMutationSupport.text(anchor, "sheetId")) ? anchor : null;
+    }
+
+    private static int definedNameAnchorCoordinate(ObjectNode anchor, String key, int maximum) {
+        JsonNode coordinate = anchor.get(key);
+        if (coordinate == null || !coordinate.isIntegralNumber() || coordinate.longValue() < 0 || coordinate.longValue() > maximum) {
+            throw ServiceException.validation("Defined-name anchor coordinate is invalid");
+        }
+        return coordinate.intValue();
+    }
+
+    private static DefinedNameKey definedNameKey(String scope, String sheetId, String name) {
+        return new DefinedNameKey(scope, sheetId, name.toUpperCase(java.util.Locale.ROOT));
+    }
+
+    private record DefinedNameKey(String scope, String sheetId, String normalizedName) {
     }
 
     private static void forEachFormulaCell(ObjectNode sheet, java.util.function.Consumer<ObjectNode> consumer) {
@@ -1700,18 +1781,29 @@ final class StructuralSnapshotReducer {
                 }
             }
         }
+        Map<DefinedNameKey, FormulaReferenceTransformer.SheetIdentity> definedNameOwners = definedNameFormulaOwners(root, target);
         ObjectNode names = SnapshotMutationSupport.object(root, "definedNames");
         names.fields().forEachRemaining(entry -> {
             if (!entry.getValue().isTextual()) return;
+            FormulaReferenceTransformer.SheetIdentity owner = definedNameProjectionOwner(definedNameOwners, entry.getKey(), target);
             names.put(entry.getKey(), FormulaReferenceTransformer.remapCellShift(
-                    entry.getValue().asText(), target, target, selected, shiftAxis, direction));
+                    entry.getValue().asText(), owner, target, selected, shiftAxis, direction));
         });
         for (JsonNode raw : SnapshotMutationSupport.array(root, "definedNameModels")) {
             ObjectNode name = requireObject(raw, "Defined name");
-            if (!"workbook".equals(name.path("scope").asText()) && !target.id().equals(name.path("sheetId").asText())) continue;
             if (!name.path("formula").isTextual()) continue;
+            ObjectNode anchor = definedNameAnchorOnSheet(name, target.id());
+            if (anchor != null) {
+                int row = definedNameAnchorCoordinate(anchor, "row", SnapshotMutationSupport.MAX_ROW);
+                int column = definedNameAnchorCoordinate(anchor, "column", SnapshotMutationSupport.MAX_COLUMN);
+                int[] mapped = FormulaReferenceTransformer.remapCellShiftCoordinate(row, column, selected, shiftAxis, direction);
+                if (mapped == null) throw ServiceException.validation("Cell shift removes defined-name anchor: " + name.path("name").asText());
+                anchor.put("row", mapped[0]);
+                anchor.put("column", mapped[1]);
+            }
+            FormulaReferenceTransformer.SheetIdentity owner = definedNameFormulaOwner(definedNameOwners, name);
             name.put("formula", FormulaReferenceTransformer.remapCellShift(
-                    name.path("formula").asText(), target, target, selected, shiftAxis, direction));
+                    name.path("formula").asText(), owner, target, selected, shiftAxis, direction));
         }
     }
 
