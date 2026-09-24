@@ -1335,6 +1335,29 @@ class MutationDescriptorRegistryTest {
     }
 
     @Test
+    void duplicateSheetRewritesConditionalAndValidationFormulaReferences() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        JsonNode snapshot = mapper.readTree("""
+                {"sheets":[{"id":"sheet-1","name":"Sheet1","rowCount":5,"columnCount":3,"cells":{},
+                  "merges":[],"conditionalFormats":[{"id":"cf-1","sheetId":"sheet-1","ranges":[{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0}],"type":"highlight","operator":"formula","value1":"=Sheet1!A1"}],
+                  "dataValidations":[{"id":"dv-1","sheetId":"sheet-1","ranges":[{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0}],"type":"custom","formula1":"=Sheet1!A1","listSource":{"kind":"formula","formula":"=Sheet1!A1"}}],
+                  "pivots":[],"sparklines":[],"sparklineGroups":[],"drawings":[],"drawingGroups":[],"drawingPayloads":{},"sheetTables":[],
+                  "spillRanges":[],"protectionRules":[],"dataRegions":[],"hyperlinks":[],
+                  "review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}}}]}
+                """);
+        OperationMutation duplicate = new OperationMutation("sheet.duplicated", "sheet-1", mapper.readTree("""
+                {"sourceSheetId":"sheet-1","newId":"sheet-2","newName":"Sheet1 Copy"}
+                """));
+
+        JsonNode current = registry.prepare(snapshot, duplicate, WorkbookAclRole.EDITOR).descriptor().apply(snapshot, duplicate);
+        JsonNode copy = current.path("sheets").get(1);
+        assertEquals("=Sheet1!A1", snapshot.path("sheets").get(0).path("conditionalFormats").get(0).path("value1").asText());
+        assertEquals("='Sheet1 Copy'!A1", copy.path("conditionalFormats").get(0).path("value1").asText());
+        assertEquals("='Sheet1 Copy'!A1", copy.path("dataValidations").get(0).path("formula1").asText());
+        assertEquals("='Sheet1 Copy'!A1", copy.path("dataValidations").get(0).path("listSource").path("formula").asText());
+    }
+
+    @Test
     void rangeMoveRewritesFormulaOwnersAndRejectsOverlappingDestinations() throws Exception {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         JsonNode snapshot = mapper.readTree("""

@@ -755,6 +755,8 @@ final class WorkbookStructureMutationDescriptor extends CanonicalJsonMutationDes
                 if (cell.getValue().isObject() && cell.getValue().path("formula").isTextual()) ((ObjectNode) cell.getValue()).put("formula", FormulaReferenceTransformer.renameSheet(cell.getValue().path("formula").asText(), sourceName, targetName));
             });
         });
+        rewriteRuleFormulaFields(copy.get("conditionalFormats"), sourceName, targetName);
+        rewriteRuleFormulaFields(copy.get("dataValidations"), sourceName, targetName);
     }
 
     private void rewriteSheetReferences(ObjectNode root, String previousName, String nextName) {
