@@ -315,6 +315,7 @@ const FORMULA_SYNC_MUTATIONS = new Set([
   'sheet.remove',
   'sheet.restore',
   'sheet.add',
+  'sheet.reordered',
   'sheet.duplicated',
   'sheetTable.add',
   'sheetTable.remove',
@@ -373,6 +374,7 @@ const DIRECT_CELL_WRITE_MUTATIONS = new Set([
 /** These operations change the dependency address space, not just cell inputs. */
 const CALCULATION_CONTEXT_REBUILDS = new Set([
   'rows.permuted',
+  'sheet.reordered',
   'sheet.rename',
   'sheet.remove',
   'sheet.restore',

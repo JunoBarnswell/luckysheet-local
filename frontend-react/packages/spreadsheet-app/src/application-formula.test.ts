@@ -219,6 +219,28 @@ describe('WorkbookSession formula integration', () => {
     assert.equal(cellValue(app, 0, 1), '#REF!');
   });
 
+  it('rebuilds 3-D reference ownership after worksheet reorder and undo', () => {
+    const app = new WorkbookSession();
+    const firstSheetId = app.getActiveSheetId();
+    app.runCommand('sheet.add', { id: 'three-d-middle', name: 'Middle' });
+    app.runCommand('sheet.add', { id: 'three-d-end', name: 'End' });
+    app.runCommand('sheet.cell.set', {
+      sheetId: firstSheetId,
+      row: 0,
+      column: 0,
+      value: { formula: '=SUM(Sheet1:Middle!A1)', value: null },
+    });
+
+    app.moveSheet('three-d-end', 1);
+    app.moveSheet('three-d-end', 2);
+    app.undo();
+
+    assert.throws(
+      () => app.runCommand('sheet.rows.insert', { sheetId: 'three-d-end', at: 0, count: 1 }),
+      /UNSUPPORTED_STRUCTURAL_REFERENCE/,
+    );
+  });
+
   it('rejects direct writes into a dynamic-array spill child and rolls back the model', async () => {
     const app = new WorkbookSession();
     const sheetId = app.getActiveSheetId();
