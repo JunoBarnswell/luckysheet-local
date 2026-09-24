@@ -21,6 +21,17 @@ class MutationDescriptorRegistryTest {
     private final ObjectMapper mapper = new ObjectMapper();
 
     @Test
+    void structuralDataModelCollectionsAllowOmissionButRejectMalformedOwner() {
+        ObjectNode snapshot = mapper.createObjectNode();
+        assertEquals(0, SnapshotMutationSupport.dataModelArray(snapshot, "sources").size());
+
+        snapshot.put("dataModel", "invalid");
+        ServiceException error = assertThrows(ServiceException.class,
+                () -> SnapshotMutationSupport.dataModelArray(snapshot, "sources"));
+        assertEquals("VALIDATION_ERROR", error.code());
+    }
+
+    @Test
     void unknownMutationsFailClosed() {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         ServiceException error = assertThrows(ServiceException.class, () -> registry.require("unknown.mutation", false));

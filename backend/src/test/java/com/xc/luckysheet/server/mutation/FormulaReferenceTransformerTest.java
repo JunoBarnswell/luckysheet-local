@@ -30,7 +30,7 @@ class FormulaReferenceTransformerTest {
     }
 
     @Test
-    void deletionCreatesRealReferenceErrorForDeletedRangeEndpoint() {
+    void deletionShrinksRangeWhenOnlyOneEndpointRowIsRemoved() {
         String result = FormulaReferenceTransformer.remapAxis(
                 "=A2:B3",
                 sheet,
@@ -41,7 +41,16 @@ class FormulaReferenceTransformerTest {
                 FormulaReferenceTransformer.Direction.DELETE
         );
 
-        assertEquals("=#REF!", result);
+        assertEquals("=A2:B2", result);
+        assertEquals("=#REF!", FormulaReferenceTransformer.remapAxis(
+                "=A2:B2",
+                sheet,
+                sheet,
+                FormulaReferenceTransformer.Axis.ROW,
+                1,
+                2,
+                FormulaReferenceTransformer.Direction.DELETE
+        ));
     }
 
     @Test
