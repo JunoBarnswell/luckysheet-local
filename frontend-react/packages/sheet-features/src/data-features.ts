@@ -10,6 +10,7 @@ import type {
   FilterCriterion,
   FilterScalar,
   RangeRef,
+  StructuralTransformResult,
   WorksheetModel,
 } from "@react-sheets/core-model";
 import { clearFormulaProvenance, hasFormulaGroupMetadata, StructuralTransform, applyRowPermutation, columnLabel, createRowPermutationPlan, isDynamicFilterType, resolveFilterCellValue, sheetRuleRegistry } from "@react-sheets/core-model";
@@ -76,6 +77,17 @@ function rowsPermutedAffectedRanges(params: RowsPermutedMutationParams): RangeRe
     startColumn: 0,
     endColumn: params.affectedColumnEnd,
   }];
+}
+
+function rowPermutationCalculationEffect(range: RangeRef): StructuralTransformResult {
+  const inputRange = structuredClone(range);
+  return {
+    kind: 'structural-transform',
+    removedCells: [],
+    clearInputRanges: [inputRange],
+    populateInputRanges: [structuredClone(inputRange)],
+    rewrittenFormulaOwners: [],
+  };
 }
 
 function isRowsPermutedMutation(value: unknown): value is RowsPermutedMutationParams {
@@ -1760,12 +1772,8 @@ export function registerDataToolCommands(runtime: CommandRuntime): void {
       const range = params.range;
       const sheet = context.workbook.getSheet(params.sheetId);
       applyRowPermutation(sheet, createRowPermutationPlan(range, params.sourceRows));
-      for (const worksheet of context.workbook.getSheets()) {
-        worksheet.cells.forEachFormulaOwner((cell) => {
-          if (cell.formula !== undefined) delete cell.formulaValue;
-        });
-      }
       setAppliedSortState(sheet, params.sortState);
+      return rowPermutationCalculationEffect(range);
     },
     metadata: {
       schema: { name: 'RowsPermuted', validate: isRowsPermutedMutation },
@@ -1807,6 +1815,14 @@ export function registerDataToolCommands(runtime: CommandRuntime): void {
       sourceRows.forEach((sourceRow, offset) => { inverseRows[sourceRow - startRow] = startRow + offset; });
       const affectedColumnEnd = rowsPermutedAffectedColumnEnd(sheet, bodyRange);
       const affectedRanges = rowsPermutedAffectedRanges({ sheetId: params.sheetId, range: bodyRange, sourceRows, affectedColumnEnd });
+      const previousSortState = (sheet as WorksheetModel & { appliedSortState?: AppliedSortState }).appliedSortState;
+      const sortState: AppliedSortState = {
+        sheetId: params.sheetId,
+        range,
+        criteria: structuredClone(params.criteria),
+        hasHeader,
+        revision: (previousSortState?.revision ?? 0) + 1,
+      };
       context.applyMutation({
         id: 'rows.permuted',
         unitId: context.workbook.unitId,
@@ -1818,16 +1834,8 @@ export function registerDataToolCommands(runtime: CommandRuntime): void {
           range: bodyRange,
           sourceRows,
           affectedColumnEnd,
-          sortState: {
-            sheetId: params.sheetId,
-            range,
-            criteria: structuredClone(params.criteria),
-            hasHeader,
-            revision: ((sheet as WorksheetModel & { appliedSortState?: AppliedSortState }).appliedSortState?.revision ?? 0) + 1,
-          },
-          previousSortState: ((sheet as WorksheetModel & { appliedSortState?: AppliedSortState }).appliedSortState
-            ? structuredClone((sheet as WorksheetModel & { appliedSortState?: AppliedSortState }).appliedSortState)
-            : undefined),
+          sortState,
+          previousSortState: previousSortState ? structuredClone(previousSortState) : undefined,
         },
         affectedRanges,
         inverse: [{
@@ -1850,7 +1858,11 @@ export function registerDataToolCommands(runtime: CommandRuntime): void {
           },
           affectedRanges,
         }],
-        apply: () => applyRowPermutation(sheet, createRowPermutationPlan(bodyRange, sourceRows)),
+        apply: () => {
+          applyRowPermutation(sheet, createRowPermutationPlan(bodyRange, sourceRows));
+          setAppliedSortState(sheet, sortState);
+          return rowPermutationCalculationEffect(bodyRange);
+        },
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },

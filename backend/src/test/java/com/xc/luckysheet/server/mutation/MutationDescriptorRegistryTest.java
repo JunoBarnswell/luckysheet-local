@@ -1522,7 +1522,7 @@ class MutationDescriptorRegistryTest {
         OperationMutation rawInversePermutation = new OperationMutation("rows.permuted", "sheet-1", mapper.readTree("""
                 {"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":0,"endRow":1,"startColumn":0,"endColumn":0},"sourceRows":[1,0]}
                 """));
-        OperationMutation inversePermutation = withSortContext(rawInversePermutation, range(0, 1, 0, 0), "worksheet", null, false, 0);
+        OperationMutation inversePermutation = withSortContext(rawInversePermutation, range(0, 1, 0, 0), "worksheet", null, false, 2);
         current = registry.prepare(current, inversePermutation, WorkbookAclRole.EDITOR).descriptor().apply(current, inversePermutation);
         JsonNode restoredFormula = current.path("sheets").get(0).path("cells").path("0").path("0");
         assertEquals("=A1", restoredFormula.path("formula").asText());
@@ -1552,7 +1552,7 @@ class MutationDescriptorRegistryTest {
             OperationMutation rawPermutation = new OperationMutation("rows.permuted", "sheet-1", mapper.readTree("""
                     {"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":0,"endRow":1,"startColumn":0,"endColumn":0},"sourceRows":[1,0]}
                     """));
-            OperationMutation permutation = withSortContext(rawPermutation, range(0, 1, 0, 0), "worksheet", null, false, 0);
+            OperationMutation permutation = withSortContext(rawPermutation, range(0, 1, 0, 0), "worksheet", null, false, 1);
 
             ServiceException rejection = assertThrows(ServiceException.class,
                     () -> registry.prepare(snapshot, permutation, WorkbookAclRole.EDITOR).descriptor().apply(snapshot, permutation));
@@ -1576,7 +1576,7 @@ class MutationDescriptorRegistryTest {
         OperationMutation rawPermutation = new OperationMutation("rows.permuted", "sheet-1", mapper.readTree("""
                 {"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":0,"endRow":1,"startColumn":0,"endColumn":0},"sourceRows":[1,0]}
                 """));
-        OperationMutation permutation = withSortContext(rawPermutation, range(0, 1, 0, 0), "worksheet", null, false, 0);
+        OperationMutation permutation = withSortContext(rawPermutation, range(0, 1, 0, 0), "worksheet", null, false, 1);
 
         ServiceException rejection = assertThrows(ServiceException.class,
                 () -> new MutationDescriptorRegistry().prepare(snapshot, permutation, WorkbookAclRole.EDITOR).descriptor().apply(snapshot, permutation));

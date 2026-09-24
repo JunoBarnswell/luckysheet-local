@@ -373,7 +373,6 @@ const DIRECT_CELL_WRITE_MUTATIONS = new Set([
 
 /** These operations change the dependency address space, not just cell inputs. */
 const CALCULATION_CONTEXT_REBUILDS = new Set([
-  'rows.permuted',
   'sheet.reordered',
   'sheet.rename',
   'sheet.remove',
@@ -956,8 +955,8 @@ export function attachCoreListeners(runtime: SpreadsheetRuntime): void {
         runtime.formula.setRecalculationMode(mode);
       }
       if (CALCULATION_CONTEXT_REBUILDS.has(mutation.id)) {
-        // Worksheet identity changes and row permutations still require a
-        // full address-space refresh; axis and cell shifts carry exact deltas.
+        // Worksheet identity changes still require a full address-space
+        // refresh; structural transforms carry exact calculation deltas.
         rebuildFormulaCalculation(runtime);
         runtime.formula.notifyVisibilityChanged();
       } else if (structuralEffect) {

@@ -271,7 +271,10 @@ function remapPermutedFormulaOwner(cell: CellData, rowDelta: number, sheetId: st
       throw new Error(`UNSUPPORTED_STRUCTURAL_REFERENCE: row sort cannot parse and safely offset formula at ${sheetId}!${row}:${column}`);
     }
   };
-  if (next.formula !== undefined) next.formula = remap(next.formula);
+  if (next.formula !== undefined) {
+    next.formula = remap(next.formula);
+    delete next.formulaValue;
+  }
   if (next.formulaMetadata?.sourceFormula !== undefined) {
     next.formulaMetadata = { ...next.formulaMetadata, sourceFormula: remap(next.formulaMetadata.sourceFormula) };
   }

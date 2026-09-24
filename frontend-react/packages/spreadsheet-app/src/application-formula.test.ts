@@ -53,6 +53,37 @@ describe('WorkbookSession formula integration', () => {
     assert.equal(cellValue(app, 0, 1), '15');
   });
 
+  it('synchronizes row permutations incrementally without rebuilding the formula engine', async () => {
+    const app = new WorkbookSession();
+    const sheetId = app.getActiveSheetId();
+    app.runCommand('sheet.cell.set', { sheetId, row: 0, column: 0, value: { value: 2 } });
+    app.runCommand('sheet.cell.set', { sheetId, row: 1, column: 0, value: { value: 1 } });
+    app.runCommand('sheet.cell.set', { sheetId, row: 0, column: 2, value: { formula: '=A1', value: null } });
+    await app.waitForFormulaCalculation();
+    assert.equal(cellValue(app, 0, 2), '2');
+
+    const formulaEngine = app['runtime'].formula;
+    app.runCommand('data.sort.rows', {
+      sheetId,
+      range: { sheetId, startRow: 0, endRow: 1, startColumn: 0, endColumn: 0 },
+      criteria: [{ column: 0, ascending: true }],
+      hasHeader: false,
+    });
+
+    assert.equal(app['runtime'].formula, formulaEngine);
+    await app.waitForFormulaCalculation();
+    assert.equal(cellValue(app, 0, 0), '1');
+    assert.equal(cellValue(app, 1, 0), '2');
+    assert.equal(cellValue(app, 0, 2), '1');
+
+    app.undo();
+    assert.equal(app['runtime'].formula, formulaEngine);
+    await app.waitForFormulaCalculation();
+    assert.equal(cellValue(app, 0, 0), '2');
+    assert.equal(cellValue(app, 1, 0), '1');
+    assert.equal(cellValue(app, 0, 2), '2');
+  });
+
   it('manual recalculation mode defers updates until recalculateFormulas()', async () => {
     const app = new WorkbookSession();
     const sheetId = app.getActiveSheetId();
