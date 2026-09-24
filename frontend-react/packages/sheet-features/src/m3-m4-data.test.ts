@@ -652,6 +652,34 @@ test('conditional formatting and validation resolve qualified same-sheet names t
   assert.equal(validateDataInput(sheet, 0, 2, 'candidate').valid, true);
 });
 
+test('unresolved formula-backed validation lists never become literal options or allow arbitrary values', () => {
+  const { workbook } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  for (const [id, formula] of [
+    ['unresolved-list', '=MissingSheet!A1:A2'],
+    ['unprefixed-unresolved-list', 'MissingSheet!A1:A2'],
+  ] as const) {
+    const rule = normalizeDataValidationRule({
+      id,
+      sheetId: sheet.id,
+      ranges: [{ sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }],
+      type: 'list',
+      listSource: { kind: 'formula', formula },
+    });
+    sheet.dataValidations.push(rule);
+
+    assert.equal(validationList(rule, sheet), undefined);
+    assert.deepEqual(validateDataInput(sheet, 0, 0, 'arbitrary'), {
+      valid: false,
+      blocking: true,
+      message: '列表来源不可用',
+      ruleId: id,
+      alertStyle: 'stop',
+    });
+    sheet.dataValidations.pop();
+  }
+});
+
 test('Text Columns, Split and Flip are one undoable transaction and clear stale output', () => {
   const { workbook, commands } = runtime();
   const sheet = workbook.getSheet(workbook.primarySheetId);

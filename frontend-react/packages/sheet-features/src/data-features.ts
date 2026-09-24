@@ -1252,14 +1252,17 @@ export function validationList(rule: DataValidationRule, sheet?: WorksheetModel)
     }
     return values;
   }
-  const formula = rule.listSource?.kind === 'formula' ? rule.listSource.formula : rule.formula1;
+  const listFormula = rule.listSource?.kind === 'formula' ? rule.listSource.formula : undefined;
+  const formulaSource = listFormula !== undefined;
+  const formula = listFormula ?? rule.formula1;
   if (!formula) return undefined;
-  if (sheet && formula.trim().startsWith('=')) {
+  if (formulaSource || formula.trim().startsWith('=')) {
+    if (!sheet) return undefined;
     const evaluated = evaluateValidationFormula(formula, sheet, 0, 0, undefined, rule.formulaAnchor ?? (rule.ranges[0] ? { sheetId: rule.ranges[0].sheetId, row: rule.ranges[0].startRow, column: rule.ranges[0].startColumn } : undefined));
-    if (isArrayValue(evaluated)) {
-      return evaluated.flat().filter((value): value is string | number | boolean =>
-        value !== null && !isFormulaError(value)).map(String);
-    }
+    if (evaluated === null || isFormulaError(evaluated)) return undefined;
+    const values = isArrayValue(evaluated) ? evaluated.flat() : [evaluated];
+    return values.filter((value): value is string | number | boolean =>
+      value !== null && !isFormulaError(value)).map(String);
   }
   return splitListLiteral(formula);
 }
@@ -1340,7 +1343,14 @@ export function validateDataInput(
     return withRule({ valid, blocking: !valid && (rule.alertStyle ?? 'stop') === 'stop', message: valid ? undefined : validationMessage(rule, "该单元格不允许为空") });
   }
   const list = validationList(rule, sheet);
-  if (list) {
+  if (rule.type === 'list') {
+    if (!list) {
+      return withRule({
+        valid: false,
+        blocking: (rule.alertStyle ?? 'stop') === 'stop',
+        message: validationMessage(rule, '列表来源不可用'),
+      });
+    }
     const candidateValues = rule.multiSelect ? String(value).split(',').map((item) => item.trim()).filter(Boolean) : [String(value)];
     const ok = candidateValues.length > 0 && candidateValues.every((candidate) =>
       list.some((item) => item.toLowerCase() === candidate.toLowerCase()));
