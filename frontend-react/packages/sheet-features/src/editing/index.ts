@@ -262,10 +262,10 @@ function isPasteMutation(value: unknown): value is PasteMutationParams {
   if (!mappedWidthColumns) return false;
   return cellRanges.every((range) => range.startRow >= 0 && range.endRow < MAX_SHEET_ROW_COUNT
       && range.startColumn >= 0 && range.endColumn < MAX_SHEET_COLUMN_COUNT)
-    && isPasteSnapshotWithinRanges(value.snapshot, cellRanges, mappedWidthColumns)
+    && isPasteSnapshotWithinRanges(pasteParams.snapshot, cellRanges, mappedWidthColumns)
     && isPasteSnapshotConsistentWithSpec(pasteParams)
-    && isPasteRuleCollectionForSheet(value.snapshot.validations, pasteParams.sheetId, 'validation')
-    && isPasteRuleCollectionForSheet(value.snapshot.conditionalFormats, pasteParams.sheetId, 'conditional-format');
+    && isPasteRuleCollectionForSheet(pasteParams.snapshot.validations, pasteParams.sheetId, 'validation')
+    && isPasteRuleCollectionForSheet(pasteParams.snapshot.conditionalFormats, pasteParams.sheetId, 'conditional-format');
 }
 
 function pasteCellRanges(value: PasteMutationParams): RangeRef[] {
