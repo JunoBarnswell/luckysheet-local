@@ -226,7 +226,7 @@ final class FormulaReferenceTransformer {
                     continue;
                 }
             }
-            index += 1;
+            index = nextReferenceCandidate(formula, index, first);
         }
     }
 
@@ -289,7 +289,7 @@ final class FormulaReferenceTransformer {
             }
             WholeAxisReference reference = parseWholeAxisReference(formula, referenceStart);
             if (reference == null) {
-                index += 1;
+                index = nextReferenceCandidate(formula, index, prefix);
                 continue;
             }
             boolean targets = sheetName == null
@@ -570,7 +570,7 @@ final class FormulaReferenceTransformer {
             }
             int referenceEnd = threeDimensionalReferenceEnd(formula, index);
             if (referenceEnd <= index) {
-                index += 1;
+                index = nextReferenceCandidate(formula, index, parseSheetPrefix(formula, index));
                 continue;
             }
 
@@ -977,6 +977,28 @@ final class FormulaReferenceTransformer {
         int index = start + 1;
         while (index < formula.length() && isSheetIdentifierPart(formula.charAt(index))) index += 1;
         return new SheetPrefix(formula.substring(start, index), formula.substring(start, index), index);
+    }
+
+    private static int nextReferenceCandidate(String formula, int start, SheetPrefix prefix) {
+        if (prefix != null) return Math.max(start + 1, prefix.afterPrefix());
+        char current = formula.charAt(start);
+        if (current == '\'') {
+            int index = start + 1;
+            while (index < formula.length()) {
+                if (formula.charAt(index) != '\'') {
+                    index += 1;
+                } else if (index + 1 < formula.length() && formula.charAt(index + 1) == '\'') {
+                    index += 2;
+                } else {
+                    return index + 1;
+                }
+            }
+            return formula.length();
+        }
+        if (!isSheetIdentifierStart(current)) return start + 1;
+        int index = start + 1;
+        while (index < formula.length() && isSheetIdentifierPart(formula.charAt(index))) index += 1;
+        return index;
     }
 
     private static ParsedReference parseReference(String formula, int start, String sheetName, String rawPrefix) {

@@ -130,4 +130,18 @@ class FormulaReferenceTransformerTest {
 
         assertEquals(formula, result);
     }
+
+    @Test
+    void structuralTransformsScanLongNonReferenceIdentifiersInLinearTime() {
+        String formula = "=" + "A".repeat(128_000);
+        List<FormulaReferenceTransformer.SheetIdentity> order = List.of(sheet,
+                new FormulaReferenceTransformer.SheetIdentity("sheet-2", "Sheet2"));
+
+        assertTimeout(Duration.ofSeconds(2), () -> FormulaReferenceTransformer.remapAxis(
+                formula, sheet, sheet, FormulaReferenceTransformer.Axis.ROW, 0, 1,
+                FormulaReferenceTransformer.Direction.INSERT, order));
+        assertTimeout(Duration.ofSeconds(2), () -> FormulaReferenceTransformer.remapMovedRegion(
+                formula, sheet, sheet, new FormulaReferenceTransformer.Range(0, 0, 0, 0),
+                0, 1, order));
+    }
 }
