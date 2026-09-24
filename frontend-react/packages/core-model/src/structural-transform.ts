@@ -238,10 +238,27 @@ function validateDataRegionAxisPreservation(
   }
 }
 
-interface StagedStructuralFormulaChange {
-  readonly validate: () => void;
-  readonly apply: () => void;
-}
+type StructuralFormulaOwnerLocator =
+  | { readonly kind: 'table-sheet-column'; readonly sheetId: string; readonly columnIndex: number; readonly fieldId: string }
+  | { readonly kind: 'shape-drawing-payload'; readonly sheetId: string; readonly payloadId: string }
+  | { readonly kind: 'data-view-field'; readonly viewId: string; readonly fieldIndex: number; readonly fieldId: string }
+  | { readonly kind: 'cell-style-template-formula'; readonly templateId: string; readonly field: 'formula1' | 'formula2' | 'listSource.formula' };
+
+type StagedStructuralFormulaChange =
+  | {
+    readonly kind: 'formula';
+    readonly participant: string;
+    readonly owner: StructuralFormulaOwnerLocator;
+    readonly before: string;
+    readonly after: string;
+  }
+  | {
+    readonly kind: 'cell-style-template-anchor';
+    readonly participant: string;
+    readonly templateId: string;
+    readonly before: Readonly<CellAddress>;
+    readonly after: Readonly<CellAddress>;
+  };
 
 // Workbook-level formulas have no worksheet-relative origin unless they persist an explicit anchor.
 const UNANCHORED_WORKBOOK_FORMULA_OWNER = '';
@@ -1087,7 +1104,7 @@ interface MovedFormulaRewritePlan {
 }
 
 function applyMovedFormulaRewritePlan(workbook: WorkbookModel, plan: MovedFormulaRewritePlan): StructuralReferenceOwnerAddress[] {
-  applyStagedStructuralFormulaChanges(plan.participantChanges);
+  applyStagedStructuralFormulaChanges(workbook, plan.participantChanges);
   const rewrittenOwners: StructuralReferenceOwnerAddress[] = [];
   for (const change of plan.cells) {
     const sheet = workbook.getSheet(change.sheetId);
@@ -1746,52 +1763,61 @@ function preflightWorkbookFormulaOwners(
   const changes: StagedStructuralFormulaChange[] = [];
   const sheetIds = new Set(workbook.sheetOrder);
   const stage = (
+    owner: StructuralFormulaOwnerLocator,
     participant: string,
-    read: () => string | undefined,
-    write: (formula: string) => void,
+    before: string | undefined,
     ownerSheetId: string,
   ): void => {
-    const before = read();
     if (before === undefined || before.length === 0) return;
     const after = mapFormula(before, ownerSheetId);
     if (after === before) return;
-    changes.push({
-      validate: () => {
-        if (read() !== before) throw new Error(`STRUCTURAL_PATCH_INVARIANT: ${participant} changed during formula preflight`);
-      },
-      apply: () => write(after),
-    });
+    changes.push({ kind: 'formula', owner, participant, before, after });
   };
   const stageAnchor = (
+    templateId: string,
     participant: string,
-    read: () => CellAddress | undefined,
-    write: (address: CellAddress) => void,
+    before: CellAddress | undefined,
   ): void => {
-    const before = read();
     if (!before || before.sheetId !== targetSheet.id) return;
     const after = mapAddress(before);
     if (!after) throw new Error(`Structural mutation removes ${participant} formula anchor`);
     if (after === before) return;
     changes.push({
-      validate: () => {
-        if (read() !== before) throw new Error(`STRUCTURAL_PATCH_INVARIANT: ${participant} anchor changed during formula preflight`);
-      },
-      apply: () => write(after),
+      kind: 'cell-style-template-anchor',
+      templateId,
+      participant,
+      before: { ...before },
+      after: { ...after },
     });
   };
 
   for (const sheet of workbook.getSheets()) {
-    for (const column of sheet.tableSheet?.columns ?? []) {
-      stage(`table-sheet:${sheet.id}.${column.fieldId}`, () => column.formula, (formula) => { column.formula = formula; }, sheet.id);
+    for (const [columnIndex, column] of (sheet.tableSheet?.columns ?? []).entries()) {
+      stage(
+        { kind: 'table-sheet-column', sheetId: sheet.id, columnIndex, fieldId: column.fieldId },
+        `table-sheet:${sheet.id}.${column.fieldId}`,
+        column.formula,
+        sheet.id,
+      );
     }
     for (const [payloadId, payload] of sheet.drawingPayloads) {
       if (payload.kind !== 'shape') continue;
-      stage(`drawing:${payloadId}.propertyFormula`, () => payload.propertyFormula, (formula) => { payload.propertyFormula = formula; }, sheet.id);
+      stage(
+        { kind: 'shape-drawing-payload', sheetId: sheet.id, payloadId },
+        `drawing:${payloadId}.propertyFormula`,
+        payload.propertyFormula,
+        sheet.id,
+      );
     }
   }
   for (const view of workbook.dataModel.views.values()) {
-    for (const field of view.fields) {
-      stage(`data-view:${view.id}.${field.fieldId}`, () => field.formula, (formula) => { field.formula = formula; }, UNANCHORED_WORKBOOK_FORMULA_OWNER);
+    for (const [fieldIndex, field] of view.fields.entries()) {
+      stage(
+        { kind: 'data-view-field', viewId: view.id, fieldIndex, fieldId: field.fieldId },
+        `data-view:${view.id}.${field.fieldId}`,
+        field.formula,
+        UNANCHORED_WORKBOOK_FORMULA_OWNER,
+      );
     }
   }
   for (const template of workbook.cellStyleTemplates.values()) {
@@ -1809,25 +1835,133 @@ function preflightWorkbookFormulaOwners(
         throw new Error(`STRUCTURAL_REFERENCE_OWNER_INVALID: cell-style-template:${template.id} formula anchor is invalid`);
       }
     }
-    stageAnchor(`cell-style-template:${template.id}`, () => validation.formulaAnchor, (address) => { validation.formulaAnchor = address; });
+    stageAnchor(template.id, `cell-style-template:${template.id}`, validation.formulaAnchor);
     const formulaOwnerSheetId = validation.formulaAnchor?.sheetId ?? UNANCHORED_WORKBOOK_FORMULA_OWNER;
     if (validation.formula1 && (validation.formula1.trim().startsWith('=') || validation.type === 'custom')) {
-      stage(`cell-style-template:${template.id}.formula1`, () => validation.formula1, (formula) => { validation.formula1 = formula; }, formulaOwnerSheetId);
+      stage(
+        { kind: 'cell-style-template-formula', templateId: template.id, field: 'formula1' },
+        `cell-style-template:${template.id}.formula1`,
+        validation.formula1,
+        formulaOwnerSheetId,
+      );
     }
     if (validation.formula2 && (validation.formula2.trim().startsWith('=') || validation.type === 'custom')) {
-      stage(`cell-style-template:${template.id}.formula2`, () => validation.formula2, (formula) => { validation.formula2 = formula; }, formulaOwnerSheetId);
+      stage(
+        { kind: 'cell-style-template-formula', templateId: template.id, field: 'formula2' },
+        `cell-style-template:${template.id}.formula2`,
+        validation.formula2,
+        formulaOwnerSheetId,
+      );
     }
     if (validation.listSource?.kind === 'formula') {
-      const listSource = validation.listSource;
-      stage(`cell-style-template:${template.id}.listSource`, () => listSource.formula, (formula) => { listSource.formula = formula; }, formulaOwnerSheetId);
+      stage(
+        { kind: 'cell-style-template-formula', templateId: template.id, field: 'listSource.formula' },
+        `cell-style-template:${template.id}.listSource`,
+        validation.listSource.formula,
+        formulaOwnerSheetId,
+      );
     }
   }
   return changes;
 }
 
-function applyStagedStructuralFormulaChanges(changes: readonly StagedStructuralFormulaChange[]): void {
-  for (const change of changes) change.validate();
-  for (const change of changes) change.apply();
+function readStructuralFormulaOwner(
+  workbook: WorkbookModel,
+  owner: StructuralFormulaOwnerLocator,
+): string | undefined {
+  switch (owner.kind) {
+    case 'table-sheet-column': {
+      const column = workbook.getSheet(owner.sheetId).tableSheet?.columns[owner.columnIndex];
+      return column?.fieldId === owner.fieldId ? column.formula : undefined;
+    }
+    case 'shape-drawing-payload': {
+      const payload = workbook.getSheet(owner.sheetId).drawingPayloads.get(owner.payloadId);
+      return payload?.kind === 'shape' ? payload.propertyFormula : undefined;
+    }
+    case 'data-view-field': {
+      const field = workbook.dataModel.views.get(owner.viewId)?.fields[owner.fieldIndex];
+      return field?.fieldId === owner.fieldId ? field.formula : undefined;
+    }
+    case 'cell-style-template-formula': {
+      const validation = workbook.cellStyleTemplates.get(owner.templateId)?.dataValidation;
+      if (owner.field === 'formula1') return validation?.formula1;
+      if (owner.field === 'formula2') return validation?.formula2;
+      return validation?.listSource?.kind === 'formula' ? validation.listSource.formula : undefined;
+    }
+  }
+}
+
+function readStructuralTemplateAnchor(workbook: WorkbookModel, templateId: string): CellAddress | undefined {
+  return workbook.cellStyleTemplates.get(templateId)?.dataValidation?.formulaAnchor;
+}
+
+function writeStructuralFormulaOwner(
+  workbook: WorkbookModel,
+  owner: StructuralFormulaOwnerLocator,
+  formula: string,
+): boolean {
+  switch (owner.kind) {
+    case 'table-sheet-column': {
+      const column = workbook.getSheet(owner.sheetId).tableSheet?.columns[owner.columnIndex];
+      if (!column || column.fieldId !== owner.fieldId) return false;
+      column.formula = formula;
+      return true;
+    }
+    case 'shape-drawing-payload': {
+      const payload = workbook.getSheet(owner.sheetId).drawingPayloads.get(owner.payloadId);
+      if (!payload || payload.kind !== 'shape') return false;
+      payload.propertyFormula = formula;
+      return true;
+    }
+    case 'data-view-field': {
+      const field = workbook.dataModel.views.get(owner.viewId)?.fields[owner.fieldIndex];
+      if (!field || field.fieldId !== owner.fieldId) return false;
+      field.formula = formula;
+      return true;
+    }
+    case 'cell-style-template-formula': {
+      const validation = workbook.cellStyleTemplates.get(owner.templateId)?.dataValidation;
+      if (!validation) return false;
+      if (owner.field === 'formula1') validation.formula1 = formula;
+      else if (owner.field === 'formula2') validation.formula2 = formula;
+      else if (validation.listSource?.kind === 'formula') validation.listSource.formula = formula;
+      else return false;
+      return true;
+    }
+  }
+}
+
+function sameCellAddress(left: Readonly<CellAddress> | undefined, right: Readonly<CellAddress>): boolean {
+  return left !== undefined
+    && left.sheetId === right.sheetId
+    && left.row === right.row
+    && left.column === right.column;
+}
+
+function applyStagedStructuralFormulaChanges(
+  workbook: WorkbookModel,
+  changes: readonly StagedStructuralFormulaChange[],
+): void {
+  for (const change of changes) {
+    if (change.kind === 'formula') {
+      if (readStructuralFormulaOwner(workbook, change.owner) !== change.before) {
+        throw new Error(`STRUCTURAL_PATCH_INVARIANT: ${change.participant} changed during formula preflight`);
+      }
+    } else if (!sameCellAddress(readStructuralTemplateAnchor(workbook, change.templateId), change.before)) {
+      throw new Error(`STRUCTURAL_PATCH_INVARIANT: ${change.participant} anchor changed during formula preflight`);
+    }
+  }
+  for (const change of changes) {
+    if (change.kind === 'formula') {
+      if (!writeStructuralFormulaOwner(workbook, change.owner, change.after)) {
+        throw new Error(`STRUCTURAL_PATCH_INVARIANT: ${change.participant} disappeared during formula apply`);
+      }
+      continue;
+    }
+    const validation = workbook.cellStyleTemplates.get(change.templateId)?.dataValidation;
+    if (!validation) throw new Error(`STRUCTURAL_PATCH_INVARIANT: ${change.participant} disappeared during formula apply`);
+    validation.formulaAnchor = { ...change.after };
+  }
 }
 
 function structuralOwnerKey(owner: StructuralReferenceOwnerAddress): string {
@@ -1867,7 +2001,7 @@ function applyFormulaRewritePlan(
   plan: FormulaRewritePlan,
   cellShiftPlan?: CellShiftPlan,
 ): StructuralReferenceOwnerAddress[] {
-  applyStagedStructuralFormulaChanges(plan.participantChanges);
+  applyStagedStructuralFormulaChanges(workbook, plan.participantChanges);
   const rewrittenOwners: StructuralReferenceOwnerAddress[] = [];
   for (const change of plan.cells) {
     const sheet = workbook.getSheet(change.sheetId);
