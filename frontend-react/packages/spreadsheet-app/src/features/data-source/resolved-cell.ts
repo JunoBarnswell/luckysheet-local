@@ -107,8 +107,11 @@ const PATCH_FIELDS: readonly CellDataField[] = [
   'styleId',
   'style',
   'editor',
+  'presentation',
   'numberFormat',
+  'richText',
   'formulaValue',
+  'formulaMetadata',
   'hyperlink',
   'hyperlinkDetail',
   'filterMetadata',
@@ -185,7 +188,10 @@ function legacyCellPatch(cell: CellData): CellPatch {
   return patch;
 }
 
-const migratedRegionSets = new WeakMap<WorksheetModel, Set<string>>();
+// Track the live region object, not only its id. Undo/redo and remote replay
+// can remove and recreate the same id with fresh ordinary cells; an id-only
+// set would skip the required migration on the recreated region.
+const migratedRegionSets = new WeakMap<WorksheetModel, WeakSet<SheetDataRegion>>();
 
 /**
  * One-time import/snapshot migration for pre-CellPatch data-region overlays.
@@ -194,12 +200,12 @@ const migratedRegionSets = new WeakMap<WorksheetModel, Set<string>>();
 export function migrateDataRegionCellPatches(sheet: WorksheetModel): number {
   let migratedRegions = migratedRegionSets.get(sheet);
   if (!migratedRegions) {
-    migratedRegions = new Set<string>();
+    migratedRegions = new WeakSet<SheetDataRegion>();
     migratedRegionSets.set(sheet, migratedRegions);
   }
   let migrated = 0;
   for (const region of sheet.dataRegions) {
-    if (migratedRegions.has(region.id)) continue;
+    if (migratedRegions.has(region)) continue;
     for (let row = region.headerRow + 1; row <= region.range.endRow; row += 1) {
       for (let column = region.range.startColumn; column <= region.range.endColumn; column += 1) {
         const cell = sheet.cells.get(row, column);
@@ -208,7 +214,7 @@ export function migrateDataRegionCellPatches(sheet: WorksheetModel): number {
         migrated += 1;
       }
     }
-    migratedRegions.add(region.id);
+    migratedRegions.add(region);
   }
   return migrated;
 }

@@ -38,8 +38,24 @@ export class DataBlockSynchronizer {
     return remote.bytes;
   }
 
-  async remove(ref: DataBlockRef): Promise<void> {
-    if (this.options.isRemoteAvailable()) await this.api.deleteDataBlock(this.options.unitId(), ref.dataSourceId, ref.id);
-    await this.local.remove(ref.dataSourceId, ref.id);
+  async remove(ref: DataBlockRef, options: { remoteRequired?: boolean } = {}): Promise<void> {
+    // Server query execution creates the block remotely before the browser
+    // receives its descriptor. A stale connection flag must not turn cleanup
+    // into a local-only delete and strand that remote object.
+    let remoteFailure: unknown;
+    if (this.options.isRemoteAvailable() || options.remoteRequired === true) {
+      try {
+        await this.api.deleteDataBlock(this.options.unitId(), ref.dataSourceId, ref.id);
+      } catch (error) {
+        remoteFailure = error;
+      }
+    }
+    try {
+      await this.local.remove(ref.dataSourceId, ref.id);
+    } catch (localFailure) {
+      if (remoteFailure !== undefined) throw new AggregateError([remoteFailure, localFailure], `Data block cleanup failed: ${ref.id}`);
+      throw localFailure;
+    }
+    if (remoteFailure !== undefined) throw remoteFailure;
   }
 }

@@ -7200,6 +7200,7 @@ export class WorkbookSession {
       if (targetIdentity() !== previousTargetIdentity) throw new QueryLoadError('QUERY_LOAD_STALE', query.id, 'The query target changed while loading; review the current target before refreshing');
     };
     const blockRefs: DataBlockRef[] = [];
+    const remoteBlockIds = new Set<string>();
     let committed = false;
     this.pendingQueryLoads.add(query.id);
     try {
@@ -7207,21 +7208,26 @@ export class WorkbookSession {
       let result: import('./features/query').QueryResult;
       let payload: ReturnType<typeof buildQueryLoadPayloadFromBlocks>;
       if (isServerQueryConnector(definition.connectorId)) {
-        const loaded = await this.loadServerQueryBlocks(definition, resolvedTarget, blockRefs, assertCurrent);
+        const loaded = await this.loadServerQueryBlocks(definition, resolvedTarget, blockRefs, remoteBlockIds, assertCurrent);
         result = loaded.result;
         payload = loaded.payload;
       } else {
         result = await executeQueryDefinition(this.runtime.connectors, definition);
         assertCurrent();
-        const prepared = await prepareQueryLoadPayload(workbook, definition, resolvedTarget, result);
-        payload = prepared.payload;
-        for (const block of prepared.blocks) {
+        const prepared = await prepareQueryLoadPayload(workbook, definition, resolvedTarget, result, async (block) => {
           assertCurrent();
-          // put() can save locally and fail during upload. Track ownership
-          // before writing, so partially written blocks are also cleaned up.
+          // Stream each encoded block into the byte store instead of keeping
+          // every ArrayBuffer alive until the complete query payload exists.
+          if (!this.runtime.localOnly && (this.runtime.remoteDataAvailable || this.runtime.remoteConnected)) {
+            // put() writes locally before uploading. Record the remote side as
+            // potentially owned before the call so an acknowledgement/network
+            // failure cannot strand a block created just before the failure.
+            remoteBlockIds.add(block.ref.id);
+          }
           blockRefs.push(block.ref);
           await this.runtime.dataBlocks.put(block.ref, block.payload);
-        }
+        });
+        payload = prepared.payload;
       }
       assertCurrent();
       this.runCommand(commandId, payload);
@@ -7233,7 +7239,9 @@ export class WorkbookSession {
       return snapshot;
     } catch (error) {
       if (!committed) {
-        const cleanup = await Promise.allSettled(blockRefs.map((block) => this.runtime.dataBlocks.remove(block)));
+        const cleanup = await Promise.allSettled(blockRefs.map((block) => this.runtime.dataBlocks.remove(block, {
+          remoteRequired: remoteBlockIds.has(block.id),
+        })));
         const failures = cleanup.flatMap((entry) => entry.status === 'rejected' ? [entry.reason] : []);
         if (failures.length > 0) throw new AggregateError([error, ...failures], `Query ${query.id} failed; some staged blocks could not be removed`);
       }
@@ -7374,7 +7382,13 @@ export class WorkbookSession {
     };
   }
 
-  private async loadServerQueryBlocks(query: QueryDefinition, target: LoadTarget, blockRefs: DataBlockRef[], assertCurrent: () => void): Promise<{
+  private async loadServerQueryBlocks(
+    query: QueryDefinition,
+    target: LoadTarget,
+    blockRefs: DataBlockRef[],
+    remoteBlockIds: Set<string>,
+    assertCurrent: () => void,
+  ): Promise<{
     result: import('./features/query').QueryResult;
     payload: ReturnType<typeof buildQueryLoadPayloadFromBlocks>;
   }> {
@@ -7403,6 +7417,7 @@ export class WorkbookSession {
     // for failure cleanup before any stale-workbook check; no block bytes
     // cross the browser until a viewport or pivot scan asks for them.
     blockRefs.push(...refs);
+    for (const ref of refs) remoteBlockIds.add(ref.id);
     assertCurrent();
     if (session.queryId !== query.id || session.connectorId !== query.connectorId || session.sourceRef !== request.sourceRef) {
       throw new Error('Java backend returned mismatched query data-source metadata');
@@ -7926,18 +7941,56 @@ export class WorkbookSession {
     const sourceId = nextId('data-source');
     const sheetSnapshot = this.runtime.model.snapshot().sheets.find((candidate) => candidate.id === sheet.id);
     if (!sheetSnapshot) throw new Error(`Selected worksheet snapshot is unavailable: ${sheet.id}`);
-    const encoded = await encodeSheetDataRegion({
-      sheet: sheetSnapshot,
-      range: sourceRange,
-      sourceId,
-      sourceName: `${sheet.name} data source`,
-      regionId: `${sourceId}:region`,
-      revision: 0,
-    });
-    if (!encoded) throw new Error('Selected range does not meet the block-backed Data Source threshold');
-    for (const block of encoded.blocks) await this.storeDataBlock(block.ref, block.payload);
-    this.addDataSource(encoded.manifest);
-    this.addDataRegion(encoded.region);
+    const staged: DataBlockRef[] = [];
+    const remoteBlockIds = new Set<string>();
+    let encoded: Awaited<ReturnType<typeof encodeSheetDataRegion>> | undefined;
+    try {
+      encoded = await encodeSheetDataRegion({
+        sheet: sheetSnapshot,
+        range: sourceRange,
+        sourceId,
+        sourceName: `${sheet.name} data source`,
+        regionId: `${sourceId}:region`,
+        revision: 0,
+        onBlock: async (block) => {
+          // Track ownership before the write so a remote acknowledgement
+          // failure still removes a locally persisted partial block.
+          staged.push(block.ref);
+          if (!this.runtime.localOnly && (this.runtime.remoteDataAvailable || this.runtime.remoteConnected)) {
+            remoteBlockIds.add(block.ref.id);
+          }
+          await this.runtime.dataBlocks.put(block.ref, block.payload);
+        },
+      });
+      if (!encoded) throw new Error('Selected range does not meet the block-backed Data Source threshold');
+      this.addDataSource(encoded.manifest);
+      this.addDataRegion(encoded.region);
+    } catch (error) {
+      const rollbackFailures: unknown[] = [];
+      if (encoded !== undefined && this.runtime.model.getSheet(encoded.region.range.sheetId).dataRegions.some((region) => region.id === encoded?.region.id)) {
+        try {
+          this.removeDataRegion(encoded.region.id);
+        } catch (rollbackError) {
+          rollbackFailures.push(rollbackError);
+        }
+      }
+      if (encoded !== undefined && this.runtime.model.dataModel.sources.has(encoded.manifest.id)) {
+        try {
+          this.removeDataSource(encoded.manifest.id);
+        } catch (rollbackError) {
+          rollbackFailures.push(rollbackError);
+        }
+      }
+      const cleanup = await Promise.allSettled(staged.map((block) => this.runtime.dataBlocks.remove(block, {
+        remoteRequired: remoteBlockIds.has(block.id),
+      })));
+      rollbackFailures.push(...cleanup.flatMap((entry) => entry.status === 'rejected' ? [entry.reason] : []));
+      if (rollbackFailures.length > 0) {
+        throw new AggregateError([error, ...rollbackFailures], 'Data Source creation failed; rollback was incomplete');
+      }
+      throw error;
+    }
+    if (encoded === undefined) throw new Error('Selected range did not produce a block-backed Data Source');
     this.notify(`Data Source ${encoded.manifest.name} created`);
     this.refresh();
   }

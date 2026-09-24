@@ -11,6 +11,7 @@ import {
   validateDataSourceMutationParams,
   type DataSourceMutationId,
 } from '@react-sheets/protocol';
+import { migrateDataRegionCellPatches } from './resolved-cell';
 
 export interface DataSourceAddCommandParams {
   sheetId: string;
@@ -181,6 +182,10 @@ function applyRegionAdd(workbook: CommandContext['workbook'], region: SheetDataR
   if (sheet.dataRegions.some((entry) => entry.id === region.id)) throw new Error(`Sheet data region already exists: ${region.id}`);
   workbook.getDataSource(region.sourceId);
   sheet.addDataRegion(region);
+  // A newly-created block region may already contain ordinary cells from the
+  // selected worksheet. Convert them at the command boundary so the resolver
+  // never observes the forbidden legacy overlay shape.
+  migrateDataRegionCellPatches(sheet);
 }
 
 function applyRegionRemove(workbook: CommandContext['workbook'], sheetId: string, regionId: string): void {

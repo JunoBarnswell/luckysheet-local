@@ -15,6 +15,7 @@ import type {
 import {
   DEFAULT_DATA_BLOCK_ROW_COUNT,
   LARGE_DATA_CELL_THRESHOLD,
+  isLargeDataSourceCellCount,
 } from '@react-sheets/core-model';
 import {
   COLUMNAR_BLOCK_ENCODING,
@@ -52,6 +53,8 @@ export interface SheetDataSourceImportInput {
   sourceName?: string;
   regionId?: string;
   revision?: number;
+  /** Persist one encoded block before the next block is materialized. */
+  onBlock?: (block: EncodedSheetDataBlock) => void | Promise<void>;
 }
 
 export interface EncodedSheetDataBlock {
@@ -66,11 +69,12 @@ export interface SheetDataSourceImport {
   /** Header values are returned separately so callers can restore the header. */
   header: TableScalar[];
   headerMetadata: SparseCellOverlayMetadata;
+  /** Empty when the input supplied onBlock; refs remain in manifest.blocks. */
   blocks: EncodedSheetDataBlock[];
   nonEmptyCellCount: number;
 }
 
-/** The import gate is intentionally strict: equal to the limit stays sparse. */
+/** Keep the import gate identical to the canonical large-data classification. */
 export const DATA_SOURCE_IMPORT_CELL_THRESHOLD = LARGE_DATA_CELL_THRESHOLD;
 export const DATA_SOURCE_IMPORT_BLOCK_ROWS = DEFAULT_DATA_BLOCK_ROW_COUNT;
 
@@ -123,7 +127,7 @@ export function countNonEmptyCells(sheet: SheetSnapshot, range: RangeRef): numbe
 }
 
 export function qualifiesForDataSourceImport(nonEmptyCellCount: number): boolean {
-  return isInteger(nonEmptyCellCount) && nonEmptyCellCount > DATA_SOURCE_IMPORT_CELL_THRESHOLD;
+  return isInteger(nonEmptyCellCount) && isLargeDataSourceCellCount(nonEmptyCellCount);
 }
 
 function cloneStyle(style: CellStyle): CellStyle {
@@ -188,16 +192,58 @@ function hasDateTokens(format: string | undefined): boolean {
   return /[dy]/i.test(withoutLiterals);
 }
 
-function inferFieldType(cells: readonly (CellData | undefined)[]): DataSourceFieldType {
-  const present = cells.filter((cell): cell is CellData => cell !== undefined && cell.value !== null);
-  if (present.length === 0) return 'mixed';
-  const types = new Set(present.map((cell) => typeof cell.value));
-  if (types.size !== 1) return 'mixed';
-  const firstType = present[0]!.value;
-  if (typeof firstType === 'string') return 'text';
-  if (typeof firstType === 'boolean') return 'boolean';
-  if (present.every((cell) => hasDateTokens(dateFormatOf(cell)))) return 'date';
-  return 'number';
+type InferableCellType = 'string' | 'number' | 'boolean';
+
+interface FieldTypeStats {
+  types: Set<InferableCellType>;
+  allDateValues: boolean;
+  present: boolean;
+}
+
+function newFieldTypeStats(): FieldTypeStats {
+  return { types: new Set<InferableCellType>(), allDateValues: true, present: false };
+}
+
+function recordFieldType(stats: FieldTypeStats, cell: CellData | undefined): void {
+  if (cell === undefined || cell.value === null) return;
+  const valueType = typeof cell.value;
+  if (valueType !== 'string' && valueType !== 'number' && valueType !== 'boolean') return;
+  stats.types.add(valueType);
+  stats.present = true;
+  if (valueType !== 'number' || !hasDateTokens(dateFormatOf(cell))) stats.allDateValues = false;
+}
+
+function fieldTypeFromStats(stats: FieldTypeStats): DataSourceFieldType {
+  if (!stats.present || stats.types.size !== 1) return 'mixed';
+  const onlyType = [...stats.types][0];
+  if (onlyType === 'string') return 'text';
+  if (onlyType === 'boolean') return 'boolean';
+  return stats.allDateValues ? 'date' : 'number';
+}
+
+interface SheetDataRegionAnalysis {
+  nonEmptyCellCount: number;
+  fieldTypes: DataSourceFieldType[];
+}
+
+/**
+ * Count the import gate and infer column types in one row-major pass. The
+ * previous implementation counted cells, then rescanned every column before
+ * encoding the same rectangle again. Keeping only scalar type state removes a
+ * full row-by-column allocation and one complete data pass for large ranges.
+ */
+function analyzeSheetDataRegion(input: SheetDataSourceImportInput, columnCount: number): SheetDataRegionAnalysis {
+  const stats = Array.from({ length: columnCount }, newFieldTypeStats);
+  let nonEmptyCellCount = 0;
+  for (let row = input.range.startRow; row <= input.range.endRow; row += 1) {
+    const isHeader = row === input.range.startRow;
+    for (let relativeColumn = 0; relativeColumn < columnCount; relativeColumn += 1) {
+      const cell = cellAt(input.sheet, row, input.range.startColumn + relativeColumn);
+      if (isNonEmptyCell(cell)) nonEmptyCellCount += 1;
+      if (!isHeader) recordFieldType(stats[relativeColumn]!, cell);
+    }
+  }
+  return { nonEmptyCellCount, fieldTypes: stats.map(fieldTypeFromStats) };
 }
 
 function scalarOf(cell: CellData | undefined): TableScalar {
@@ -280,27 +326,23 @@ export async function encodeSheetDataRegion(
   input: SheetDataSourceImportInput,
 ): Promise<SheetDataSourceImport | undefined> {
   validateInput(input);
-  const nonEmptyCellCount = countNonEmptyCells(input.sheet, input.range);
+  const columnCount = input.range.endColumn - input.range.startColumn + 1;
+  const analysis = analyzeSheetDataRegion(input, columnCount);
+  const nonEmptyCellCount = analysis.nonEmptyCellCount;
   if (!qualifiesForDataSourceImport(nonEmptyCellCount)) return undefined;
 
   const revision = input.revision ?? 0;
-  const columnCount = input.range.endColumn - input.range.startColumn + 1;
   const rowCount = dataRows(input);
   if (rowCount <= 0) fail('requires at least one data row after the header');
 
   const header = buildHeader(input, columnCount, revision);
   const fields: DataSourceField[] = [];
   for (let ordinal = 0; ordinal < columnCount; ordinal += 1) {
-    const absoluteColumn = input.range.startColumn + ordinal;
-    const cells: CellData[] = [];
-    for (let row = input.range.startRow + 1; row <= input.range.endRow; row += 1) {
-      const cell = cellAt(input.sheet, row, absoluteColumn);
-      if (cell) cells.push(cell);
-    }
-    fields.push(dataField(input.sourceId, ordinal, headerName(header.values[ordinal]!, ordinal), inferFieldType(cells)));
+    fields.push(dataField(input.sourceId, ordinal, headerName(header.values[ordinal]!, ordinal), analysis.fieldTypes[ordinal]!));
   }
 
   const blockPayloads: EncodedSheetDataBlock[] = [];
+  const blockRefs: DataBlockRef[] = [];
   for (let blockStart = 0; blockStart < rowCount; blockStart += DATA_SOURCE_IMPORT_BLOCK_ROWS) {
     const blockRowCount = Math.min(DATA_SOURCE_IMPORT_BLOCK_ROWS, rowCount - blockStart);
     const rows: TableScalar[][] = [];
@@ -334,7 +376,10 @@ export async function encodeSheetDataRegion(
       encoding: COLUMNAR_BLOCK_ENCODING,
       revision,
     };
-    blockPayloads.push({ ref, payload, metadata });
+    const block = { ref, payload, metadata };
+    blockRefs.push(ref);
+    if (input.onBlock) await input.onBlock(block);
+    else blockPayloads.push(block);
   }
 
   const region: SheetDataRegion = {
@@ -345,7 +390,7 @@ export async function encodeSheetDataRegion(
     revision,
   };
   return {
-    manifest: buildManifest(input, fields, blockPayloads.map((entry) => entry.ref), rowCount, revision),
+    manifest: buildManifest(input, fields, blockRefs, rowCount, revision),
     region,
     header: header.values,
     headerMetadata: header.metadata,

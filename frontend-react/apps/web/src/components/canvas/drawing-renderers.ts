@@ -867,7 +867,10 @@ function drawChartText(context: CanvasRenderingContext2D, text: string, x: numbe
 
 function chartScale(value: number, axis: NonNullable<ChartLayout['valueAxis']>): number {
   const axisModel = axis.model;
-  const project = (ratio: number): number => axisModel.reverseOrder ? 1 - ratio : ratio;
+  const project = (ratio: number): number => {
+    const bounded = Math.max(0, Math.min(1, ratio));
+    return axisModel.reverseOrder ? 1 - bounded : bounded;
+  };
   if (axisModel.scale === 'logarithmic') {
     const base = axisModel.logBase ?? 10;
     const min = Math.log(Math.max(Number.MIN_VALUE, axis.minimum)) / Math.log(base);
@@ -1122,7 +1125,7 @@ function drawChartDataLabels(context: CanvasRenderingContext2D, payload: ChartDr
       : undefined);
   const labels = declaredSeries?.dataLabels ?? chartLabels;
   for (const point of series.points) {
-    if (!labels?.visible || point.value === null) continue;
+    if (!labels?.visible || !point.visible || point.value === null) continue;
     const parts: string[] = [];
     if (labels.showSeriesName) parts.push(series.name);
     if (labels.showCategoryName) parts.push(String(point.category));
@@ -1389,7 +1392,10 @@ function drawChartLayoutOnCanvas(options: { context: CanvasRenderingContext2D; p
       if (series.chartType === 'line' || series.chartType === 'area') {
         const valueAxis = series.axis === 'secondary' ? layout.secondaryValueAxis ?? layout.valueAxis : layout.valueAxis;
         const pixelsPerValue = valueAxis ? layout.plot.height / Math.max(Number.EPSILON, valueAxis.maximum - valueAxis.minimum) : 1;
-        drawChartLine(context, series, series.chartType === 'area' || payload.chartType === 'area', series.subtype?.includes('smooth') === true || series.smooth === true, layout.plot.top + layout.plot.height, payload.elements.emptyCells ?? 'gap', pixelsPerValue);
+        const baseline = valueAxis && valueAxis.model.scale !== 'logarithmic'
+          ? layout.plot.top + layout.plot.height * (1 - chartScale(0, valueAxis))
+          : layout.plot.top + layout.plot.height;
+        drawChartLine(context, series, series.chartType === 'area' || payload.chartType === 'area', series.subtype?.includes('smooth') === true || series.smooth === true, baseline, payload.elements.emptyCells ?? 'gap', pixelsPerValue);
       }
       if (payload.chartType === 'scatter' || payload.chartType === 'bubble') drawScatterSeries(context, series, payload.chartType === 'bubble');
       drawChartDataLabels(context, payload, series);
@@ -1922,11 +1928,11 @@ export function createCanvasFloatingDrawables(input: CanvasFloatingRendererInput
       const data = getChartSeries(payload, getSheet, pivotResults, sheets, tables, analysisViews);
       const layout = buildChartLayout(payload, data, bounds.width, bounds.height);
       if (layout.status.kind === 'loading') {
-        drawables.push({ kind: 'shape', id: drawing.id, bounds, draw: (context, rect) => drawChartLoadingOnCanvas(context, rect, layout.status.message ?? 'Loading chart data…') });
+        drawables.push({ kind: 'chart', id: drawing.id, bounds, draw: (context, rect) => drawChartLoadingOnCanvas(context, rect, layout.status.message ?? 'Loading chart data…'), hitTest: () => ({ action: 'chart.select-element', data: { kind: 'chart-area' } }) });
         continue;
       }
       if (layout.status.kind !== 'ready') {
-        drawables.push({ kind: 'shape', id: drawing.id, bounds, draw: (context, rect) => drawUnsupportedDrawingOnCanvas(context, rect, layout.status.message ?? `${layout.status.code ?? 'UNSUPPORTED_FEATURE'}: chart data is unavailable`) });
+        drawables.push({ kind: 'chart', id: drawing.id, bounds, draw: (context, rect) => drawUnsupportedDrawingOnCanvas(context, rect, layout.status.message ?? `${layout.status.code ?? 'UNSUPPORTED_FEATURE'}: chart data is unavailable`), hitTest: () => ({ action: 'chart.select-element', data: { kind: 'chart-area' } }) });
         continue;
       }
       drawables.push({

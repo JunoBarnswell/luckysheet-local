@@ -380,6 +380,9 @@ function validateChartSemantics(payload: ChartPayload): void {
       if (series.chartType && !['column', 'bar', 'line', 'area'].includes(series.chartType)) throw new Error(`INVALID_CHART_SOURCE: Combo series type ${series.chartType} is not supported by the canonical combo layout`);
       if (series.subtype && series.chartType && !isChartSubtypeForType(series.chartType, series.subtype)) throw new Error(`Chart series subtype ${series.subtype} does not belong to ${series.chartType}`);
     }
+    const hasBar = payload.series.some((series) => series.chartType === 'bar');
+    const hasNonBar = payload.series.some((series) => series.chartType !== 'bar');
+    if (hasBar && hasNonBar) throw new Error('UNSUPPORTED_FEATURE: Mixed horizontal-bar combo charts are not supported by the canonical layout');
   }
   if (payload.chartType !== 'combo' && payload.series?.some((series) => series.chartType && series.chartType !== payload.chartType)) {
     throw new Error(`INVALID_CHART_SOURCE: ${payload.chartType} chart cannot contain a different series chart type`);
@@ -394,6 +397,7 @@ function validateChartSemantics(payload: ChartPayload): void {
     if (series.id !== undefined && !seriesIds.add(series.id)) throw new Error(`INVALID_CHART_SOURCE: Duplicate chart series id ${series.id}`);
     if (series.id === undefined && !unnamedSeriesNames.add(series.name)) throw new Error(`INVALID_CHART_SOURCE: Duplicate chart series name without an id: ${series.name}`);
     const seriesType = series.chartType ?? payload.chartType;
+    if (series.subtype && !isChartSubtypeForType(seriesType, series.subtype)) throw new Error(`Chart series subtype ${series.subtype} does not belong to ${seriesType}`);
     if (seriesType === 'stock') {
       const stockSubtype = series.subtype ?? payload.subtype;
       if (!series.stockRoles) throw new Error('INVALID_CHART_SOURCE: Stock charts require explicit High/Low/Close role bindings');

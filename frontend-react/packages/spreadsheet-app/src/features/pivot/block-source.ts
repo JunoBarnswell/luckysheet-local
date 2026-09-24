@@ -8,7 +8,7 @@ import type {
   SheetId,
 } from '@react-sheets/core-model';
 import type { DataSourceContentLoadState, DataSourceContentQuery } from '../data-source/content-query';
-import { createPivotSourceIndex, type PivotSourceIndex } from './source-index';
+import { createPivotSourceIndexFromRows, type PivotSourceIndex } from './source-index';
 
 export interface PivotBlockSourceField {
   fieldId: string;
@@ -170,34 +170,22 @@ export async function readPivotBlockSource(
   });
   try {
     assertBlockReadActive(options.signal);
-    const columnValues = fields.map(() => [] as PivotScalar[]);
-    let scannedRowCount = 0;
-    const scanned = await query.scanRows((values, logicalRow) => {
-      assertBlockReadActive(options.signal);
-      if (values.length !== fields.length) {
-        throw new Error(`Data source row ${String(logicalRow)} has ${String(values.length)} fields; expected ${String(fields.length)}`);
-      }
-      const physicalRow = query.getPhysicalRow(logicalRow);
-      if (physicalRow === undefined) throw new Error(`Data source logical row ${String(logicalRow)} has no physical source row`);
-      scannedRowCount += 1;
-      for (let ordinal = 0; ordinal < fields.length; ordinal += 1) {
-        columnValues[ordinal]!.push(values[ordinal] ?? null);
-      }
-    }, { signal: options.signal, prefetchAllBlocks: true });
+    const loaded = await query.getAllBlockRows();
     assertBlockReadActive(options.signal);
-    const scanState = stateFromQuery(scanned.state);
-    if (scanned.value === undefined || scanState.status !== 'ready') {
-      const status = scanState.status === 'ready' ? 'error' : scanState.status;
-      return failure(status, scanState.sourceId, scanState.error ?? `Data source ${sourceId} did not return rows`, scanState.blockId);
+    const loadState = stateFromQuery(loaded.state);
+    if (loaded.value === undefined || loadState.status !== 'ready') {
+      const status = loadState.status === 'ready' ? 'error' : loadState.status;
+      return failure(status, loadState.sourceId, loadState.error ?? `Data source ${sourceId} did not return rows`, loadState.blockId);
     }
     if (JSON.stringify(query.manifest) !== manifestIdentity) {
       return failure('error', sourceId, 'Pivot data source changed while block rows were loading');
     }
-    if (scannedRowCount !== queryManifest.rowCount) {
+    const loadedRowCount = loaded.value.reduce((count, block) => count + block.rows.length, 0);
+    if (loadedRowCount !== queryManifest.rowCount) {
       return failure('error', sourceId, 'Pivot data source row count changed while block rows were loading');
     }
     const overlays = options.resolveCellOverlays?.() ?? [];
-    const overlayCells = new Set<string>();
+    const overlayByLogicalRow = new Map<number, Map<number, PivotScalar>>();
     if (overlays.length > 0) {
       const logicalByPhysicalRow = new Map<number, number>();
       for (let logicalRow = 0; logicalRow < queryManifest.rowCount; logicalRow += 1) {
@@ -214,25 +202,38 @@ export async function readPivotBlockSource(
         }
         const logicalRow = logicalByPhysicalRow.get(overlay.rowIndex);
         if (logicalRow === undefined) throw new Error(`Pivot source physical row ${String(overlay.rowIndex)} is absent from the current row order`);
-        const cellKey = `${String(overlay.rowIndex)}:${String(overlay.fieldOrdinal)}`;
-        if (overlayCells.has(cellKey)) throw new Error('Pivot source has duplicate CellPatch overlays for one cell');
-        overlayCells.add(cellKey);
-        columnValues[overlay.fieldOrdinal]![logicalRow] = overlay.value;
+        const rowOverlays = overlayByLogicalRow.get(logicalRow) ?? new Map<number, PivotScalar>();
+        if (rowOverlays.has(overlay.fieldOrdinal)) throw new Error('Pivot source has duplicate CellPatch overlays for one cell');
+        rowOverlays.set(overlay.fieldOrdinal, overlay.value);
+        overlayByLogicalRow.set(logicalRow, rowOverlays);
       }
     }
     assertBlockReadActive(options.signal);
     const readyState: PivotBlockSourceState = {
       status: 'ready',
       sourceId,
-      blockId: scanState.blockId ?? latestState?.blockId ?? null,
+      blockId: loadState.blockId ?? latestState?.blockId ?? null,
     };
     return {
       status: 'ready',
       state: readyState,
-      source: createPivotSourceIndex({
-        columns: fields.map((field, ordinal) => ({ field, values: columnValues[ordinal]! })),
+      source: createPivotSourceIndexFromRows({
+        fields,
         rowCount: queryManifest.rowCount,
+        rowAt: (logicalRow) => {
+          assertBlockReadActive(options.signal);
+          const physicalRow = query.getPhysicalRow(logicalRow);
+          if (physicalRow === undefined) throw new Error(`Data source logical row ${String(logicalRow)} has no physical source row`);
+          const base = query.getLoadedPhysicalRow(physicalRow);
+          if (base === undefined) throw new Error(`Data source physical row ${String(physicalRow)} was not loaded`);
+          const rowOverlays = overlayByLogicalRow.get(logicalRow);
+          if (rowOverlays === undefined) return base;
+          const values = [...base] as PivotScalar[];
+          for (const [fieldOrdinal, value] of rowOverlays) values[fieldOrdinal] = value;
+          return values;
+        },
         rowPathAt: (logicalRow) => {
+          assertBlockReadActive(options.signal);
           const physicalRow = query.getPhysicalRow(logicalRow);
           if (physicalRow === undefined) throw new Error(`Data source logical row ${String(logicalRow)} has no physical source row`);
           return [rowPath(sourceSheetId, sourceRowStart, physicalRow)];

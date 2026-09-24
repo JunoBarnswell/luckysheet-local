@@ -333,29 +333,42 @@ public class QueryExecutionService {
     ) {
         QueryTable table = executeInternal(request, source, false);
         List<String> columnTypes = inferColumnTypes(table);
-        DataSourceBlockPlan plan = planDataSourceBlocks(sourceId, table, columnTypes);
-        int blockRowCount = plan.blockRowCount();
-        if (plan.blocks().size() > WorkbookDataBlockService.MAX_WORKBOOK_BLOCK_COUNT) {
-            throw QueryFailure.validation("Query result requires too many data blocks");
-        }
+        int blockRowCount = resolveBlockRowCount(table);
         List<QueryDataSourceBlock> blocks = new ArrayList<>();
-        try {
-            for (int index = 0; index < plan.blocks().size(); index += 1) {
-                if (Thread.currentThread().isInterrupted()) throw ServiceException.timeout("Query was cancelled");
-                String blockId = "query-block:" + UUID.randomUUID();
-                int start = index * blockRowCount;
-                int rowCount = Math.min(blockRowCount, table.rows.size() - start);
-                ColumnarBlockEncoder.EncodedBlock encoded = plan.blocks().get(index);
-                QueryDataSourceBlock block = new QueryDataSourceBlock(
-                        blockId, start, rowCount, encoded.checksum(), encoded.content().length, ColumnarBlockEncoder.ENCODING);
-                blocks.add(block);
-                dataBlocks.put(unitId, sourceId, blockId, encoded.checksum(), encoded.content().length,
-                        () -> new ByteArrayInputStream(encoded.content()), actor);
+        while (true) {
+            long blockCount = blockCount(table.rows.size(), blockRowCount);
+            if (blockCount > WorkbookDataBlockService.MAX_WORKBOOK_BLOCK_COUNT) {
+                throw QueryFailure.validation("Query result requires too many data blocks");
             }
-            if (Thread.currentThread().isInterrupted()) throw ServiceException.timeout("Query was cancelled");
-        } catch (RuntimeException error) {
-            cleanupGeneratedDataBlocks(unitId, sourceId, blocks, actor, error);
-            throw error;
+            blocks.clear();
+            try {
+                for (int index = 0; index < blockCount; index += 1) {
+                    if (Thread.currentThread().isInterrupted()) throw ServiceException.timeout("Query was cancelled");
+                    String blockId = "query-block:" + UUID.randomUUID();
+                    int start = index * blockRowCount;
+                    int rowCount = Math.min(blockRowCount, table.rows.size() - start);
+                    // Keep only the current encoded block alive. If a later
+                    // block is too large, the already persisted prefix is
+                    // removed before retrying with a smaller row count.
+                    ColumnarBlockEncoder.EncodedBlock encoded = COLUMNAR_BLOCK_ENCODER.encode(
+                            sourceId, table.columns, columnTypes, table.rows.subList(start, start + rowCount));
+                    QueryDataSourceBlock block = new QueryDataSourceBlock(
+                            blockId, start, rowCount, encoded.checksum(), encoded.content().length, ColumnarBlockEncoder.ENCODING);
+                    blocks.add(block);
+                    dataBlocks.put(unitId, sourceId, blockId, encoded.checksum(), encoded.content().length,
+                            () -> new ByteArrayInputStream(encoded.content()), actor);
+                }
+                if (Thread.currentThread().isInterrupted()) throw ServiceException.timeout("Query was cancelled");
+                break;
+            } catch (ColumnarBlockEncoder.BlockTooLargeException error) {
+                cleanupGeneratedDataBlocks(unitId, sourceId, blocks, actor, error);
+                if (error.getSuppressed().length > 0) throw error;
+                if (blockRowCount == 1) throw QueryFailure.validation("A query data block exceeds the configured byte limit");
+                blockRowCount = Math.max(1, blockRowCount / 2);
+            } catch (RuntimeException error) {
+                cleanupGeneratedDataBlocks(unitId, sourceId, blocks, actor, error);
+                throw error;
+            }
         }
 
         long duration = Duration.between(started, Instant.now()).toMillis();
@@ -372,23 +385,9 @@ public class QueryExecutionService {
                 table.columns, columnTypes, table.rows.size(), blockRowCount, blocks, Instant.now(), duration);
     }
 
-    private DataSourceBlockPlan planDataSourceBlocks(String sourceId, QueryTable table, List<String> columnTypes) {
-        int candidate = resolveBlockRowCount(table);
-        while (candidate >= 1) {
-            try {
-                List<ColumnarBlockEncoder.EncodedBlock> blocks = new ArrayList<>();
-                for (int start = 0; start < table.rows.size(); start += candidate) {
-                    if (Thread.currentThread().isInterrupted()) throw ServiceException.timeout("Query was cancelled");
-                    int end = Math.min(start + candidate, table.rows.size());
-                    blocks.add(COLUMNAR_BLOCK_ENCODER.encode(sourceId, table.columns, columnTypes, table.rows.subList(start, end)));
-                }
-                return new DataSourceBlockPlan(candidate, blocks);
-            } catch (ColumnarBlockEncoder.BlockTooLargeException error) {
-                if (candidate == 1) throw QueryFailure.validation("A query data block exceeds the configured byte limit");
-                candidate = Math.max(1, candidate / 2);
-            }
-        }
-        throw QueryFailure.validation("A query data block size could not be resolved");
+    private long blockCount(int rowCount, int blockRowCount) {
+        if (rowCount <= 0) return 0;
+        return ((long) rowCount + blockRowCount - 1) / blockRowCount;
     }
 
     public QueryBlockResponse readBlock(String unitId, String queryId, String executionId, long offset, String actor) {
@@ -1090,12 +1089,6 @@ public class QueryExecutionService {
     }
 
     private record ActiveQuery(String actor, Future<?> future) {}
-
-    private record DataSourceBlockPlan(int blockRowCount, List<ColumnarBlockEncoder.EncodedBlock> blocks) {
-        private DataSourceBlockPlan {
-            blocks = List.copyOf(blocks);
-        }
-    }
 
     private record BlockQuery(String unitId, String queryId, String actor, QueryTable table, int blockRowCount, Instant expiresAt) {}
 

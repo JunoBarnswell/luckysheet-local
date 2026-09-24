@@ -73,6 +73,18 @@ export type PivotSourceIndexBuildInput = {
   rowPaths?: never;
 };
 
+/**
+ * Row-stream input for block-backed sources. The row callback must return a
+ * read-only view owned by the source cache; the builder encodes values into
+ * the final typed/dictionary columns without retaining that row view.
+ */
+export interface PivotSourceRowsBuildInput {
+  fields: readonly PivotSourceFieldInput[];
+  rowCount: number;
+  rowAt: (row: number) => readonly PivotScalar[];
+  rowPathAt: (row: number) => readonly PivotSourceRowPath[];
+}
+
 export function inferPivotSourceFieldType(values: readonly PivotScalar[]): PivotFieldDataType {
   const present = values.filter((value) => value != null && value !== '');
   if (!present.length && values.some((value) => typeof value === 'string') && values.every((value) => value == null || typeof value === 'string')) return 'text';
@@ -125,6 +137,57 @@ export function createPivotSourceIndex(input: PivotSourceIndexBuildInput): Pivot
     rowCount,
     fields,
     columns,
+    rowPathPool,
+    rowPathOffsets,
+  };
+}
+
+/**
+ * Build a Pivot source index directly from a row stream.
+ *
+ * A block-backed source is already decoded in row views. Materializing a
+ * second `PivotScalar[][]`/column-array copy before encoding doubles the peak
+ * heap for large sheets and defeats lazy block loading. This path keeps only
+ * the final transferable column representation plus row paths.
+ */
+export function createPivotSourceIndexFromRows(input: PivotSourceRowsBuildInput): PivotSourceIndex {
+  const { rowCount } = input;
+  if (!Number.isSafeInteger(rowCount) || rowCount < 0) throw new Error('Pivot source row count is invalid');
+  if (rowCount >= MAX_UINT32) throw new Error('Pivot source row count exceeds the transferable index limit');
+  const fieldIds = new Set<string>();
+  const fields = input.fields.map((field, ordinal) => {
+    if (!field.fieldId.trim()) throw new Error(`Pivot source field ${String(ordinal)} has no stable fieldId`);
+    if (fieldIds.has(field.fieldId)) throw new Error(`Pivot source fieldId is duplicated: ${field.fieldId}`);
+    if (field.ordinal !== ordinal) throw new Error(`Pivot source field ${field.fieldId} has a non-contiguous ordinal`);
+    const dataType = field.dataType;
+    if (dataType === undefined) throw new Error(`Pivot source field ${field.fieldId} requires a declared data type for row streaming`);
+    fieldIds.add(field.fieldId);
+    return { ...field, dataType };
+  });
+  const builders = fields.map((field) => createColumnBuilder(field.dataType, rowCount));
+  const rowPathPool: PivotSourceRowPath[] = [];
+  const rowPathOffsets = new Uint32Array(rowCount + 1);
+  for (let row = 0; row < rowCount; row += 1) {
+    const values = input.rowAt(row);
+    if (values.length !== fields.length) {
+      throw new Error(`Pivot source row ${String(row)} has ${String(values.length)} fields; expected ${String(fields.length)}`);
+    }
+    for (let ordinal = 0; ordinal < fields.length; ordinal += 1) {
+      appendColumnValue(builders[ordinal]!, fields[ordinal]!.fieldId, fields[ordinal]!.dataType, row, values[ordinal] ?? null);
+    }
+    rowPathOffsets[row] = rowPathPool.length;
+    const paths = input.rowPathAt(row);
+    if (!Array.isArray(paths)) throw new Error(`Pivot source row ${String(row)} has invalid row paths`);
+    if (rowPathPool.length + paths.length > MAX_UINT32) throw new Error('Pivot source row-path pool exceeds the transferable limit');
+    for (const path of paths) rowPathPool.push(structuredClone(path));
+  }
+  rowPathOffsets[rowCount] = rowPathPool.length;
+  return {
+    schema: PIVOT_SOURCE_INDEX_SCHEMA,
+    version: PIVOT_SOURCE_INDEX_VERSION,
+    rowCount,
+    fields,
+    columns: builders.map(finalizeColumnBuilder),
     rowPathPool,
     rowPathOffsets,
   };
@@ -263,23 +326,84 @@ function encodeColumn(dataType: PivotFieldDataType, values: readonly PivotScalar
   return { kind: 'dictionary', dictionary, codes };
 }
 
+function validatePivotValue(fieldId: string, dataType: PivotFieldDataType, value: PivotScalar): void {
+  if (value == null || value === '') return;
+  // Typed numeric/boolean/date columns cannot carry a formula error: the
+  // transferable representation has no error slot and would otherwise turn
+  // the object into NaN/false. Mixed and error columns retain the canonical
+  // error value in their dictionary representation.
+  const invalid = isPivotError(value)
+    ? dataType !== 'mixed' && dataType !== 'error'
+    : dataType === 'number'
+      ? typeof value !== 'number' || !Number.isFinite(value)
+      : dataType === 'boolean'
+        ? typeof value !== 'boolean'
+        : dataType === 'text'
+          ? typeof value !== 'string'
+          : dataType === 'date'
+            ? !((typeof value === 'number' && Number.isFinite(value))
+              || (typeof value === 'string' && pivotTimelineInstant(value) !== undefined))
+            : dataType === 'error'
+              ? !isPivotError(value)
+              : false;
+  if (invalid) throw new Error(`Pivot source field ${fieldId} contains a value incompatible with ${dataType}`);
+}
+
 function validateDeclaredType(fieldId: string, dataType: PivotFieldDataType, values: readonly PivotScalar[]): void {
   const invalid = values.find((value) => {
-    if (value == null || value === '') return false;
-    // Typed numeric/boolean/date columns cannot carry a formula error: the
-    // transferable representation has no error slot and would otherwise turn
-    // the object into NaN/false. Mixed and error columns retain the canonical
-    // error value in their dictionary representation.
-    if (isPivotError(value)) return dataType !== 'mixed' && dataType !== 'error';
-    if (dataType === 'number') return typeof value !== 'number' || !Number.isFinite(value);
-    if (dataType === 'boolean') return typeof value !== 'boolean';
-    if (dataType === 'text') return typeof value !== 'string';
-    if (dataType === 'date') return !((typeof value === 'number' && Number.isFinite(value))
-      || (typeof value === 'string' && pivotTimelineInstant(value) !== undefined));
-    if (dataType === 'error') return !isPivotError(value);
-    return false;
+    try {
+      validatePivotValue(fieldId, dataType, value);
+      return false;
+    } catch {
+      return true;
+    }
   });
   if (invalid !== undefined) throw new Error(`Pivot source field ${fieldId} contains a value incompatible with ${dataType}`);
+}
+
+type PivotColumnBuilder =
+  | PivotDictionaryColumn & { dictionaryIndex: Map<string, number> }
+  | PivotNumberColumn
+  | PivotBooleanColumn;
+
+function createColumnBuilder(dataType: PivotFieldDataType, rowCount: number): PivotColumnBuilder {
+  if (dataType === 'number') return { kind: 'number', values: new Float64Array(rowCount), validity: new Uint8Array(rowCount) };
+  if (dataType === 'boolean') return { kind: 'boolean', values: new Uint8Array(rowCount), validity: new Uint8Array(rowCount) };
+  return { kind: 'dictionary', dictionary: [], dictionaryIndex: new Map<string, number>(), codes: new Uint32Array(rowCount) };
+}
+
+function finalizeColumnBuilder(builder: PivotColumnBuilder): PivotSourceColumn {
+  if (builder.kind === 'dictionary') return { kind: 'dictionary', dictionary: builder.dictionary, codes: builder.codes };
+  return builder;
+}
+
+function appendColumnValue(
+  builder: PivotColumnBuilder,
+  fieldId: string,
+  dataType: PivotFieldDataType,
+  row: number,
+  value: PivotScalar,
+): void {
+  validatePivotValue(fieldId, dataType, value);
+  if (value == null || value === '') return;
+  if (builder.kind === 'number') {
+    builder.values[row] = value as number;
+    builder.validity[row] = 1;
+    return;
+  }
+  if (builder.kind === 'boolean') {
+    builder.values[row] = value === true ? 1 : 0;
+    builder.validity[row] = 1;
+    return;
+  }
+  const key = pivotMemberKey(createPivotMemberKey(value));
+  let code = builder.dictionaryIndex.get(key);
+  if (code === undefined) {
+    builder.dictionary.push(structuredClone(value));
+    code = builder.dictionary.length;
+    builder.dictionaryIndex.set(key, code);
+  }
+  builder.codes[row] = code;
 }
 
 function scalarBytes(value: PivotScalar): number {

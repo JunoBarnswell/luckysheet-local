@@ -97,6 +97,8 @@ export interface PreparedQueryLoad {
   blocks: Array<{ ref: DataBlockRef; payload: ArrayBuffer }>;
 }
 
+export type QueryLoadBlockSink = (block: { ref: DataBlockRef; payload: ArrayBuffer }) => void | Promise<void>;
+
 export async function executeQueryDefinition(
   connectors: ConnectorRegistry,
   query: QueryDefinition,
@@ -451,28 +453,70 @@ export function buildQueryLoadPayloadFromBlocks(
   };
 }
 
-export async function prepareQueryLoadPayload(workbook: WorkbookModel, query: QueryDefinition, target: LoadTarget, result: QueryResult): Promise<PreparedQueryLoad> {
+export async function prepareQueryLoadPayload(
+  workbook: WorkbookModel,
+  query: QueryDefinition,
+  target: LoadTarget,
+  result: QueryResult,
+  onBlock?: QueryLoadBlockSink,
+): Promise<PreparedQueryLoad> {
   validateQueryDefinition(query);
   validateQueryResult(result);
   const sourceId = querySourceId(query.id);
   const previousSource = workbook.dataModel.sources.get(sourceId);
   const revision = (previousSource?.revision ?? -1) + 1;
+  let targetTable: WorkbookTableModel | undefined;
+  if (target.kind === 'workbook-table') {
+    if (!target.tableId) throw new Error('Workbook-table query target requires tableId');
+    targetTable = workbook.dataModel.tables.get(target.tableId);
+    if (!targetTable) throw new Error(`Unknown workbook table: ${target.tableId}`);
+  }
   const fields = inferQueryFields(sourceId, result.columns, result.rows);
+  // Validate the target before encoding or persisting any large block. A
+  // range/target mismatch is deterministic and should fail before allocating
+  // columnar payloads that the caller then has to clean up.
+  const sourceRange = target.kind === 'workbook-table' ? undefined : targetRangeForQuery(workbook, target, result.columns, result.rowCount);
   const blocks: Array<{ ref: DataBlockRef; payload: ArrayBuffer }> = [];
+  const blockRefs: DataBlockRef[] = [];
   for (let startRow = 0; startRow < result.rows.length; startRow += DEFAULT_DATA_BLOCK_ROW_COUNT) {
     const sourceRows = result.rows.slice(startRow, startRow + DEFAULT_DATA_BLOCK_ROW_COUNT);
     const rows = normalizeQueryRowsForDataSource(sourceRows, fields, startRow);
     const blockPayload = await encodeColumnarBlock({ fields: fields.map((field) => columnarField(sourceId, field.name, field.ordinal, field.type)), rows });
     const blockId = `query-block:${crypto.randomUUID()}`;
-    blocks.push({ ref: { id: blockId, dataSourceId: sourceId, startRow, rowCount: rows.length, storageKey: `data-source/${sourceId}/revision-${revision}/${blockId}`, checksum: await computeColumnarBlockChecksum(blockPayload), byteLength: blockPayload.byteLength, encoding: COLUMNAR_BLOCK_ENCODING, revision }, payload: blockPayload });
+    const block = {
+      ref: {
+        id: blockId,
+        dataSourceId: sourceId,
+        startRow,
+        rowCount: rows.length,
+        storageKey: `data-source/${sourceId}/revision-${revision}/${blockId}`,
+        checksum: await computeColumnarBlockChecksum(blockPayload),
+        byteLength: blockPayload.byteLength,
+        encoding: COLUMNAR_BLOCK_ENCODING,
+        revision,
+      },
+      payload: blockPayload,
+    };
+    blockRefs.push(block.ref);
+    if (onBlock === undefined) blocks.push(block);
+    else await onBlock(block);
   }
-  const sourceRange = target.kind === 'workbook-table' ? undefined : targetRangeForQuery(workbook, target, result.columns, result.rowCount);
-  const source: DataSourceManifest = { schema: 'DataSourceManifest', version: 1, id: sourceId, name: query.name, kind: 'chunked-table', ...(sourceRange ? { sourceSheetId: sourceRange.sheetId, sourceRange: structuredClone(sourceRange) } : {}), rowCount: result.rows.length, fields, blockRowCount: DEFAULT_DATA_BLOCK_ROW_COUNT, blocks: blocks.map((entry) => entry.ref), revision };
+  const source: DataSourceManifest = {
+    schema: 'DataSourceManifest',
+    version: 1,
+    id: sourceId,
+    name: query.name,
+    kind: 'chunked-table',
+    ...(sourceRange ? { sourceSheetId: sourceRange.sheetId, sourceRange: structuredClone(sourceRange) } : {}),
+    rowCount: result.rows.length,
+    fields,
+    blockRowCount: DEFAULT_DATA_BLOCK_ROW_COUNT,
+    blocks: blockRefs,
+    revision,
+  };
   const definition = serializeQueryDefinition({ ...query, sourceRevision: revision });
   if (target.kind === 'workbook-table') {
-    if (!target.tableId) throw new Error('Workbook-table query target requires tableId');
-    const table = workbook.dataModel.tables.get(target.tableId);
-    if (!table) throw new Error(`Unknown workbook table: ${target.tableId}`);
+    const table = targetTable!;
     const nextTable: WorkbookTableModel = { ...structuredClone(table), sourceId, sourceSheetId: undefined, sourceRange: undefined, rowCount: result.rowCount, fields: fields.map((field) => ({ id: field.id, name: field.name, ordinal: field.ordinal, type: field.type })), blocks: [], revision: table.revision + 1 };
     return { payload: { kind: 'data-source-load', queryId: query.id, queryDefinition: definition, target: structuredClone(target), sourceId, source, binding: { kind: 'workbook-table', tableId: table.id, table: nextTable } }, blocks };
   }
