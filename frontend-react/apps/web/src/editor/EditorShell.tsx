@@ -343,8 +343,10 @@ export function EditorShell({
                   }
                   if ((kind === 'point' || kind === 'series' || kind === 'data-label') && 'seriesId' in data) {
                     session.selectChartElement({ kind: kind as 'point' | 'series' | 'data-label', chartId: payload.chartId, seriesId: String((data as { seriesId: string }).seriesId), ...('pointIndex' in data ? { pointIndex: Number((data as { pointIndex: number }).pointIndex) } : {}) });
+                  } else if (kind === 'histogram-bin' && 'seriesId' in data && 'binIndex' in data) {
+                    session.selectChartElement({ kind: 'histogram-bin', chartId: payload.chartId, seriesId: String((data as { seriesId: string }).seriesId), binIndex: Number((data as { binIndex: number }).binIndex) });
                   } else if (['chart-area', 'plot-area', 'title', 'legend', 'axis', 'axis-title', 'gridline', 'data-table', 'trendline', 'error-bar'].includes(kind)) {
-                    session.selectChartElement({ kind: kind as Exclude<ChartElementSelection, { kind: 'series' | 'point' | 'data-label' }>['kind'], chartId: payload.chartId });
+                    session.selectChartElement({ kind: kind as Exclude<ChartElementSelection['kind'], 'series' | 'point' | 'data-label' | 'histogram-bin'>, chartId: payload.chartId });
                   }
                 }}
                 onFloatingMove={(drawingId, bounds, rotation) => dispatchCommand({ commandId: "drawing.move", params: { sheetId: state.activeSheetId, drawingId, transform: { ...bounds, rotation } } })}

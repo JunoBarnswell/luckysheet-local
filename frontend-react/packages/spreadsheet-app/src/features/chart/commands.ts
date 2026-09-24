@@ -143,6 +143,22 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
 
+const CHART_BINDING_AREAS = ['values', 'category', 'details', 'color', 'size', 'tooltip', 'filter'] as const;
+const CHART_AGGREGATES = ['sum', 'average', 'count', 'min', 'max', 'none'] as const;
+
+function isChartBindings(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  return CHART_BINDING_AREAS.every((area) => {
+    const bindings = value[area];
+    return Array.isArray(bindings) && bindings.every((binding) => isRecord(binding)
+      && typeof binding.fieldId === 'string' && binding.fieldId.trim().length > 0
+      && binding.area === area
+      && typeof binding.aggregate === 'string' && CHART_AGGREGATES.includes(binding.aggregate as typeof CHART_AGGREGATES[number])
+      && (binding.sort === undefined || binding.sort === 'asc' || binding.sort === 'desc')
+      && (binding.format === undefined || typeof binding.format === 'string'));
+  });
+}
+
 function isRange(value: unknown): value is RangeRef {
   if (!isRecord(value)) return false;
   return typeof value.sheetId === 'string'
@@ -164,9 +180,9 @@ function isChartSource(value: unknown): value is ChartSource {
     && (value.identity === undefined || typeof value.identity === 'string')
     && (value.dynamic === undefined || typeof value.dynamic === 'boolean');
   if (value.kind === 'pivot') return typeof value.pivotId === 'string' && value.pivotId.length > 0;
-  if (value.kind === 'table') return typeof value.tableId === 'string' && value.tableId.length > 0 && isRecord(value.bindings)
+  if (value.kind === 'table') return typeof value.tableId === 'string' && value.tableId.length > 0 && isChartBindings(value.bindings)
     && (value.structuredReference === undefined || typeof value.structuredReference === 'string');
-  return value.kind === 'report-range' && isRange(value.range) && isRecord(value.bindings)
+  return value.kind === 'report-range' && isRange(value.range) && isChartBindings(value.bindings)
     && (value.identity === undefined || typeof value.identity === 'string');
 }
 

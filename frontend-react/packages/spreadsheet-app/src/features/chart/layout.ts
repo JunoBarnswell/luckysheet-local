@@ -108,6 +108,7 @@ export interface ChartWaterfallBarLayout {
   end: number;
   total: boolean;
   color: string;
+  visible: boolean;
 }
 
 export interface ChartMapFeatureLayout {
@@ -137,10 +138,10 @@ export interface ChartLayout {
   paretoPoints?: Array<{ x: number; y: number }>;
   boxes?: ChartBoxLayout[];
   waterfallBars?: ChartWaterfallBarLayout[];
-  funnelStages?: Array<{ index: number; value: number; nextValue: number; label: string; color: string }>;
+  funnelStages?: Array<{ index: number; value: number; nextValue: number; label: string; color: string; visible: boolean }>;
   stockPoints?: Array<{ index: number; open?: number; high: number; low: number; close: number; volume?: number; color: string }>;
-  surfaceCells?: Array<{ row: number; column: number; seriesIndex: number; value: number; color: string }>;
-  radar?: { count: number; maximum: number; points: Array<{ seriesIndex: number; values: number[]; color: string }> };
+  surfaceCells?: Array<{ row: number; column: number; seriesIndex: number; value: number | null; color: string; visible: boolean }>;
+  radar?: { count: number; maximum: number; points: Array<{ seriesIndex: number; values: number[]; visible: boolean[]; color: string }> };
   map?: ChartMapOptions & ({ resolved: false; reason: string } | { resolved: true; featureCount: number });
   mapFeatures?: ChartMapFeatureLayout[];
 }
@@ -167,13 +168,25 @@ function axisBounds(model: ChartAxisModel, values: readonly number[], percent = 
     maximum += span * 0.1;
   }
   if (model.scale === 'logarithmic') {
-    minimum = Math.max(Number.MIN_VALUE, minimum || Number.MIN_VALUE);
+    if (finite.some((value) => value <= 0) || minimum <= 0 || maximum <= 0) {
+      throw new Error('INVALID_CHART_SOURCE: logarithmic axes require strictly positive finite values');
+    }
     maximum = Math.max(minimum * 10, maximum);
   }
   if (!Number.isFinite(minimum) || !Number.isFinite(maximum) || maximum <= minimum) throw new Error('INVALID_CHART_SOURCE: Axis bounds are not finite');
-  const unit = model.majorUnit && model.majorUnit > 0 ? model.majorUnit : niceUnit(maximum - minimum);
   const ticks: number[] = [];
-  for (let value = Math.ceil(minimum / unit) * unit; value <= maximum + unit * 0.001 && ticks.length < 100; value += unit) ticks.push(Number(value.toFixed(12)));
+  if (model.scale === 'logarithmic') {
+    const base = model.logBase ?? 10;
+    const firstExponent = Math.ceil(Math.log(minimum) / Math.log(base));
+    const lastExponent = Math.floor(Math.log(maximum) / Math.log(base));
+    for (let exponent = firstExponent; exponent <= lastExponent && ticks.length < 100; exponent += 1) {
+      const tick = base ** exponent;
+      if (tick >= minimum && tick <= maximum) ticks.push(Number(tick.toPrecision(12)));
+    }
+  } else {
+    const unit = model.majorUnit && model.majorUnit > 0 ? model.majorUnit : niceUnit(maximum - minimum);
+    for (let value = Math.ceil(minimum / unit) * unit; value <= maximum + unit * 0.001 && ticks.length < 100; value += unit) ticks.push(Number(value.toFixed(12)));
+  }
   if (!ticks.length) ticks.push(minimum, maximum);
   return { model, minimum, maximum, ticks };
 }
@@ -325,14 +338,17 @@ function linearRegression(points: Array<{ x: number; y: number }>): { slope: num
 }
 
 function buildTrendline(model: ChartTrendlineModel, source: ChartLayoutPoint[], axis: ChartAxisLayout, plot: ChartLayout['plot']): ChartLayoutTrendline {
-  const points = source.filter((point) => point.visible && point.value !== null).map((point) => ({ x: point.x, yValue: point.value! }));
-  const xMin = points.length ? points.reduce((value, point) => Math.min(value, point.x), Infinity) : plot.left;
-  const xMax = points.length ? points.reduce((value, point) => Math.max(value, point.x), -Infinity) : plot.left + plot.width;
-  const raw = points.map((point, index) => ({ x: index, y: point.yValue }));
+  const points = source.filter((point) => point.visible && point.value !== null).map((point) => ({ canvasX: point.x, predictor: point.xValue ?? point.index, yValue: point.value! }));
+  const xMin = points.length ? points.reduce((value, point) => Math.min(value, point.canvasX), Infinity) : plot.left;
+  const xMax = points.length ? points.reduce((value, point) => Math.max(value, point.canvasX), -Infinity) : plot.left + plot.width;
+  const predictorMin = points.length ? points.reduce((value, point) => Math.min(value, point.predictor), Infinity) : 0;
+  const predictorMax = points.length ? points.reduce((value, point) => Math.max(value, point.predictor), -Infinity) : 1;
+  const raw = points.map((point) => ({ x: point.predictor, y: point.yValue }));
   const regression = linearRegression(raw);
   const output: Array<{ x: number; y: number }> = [];
   for (let index = 0; index < Math.max(2, points.length); index += 1) {
     const normalized = index / Math.max(1, Math.max(2, points.length) - 1);
+    const predictor = predictorMin + normalized * (predictorMax - predictorMin);
     const x = xMin + normalized * (xMax - xMin);
     let yValue: number;
     if (model.type === 'moving-average') {
@@ -340,15 +356,15 @@ function buildTrendline(model: ChartTrendlineModel, source: ChartLayoutPoint[], 
       const slice = raw.slice(Math.max(0, index - period + 1), index + 1);
       yValue = slice.reduce((sum, point) => sum + point.y, 0) / Math.max(1, slice.length);
     } else if (model.type === 'exponential') {
-      yValue = Math.exp(Math.max(-20, Math.min(20, regression.intercept + regression.slope * index)));
+      yValue = Math.exp(Math.max(-20, Math.min(20, regression.intercept + regression.slope * predictor)));
     } else if (model.type === 'logarithmic') {
-      yValue = regression.intercept + regression.slope * Math.log(Math.max(1, index + 1));
+      yValue = regression.intercept + regression.slope * Math.log(Math.max(1, predictor));
     } else if (model.type === 'power') {
-      yValue = Math.exp(regression.intercept) * (index + 1) ** regression.slope;
+      yValue = Math.exp(regression.intercept) * Math.max(Number.MIN_VALUE, predictor) ** regression.slope;
     } else if (model.type === 'polynomial') {
-      yValue = regression.intercept + regression.slope * index + (model.order && model.order > 1 ? index ** 2 * regression.slope * 0.02 : 0);
+      yValue = regression.intercept + regression.slope * predictor + (model.order && model.order > 1 ? predictor ** 2 * regression.slope * 0.02 : 0);
     } else {
-      yValue = regression.intercept + regression.slope * index;
+      yValue = regression.intercept + regression.slope * predictor;
     }
     yValue += (model.intercept ?? 0) + (model.forwardForecast ?? 0) * normalized - (model.backwardForecast ?? 0) * (1 - normalized);
     output.push({ x, y: plot.top + plot.height * (1 - scale(yValue, axis)) });
@@ -484,17 +500,23 @@ function pieSlices(payload: ChartDrawingPayload, data: ResolvedChartData, plot: 
   const maxRadius = Math.min(plot.width, plot.height) * 0.43;
   const hole = payload.chartType === 'doughnut' ? 0.55 : 0;
   for (let ringIndex = 0; ringIndex < ringCount; ringIndex += 1) {
-    const seriesIndex = visibleSeriesIndexes[ringIndex] ?? visibleSeriesIndexes[0];
-    const series = seriesIndex === undefined ? undefined : data.series[seriesIndex];
+    const seriesIndex = visibleSeriesIndexes[ringIndex];
+    if (seriesIndex === undefined) continue;
+    const series = data.series[seriesIndex];
     if (!series) continue;
-    const values = series.values.map(chartNumericValue).map((value) => Math.max(0, value ?? 0));
-    const total = values.reduce((sum, value) => sum + value, 0);
+    const values = series.values.map((raw) => {
+      const value = chartNumericValue(raw);
+      return value === undefined && payload.elements.emptyCells !== 'zero' ? null : Math.max(0, value ?? 0);
+    });
+    const total = values.reduce<number>((sum, value) => sum + (value ?? 0), 0);
     if (total <= 0) continue;
     const ringWidth = maxRadius * (1 - hole) / ringCount;
     let angle = -Math.PI / 2 + ((payload.subtype === 'exploded-pie' || payload.subtype === 'exploded-three-dimensional-pie' || payload.subtype === 'exploded-doughnut') ? Math.PI / 18 : 0);
     for (let pointIndex = 0; pointIndex < values.length; pointIndex += 1) {
-      const sweep = values[pointIndex]! / total * Math.PI * 2;
-      slices.push({ seriesIndex, pointIndex, value: values[pointIndex]!, startAngle: angle, endAngle: angle + sweep, innerRadius: payload.chartType === 'doughnut' ? maxRadius * hole + ringWidth * ringIndex : 0, outerRadius: payload.chartType === 'doughnut' ? maxRadius * hole + ringWidth * (ringIndex + 1) : maxRadius, explosion: payload.subtype?.includes('exploded') ? Math.min(12, maxRadius * 0.08) : 0, color: DEFAULT_COLORS[pointIndex % DEFAULT_COLORS.length]!, label: String(data.categories[pointIndex] ?? pointIndex + 1) });
+      const value = values[pointIndex] ?? 0;
+      if (value <= 0) continue;
+      const sweep = value / total * Math.PI * 2;
+      slices.push({ seriesIndex, pointIndex, value, startAngle: angle, endAngle: angle + sweep, innerRadius: payload.chartType === 'doughnut' ? maxRadius * hole + ringWidth * ringIndex : 0, outerRadius: payload.chartType === 'doughnut' ? maxRadius * hole + ringWidth * (ringIndex + 1) : maxRadius, explosion: payload.subtype?.includes('exploded') ? Math.min(12, maxRadius * 0.08) : 0, color: DEFAULT_COLORS[pointIndex % DEFAULT_COLORS.length]!, label: String(data.categories[pointIndex] ?? pointIndex + 1) });
       angle += sweep;
     }
   }
@@ -518,16 +540,17 @@ function boxLayouts(payload: ChartDrawingPayload, data: ResolvedChartData, color
 }
 
 function waterfallLayouts(payload: ChartDrawingPayload, data: ResolvedChartData, seriesIndex: number): ChartWaterfallBarLayout[] {
-  const values = data.series[seriesIndex]?.values.map(chartNumericValue).map((value) => value ?? 0) ?? [];
+  const values = data.series[seriesIndex]?.values.map(chartNumericValue) ?? [];
   const options: ChartWaterfallOptions = payload.waterfallOptions ?? { connectorLines: true };
   const totals = new Set(options.totalPointIndexes ?? []);
   let running = 0;
   return values.map((value, index) => {
+    if (value === undefined) return { seriesIndex, index, start: running, end: running, total: false, color: '#cbd5e1', visible: false };
     const total = totals.has(index);
     const start = total ? 0 : running;
     const end = total ? value : running + value;
     running = total ? value : end;
-    return { seriesIndex, index, start: Math.min(start, end), end: Math.max(start, end), total, color: total ? '#64748b' : value >= 0 ? '#10b981' : '#ef4444' };
+    return { seriesIndex, index, start: Math.min(start, end), end: Math.max(start, end), total, color: total ? '#64748b' : value >= 0 ? '#10b981' : '#ef4444', visible: true };
   });
 }
 
@@ -640,17 +663,25 @@ export function buildChartLayout(payload: ChartDrawingPayload, data: ResolvedCha
   const percent = payload.stacked === 'percent' || payload.subtype.includes('percent');
   const isScatter = payload.chartType === 'scatter' || payload.chartType === 'bubble';
   const xValues = data.series.flatMap((series) => series.xValues?.map(chartNumericValue).filter((value): value is number => value !== undefined) ?? []);
-  const categoryAxis = axisBounds(
-    payload.elements.categoryAxis ?? defaultAxis(isScatter ? 'x' : 'category', 'bottom', isScatter ? 'value' : 'category'),
-    isScatter ? xValues : Array.from({ length: Math.max(1, data.categories.length) }, (_, index) => index),
-    false,
-  );
   const categoryCount = Math.max(1, data.categories.length, ...data.series.map((series) => series.values.length));
   const barPlacements = buildBarPlacements(payload, data, categoryCount);
   const primaryValues = axisValuesForSeries(payload, data, 'primary', barPlacements);
   const secondaryValues = axisValuesForSeries(payload, data, 'secondary', barPlacements);
-  const valueAxis = axisBounds(payload.elements.valueAxis ?? defaultAxis('value', 'left', 'value'), primaryValues.length ? primaryValues : values, percent);
-  const secondaryAxis = secondaryValues.length ? axisBounds(payload.elements.secondaryValueAxis ?? defaultAxis('secondary-value', 'right', 'value'), secondaryValues, false) : undefined;
+  let categoryAxis: ChartAxisLayout;
+  let valueAxis: ChartAxisLayout;
+  let secondaryAxis: ChartAxisLayout | undefined;
+  try {
+    categoryAxis = axisBounds(
+      payload.elements.categoryAxis ?? defaultAxis(isScatter ? 'x' : 'category', 'bottom', isScatter ? 'value' : 'category'),
+      isScatter ? xValues : Array.from({ length: Math.max(1, data.categories.length) }, (_, index) => index),
+      false,
+    );
+    valueAxis = axisBounds(payload.elements.valueAxis ?? defaultAxis('value', 'left', 'value'), primaryValues.length ? primaryValues : values, percent);
+    secondaryAxis = secondaryValues.length ? axisBounds(payload.elements.secondaryValueAxis ?? defaultAxis('secondary-value', 'right', 'value'), secondaryValues, false) : undefined;
+  } catch (error) {
+    layout.status = statusError('invalid', 'INVALID_CHART_SOURCE', error instanceof Error ? error.message : String(error));
+    return layout;
+  }
   layout.categoryAxis = categoryAxis;
   layout.valueAxis = valueAxis;
   layout.secondaryValueAxis = secondaryAxis;
@@ -672,16 +703,44 @@ export function buildChartLayout(payload: ChartDrawingPayload, data: ResolvedCha
     }
     return layout;
   }
+  if (kind === 'treemap' || kind === 'sunburst') {
+    if (data.series.some((series) => series.values.some((value) => {
+      const numeric = chartNumericValue(value);
+      return numeric !== undefined && numeric < 0;
+    }))) {
+      layout.status = statusError('invalid', 'INVALID_CHART_SOURCE', 'Treemap and sunburst charts require non-negative values');
+      return layout;
+    }
+    if (!layout.series.some((series) => series.visible && series.points.some((point) => point.visible && (point.value ?? 0) > 0))) {
+      layout.status = statusError('invalid', 'INVALID_CHART_SOURCE', 'Treemap and sunburst charts require at least one positive value');
+      return layout;
+    }
+  }
   if (kind === 'pie') {
     if (payload.chartType === 'pie' && layout.series.filter((series) => series.visible).length !== 1) {
       layout.status = statusError('invalid', 'INVALID_CHART_SOURCE', 'Pie charts require exactly one visible series');
       return layout;
     }
+    if (data.series.some((series) => series.values.some((value) => {
+      const numeric = chartNumericValue(value);
+      return numeric !== undefined && numeric < 0;
+    }))) {
+      layout.status = statusError('invalid', 'INVALID_CHART_SOURCE', 'Pie and doughnut charts require non-negative values');
+      return layout;
+    }
     layout.pieSlices = pieSlices(payload, data, layout.plot);
+    if (layout.pieSlices.length === 0) {
+      layout.status = statusError('invalid', 'INVALID_CHART_SOURCE', 'Pie and doughnut charts require at least one positive value');
+    }
     return layout;
   }
   if (kind === 'histogram') {
-    const bins = histogram(numberValues(data.series[specialSeriesIndex]?.values ?? []), payload.histogramOptions);
+    const rawValues = data.series[specialSeriesIndex]?.values.map((value, index) => ({ index, value: chartNumericValue(value) })).filter((entry): entry is { index: number; value: number } => entry.value !== undefined) ?? [];
+    const bins = histogram(rawValues.map((entry) => entry.value), payload.histogramOptions);
+    if (rawValues.length === 0 || bins.every((bin) => bin.count === 0)) {
+      layout.status = statusError('invalid', 'INVALID_CHART_SOURCE', 'Histogram charts require at least one value in range');
+      return layout;
+    }
     layout.histogramBins = payload.chartType === 'pareto' ? bins.slice().sort((left, right) => right.count - left.count) : bins;
     if (payload.chartType === 'pareto') {
       let cumulative = 0;
@@ -692,15 +751,29 @@ export function buildChartLayout(payload: ChartDrawingPayload, data: ResolvedCha
   }
   if (kind === 'box-whisker') {
     layout.boxes = boxLayouts(payload, data, DEFAULT_COLORS);
+    if (layout.boxes.length === 0 || !data.series.some((series, seriesIndex) => layout.series[seriesIndex]?.visible && numberValues(series.values).length > 0)) {
+      layout.status = statusError('invalid', 'INVALID_CHART_SOURCE', 'Box and whisker charts require at least one numeric value');
+    }
     return layout;
   }
   if (kind === 'waterfall') {
     layout.waterfallBars = waterfallLayouts(payload, data, specialSeriesIndex);
+    if (!layout.waterfallBars.some((bar) => bar.visible)) {
+      layout.status = statusError('invalid', 'INVALID_CHART_SOURCE', 'Waterfall charts require at least one numeric value');
+    }
     return layout;
   }
   if (kind === 'funnel') {
-    const valuesForFunnel = data.series[specialSeriesIndex]?.values.map(chartNumericValue).map((value) => Math.abs(value ?? 0)) ?? [];
-    layout.funnelStages = valuesForFunnel.map((value, index) => ({ index, value, nextValue: valuesForFunnel[index + 1] ?? value, label: String(data.categories[index] ?? index + 1), color: DEFAULT_COLORS[index % DEFAULT_COLORS.length]! }));
+    const rawValues = data.series[specialSeriesIndex]?.values.map(chartNumericValue) ?? [];
+    if (rawValues.some((value) => value !== undefined && value < 0)) {
+      layout.status = statusError('invalid', 'INVALID_CHART_SOURCE', 'Funnel charts require non-negative values');
+      return layout;
+    }
+    const valuesForFunnel = rawValues.map((value) => value ?? null);
+    layout.funnelStages = valuesForFunnel.map((value, index) => ({ index, value: value ?? 0, nextValue: valuesForFunnel[index + 1] ?? value ?? 0, label: String(data.categories[index] ?? index + 1), color: DEFAULT_COLORS[index % DEFAULT_COLORS.length]!, visible: value !== null }));
+    if (!layout.funnelStages.some((stage) => stage.visible)) {
+      layout.status = statusError('invalid', 'INVALID_CHART_SOURCE', 'Funnel charts require at least one numeric value');
+    }
     return layout;
   }
   if (kind === 'stock') {
@@ -718,15 +791,25 @@ export function buildChartLayout(payload: ChartDrawingPayload, data: ResolvedCha
     layout.surfaceCells = data.series.flatMap((series, seriesIndex) => {
       if (layout.series[seriesIndex]?.visible === false) return [];
       const row = visibleRow++;
-      return series.values.map(chartNumericValue).map((value, column) => ({ row, column, seriesIndex, value: value ?? 0, color: `rgb(${Math.round(37 + 202 * ((value ?? min) - min) / span)},${Math.round(99 + 100 * (1 - ((value ?? min) - min) / span))},${Math.round(235 - 167 * ((value ?? min) - min) / span)})` }));
+      return series.values.map(chartNumericValue).map((value, column) => {
+        if (value === undefined) return { row, column, seriesIndex, value: null, color: '#e2e8f0', visible: false };
+        const ratio = (value - min) / span;
+        return { row, column, seriesIndex, value, color: `rgb(${Math.round(37 + 202 * ratio)},${Math.round(99 + 100 * (1 - ratio))},${Math.round(235 - 167 * ratio)})`, visible: true };
+      });
     });
+    if (!layout.surfaceCells.some((cell) => cell.visible)) {
+      layout.status = statusError('invalid', 'INVALID_CHART_SOURCE', 'Surface charts require at least one numeric value');
+    }
     return layout;
   }
   if (kind === 'radar') {
     const visibleSeries = data.series.flatMap((series, seriesIndex) => layout.series[seriesIndex]?.visible === false ? [] : [{ series, seriesIndex }]);
     const count = Math.max(3, data.categories.length, ...visibleSeries.map(({ series }) => series.values.length));
     const radarValues = visibleSeries.flatMap(({ series }) => numberValues(series.values));
-    layout.radar = { count, maximum: radarValues.reduce((maximum, value) => Math.max(maximum, Math.abs(value)), 1), points: visibleSeries.map(({ series, seriesIndex }) => ({ seriesIndex, values: series.values.map(chartNumericValue).map((value) => value ?? 0), color: colorFor(series, seriesIndex) })) };
+    layout.radar = { count, maximum: radarValues.reduce((maximum, value) => Math.max(maximum, Math.abs(value)), 1), points: visibleSeries.map(({ series, seriesIndex }) => ({ seriesIndex, values: series.values.map(chartNumericValue).map((value) => value ?? 0), visible: series.values.map((value) => chartNumericValue(value) !== undefined), color: colorFor(series, seriesIndex) })) };
+    if (radarValues.length === 0) {
+      layout.status = statusError('invalid', 'INVALID_CHART_SOURCE', 'Radar charts require at least one numeric value');
+    }
     return layout;
   }
   if (payload.chartType === 'scatter' || payload.chartType === 'bubble') {

@@ -131,7 +131,7 @@ export class DataSourceContentQuery {
       if (block.rowCount > normalized.blockRowCount) {
         throw new Error(`Data block exceeds the configured row block size: ${block.id}`);
       }
-      if (block.startRow + block.rowCount > normalized.rowCount) {
+      if (block.startRow > normalized.rowCount || block.rowCount > normalized.rowCount - block.startRow) {
         throw new Error(`Data block exceeds the source rowCount: ${block.id}`);
       }
     }
@@ -179,6 +179,14 @@ export class DataSourceContentQuery {
       })),
     });
     if (contentIdentity(normalized) !== contentIdentity(this.source)) return false;
+    for (const [blockId, loaded] of this.loadedBlocks) {
+      const ref = normalized.blocks.find((candidate) => candidate.id === blockId);
+      if (ref === undefined) this.loadedBlocks.delete(blockId);
+      else this.loadedBlocks.set(blockId, { ...loaded, ref });
+    }
+    for (const [blockId, current] of this.loadStates) {
+      this.loadStates.set(blockId, { ...current, sourceId: normalized.id });
+    }
     this.source = normalized;
     return true;
   }
@@ -546,7 +554,7 @@ export class DataSourceContentQuery {
   private validateRange(startRow: number, rowCount: number): string | undefined {
     if (!isSafeRowIndex(startRow)) return 'Data source startRow must be a non-negative safe integer';
     if (!Number.isSafeInteger(rowCount) || rowCount < 0) return 'Data source rowCount must be a non-negative safe integer';
-    if (startRow + rowCount > this.source.rowCount) return 'Data source query range exceeds rowCount';
+    if (startRow > this.source.rowCount || rowCount > this.source.rowCount - startRow) return 'Data source query range exceeds rowCount';
     return undefined;
   }
 
@@ -630,9 +638,12 @@ export class DataSourceContentQuery {
     if (existing !== undefined) return existing;
 
     const promise = Promise.resolve().then(() => this.readBlock(ref)).then((block) => {
-      this.loadedBlocks.set(ref.id, block);
+      const currentRef = this.source.blocks.find((candidate) => candidate.id === ref.id);
+      if (currentRef === undefined) throw new ContentQueryFailure('error', `Data block ${ref.id} was removed while loading`);
+      const currentBlock = block.ref === currentRef ? block : { ...block, ref: currentRef };
+      this.loadedBlocks.set(ref.id, currentBlock);
       this.publishState(state(this.source.id, ref.id, 'ready'));
-      return block;
+      return currentBlock;
     }).catch((error: unknown) => {
       const failure = error instanceof ContentQueryFailure
         ? error

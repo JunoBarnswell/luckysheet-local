@@ -50,7 +50,7 @@ function AxisFields({ axis, position, onChange }: { axis?: ChartAxisModel; posit
 }
 const elementLabels: Record<ChartElementSelection['kind'], string> = {
   'chart-area': '图表区', 'plot-area': '绘图区', title: '标题', legend: '图例', axis: '坐标轴', 'axis-title': '轴标题',
-  gridline: '网格线', 'data-table': '数据表', trendline: '趋势线', 'error-bar': '误差线', series: '数据系列', point: '数据点', 'data-label': '数据标签',
+  gridline: '网格线', 'data-table': '数据表', trendline: '趋势线', 'error-bar': '误差线', series: '数据系列', point: '数据点', 'data-label': '数据标签', 'histogram-bin': '直方图分组',
 };
 const EMPTY_SELECTED_DRAWING_IDS: readonly string[] = [];
 

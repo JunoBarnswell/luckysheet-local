@@ -79,7 +79,8 @@ export interface PanelState {
 
 export type ChartElementSelection =
   | { kind: 'chart-area' | 'plot-area' | 'title' | 'legend' | 'axis' | 'axis-title' | 'gridline' | 'data-table' | 'trendline' | 'error-bar'; chartId: string }
-  | { kind: 'series' | 'point' | 'data-label'; chartId: string; seriesId: string; pointIndex?: number };
+  | { kind: 'series' | 'point' | 'data-label'; chartId: string; seriesId: string; pointIndex?: number }
+  | { kind: 'histogram-bin'; chartId: string; seriesId: string; binIndex: number };
 
 export type LocalObjectDialogKind = 'icon' | 'model3d' | 'smartart' | 'wordart' | 'signature-line' | 'embedded-object' | 'equation';
 export type DialogId = 'function-wizard' | 'sort-dialog' | 'find-replace' | 'print-preview' | 'goto' | 'paste-special' | 'format-cells' | 'fill-series' | 'phonetic-guide' | 'symbol' | 'shift-cells' | 'create-pivot' | 'create-table' | 'recommended-pivots' | 'recommended-charts' | 'merge-confirm' | 'column-width' | 'row-height' | 'command-palette' | 'sheet-dialog' | 'cell-template' | 'cell-editor' | 'insert-picture' | 'hyperlink' | 'local-object';

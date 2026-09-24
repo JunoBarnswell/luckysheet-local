@@ -98,7 +98,7 @@ export interface SpreadsheetRuntime {
   dataBlocks: DataBlockSynchronizer;
   assetStore: AssetStore;
   dataContent: Map<string, DataSourceContentQuery>;
-  dataContentSubscriptions: Map<string, { manifest: DataSourceManifest; unsubscribe: () => void }>;
+  dataContentSubscriptions: Map<string, { manifest: DataSourceManifest; manifestRef: { current: DataSourceManifest }; unsubscribe: () => void }>;
   workspaceRecord: WorkspaceRecord | null;
   localRevision: number;
   localOnly: boolean;
@@ -861,6 +861,7 @@ function initializeDataContent(runtime: SpreadsheetRuntime): void {
     const query = runtime.dataContent.get(sourceId);
     if (current !== undefined && query?.rebindManifest(current)) {
       subscription.manifest = current;
+      subscription.manifestRef.current = current;
       continue;
     }
     subscription.unsubscribe();
@@ -869,9 +870,10 @@ function initializeDataContent(runtime: SpreadsheetRuntime): void {
   }
   for (const manifest of runtime.model.dataModel.sources.values()) {
     if (runtime.dataContent.has(manifest.id)) continue;
+    const manifestRef = { current: manifest };
     const query = new DataSourceContentQuery(manifest, {
       get: async (reference) => {
-        const ref = manifest.blocks.find((block) => block.id === reference.id && block.dataSourceId === reference.dataSourceId && block.checksum === reference.checksum);
+        const ref = manifestRef.current.blocks.find((block) => block.id === reference.id && block.dataSourceId === reference.dataSourceId && block.checksum === reference.checksum);
         if (!ref) return null;
         const bytes = await runtime.dataBlocks.get(ref);
         return { sourceId: ref.dataSourceId, blockId: ref.id, checksum: ref.checksum, bytes };
@@ -891,7 +893,7 @@ function initializeDataContent(runtime: SpreadsheetRuntime): void {
         runtime.handlers.onMutationsApplied?.();
       }, 0);
     };
-    runtime.dataContentSubscriptions.set(manifest.id, { manifest, unsubscribe: query.subscribe(notifyContentChanged) });
+    runtime.dataContentSubscriptions.set(manifest.id, { manifest, manifestRef, unsubscribe: query.subscribe(notifyContentChanged) });
     runtime.dataContent.set(manifest.id, query);
   }
 }

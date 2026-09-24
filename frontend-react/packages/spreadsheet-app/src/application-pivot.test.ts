@@ -85,7 +85,7 @@ it('loads and refreshes a cross-sheet PivotChart dependency without projecting u
     clearPivotResultCache(app['runtime'].model, pivot.id);
     const payload: ChartPayload = {
       kind: 'chart', chartId: 'dashboard-chart', chartType: 'combo', subtype: 'custom-combo',
-      source: { kind: 'pivot', pivotId: pivot.id }, elements: {},
+      source: { kind: 'pivot', pivotId: pivot.id }, elements: { hiddenData: 'show' },
     };
     app.runCommand('chart.insert', {
       sheetId: 'dashboard', payload,
