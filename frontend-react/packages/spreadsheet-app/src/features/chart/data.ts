@@ -229,7 +229,8 @@ export function chartSourceRanges(payload: ChartDrawingPayload, tables: readonly
   if (payload.source.kind === 'worksheet-ranges') {
     for (const range of payload.source.ranges) add(range);
   } else if (payload.source.kind === 'table') {
-    add(tables.find((table) => table.id === payload.source.tableId)?.sourceRange);
+    const tableId = payload.source.tableId;
+    add(tables.find((table) => table.id === tableId)?.sourceRange);
   } else if (payload.source.kind === 'report-range') {
     add(payload.source.range);
   }

@@ -457,7 +457,7 @@ function executeChartInsert(params: ChartInsertParams, context: CommandContext, 
   if (expectedType && params.payload.chartType !== expectedType) throw new Error(`Chart command type mismatch: expected ${expectedType}`);
   const sheet = context.workbook.getSheet(params.sheetId);
   validateChartPair(sheet, params.drawing, params.payload);
-  const affectedRanges = chartAffectedRanges(context, params.payload);
+  const affectedRanges = chartAffectedRanges(context.workbook, params.payload);
   context.applyMutation({
     id: 'drawing.add',
     unitId: context.workbook.unitId,
@@ -481,7 +481,7 @@ function executeChartUpdate<P extends { sheetId: string; chartId: string }>(
   const nextPayload = patch(structuredClone(current.payload), params);
   if (!isChartPayload(nextPayload)) throw new Error(`Invalid chart payload: ${params.chartId}`);
   validateChartSemantics(nextPayload);
-  const affectedRanges = chartAffectedRanges(context, current.payload, nextPayload);
+  const affectedRanges = chartAffectedRanges(context.workbook, current.payload, nextPayload);
   const mutationParams = { sheetId: params.sheetId, payloadId: params.chartId, before: current.payload, after: nextPayload };
   context.applyMutation({
     id: 'drawing.payload.update',
@@ -621,7 +621,7 @@ export function registerChartCommands(runtime: CommandRuntime): string[] {
       const sheet = context.workbook.getSheet(params.sheetId);
       const current = findChartDrawing(sheet, params.chartId);
       if (!current) return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
-      const affectedRanges = chartAffectedRanges(context, current.payload);
+      const affectedRanges = chartAffectedRanges(context.workbook, current.payload);
       const inverseParams: ChartInsertParams = { sheetId: params.sheetId, drawing: structuredClone(current.drawing), payload: structuredClone(current.payload) };
       context.applyMutation({
         id: 'drawing.remove',
