@@ -513,7 +513,7 @@ function pieSlices(payload: ChartDrawingPayload, data: ResolvedChartData, plot: 
     let angle = -Math.PI / 2 + ((payload.subtype === 'exploded-pie' || payload.subtype === 'exploded-three-dimensional-pie' || payload.subtype === 'exploded-doughnut') ? Math.PI / 18 : 0);
     for (let pointIndex = 0; pointIndex < values.length; pointIndex += 1) {
       const value = values[pointIndex];
-      if (value === null || value === undefined || value <= 0) continue;
+      if (typeof value !== 'number' || value <= 0) continue;
       const sweep = value / total * Math.PI * 2;
       slices.push({ seriesIndex, pointIndex, value, startAngle: angle, endAngle: angle + sweep, innerRadius: payload.chartType === 'doughnut' ? maxRadius * hole + ringWidth * ringIndex : 0, outerRadius: payload.chartType === 'doughnut' ? maxRadius * hole + ringWidth * (ringIndex + 1) : maxRadius, explosion: payload.subtype?.includes('exploded') ? Math.min(12, maxRadius * 0.08) : 0, color: DEFAULT_COLORS[pointIndex % DEFAULT_COLORS.length]!, label: String(data.categories[pointIndex] ?? pointIndex + 1) });
       angle += sweep;
