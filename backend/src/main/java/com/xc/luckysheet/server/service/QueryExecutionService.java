@@ -842,7 +842,7 @@ public class QueryExecutionService {
     private int resolveBlockRowCount(QueryTable table) {
         if (table.rows.isEmpty()) return properties.blockRowCount();
         try {
-            int candidate = Math.min(properties.blockRowCount(), table.rows.size());
+            int candidate = properties.blockRowCount();
             while (candidate >= 1) {
                 boolean fits = true;
                 for (int start = 0; start < table.rows.size(); start += candidate) {
