@@ -4,6 +4,7 @@
   "type": "module",
   "main": "src/index.ts",
   "dependencies": {
-    "@react-sheets/core-model": "file:../core-model"
+    "@react-sheets/core-model": "file:../core-model",
+    "@react-sheets/formula-engine": "file:../formula-engine"
   }
 }

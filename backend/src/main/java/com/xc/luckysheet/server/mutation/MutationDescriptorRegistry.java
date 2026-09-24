@@ -48,7 +48,7 @@ public class MutationDescriptorRegistry {
             "pivot.add", "pivot.chart.create", "pivot.drilldown.add", "pivot.drilldown.remove", "pivot.refresh", "pivot.remove", "pivot.update",
             "pageLayout.margins.set", "pageLayout.orientation.set", "pageLayout.paperSize.set", "pageLayout.pageSetupDetail.set", "pageLayout.scaleToFit.set", "pageLayout.printTitles.set", "pageLayout.printArea.set", "pageLayout.printArea.clear", "pageLayout.pageBreak.insert", "pageLayout.pageBreak.remove", "pageLayout.pageBreak.clear", "pageLayout.printGridlines.set", "pageLayout.printHeadings.set", "pageLayout.viewGridlines.set", "pageLayout.viewHeadings.set",
             "query.definition.replace", "query.load.pivot-source", "query.load.range", "query.load.sheet-table", "query.load.workbook-table",
-            "range.clear", "range.clear.restore", "range.paste", "range.set",
+            "range.clear", "range.clear.restore", "range.move", "range.paste", "range.set",
             "row.hidden", "row.resize", "row.unhidden", "rows.deleted", "rows.hidden.restore", "rows.inserted", "rows.permuted", "rows.unhidden.all", "rows.visibility",
             "sheet.add", "sheet.duplicated", "sheet.hidden", "sheet.protect.remove", "sheet.protect.set", "sheet.remove", "sheet.rename", "sheet.reordered", "sheet.restore", "sheet.tabColor", "sheet.unhidden",
             "sheetTable.add", "sheetTable.remove", "sheetTable.update", "sheetTable.autoFilter.set", "tableSheet.update", "ganttSheet.update", "reportSheet.update",
@@ -57,10 +57,6 @@ public class MutationDescriptorRegistry {
             "drawing.visibility.set", "drawing.rename"
     );
     private static final Map<String, String> UNAVAILABLE_REASONS = Map.ofEntries(
-            Map.entry("rows.inserted", "Requires one shared reference AST transform and complete structural participant relocation."),
-            Map.entry("rows.deleted", "Requires one shared reference AST transform and complete structural participant relocation."),
-            Map.entry("columns.inserted", "Requires one shared reference AST transform and complete structural participant relocation."),
-            Map.entry("columns.deleted", "Requires one shared reference AST transform and complete structural participant relocation."),
             Map.entry("pivot.chart.create", "PivotChart is persisted through one canonical drawing.add mutation; the UI command must never cross the workbook mutation boundary."),
             Map.entry("workbook.restore", "Only the server restore flow may materialize a historical workbook snapshot.")
     );

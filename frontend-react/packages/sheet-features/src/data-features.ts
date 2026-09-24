@@ -126,6 +126,14 @@ function snapshotCells(sheet: WorksheetModel, range: RangeRef): Array<{ row: num
   return result;
 }
 
+function snapshotOccupiedCells(sheet: WorksheetModel, range: RangeRef): Array<{ row: number; column: number; previous: CellData }> {
+  const result: Array<{ row: number; column: number; previous: CellData }> = [];
+  sheet.cells.forEach((cell, row, column) => {
+    if (inRange(range, row, column)) result.push({ row, column, previous: structuredClone(cell) });
+  });
+  return result;
+}
+
 function applyRangeValues(
   context: CommandContext,
   params: { sheetId: string; startRow: number; startColumn: number; values: CellData[][] },
@@ -211,7 +219,7 @@ function applyRowsInsert(context: CommandContext, sheetId: string, at: number, c
     params: { sheetId, at, count },
     affectedRanges,
     inverse: [{ id: 'rows.deleted', unitId: context.workbook.unitId, sheetId, params: { sheetId, at, count }, affectedRanges }],
-    apply: () => StructuralTransform.apply(context.workbook, { kind: 'insert-rows', sheetId, at, count }),
+    apply: () => StructuralTransform.apply(context.workbook, { kind: 'insert-rows', sheetId, at, count }, context.structuralReferenceOwners),
   });
 }
 
@@ -219,7 +227,7 @@ function applyRowsDelete(context: CommandContext, sheetId: string, at: number, c
   if (count <= 0) return;
   const sheet = context.workbook.getSheet(sheetId);
   const end = at + count - 1;
-  const removed = snapshotCells(sheet, { sheetId, startRow: at, endRow: end, startColumn: 0, endColumn: Math.max(0, sheet.columnCount - 1) });
+  const removed = snapshotOccupiedCells(sheet, { sheetId, startRow: at, endRow: end, startColumn: 0, endColumn: Math.max(0, sheet.columnCount - 1) });
   const affectedRanges: RangeRef[] = [{ sheetId, startRow: at, endRow: end, startColumn: 0, endColumn: Math.max(0, sheet.columnCount - 1) }];
   context.applyMutation({
     id: 'rows.deleted',
@@ -237,7 +245,7 @@ function applyRowsDelete(context: CommandContext, sheetId: string, at: number, c
         affectedRanges: [cellRange(sheetId, entry.row, entry.column)],
       })),
     ],
-    apply: () => StructuralTransform.apply(context.workbook, { kind: 'delete-rows', sheetId, at, count }),
+    apply: () => StructuralTransform.apply(context.workbook, { kind: 'delete-rows', sheetId, at, count }, context.structuralReferenceOwners),
   });
 }
 

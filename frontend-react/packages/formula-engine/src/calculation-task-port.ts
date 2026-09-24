@@ -3,6 +3,7 @@ import type { FormulaDependency } from './range-index';
 import type { ResolvedSpill } from './spill-resolver';
 import type { FormulaValue } from './values';
 import type { ScalarValue } from './values';
+import type { CalculationEntropyContext } from './random';
 
 /** Stable wire identity for the calculation task transport. */
 export const CALCULATION_TASK_PROTOCOL = 'react-sheets.formula-calculation' as const;
@@ -23,6 +24,8 @@ export interface CalculationTaskRequest {
   readonly kind: CalculationTaskKind;
   readonly revision: number;
   readonly roots?: readonly CellAddress[];
+  /** Host-assigned cycle entropy keeps volatile values stable across Worker and inline execution. */
+  readonly calculationEntropy?: CalculationEntropyContext;
   /** Ctrl+Alt+F9 semantics: recalculate every formula, ignoring dirty roots. */
   readonly full?: boolean;
   /** Incremental authored-input changes applied to the persistent worker. */
@@ -46,6 +49,8 @@ export interface CalculationCellResult {
 
 export interface CalculationTaskReport {
   readonly recalculated: readonly CellAddress[];
+  /** Canonical result/spill changes, distinct from formulas traversed for evaluation. */
+  readonly changedAddresses?: readonly CellAddress[];
   readonly results: readonly CalculationCellResult[];
   /** Current spill projection after this task, used to replace stale spills. */
   readonly spills?: readonly ResolvedSpill[];
@@ -97,6 +102,14 @@ export function assertCalculationTaskRequest(request: CalculationTaskRequest): v
   }
   if (request.roots !== undefined && !request.roots.every(isCellAddress)) {
     throw new Error('Calculation task roots must be valid cell addresses');
+  }
+  if (request.calculationEntropy !== undefined) {
+    const entropy = request.calculationEntropy;
+    if (!entropy || !Number.isSafeInteger(entropy.cycleId) || entropy.cycleId < 0
+      || typeof entropy.entropySeed !== 'string' || entropy.entropySeed.trim().length === 0
+      || !Number.isSafeInteger(entropy.passIndex) || entropy.passIndex < 0) {
+      throw new Error('Calculation task entropy context is invalid');
+    }
   }
   if (request.full !== undefined && typeof request.full !== 'boolean') {
     throw new Error('Calculation task full flag must be boolean');
@@ -150,6 +163,7 @@ function isCellAddress(value: CellAddress): boolean {
 function isCalculationTaskReport(value: unknown): value is CalculationTaskReport {
   if (!isRecord(value) || !Array.isArray(value.recalculated) || !Array.isArray(value.results)) return false;
   return value.recalculated.every((address) => isCellAddress(address as CellAddress))
+    && (value.changedAddresses === undefined || (Array.isArray(value.changedAddresses) && value.changedAddresses.every((address) => isCellAddress(address as CellAddress))))
     && value.results.every(isCalculationCellResult)
     && (value.spills === undefined || Array.isArray(value.spills))
     && (value.pendingRoots === undefined || (Array.isArray(value.pendingRoots) && value.pendingRoots.every((address) => isCellAddress(address as CellAddress))));

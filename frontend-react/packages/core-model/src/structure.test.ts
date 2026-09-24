@@ -1,6 +1,26 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { CellMatrix, StructuralTransform, WorkbookModel } from './index';
+import { collectFormulaDependencies, parseFormula, RangeIndex } from '@react-sheets/formula-engine';
+import { CellMatrix, StructuralTransform as CoreStructuralTransform, WorkbookModel, type StructuralTransformParams } from './index';
+
+const StructuralTransform = {
+  apply(workbook: WorkbookModel, params: StructuralTransformParams) {
+    const index = new RangeIndex(workbook.sheetOrder.map((id) => ({ id, name: workbook.getSheet(id).name })));
+    for (const sheet of workbook.getSheets()) {
+      sheet.cells.forEach((cell, row, column) => {
+        if (cell.formula === undefined) return;
+        const owner = { sheetId: sheet.id, row, column };
+        try {
+          const formula = cell.formula.trimStart().startsWith('=') ? cell.formula : `=${cell.formula}`;
+          index.set(owner, collectFormulaDependencies(parseFormula(formula), owner));
+        } catch {
+          index.set(owner, [], true);
+        }
+      });
+    }
+    return CoreStructuralTransform.apply(workbook, params, index);
+  },
+};
 
 function seedWorkbook(): { workbook: WorkbookModel; sheetId: string } {
   const workbook = new WorkbookModel('unit-test', 'Structural');
@@ -21,6 +41,15 @@ describe('structural operations', () => {
     assert.equal(matrix.get(7, 1)?.value, 'bottom');
     matrix.shiftRows(3, 2, -1);
     assert.equal(matrix.get(5, 1)?.value, 'bottom');
+  });
+
+  it('axis shifts hydrate deferred sparse cells before reading row buckets', () => {
+    const matrix = new CellMatrix();
+    matrix.deferJSON({ '5': { '1': { value: 'row' }, '4': { value: 'column' } } });
+    matrix.shiftRows(3, 2, 1);
+    assert.equal(matrix.get(7, 1)?.value, 'row');
+    matrix.shiftColumns(3, 2, 1);
+    assert.equal(matrix.get(7, 6)?.value, 'column');
   });
 
   it('StructuralTransform insertRows keeps merges and freeze consistent', () => {
@@ -217,6 +246,22 @@ describe('structural operations', () => {
     assert.equal(sheet.cells.get(2, 3)?.formula, '=C3');
     assert.equal(sheet.cells.get(0, 0), undefined);
     assert.equal(sheet.cells.get(0, 3)?.formula, '=C3');
+  });
+
+  it('rejects moving over destination-anchored hyperlinks without mutating either range', () => {
+    const workbook = new WorkbookModel('unit-move-hyperlink-reject', 'Move Hyperlink Reject');
+    const sheet = workbook.getSheet('sheet-1');
+    sheet.cells.set(0, 0, { value: 'source' });
+    sheet.hyperlinks.set('1:1', { id: 'destination-link', target: { kind: 'url', url: 'https://example.com' } });
+
+    assert.throws(() => StructuralTransform.apply(workbook, {
+      kind: 'move-range',
+      sheetId: sheet.id,
+      sourceRange: { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 },
+      targetOrigin: { row: 1, column: 1 },
+    }), /hyperlink 1:1 would be overwritten at the target/);
+    assert.equal(sheet.cells.get(0, 0)?.value, 'source');
+    assert.equal(sheet.hyperlinks.has('1:1'), true);
   });
 
   it('rejects a cell shift that would silently drop an anchored object', () => {

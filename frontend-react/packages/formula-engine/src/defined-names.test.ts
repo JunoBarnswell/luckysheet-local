@@ -36,6 +36,26 @@ test('FormulaEngine recalculates formulas when a defined name changes', () => {
   assert.equal(engine.getCellValue('B1'), 15);
 });
 
+test('FormulaEngine refreshes formulas through nested names without recalculating unrelated formulas', () => {
+  const engine = new FormulaEngine({ defaultSheetId: 'Sheet1' });
+  engine.setDefinedNameModels([
+    { name: 'Rate', formula: '2', scope: 'workbook' },
+    { name: 'TaxedRate', formula: 'Rate*4', scope: 'workbook' },
+  ]);
+  engine.setFormula('A1', '=TaxedRate');
+  engine.setFormula('B1', '=1+1');
+  assert.equal(engine.getCellValue('A1'), 8);
+
+  const report = engine.setDefinedNameModels([
+    { name: 'Rate', formula: '3', scope: 'workbook' },
+    { name: 'TaxedRate', formula: 'Rate*4', scope: 'workbook' },
+  ]);
+
+  assert.equal(engine.getCellValue('A1'), 12);
+  assert.ok(report.recalculated.some(({ row, column }) => row === 0 && column === 0));
+  assert.ok(!report.recalculated.some(({ row, column }) => row === 0 && column === 1));
+});
+
 test('FormulaEngine resolves sheet-scoped names before workbook-scoped names', () => {
   const engine = new FormulaEngine({ defaultSheetId: 'Sheet1' });
   engine.setDefinedNameModels([

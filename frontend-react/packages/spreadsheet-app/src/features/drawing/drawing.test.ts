@@ -344,7 +344,11 @@ describe('drawing feature', () => {
       },
       payload: { kind: 'shape', type: 'ellipse', fill: '#fff', stroke: '#000' },
     });
-    StructuralTransform.apply(workbook, { kind: 'insert-rows', sheetId: 'sheet-1', at: 1, count: 2 });
+    StructuralTransform.apply(workbook, { kind: 'insert-rows', sheetId: 'sheet-1', at: 1, count: 2 }, {
+      getStructuralDependents: () => [],
+      getRangeDependents: () => [],
+      getInvalidFormulaOwners: () => [],
+    });
     assert.deepEqual(workbook.getSheet('sheet-1').drawings[0]?.anchor, { kind: 'two-cell', row: 4, column: 2, endRow: 7, endColumn: 4 });
   });
 

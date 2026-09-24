@@ -17,8 +17,9 @@ import type {
 import { cellKey, clearFormulaProvenance, columnLabel, planCellShift, sheetRuleRegistry, type CellShiftSpec } from '@react-sheets/core-model';
 import { StructuralTransform } from '@react-sheets/core-model';
 import { formatValue } from '@react-sheets/number-format';
-import type { CommandRuntime, MutationInfo } from '@react-sheets/command-runtime';
+import type { CommandContext, CommandResult, CommandRuntime, MutationInfo } from '@react-sheets/command-runtime';
 import {
+  DEFAULT_PASTE_SPECIAL_SPEC,
   copyRangeToClipboardData,
   parseClipboardPayload,
   shiftFormula,
@@ -260,6 +261,20 @@ function isPasteSpecialSpec(value: unknown): value is PasteSpecialSpec {
     && typeof value.skipBlanks === 'boolean'
     && typeof value.transpose === 'boolean'
     && typeof value.link === 'boolean';
+}
+
+function isDefaultMoveSpec(spec: PasteSpecialSpec): boolean {
+  return spec.content === DEFAULT_PASTE_SPECIAL_SPEC.content
+    && spec.formatting === DEFAULT_PASTE_SPECIAL_SPEC.formatting
+    && spec.metadata.commentsNotes === DEFAULT_PASTE_SPECIAL_SPEC.metadata.commentsNotes
+    && spec.metadata.validation === DEFAULT_PASTE_SPECIAL_SPEC.metadata.validation
+    && spec.metadata.columnWidths === DEFAULT_PASTE_SPECIAL_SPEC.metadata.columnWidths
+    && spec.metadata.conditionalFormats === DEFAULT_PASTE_SPECIAL_SPEC.metadata.conditionalFormats
+    && spec.metadata.hyperlinks === DEFAULT_PASTE_SPECIAL_SPEC.metadata.hyperlinks
+    && spec.operation === DEFAULT_PASTE_SPECIAL_SPEC.operation
+    && spec.skipBlanks === DEFAULT_PASTE_SPECIAL_SPEC.skipBlanks
+    && spec.transpose === DEFAULT_PASTE_SPECIAL_SPEC.transpose
+    && spec.link === DEFAULT_PASTE_SPECIAL_SPEC.link;
 }
 
 function isPasteSnapshot(value: unknown): value is PasteSnapshot {
@@ -921,7 +936,104 @@ function applyPasteMetadataPlan(workbook: WorkbookModel, params: PasteRangeParam
   if (!sourceSheet || !targetSheet) throw new Error('Clipboard source or paste target sheet is unavailable');
 }
 
+export interface RangeMoveMutationParams {
+  sheetId: string;
+  sourceRange: RangeRef;
+  targetOrigin: { row: number; column: number };
+}
+
+function isRangeMoveMutation(value: unknown): value is RangeMoveMutationParams {
+  if (!isRecord(value) || typeof value.sheetId !== 'string' || !isRange(value.sourceRange)
+    || value.sourceRange.sheetId !== value.sheetId || !isRecord(value.targetOrigin)) return false;
+  const { row, column } = value.targetOrigin;
+  const height = value.sourceRange.endRow - value.sourceRange.startRow + 1;
+  const width = value.sourceRange.endColumn - value.sourceRange.startColumn + 1;
+  return typeof row === 'number' && Number.isSafeInteger(row) && row >= 0
+    && typeof column === 'number' && Number.isSafeInteger(column) && column >= 0
+    && Number.isSafeInteger(row + height - 1)
+    && Number.isSafeInteger(column + width - 1);
+}
+
+function rangeMoveAffectedRanges(params: RangeMoveMutationParams): [RangeRef, RangeRef] {
+  const { sourceRange, targetOrigin } = params;
+  const rowDelta = targetOrigin.row - sourceRange.startRow;
+  const columnDelta = targetOrigin.column - sourceRange.startColumn;
+  return [
+    structuredClone(sourceRange),
+    {
+      sheetId: params.sheetId,
+      startRow: sourceRange.startRow + rowDelta,
+      endRow: sourceRange.endRow + rowDelta,
+      startColumn: sourceRange.startColumn + columnDelta,
+      endColumn: sourceRange.endColumn + columnDelta,
+    },
+  ];
+}
+
+export function applyRangeMoveMutation(context: CommandContext, params: RangeMoveMutationParams): CommandResult {
+  if (!isRangeMoveMutation(params)) throw new Error('Invalid range.move mutation payload');
+  const [sourceRange, targetRange] = rangeMoveAffectedRanges(params);
+  const sheet = context.workbook.getSheet(params.sheetId);
+  const overwritten = sheet.cells.getRegion(
+    targetRange.startRow,
+    targetRange.endRow,
+    targetRange.startColumn,
+    targetRange.endColumn,
+  );
+  const inverse: MutationInfo[] = [{
+    id: 'range.move',
+    unitId: context.workbook.unitId,
+    sheetId: params.sheetId,
+    params: {
+      sheetId: params.sheetId,
+      sourceRange: structuredClone(targetRange),
+      targetOrigin: { row: sourceRange.startRow, column: sourceRange.startColumn },
+    } satisfies RangeMoveMutationParams,
+    affectedRanges: [structuredClone(targetRange), structuredClone(sourceRange)],
+  }, ...overwritten.map(({ row, column, cell }) => ({
+    id: 'cell.restore',
+    unitId: context.workbook.unitId,
+    sheetId: params.sheetId,
+    params: { sheetId: params.sheetId, row, column, previous: structuredClone(cell) },
+    affectedRanges: [{ sheetId: params.sheetId, startRow: row, endRow: row, startColumn: column, endColumn: column }],
+  }))];
+  context.applyMutation({
+    id: 'range.move',
+    unitId: context.workbook.unitId,
+    sheetId: params.sheetId,
+    params: structuredClone(params),
+    affectedRanges: [structuredClone(sourceRange), structuredClone(targetRange)],
+    inverse,
+    apply: () => StructuralTransform.apply(context.workbook, {
+      kind: 'move-range',
+      sheetId: params.sheetId,
+      sourceRange,
+      targetOrigin: structuredClone(params.targetOrigin),
+    }, context.structuralReferenceOwners),
+  });
+  return { operationId: context.operationId, mutationCount: 1, affectedRanges: [sourceRange, targetRange] };
+}
+
 export function registerEditingCommands(runtime: CommandRuntime): void {
+  runtime.registry.registerMutation<RangeMoveMutationParams>({
+    id: 'range.move',
+    handler: (item, context) => {
+      if (!isRangeMoveMutation(item.params)) throw new Error('Invalid range.move mutation payload');
+      return StructuralTransform.apply(context.workbook, {
+        kind: 'move-range',
+        sheetId: item.params.sheetId,
+        sourceRange: item.params.sourceRange,
+        targetOrigin: item.params.targetOrigin,
+      }, context.structuralReferenceOwners);
+    },
+    metadata: {
+      schema: { name: 'RangeMove', validate: isRangeMoveMutation },
+      permission: { capability: 'sheet.cell.write', roles: ['owner', 'editor'] },
+      affectedRanges: { resolve: rangeMoveAffectedRanges, mode: 'exact' },
+      inversePolicy: { allowedMutationIds: ['range.move', 'cell.restore'], minCount: 1 },
+    },
+  });
+
   runtime.registry.registerMutation<PasteMutationParams>({
     id: 'range.paste',
     handler: (item, context) => {
@@ -970,6 +1082,13 @@ export function registerEditingCommands(runtime: CommandRuntime): void {
         spec: structuredClone(params.spec),
       };
       const targetRange = assertPastePreconditions(context.workbook, canonicalParams);
+      if (transfer === 'move' && sourceRange?.sheetId === params.sheetId && isDefaultMoveSpec(params.spec)) {
+        return applyRangeMoveMutation(context, {
+          sheetId: params.sheetId,
+          sourceRange,
+          targetOrigin: params.targetOrigin,
+        });
+      }
       const sourceRow = sourceRange?.startRow ?? 0;
       const sourceColumn = sourceRange?.startColumn ?? 0;
       const sourceSheetName = context.workbook.getSheet(sourceRange.sheetId).name.replaceAll("'", "''");
@@ -1275,21 +1394,22 @@ export function registerEditingCommands(runtime: CommandRuntime): void {
     const plan = planCellShift(context.workbook, params);
     if (JSON.stringify(plan.band) !== JSON.stringify(params.affectedBand)) throw new Error('Cell shift affected band is not canonical');
   };
-  const cellShiftMutationHandler = (operation: CellShiftParams['operation'], id: 'cells.inserted' | 'cells.deleted') => (item: { params: unknown }, context: { workbook: WorkbookModel }) => {
+  const cellShiftMutationHandler = (operation: CellShiftParams['operation'], id: 'cells.inserted' | 'cells.deleted') => (item: { params: unknown }, context: CommandContext) => {
       if (!isCellShiftMutation(item.params) || item.params.operation !== operation) throw new Error(`Invalid ${id} mutation payload`);
       validateCellShiftEnvelope(item.params, context);
-      StructuralTransform.apply(context.workbook, { kind: 'cell-shift', sheetId: item.params.sheetId, sourceRange: item.params.range, operation: item.params.operation, axis: item.params.axis });
+      return StructuralTransform.apply(context.workbook, { kind: 'cell-shift', sheetId: item.params.sheetId, sourceRange: item.params.range, operation: item.params.operation, axis: item.params.axis }, context.structuralReferenceOwners);
     };
   runtime.registry.registerMutation<CellShiftParams>({ id: 'cells.inserted', handler: cellShiftMutationHandler('insert', 'cells.inserted'), metadata: { schema: { name: 'CellShiftInsert', validate: (value: unknown): value is CellShiftParams => isCellShiftMutation(value) && value.operation === 'insert' }, permission: { capability: 'sheet.cell.write', roles: ['owner', 'editor'] }, affectedRanges: { resolve: (params) => [structuredClone(params.affectedBand)], mode: 'exact' }, inverseIds: ['cells.inserted.restore'] } });
   runtime.registry.registerMutation<CellShiftParams>({ id: 'cells.deleted', handler: cellShiftMutationHandler('delete', 'cells.deleted'), metadata: { schema: { name: 'CellShiftDelete', validate: (value: unknown): value is CellShiftParams => isCellShiftMutation(value) && value.operation === 'delete' }, permission: { capability: 'sheet.cell.write', roles: ['owner', 'editor'] }, affectedRanges: { resolve: (params) => [structuredClone(params.affectedBand)], mode: 'exact' }, inverseIds: ['cells.deleted.restore'] } });
-  const cellShiftRestoreMutationHandler = (operation: CellShiftParams['operation'], id: 'cells.inserted.restore' | 'cells.deleted.restore') => (item: { params: unknown }, context: { workbook: WorkbookModel }) => {
+  const cellShiftRestoreMutationHandler = (operation: CellShiftParams['operation'], id: 'cells.inserted.restore' | 'cells.deleted.restore') => (item: { params: unknown }, context: CommandContext) => {
       if (!isCellShiftRestoreMutation(item.params) || item.params.spec.operation !== operation) throw new Error(`Invalid ${id} mutation payload`);
       validateCellShiftEnvelope(item.params.spec, context);
       const plan = planCellShift(context.workbook, item.params.spec);
       const sheet = context.workbook.getSheet(item.params.spec.sheetId);
-      StructuralTransform.apply(context.workbook, { kind: 'cell-shift', sheetId: item.params.spec.sheetId, sourceRange: item.params.spec.range, operation: operation === 'insert' ? 'delete' : 'insert', axis: item.params.spec.axis });
+      const effect = StructuralTransform.apply(context.workbook, { kind: 'cell-shift', sheetId: item.params.spec.sheetId, sourceRange: item.params.spec.range, operation: operation === 'insert' ? 'delete' : 'insert', axis: item.params.spec.axis }, context.structuralReferenceOwners);
       for (let row = plan.band.startRow; row <= plan.band.endRow; row += 1) for (let column = plan.band.startColumn; column <= plan.band.endColumn; column += 1) sheet.cells.delete(row, column);
       for (const entry of item.params.cells) sheet.cells.set(entry.row, entry.column, structuredClone(entry.cell));
+      return effect;
     };
   runtime.registry.registerMutation<CellShiftRestoreParams>({ id: 'cells.inserted.restore', handler: cellShiftRestoreMutationHandler('insert', 'cells.inserted.restore'), metadata: { schema: { name: 'CellShiftInsertRestore', validate: (value: unknown): value is CellShiftRestoreParams => isCellShiftRestoreMutation(value) && value.spec.operation === 'insert' }, permission: { capability: 'sheet.cell.write', roles: ['owner', 'editor'] }, affectedRanges: { resolve: (params) => [structuredClone(params.spec.affectedBand)], mode: 'exact' }, inverseIds: ['cells.inserted'] } });
   runtime.registry.registerMutation<CellShiftRestoreParams>({ id: 'cells.deleted.restore', handler: cellShiftRestoreMutationHandler('delete', 'cells.deleted.restore'), metadata: { schema: { name: 'CellShiftDeleteRestore', validate: (value: unknown): value is CellShiftRestoreParams => isCellShiftRestoreMutation(value) && value.spec.operation === 'delete' }, permission: { capability: 'sheet.cell.write', roles: ['owner', 'editor'] }, affectedRanges: { resolve: (params) => [structuredClone(params.spec.affectedBand)], mode: 'exact' }, inverseIds: ['cells.deleted'] } });
@@ -1302,8 +1422,8 @@ export function registerEditingCommands(runtime: CommandRuntime): void {
     const affectedRanges: RangeRef[] = [structuredClone(plan.band)];
     return { canonicalParams, snapshot, affectedRanges };
   };
-  runtime.registry.registerCommand<Omit<CellShiftParams, 'affectedBand'>>({ id: 'sheet.cells.insert', execute: (params, context) => { const { canonicalParams, snapshot, affectedRanges } = createCellShiftParams(params, context); context.applyMutation({ id: 'cells.inserted', unitId: context.workbook.unitId, sheetId: params.sheetId, params: canonicalParams, affectedRanges, inverse: [{ id: 'cells.inserted.restore', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { spec: canonicalParams, cells: snapshot }, affectedRanges }], apply: () => StructuralTransform.apply(context.workbook, { kind: 'cell-shift', sheetId: params.sheetId, sourceRange: params.range, operation: 'insert', axis: params.axis }) }); return { operationId: context.operationId, mutationCount: 1, affectedRanges }; } });
-  runtime.registry.registerCommand<Omit<CellShiftParams, 'affectedBand'>>({ id: 'sheet.cells.delete', execute: (params, context) => { const { canonicalParams, snapshot, affectedRanges } = createCellShiftParams(params, context); context.applyMutation({ id: 'cells.deleted', unitId: context.workbook.unitId, sheetId: params.sheetId, params: canonicalParams, affectedRanges, inverse: [{ id: 'cells.deleted.restore', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { spec: canonicalParams, cells: snapshot }, affectedRanges }], apply: () => StructuralTransform.apply(context.workbook, { kind: 'cell-shift', sheetId: params.sheetId, sourceRange: params.range, operation: 'delete', axis: params.axis }) }); return { operationId: context.operationId, mutationCount: 1, affectedRanges }; } });
+  runtime.registry.registerCommand<Omit<CellShiftParams, 'affectedBand'>>({ id: 'sheet.cells.insert', execute: (params, context) => { const { canonicalParams, snapshot, affectedRanges } = createCellShiftParams(params, context); context.applyMutation({ id: 'cells.inserted', unitId: context.workbook.unitId, sheetId: params.sheetId, params: canonicalParams, affectedRanges, inverse: [{ id: 'cells.inserted.restore', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { spec: canonicalParams, cells: snapshot }, affectedRanges }], apply: () => StructuralTransform.apply(context.workbook, { kind: 'cell-shift', sheetId: params.sheetId, sourceRange: params.range, operation: 'insert', axis: params.axis }, context.structuralReferenceOwners) }); return { operationId: context.operationId, mutationCount: 1, affectedRanges }; } });
+  runtime.registry.registerCommand<Omit<CellShiftParams, 'affectedBand'>>({ id: 'sheet.cells.delete', execute: (params, context) => { const { canonicalParams, snapshot, affectedRanges } = createCellShiftParams(params, context); context.applyMutation({ id: 'cells.deleted', unitId: context.workbook.unitId, sheetId: params.sheetId, params: canonicalParams, affectedRanges, inverse: [{ id: 'cells.deleted.restore', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { spec: canonicalParams, cells: snapshot }, affectedRanges }], apply: () => StructuralTransform.apply(context.workbook, { kind: 'cell-shift', sheetId: params.sheetId, sourceRange: params.range, operation: 'delete', axis: params.axis }, context.structuralReferenceOwners) }); return { operationId: context.operationId, mutationCount: 1, affectedRanges }; } });
 
   runtime.registry.registerMutation<{ sourceSheetId: string; newId: string; newName: string }>({
     id: 'sheet.duplicated',

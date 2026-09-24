@@ -283,17 +283,60 @@ test('Go To Special returns discontiguous formula and validation matches', () =>
 test('range move and style preset are atomic and reversible', () => {
   const { workbook, runtime } = setup();
   const sheet = workbook.getSheet(workbook.primarySheetId);
-  sheet.cells.set(0, 0, { value: null, formula: '=B1', style: { bold: true } });
+  sheet.cells.set(0, 0, { value: null, formula: '=A1', style: { bold: true } });
+  sheet.cells.set(0, 2, { value: null, formula: '=A1' });
+  sheet.cells.set(1, 1, { value: 'overwritten' });
   const sourceRange = { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 };
+  const moveMutationIds: string[] = [];
+  runtime.onMutation((mutation, source) => {
+    if (source === 'command') moveMutationIds.push(mutation.id);
+  });
   runtime.execute('sheet.range.move', { sheetId: sheet.id, sourceRange, targetOrigin: { row: 1, column: 1 } });
   assert.equal(sheet.cells.get(0, 0), undefined);
-  assert.equal(sheet.cells.get(1, 1)?.formula, '=B1');
+  assert.equal(sheet.cells.get(1, 1)?.formula, '=B2');
+  assert.equal(sheet.cells.get(0, 2)?.formula, '=B2');
+  assert.deepEqual(moveMutationIds, ['range.move']);
   runtime.undo();
-  assert.equal(sheet.cells.get(0, 0)?.formula, '=B1');
+  assert.equal(sheet.cells.get(0, 0)?.formula, '=A1');
+  assert.equal(sheet.cells.get(0, 2)?.formula, '=A1');
+  assert.equal(sheet.cells.get(1, 1)?.value, 'overwritten');
   runtime.execute('sheet.style.preset.apply', { sheetId: sheet.id, ranges: [sourceRange], preset: 'good' });
   assert.equal(sheet.cells.get(0, 0)?.styleId, 'good');
   runtime.undo();
   assert.equal(sheet.cells.get(0, 0)?.styleId, undefined);
+});
+
+test('insert-drag rejects an insertion point inside its source before changing the workbook', () => {
+  const { workbook, runtime } = setup();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, { value: 'top' });
+  sheet.cells.set(1, 0, { value: 'bottom' });
+  const before = workbook.snapshot();
+
+  assert.throws(() => runtime.execute('sheet.range.move', {
+    sheetId: sheet.id,
+    sourceRange: { sheetId: sheet.id, startRow: 0, endRow: 1, startColumn: 0, endColumn: 0 },
+    targetOrigin: { row: 1, column: 0 },
+    insert: true,
+  }), /Insert-drag cannot split its source range/);
+  assert.deepEqual(workbook.snapshot(), before);
+  assert.equal(runtime.getHistoryDepth().undo, 0);
+});
+
+test('range move grows worksheet extent up to the Excel grid boundary', () => {
+  const { workbook, runtime } = setup();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, { value: 'moved' });
+  const targetRow = sheet.rowCount + 1;
+
+  runtime.execute('sheet.range.move', {
+    sheetId: sheet.id,
+    sourceRange: { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 },
+    targetOrigin: { row: targetRow, column: 0 },
+  });
+
+  assert.equal(sheet.cells.get(targetRow, 0)?.value, 'moved');
+  assert.ok(sheet.rowCount > targetRow);
 });
 
 test('workbook cell templates apply style, editor and validation through one command transaction', () => {

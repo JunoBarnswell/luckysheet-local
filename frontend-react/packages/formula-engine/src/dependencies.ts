@@ -55,13 +55,16 @@ function visit(
     }
     case 'whole-column-reference':
     case 'whole-row-reference':
-    case 'reference-union':
-    case 'reference-intersection':
     case 'sheet-range-reference':
     case 'external-reference': {
       addDependency({ kind: 'reference', reference: node }, dependencies, seen);
       return;
     }
+    case 'reference-union':
+    case 'reference-intersection':
+      addDependency({ kind: 'reference', reference: node }, dependencies, seen);
+      collectNestedTableDependencies(node, owner, dependencies, seen, sheetTables);
+      return;
     case 'unary-expression':
       visit(node.operand, owner, dependencies, seen, sheetTables);
       return;
@@ -111,6 +114,53 @@ function visit(
     case 'string-literal':
     case 'boolean-literal':
       return;
+  }
+}
+
+function collectNestedTableDependencies(
+  reference: FormulaReferenceNode,
+  owner: CellAddress,
+  dependencies: FormulaDependency[],
+  seen: Set<string>,
+  sheetTables?: ReadonlyMap<string, SheetTableRef>,
+): void {
+  switch (reference.type) {
+    case 'table-reference':
+      visit(reference, owner, dependencies, seen, sheetTables);
+      return;
+    case 'reference-union':
+      for (const item of reference.references) collectNestedTableDependencies(item, owner, dependencies, seen, sheetTables);
+      return;
+    case 'reference-intersection':
+      collectNestedTableDependencies(reference.left, owner, dependencies, seen, sheetTables);
+      collectNestedTableDependencies(reference.right, owner, dependencies, seen, sheetTables);
+      return;
+    case 'spill-reference':
+      if (isFormulaReference(reference.operand)) {
+        collectNestedTableDependencies(reference.operand, owner, dependencies, seen, sheetTables);
+      }
+      return;
+    default:
+      return;
+  }
+}
+
+function isFormulaReference(node: FormulaAst): node is FormulaReferenceNode {
+  switch (node.type) {
+    case 'cell-reference':
+    case 'invalid-reference':
+    case 'range-reference':
+    case 'whole-column-reference':
+    case 'whole-row-reference':
+    case 'spill-reference':
+    case 'table-reference':
+    case 'reference-union':
+    case 'reference-intersection':
+    case 'sheet-range-reference':
+    case 'external-reference':
+      return true;
+    default:
+      return false;
   }
 }
 

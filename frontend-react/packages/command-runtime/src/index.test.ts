@@ -47,6 +47,7 @@ test('CommandRuntime executes a registered command and tracks history', () => {
     handler: (item, context) => {
       const params = item.params as { row: number; column: number; value: string };
       context.workbook.getSheet(item.sheetId).cells.set(params.row, params.column, { value: params.value });
+      return { replayed: 'cell.set' };
     },
     metadata: cellSetMetadata,
   });
@@ -56,6 +57,7 @@ test('CommandRuntime executes a registered command and tracks history', () => {
       const params = item.params as { row: number; column: number; previous?: { value: string } };
       if (params.previous) context.workbook.getSheet(item.sheetId).cells.set(params.row, params.column, params.previous);
       else context.workbook.getSheet(item.sheetId).cells.delete(params.row, params.column);
+      return { replayed: 'cell.restore' };
     },
     metadata: cellRestoreMetadata,
   });
@@ -72,22 +74,32 @@ test('CommandRuntime executes a registered command and tracks history', () => {
         params,
         affectedRanges: range,
         inverse: [{ id: 'cell.restore', unitId: context.workbook.unitId, sheetId: 'sheet-1', params: { row: params.row, column: params.column, previous }, affectedRanges: range }],
-        apply: () => sheet.cells.set(params.row, params.column, { value: params.value }),
+        apply: () => {
+          sheet.cells.set(params.row, params.column, { value: params.value });
+          return { applied: 'cell.set' };
+        },
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges: range };
     },
   });
 
   const listenedMutations: MutationInfo[] = [];
-  const unsubscribe = runtime.onMutation((m) => listenedMutations.push(m));
+  const observedEffects: Array<{ source: string; effect: unknown }> = [];
+  const unsubscribe = runtime.onMutation((m, source, effect) => {
+    listenedMutations.push(m);
+    observedEffects.push({ source, effect });
+  });
 
   const result = runtime.execute('cell.set', { row: 1, column: 1, value: 'A' });
   assert.equal(result.mutationCount, 1);
   assert.equal(listenedMutations.length, 1);
+  assert.deepEqual(observedEffects[0], { source: 'command', effect: { applied: 'cell.set' } });
   assert.equal(runtime.getHistoryDepth().undo, 1);
   assert.equal(runtime.undo(), true);
+  assert.deepEqual(observedEffects[1], { source: 'undo', effect: { replayed: 'cell.restore' } });
   assert.equal(workbook.getSheet('sheet-1').cells.get(1, 1), undefined);
   assert.equal(runtime.redo(), true);
+  assert.deepEqual(observedEffects[2], { source: 'redo', effect: { replayed: 'cell.set' } });
   assert.equal(workbook.getSheet('sheet-1').cells.get(1, 1)?.value, 'A');
 
   unsubscribe();
@@ -143,10 +155,15 @@ test('CommandRuntime rolls back applied mutations if a command throws mid-execut
     },
   });
 
+  const aborted: Array<{ commandId: string; operationId: string }> = [];
+  runtime.onCommandAbort((commandId, _params, operationId) => aborted.push({ commandId, operationId }));
   assert.throws(() => runtime.execute('failing.transaction', {}), /Simulated failure/);
   // The first mutation should have been rolled back
   assert.equal(workbook.getSheet('sheet-1').cells.get(0, 0), undefined);
   assert.equal(runtime.getHistoryDepth().undo, 0);
+  assert.equal(aborted.length, 1);
+  assert.equal(aborted[0]?.commandId, 'failing.transaction');
+  assert.ok(aborted[0]?.operationId);
 });
 
 test('CommandRegistry guards against duplicate IDs and unknown lookups', () => {

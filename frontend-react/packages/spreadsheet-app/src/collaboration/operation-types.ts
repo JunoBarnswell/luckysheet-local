@@ -48,7 +48,6 @@ const MUTATION_KIND_MAP: Readonly<Record<string, CollaborationOperationKind>> = 
   'range.set': 'cell-value',
   'fill.applied': 'cell-value',
   'fill.restored': 'cell-value',
-  'range.paste': 'cell-value',
   'range.clear': 'clear',
   'cells.inserted': 'move-range',
   'cells.deleted': 'move-range',
@@ -77,11 +76,26 @@ const MUTATION_KIND_MAP: Readonly<Record<string, CollaborationOperationKind>> = 
 };
 
 export function classifyMutation(mutationId: string, params: unknown, sheetId: string, affectedRanges: RangeRef[]): ClassifiedMutation {
+  const pasteParams = isRecord(params) ? params : undefined;
+  const hasSourceSnapshot = pasteParams !== undefined
+    && (pasteParams.sourceRange !== undefined || pasteParams.sourceSnapshot !== undefined);
+  const pasteKind = mutationId !== 'range.paste'
+    ? undefined
+    : pasteParams?.transfer === 'move' || pasteParams?.clearSource === true || hasSourceSnapshot
+      ? 'move-range'
+      : pasteParams?.transfer === 'copy' && pasteParams.clearSource === false
+        && pasteParams.sourceRange === undefined && pasteParams.sourceSnapshot === undefined
+        ? 'cell-value'
+        : 'unknown';
   return {
     mutationId,
-    kind: mutationCapability(mutationId)?.collaborationKind ?? MUTATION_KIND_MAP[mutationId] ?? 'unknown',
+    kind: pasteKind ?? mutationCapability(mutationId)?.collaborationKind ?? MUTATION_KIND_MAP[mutationId] ?? 'unknown',
     sheetId,
     affectedRanges,
     params,
   };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
 }

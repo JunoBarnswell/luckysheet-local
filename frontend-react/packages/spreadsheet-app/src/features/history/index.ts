@@ -210,7 +210,7 @@ function pivotCacheKey(revision: number, pivotId: string): string {
 }
 
 async function hydratePreviewFormula(workbook: WorkbookModel): Promise<FormulaEngine> {
-  const engine = new FormulaEngine({ defaultSheetId: workbook.primarySheetId });
+  const engine = new FormulaEngine({ defaultSheetId: workbook.primarySheetId, sheetOrder: workbook.sheetOrder.map((id) => ({ id, name: workbook.getSheet(id).name })) });
   engine.setRecalculationMode('manual');
   engine.setDefinedNameModels(workbook.definedNameModels);
   const tableRefs: SheetTableRef[] = workbook.getSheets().flatMap((sheet) => sheet.sheetTables.map((table) => ({

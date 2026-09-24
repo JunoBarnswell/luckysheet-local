@@ -178,6 +178,28 @@ describe('WorkbookSession formula integration', () => {
     assert.equal(cellValue(app, 1, 1), '6');
   });
 
+  it('synchronizes formula inputs and external references after a canonical range move', async () => {
+    const app = new WorkbookSession();
+    const sheetId = app.getActiveSheetId();
+    app.runCommand('sheet.cell.set', { sheetId, row: 0, column: 0, value: { value: 5 } });
+    app.runCommand('sheet.cell.set', { sheetId, row: 0, column: 1, value: { formula: '=A1*2', value: null } });
+    app.runCommand('sheet.cell.set', { sheetId, row: 0, column: 3, value: { formula: '=A1*3', value: null } });
+
+    app.runCommand('sheet.range.move', {
+      sheetId,
+      sourceRange: { sheetId, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 },
+      targetOrigin: { row: 2, column: 2 },
+    });
+    await app.waitForFormulaCalculation();
+
+    const sheet = app['runtime'].model.getSheet(sheetId);
+    assert.equal(sheet.cells.get(2, 2)?.value, 5);
+    assert.equal(sheet.cells.get(0, 1)?.formula, '=C3*2');
+    assert.equal(sheet.cells.get(0, 3)?.formula, '=C3*3');
+    assert.equal(cellValue(app, 0, 1), '10');
+    assert.equal(cellValue(app, 0, 3), '15');
+  });
+
   it('synchronizes clear and emits #REF! after a deleted-row reference', async () => {
     const app = new WorkbookSession();
     const sheetId = app.getActiveSheetId();

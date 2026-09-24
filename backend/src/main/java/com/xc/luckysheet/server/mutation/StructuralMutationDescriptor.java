@@ -15,7 +15,7 @@ import java.util.Set;
 final class StructuralMutationDescriptor extends CanonicalJsonMutationDescriptor {
     static final Set<String> IDS = Set.of(
             "rows.inserted", "rows.deleted", "columns.inserted", "columns.deleted",
-            "cells.inserted", "cells.deleted", "cells.inserted.restore", "cells.deleted.restore", "rows.permuted"
+            "cells.inserted", "cells.deleted", "cells.inserted.restore", "cells.deleted.restore", "rows.permuted", "range.move"
     );
 
     StructuralMutationDescriptor(String id) {
@@ -41,6 +41,11 @@ final class StructuralMutationDescriptor extends CanonicalJsonMutationDescriptor
                 }
                 yield List.of(new RangeRef(selected.sheetId(), selected.startRow(), selected.endRow(), 0, declaredEndColumn));
             }
+            case "range.move" -> {
+                RangeRef source = ownRangeField(root, mutation.sheetId(), params, "sourceRange");
+                RangeRef target = moveTarget(root, mutation.sheetId(), source, params.get("targetOrigin"));
+                yield List.of(source, target);
+            }
             default -> throw ServiceException.validation("Unsupported structural mutation: " + id());
         };
     }
@@ -65,6 +70,12 @@ final class StructuralMutationDescriptor extends CanonicalJsonMutationDescriptor
                     throw ServiceException.validation("Rows permutation affected column extent does not cover current worksheet metadata");
                 }
                 StructuralSnapshotReducer.permuteRows(root, mutation.sheetId(), selected, declaredEndColumn, params.get("sourceRows"));
+            }
+            case "range.move" -> {
+                SnapshotMutationSupport.validateKnownKeys(params, Set.of("sheetId", "sourceRange", "targetOrigin"), "range.move");
+                RangeRef source = ownRangeField(root, mutation.sheetId(), params, "sourceRange");
+                RangeRef target = moveTarget(root, mutation.sheetId(), source, params.get("targetOrigin"));
+                StructuralSnapshotReducer.moveRange(root, mutation.sheetId(), source, target);
             }
             default -> throw ServiceException.validation("Unsupported structural mutation: " + id());
         }
@@ -111,6 +122,21 @@ final class StructuralMutationDescriptor extends CanonicalJsonMutationDescriptor
         RangeRef range = SnapshotMutationSupport.range(root, params.get(field));
         SnapshotMutationSupport.requireSheet(range, sheetId);
         return range;
+    }
+
+    private RangeRef moveTarget(ObjectNode root, String sheetId, RangeRef source, JsonNode rawOrigin) {
+        if (rawOrigin == null || !rawOrigin.isObject()) throw ServiceException.validation("Move target origin must be an object");
+        ObjectNode origin = (ObjectNode) rawOrigin;
+        SnapshotMutationSupport.validateKnownKeys(origin, Set.of("row", "column"), "Move target origin");
+        int row = integer(origin.get("row"), "Move target row");
+        int column = integer(origin.get("column"), "Move target column");
+        long endRow = (long) row + source.endRow() - source.startRow();
+        long endColumn = (long) column + source.endColumn() - source.startColumn();
+        if (endRow > SnapshotMutationSupport.MAX_ROW || endColumn > SnapshotMutationSupport.MAX_COLUMN) {
+            throw ServiceException.validation("Move target exceeds worksheet bounds");
+        }
+        SnapshotMutationSupport.sheet(root, sheetId);
+        return new RangeRef(sheetId, row, (int) endRow, column, (int) endColumn);
     }
 
     private String text(JsonNode value, String label) {

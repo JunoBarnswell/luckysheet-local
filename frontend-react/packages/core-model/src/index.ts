@@ -494,7 +494,15 @@ export {
   type ConnectorTransformOverride,
   type DrawingGraphSheet,
 } from './drawing-planner';
-export { StructuralTransform, planCellShift, type StructuralTransformResult, type CellShiftPlan, ensureDrawing } from './structural-transform';
+export {
+  StructuralTransform,
+  planCellShift,
+  type StructuralTransformResult,
+  type StructuralReferenceOwnerAddress,
+  type StructuralReferenceOwnerIndex,
+  type CellShiftPlan,
+  ensureDrawing,
+} from './structural-transform';
 export { SheetRuleRegistry, sheetRuleRegistry, ruleRangesIntersect, type RuleTransform, type RulePasteTransform, type SheetRule, type SheetRuleKind } from './rule-lifecycle';
 export {
   planBorderChange,
@@ -1226,16 +1234,12 @@ export class CellMatrix {
 
   /** 沿行轴整体平移:dir=+1 下移(插入),dir=-1 上移(删除);越界丢弃 */
   shiftRows(at: Row, count: number, direction: 1 | -1): void {
+    this.hydrate();
     const entries: Array<[Row, Column, CellData]> = [];
     const delta = direction * count;
-    this.forEach((cell, row, column) => {
-      if (row >= at) entries.push([row, column, cell]);
-    });
-    if (direction === -1) {
-      // 从小到大删除,避免覆盖
-      entries.sort((a, b) => a[0] - b[0]);
-    } else {
-      entries.sort((a, b) => b[0] - a[0]);
+    for (const [row, columns] of this.rows) {
+      if (row < at) continue;
+      for (const [column, cell] of columns) entries.push([row, column, cell]);
     }
     for (const [row, column] of entries) this.delete(row, column);
     for (const [row, column, cell] of entries) {
@@ -1245,27 +1249,37 @@ export class CellMatrix {
 
   /** 沿列轴整体平移:dir=+1 右移(插入),dir=-1 左移(删除) */
   shiftColumns(at: Column, count: number, direction: 1 | -1): void {
-    const entries: Array<[Row, Column, CellData]> = [];
+    this.hydrate();
     const delta = direction * count;
-    this.forEach((cell, row, column) => {
-      if (column >= at) entries.push([row, column, cell]);
-    });
-    if (direction === -1) entries.sort((a, b) => a[1] - b[1]);
-    else entries.sort((a, b) => b[1] - a[1]);
-    for (const [row, column] of entries) this.delete(row, column);
-    for (const [row, column, cell] of entries) {
-      this.set(row, column + delta, cell);
+    for (const [row, columns] of [...this.rows]) {
+      const entries: Array<[Column, CellData]> = [];
+      for (const [column, cell] of columns) {
+        if (column >= at) entries.push([column, cell]);
+      }
+      if (entries.length === 0) continue;
+      for (const [column] of entries) this.delete(row, column);
+      for (const [column, cell] of entries) this.set(row, column + delta, cell);
     }
   }
 
-  /** 摘除区间内全部单元格并返回(用于删除行的逆操作恢复) */
-  extractRegion(startRow: Row, endRow: Row, startColumn: Column, endColumn: Column): Array<{ row: Row; column: Column; cell: CellData }> {
+  /** 按稀疏行列索引读取范围内实际存在的单元格。 */
+  getRegion(startRow: Row, endRow: Row, startColumn: Column, endColumn: Column): Array<{ row: Row; column: Column; cell: CellData }> {
     const extracted: Array<{ row: Row; column: Column; cell: CellData }> = [];
-    this.forEach((cell, row, column) => {
-      if (row >= startRow && row <= endRow && column >= startColumn && column <= endColumn) {
-        extracted.push({ row, column, cell: structuredClone(cell) });
+    this.hydrate();
+    for (const [row, columns] of this.rows) {
+      if (row < startRow || row > endRow) continue;
+      for (const [column, cell] of columns) {
+        if (column >= startColumn && column <= endColumn) {
+          extracted.push({ row, column, cell: structuredClone(cell) });
+        }
       }
-    });
+    }
+    return extracted;
+  }
+
+  /** 摘除范围内全部单元格并返回原坐标快照。 */
+  extractRegion(startRow: Row, endRow: Row, startColumn: Column, endColumn: Column): Array<{ row: Row; column: Column; cell: CellData }> {
+    const extracted = this.getRegion(startRow, endRow, startColumn, endColumn);
     for (const item of extracted) this.delete(item.row, item.column);
     return extracted;
   }

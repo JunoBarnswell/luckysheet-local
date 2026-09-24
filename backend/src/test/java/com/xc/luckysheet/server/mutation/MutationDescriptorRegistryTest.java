@@ -297,7 +297,7 @@ class MutationDescriptorRegistryTest {
                 "table.add", "table.remove", "name.set", "name.remove", "workbook.calculation.mode.set",
                 "pageLayout.margins.set", "pageLayout.orientation.set", "pageLayout.paperSize.set", "pageLayout.pageSetupDetail.set", "pageLayout.scaleToFit.set", "pageLayout.printTitles.set", "pageLayout.printArea.set", "pageLayout.printArea.clear", "pageLayout.pageBreak.insert", "pageLayout.pageBreak.remove", "pageLayout.pageBreak.clear", "pageLayout.printGridlines.set", "pageLayout.printHeadings.set", "pageLayout.viewGridlines.set", "pageLayout.viewHeadings.set"
                 , "query.definition.replace", "query.load.range", "query.load.sheet-table", "query.load.pivot-source", "query.load.workbook-table",
-                "rows.inserted", "rows.deleted", "columns.inserted", "columns.deleted", "cells.inserted", "cells.deleted", "cells.inserted.restore", "cells.deleted.restore", "rows.permuted", "rows.visibility",
+                "rows.inserted", "rows.deleted", "columns.inserted", "columns.deleted", "cells.inserted", "cells.deleted", "cells.inserted.restore", "cells.deleted.restore", "rows.permuted", "range.move", "rows.visibility",
                 "fill.applied", "fill.restored",
                 "dataSource.add", "dataSource.update", "dataSource.remove", "dataRegion.add", "dataRegion.remove", "analysis.view.replace"
         ), Set.copyOf(registry.acceptedIds()));
@@ -1212,6 +1212,64 @@ class MutationDescriptorRegistryTest {
         current = registry.prepare(current, permutation, WorkbookAclRole.EDITOR).descriptor().apply(current, permutation);
         assertEquals("drop", current.path("sheets").get(0).path("cells").path("0").path("0").path("value").asText());
         assertEquals("=A1", current.path("sheets").get(0).path("cells").path("1").path("0").path("formula").asText());
+    }
+
+    @Test
+    void rangeMoveRewritesFormulaOwnersAndRejectsOverlappingDestinations() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        JsonNode snapshot = mapper.readTree("""
+                {"dataModel":{"sources":[],"tables":[],"relationships":[],"views":[]},"definedNames":{},"definedNameModels":[],"printDocuments":[],
+                 "sheets":[{"id":"sheet-1","name":"Sheet1","rowCount":6,"columnCount":6,
+                   "cells":{"0":{"0":{"value":7},"1":{"formula":"=A1"},"4":{"formula":"=A1"}},"2":{"3":{"value":"stale"}}},
+                   "pane":{"kind":"none"},"defaultRowHeightPx":20,"defaultColumnWidthPx":64,
+                   "review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}},
+                   "merges":[],"hiddenRows":[],"hiddenColumns":[],"rowHeightsPx":{},"columnWidthsPx":{},
+                   "drawings":[],"drawingPayloads":{},"spillRanges":[],"sheetTables":[],"conditionalFormats":[],"dataValidations":[],
+                   "protectionRules":[],"outline":{"groups":[]},"sparklines":[],"pivots":[],"dataRegions":[],"hyperlinks":[]}]}
+                """);
+        OperationMutation move = new OperationMutation("range.move", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","sourceRange":{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":1},"targetOrigin":{"row":2,"column":2}}
+                """));
+
+        var prepared = registry.prepare(snapshot, move, WorkbookAclRole.EDITOR);
+        assertEquals(2, prepared.affectedRanges().size());
+        JsonNode moved = registry.applyPublicMutations(snapshot, List.of(move));
+        JsonNode sheet = moved.path("sheets").get(0);
+        assertEquals(7, sheet.path("cells").path("2").path("2").path("value").asInt());
+        assertEquals("=C3", sheet.path("cells").path("2").path("3").path("formula").asText());
+        assertEquals("=C3", sheet.path("cells").path("0").path("4").path("formula").asText());
+        assertTrue(sheet.path("cells").path("2").path("3").path("value").isMissingNode());
+        assertEquals(7, snapshot.path("sheets").get(0).path("cells").path("0").path("0").path("value").asInt());
+
+        OperationMutation overlap = new OperationMutation("range.move", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","sourceRange":{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0},"targetOrigin":{"row":0,"column":0}}
+                """));
+        ServiceException rejected = assertThrows(ServiceException.class, () -> registry.applyPublicMutations(snapshot, List.of(overlap)));
+        assertEquals("VALIDATION_ERROR", rejected.code());
+
+        ObjectNode partialRangeSnapshot = (ObjectNode) snapshot.deepCopy();
+        ((ObjectNode) partialRangeSnapshot.path("sheets").get(0).path("cells").path("0"))
+                .putObject("5").put("formula", "=SUM(A1:A4)");
+        assertThrows(ServiceException.class, () -> registry.applyPublicMutations(partialRangeSnapshot, List.of(move)));
+
+        ObjectNode wholeColumnSnapshot = (ObjectNode) snapshot.deepCopy();
+        ((ObjectNode) wholeColumnSnapshot.path("sheets").get(0).path("cells").path("0"))
+                .putObject("5").put("formula", "=SUM(A:A)");
+        assertThrows(ServiceException.class, () -> registry.applyPublicMutations(wholeColumnSnapshot, List.of(move)));
+
+        ObjectNode wholeRowSnapshot = (ObjectNode) snapshot.deepCopy();
+        ((ObjectNode) wholeRowSnapshot.path("sheets").get(0).path("cells").path("0"))
+                .putObject("5").put("formula", "=SUM(1:1)");
+        assertThrows(ServiceException.class, () -> registry.applyPublicMutations(wholeRowSnapshot, List.of(move)));
+
+        ObjectNode threeDimensionalSnapshot = (ObjectNode) snapshot.deepCopy();
+        ObjectNode firstSheet = (ObjectNode) threeDimensionalSnapshot.path("sheets").get(0);
+        ((ObjectNode) firstSheet.path("cells").path("0")).putObject("5").put("formula", "=SUM(Sheet1:Sheet2!A1)");
+        ObjectNode secondSheet = firstSheet.deepCopy();
+        secondSheet.put("id", "sheet-2");
+        secondSheet.put("name", "Sheet2");
+        ((ArrayNode) threeDimensionalSnapshot.path("sheets")).add(secondSheet);
+        assertThrows(ServiceException.class, () -> registry.applyPublicMutations(threeDimensionalSnapshot, List.of(move)));
     }
 
     @Test

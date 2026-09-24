@@ -15,6 +15,7 @@ import { assertFormulaVisibilitySnapshot, type FormulaVisibilitySnapshot } from 
  */
 export interface FormulaCalculationSnapshot {
   readonly defaultSheetId: string;
+  readonly sheetOrder: readonly { readonly id: string; readonly name: string }[];
   readonly calculationSettings: WorkbookCalculationSettings;
   readonly dateSystem: ExcelDateSystem;
   readonly canonicalReferenceDate?: CanonicalExcelDateParts;
@@ -54,6 +55,21 @@ export function assertFormulaCalculationSnapshot(value: unknown): asserts value 
   if (typeof value.defaultSheetId !== 'string' || value.defaultSheetId.length === 0) {
     throw new Error('Calculation snapshot requires a default worksheet id');
   }
+  if (!Array.isArray(value.sheetOrder) || value.sheetOrder.length === 0
+    || !value.sheetOrder.every(isSheetIdentity)
+    || !value.sheetOrder.some((sheet) => sheet.id === value.defaultSheetId)) {
+    throw new Error('Calculation snapshot has an invalid worksheet order');
+  }
+  const sheetIds = new Set<string>();
+  const sheetNames = new Set<string>();
+  for (const sheet of value.sheetOrder) {
+    const normalizedName = sheet.name.toLocaleLowerCase();
+    if (sheetIds.has(sheet.id) || sheetNames.has(normalizedName)) {
+      throw new Error('Calculation snapshot worksheet identities are not unique');
+    }
+    sheetIds.add(sheet.id);
+    sheetNames.add(normalizedName);
+  }
   if (!isWorkbookCalculationSettings(value.calculationSettings)) throw new Error('Calculation snapshot has invalid calculation settings');
   if (value.dateSystem !== '1900' && value.dateSystem !== '1904') throw new Error('Calculation snapshot has an invalid date system');
   if (value.canonicalReferenceDate !== undefined && !isCanonicalDateParts(value.canonicalReferenceDate)) {
@@ -76,6 +92,12 @@ export function assertFormulaCalculationSnapshot(value: unknown): asserts value 
   if (!Array.isArray(value.pendingRoots) || !value.pendingRoots.every(isCellAddress)) {
     throw new Error('Calculation snapshot has invalid dirty roots');
   }
+}
+
+function isSheetIdentity(value: unknown): value is { readonly id: string; readonly name: string } {
+  return isRecord(value)
+    && typeof value.id === 'string' && value.id.trim().length > 0
+    && typeof value.name === 'string' && value.name.trim().length > 0;
 }
 
 function isFormulaCellSnapshot(value: unknown): value is FormulaCellSnapshot {

@@ -9,7 +9,6 @@ import { validateOperationEnvelope } from '@react-sheets/protocol';
 import { classifyMutation, committedMutationToClassified } from './operation-types';
 import { rebaseAgainstHistory } from './ot-rebase';
 import { OfflineQueue } from './offline-queue';
-import { CollaborativeUndoStack } from './collaborative-undo';
 import { PresenceStore } from './presence';
 
 export interface CollaborationSessionOptions {
@@ -27,13 +26,10 @@ interface AckWaiter {
   reject: (cause: unknown) => void;
 }
 
-const LOCAL_UNDO_KEY = 'local';
-
 /** 协同会话 — single operation envelope + OT rebase + ACK-gated offline queue. */
 export class CollaborationSession {
   readonly presence = new PresenceStore();
   readonly offlineQueue: OfflineQueue;
-  readonly collaborativeUndo = new CollaborativeUndoStack();
 
   private runtime: CommandRuntime;
   private send?: (operation: OperationEnvelope) => boolean | Promise<boolean | number>;
@@ -264,21 +260,6 @@ export class CollaborationSession {
       this.offlineQueue.discard(entry.operation.operationId);
       this.localClassified.delete(entry.operation.operationId);
     }
-    this.collaborativeUndo.clear(LOCAL_UNDO_KEY);
-  }
-
-  recordLocalUndo(entry: { operationId: string; undoMutations: MutationInfo[] }): void {
-    this.collaborativeUndo.push(LOCAL_UNDO_KEY, {
-      operationId: entry.operationId,
-      actorId: LOCAL_UNDO_KEY,
-      undoMutations: entry.undoMutations,
-      timestamp: Date.now(),
-    });
-  }
-
-  undoOwnLast(): MutationInfo[] | undefined {
-    const entry = this.collaborativeUndo.pop(LOCAL_UNDO_KEY);
-    return entry ? this.collaborativeUndo.createCompensatingCommand(entry) : undefined;
   }
 
   private async flushOperation(operation: OperationEnvelope): Promise<number> {

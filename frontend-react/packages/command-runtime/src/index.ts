@@ -1,4 +1,5 @@
-import { WorkbookModel, type ProtectionAction, type RangeRef, type WorksheetModel } from '@react-sheets/core-model';
+import { WorkbookModel, type ProtectionAction, type RangeRef, type StructuralReferenceOwnerIndex, type WorksheetModel } from '@react-sheets/core-model';
+import { collectFormulaDependencies, formatFormula, mapAstStructuralReferences, parseFormula, RangeIndex } from '@react-sheets/formula-engine';
 
 export interface MutationInfo<P = unknown> {
   id: string;
@@ -107,20 +108,22 @@ export interface Operation<P = unknown> {
 }
 
 export interface Mutation<P = unknown> extends MutationInfo<P> {
-  apply(context: CommandContext): void;
+  apply(context: CommandContext): unknown;
   inverse: MutationInfo[];
 }
 
 export interface CommandContext {
   readonly workbook: WorkbookModel;
   readonly operationId: string;
+  /** Indexed structural-reference owners from the canonical formula runtime. */
+  readonly structuralReferenceOwners: StructuralReferenceOwnerIndex;
   /** Optional canonical worksheet-value authority supplied by the host runtime. */
   readonly resolveCellValue?: (sheet: WorksheetModel, row: number, column: number) => unknown;
   applyMutation<P>(mutation: Mutation<P>): void;
   recordOperation<P>(operation: Operation<P>, params: P): OperationResult;
 }
 
-export type MutationHandler<P = unknown> = (item: MutationInfo<P>, context: CommandContext) => void;
+export type MutationHandler<P = unknown> = (item: MutationInfo<P>, context: CommandContext) => unknown;
 
 export interface MutationRegistration<P = unknown> {
   readonly id: string;
@@ -539,6 +542,26 @@ interface StructuralDelta {
   readonly sheetId: string;
 }
 
+function buildStructuralReferenceIndex(workbook: WorkbookModel): StructuralReferenceOwnerIndex {
+  const index = new RangeIndex(workbook.sheetOrder.map((id) => ({ id, name: workbook.getSheet(id).name })));
+  for (const sheet of workbook.getSheets()) {
+    sheet.cells.forEach((cell, row, column) => {
+      if (cell.formula === undefined) return;
+      const owner = { sheetId: sheet.id, row, column };
+      try {
+        const formula = cell.formula.trimStart().startsWith('=') ? cell.formula : `=${cell.formula}`;
+        index.set(owner, collectFormulaDependencies(parseFormula(formula), owner));
+      } catch {
+        index.set(owner, [], true);
+      }
+    });
+  }
+  return index;
+}
+
+const MAX_ROW_INDEX = 1_048_575;
+const MAX_COLUMN_INDEX = 16_383;
+
 interface TransformValueResult {
   readonly value: unknown;
   readonly safe: boolean;
@@ -570,14 +593,21 @@ function structuralDelta(mutation: MutationInfo): StructuralDelta | undefined {
 }
 
 function transformIndex(index: number, delta: StructuralDelta): number | undefined {
-  if (!Number.isSafeInteger(index) || index < 0) return undefined;
-  if (delta.direction === 1) return index >= delta.at ? index + delta.count : index;
+  const maximum = delta.axis === 'row' ? MAX_ROW_INDEX : MAX_COLUMN_INDEX;
+  if (!Number.isSafeInteger(index) || index < 0 || index > maximum) return undefined;
+  if (delta.direction === 1) {
+    const mapped = index >= delta.at ? index + delta.count : index;
+    return Number.isSafeInteger(mapped) && mapped <= maximum ? mapped : undefined;
+  }
   const deletedEnd = delta.at + delta.count - 1;
   if (index >= delta.at && index <= deletedEnd) return undefined;
   return index > deletedEnd ? index - delta.count : index;
 }
 
 function transformRange(range: RangeRef, delta: StructuralDelta): RangeRef | undefined {
+  if (!isValidRangeRef(range)
+    || range.startRow < 0 || range.endRow < range.startRow || range.endRow > MAX_ROW_INDEX
+    || range.startColumn < 0 || range.endColumn < range.startColumn || range.endColumn > MAX_COLUMN_INDEX) return undefined;
   if (range.sheetId !== delta.sheetId) return structuredClone(range);
   const start = delta.axis === 'row' ? range.startRow : range.startColumn;
   const end = delta.axis === 'row' ? range.endRow : range.endColumn;
@@ -588,9 +618,8 @@ function transformRange(range: RangeRef, delta: StructuralDelta): RangeRef | und
   const nextStart = transformIndex(start, delta);
   const nextEnd = transformIndex(end, delta);
   if (nextStart === undefined || nextEnd === undefined) return undefined;
-  let mappedStart = nextStart;
-  let mappedEnd = nextEnd;
-  if (delta.direction === 1 && start < delta.at && delta.at <= end) mappedEnd += delta.count;
+  const mappedStart = nextStart;
+  const mappedEnd = nextEnd;
   return delta.axis === 'row'
     ? { ...range, startRow: mappedStart, endRow: mappedEnd }
     : { ...range, startColumn: mappedStart, endColumn: mappedEnd };
@@ -621,23 +650,53 @@ function isCoordinateListKey(key: string, axis: 'row' | 'column'): boolean {
     : normalized === 'columns' || normalized === 'sourcecolumns' || normalized === 'columnindices' || normalized === 'columnindexes';
 }
 
-function transformPayload(value: unknown, delta: StructuralDelta, id: string, keyHint = ''): TransformValueResult {
+function isFormulaSourceKey(key: string): boolean {
+  const normalized = key.toLowerCase();
+  return normalized === 'formula'
+    || normalized === 'formulatext'
+    || /^formula\d+$/.test(normalized)
+    || normalized.endsWith('formula');
+}
+
+function transformPayload(
+  value: unknown,
+  delta: StructuralDelta,
+  id: string,
+  keyHint = '',
+  ownerSheetId = delta.sheetId,
+): TransformValueResult {
+  if (typeof value === 'string' && isFormulaSourceKey(keyHint) && value.trimStart().startsWith('=')) {
+    try {
+      const sourceAst = parseFormula(value);
+      const mapped = formatFormula(mapAstStructuralReferences(sourceAst, {
+        shift: { axis: delta.axis, at: delta.at, count: delta.count, op: delta.direction === 1 ? 'insert' : 'delete' },
+        ownerSheetId,
+        targetSheetId: delta.sheetId,
+      }));
+      return { value: mapped === formatFormula(sourceAst) ? value : mapped, safe: true };
+    } catch {
+      return { value, safe: false };
+    }
+  }
   if (Array.isArray(value)) {
     const values: unknown[] = [];
     for (const item of value) {
-      if (typeof item === 'number' && isCoordinateListKey(keyHint, delta.axis)) {
+      if (ownerSheetId === delta.sheetId && typeof item === 'number' && isCoordinateListKey(keyHint, delta.axis)) {
         const mapped = transformIndex(item, delta);
         if (mapped === undefined) return { value, safe: false };
         values.push(mapped);
         continue;
       }
-      const transformed = transformPayload(item, delta, id, keyHint);
+      const transformed = transformPayload(item, delta, id, keyHint, ownerSheetId);
       if (!transformed.safe) return transformed;
       values.push(transformed.value);
     }
     return { value: values, safe: true };
   }
   if (!isRecord(value)) return { value, safe: true };
+  const valueSheetId = typeof value.sheetId === 'string'
+    ? value.sheetId
+    : value.scope === 'workbook' ? delta.sheetId : ownerSheetId;
   if (isValidRangeRef(value)) {
     const mapped = transformRange(value, delta);
     return mapped ? { value: mapped, safe: true } : { value, safe: false };
@@ -645,22 +704,28 @@ function transformPayload(value: unknown, delta: StructuralDelta, id: string, ke
 
   const result: Record<string, unknown> = {};
   const structuralAxis = mutationAxis(id);
+  let formulaChanged = false;
   for (const [key, child] of Object.entries(value)) {
-    if (isCoordinateKey(key, delta.axis) && typeof child === 'number') {
+    if (valueSheetId === delta.sheetId && isCoordinateKey(key, delta.axis) && typeof child === 'number') {
       const mapped = transformIndex(child, delta);
       if (mapped === undefined) return { value, safe: false };
       result[key] = mapped;
       continue;
     }
-    if (key === 'at' && typeof child === 'number' && (structuralAxis === delta.axis || 'count' in value)) {
+    if (valueSheetId === delta.sheetId && key === 'at' && typeof child === 'number' && (structuralAxis === delta.axis || 'count' in value)) {
       const mapped = transformIndex(child, delta);
       if (mapped === undefined) return { value, safe: false };
       result[key] = mapped;
       continue;
     }
-    const transformed = transformPayload(child, delta, id, key);
+    const transformed = transformPayload(child, delta, id, key, valueSheetId);
     if (!transformed.safe) return transformed;
     result[key] = transformed.value;
+    if (isFormulaSourceKey(key) && typeof child === 'string' && transformed.value !== child) formulaChanged = true;
+  }
+  if (formulaChanged) {
+    delete result.formulaValue;
+    delete result.displayValue;
   }
   return { value: result, safe: true };
 }
@@ -672,8 +737,7 @@ function transformMutation(item: MutationInfo, delta: StructuralDelta): Mutation
     if (!mapped) return undefined;
     affectedRanges.push(mapped);
   }
-  if (item.sheetId !== delta.sheetId) return { ...item, affectedRanges };
-  const params = transformPayload(item.params, delta, item.id);
+  const params = transformPayload(item.params, delta, item.id, '', item.sheetId);
   if (!params.safe) return undefined;
   return { ...item, params: params.value, affectedRanges };
 }
@@ -710,9 +774,10 @@ function transformHistoryEntry(entry: HistoryEntry, remote: MutationInfo): Histo
 /** 变更来源:正向命令、本地撤销、本地重做、远端协同重放 */
 export type MutationSource = 'command' | 'undo' | 'redo' | 'remote';
 
-export type MutationListener = (mutation: MutationInfo, source: MutationSource) => void;
+export type MutationListener = (mutation: MutationInfo, source: MutationSource, effect?: unknown) => void;
 export type MutationGuard = (mutation: MutationInfo, source: MutationSource) => void;
 export type CommandListener = (commandId: string, params: unknown, result: CommandResult) => void;
+export type CommandAbortListener = (commandId: string, params: unknown, operationId: string) => void;
 export type HistoryReplayListener = (source: 'undo' | 'redo', entry: HistoryEntry) => void;
 
 export class CommandRuntime {
@@ -722,10 +787,12 @@ export class CommandRuntime {
   private transactionDepth = 0;
   private readonly mutationListeners: MutationListener[] = [];
   private readonly commandListeners: CommandListener[] = [];
+  private readonly commandAbortListeners: CommandAbortListener[] = [];
   private readonly historyReplayListeners: HistoryReplayListener[] = [];
   private cellValueResolver?: (sheet: WorksheetModel, row: number, column: number) => unknown;
   private mutationGuard?: MutationGuard;
   private revisionProvider?: () => number;
+  private structuralReferenceOwnersProvider?: (workbook: WorkbookModel) => StructuralReferenceOwnerIndex;
   private currentRevision = 0;
   private readonly invalidHistory: HistoryEntry[] = [];
 
@@ -752,6 +819,16 @@ export class CommandRuntime {
     this.revisionProvider = provider;
   }
 
+  setStructuralReferenceOwnersProvider(
+    provider: ((workbook: WorkbookModel) => StructuralReferenceOwnerIndex) | undefined,
+  ): void {
+    this.structuralReferenceOwnersProvider = provider;
+  }
+
+  private resolveStructuralReferenceOwners(): StructuralReferenceOwnerIndex {
+    return this.structuralReferenceOwnersProvider?.(this.workbook) ?? buildStructuralReferenceIndex(this.workbook);
+  }
+
   setRevision(revision: number): void {
     if (!Number.isSafeInteger(revision) || revision < 0) throw new Error('Revision must be a non-negative safe integer');
     this.currentRevision = revision;
@@ -770,6 +847,14 @@ export class CommandRuntime {
     return () => {
       const idx = this.commandListeners.indexOf(listener);
       if (idx >= 0) this.commandListeners.splice(idx, 1);
+    };
+  }
+
+  onCommandAbort(listener: CommandAbortListener): () => void {
+    this.commandAbortListeners.push(listener);
+    return () => {
+      const idx = this.commandAbortListeners.indexOf(listener);
+      if (idx >= 0) this.commandAbortListeners.splice(idx, 1);
     };
   }
 
@@ -811,9 +896,11 @@ export class CommandRuntime {
     }
     this.transactionDepth += 1;
 
+    const commandRuntime = this;
     const context: CommandContext = {
       workbook: this.workbook,
       operationId,
+      get structuralReferenceOwners() { return commandRuntime.resolveStructuralReferenceOwners(); },
       resolveCellValue: (sheet, row, column) => this.cellValueResolver?.(sheet, row, column),
       applyMutation: (mutation) => {
         if (mutation.unitId !== this.workbook.unitId) {
@@ -824,7 +911,7 @@ export class CommandRuntime {
         // execution and every replay path fail closed on protocol drift.
         this.registry.assertMutation(mutation);
         this.mutationGuard?.(mutation, 'command');
-        mutation.apply(context);
+        const effect = mutation.apply(context);
         const info: MutationInfo = {
           id: mutation.id,
           unitId: mutation.unitId,
@@ -841,7 +928,7 @@ export class CommandRuntime {
         }
 
         for (const listener of this.mutationListeners) {
-          listener(info, 'command');
+          listener(info, 'command', effect);
         }
       },
       recordOperation: (operation, operationParams) => {
@@ -878,10 +965,18 @@ export class CommandRuntime {
       this.transactionDepth -= 1;
       if (isRootTransaction) {
         // Rollback applied mutations in this transaction if failed
-        if (this.activeEntry && this.activeEntry.inversePlan.length > 0) {
-          this.applyHistory(this.activeEntry.inversePlan, 'undo');
+        let rollbackError: unknown;
+        try {
+          if (this.activeEntry && this.activeEntry.inversePlan.length > 0) {
+            this.applyHistory(this.activeEntry.inversePlan, 'undo');
+          }
+        } catch (error) {
+          rollbackError = error;
+        } finally {
+          this.activeEntry = null;
+          for (const listener of this.commandAbortListeners) listener(id, params, operationId);
         }
-        this.activeEntry = null;
+        if (rollbackError !== undefined) throw rollbackError;
       }
       throw err;
     }
@@ -889,10 +984,12 @@ export class CommandRuntime {
 
   undo(): boolean {
     this.registry.assertComplete();
-    const entry = this.undoStack.pop();
+    const entry = this.undoStack[this.undoStack.length - 1];
     if (!entry) return false;
     if (entry.status !== 'active') return false;
+    this.preflightHistory(entry.inversePlan, 'undo');
     this.applyHistory(entry.inversePlan, 'undo');
+    this.undoStack.pop();
     this.redoStack.push(entry);
     for (const listener of this.historyReplayListeners) listener('undo', entry);
     return true;
@@ -900,10 +997,12 @@ export class CommandRuntime {
 
   redo(): boolean {
     this.registry.assertComplete();
-    const entry = this.redoStack.pop();
+    const entry = this.redoStack[this.redoStack.length - 1];
     if (!entry) return false;
     if (entry.status !== 'active') return false;
+    this.preflightHistory(entry.forwardMutations, 'redo');
     this.applyHistory(entry.forwardMutations, 'redo');
+    this.redoStack.pop();
     this.undoStack.push(entry);
     for (const listener of this.historyReplayListeners) listener('redo', entry);
     return true;
@@ -918,8 +1017,7 @@ export class CommandRuntime {
     // A committed operation may contain several dependent mutations. Replay
     // them against an isolated snapshot first so a later rejection cannot
     // leave the live workbook partially changed.
-    const preview = new CommandRuntime(WorkbookModel.fromSnapshot(this.workbook.snapshot()), this.registry);
-    preview.applyHistory(items, 'remote');
+    this.preflightHistory(items, 'remote');
     this.applyHistory(items, 'remote');
     for (const item of items) this.transformHistoryAgainstRemote(item);
     if (remoteContext.revision !== undefined) {
@@ -1005,9 +1103,11 @@ export class CommandRuntime {
     for (const item of items) this.mutationGuard?.(item, source);
     for (const item of items) {
       const handler = this.registry.getMutation(item.id);
+      const commandRuntime = this;
       const replayContext: CommandContext = {
         workbook: this.workbook,
         operationId: createOperationId(),
+        get structuralReferenceOwners() { return commandRuntime.resolveStructuralReferenceOwners(); },
         resolveCellValue: (sheet, row, column) => this.cellValueResolver?.(sheet, row, column),
         applyMutation: () => {
           throw new Error('Nested mutation application is not allowed during mutation replay');
@@ -1017,12 +1117,18 @@ export class CommandRuntime {
           return registered.execute(operationParams, replayContext);
         },
       };
-      handler(item, {
+      const effect = handler(item, {
         ...replayContext,
       });
       for (const listener of this.mutationListeners) {
-        listener(item, source);
+        listener(item, source, effect);
       }
     }
+  }
+
+  private preflightHistory(items: readonly MutationInfo[], source: MutationSource): void {
+    const preview = new CommandRuntime(WorkbookModel.fromSnapshot(this.workbook.snapshot()), this.registry);
+    preview.setStructuralReferenceOwnersProvider((workbook) => buildStructuralReferenceIndex(workbook));
+    preview.applyHistory(items, source);
   }
 }

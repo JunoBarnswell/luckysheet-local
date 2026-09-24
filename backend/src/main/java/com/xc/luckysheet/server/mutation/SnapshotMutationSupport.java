@@ -10,6 +10,7 @@ import com.xc.luckysheet.server.service.ServiceException;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /** Strict JSON primitives shared by server-side snapshot reducers. */
@@ -149,9 +150,19 @@ final class SnapshotMutationSupport {
 
     static void clearCells(ObjectNode sheet, RangeRef range) {
         ObjectNode cells = cells(sheet);
-        for (int row = range.startRow(); row <= range.endRow(); row++) {
-            ObjectNode current = cellRow(cells, row, false);
-            if (current == null) continue;
+        List<String> emptyRows = new ArrayList<>();
+        for (java.util.Iterator<Map.Entry<String, JsonNode>> rows = cells.fields(); rows.hasNext();) {
+            Map.Entry<String, JsonNode> rowEntry = rows.next();
+            int row;
+            try {
+                row = Integer.parseInt(rowEntry.getKey());
+            } catch (NumberFormatException exception) {
+                throw ServiceException.validation("Cell row key is invalid");
+            }
+            if (row < 0 || row > MAX_ROW) throw ServiceException.validation("Cell row key is out of bounds");
+            if (row < range.startRow() || row > range.endRow()) continue;
+            if (!rowEntry.getValue().isObject()) throw ServiceException.validation("Cell row must be an object");
+            ObjectNode current = (ObjectNode) rowEntry.getValue();
             List<String> remove = new ArrayList<>();
             current.fieldNames().forEachRemaining(key -> {
                 try {
@@ -162,8 +173,9 @@ final class SnapshotMutationSupport {
                 }
             });
             remove.forEach(current::remove);
-            if (current.isEmpty()) cells.remove(Integer.toString(row));
+            if (current.isEmpty()) emptyRows.add(rowEntry.getKey());
         }
+        emptyRows.forEach(cells::remove);
     }
 
     static void removeHyperlinks(ObjectNode sheet, RangeRef range) {

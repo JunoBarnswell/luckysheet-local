@@ -3,6 +3,7 @@ import test from 'node:test';
 import {
   FormulaEngine,
   RangeIndex,
+  mapAstMovedReferences,
   formatFormula,
   formatCellAddress,
   isFormulaError,
@@ -12,6 +13,7 @@ import {
   offsetAst,
   type CellAddress,
   type FormulaValue,
+  type MoveRangeReferenceTransform,
 } from './index';
 
 test('lexer and parser produce a precedence-aware AST without executable code', () => {
@@ -50,18 +52,79 @@ test('AST formatter preserves explicit grouping and qualified sheet names', () =
   assert.equal(formatFormula(offsetAst(parseFormula('=A1+$B$1'), 2, 3)), '=D3+$B$1');
 });
 
-test('structural deletion invalidates references instead of clamping them', () => {
-  const engine = new FormulaEngine({ defaultSheetId: 'Sheet1' });
-  engine.setValue('A1', 10);
-  engine.setValue('A2', 20);
-  engine.setFormula('B1', '=A2+1');
-  const report = engine.remapStructure('Sheet1', { axis: 'row', at: 1, count: 1, op: 'delete' });
+test('structural reference index selects affected owners and retains invalid formulas', () => {
+  const index = new RangeIndex([{ id: 'Sheet1', name: 'Sheet1' }]);
+  const affected = address('Sheet1', 10, 3);
+  const unaffected = address('Sheet1', 11, 3);
+  const invalid = address('Sheet1', 20, 3);
+  index.set(affected, [{
+    kind: 'range',
+    start: address('Sheet1', 2, 0),
+    end: address('Sheet1', 5, 2),
+  }]);
+  index.set(unaffected, [{ kind: 'cell', address: address('Sheet1', 1, 0) }]);
+  index.set(invalid, [], true);
 
-  assert.equal(formatFormula(parseFormula('=#REF!')), '=#REF!');
-  assert.equal(engine.getCellResult('B1')?.formula, '=#REF!+1');
-  assertError(engine.getCellValue('B1'), '#REF!');
-  assert.equal(report.recalculated.some((address) => address.row === 0 && address.column === 1), true);
-  assert.deepEqual(engine.getDependencies('B1'), []);
+  assert.deepEqual(index.getStructuralDependents('Sheet1', 'row', 3), [affected]);
+  assert.deepEqual(index.getRangeDependents('Sheet1', { startRow: 4, endRow: 6, startColumn: 2, endColumn: 3 }), [affected]);
+  assert.throws(
+    () => index.getRangeDependents('Sheet1', { startRow: 6, endRow: 4, startColumn: 0, endColumn: 1 }),
+    /Reference range query bounds are invalid/,
+  );
+  assert.deepEqual(index.getInvalidFormulaOwners(), [invalid]);
+
+  index.set(invalid, [{ kind: 'cell', address: address('Sheet1', 4, 0) }]);
+  assert.deepEqual(index.getInvalidFormulaOwners(), []);
+});
+
+test('range moves fail closed when whole-axis references would become non-contiguous', () => {
+  const move: MoveRangeReferenceTransform = {
+    selection: { sheetId: 'sheet-1', startRow: 0, endRow: 1, startColumn: 0, endColumn: 0 },
+    rowDelta: 2,
+    columnDelta: 2,
+    ownerSheetId: 'sheet-1',
+    targetSheetId: 'sheet-1',
+    targetSheetName: 'Sheet1',
+    sheetOrder: [{ id: 'sheet-1', name: 'Sheet1' }],
+  };
+  assert.throws(() => mapAstMovedReferences(parseFormula('=SUM(A:A)'), move), /whole-column reference non-contiguous/);
+  assert.throws(() => mapAstMovedReferences(parseFormula('=SUM(1:1)'), move), /whole-row reference non-contiguous/);
+  assert.equal(formatFormula(mapAstMovedReferences(parseFormula('=SUM(A:A)'), { ...move, columnDelta: 0 })), '=SUM(A:A)');
+});
+
+test('FormulaEngine input-address range index follows value, formula, clear and reset lifecycle', () => {
+  const engine = new FormulaEngine({ defaultSheetId: 'Sheet1' });
+  const valueAddress = address('Sheet1', 4, 2);
+  const formulaAddress = address('Sheet1', 8, 5);
+  engine.setValue(valueAddress, 12);
+  engine.setFormula(formulaAddress, '=1+1');
+
+  const range = { sheetId: 'Sheet1', startRow: 4, endRow: 8, startColumn: 2, endColumn: 5 };
+  assert.deepEqual(engine.getInputAddressesInRange(range), [valueAddress, formulaAddress]);
+
+  const middleAddress = address('Sheet1', 6, 2);
+  engine.setValue(middleAddress, 24);
+  assert.deepEqual(engine.getInputAddressesInRange(range), [valueAddress, middleAddress, formulaAddress]);
+  engine.setFormula(valueAddress, '=2+2');
+  assert.deepEqual(engine.getInputAddressesInRange(range), [valueAddress, middleAddress, formulaAddress]);
+  engine.clearCell(valueAddress);
+  assert.deepEqual(engine.getInputAddressesInRange(range), [middleAddress, formulaAddress]);
+  engine.reset();
+  assert.deepEqual(engine.getInputAddressesInRange(range), []);
+});
+
+test('visibility changes enqueue SUBTOTAL and AGGREGATE formulas without dirtying ordinary formulas', () => {
+  const engine = new FormulaEngine({ defaultSheetId: 'Sheet1' });
+  const subtotal = address('Sheet1', 0, 0);
+  const aggregate = address('Sheet1', 1, 0);
+  engine.setDefinedNameModels([{ name: 'VisibleSubtotal', formula: '=SUBTOTAL(9,B1:B3)', scope: 'workbook' }]);
+  engine.setFormula(subtotal, '=VisibleSubtotal');
+  engine.setFormula(aggregate, '=AGGREGATE(9,5,B1:B3)');
+  engine.setFormula(address('Sheet1', 2, 0), '=SUM(B1:B3)');
+
+  engine.notifyVisibilityChanged();
+
+  assert.deepEqual(engine.getPendingRecalculationRoots(), [subtotal, aggregate]);
 });
 
 test('A1 addresses support zero-based engine coordinates and qualified sheets', () => {

@@ -15,6 +15,7 @@ export * from './formula-analysis';
 export * from './lexer';
 export * from './parser';
 export * from './range-index';
+export * from './reference-index';
 export * from './values';
 export * from './numeric';
 export * from './random';

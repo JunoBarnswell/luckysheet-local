@@ -13,6 +13,7 @@ import type {
   WorkbookModel,
   WorksheetModel,
   StructuralTransformParams,
+  StructuralTransformResult,
   DefinedNameModel,
   TableSheetDefinition,
   GanttSheetDefinition,
@@ -63,8 +64,8 @@ function snapshotCellRegion(
   return extracted;
 }
 
-function applyStructuralTransform(workbook: WorkbookModel, params: StructuralTransformParams): void {
-  StructuralTransform.apply(workbook, params);
+function applyStructuralTransform(context: CommandContext, params: StructuralTransformParams): StructuralTransformResult {
+  return StructuralTransform.apply(context.workbook, params, context.structuralReferenceOwners);
 }
 
 export * from './clipboard';
@@ -2166,7 +2167,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
     handler: (item, context) => {
       if (!isSheetAtCountMutation(item.params)) throw new Error('Invalid rows.inserted mutation payload');
       const params = item.params;
-      applyStructuralTransform(context.workbook, { kind: 'insert-rows', sheetId: params.sheetId, at: params.at, count: params.count });
+      return applyStructuralTransform(context, { kind: 'insert-rows', sheetId: params.sheetId, at: params.at, count: params.count });
     },
     metadata: {
       schema: { name: 'RowsInserted', validate: isSheetAtCountMutation },
@@ -2180,7 +2181,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
     handler: (item, context) => {
       if (!isSheetAtCountMutation(item.params)) throw new Error('Invalid rows.deleted mutation payload');
       const params = item.params;
-      applyStructuralTransform(context.workbook, { kind: 'delete-rows', sheetId: params.sheetId, at: params.at, count: params.count });
+      return applyStructuralTransform(context, { kind: 'delete-rows', sheetId: params.sheetId, at: params.at, count: params.count });
     },
     metadata: {
       schema: { name: 'RowsDeleted', validate: isSheetAtCountMutation },
@@ -2194,7 +2195,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
     handler: (item, context) => {
       if (!isSheetAtCountMutation(item.params)) throw new Error('Invalid columns.inserted mutation payload');
       const params = item.params;
-      applyStructuralTransform(context.workbook, { kind: 'insert-columns', sheetId: params.sheetId, at: params.at, count: params.count });
+      return applyStructuralTransform(context, { kind: 'insert-columns', sheetId: params.sheetId, at: params.at, count: params.count });
     },
     metadata: {
       schema: { name: 'ColumnsInserted', validate: isSheetAtCountMutation },
@@ -2208,7 +2209,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
     handler: (item, context) => {
       if (!isSheetAtCountMutation(item.params)) throw new Error('Invalid columns.deleted mutation payload');
       const params = item.params;
-      applyStructuralTransform(context.workbook, { kind: 'delete-columns', sheetId: params.sheetId, at: params.at, count: params.count });
+      return applyStructuralTransform(context, { kind: 'delete-columns', sheetId: params.sheetId, at: params.at, count: params.count });
     },
     metadata: {
       schema: { name: 'ColumnsDeleted', validate: isSheetAtCountMutation },
@@ -2507,7 +2508,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
             affectedRanges,
           },
         ],
-        apply: () => applyStructuralTransform(context.workbook, { kind: 'insert-rows', sheetId: params.sheetId, at: params.at, count: params.count }),
+        apply: () => applyStructuralTransform(context, { kind: 'insert-rows', sheetId: params.sheetId, at: params.at, count: params.count }),
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -2548,7 +2549,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
             affectedRanges: cellRange({ sheetId: params.sheetId, row: entry.row, column: entry.column }),
           })),
         ],
-        apply: () => applyStructuralTransform(context.workbook, { kind: 'delete-rows', sheetId: params.sheetId, at: params.at, count: params.count }),
+        apply: () => applyStructuralTransform(context, { kind: 'delete-rows', sheetId: params.sheetId, at: params.at, count: params.count }),
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -2580,7 +2581,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
             affectedRanges,
           },
         ],
-        apply: () => applyStructuralTransform(context.workbook, { kind: 'insert-columns', sheetId: params.sheetId, at: params.at, count: params.count }),
+        apply: () => applyStructuralTransform(context, { kind: 'insert-columns', sheetId: params.sheetId, at: params.at, count: params.count }),
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -2621,7 +2622,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
             affectedRanges: cellRange({ sheetId: params.sheetId, row: entry.row, column: entry.column }),
           })),
         ],
-        apply: () => applyStructuralTransform(context.workbook, { kind: 'delete-columns', sheetId: params.sheetId, at: params.at, count: params.count }),
+        apply: () => applyStructuralTransform(context, { kind: 'delete-columns', sheetId: params.sheetId, at: params.at, count: params.count }),
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },

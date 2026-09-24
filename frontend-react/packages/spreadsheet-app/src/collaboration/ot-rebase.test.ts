@@ -26,3 +26,93 @@ test('fails closed when a structural revision would move an unclassified mutatio
   }]);
   assert.throws(() => rebaseMutation(pending, committed), /Cannot rebase unknown mutation/);
 });
+
+test('classifies cut paste as structural and fails closed across a committed cut', () => {
+  const committed = classifyMutation('range.paste', { transfer: 'move', clearSource: true }, 's1', []);
+  const pending = classifyMutation('cell.set', { row: 9, column: 0 }, 's1', [{
+    sheetId: 's1', startRow: 9, endRow: 9, startColumn: 0, endColumn: 0,
+  }]);
+
+  assert.equal(committed.kind, 'move-range');
+  assert.throws(() => rebaseMutation(pending, committed), /STRUCTURAL_REBASE_CONFLICT/);
+});
+
+test('does not classify malformed paste payloads as plain cell writes', () => {
+  assert.equal(classifyMutation('range.paste', { transfer: 'copy' }, 's1', []).kind, 'unknown');
+  assert.equal(classifyMutation('range.paste', { transfer: 'copy', clearSource: false }, 's1', []).kind, 'cell-value');
+  assert.equal(classifyMutation('range.paste', {
+    transfer: 'copy', clearSource: false, sourceRange: undefined, sourceSnapshot: undefined,
+  }, 's1', []).kind, 'cell-value');
+});
+
+test('rebases every absolute coordinate in a pending paste snapshot', () => {
+  const pending = classifyMutation('range.paste', {
+    transfer: 'move',
+    clearSource: true,
+    sourceRange: { sheetId: 's1', startRow: 9, endRow: 9, startColumn: 2, endColumn: 2 },
+    targetOrigin: { row: 9, column: 2 },
+    snapshot: {
+      clearRanges: [{ sheetId: 's1', startRow: 9, endRow: 9, startColumn: 2, endColumn: 2 }],
+      cells: [{ row: 9, column: 2, value: { value: 'moved' } }],
+      notes: [{ key: '9:2' }],
+      hyperlinks: [{ key: '9:2' }],
+      commentCells: ['9:2'],
+      comments: [{ sheetId: 's1', row: 9, column: 2 }],
+      columnWidths: [{ column: 2, widthPx: 80 }],
+      validations: [{ formulaAnchor: { sheetId: 's1', row: 9, column: 2 }, ranges: [{ sheetId: 's1', startRow: 9, endRow: 9, startColumn: 2, endColumn: 2 }] }],
+    },
+  }, 's1', [{ sheetId: 's1', startRow: 9, endRow: 9, startColumn: 2, endColumn: 2 }]);
+  const rowInsert = classifyMutation('row.insert', { at: 5 }, 's1', []);
+  const columnInsert = classifyMutation('column.insert', { at: 0 }, 's1', []);
+
+  const afterRows = rebaseMutation(pending, rowInsert).rebased;
+  const { rebased } = rebaseMutation(afterRows, columnInsert);
+  const params = rebased.params as {
+    sourceRange: { startRow: number; startColumn: number };
+    targetOrigin: { row: number; column: number };
+    snapshot: {
+      cells: Array<{ row: number; column: number }>;
+      notes: Array<{ key: string }>;
+      hyperlinks: Array<{ key: string }>;
+      commentCells: string[];
+      comments: Array<{ row: number; column: number }>;
+      columnWidths: Array<{ column: number }>;
+      validations: Array<{ formulaAnchor: { row: number; column: number } }>;
+    };
+  };
+
+  assert.deepEqual(params.targetOrigin, { row: 10, column: 3 });
+  assert.deepEqual(params.sourceRange, { sheetId: 's1', startRow: 10, endRow: 10, startColumn: 3, endColumn: 3 });
+  assert.deepEqual(params.snapshot.cells[0], { row: 10, column: 3, value: { value: 'moved' } });
+  assert.equal(params.snapshot.notes[0]?.key, '10:3');
+  assert.equal(params.snapshot.hyperlinks[0]?.key, '10:3');
+  assert.equal(params.snapshot.commentCells[0], '10:3');
+  assert.deepEqual(params.snapshot.comments[0], { sheetId: 's1', row: 10, column: 3 });
+  assert.equal(params.snapshot.columnWidths[0]?.column, 3);
+  assert.deepEqual(params.snapshot.validations[0]?.formulaAnchor, { sheetId: 's1', row: 10, column: 3 });
+});
+
+test('rebases cross-sheet source snapshots in their own coordinate space', () => {
+  const pending = classifyMutation('range.paste', {
+    transfer: 'move',
+    clearSource: true,
+    sourceRange: { sheetId: 'source', startRow: 9, endRow: 9, startColumn: 2, endColumn: 2 },
+    targetOrigin: { row: 9, column: 2 },
+    snapshot: { cells: [{ row: 9, column: 2 }] },
+    sourceSnapshot: {
+      cells: [{ row: 9, column: 2 }],
+      notes: [{ key: '9:2' }],
+      comments: [{ sheetId: 'source', row: 9, column: 2 }],
+    },
+  }, 'target', [
+    { sheetId: 'target', startRow: 9, endRow: 9, startColumn: 2, endColumn: 2 },
+    { sheetId: 'source', startRow: 9, endRow: 9, startColumn: 2, endColumn: 2 },
+  ]);
+  const committed = classifyMutation('row.insert', { at: 5 }, 'source', []);
+  const { rebased } = rebaseMutation(pending, committed);
+  const sourceSnapshot = (rebased.params as { sourceSnapshot: { cells: Array<{ row: number; column: number }>; notes: Array<{ key: string }>; comments: Array<{ row: number; column: number }> } }).sourceSnapshot;
+
+  assert.deepEqual(sourceSnapshot.cells[0], { row: 10, column: 2 });
+  assert.equal(sourceSnapshot.notes[0]?.key, '10:2');
+  assert.deepEqual(sourceSnapshot.comments[0], { sheetId: 'source', row: 10, column: 2 });
+});
