@@ -688,7 +688,7 @@ class MutationDescriptorRegistryTest {
     void rowPermutationChecksProtectedMetadataAcrossEveryColumnItRemaps() throws Exception {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         var snapshot = mapper.readTree("""
-                {"sheets":[{"id":"sheet-1","rowCount":10,"columnCount":501,"cells":{},"review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}},"protectionRules":[
+                {"sheets":[{"id":"sheet-1","rowCount":10,"columnCount":2,"cells":{},"review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}},"protectionRules":[
                   {"id":"lock-outside-grid","scope":"range","range":{"sheetId":"sheet-1","startRow":0,"endRow":4,"startColumn":500,"endColumn":500},"locked":true,"allow":{}}
                 ]}]}
                 """);
@@ -1884,7 +1884,9 @@ class MutationDescriptorRegistryTest {
                 """));
         OperationMutation permutation = withSortContext(rawPermutation, range(0, 1, 0, 0), "worksheet", null, false, 8);
 
-        JsonNode current = registry.prepare(snapshot, permutation, WorkbookAclRole.EDITOR).descriptor().apply(snapshot, permutation);
+        var preparation = registry.prepare(snapshot, permutation, WorkbookAclRole.EDITOR);
+        assertEquals(8, preparation.affectedRanges().getFirst().endColumn());
+        JsonNode current = preparation.descriptor().apply(snapshot, permutation);
         JsonNode sheet = current.path("sheets").get(0);
         assertEquals("=A2", current.path("definedNames").path("RelativeOwner").asText());
         assertEquals("=A2", current.path("definedNameModels").get(0).path("formula").asText());

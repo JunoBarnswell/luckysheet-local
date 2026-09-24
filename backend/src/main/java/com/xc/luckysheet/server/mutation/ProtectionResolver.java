@@ -66,19 +66,18 @@ final class ProtectionResolver {
     }
 
     private static void assertCanonicalRange(ObjectNode sheet, RangeRef target) {
-        int rowCount = canonicalDimension(sheet, "rowCount");
-        int columnCount = canonicalDimension(sheet, "columnCount");
-        if (target.endRow() >= rowCount || target.endColumn() >= columnCount) {
+        assertCanonicalDimension(sheet, "rowCount");
+        assertCanonicalDimension(sheet, "columnCount");
+        if (target.endRow() > SnapshotMutationSupport.MAX_ROW || target.endColumn() > SnapshotMutationSupport.MAX_COLUMN) {
             throw ServiceException.validation("Protection range exceeds canonical worksheet bounds");
         }
     }
 
-    private static int canonicalDimension(ObjectNode sheet, String field) {
+    private static void assertCanonicalDimension(ObjectNode sheet, String field) {
         JsonNode value = sheet.get(field);
         if (value == null || !value.isIntegralNumber() || !value.canConvertToInt() || value.intValue() < 1) {
             throw ServiceException.validation("Protection requires canonical worksheet " + field);
         }
-        return value.intValue();
     }
 
     private static long countExplicitUnlockedCells(ObjectNode sheet, RangeRef target) {
