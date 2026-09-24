@@ -21,20 +21,27 @@ export interface NativeDocumentExportRequest {
 /** Export an OOXML document and generate its Compatibility Report. */
 export async function exportOoxmlDocument(request: NativeDocumentExportRequest): Promise<NativeDocumentExportResult> {
   if (request.artifact) await verifyNativeDocumentArtifact(request.artifact);
-  if (request.artifact
-    && request.artifact.nativeGraph.kind === 'opc'
-    && !request.artifact.nativeGraph.package.nativePivotGraph
-    && request.artifact.fileName === request.fileName
-    && request.artifact.sourceSnapshotHash === nativeSnapshotHash(request.snapshot)) {
+  const artifact = request.artifact;
+  const sourcePackage = artifact?.nativeGraph.kind === 'opc' ? artifact.nativeGraph.package : undefined;
+  if (artifact
+    && sourcePackage
+    && !sourcePackage.nativePivotGraph
+    && artifact.fileName === request.fileName
+    && artifact.sourceSnapshotHash === nativeSnapshotHash(request.snapshot)
+    && artifact.compatibility.exportLevel === request.options.compatibilityTarget
+    && artifact.compatibility.dateSystem === (request.options.dateSystem ?? sourcePackage.dateSystem)
+    && request.options.includeCachedValues !== false
+    && !(request.options.preserveMacros === false && hasMacroParts(sourcePackage))
+    && request.options.assetBytes === undefined
+    && request.options.limits === undefined) {
     return {
       taskId: `export-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      report: structuredClone(request.artifact.compatibility),
-      buffer: request.artifact.sourceBytes.slice(0),
+      report: structuredClone(artifact.compatibility),
+      buffer: artifact.sourceBytes.slice(0),
       fileName: request.fileName,
-      artifact: request.artifact,
+      artifact,
     };
   }
-  const sourcePackage = request.artifact?.nativeGraph.kind === 'opc' ? request.artifact.nativeGraph.package : undefined;
   const targetFormat = ooxmlTargetFormat(request.fileName, sourcePackage);
   if (sourcePackage && targetFormat && targetFormat.variant !== sourcePackage.format.variant && hasMacroParts(sourcePackage) && !macroVariant(targetFormat.variant)) {
     throw new NativeDocumentError({ code: 'NATIVE_DOCUMENT_UNSUPPORTED', message: `Save As ${targetFormat.variant} would discard the source macro project`, format: targetFormat, recovery: 'Choose a macro-enabled target or explicitly remove the macro project in a dedicated conversion workflow.' });
@@ -44,7 +51,7 @@ export async function exportOoxmlDocument(request: NativeDocumentExportRequest):
   // Report the package that was actually emitted. This prevents a deleted
   // native Pivot/Slicer/Timeline from being reported as preserved merely
   // because its source package contained the old opaque part.
-  const emittedPackage = loadOpcPackageGraph(buffer, {}, request.fileName).packageGraph;
+  const emittedPackage = loadOpcPackageGraph(buffer, request.options.limits, request.fileName).packageGraph;
   const emittedFileName = fileNameForFormat(request.fileName, emittedPackage.format.variant);
   const snapshotFeatureSet = new Set(scanSnapshotFeatures(request.snapshot));
   const packageFeatureSet = new Set(detectPackageFeatures(emittedPackage));

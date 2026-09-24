@@ -1353,6 +1353,70 @@ describe('exchange-excel-ooxml', () => {
     assert.equal(exported.report.issues.some((issue) => issue.feature === 'charts' && issue.preserved), true);
   });
 
+  it('honors explicit OOXML export options before reusing untouched source bytes', async () => {
+    const workbook = new WorkbookModel('wb-export-options', 'Export options');
+    const sheet = workbook.getSheet(workbook.primarySheetId);
+    sheet.cells.set(0, 0, { formula: '=1+1', value: 2 });
+    sheet.drawings.push({
+      id: 'image-drawing',
+      sheetId: sheet.id,
+      kind: 'image',
+      anchor: { kind: 'one-cell', row: 1, column: 1 },
+      transform: { x: 0, y: 0, width: 80, height: 40 },
+      zIndex: 0,
+      payloadId: 'image-payload',
+    });
+    sheet.drawingPayloads.set('image-payload', {
+      kind: 'image',
+      asset: { schema: 'AssetRef', assetId: 'asset-test', contentHash: 'a'.repeat(64), mimeType: 'image/png', byteLength: 2 },
+    });
+    const original = loadOpcPackageGraph(exportSnapshotToOoxmlBuffer(workbook.snapshot(), undefined, {
+      assetBytes: { 'asset-test': Uint8Array.from([1, 2]) },
+    }));
+    original.packageGraph.parts['xl/vbaProject.bin'] = Uint8Array.from([7, 8]);
+    const imported = await importOoxmlDocument({
+      fileName: 'export-options.xlsm',
+      buffer: zipOpcPartsBuffer(original.packageGraph.parts),
+      options: { compatibilityTarget: 'B', preserveMacros: true },
+    });
+
+    const exported = await exportOoxmlDocument({
+      snapshot: imported.snapshot,
+      artifact: imported.artifact,
+      fileName: 'export-options.xlsm',
+      options: {
+        compatibilityTarget: 'C',
+        dateSystem: '1904',
+        includeCachedValues: false,
+        preserveMacros: false,
+        assetBytes: { 'asset-test': Uint8Array.from([4, 5]) },
+      },
+    });
+    const output = loadOpcPackageGraph(exported.buffer);
+    assert.equal(output.files['xl/vbaProject.bin'], undefined);
+    assert.match(strFromU8(output.files['xl/workbook.xml']!), /date1904="1"/);
+    assert.equal(strFromU8(output.files['xl/worksheets/sheet1.xml']!).includes('<v>2</v>'), false);
+    assert.deepEqual([...output.files['xl/media/asset-test.png']!], [4, 5]);
+    assert.equal(exported.report.exportLevel, 'C');
+    assert.equal(exported.report.dateSystem, '1904');
+  });
+
+  it('applies caller resource limits to a regenerated OOXML package with an unchanged snapshot', async () => {
+    const workbook = new WorkbookModel('wb-export-limits', 'Export limits');
+    const buffer = exportSnapshotToOoxmlBuffer(workbook.snapshot());
+    const imported = await importOoxmlDocument({
+      fileName: 'export-limits.xlsx',
+      buffer,
+      options: { compatibilityTarget: 'B' },
+    });
+    await assert.rejects(() => exportOoxmlDocument({
+      snapshot: imported.snapshot,
+      artifact: imported.artifact,
+      fileName: 'export-limits.xlsx',
+      options: { compatibilityTarget: 'B', limits: { maxArchiveBytes: 1 } },
+    }), /archive exceeds 1 byte limit/);
+  });
+
   it('rejects oversized and unsafe ZIP entries before inflation', () => {
     const workbook = new WorkbookModel('wb-limit', 'Limit');
     const buffer = exportSnapshotToOoxmlBuffer(workbook.snapshot());
