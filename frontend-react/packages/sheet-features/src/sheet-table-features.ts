@@ -329,7 +329,8 @@ export function validateFilterModelOwnership(
   if (filter.sheetId !== sheetId || range.sheetId !== sheetId) throw new Error(`${label} must target its worksheet`);
   if (!rangesEqual(range, normalizeRangeRef(ownerRange))) throw new Error(`${label} range must equal its owner range`);
   for (const [key, column] of Object.entries(filter.columns)) {
-    if (Number(key) !== column.column || column.column < range.startColumn || column.column > range.endColumn) {
+    if (!Number.isSafeInteger(column.column) || key !== String(column.column)
+      || column.column < range.startColumn || column.column > range.endColumn) {
       throw new Error(`${label} column is outside its range`);
     }
   }
@@ -343,14 +344,16 @@ export function validateFilterOwnership(
 ): AutoFilterModel {
   const normalized = normalizeRangeRef(candidate.range);
   if (normalized.sheetId !== sheet.id || candidate.sheetId !== sheet.id) throw new Error('AutoFilter must target its worksheet');
+  let validated: AutoFilterModel;
   if (owner.kind === 'worksheet') {
+    validated = validateFilterModelOwnership(candidate, sheet.id, normalized, 'Worksheet AutoFilter');
     if (sheet.sheetTables.some((table) => table.sheetId === sheet.id && table.autoFilter && rangesOverlap(normalized, table.autoFilter.range))) {
       throw new Error('Worksheet AutoFilter cannot overlap a Table AutoFilter');
     }
   } else {
     const table = sheet.sheetTables.find((entry) => entry.id === owner.tableId && entry.sheetId === sheet.id);
     if (!table) throw new Error(`Sheet Table not found: ${owner.tableId}`);
-    validateFilterModelOwnership(candidate, sheet.id, table.range, 'Table AutoFilter');
+    validated = validateFilterModelOwnership(candidate, sheet.id, table.range, 'Table AutoFilter');
     if (sheet.autoFilter && rangesOverlap(normalized, sheet.autoFilter.range)) {
       throw new Error('Table AutoFilter cannot overlap a Worksheet AutoFilter');
     }
@@ -358,7 +361,7 @@ export function validateFilterOwnership(
       throw new Error('Table AutoFilter cannot overlap another Table AutoFilter');
     }
   }
-  return { ...structuredClone(candidate), range: normalized };
+  return validated;
 }
 
 export function tableFilterColumns(table: SheetTableModel): number[] {

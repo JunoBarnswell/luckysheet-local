@@ -40,6 +40,32 @@ test('canonical snapshots bound drawing source work', () => {
   assert.throws(() => assertCanonicalWorkbookSnapshot(snapshot), /rendering limit/);
 });
 
+test('canonical snapshots enforce worksheet AutoFilter identity and column bounds', () => {
+  const workbook = new WorkbookModel('unit-auto-filter-contract', 'AutoFilter contract');
+  const snapshot = workbook.snapshot();
+  const sheet = snapshot.sheets[0]!;
+  const range = { sheetId: sheet.id, startRow: 0, endRow: 2, startColumn: 0, endColumn: 1 };
+
+  sheet.autoFilter = { sheetId: 'other-sheet', range, columns: {} };
+  assert.throws(() => assertCanonicalWorkbookSnapshot(snapshot), /AutoFilter must target its worksheet/);
+
+  sheet.autoFilter = {
+    sheetId: sheet.id,
+    range,
+    columns: { 2: { column: 2, showButton: true, hiddenButton: false } },
+  };
+  assert.throws(() => assertCanonicalWorkbookSnapshot(snapshot), /AutoFilter column identity is invalid/);
+
+  const aliasedColumns = {} as NonNullable<typeof sheet.autoFilter>['columns'];
+  aliasedColumns[0] = { column: 0, showButton: true, hiddenButton: false };
+  Object.defineProperty(aliasedColumns, '00', {
+    value: { column: 0, showButton: true, hiddenButton: false },
+    enumerable: true,
+  });
+  sheet.autoFilter = { sheetId: sheet.id, range, columns: aliasedColumns };
+  assert.throws(() => assertCanonicalWorkbookSnapshot(snapshot), /AutoFilter column identity is invalid/);
+});
+
 test('CellMatrix keeps empty logical space sparse', () => {
   const matrix = new CellMatrix();
   matrix.set(100_000, 4, { value: 'tail' });

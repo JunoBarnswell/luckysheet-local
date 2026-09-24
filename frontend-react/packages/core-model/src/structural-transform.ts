@@ -1769,18 +1769,22 @@ function applyMoveRange(
     range.endColumn += colDelta;
   };
   const relocateAutoFilter = (filter: NonNullable<WorksheetModel['autoFilter']>): void => {
-    relocate(filter.range);
+    const rangeMoved = rangeContains(normalizedSource, filter.range);
+    if (rangeMoved) relocate(filter.range);
     if (filter.sortState) {
       relocate(filter.sortState.ref);
       for (const condition of filter.sortState.conditions) relocate(condition.ref);
     }
-    if (colDelta === 0) return;
+    if (!rangeMoved || colDelta === 0) return;
     const columns: typeof filter.columns = {};
     for (const [key, definition] of Object.entries(filter.columns)) {
       const column = Number(key);
       const shifted = column >= normalizedSource.startColumn && column <= normalizedSource.endColumn
         ? column + colDelta
         : column;
+      if (Object.prototype.hasOwnProperty.call(columns, String(shifted))) {
+        throw new Error('STRUCTURAL_PATCH_INVARIANT: move collides AutoFilter column criteria');
+      }
       columns[shifted] = { ...definition, column: shifted };
     }
     filter.columns = columns;
@@ -1969,6 +1973,23 @@ function validateMoveMetadataPreservation(workbook: WorkbookModel, sheet: Worksh
   };
   const validateAutoFilter = (filter: NonNullable<WorksheetModel['autoFilter']>, label: string): void => {
     validateRange(filter.range, `${label} range`);
+    const rangeMoves = rangeContains(source, filter.range);
+    const columnDelta = target.startColumn - source.startColumn;
+    const shiftedColumns = new Set<number>();
+    for (const [key, definition] of Object.entries(filter.columns)) {
+      const column = Number(key);
+      if (!Number.isSafeInteger(definition.column) || key !== String(definition.column)
+        || definition.column < filter.range.startColumn || definition.column > filter.range.endColumn
+        || definition.column !== column) {
+        throw new Error(`Cannot move range: ${label} has an invalid column identity`);
+      }
+      const shifted = rangeMoves && columnDelta !== 0
+        && column >= source.startColumn && column <= source.endColumn
+        ? column + columnDelta
+        : column;
+      if (shiftedColumns.has(shifted)) throw new Error(`Cannot move range: ${label} column criteria collide`);
+      shiftedColumns.add(shifted);
+    }
     if (!filter.sortState) return;
     validateRange(filter.sortState.ref, `${label} sort reference`);
     for (const condition of filter.sortState.conditions) validateRange(condition.ref, `${label} sort condition`);

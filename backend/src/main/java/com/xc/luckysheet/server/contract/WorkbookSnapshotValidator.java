@@ -357,7 +357,8 @@ public final class WorkbookSnapshotValidator {
             try {
                 int key = Integer.parseInt(entry.getKey());
                 JsonNode column = entry.getValue();
-                if (!column.isObject() || column.path("column").asInt(Integer.MIN_VALUE) != key
+                if (!Integer.toString(key).equals(entry.getKey())
+                        || !column.isObject() || column.path("column").asInt(Integer.MIN_VALUE) != key
                         || key < range.startColumn() || key > range.endColumn()
                         || !column.path("showButton").isBoolean() || !column.path("hiddenButton").isBoolean()) {
                     throw ServiceException.validation("AutoFilter column identity is invalid");

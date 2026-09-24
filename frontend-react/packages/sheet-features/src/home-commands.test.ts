@@ -245,6 +245,53 @@ test('filter toggle, clearCriteria and reapply preserve the filter contract', ()
   assert.equal(sheet.autoFilter, undefined);
 });
 
+test('worksheet AutoFilter rejects out-of-range and aliased column identities before mutation', () => {
+  const { workbook, runtime } = setup();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  const range = { sheetId: sheet.id, startRow: 0, endRow: 2, startColumn: 0, endColumn: 1 };
+  const column = { column: 2, showButton: true, hiddenButton: false };
+  const before = workbook.snapshot();
+
+  assert.throws(() => runtime.execute('sheet.autoFilter.set', {
+    sheetId: sheet.id,
+    autoFilter: { sheetId: sheet.id, range, columns: { 2: column } },
+  }), /column is outside its range/);
+  assert.deepEqual(workbook.snapshot(), before);
+  assert.equal(runtime.getHistoryDepth().undo, 0);
+
+  const aliasedColumns = {} as NonNullable<typeof sheet.autoFilter>['columns'];
+  aliasedColumns[0] = { column: 0, showButton: true, hiddenButton: false };
+  Object.defineProperty(aliasedColumns, '00', {
+    value: { column: 0, showButton: true, hiddenButton: false },
+    enumerable: true,
+  });
+  assert.throws(() => runtime.execute('sheet.autoFilter.set', {
+    sheetId: sheet.id,
+    autoFilter: { sheetId: sheet.id, range, columns: aliasedColumns },
+  }), /column is outside its range/);
+  assert.deepEqual(workbook.snapshot(), before);
+  assert.equal(runtime.getHistoryDepth().undo, 0);
+});
+
+test('range move fails before changing cells when filter column ownership is malformed', () => {
+  const { workbook, runtime } = setup();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  const filterRange = { sheetId: sheet.id, startRow: 0, endRow: 2, startColumn: 0, endColumn: 0 };
+  const columns = {} as NonNullable<typeof sheet.autoFilter>['columns'];
+  columns[2] = { column: 2, showButton: true, hiddenButton: false };
+  sheet.autoFilter = { sheetId: sheet.id, range: filterRange, columns };
+  sheet.cells.set(0, 2, { value: 'source' });
+  const before = workbook.snapshot();
+
+  assert.throws(() => runtime.execute('sheet.range.move', {
+    sheetId: sheet.id,
+    sourceRange: { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 2, endColumn: 2 },
+    targetOrigin: { row: 1, column: 3 },
+  }), /filter has an invalid column identity/);
+  assert.deepEqual(workbook.snapshot(), before);
+  assert.equal(runtime.getHistoryDepth().undo, 0);
+});
+
 test('replace all is one history action and restores every cell', () => {
   const { workbook, runtime } = setup();
   const sheet = workbook.getSheet(workbook.primarySheetId);

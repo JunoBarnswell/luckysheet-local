@@ -319,9 +319,14 @@ export function assertCanonicalWorkbookSnapshot(snapshot: WorkbookSnapshot): Wor
       }
     }
     if (sheet.autoFilter) {
-      if (sheet.autoFilter.range.sheetId !== sheet.id) throw new Error('AutoFilter range must target its worksheet');
+      if (sheet.autoFilter.sheetId !== sheet.id || sheet.autoFilter.range.sheetId !== sheet.id) {
+        throw new Error('AutoFilter must target its worksheet');
+      }
       for (const [key, column] of Object.entries(sheet.autoFilter.columns)) {
-        if (!Number.isSafeInteger(Number(key)) || column.column !== Number(key)) throw new Error('AutoFilter column identity is invalid');
+        if (!Number.isSafeInteger(column.column) || key !== String(column.column)
+          || column.column < sheet.autoFilter.range.startColumn || column.column > sheet.autoFilter.range.endColumn) {
+          throw new Error('AutoFilter column identity is invalid');
+        }
       }
     }
     const tableFilters = (sheet.sheetTables ?? []).filter((table) => Boolean(table.autoFilter));
@@ -331,7 +336,7 @@ export function assertCanonicalWorkbookSnapshot(snapshot: WorkbookSnapshot): Wor
         throw new Error('Table AutoFilter must equal its Table range');
       }
       for (const [key, column] of Object.entries(filter.columns)) {
-        if (!Number.isSafeInteger(Number(key)) || column.column !== Number(key)
+        if (!Number.isSafeInteger(column.column) || key !== String(column.column)
           || column.column < filter.range.startColumn || column.column > filter.range.endColumn) {
           throw new Error('Table AutoFilter column identity is invalid');
         }

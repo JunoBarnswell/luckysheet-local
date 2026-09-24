@@ -61,6 +61,23 @@ class WorkbookSnapshotValidatorTest {
         assertEquals("VALIDATION_ERROR", error.code());
     }
 
+    @Test
+    void rejectsAutoFilterColumnKeysWithNumericAliases() {
+        ObjectNode snapshot = snapshot();
+        ObjectNode filter = ((ObjectNode) snapshot.path("sheets").get(0)).putObject("autoFilter");
+        filter.put("sheetId", "sheet-1");
+        filter.set("range", mapper.createObjectNode().put("sheetId", "sheet-1")
+                .put("startRow", 0).put("endRow", 4).put("startColumn", 0).put("endColumn", 2));
+        ObjectNode columns = filter.putObject("columns");
+        columns.putObject("1").put("column", 1).put("showButton", true).put("hiddenButton", false);
+        columns.putObject("01").put("column", 1).put("showButton", true).put("hiddenButton", false);
+
+        ServiceException error = assertThrows(ServiceException.class,
+                () -> WorkbookSnapshotValidator.requireCanonical(snapshot, "book-1"));
+
+        assertEquals("VALIDATION_ERROR", error.code());
+    }
+
     private ObjectNode snapshot() {
         ObjectNode snapshot = mapper.createObjectNode();
         snapshot.put("schema", GeneratedWorkbookContract.SNAPSHOT_SCHEMA).put("version", GeneratedWorkbookContract.SNAPSHOT_VERSION)
