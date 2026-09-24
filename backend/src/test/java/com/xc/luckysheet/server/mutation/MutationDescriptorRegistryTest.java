@@ -1284,6 +1284,93 @@ class MutationDescriptorRegistryTest {
     }
 
     @Test
+    void structuralAxisRewriteCoversPersistedFormulaOwnersAndRejectsRemovedTemplateAnchors() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        JsonNode snapshot = mapper.readTree("""
+                {"dataModel":{"sources":[],"tables":[],"relationships":[],"views":[
+                  {"id":"formula-view","name":"Formula View","tableId":"source-table","fields":[
+                    {"fieldId":"view-calc","caption":"View Calc","formula":"=Sheet1!A1"}]}]},
+                 "definedNames":{},"definedNameModels":[],"printDocuments":[],
+                 "cellStyleTemplates":[{"id":"formula-template","name":"Formula Template","style":{},
+                   "dataValidation":{"type":"custom","formulaAnchor":{"sheetId":"sheet-1","row":0,"column":0},
+                     "formula1":"=A1","formula2":"=B1","listSource":{"kind":"formula","formula":"=C1"}}}],
+                 "sheets":[{"id":"sheet-1","name":"Sheet1","rowCount":5,"columnCount":5,"cells":{},
+                   "pane":{"kind":"none"},"defaultRowHeightPx":20,"defaultColumnWidthPx":64,
+                   "review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}},
+                   "merges":[],"hiddenRows":[],"hiddenColumns":[],"rowHeightsPx":{},"columnWidthsPx":{},
+                   "drawings":[],"drawingPayloads":{"shape":{"kind":"shape","propertyFormula":"=A1"}},
+                   "tableSheet":{"viewId":"formula-view","columns":[{"fieldId":"table-calc","caption":"Table Calc","formula":"=A1"}],"grouping":[]},
+                   "spillRanges":[],"sheetTables":[],"conditionalFormats":[],"dataValidations":[],
+                   "protectionRules":[],"outline":{"groups":[]},"sparklines":[],"pivots":[],"dataRegions":[],"hyperlinks":[]}]}
+                """);
+        OperationMutation insert = new OperationMutation("rows.inserted", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","at":0,"count":1}
+                """));
+
+        JsonNode shifted = registry.applyPublicMutations(snapshot, List.of(insert));
+        JsonNode sheet = shifted.path("sheets").get(0);
+        JsonNode validation = shifted.path("cellStyleTemplates").get(0).path("dataValidation");
+        assertEquals("=A2", sheet.path("tableSheet").path("columns").get(0).path("formula").asText());
+        assertEquals("=A2", sheet.path("drawingPayloads").path("shape").path("propertyFormula").asText());
+        assertEquals("=Sheet1!A2", shifted.path("dataModel").path("views").get(0).path("fields").get(0).path("formula").asText());
+        assertEquals(1, validation.path("formulaAnchor").path("row").asInt());
+        assertEquals("=A2", validation.path("formula1").asText());
+        assertEquals("=B2", validation.path("formula2").asText());
+        assertEquals("=C2", validation.path("listSource").path("formula").asText());
+
+        OperationMutation cellShift = new OperationMutation("cells.inserted", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":1,"endRow":1,"startColumn":0,"endColumn":0},
+                 "affectedBand":{"sheetId":"sheet-1","startRow":1,"endRow":5,"startColumn":0,"endColumn":0},"operation":"insert","axis":"row"}
+                """));
+        JsonNode cellShifted = registry.applyPublicMutations(shifted, List.of(cellShift));
+        JsonNode shiftedSheet = cellShifted.path("sheets").get(0);
+        JsonNode shiftedValidation = cellShifted.path("cellStyleTemplates").get(0).path("dataValidation");
+        assertEquals("=A3", shiftedSheet.path("tableSheet").path("columns").get(0).path("formula").asText());
+        assertEquals("=A3", shiftedSheet.path("drawingPayloads").path("shape").path("propertyFormula").asText());
+        assertEquals("=Sheet1!A3", cellShifted.path("dataModel").path("views").get(0).path("fields").get(0).path("formula").asText());
+        assertEquals(2, shiftedValidation.path("formulaAnchor").path("row").asInt());
+        assertEquals("=A3", shiftedValidation.path("formula1").asText());
+
+        OperationMutation move = new OperationMutation("range.move", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","sourceRange":{"sheetId":"sheet-1","startRow":2,"endRow":2,"startColumn":0,"endColumn":0},"targetOrigin":{"row":3,"column":1}}
+                """));
+        JsonNode moved = registry.applyPublicMutations(cellShifted, List.of(move));
+        JsonNode movedSheet = moved.path("sheets").get(0);
+        JsonNode movedValidation = moved.path("cellStyleTemplates").get(0).path("dataValidation");
+        assertEquals("=B4", movedSheet.path("tableSheet").path("columns").get(0).path("formula").asText());
+        assertEquals("=B4", movedSheet.path("drawingPayloads").path("shape").path("propertyFormula").asText());
+        assertEquals("=Sheet1!B4", moved.path("dataModel").path("views").get(0).path("fields").get(0).path("formula").asText());
+        assertEquals(3, movedValidation.path("formulaAnchor").path("row").asInt());
+        assertEquals(1, movedValidation.path("formulaAnchor").path("column").asInt());
+        assertEquals("=B4", movedValidation.path("formula1").asText());
+        assertEquals("=B2", movedValidation.path("formula2").asText());
+        assertEquals("=C2", movedValidation.path("listSource").path("formula").asText());
+
+        ObjectNode anchoredSnapshot = (ObjectNode) snapshot.deepCopy();
+        OperationMutation deleteAnchor = new OperationMutation("rows.deleted", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","at":0,"count":1}
+                """));
+        JsonNode before = anchoredSnapshot.deepCopy();
+        ServiceException rejected = assertThrows(ServiceException.class,
+                () -> registry.applyPublicMutations(anchoredSnapshot, List.of(deleteAnchor)));
+        assertEquals("VALIDATION_ERROR", rejected.code());
+        assertEquals(before, anchoredSnapshot);
+
+        ObjectNode outOfBoundsAnchor = (ObjectNode) snapshot.deepCopy();
+        ((ObjectNode) outOfBoundsAnchor.path("cellStyleTemplates").get(0).path("dataValidation").path("formulaAnchor"))
+                .put("row", 1_048_576);
+        ServiceException invalidCoordinate = assertThrows(ServiceException.class,
+                () -> registry.applyPublicMutations(outOfBoundsAnchor, List.of(insert)));
+        assertEquals("VALIDATION_ERROR", invalidCoordinate.code());
+
+        ObjectNode nullAnchor = (ObjectNode) snapshot.deepCopy();
+        ((ObjectNode) nullAnchor.path("cellStyleTemplates").get(0).path("dataValidation")).putNull("formulaAnchor");
+        ServiceException invalidNull = assertThrows(ServiceException.class,
+                () -> registry.applyPublicMutations(nullAnchor, List.of(insert)));
+        assertEquals("VALIDATION_ERROR", invalidNull.code());
+    }
+
+    @Test
     void pivotChartCreateIsNotAWorkbookMutation() {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         ServiceException error = assertThrows(ServiceException.class, () -> registry.require("pivot.chart.create", false));

@@ -1,4 +1,4 @@
-import type { CellData, RangeRef, Row, Column } from './index';
+import type { CellAddress, CellData, RangeRef, Row, Column } from './index';
 import type { CellHyperlink, DrawingObject, StructuralTransformParams, SheetTableModel, SpillRange, ProtectionRule, OutlineGroup, CellShiftSpec } from './domain';
 import type { WorkbookTableModel } from './data-model';
 import type { DataSourceManifest } from './data-source';
@@ -6,6 +6,8 @@ import type { PrintDocumentSnapshot } from './workbook-state';
 import { WorkbookModel, WorksheetModel, cellKey, hasFormulaGroupMetadata } from './index';
 import {
   formatFormula,
+  MAX_COLUMN_INDEX,
+  MAX_ROW_INDEX,
   mapAstMovedReferences,
   mapAstStructuralReferences,
   parseFormula,
@@ -232,6 +234,14 @@ function validateDataRegionAxisPreservation(
     }
   }
 }
+
+interface StagedStructuralFormulaChange {
+  readonly validate: () => void;
+  readonly apply: () => void;
+}
+
+// Workbook-level formulas have no worksheet-relative origin unless they persist an explicit anchor.
+const UNANCHORED_WORKBOOK_FORMULA_OWNER = '';
 
 function shiftDataRegionAxis(
   workbook: WorkbookModel,
@@ -928,7 +938,7 @@ function rewriteReferencesForMovedRegion(
   columnDelta: number,
   referenceOwners: StructuralReferenceOwnerIndex,
 ): MovedFormulaRewritePlan {
-  const plan: MovedFormulaRewritePlan = { cells: [], names: [], rules: [], hyperlinks: [] };
+  const plan: MovedFormulaRewritePlan = { cells: [], names: [], rules: [], hyperlinks: [], participantChanges: [] };
   const sheetOrder = workbook.sheetOrder.map((id) => ({ id, name: workbook.getSheet(id).name }));
   const transformMovedFormula = (formula: string, ownerSheetId: string): string => transformFormula(formula, (ast) => mapAstMovedReferences(ast, {
     selection,
@@ -1029,6 +1039,14 @@ function rewriteReferencesForMovedRegion(
     }
     if (formula !== entry.formula || anchor !== entry.anchor) plan.names.push({ entry, formula, anchor });
   }
+  plan.participantChanges = preflightWorkbookFormulaOwners(
+    workbook,
+    targetSheet,
+    transformMovedFormula,
+    (anchor) => insideCell(selection, anchor.row, anchor.column)
+      ? { ...anchor, row: anchor.row + rowDelta, column: anchor.column + columnDelta }
+      : anchor,
+  );
   return plan;
 }
 
@@ -1062,9 +1080,11 @@ interface MovedFormulaRewritePlan {
   }>;
   rules: Array<{ rule: MoveFormulaRule; field: MoveRuleFormulaField; formula: string }>;
   hyperlinks: Array<{ hyperlink: CellHyperlink; target: CellHyperlink['target'] }>;
+  participantChanges: StagedStructuralFormulaChange[];
 }
 
 function applyMovedFormulaRewritePlan(workbook: WorkbookModel, plan: MovedFormulaRewritePlan): StructuralReferenceOwnerAddress[] {
+  applyStagedStructuralFormulaChanges(plan.participantChanges);
   const rewrittenOwners: StructuralReferenceOwnerAddress[] = [];
   for (const change of plan.cells) {
     const sheet = workbook.getSheet(change.sheetId);
@@ -1622,6 +1642,7 @@ interface FormulaRewritePlan {
     formula: string;
     anchor?: WorkbookModel['definedNameModels'][number]['anchor'];
   }>;
+  readonly participantChanges: StagedStructuralFormulaChange[];
 }
 
 function preflightFormulaRewrite(
@@ -1631,8 +1652,16 @@ function preflightFormulaRewrite(
   referenceOwners: StructuralReferenceOwnerIndex,
   cellShift?: CellShiftReferenceTransform,
 ): FormulaRewritePlan {
-  const plan: FormulaRewritePlan = { cells: [], names: [] };
+  const plan: FormulaRewritePlan = { cells: [], names: [], participantChanges: [] };
   const sheetOrder = workbook.sheetOrder.map((id) => ({ id, name: workbook.getSheet(id).name }));
+  const mapFormula = (formula: string, ownerSheetId: string): string => transformFormula(formula, (ast) => mapAstStructuralReferences(ast, {
+    shift,
+    cellShift,
+    ownerSheetId,
+    targetSheetId: targetSheet.id,
+    targetSheetName: targetSheet.name,
+    sheetOrder,
+  }));
   const owners = new Map<string, StructuralReferenceOwnerAddress>();
   for (const owner of referenceOwners.getStructuralDependents(targetSheet.id, shift.axis, shift.at)) {
     owners.set(structuralOwnerKey(owner), owner);
@@ -1646,17 +1675,9 @@ function preflightFormulaRewrite(
     if (!cell) {
       throw new Error(`STRUCTURAL_REFERENCE_INDEX_INVARIANT: formula reference owner ${owner.sheetId}!${owner.row}:${owner.column} is missing from the workbook`);
     }
-    const transformReferences = (ast: ReturnType<typeof parseFormula>) => mapAstStructuralReferences(ast, {
-      shift,
-      cellShift,
-      ownerSheetId: sheet.id,
-      targetSheetId: targetSheet.id,
-      targetSheetName: targetSheet.name,
-      sheetOrder,
-    });
-    const formula = cell.formula === undefined ? undefined : transformFormula(cell.formula, transformReferences);
+    const formula = cell.formula === undefined ? undefined : mapFormula(cell.formula, sheet.id);
     const sourceFormula = cell.formulaMetadata?.sourceFormula !== undefined
-      ? transformFormula(cell.formulaMetadata.sourceFormula, transformReferences)
+      ? mapFormula(cell.formulaMetadata.sourceFormula, sheet.id)
       : undefined;
     const formulaChanged = formula !== undefined && formula !== cell.formula;
     const sourceFormulaChanged = sourceFormula !== undefined && sourceFormula !== cell.formulaMetadata?.sourceFormula;
@@ -1665,7 +1686,7 @@ function preflightFormulaRewrite(
       throw new Error(`UNSUPPORTED_STRUCTURAL_REFERENCE: formula group at ${sheet.id}!${owner.row}:${owner.column} requires an explicit formula-group transform`);
     }
     const barcode = cell.presentation?.kind === 'barcode' && cell.presentation.source.kind === 'formula'
-      ? transformFormula(cell.presentation.source.formula, transformReferences)
+      ? mapFormula(cell.presentation.source.formula, sheet.id)
       : undefined;
     const barcodeFormulaChanged = barcode !== undefined
       && cell.presentation?.kind === 'barcode'
@@ -1699,17 +1720,118 @@ function preflightFormulaRewrite(
           : { ...anchor, column: shifted };
       }
     }
-    const formula = transformFormula(entry.formula, (ast) => mapAstStructuralReferences(ast, {
-      shift,
-      cellShift,
-      ownerSheetId,
-      targetSheetId: targetSheet.id,
-      targetSheetName: targetSheet.name,
-      sheetOrder,
-    }));
+    const formula = mapFormula(entry.formula, ownerSheetId);
     if (formula !== entry.formula || anchor !== entry.anchor) plan.names.push({ entry, formula, anchor });
   }
+  const mapAddress = (address: CellAddress): CellAddress | null => {
+    if (address.sheetId !== targetSheet.id) return address;
+    if (cellShift) {
+      const moved = mapCellShiftCoordinateForOwner(cellShift, address.row, address.column);
+      if (!moved) return null;
+      return moved.row === address.row && moved.column === address.column ? address : { ...address, ...moved };
+    }
+    const position = shift.axis === 'row' ? address.row : address.column;
+    const shifted = shiftIndex(position, shift.at, shift.count, shift.op === 'insert' ? 1 : -1);
+    if (shifted === null) return null;
+    if (shifted === position) return address;
+    return shift.axis === 'row' ? { ...address, row: shifted } : { ...address, column: shifted };
+  };
+  plan.participantChanges.push(...preflightWorkbookFormulaOwners(workbook, targetSheet, mapFormula, mapAddress));
   return plan;
+}
+
+/** Formula-bearing workbook/sheet owners outside the cell, rule and name indexes. */
+function preflightWorkbookFormulaOwners(
+  workbook: WorkbookModel,
+  targetSheet: WorksheetModel,
+  mapFormula: (formula: string, ownerSheetId: string) => string,
+  mapAddress: (address: CellAddress) => CellAddress | null,
+): StagedStructuralFormulaChange[] {
+  const changes: StagedStructuralFormulaChange[] = [];
+  const sheetIds = new Set(workbook.sheetOrder);
+  const stage = (
+    participant: string,
+    read: () => string | undefined,
+    write: (formula: string) => void,
+    ownerSheetId: string,
+  ): void => {
+    const before = read();
+    if (before === undefined || before.length === 0) return;
+    const after = mapFormula(before, ownerSheetId);
+    if (after === before) return;
+    changes.push({
+      validate: () => {
+        if (read() !== before) throw new Error(`STRUCTURAL_PATCH_INVARIANT: ${participant} changed during formula preflight`);
+      },
+      apply: () => write(after),
+    });
+  };
+  const stageAnchor = (
+    participant: string,
+    read: () => CellAddress | undefined,
+    write: (address: CellAddress) => void,
+  ): void => {
+    const before = read();
+    if (!before || before.sheetId !== targetSheet.id) return;
+    const after = mapAddress(before);
+    if (!after) throw new Error(`Structural mutation removes ${participant} formula anchor`);
+    if (after === before) return;
+    changes.push({
+      validate: () => {
+        if (read() !== before) throw new Error(`STRUCTURAL_PATCH_INVARIANT: ${participant} anchor changed during formula preflight`);
+      },
+      apply: () => write(after),
+    });
+  };
+
+  for (const sheet of workbook.getSheets()) {
+    for (const column of sheet.tableSheet?.columns ?? []) {
+      stage(`table-sheet:${sheet.id}.${column.fieldId}`, () => column.formula, (formula) => { column.formula = formula; }, sheet.id);
+    }
+    for (const [payloadId, payload] of sheet.drawingPayloads) {
+      if (payload.kind !== 'shape') continue;
+      stage(`drawing:${payloadId}.propertyFormula`, () => payload.propertyFormula, (formula) => { payload.propertyFormula = formula; }, sheet.id);
+    }
+  }
+  for (const view of workbook.dataModel.views.values()) {
+    for (const field of view.fields) {
+      stage(`data-view:${view.id}.${field.fieldId}`, () => field.formula, (formula) => { field.formula = formula; }, UNANCHORED_WORKBOOK_FORMULA_OWNER);
+    }
+  }
+  for (const template of workbook.cellStyleTemplates.values()) {
+    const validation = template.dataValidation;
+    if (!validation) continue;
+    const formulaAnchor: unknown = validation.formulaAnchor;
+    if (formulaAnchor !== undefined) {
+      if (formulaAnchor === null || typeof formulaAnchor !== 'object' || Array.isArray(formulaAnchor)) {
+        throw new Error(`STRUCTURAL_REFERENCE_OWNER_INVALID: cell-style-template:${template.id} formula anchor is invalid`);
+      }
+      const anchor = formulaAnchor as CellAddress;
+      if (!sheetIds.has(anchor.sheetId)
+        || !Number.isSafeInteger(anchor.row) || anchor.row < 0 || anchor.row > MAX_ROW_INDEX
+        || !Number.isSafeInteger(anchor.column) || anchor.column < 0 || anchor.column > MAX_COLUMN_INDEX) {
+        throw new Error(`STRUCTURAL_REFERENCE_OWNER_INVALID: cell-style-template:${template.id} formula anchor is invalid`);
+      }
+    }
+    stageAnchor(`cell-style-template:${template.id}`, () => validation.formulaAnchor, (address) => { validation.formulaAnchor = address; });
+    const formulaOwnerSheetId = validation.formulaAnchor?.sheetId ?? UNANCHORED_WORKBOOK_FORMULA_OWNER;
+    if (validation.formula1 && (validation.formula1.trim().startsWith('=') || validation.type === 'custom')) {
+      stage(`cell-style-template:${template.id}.formula1`, () => validation.formula1, (formula) => { validation.formula1 = formula; }, formulaOwnerSheetId);
+    }
+    if (validation.formula2 && (validation.formula2.trim().startsWith('=') || validation.type === 'custom')) {
+      stage(`cell-style-template:${template.id}.formula2`, () => validation.formula2, (formula) => { validation.formula2 = formula; }, formulaOwnerSheetId);
+    }
+    if (validation.listSource?.kind === 'formula') {
+      const listSource = validation.listSource;
+      stage(`cell-style-template:${template.id}.listSource`, () => listSource.formula, (formula) => { listSource.formula = formula; }, formulaOwnerSheetId);
+    }
+  }
+  return changes;
+}
+
+function applyStagedStructuralFormulaChanges(changes: readonly StagedStructuralFormulaChange[]): void {
+  for (const change of changes) change.validate();
+  for (const change of changes) change.apply();
 }
 
 function structuralOwnerKey(owner: StructuralReferenceOwnerAddress): string {
@@ -1749,6 +1871,7 @@ function applyFormulaRewritePlan(
   plan: FormulaRewritePlan,
   cellShiftPlan?: CellShiftPlan,
 ): StructuralReferenceOwnerAddress[] {
+  applyStagedStructuralFormulaChanges(plan.participantChanges);
   const rewrittenOwners: StructuralReferenceOwnerAddress[] = [];
   for (const change of plan.cells) {
     const sheet = workbook.getSheet(change.sheetId);

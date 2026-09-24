@@ -1,8 +1,8 @@
 import type { FormulaAst, ParsedCellReference } from './ast';
 import { formulaSheetReferenceIndex, sameFormulaSheetName } from './sheet-reference';
 
-const MAX_ROW_INDEX = 1_048_575;
-const MAX_COLUMN_INDEX = 16_383;
+export const MAX_ROW_INDEX = 1_048_575;
+export const MAX_COLUMN_INDEX = 16_383;
 
 export interface StructuralShift {
   axis: 'row' | 'column';

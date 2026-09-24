@@ -13,6 +13,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.BiFunction;
 import java.util.function.Function;
 
 /**
@@ -471,6 +472,9 @@ final class StructuralSnapshotReducer {
             FormulaReferenceTransformer.SheetIdentity owner = definedNameFormulaOwner(definedNameOwners, name);
             name.put("formula", FormulaReferenceTransformer.remapMovedRegion(name.path("formula").asText(), owner, targetIdentity, selected, rowDelta, columnDelta, sheetOrder));
         }
+        rewritePersistedFormulaOwners(root, targetIdentity,
+                (formula, owner) -> FormulaReferenceTransformer.remapMovedRegion(formula, owner, targetIdentity, selected, rowDelta, columnDelta, sheetOrder),
+                anchor -> moveTemplateFormulaAnchor(anchor, targetIdentity.id(), source, rowDelta, columnDelta));
     }
 
     private static void shiftCellBandAnchors(ObjectNode sheet, RangeRef selection, RangeRef band, String axis, String operation, int count) {
@@ -1642,6 +1646,9 @@ final class StructuralSnapshotReducer {
             String rewritten = FormulaReferenceTransformer.remapAxis(name.path("formula").asText(), owner, target, axis, at, count, direction, sheetOrder);
             name.put("formula", rewritten);
         }
+        rewritePersistedFormulaOwners(root, target,
+                (formula, owner) -> FormulaReferenceTransformer.remapAxis(formula, owner, target, axis, at, count, direction, sheetOrder),
+                anchor -> shiftTemplateFormulaAnchor(anchor, target.id(), axis, at, count, direction));
     }
 
     private static ArrayNode workbookTables(ObjectNode root) {
@@ -1878,6 +1885,198 @@ final class StructuralSnapshotReducer {
             name.put("formula", FormulaReferenceTransformer.remapCellShift(
                     name.path("formula").asText(), owner, target, selected, shiftAxis, direction, sheetOrder));
         }
+        rewritePersistedFormulaOwners(root, target,
+                (formula, owner) -> FormulaReferenceTransformer.remapCellShift(formula, owner, target, selected, shiftAxis, direction, sheetOrder),
+                anchor -> shiftTemplateFormulaAnchor(anchor, target.id(), selected, shiftAxis, direction));
+    }
+
+    private static void rewritePersistedFormulaOwners(
+            ObjectNode root,
+            FormulaReferenceTransformer.SheetIdentity target,
+            BiFunction<String, FormulaReferenceTransformer.SheetIdentity, String> formulaMapper,
+            Function<ObjectNode, ObjectNode> anchorMapper
+    ) {
+        // Global formulas only have relative-reference ownership when a persisted anchor supplies it.
+        String workbookOwnerId = "__workbook_formula_owner__";
+        while (target.id().equals(workbookOwnerId)) workbookOwnerId += "_";
+        FormulaReferenceTransformer.SheetIdentity workbookOwner = new FormulaReferenceTransformer.SheetIdentity(workbookOwnerId, workbookOwnerId);
+        for (JsonNode raw : SnapshotMutationSupport.sheets(root)) {
+            ObjectNode owner = requireObject(raw, "Sheet");
+            FormulaReferenceTransformer.SheetIdentity ownerIdentity = identity(owner);
+            JsonNode tableSheetRaw = owner.get("tableSheet");
+            if (tableSheetRaw != null && !tableSheetRaw.isNull()) {
+                ObjectNode tableSheet = requireObject(tableSheetRaw, "TableSheet definition");
+                for (JsonNode columnRaw : SnapshotMutationSupport.requiredArray(tableSheet, "columns")) {
+                    ObjectNode column = requireObject(columnRaw, "TableSheet column");
+                    rewriteOptionalFormula(column, "formula", ownerIdentity, formulaMapper,
+                            "table-sheet:" + ownerIdentity.id() + "." + column.path("fieldId").asText());
+                }
+            }
+            JsonNode payloadsRaw = owner.get("drawingPayloads");
+            if (payloadsRaw != null && !payloadsRaw.isNull()) {
+                if (!payloadsRaw.isObject()) throw ServiceException.validation("drawingPayloads must be an object");
+                ObjectNode payloads = (ObjectNode) payloadsRaw;
+                payloads.fields().forEachRemaining(entry -> {
+                    if (!"shape".equals(entry.getValue().path("kind").asText())) return;
+                    ObjectNode payload = requireObject(entry.getValue(), "Drawing payload");
+                    rewriteOptionalFormula(payload, "propertyFormula", ownerIdentity, formulaMapper,
+                            "drawing:" + entry.getKey() + ".propertyFormula");
+                });
+            }
+        }
+
+        JsonNode dataModelRaw = root.get("dataModel");
+        if (dataModelRaw != null && !dataModelRaw.isNull()) {
+            if (!dataModelRaw.isObject()) throw ServiceException.validation("dataModel must be an object");
+            JsonNode viewsRaw = dataModelRaw.get("views");
+            if (viewsRaw != null && !viewsRaw.isNull()) {
+                if (!viewsRaw.isArray()) throw ServiceException.validation("views must be an array");
+                for (JsonNode viewRaw : viewsRaw) {
+                    ObjectNode view = requireObject(viewRaw, "Data view");
+                    for (JsonNode fieldRaw : SnapshotMutationSupport.requiredArray(view, "fields")) {
+                        ObjectNode field = requireObject(fieldRaw, "Data view field");
+                        rewriteOptionalFormula(field, "formula", workbookOwner, formulaMapper,
+                                "data-view:" + view.path("id").asText() + "." + field.path("fieldId").asText());
+                    }
+                }
+            }
+        }
+
+        JsonNode templatesRaw = root.get("cellStyleTemplates");
+        if (templatesRaw != null && !templatesRaw.isNull()) {
+            if (!templatesRaw.isArray()) throw ServiceException.validation("cellStyleTemplates must be an array");
+            for (JsonNode templateRaw : templatesRaw) {
+                ObjectNode template = requireObject(templateRaw, "Cell style template");
+                JsonNode validationRaw = template.get("dataValidation");
+                if (validationRaw == null || validationRaw.isNull()) continue;
+                ObjectNode validation = requireObject(validationRaw, "Cell style template validation");
+                JsonNode anchorRaw = validation.get("formulaAnchor");
+                FormulaReferenceTransformer.SheetIdentity formulaOwner = workbookOwner;
+                if (anchorRaw != null) {
+                    if (!anchorRaw.isObject()) throw ServiceException.validation("Cell style template formulaAnchor must be an object");
+                    ObjectNode anchor = (ObjectNode) anchorRaw;
+                    String ownerSheetId = SnapshotMutationSupport.text(anchor, "sheetId");
+                    ObjectNode ownerSheet = SnapshotMutationSupport.sheet(root, ownerSheetId);
+                    formulaOwner = identity(ownerSheet);
+                    definedNameAnchorCoordinate(anchor, "row", SnapshotMutationSupport.MAX_ROW);
+                    definedNameAnchorCoordinate(anchor, "column", SnapshotMutationSupport.MAX_COLUMN);
+                    ObjectNode mappedAnchor = anchorMapper.apply(anchor);
+                    if (!anchor.equals(mappedAnchor)) validation.set("formulaAnchor", mappedAnchor);
+                }
+                String templateId = template.path("id").asText();
+                JsonNode formula1 = validation.get("formula1");
+                String type = validation.path("type").asText();
+                if (formula1 != null && formula1.isTextual() && !formula1.asText().isEmpty()
+                        && (formula1.asText().stripLeading().startsWith("=") || "custom".equals(type))) {
+                    rewriteOptionalFormula(validation, "formula1", formulaOwner, formulaMapper,
+                            "cell-style-template:" + templateId + ".formula1");
+                } else if (formula1 != null && !formula1.isNull() && !formula1.isTextual()) {
+                    throw ServiceException.validation("Cell style template formula1 must be text");
+                }
+                JsonNode formula2 = validation.get("formula2");
+                if (formula2 != null && formula2.isTextual() && !formula2.asText().isEmpty()
+                        && (formula2.asText().stripLeading().startsWith("=") || "custom".equals(type))) {
+                    rewriteOptionalFormula(validation, "formula2", formulaOwner, formulaMapper,
+                            "cell-style-template:" + templateId + ".formula2");
+                } else if (formula2 != null && !formula2.isNull() && !formula2.isTextual()) {
+                    throw ServiceException.validation("Cell style template formula2 must be text");
+                }
+                JsonNode listSourceRaw = validation.get("listSource");
+                if (listSourceRaw != null && !listSourceRaw.isNull()) {
+                    ObjectNode listSource = requireObject(listSourceRaw, "Cell style template listSource");
+                    if ("formula".equals(listSource.path("kind").asText())) {
+                        JsonNode formula = listSource.get("formula");
+                        if (formula == null || !formula.isTextual()) {
+                            throw ServiceException.validation("Cell style template list formula must be text");
+                        }
+                        rewriteOptionalFormula(listSource, "formula", formulaOwner, formulaMapper,
+                                "cell-style-template:" + templateId + ".listSource");
+                    }
+                }
+            }
+        }
+    }
+
+    private static void rewriteOptionalFormula(
+            ObjectNode owner,
+            String property,
+            FormulaReferenceTransformer.SheetIdentity formulaOwner,
+            BiFunction<String, FormulaReferenceTransformer.SheetIdentity, String> formulaMapper,
+            String participant
+    ) {
+        JsonNode raw = owner.get(property);
+        if (raw == null || raw.isNull()) return;
+        if (!raw.isTextual()) throw ServiceException.validation(participant + " must be text");
+        String formula = raw.asText();
+        if (!formula.isEmpty()) owner.put(property, formulaMapper.apply(formula, formulaOwner));
+    }
+
+    private static ObjectNode shiftTemplateFormulaAnchor(
+            ObjectNode anchor,
+            String targetSheetId,
+            FormulaReferenceTransformer.Axis axis,
+            int at,
+            int count,
+            FormulaReferenceTransformer.Direction direction
+    ) {
+        String sheetId = SnapshotMutationSupport.text(anchor, "sheetId");
+        if (!targetSheetId.equals(sheetId)) return anchor;
+        String key = axis == FormulaReferenceTransformer.Axis.ROW ? "row" : "column";
+        int maximum = axis == FormulaReferenceTransformer.Axis.ROW ? SnapshotMutationSupport.MAX_ROW : SnapshotMutationSupport.MAX_COLUMN;
+        int position = definedNameAnchorCoordinate(anchor, key, maximum);
+        int shifted = shiftIndex(position, at, count, direction);
+        if (shifted < 0 || shifted > maximum) throw ServiceException.validation("Structural mutation removes cell-style-template formula anchor");
+        ObjectNode result = anchor.deepCopy();
+        result.put(key, shifted);
+        return result;
+    }
+
+    private static ObjectNode shiftTemplateFormulaAnchor(
+            ObjectNode anchor,
+            String targetSheetId,
+            RangeRef selection,
+            FormulaReferenceTransformer.Axis axis,
+            FormulaReferenceTransformer.Direction direction
+    ) {
+        String operation = direction == FormulaReferenceTransformer.Direction.INSERT ? "insert" : "delete";
+        return shiftTemplateFormulaAnchor(anchor, targetSheetId, selection, axis, operation);
+    }
+
+    private static ObjectNode shiftTemplateFormulaAnchor(
+            ObjectNode anchor,
+            String targetSheetId,
+            RangeRef selection,
+            FormulaReferenceTransformer.Axis axis,
+            String operation
+    ) {
+        String sheetId = SnapshotMutationSupport.text(anchor, "sheetId");
+        if (!targetSheetId.equals(sheetId)) return anchor;
+        int row = definedNameAnchorCoordinate(anchor, "row", SnapshotMutationSupport.MAX_ROW);
+        int column = definedNameAnchorCoordinate(anchor, "column", SnapshotMutationSupport.MAX_COLUMN);
+        int[] mapped = FormulaReferenceTransformer.remapCellShiftCoordinate(row, column, formulaRange(selection), axis,
+                "insert".equals(operation) ? FormulaReferenceTransformer.Direction.INSERT : FormulaReferenceTransformer.Direction.DELETE);
+        if (mapped == null) throw ServiceException.validation("Structural mutation removes cell-style-template formula anchor");
+        ObjectNode result = anchor.deepCopy();
+        result.put("row", mapped[0]);
+        result.put("column", mapped[1]);
+        return result;
+    }
+
+    private static ObjectNode moveTemplateFormulaAnchor(
+            ObjectNode anchor,
+            String targetSheetId,
+            RangeRef source,
+            int rowDelta,
+            int columnDelta
+    ) {
+        if (!targetSheetId.equals(SnapshotMutationSupport.text(anchor, "sheetId"))) return anchor;
+        int row = definedNameAnchorCoordinate(anchor, "row", SnapshotMutationSupport.MAX_ROW);
+        int column = definedNameAnchorCoordinate(anchor, "column", SnapshotMutationSupport.MAX_COLUMN);
+        if (!contains(source, row, column)) return anchor;
+        ObjectNode result = anchor.deepCopy();
+        result.put("row", row + rowDelta);
+        result.put("column", column + columnDelta);
+        return result;
     }
 
     private static void invalidateFormulaCaches(ObjectNode root) {

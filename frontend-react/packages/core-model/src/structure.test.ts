@@ -101,6 +101,115 @@ describe('structural operations', () => {
     assert.equal(sheet.cells.get(6, 0)?.formula, "=SUM($A$2,'Input Sheet'!$B$2,A2)+\"A1\"");
   });
 
+  it('rewrites persisted non-cell formula owners and their template anchors on axis edits', () => {
+    const workbook = new WorkbookModel('unit-persisted-formula-owners', 'Persisted Formula Owners');
+    const sheet = workbook.getSheet('sheet-1');
+    sheet.name = 'Input Sheet';
+    sheet.tableSheet = {
+      viewId: 'formula-view',
+      columns: [{ fieldId: 'table-calc', caption: 'Table Calc', formula: '=A1' }],
+      grouping: [],
+    };
+    sheet.drawingPayloads.set('formula-shape', {
+      kind: 'shape', type: 'rectangle', fill: '#ffffff', stroke: '#000000', propertyFormula: '=A1',
+    });
+    workbook.dataModel.views.set('formula-view', {
+      id: 'formula-view', name: 'Formula View', tableId: 'source-table',
+      fields: [{ fieldId: 'view-calc', caption: 'View Calc', formula: "='Input Sheet'!A1" }],
+    });
+    workbook.setCellStyleTemplate({
+      id: 'formula-template', name: 'Formula Template', style: {},
+      dataValidation: {
+        type: 'custom',
+        formulaAnchor: { sheetId: sheet.id, row: 0, column: 0 },
+        formula1: '=A1',
+        formula2: '=B1',
+        listSource: { kind: 'formula', formula: '=C1' },
+      },
+    });
+
+    StructuralTransform.apply(workbook, { kind: 'insert-rows', sheetId: sheet.id, at: 0, count: 1 });
+
+    assert.equal(sheet.tableSheet?.columns[0]?.formula, '=A2');
+    assert.equal((sheet.drawingPayloads.get('formula-shape') as { propertyFormula?: string }).propertyFormula, '=A2');
+    assert.equal(workbook.dataModel.views.get('formula-view')?.fields[0]?.formula, "='Input Sheet'!A2");
+    const validation = workbook.cellStyleTemplates.get('formula-template')?.dataValidation;
+    assert.equal(validation?.formulaAnchor?.row, 1);
+    assert.equal(validation?.formula1, '=A2');
+    assert.equal(validation?.formula2, '=B2');
+
+    StructuralTransform.apply(workbook, {
+      kind: 'cell-shift', sheetId: sheet.id,
+      sourceRange: { sheetId: sheet.id, startRow: 1, endRow: 1, startColumn: 0, endColumn: 0 },
+      operation: 'insert', axis: 'row',
+    });
+    assert.equal(sheet.tableSheet?.columns[0]?.formula, '=A3');
+    assert.equal((sheet.drawingPayloads.get('formula-shape') as { propertyFormula?: string }).propertyFormula, '=A3');
+    assert.equal(workbook.dataModel.views.get('formula-view')?.fields[0]?.formula, "='Input Sheet'!A3");
+    assert.equal(validation?.formulaAnchor?.row, 2);
+    assert.equal(validation?.formula1, '=A3');
+
+    StructuralTransform.apply(workbook, {
+      kind: 'move-range', sheetId: sheet.id,
+      sourceRange: { sheetId: sheet.id, startRow: 2, endRow: 2, startColumn: 0, endColumn: 0 },
+      targetOrigin: { row: 3, column: 1 },
+    });
+    assert.equal(sheet.tableSheet?.columns[0]?.formula, '=B4');
+    assert.equal((sheet.drawingPayloads.get('formula-shape') as { propertyFormula?: string }).propertyFormula, '=B4');
+    assert.equal(workbook.dataModel.views.get('formula-view')?.fields[0]?.formula, "='Input Sheet'!B4");
+    assert.deepEqual(validation?.formulaAnchor, { sheetId: sheet.id, row: 3, column: 1 });
+    assert.equal(validation?.formula1, '=B4');
+    assert.equal(validation?.formula2, '=B2');
+    assert.equal(validation?.listSource?.kind === 'formula' ? validation.listSource.formula : undefined, '=C2');
+  });
+
+  it('rejects deletion of an anchored style-template formula before changing coordinates', () => {
+    const workbook = new WorkbookModel('unit-template-anchor-rejection', 'Template Anchor Rejection');
+    const sheet = workbook.getSheet('sheet-1');
+    sheet.cells.set(2, 0, { value: 'preserved' });
+    workbook.setCellStyleTemplate({
+      id: 'formula-template', name: 'Formula Template', style: {},
+      dataValidation: {
+        type: 'custom',
+        formulaAnchor: { sheetId: sheet.id, row: 0, column: 0 },
+        formula1: '=A1',
+      },
+    });
+    const rowCount = sheet.rowCount;
+
+    assert.throws(
+      () => StructuralTransform.apply(workbook, { kind: 'delete-rows', sheetId: sheet.id, at: 0, count: 1 }),
+      /removes cell-style-template:formula-template formula anchor/,
+    );
+    assert.equal(sheet.cells.get(2, 0)?.value, 'preserved');
+    assert.equal(sheet.rowCount, rowCount);
+    assert.equal(workbook.cellStyleTemplates.get('formula-template')?.dataValidation?.formulaAnchor?.row, 0);
+  });
+
+  it('rejects invalid persisted style-template formula anchors before structural mutation', () => {
+    for (const formulaAnchor of [
+      null,
+      { sheetId: 'missing-sheet', row: 0, column: 0 },
+      { sheetId: 'sheet-1', row: 1_048_576, column: 0 },
+    ]) {
+      const workbook = new WorkbookModel('unit-invalid-template-anchor', 'Invalid Template Anchor');
+      const sheet = workbook.getSheet('sheet-1');
+      sheet.cells.set(2, 0, { value: 'preserved' });
+      workbook.setCellStyleTemplate({
+        id: 'formula-template', name: 'Formula Template', style: {},
+        dataValidation: { type: 'custom', formulaAnchor: formulaAnchor as { sheetId: string; row: number; column: number }, formula1: '=A1' },
+      });
+      const rowCount = sheet.rowCount;
+
+      assert.throws(
+        () => StructuralTransform.apply(workbook, { kind: 'insert-rows', sheetId: sheet.id, at: 0, count: 1 }),
+        /STRUCTURAL_REFERENCE_OWNER_INVALID: cell-style-template:formula-template formula anchor is invalid/,
+      );
+      assert.equal(sheet.cells.get(2, 0)?.value, 'preserved');
+      assert.equal(sheet.rowCount, rowCount);
+    }
+  });
+
   it('keeps imported OOXML formula provenance aligned with structural reference rewrites', () => {
     const workbook = new WorkbookModel('unit-formula-provenance-structure', 'Formula Provenance Structure');
     const sheet = workbook.getSheet('sheet-1');
