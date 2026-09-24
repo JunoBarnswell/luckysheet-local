@@ -210,7 +210,10 @@ describe('WorkbookSession collaboration integration', () => {
 
     assert.ok(runtime.registry.validateMutationInfo({ ...mutation, affectedRanges: [] })
       .some((issue) => issue.code === 'invalid-affected-ranges'));
-    const params = mutation.params as { snapshot: { cells: Array<{ row: number; column: number; value?: unknown }> } };
+    const params = mutation.params as {
+      snapshot: { cells: Array<{ row: number; column: number; value?: unknown }> };
+      clipboard: { range: { sheetId: string; startRow: number; endRow: number; startColumn: number; endColumn: number }; [key: string]: unknown };
+    };
     const escapedSnapshot = {
       ...mutation,
       params: {
@@ -219,6 +222,110 @@ describe('WorkbookSession collaboration integration', () => {
       },
     };
     assert.ok(runtime.registry.validateMutationInfo(escapedSnapshot)
+      .some((issue) => issue.code === 'invalid-params'));
+    const outOfBoundsSource = {
+      ...mutation,
+      params: {
+        ...params,
+        clipboard: {
+          ...params.clipboard,
+          range: { sheetId, startRow: 1_048_576, endRow: 1_048_576, startColumn: 0, endColumn: 0 },
+        },
+      },
+    };
+    assert.ok(runtime.registry.validateMutationInfo(outOfBoundsSource)
+      .some((issue) => issue.code === 'invalid-params'));
+    const invalidWidth = {
+      ...mutation,
+      params: { ...params, snapshot: { ...params.snapshot, columnWidths: [{ column: 2, widthPx: 0 }] } },
+    };
+    assert.ok(runtime.registry.validateMutationInfo(invalidWidth)
+      .some((issue) => issue.code === 'invalid-params'));
+    const unexpectedMetadata = {
+      ...mutation,
+      params: { ...params, snapshot: { ...params.snapshot, validations: [] } },
+    };
+    assert.ok(runtime.registry.validateMutationInfo(unexpectedMetadata)
+      .some((issue) => issue.code === 'invalid-params'));
+    const validationSpec = createPasteSpecialSpec({
+      formatting: 'none',
+      metadata: { commentsNotes: false, validation: true, columnWidths: false, conditionalFormats: false, hyperlinks: false },
+    });
+    const targetRange = { sheetId, startRow: 2, endRow: 2, startColumn: 2, endColumn: 2 };
+    const foreignRule = {
+      ...mutation,
+      params: {
+        ...params,
+        spec: validationSpec,
+        snapshot: {
+          ...params.snapshot,
+          clearMetadataRanges: [targetRange],
+          validations: [{ id: 'foreign-rule', sheetId: 'another-sheet', ranges: [{ sheetId: 'another-sheet', startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }], type: 'whole', formula1: '1' }],
+        },
+      },
+    };
+    assert.ok(runtime.registry.validateMutationInfo(foreignRule)
+      .some((issue) => issue.code === 'invalid-params'));
+    const malformedRule = {
+      ...mutation,
+      params: {
+        ...params,
+        spec: validationSpec,
+        snapshot: {
+          ...params.snapshot,
+          clearMetadataRanges: [targetRange],
+          validations: [{ id: 'unknown-rule', sheetId, ranges: [targetRange], type: 'unsupported', formula1: '1' }],
+        },
+      },
+    };
+    assert.ok(runtime.registry.validateMutationInfo(malformedRule)
+      .some((issue) => issue.code === 'invalid-params'));
+
+    const widthsSpec = createPasteSpecialSpec({
+      formatting: 'none',
+      metadata: { commentsNotes: false, validation: false, columnWidths: true, conditionalFormats: false, hyperlinks: false },
+    });
+    const outOfRangeWidth = {
+      ...mutation,
+      params: { ...params, spec: widthsSpec, snapshot: { ...params.snapshot, clearMetadataRanges: [targetRange], columnWidths: [{ column: 7, widthPx: 120 }] } },
+    };
+    assert.ok(runtime.registry.validateMutationInfo(outOfRangeWidth)
+      .some((issue) => issue.code === 'invalid-params'));
+
+    const hyperlinksSpec = createPasteSpecialSpec({
+      formatting: 'none',
+      metadata: { commentsNotes: false, validation: false, columnWidths: false, conditionalFormats: false, hyperlinks: true },
+    });
+    const nonCanonicalCellKey = {
+      ...mutation,
+      params: {
+        ...params,
+        spec: hyperlinksSpec,
+        snapshot: {
+          ...params.snapshot,
+          clearMetadataRanges: [targetRange],
+          hyperlinks: [{ key: '02:2', value: { id: 'link', target: { kind: 'url', url: 'https://example.com' } } }],
+        },
+      },
+    };
+    assert.ok(runtime.registry.validateMutationInfo(nonCanonicalCellKey)
+      .some((issue) => issue.code === 'invalid-params'));
+
+    const overlapRange = { sheetId, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 };
+    const overlappingMove = {
+      ...mutation,
+      affectedRanges: [overlapRange, overlapRange],
+      params: {
+        ...params,
+        targetOrigin: { row: 0, column: 0 },
+        transfer: 'move',
+        clearSource: true,
+        sourceRange: overlapRange,
+        clipboard: { ...params.clipboard, transfer: 'move' },
+        snapshot: { ...params.snapshot, clearRanges: [overlapRange, overlapRange], cells: [] },
+      },
+    };
+    assert.ok(runtime.registry.validateMutationInfo(overlappingMove)
       .some((issue) => issue.code === 'invalid-params'));
   });
 

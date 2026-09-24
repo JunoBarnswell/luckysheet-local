@@ -712,6 +712,119 @@ test('paste special copies range-owned metadata atomically and restores it once'
   assert.equal(runtime.getHistoryDepth().undo, 1);
 });
 
+test('paste special preserves metadata categories that are not selected', () => {
+  const workbook = new WorkbookModel('unit-paste-metadata-selection', 'Paste Metadata Selection');
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, { value: 'source' });
+  sheet.review.setNote(4, 4, { id: 'kept-note', author: 'u', text: 'keep note', createdAt: '2026-01-01', visible: true });
+  sheet.hyperlinks.set('4:4', { id: 'kept-link', target: { kind: 'url', url: 'https://example.com' } });
+  sheet.review.addThread({ id: 'kept-comment', sheetId: sheet.id, row: 4, column: 4, author: 'u', text: 'keep comment', createdAt: '2026-01-01', replies: [] });
+
+  runtime.execute('sheet.range.paste', {
+    sheetId: sheet.id,
+    targetOrigin: { row: 4, column: 4 },
+    clipboard: copyRangeToClipboardData(workbook, { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }),
+    transfer: 'copy',
+    spec: createPasteSpecialSpec({
+      formatting: 'none',
+      metadata: { commentsNotes: false, validation: true, columnWidths: false, conditionalFormats: false, hyperlinks: false },
+    }),
+  });
+
+  assert.equal(sheet.review.getNoteAt(4, 4)?.text, 'keep note');
+  assert.equal(sheet.hyperlinks.get('4:4')?.id, 'kept-link');
+  assert.equal(sheet.review.getThreadsAt(4, 4)[0]?.id, 'kept-comment');
+});
+
+test('same-sheet cut paste records metadata tombstones and removes newly written cells on undo', () => {
+  const workbook = new WorkbookModel('unit-paste-cut-snapshot', 'Paste Cut Snapshot');
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, { value: 'moving' });
+  sheet.review.setNote(0, 0, { id: 'moving-note', author: 'u', text: 'move note', createdAt: '2026-01-01', visible: true });
+  sheet.hyperlinks.set('0:0', { id: 'moving-link', target: { kind: 'url', url: 'https://example.com' } });
+  const clipboard = copyRangeToClipboardData(workbook, { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 });
+  clipboard.transfer = 'move';
+
+  runtime.execute('sheet.range.paste', {
+    sheetId: sheet.id,
+    targetOrigin: { row: 3, column: 3 },
+    clipboard,
+    transfer: 'move',
+    spec: createPasteSpecialSpec({ skipBlanks: true }),
+  });
+
+  assert.equal(sheet.cells.get(0, 0), undefined);
+  assert.equal(sheet.review.hasNoteAt(0, 0), false);
+  assert.equal(sheet.hyperlinks.has('0:0'), false);
+  assert.equal(sheet.cells.get(3, 3)?.value, 'moving');
+  assert.equal(sheet.review.getNoteAt(3, 3)?.text, 'move note');
+  assert.equal(sheet.hyperlinks.get('3:3')?.id, 'moving-link');
+
+  assert.equal(runtime.undo(), true);
+  assert.equal(sheet.cells.get(0, 0)?.value, 'moving');
+  assert.equal(sheet.review.getNoteAt(0, 0)?.text, 'move note');
+  assert.equal(sheet.hyperlinks.get('0:0')?.id, 'moving-link');
+  assert.equal(sheet.cells.get(3, 3), undefined);
+  assert.equal(sheet.review.hasNoteAt(3, 3), false);
+  assert.equal(sheet.hyperlinks.has('3:3'), false);
+});
+
+test('transposed paste keeps source-offset column-width mapping within its declared columns', () => {
+  const workbook = new WorkbookModel('unit-paste-transposed-widths', 'Paste Transposed Widths');
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.columnWidthsPx[0] = 80;
+  sheet.columnWidthsPx[1] = 90;
+  sheet.columnWidthsPx[2] = 100;
+  const clipboard = copyRangeToClipboardData(workbook, { sheetId: sheet.id, startRow: 0, endRow: 1, startColumn: 0, endColumn: 2 });
+
+  runtime.execute('sheet.range.paste', {
+    sheetId: sheet.id,
+    targetOrigin: { row: 4, column: 4 },
+    clipboard,
+    transfer: 'copy',
+    spec: createPasteSpecialSpec({
+      formatting: 'none',
+      transpose: true,
+      metadata: { commentsNotes: false, validation: false, columnWidths: true, conditionalFormats: false, hyperlinks: false },
+    }),
+  });
+
+  assert.equal(sheet.columnWidthsPx[4], 80);
+  assert.equal(sheet.columnWidthsPx[5], 90);
+  assert.equal(sheet.columnWidthsPx[6], 100);
+});
+
+test('cut paste in the same column does not clear its retained column width', () => {
+  const workbook = new WorkbookModel('unit-paste-same-column-width', 'Paste Same Column Width');
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, { value: 'moving' });
+  sheet.columnWidthsPx[0] = 88;
+  const clipboard = copyRangeToClipboardData(workbook, { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 });
+  clipboard.transfer = 'move';
+
+  runtime.execute('sheet.range.paste', {
+    sheetId: sheet.id,
+    targetOrigin: { row: 4, column: 0 },
+    clipboard,
+    transfer: 'move',
+    spec: createPasteSpecialSpec({
+      skipBlanks: true,
+      formatting: 'none',
+      metadata: { commentsNotes: false, validation: false, columnWidths: true, conditionalFormats: false, hyperlinks: false },
+    }),
+  });
+
+  assert.equal(sheet.columnWidthsPx[0], 88);
+});
+
 test('paste special arithmetic, skip blanks and protected rejection are fail-closed', () => {
   const workbook = new WorkbookModel('unit-paste-arithmetic', 'Paste Arithmetic');
   const runtime = new CommandRuntime(workbook);

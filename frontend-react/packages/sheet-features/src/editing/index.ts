@@ -16,6 +16,7 @@ import type {
 } from '@react-sheets/core-model';
 import { cellKey, clearFormulaProvenance, columnLabel, MAX_SHEET_COLUMN_COUNT, MAX_SHEET_ROW_COUNT, planCellShift, sheetRuleRegistry, type CellShiftSpec } from '@react-sheets/core-model';
 import { StructuralTransform } from '@react-sheets/core-model';
+import { parseFormula } from '@react-sheets/formula-engine';
 import { formatValue } from '@react-sheets/number-format';
 import type { CommandContext, CommandResult, CommandRuntime, MutationInfo } from '@react-sheets/command-runtime';
 import {
@@ -211,6 +212,9 @@ function isPasteMutation(value: unknown): value is PasteMutationParams {
   const declaredExtent = value.sourceExtent;
   const clipboardRange = clipboard.range;
   if (!isRecord(declaredExtent) || !isRange(clipboardRange)) return false;
+  const clipboardRangeWithinWorksheet = clipboardRange.sheetId.trim().length > 0
+    && clipboardRange.startRow < MAX_SHEET_ROW_COUNT && clipboardRange.endRow < MAX_SHEET_ROW_COUNT
+    && clipboardRange.startColumn < MAX_SHEET_COLUMN_COUNT && clipboardRange.endColumn < MAX_SHEET_COLUMN_COUNT;
   const extentMatchesClipboard = Number(sourceExtent.rows) === Number(declaredExtent.rows)
     && Number(sourceExtent.columns) === Number(declaredExtent.columns)
     && clipboardRange.endRow - clipboardRange.startRow + 1 === Number(sourceExtent.rows)
@@ -228,6 +232,7 @@ function isPasteMutation(value: unknown): value is PasteMutationParams {
     && (value.transfer === 'copy' || value.transfer === 'move')
     && clipboard.transfer === value.transfer
     && clipboard.schema === 'SparseClipboardPayload'
+    && clipboardRangeWithinWorksheet
     && Number.isInteger(sourceExtent.rows) && Number(sourceExtent.rows) > 0
     && Number.isInteger(sourceExtent.columns) && Number(sourceExtent.columns) > 0
     && Array.isArray(clipboard.occupiedCells)
@@ -253,9 +258,14 @@ function isPasteMutation(value: unknown): value is PasteMutationParams {
   if (!valid) return false;
   const pasteParams = value as unknown as PasteMutationParams;
   const cellRanges = pasteCellRanges(pasteParams);
+  const mappedWidthColumns = pasteTargetWidthColumns(pasteParams);
+  if (!mappedWidthColumns) return false;
   return cellRanges.every((range) => range.startRow >= 0 && range.endRow < MAX_SHEET_ROW_COUNT
       && range.startColumn >= 0 && range.endColumn < MAX_SHEET_COLUMN_COUNT)
-    && isPasteSnapshotWithinRanges(value.snapshot, cellRanges);
+    && isPasteSnapshotWithinRanges(value.snapshot, cellRanges, mappedWidthColumns)
+    && isPasteSnapshotConsistentWithSpec(pasteParams)
+    && isPasteRuleCollectionForSheet(value.snapshot.validations, pasteParams.sheetId, 'validation')
+    && isPasteRuleCollectionForSheet(value.snapshot.conditionalFormats, pasteParams.sheetId, 'conditional-format');
 }
 
 function pasteCellRanges(value: PasteMutationParams): RangeRef[] {
@@ -264,6 +274,54 @@ function pasteCellRanges(value: PasteMutationParams): RangeRef[] {
   const ranges = [{ sheetId: value.sheetId, startRow: value.targetOrigin.row, endRow: value.targetOrigin.row + Math.max(0, rowCount - 1), startColumn: value.targetOrigin.column, endColumn: value.targetOrigin.column + Math.max(0, columnCount - 1) }];
   if (value.clearSource && value.sourceRange) ranges.push(structuredClone(value.sourceRange));
   return ranges;
+}
+
+function pasteTargetWidthColumns(value: PasteMutationParams): Set<number> | undefined {
+  if (!value.spec.metadata.columnWidths) return new Set();
+  const columns = new Set<number>();
+  const offsets = new Set<number>();
+  for (const entry of value.clipboard.rangeMetadata.columnWidths) {
+    if (!isRecord(entry) || !Number.isSafeInteger(entry.offset) || Number(entry.offset) < 0
+      || Number(entry.offset) >= value.sourceExtent.columns
+      || typeof entry.widthPx !== 'number' || !Number.isFinite(entry.widthPx) || entry.widthPx <= 0
+      || offsets.has(Number(entry.offset))) return undefined;
+    offsets.add(Number(entry.offset));
+    const column = value.targetOrigin.column + Number(entry.offset);
+    if (!Number.isSafeInteger(column) || column < 0 || column >= MAX_SHEET_COLUMN_COUNT) return undefined;
+    columns.add(column);
+  }
+  return columns;
+}
+
+function isPasteSnapshotConsistentWithSpec(value: PasteMutationParams): boolean {
+  const [targetRange] = pasteCellRanges(value);
+  if (!targetRange || (value.transfer === 'move' && value.sourceRange?.sheetId !== value.sheetId)) return false;
+  if (value.transfer === 'move' && value.sourceRange && rangesIntersect(targetRange, value.sourceRange)) return false;
+  const expectedClearRanges = value.spec.content !== 'none' && !value.spec.skipBlanks ? [targetRange] : [];
+  if (value.transfer === 'move' && value.sourceRange) expectedClearRanges.push(value.sourceRange);
+  const hasMetadata = Object.values(value.spec.metadata).some(Boolean);
+  const expectedMetadataRanges = hasMetadata
+    ? [targetRange, ...(value.transfer === 'move' && value.sourceRange ? [value.sourceRange] : [])]
+    : [];
+  const sameRanges = (actual: readonly RangeRef[] | undefined, expected: readonly RangeRef[]) => Array.isArray(actual)
+    && actual.length === expected.length
+    && actual.every((range, index) => {
+      const other = expected[index];
+      return other !== undefined && range.sheetId === other.sheetId
+        && range.startRow === other.startRow && range.endRow === other.endRow
+        && range.startColumn === other.startColumn && range.endColumn === other.endColumn;
+    });
+  const snapshot = value.snapshot;
+  return sameRanges(snapshot.clearRanges, expectedClearRanges)
+    && sameRanges(snapshot.clearMetadataRanges, expectedMetadataRanges)
+    && (snapshot.notes !== undefined) === value.spec.metadata.commentsNotes
+    && (snapshot.comments !== undefined) === value.spec.metadata.commentsNotes
+    && (snapshot.commentCells !== undefined) === value.spec.metadata.commentsNotes
+    && (snapshot.hyperlinks !== undefined) === value.spec.metadata.hyperlinks
+    && (snapshot.validations !== undefined) === value.spec.metadata.validation
+    && (snapshot.conditionalFormats !== undefined) === value.spec.metadata.conditionalFormats
+    && (snapshot.columnWidths !== undefined) === value.spec.metadata.columnWidths
+    && (snapshot.workbookTheme !== undefined) === (value.spec.formatting === 'source-theme');
 }
 
 function pasteAffectedRanges(value: PasteMutationParams): RangeRef[] {
@@ -288,7 +346,7 @@ function pasteAffectedRanges(value: PasteMutationParams): RangeRef[] {
   return ranges;
 }
 
-function isPasteSnapshotWithinRanges(snapshot: unknown, ranges: readonly RangeRef[]): boolean {
+function isPasteSnapshotWithinRanges(snapshot: unknown, ranges: readonly RangeRef[], mappedWidthColumns: ReadonlySet<number>): boolean {
   if (!isRecord(snapshot)) return false;
   const containsPoint = (row: unknown, column: unknown) => typeof row === 'number' && Number.isSafeInteger(row)
     && row >= 0 && row < MAX_SHEET_ROW_COUNT
@@ -302,7 +360,7 @@ function isPasteSnapshotWithinRanges(snapshot: unknown, ranges: readonly RangeRe
   const keyWithinRanges = (key: unknown) => {
     if (typeof key !== 'string' || !/^\d+:\d+$/.test(key)) return false;
     const [row, column] = key.split(':').map(Number);
-    return containsPoint(row, column);
+    return key === `${row}:${column}` && containsPoint(row, column);
   };
   const hasOnlyScopedPoints = (entries: unknown, point: (entry: unknown) => boolean) => entries === undefined
     || (Array.isArray(entries) && entries.every(point));
@@ -313,10 +371,15 @@ function isPasteSnapshotWithinRanges(snapshot: unknown, ranges: readonly RangeRe
     && hasOnlyScopedPoints(snapshot.notes, (entry) => isRecord(entry) && keyWithinRanges(entry.key))
     && hasOnlyScopedPoints(snapshot.hyperlinks, (entry) => isRecord(entry) && keyWithinRanges(entry.key))
     && hasOnlyScopedPoints(snapshot.commentCells, keyWithinRanges)
-    && hasOnlyScopedPoints(snapshot.comments, (entry) => isRecord(entry) && containsPoint(entry.row, entry.column))
-    && hasOnlyScopedPoints(snapshot.columnWidths, (entry) => isRecord(entry)
-      && typeof entry.column === 'number' && Number.isSafeInteger(entry.column)
-      && entry.column >= 0 && entry.column < MAX_SHEET_COLUMN_COUNT);
+    && hasOnlyScopedPoints(snapshot.comments, (entry) => isRecord(entry)
+      && entry.sheetId === ranges[0]?.sheetId && containsPoint(entry.row, entry.column))
+    && hasOnlyScopedPoints(snapshot.columnWidths, (entry) => {
+      if (!isRecord(entry) || typeof entry.column !== 'number' || !Number.isSafeInteger(entry.column)) return false;
+      const column = entry.column;
+      return column >= 0 && column < MAX_SHEET_COLUMN_COUNT
+        && (mappedWidthColumns.has(column) || ranges.some((range) => range.sheetId === ranges[0]?.sheetId
+          && column >= range.startColumn && column <= range.endColumn));
+    });
 }
 
 function isPasteSpecialSpec(value: unknown): value is PasteSpecialSpec {
@@ -355,14 +418,119 @@ function isPasteSnapshot(value: unknown): value is PasteSnapshot {
   return (value.clearRanges === undefined || (Array.isArray(value.clearRanges) && value.clearRanges.every(isRange)))
     && (value.clearMetadataRanges === undefined || (Array.isArray(value.clearMetadataRanges) && value.clearMetadataRanges.every(isRange)))
     && value.cells.every((entry) => isRecord(entry) && Number.isInteger(entry.row) && Number.isInteger(entry.column) && (entry.value === undefined || isCellData(entry.value)))
-    && (value.notes === undefined || Array.isArray(value.notes))
-    && (value.hyperlinks === undefined || Array.isArray(value.hyperlinks))
-    && (value.commentCells === undefined || Array.isArray(value.commentCells))
-    && (value.comments === undefined || Array.isArray(value.comments))
+    && (value.notes === undefined || (Array.isArray(value.notes) && value.notes.every((entry) => isRecord(entry)
+      && typeof entry.key === 'string' && (entry.value === undefined || isCellNoteSnapshot(entry.value))))
+    && (value.hyperlinks === undefined || (Array.isArray(value.hyperlinks) && value.hyperlinks.every((entry) => isRecord(entry)
+      && typeof entry.key === 'string' && (entry.value === undefined || isCellHyperlinkSnapshot(entry.value))))
+    && (value.commentCells === undefined || (Array.isArray(value.commentCells) && value.commentCells.every((key) => typeof key === 'string')))
+    && (value.comments === undefined || (Array.isArray(value.comments) && value.comments.every(isCommentThreadSnapshot)))
     && (value.validations === undefined || Array.isArray(value.validations))
     && (value.conditionalFormats === undefined || Array.isArray(value.conditionalFormats))
-    && (value.columnWidths === undefined || Array.isArray(value.columnWidths))
+    && (value.columnWidths === undefined || (Array.isArray(value.columnWidths) && value.columnWidths.every((entry) => isRecord(entry)
+      && Number.isSafeInteger(entry.column) && Number(entry.column) >= 0 && Number(entry.column) < MAX_SHEET_COLUMN_COUNT
+      && (entry.widthPx === undefined || (typeof entry.widthPx === 'number' && Number.isFinite(entry.widthPx) && entry.widthPx > 0)))))
     && (value.workbookTheme === undefined || (isRecord(value.workbookTheme) && typeof value.workbookTheme.id === 'string' && value.workbookTheme.id.trim().length > 0 && isRecord(value.workbookTheme.colors) && Object.values(value.workbookTheme.colors).every((color) => typeof color === 'string' && /^#[0-9a-f]{6}$/i.test(color))));
+}
+
+function isCellNoteSnapshot(value: unknown): value is CellNote {
+  return isRecord(value) && typeof value.id === 'string' && value.id.trim().length > 0
+    && typeof value.author === 'string' && typeof value.text === 'string'
+    && typeof value.createdAt === 'string' && typeof value.visible === 'boolean';
+}
+
+function isCellHyperlinkSnapshot(value: unknown): value is CellHyperlink {
+  if (!isRecord(value) || typeof value.id !== 'string' || !value.id.trim() || !isRecord(value.target)) return false;
+  const target = value.target;
+  if (value.tooltip !== undefined && typeof value.tooltip !== 'string') return false;
+  switch (target.kind) {
+    case 'url': return typeof target.url === 'string' && target.url.length > 0;
+    case 'email': return typeof target.address === 'string' && target.address.length > 0
+      && (target.subject === undefined || typeof target.subject === 'string');
+    case 'sheet': return typeof target.sheetId === 'string' && target.sheetId.length > 0
+      && (target.address === undefined || typeof target.address === 'string')
+      && (target.row === undefined || (Number.isSafeInteger(target.row) && Number(target.row) >= 0))
+      && (target.column === undefined || (Number.isSafeInteger(target.column) && Number(target.column) >= 0));
+    case 'name': return typeof target.name === 'string' && target.name.length > 0;
+    default: return false;
+  }
+}
+
+function isCommentReplySnapshot(value: unknown): boolean {
+  return isRecord(value) && typeof value.id === 'string' && value.id.length > 0
+    && typeof value.author === 'string' && typeof value.text === 'string' && typeof value.createdAt === 'string'
+    && (value.mentions === undefined || (Array.isArray(value.mentions) && value.mentions.every((mention) => typeof mention === 'string')));
+}
+
+function isCommentThreadSnapshot(value: unknown): value is CommentThread {
+  return isRecord(value) && typeof value.id === 'string' && value.id.length > 0
+    && typeof value.sheetId === 'string' && Number.isSafeInteger(value.row) && Number(value.row) >= 0
+    && Number.isSafeInteger(value.column) && Number(value.column) >= 0
+    && typeof value.author === 'string' && typeof value.text === 'string' && typeof value.createdAt === 'string'
+    && Array.isArray(value.replies) && value.replies.every(isCommentReplySnapshot)
+    && (value.mentions === undefined || (Array.isArray(value.mentions) && value.mentions.every((mention) => typeof mention === 'string')))
+    && (value.resolved === undefined || typeof value.resolved === 'boolean')
+    && (value.resolvedAt === undefined || typeof value.resolvedAt === 'string');
+}
+
+function isPasteRuleCollectionForSheet(
+  value: unknown,
+  sheetId: string,
+  kind: 'validation' | 'conditional-format',
+): boolean {
+  if (value === undefined) return true;
+  if (!Array.isArray(value)) return false;
+  const ruleTypes = kind === 'validation'
+    ? ['list', 'whole', 'decimal', 'date', 'time', 'checkbox', 'textLength', 'custom']
+    : ['highlight', 'dataBar', 'colorScale', 'iconSet', 'topBottom'];
+  const operators = kind === 'validation'
+    ? ['between', 'notBetween', 'equal', 'notEqual', 'greaterThan', 'lessThan']
+    : ['greaterThan', 'lessThan', 'between', 'equal', 'notEqual', 'containsText', 'notContainsText', 'duplicate', 'unique', 'formula', 'top', 'bottom'];
+  return value.every((candidate) => {
+    if (!isRecord(candidate) || candidate.sheetId !== sheetId || !Array.isArray(candidate.ranges)
+      || !candidate.ranges.every((range) => isRange(range) && range.sheetId === sheetId
+        && range.endRow < MAX_SHEET_ROW_COUNT && range.endColumn < MAX_SHEET_COLUMN_COUNT)) return false;
+    if (typeof candidate.id !== 'string' || candidate.id.trim().length === 0
+      || !ruleTypes.includes(String(candidate.type))
+      || (candidate.operator !== undefined && !operators.includes(String(candidate.operator)))) return false;
+    if (kind === 'validation') {
+      if ((candidate.formula1 !== undefined && typeof candidate.formula1 !== 'string')
+        || (candidate.formula2 !== undefined && typeof candidate.formula2 !== 'string')) return false;
+      const listSource = candidate.listSource;
+      if (listSource !== undefined) {
+        if (!isRecord(listSource)) return false;
+        if (listSource.kind === 'values' && (!Array.isArray(listSource.values) || !listSource.values.every((entry) => typeof entry === 'string'))) return false;
+        if (listSource.kind === 'range') {
+          const range = listSource.range;
+          if (!isRange(range) || range.sheetId !== sheetId
+            || range.endRow >= MAX_SHEET_ROW_COUNT || range.endColumn >= MAX_SHEET_COLUMN_COUNT) return false;
+        }
+        if (listSource.kind === 'formula' && typeof listSource.formula !== 'string') return false;
+        if (listSource.kind !== 'values' && listSource.kind !== 'range' && listSource.kind !== 'formula') return false;
+      }
+    } else if ((candidate.value1 !== undefined && typeof candidate.value1 !== 'string'
+      && !(typeof candidate.value1 === 'number' && Number.isFinite(candidate.value1)))
+      || (candidate.value2 !== undefined && typeof candidate.value2 !== 'string'
+        && !(typeof candidate.value2 === 'number' && Number.isFinite(candidate.value2)))) return false;
+    if (kind === 'conditional-format' && candidate.topBottom !== undefined) {
+      const topBottom = candidate.topBottom;
+      if (!isRecord(topBottom)
+        || (topBottom.direction !== 'top' && topBottom.direction !== 'bottom')
+        || (topBottom.percent !== undefined && typeof topBottom.percent !== 'boolean')) return false;
+    }
+    try {
+      const normalized = kind === 'validation'
+        ? sheetRuleRegistry.normalizeDataValidation(candidate as unknown as DataValidationRule, (formula) => { parseFormula(formula); })
+        : sheetRuleRegistry.normalizeConditionalFormat(candidate as unknown as ConditionalFormatRule, 1, (formula) => { parseFormula(formula); });
+      const formulaAnchor = normalized.formulaAnchor;
+      return normalized.ranges.length > 0 && normalized.ranges.every((range) => range.sheetId === sheetId
+        && range.endRow < MAX_SHEET_ROW_COUNT && range.endColumn < MAX_SHEET_COLUMN_COUNT)
+        && formulaAnchor !== undefined && formulaAnchor.sheetId === sheetId
+        && formulaAnchor.row < MAX_SHEET_ROW_COUNT
+        && formulaAnchor.column < MAX_SHEET_COLUMN_COUNT;
+    } catch {
+      return false;
+    }
+  });
 }
 
 function isCellShiftMutation(value: unknown): value is CellShiftParams {
@@ -823,7 +991,8 @@ function assertPastePreconditions(workbook: WorkbookModel, params: PasteRangePar
   if (targetRange.endRow < targetRange.startRow || targetRange.endColumn < targetRange.startColumn) throw new Error('Paste target extent is invalid');
   if (targetRange.endRow > 1048575 || targetRange.endColumn > 16383) throw new Error('Paste exceeds canonical worksheet limits');
   if (sourceRange.sheetId.length === 0 || sourceRange.startRow < 0 || sourceRange.startColumn < 0) throw new Error('Clipboard source range is invalid');
-  if (sourceRange.endRow < sourceRange.startRow || sourceRange.endColumn < sourceRange.startColumn) throw new Error('Clipboard source range is invalid');
+  if (sourceRange.endRow < sourceRange.startRow || sourceRange.endColumn < sourceRange.startColumn
+    || sourceRange.endRow >= MAX_SHEET_ROW_COUNT || sourceRange.endColumn >= MAX_SHEET_COLUMN_COUNT) throw new Error('Clipboard source range is invalid');
   if (params.spec.formatting === 'source-theme' && !params.clipboard.rangeMetadata.sourceWorkbookThemeRef) throw new Error('Paste source theme is unavailable for this clipboard payload');
   if (!isPasteSpecialSpecSupported(params.spec, params.clipboard)) throw new Error('Paste Special option is not supported by the canonical workbook model');
   if (params.spec.metadata.validation && params.clipboard.rangeMetadata.validations.length === 0 && params.spec.content === 'all') {
@@ -891,12 +1060,18 @@ function applyPasteSnapshot(workbook: WorkbookModel, sheet: WorksheetModel, snap
   }
   for (const range of snapshot.clearMetadataRanges ?? []) {
     if (range.sheetId !== sheet.id) continue;
-    for (const entry of sheet.review.noteEntries()) if (rangeContains(range, entry.row, entry.column)) sheet.review.removeNote(entry.row, entry.column);
-    for (const key of [...sheet.hyperlinks.keys()]) {
-      const { row, column } = coordinatesFromKey(key);
-      if (Number.isInteger(row) && Number.isInteger(column) && rangeContains(range, row, column)) sheet.hyperlinks.delete(key);
+    if (snapshot.notes !== undefined) {
+      for (const entry of sheet.review.noteEntries()) if (rangeContains(range, entry.row, entry.column)) sheet.review.removeNote(entry.row, entry.column);
     }
-    for (const thread of sheet.review.threadEntries()) if (rangeContains(range, thread.row, thread.column)) sheet.review.removeThread(thread.id);
+    if (snapshot.hyperlinks !== undefined) {
+      for (const key of [...sheet.hyperlinks.keys()]) {
+        const { row, column } = coordinatesFromKey(key);
+        if (Number.isInteger(row) && Number.isInteger(column) && rangeContains(range, row, column)) sheet.hyperlinks.delete(key);
+      }
+    }
+    if (snapshot.comments !== undefined || snapshot.commentCells !== undefined) {
+      for (const thread of sheet.review.threadEntries()) if (rangeContains(range, thread.row, thread.column)) sheet.review.removeThread(thread.id);
+    }
   }
   for (const cell of snapshot.cells) {
     if (cell.value) sheet.cells.set(cell.row, cell.column, structuredClone(cell.value));
@@ -1000,12 +1175,16 @@ function applyPasteMetadataPlan(workbook: WorkbookModel, params: PasteRangeParam
     after.conditionalFormats = [...targetRules, ...sourceRules];
   }
   if (params.spec.metadata.columnWidths) {
-    after.columnWidths = metadata.columnWidths.map((entry) => ({
+    const targetWidths = metadata.columnWidths.map((entry) => ({
       column: targetRange.startColumn + entry.offset,
       widthPx: entry.widthPx,
     }));
+    after.columnWidths = targetWidths;
     if (params.transfer === 'move') {
-      after.columnWidths.push(...metadata.columnWidths.map((entry) => ({ column: source.startColumn + entry.offset, widthPx: undefined })));
+      const targetColumns = new Set(targetWidths.map((entry) => entry.column));
+      after.columnWidths.push(...metadata.columnWidths
+        .map((entry) => ({ column: source.startColumn + entry.offset, widthPx: undefined }))
+        .filter((entry) => !targetColumns.has(entry.column)));
     }
   }
   if (params.transfer === 'move' && source.sheetId === params.sheetId) {
@@ -1126,6 +1305,7 @@ export function registerEditingCommands(runtime: CommandRuntime): void {
     if (params.clearSource && params.sourceRange?.sheetId !== params.sheetId) {
       throw new Error('UNSUPPORTED_FEATURE: cross-sheet cut/paste requires a canonical structural move patch');
     }
+    context.workbook.getSheet(params.clipboard.range.sheetId);
     const targetSheet = context.workbook.getSheet(params.sheetId);
     applyPasteSnapshot(context.workbook, targetSheet, params.snapshot);
     },
@@ -1252,6 +1432,7 @@ export function registerEditingCommands(runtime: CommandRuntime): void {
       });
       if (after.comments) after.comments = after.comments.filter((entry) => !inRanges(entry.row, entry.column, after.clearMetadataRanges ?? []));
       const afterCells = new Map(after.cells.map((entry) => [keyFor(entry.row, entry.column), entry]));
+      const beforeCellKeys = new Set(before.cells.map((entry) => keyFor(entry.row, entry.column)));
       const setAfterCell = (row: number, column: number, value: CellData | undefined) => {
         afterCells.set(keyFor(row, column), { row, column, ...(value ? { value: structuredClone(value) } : {}) });
       };
@@ -1276,7 +1457,14 @@ export function registerEditingCommands(runtime: CommandRuntime): void {
             if (source.hyperlink) next.hyperlink = source.hyperlink;
             if (source.hyperlinkDetail) next.hyperlinkDetail = structuredClone(source.hyperlinkDetail);
           }
-          if (next !== undefined) setAfterCell(row, column, next);
+          if (next !== undefined) {
+            const key = keyFor(row, column);
+            if (!beforeCellKeys.has(key) && !inRanges(row, column, before.clearRanges ?? [])) {
+              before.cells.push({ row, column });
+              beforeCellKeys.add(key);
+            }
+            setAfterCell(row, column, next);
+          }
       }
       after.cells = [...afterCells.values()];
       applyPasteMetadataPlan(context.workbook, canonicalParams, targetRange, after);
