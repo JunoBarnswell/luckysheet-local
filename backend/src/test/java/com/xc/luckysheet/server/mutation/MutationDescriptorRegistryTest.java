@@ -1342,7 +1342,7 @@ class MutationDescriptorRegistryTest {
                 {"sheetId":"sheet-1","at":0,"count":2}
                 """));
         ServiceException rejected = assertThrows(ServiceException.class,
-                () -> registry.prepare(snapshot, removeCameraSource, WorkbookAclRole.EDITOR));
+                () -> registry.applyPublicMutations(snapshot, List.of(removeCameraSource)));
         assertEquals("VALIDATION_ERROR", rejected.code());
     }
 
