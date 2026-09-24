@@ -35,5 +35,6 @@ public interface MutationDescriptor {
 
     List<RangeRef> affectedRanges(JsonNode snapshot, OperationMutation mutation);
 
+    /** Apply without mutating the input snapshot and return an independent result. */
     JsonNode apply(JsonNode snapshot, OperationMutation mutation);
 }

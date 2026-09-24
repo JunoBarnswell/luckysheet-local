@@ -148,7 +148,8 @@ public class MutationDescriptorRegistry {
     }
 
     public JsonNode applyPublicMutations(JsonNode snapshot, List<OperationMutation> mutations) {
-        JsonNode current = snapshot.deepCopy();
+        if (mutations.isEmpty()) return snapshot.deepCopy();
+        JsonNode current = snapshot;
         for (OperationMutation mutation : mutations) current = require(mutation.id(), false).apply(current, mutation);
         return current;
     }

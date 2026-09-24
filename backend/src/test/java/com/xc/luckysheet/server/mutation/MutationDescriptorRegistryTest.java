@@ -14,6 +14,7 @@ import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -48,6 +49,26 @@ class MutationDescriptorRegistryTest {
         assertEquals(2, registry.resolveRanges(snapshot, mutation).get(0).startRow());
         var next = registry.applyPublicMutations(snapshot, List.of(mutation));
         assertEquals(42, next.path("sheets").get(0).path("cells").path("2").path("3").path("value").asInt());
+    }
+
+    @Test
+    void publicMutationReductionPreservesInputAndEmptyBatchIsolation() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        ObjectNode snapshot = (ObjectNode) mapper.readTree("{\"name\":\"before\",\"sheets\":[{\"id\":\"sheet-1\",\"rowCount\":1000,\"columnCount\":26,\"cells\":{}}]}");
+        JsonNode original = snapshot.deepCopy();
+        var mutation = new OperationMutation("cell.set", "sheet-1", mapper.readTree(cellSetParams(2, 3, "{\"value\":42}", "accepted")));
+
+        JsonNode next = registry.applyPublicMutations(snapshot, List.of(mutation));
+
+        assertNotSame(snapshot, next);
+        assertEquals(original, snapshot);
+        assertEquals(42, next.path("sheets").get(0).path("cells").path("2").path("3").path("value").asInt());
+
+        JsonNode emptyReduction = registry.applyPublicMutations(snapshot, List.of());
+        assertNotSame(snapshot, emptyReduction);
+        assertEquals(snapshot, emptyReduction);
+        ((ObjectNode) emptyReduction).put("isolationProbe", true);
+        assertTrue(snapshot.get("isolationProbe") == null);
     }
 
     @Test
