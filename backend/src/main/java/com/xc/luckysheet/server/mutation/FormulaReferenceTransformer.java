@@ -900,15 +900,9 @@ final class FormulaReferenceTransformer {
     }
 
     private static int mapAxisPoint(int position, Axis axis, int at, int count, Direction direction) {
-        if (direction == Direction.INSERT) {
-            long next = position < at ? position : (long) position + count;
-            int maximum = axis == Axis.ROW ? MAX_ROW : MAX_COLUMN;
-            return next > maximum ? -1 : (int) next;
-        }
-        long end = (long) at + count - 1;
-        if (position < at) return position;
-        if (position > end) return (int) (position - (long) count);
-        return -1;
+        long mapped = StructuralAxisCoordinate.mapPoint(position, at, count, direction == Direction.INSERT);
+        int maximum = axis == Axis.ROW ? MAX_ROW : MAX_COLUMN;
+        return mapped < 0 || mapped > maximum ? -1 : (int) mapped;
     }
 
     private static Reference withAxisCoordinate(Reference reference, Axis axis, int coordinate) {

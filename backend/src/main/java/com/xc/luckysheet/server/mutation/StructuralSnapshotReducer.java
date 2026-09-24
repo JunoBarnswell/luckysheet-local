@@ -598,10 +598,8 @@ final class StructuralSnapshotReducer {
     }
 
     private static int shiftIndex(int value, int at, int count, FormulaReferenceTransformer.Direction direction) {
-        if (direction == FormulaReferenceTransformer.Direction.INSERT) return value >= at ? value + count : value;
-        if (value < at) return value;
-        if (value < at + count) return -1;
-        return value - count;
+        return Math.toIntExact(StructuralAxisCoordinate.mapPoint(
+                value, at, count, direction == FormulaReferenceTransformer.Direction.INSERT));
     }
 
     private static int integerKey(String value, int maximum, String label) {
