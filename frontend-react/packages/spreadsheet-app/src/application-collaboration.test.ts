@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { CommandRuntime } from '@react-sheets/command-runtime';
 import { WorkbookModel } from '@react-sheets/core-model';
-import { createCellSetMutationParams } from '@react-sheets/sheet-features';
+import { createCellSetMutationParams, createPasteSpecialSpec } from '@react-sheets/sheet-features';
 import { registerSpreadsheetFeatures } from './feature-registry';
 import { DrawingRuntime } from './features/drawing';
 import { WorkbookSession } from './workbook-session';
@@ -139,6 +139,87 @@ describe('WorkbookSession collaboration integration', () => {
     assert.equal(sheet.cells.get(1, 1)?.value, 'source');
     assert.equal(runtime.undo(), false);
     assert.equal(runtime.getInvalidHistoryEntries()[0]?.status, 'invalid');
+  });
+
+  it('rejects structural mutation envelopes whose sheet differs from their target', () => {
+    const workbook = new WorkbookModel('wb-structural-scope', 'Structural scope');
+    const target = workbook.addSheet('target-sheet', 'Target');
+    const runtime = new CommandRuntime(workbook);
+    registerSpreadsheetFeatures(runtime, new DrawingRuntime());
+    target.cells.set(4, 0, { value: 'stays-at-row-five' });
+
+    assert.throws(() => runtime.applyRemoteMutations([{
+      id: 'rows.inserted',
+      unitId: workbook.unitId,
+      sheetId: workbook.primarySheetId,
+      params: { sheetId: target.id, at: 2, count: 1 },
+      affectedRanges: [{ sheetId: target.id, startRow: 2, endRow: 2, startColumn: 0, endColumn: 0 }],
+    }]), /envelope sheetId differs from its target/);
+    assert.equal(target.cells.get(4, 0)?.value, 'stays-at-row-five');
+    assert.equal(target.cells.get(5, 0), undefined);
+  });
+
+  it('invalidates unscoped history when another unscoped mutation arrives', () => {
+    const workbook = new WorkbookModel('wb-defined-name-history', 'Defined name history');
+    const runtime = new CommandRuntime(workbook);
+    registerSpreadsheetFeatures(runtime, new DrawingRuntime());
+    const sheetId = workbook.primarySheetId;
+    runtime.execute('workbook.name.set', { name: 'Rate', formula: '=Sheet1!A1', scope: 'workbook' });
+    const session = new CollaborationSession(runtime);
+
+    session.applyRemote({
+      schema: 'OperationEnvelope', clientSessionId: 'fixture-session', operationId: 'remote-name-set',
+      unitId: workbook.unitId, actorId: 'actor-2', origin: 'client', clientSequence: 1, baseRevision: 0,
+      revision: 1, committedAt: new Date().toISOString(), createdAt: new Date().toISOString(),
+      mutations: [{
+        id: 'name.set', sheetId,
+        params: { model: { name: 'Rate', formula: '=Sheet1!A2', scope: 'workbook' } },
+        affectedRanges: [],
+      }],
+    });
+
+    assert.equal(workbook.getDefinedName('Rate')?.formula, '=Sheet1!A2');
+    assert.equal(runtime.undo(), false);
+    assert.equal(runtime.getInvalidHistoryEntries()[0]?.status, 'invalid');
+  });
+
+  it('rejects range-paste history with omitted or out-of-footprint affected cells', () => {
+    const workbook = new WorkbookModel('wb-paste-footprint', 'Paste footprint');
+    const runtime = new CommandRuntime(workbook);
+    registerSpreadsheetFeatures(runtime, new DrawingRuntime());
+    const sheetId = workbook.primarySheetId;
+    runtime.execute('sheet.range.paste', {
+      sheetId,
+      targetOrigin: { row: 2, column: 2 },
+      clipboard: {
+        schema: 'SparseClipboardPayload',
+        range: { sheetId, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 },
+        sourceExtent: { rows: 1, columns: 1 },
+        occupiedCells: [{ rowOffset: 0, columnOffset: 0, value: { value: 'paste' } }],
+        transfer: 'copy',
+        rangeMetadata: { columnWidths: [], validations: [], conditionalFormats: [], notes: [], comments: [], hyperlinks: [] },
+      },
+      transfer: 'copy',
+      spec: createPasteSpecialSpec({
+        formatting: 'none',
+        metadata: { commentsNotes: false, validation: false, columnWidths: false, conditionalFormats: false, hyperlinks: false },
+      }),
+    });
+    const mutation = runtime.getUndoEntries().at(-1)?.forwardMutations[0];
+    assert.ok(mutation);
+
+    assert.ok(runtime.registry.validateMutationInfo({ ...mutation, affectedRanges: [] })
+      .some((issue) => issue.code === 'invalid-affected-ranges'));
+    const params = mutation.params as { snapshot: { cells: Array<{ row: number; column: number; value?: unknown }> } };
+    const escapedSnapshot = {
+      ...mutation,
+      params: {
+        ...params,
+        snapshot: { ...params.snapshot, cells: [...params.snapshot.cells, { row: 9, column: 9, value: { value: 'outside' } }] },
+      },
+    };
+    assert.ok(runtime.registry.validateMutationInfo(escapedSnapshot)
+      .some((issue) => issue.code === 'invalid-params'));
   });
 
   it('replays a canonical bulk row visibility mutation without splitting history semantics', () => {

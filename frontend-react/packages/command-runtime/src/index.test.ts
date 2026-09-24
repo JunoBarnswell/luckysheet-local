@@ -202,6 +202,29 @@ test('remote mutations reject a different workbook unit', () => {
   }]), /Mutation unit mismatch/);
 });
 
+test('remote revision validation rejects before applying a mutation', () => {
+  const workbook = new WorkbookModel('unit-invalid-revision', 'Invalid revision');
+  const runtime = new CommandRuntime(workbook);
+  runtime.registry.registerMutation({
+    id: 'cell.set',
+    handler: (item, context) => {
+      const params = item.params as { row: number; column: number; value: string };
+      context.workbook.getSheet(item.sheetId).cells.set(params.row, params.column, { value: params.value });
+    },
+    metadata: cellSetMetadata,
+  });
+  runtime.registry.registerMutation({ id: 'cell.restore', handler: () => undefined, metadata: cellRestoreMetadata });
+
+  assert.throws(() => runtime.applyRemoteMutations([{
+    id: 'cell.set',
+    unitId: workbook.unitId,
+    sheetId: 'sheet-1',
+    params: { row: 3, column: 4, value: 'must-not-apply' },
+    affectedRanges: cellRange({ row: 3, column: 4 }),
+  }], { revision: 0 }), /Remote revision is invalid/);
+  assert.equal(workbook.getSheet('sheet-1').cells.get(3, 4), undefined);
+});
+
 test('remote structural history resolves formula sheet names before colliding IDs', () => {
   const workbook = new WorkbookModel('unit-sheet-name-rebase', 'Sheet name rebase');
   workbook.addSheet('End', 'Target');

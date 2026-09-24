@@ -481,6 +481,12 @@ export class CommandRegistry {
     if (!isRecord(item) || typeof item.unitId !== 'string' || !item.unitId || typeof item.sheetId !== 'string' || !item.sheetId) {
       issues.push(issue('invalid-registration', ownerMutationId, `Mutation ${item.id} has invalid unitId or sheetId`, inverseId));
     }
+    if (registration.metadata.historyRebase?.kind === 'axis'
+      && isRecord(item.params)
+      && typeof item.params.sheetId === 'string'
+      && item.params.sheetId !== item.sheetId) {
+      issues.push(issue('invalid-registration', ownerMutationId, `Structural mutation ${item.id} envelope sheetId differs from its target`, inverseId));
+    }
     if (!Array.isArray(item.affectedRanges) || !item.affectedRanges.every(isValidRangeRef)) {
       issues.push(issue('invalid-affected-ranges', ownerMutationId, `Mutation ${item.id} has invalid affected ranges`, inverseId));
     }
@@ -785,6 +791,10 @@ function transformHistoryEntry(
     reason: `History ${entry.operationId} cannot be safely rebased across ${remote.id}: its axis transform payload is invalid`,
   };
   if (!delta) {
+    if (entry.affectedRanges.length === 0 && remote.affectedRanges.length === 0) return {
+      ok: false,
+      reason: `History ${entry.operationId} and remote mutation ${remote.id} have no canonical conflict scope`,
+    };
     const overlapsRemote = entry.affectedRanges.some((left) => remote.affectedRanges.some((right) => (
       left.sheetId === right.sheetId
       && left.startRow <= right.endRow && left.endRow >= right.startRow
@@ -1065,6 +1075,10 @@ export class CommandRuntime {
    */
   applyRemoteMutations(items: readonly MutationInfo[], remoteContext: RemoteMutationContext = {}): void {
     this.registry.assertComplete();
+    if (remoteContext.revision !== undefined
+      && (!Number.isSafeInteger(remoteContext.revision) || remoteContext.revision < 1)) {
+      throw new Error('Remote revision is invalid');
+    }
     // A committed operation may contain several dependent mutations. Replay
     // them against an isolated snapshot first so a later rejection cannot
     // leave the live workbook partially changed.
@@ -1072,7 +1086,6 @@ export class CommandRuntime {
     this.applyHistory(items, 'remote');
     for (const item of items) this.transformHistoryAgainstRemote(item);
     if (remoteContext.revision !== undefined) {
-      if (!Number.isSafeInteger(remoteContext.revision) || remoteContext.revision < 1) throw new Error('Remote revision is invalid');
       this.currentRevision = Math.max(this.currentRevision, remoteContext.revision);
     }
   }
