@@ -231,6 +231,203 @@ test('WorkbookModel manages multiple sheets with a stable primary sheet', () => 
   assert.throws(() => workbook.removeSheet('sheet-1'), /must keep at least one worksheet/);
 });
 
+test('sheet deletion rejects external formula anchors, validation ranges, chart ranges, and shape formulas', () => {
+  const assertSourceSheetDeletionRejected = (workbook: WorkbookModel, sourceSheetId: string): void => {
+    const originalOrder = [...workbook.sheetOrder];
+    assert.throws(() => workbook.removeSheet(sourceSheetId), /external references must be resolved first/);
+    assert.equal(workbook.sheets.has(sourceSheetId), true);
+    assert.deepEqual(workbook.sheetOrder, originalOrder);
+  };
+
+  const validationWorkbook = new WorkbookModel('delete-validation-source', 'Delete validation source');
+  const validationOwner = validationWorkbook.getSheet('sheet-1');
+  const validationSource = validationWorkbook.addSheet('validation-source', 'Validation Source');
+  validationOwner.dataValidations.push({
+    id: 'cross-sheet-list',
+    sheetId: validationOwner.id,
+    ranges: [{ sheetId: validationOwner.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }],
+    type: 'list',
+    listSource: { kind: 'range', range: { sheetId: validationSource.id, startRow: 0, endRow: 2, startColumn: 0, endColumn: 0 } },
+  });
+  assertSourceSheetDeletionRejected(validationWorkbook, validationSource.id);
+
+  const anchorWorkbook = new WorkbookModel('delete-anchor-source', 'Delete anchor source');
+  const anchorSource = anchorWorkbook.addSheet('anchor-source', 'Anchor Source');
+  anchorWorkbook.setDefinedName({
+    name: 'RelativeName', formula: 'A1', scope: 'workbook',
+    anchor: { sheetId: anchorSource.id, row: 0, column: 0 },
+  });
+  assertSourceSheetDeletionRejected(anchorWorkbook, anchorSource.id);
+
+  const chartWorkbook = new WorkbookModel('delete-chart-source', 'Delete chart source');
+  const chartOwner = chartWorkbook.getSheet('sheet-1');
+  const chartSource = chartWorkbook.addSheet('chart-source', 'Chart Source');
+  chartOwner.drawings.push({
+    id: 'cross-sheet-chart', sheetId: chartOwner.id, kind: 'chart', payloadId: 'cross-sheet-chart',
+    anchor: { kind: 'absolute' }, transform: { x: 0, y: 0, width: 200, height: 120 }, zIndex: 0,
+  });
+  chartOwner.drawingPayloads.set('cross-sheet-chart', {
+    kind: 'chart', chartId: 'cross-sheet-chart', chartType: 'column', subtype: 'clustered',
+    source: { kind: 'worksheet-ranges', ranges: [{ sheetId: chartSource.id, startRow: 0, endRow: 3, startColumn: 0, endColumn: 1 }] },
+    elements: { hiddenData: 'show' },
+  });
+  assertSourceSheetDeletionRejected(chartWorkbook, chartSource.id);
+
+  const shapeWorkbook = new WorkbookModel('delete-shape-source', 'Delete shape source');
+  const shapeOwner = shapeWorkbook.getSheet('sheet-1');
+  const shapeSource = shapeWorkbook.addSheet('shape-source', 'Shape Source');
+  shapeOwner.drawings.push({
+    id: 'formula-shape', sheetId: shapeOwner.id, kind: 'shape', payloadId: 'formula-shape',
+    anchor: { kind: 'absolute' }, transform: { x: 0, y: 0, width: 100, height: 60 }, zIndex: 0,
+  });
+  shapeOwner.drawingPayloads.set('formula-shape', {
+    kind: 'shape', type: 'rectangle', fill: '#ffffff', stroke: '#000000',
+    propertyFormula: "='Shape Source'!A1",
+  });
+  assertSourceSheetDeletionRejected(shapeWorkbook, shapeSource.id);
+
+  const barcodeWorkbook = new WorkbookModel('delete-barcode-source', 'Delete barcode source');
+  const barcodeOwner = barcodeWorkbook.getSheet('sheet-1');
+  const barcodeSource = barcodeWorkbook.addSheet('barcode-source', 'Barcode Source');
+  barcodeOwner.cells.set(0, 0, {
+    value: null,
+    presentation: {
+      kind: 'barcode', symbology: 'code128',
+      source: { kind: 'formula', formula: "='Barcode Source'!A1" },
+      parameters: { symbology: 'code128' },
+      options: { foreground: '#000000', background: '#ffffff', showText: true, labelPosition: 'below', quietZone: 2 },
+    },
+  });
+  assertSourceSheetDeletionRejected(barcodeWorkbook, barcodeSource.id);
+
+  const preservedFormulaWorkbook = new WorkbookModel('delete-preserved-formula-source', 'Delete preserved formula source');
+  const preservedFormulaOwner = preservedFormulaWorkbook.getSheet('sheet-1');
+  const preservedFormulaSource = preservedFormulaWorkbook.addSheet('preserved-formula-source', 'Preserved Formula Source');
+  preservedFormulaOwner.cells.set(0, 0, {
+    value: null,
+    formulaMetadata: {
+      kind: 'dataTable', preservedOnly: true, reason: 'Native formula retained from OOXML',
+      sourceFormula: "='Preserved Formula Source'!A1",
+    },
+  });
+  assertSourceSheetDeletionRejected(preservedFormulaWorkbook, preservedFormulaSource.id);
+
+  const tableViewWorkbook = new WorkbookModel('delete-table-view-formula-source', 'Delete table view formula source');
+  const tableViewOwner = tableViewWorkbook.getSheet('sheet-1');
+  const tableViewSource = tableViewWorkbook.addSheet('table-view-source', 'Table View Source');
+  tableViewOwner.kind = 'table-sheet';
+  tableViewOwner.tableSheet = {
+    viewId: 'table-view',
+    columns: [{ fieldId: 'calculated', caption: 'Calculated', type: 'formula', formula: "='Table View Source'!A1" }],
+    grouping: [],
+  };
+  assertSourceSheetDeletionRejected(tableViewWorkbook, tableViewSource.id);
+});
+
+test('sheet rename and duplication preserve every persisted formula owner identity', () => {
+  const workbook = new WorkbookModel('sheet-formula-identity', 'Sheet formula identity');
+  const source = workbook.addSheet('formula-source', 'Source');
+  source.cells.set(0, 0, {
+    value: null,
+    formula: "='Source'!A1",
+    formulaMetadata: { kind: 'normal', sourceFormula: "='Source'!A1" },
+  });
+  source.cells.set(0, 1, {
+    value: null,
+    presentation: {
+      kind: 'barcode', symbology: 'code128',
+      source: { kind: 'formula', formula: "='Source'!A1" },
+      parameters: { symbology: 'code128' },
+      options: { foreground: '#000000', background: '#ffffff', showText: true, labelPosition: 'below', quietZone: 2 },
+    },
+  });
+  source.kind = 'table-sheet';
+  source.tableSheet = {
+    viewId: 'formula-view',
+    columns: [{ fieldId: 'calculated', caption: 'Calculated', type: 'formula', formula: "='Source'!A1" }],
+    grouping: [],
+  };
+  source.drawings.push({
+    id: 'formula-shape', sheetId: source.id, kind: 'shape', payloadId: 'formula-shape',
+    anchor: { kind: 'absolute' }, transform: { x: 0, y: 0, width: 100, height: 60 }, zIndex: 0,
+  });
+  source.drawingPayloads.set('formula-shape', {
+    kind: 'shape', type: 'rectangle', fill: '#ffffff', stroke: '#000000',
+    propertyFormula: "='Source'!A1",
+  });
+  workbook.setDefinedName({
+    name: 'RelativeName', formula: "='Source'!A1", scope: 'sheet', sheetId: source.id,
+    anchor: { sheetId: source.id, row: 0, column: 0 },
+  });
+  workbook.setCellStyleTemplate({
+    id: 'formula-template', name: 'Formula template', style: {},
+    dataValidation: { type: 'custom', formula1: "='Source'!A1" },
+  });
+  workbook.dataModel.views.set('formula-view', {
+    id: 'formula-view', name: 'Formula view', tableId: 'source-table', marginLeftPx: 0,
+    fields: [{ fieldId: 'calculated', caption: 'Calculated', formula: "='Source'!A1" }],
+  });
+  const externalOwner = workbook.getSheet('sheet-1');
+  externalOwner.cells.set(2, 2, {
+    value: null,
+    presentation: {
+      kind: 'barcode', symbology: 'code128',
+      source: { kind: 'formula', formula: "='Source'!A1" },
+      parameters: { symbology: 'code128' },
+      options: { foreground: '#000000', background: '#ffffff', showText: true, labelPosition: 'below', quietZone: 2 },
+    },
+  });
+  externalOwner.drawings.push({
+    id: 'external-formula-shape', sheetId: externalOwner.id, kind: 'shape', payloadId: 'external-formula-shape',
+    anchor: { kind: 'absolute' }, transform: { x: 0, y: 0, width: 100, height: 60 }, zIndex: 0,
+  });
+  externalOwner.drawingPayloads.set('external-formula-shape', {
+    kind: 'shape', type: 'rectangle', fill: '#ffffff', stroke: '#000000',
+    propertyFormula: "='Source'!A1",
+  });
+
+  workbook.renameSheet(source.id, 'Renamed Sheet');
+  const renamedBarcode = source.cells.get(0, 1)?.presentation;
+  const renamedExternalBarcode = externalOwner.cells.get(2, 2)?.presentation;
+  assert.equal(source.cells.get(0, 0)?.formula, "='Renamed Sheet'!A1");
+  assert.equal(source.cells.get(0, 0)?.formulaMetadata?.sourceFormula, "='Renamed Sheet'!A1");
+  assert.equal(renamedBarcode?.kind === 'barcode' && renamedBarcode.source.kind === 'formula' ? renamedBarcode.source.formula : undefined, "='Renamed Sheet'!A1");
+  assert.equal(source.tableSheet?.columns[0]?.formula, "='Renamed Sheet'!A1");
+  assert.equal((source.drawingPayloads.get('formula-shape') as { propertyFormula?: string }).propertyFormula, "='Renamed Sheet'!A1");
+  assert.equal(workbook.dataModel.views.get('formula-view')?.fields[0]?.formula, "='Renamed Sheet'!A1");
+  assert.equal(workbook.cellStyleTemplates.get('formula-template')?.dataValidation?.formula1, "='Renamed Sheet'!A1");
+  assert.equal(renamedExternalBarcode?.kind === 'barcode' && renamedExternalBarcode.source.kind === 'formula' ? renamedExternalBarcode.source.formula : undefined, "='Renamed Sheet'!A1");
+  assert.equal((externalOwner.drawingPayloads.get('external-formula-shape') as { propertyFormula?: string }).propertyFormula, "='Renamed Sheet'!A1");
+
+  const duplicate = workbook.duplicateSheet(source.id, 'formula-copy', 'Copy Sheet');
+  const duplicatedBarcode = duplicate.cells.get(0, 1)?.presentation;
+  assert.equal(duplicate.cells.get(0, 0)?.formula, "='Copy Sheet'!A1");
+  assert.equal(duplicate.cells.get(0, 0)?.formulaMetadata?.sourceFormula, "='Copy Sheet'!A1");
+  assert.equal(duplicatedBarcode?.kind === 'barcode' && duplicatedBarcode.source.kind === 'formula' ? duplicatedBarcode.source.formula : undefined, "='Copy Sheet'!A1");
+  assert.equal(duplicate.tableSheet?.columns[0]?.formula, "='Copy Sheet'!A1");
+  assert.equal((duplicate.drawingPayloads.get('formula-shape::formula-copy') as { propertyFormula?: string } | undefined)?.propertyFormula, "='Copy Sheet'!A1");
+  assert.equal(workbook.definedNameModels.find((entry) => entry.name === 'RelativeName' && entry.sheetId === duplicate.id)?.anchor?.sheetId, duplicate.id);
+  assert.equal(workbook.dataModel.views.get('formula-view')?.fields[0]?.formula, "='Renamed Sheet'!A1");
+  assert.equal(workbook.cellStyleTemplates.get('formula-template')?.dataValidation?.formula1, "='Renamed Sheet'!A1");
+  const unchangedExternalBarcode = externalOwner.cells.get(2, 2)?.presentation;
+  assert.equal(unchangedExternalBarcode?.kind === 'barcode' && unchangedExternalBarcode.source.kind === 'formula' ? unchangedExternalBarcode.source.formula : undefined, "='Renamed Sheet'!A1");
+  assert.equal((externalOwner.drawingPayloads.get('external-formula-shape') as { propertyFormula?: string }).propertyFormula, "='Renamed Sheet'!A1");
+});
+
+test('sheet rename fails closed on a preserved-only formula reference without changing the workbook', () => {
+  const workbook = new WorkbookModel('preserved-formula-rename', 'Preserved formula rename');
+  const source = workbook.addSheet('preserved-source', 'Preserved Source');
+  const formula = "='Preserved Source'!A1";
+  source.cells.set(0, 0, {
+    value: null,
+    formulaMetadata: { kind: 'dataTable', preservedOnly: true, sourceFormula: formula, reason: 'Native OOXML formula' },
+  });
+
+  assert.throws(() => workbook.renameSheet(source.id, 'Renamed Source'), /cannot be rewritten safely/);
+  assert.equal(source.name, 'Preserved Source');
+  assert.equal(source.cells.get(0, 0)?.formulaMetadata?.sourceFormula, formula);
+});
+
 test('canonical snapshots reject drawings whose Pivot reference no longer exists', () => {
   const workbook = new WorkbookModel('pivot-reference-validation', 'Pivot Reference Validation');
   const sheet = workbook.getSheet('sheet-1');
