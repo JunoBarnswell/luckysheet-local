@@ -3,6 +3,7 @@ import test from 'node:test';
 import {
   FormulaEngine,
   RangeIndex,
+  collectFormulaDependencies,
   mapAstMovedReferences,
   mapAstStructuralReferences,
   formatFormula,
@@ -403,6 +404,13 @@ test('FormulaEngine evaluates qualified display names against canonical workshee
   assert.equal(engine.setFormula(address('owner-id', 1, 1), '=SUM(Target!A1:A2)').value, 18);
   assert.equal(engine.setFormula(address('owner-id', 2, 1), "=' Target '!A1+1").value, 5);
   assertError(engine.setFormula(address('owner-id', 3, 1), '=Missing!A1').value, '#REF!');
+});
+
+test('dependency collection rejects qualified names without worksheet identities', () => {
+  assert.throws(
+    () => collectFormulaDependencies(parseFormula('=Remote!A1'), address('owner-id', 0, 0), { sheetOrder: [] }),
+    /Worksheet identity order is required to resolve/,
+  );
 });
 
 function address(sheetId: string, row: number, column: number): CellAddress {

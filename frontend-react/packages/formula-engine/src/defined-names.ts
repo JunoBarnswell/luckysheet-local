@@ -19,7 +19,7 @@ export interface FormulaDefinedName {
 
 export interface DefinedNameContext {
   currentCell: CellAddress;
-  sheetOrder?: readonly FormulaSheetIdentity[];
+  sheetOrder: readonly FormulaSheetIdentity[];
   readCell: (address: CellAddress) => FormulaValue;
   readRangeMatrix: (range: RangeDependency) => ArrayValue;
   resolveName?: (name: string) => FormulaValue | undefined;

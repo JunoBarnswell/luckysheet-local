@@ -10,6 +10,7 @@ test('normalizeDefinedNames uppercases keys', () => {
 test('resolveDefinedNameSource supports scalar, range, and formula values', () => {
   const context = {
     currentCell: { sheetId: 'Sheet1', row: 4, column: 2 },
+    sheetOrder: [{ id: 'Sheet1', name: 'Sheet1' }],
     readCell: (address: { row: number; column: number }) => (address.row === 0 && address.column === 0 ? 10 : null),
     readRangeMatrix: () => [[1, 2], [3, 4]],
   };

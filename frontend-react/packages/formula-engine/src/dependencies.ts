@@ -8,13 +8,13 @@ import { isFormulaError } from './values';
 
 export interface CollectFormulaDependenciesOptions {
   readonly sheetTables?: ReadonlyMap<string, SheetTableRef>;
-  readonly sheetOrder?: readonly FormulaSheetIdentity[];
+  readonly sheetOrder: readonly FormulaSheetIdentity[];
 }
 
 export function collectFormulaDependencies(
   ast: FormulaAst,
   owner: CellAddress,
-  options: CollectFormulaDependenciesOptions = {},
+  options: CollectFormulaDependenciesOptions,
 ): readonly FormulaDependency[] {
   assertCellAddress(owner);
   const dependencies: FormulaDependency[] = [];
@@ -26,17 +26,17 @@ export function collectFormulaDependencies(
 export function resolveCellReference(
   reference: ParsedCellReference,
   currentCell: CellAddress,
-  sheetOrder?: readonly FormulaSheetIdentity[],
+  sheetOrder: readonly FormulaSheetIdentity[],
 ): CellAddress {
   const sheetId = reference.sheetId ?? currentCell.sheetId;
   if (!sheetId) throw new FormulaReferenceError('Cell reference is missing a worksheet');
-  return { sheetId: resolveFormulaSheetId(reference.sheetId, currentCell.sheetId, sheetOrder ?? []), row: reference.row, column: reference.column };
+  return { sheetId: resolveFormulaSheetId(reference.sheetId, currentCell.sheetId, sheetOrder), row: reference.row, column: reference.column };
 }
 
 export function resolveRangeReference(
   node: RangeReferenceNode,
   currentCell: CellAddress,
-  sheetOrder?: readonly FormulaSheetIdentity[],
+  sheetOrder: readonly FormulaSheetIdentity[],
 ): RangeDependency {
   const start = resolveCellReference(node.start.reference, currentCell, sheetOrder);
   const end = resolveCellReference(
@@ -52,8 +52,8 @@ function visit(
   owner: CellAddress,
   dependencies: FormulaDependency[],
   seen: Set<string>,
-  sheetTables?: ReadonlyMap<string, SheetTableRef>,
-  sheetOrder?: readonly FormulaSheetIdentity[],
+  sheetTables: ReadonlyMap<string, SheetTableRef> | undefined,
+  sheetOrder: readonly FormulaSheetIdentity[],
 ): void {
   switch (node.type) {
     case 'cell-reference': {
@@ -134,8 +134,8 @@ function collectNestedTableDependencies(
   owner: CellAddress,
   dependencies: FormulaDependency[],
   seen: Set<string>,
-  sheetTables?: ReadonlyMap<string, SheetTableRef>,
-  sheetOrder?: readonly FormulaSheetIdentity[],
+  sheetTables: ReadonlyMap<string, SheetTableRef> | undefined,
+  sheetOrder: readonly FormulaSheetIdentity[],
 ): void {
   switch (reference.type) {
     case 'table-reference':

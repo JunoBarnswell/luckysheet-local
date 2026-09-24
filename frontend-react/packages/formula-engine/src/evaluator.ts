@@ -15,7 +15,7 @@ import type { FormulaSheetIdentity } from './sheet-reference';
 
 export interface FormulaEvaluationContext {
   readonly currentCell: CellAddress;
-  readonly sheetOrder?: readonly FormulaSheetIdentity[];
+  readonly sheetOrder: readonly FormulaSheetIdentity[];
   readCell(address: CellAddress): FormulaValue;
   readRange(range: RangeDependency): Iterable<FormulaValue>;
   readRangeMatrix?(range: RangeDependency): ArrayValue;

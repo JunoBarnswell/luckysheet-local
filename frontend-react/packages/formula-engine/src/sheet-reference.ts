@@ -22,9 +22,12 @@ export function sameFormulaSheetName(left: string | undefined, right: string): b
 export function resolveFormulaSheetId(
   reference: string | undefined,
   ownerSheetId: string,
-  sheetOrder: readonly FormulaSheetIdentity[] = [],
+  sheetOrder: readonly FormulaSheetIdentity[],
 ): string {
-  if (reference === undefined || sheetOrder.length === 0) return reference ?? ownerSheetId;
+  if (reference === undefined) return ownerSheetId;
+  if (sheetOrder.length === 0) {
+    throw new FormulaReferenceError(`Worksheet identity order is required to resolve: ${reference}`);
+  }
   const index = formulaSheetReferenceIndex(reference, sheetOrder);
   const sheet = index >= 0 ? sheetOrder[index] : undefined;
   if (!sheet) throw new FormulaReferenceError(`Reference worksheet cannot be resolved: ${reference}`);
