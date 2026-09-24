@@ -25,6 +25,7 @@ import com.xc.luckysheet.server.contract.QueryExecutionRequest;
 import com.xc.luckysheet.server.contract.QueryExecutionResponse;
 import com.xc.luckysheet.server.contract.QueryBlockExecutionResponse;
 import com.xc.luckysheet.server.contract.QueryBlockResponse;
+import com.xc.luckysheet.server.contract.QueryDataSourceExecutionResponse;
 import com.xc.luckysheet.server.contract.ShareCreateRequest;
 import com.xc.luckysheet.server.contract.ShareResponse;
 import com.xc.luckysheet.server.coordination.WebSocketSessionRegistry;
@@ -272,6 +273,15 @@ public class WorkbookController {
             Authentication authentication
     ) {
         return queries.executeBlocks(unitId, request, ActorIdentity.subject(authentication));
+    }
+
+    @PostMapping("/{unitId}/queries/execute-data-source")
+    public QueryDataSourceExecutionResponse executeQueryDataSource(
+            @PathVariable String unitId,
+            @Valid @RequestBody QueryExecutionRequest request,
+            Authentication authentication
+    ) {
+        return queries.executeDataSource(unitId, request, ActorIdentity.subject(authentication));
     }
 
     @GetMapping("/{unitId}/queries/{queryId}/blocks/{executionId}")

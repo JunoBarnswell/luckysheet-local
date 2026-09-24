@@ -46,7 +46,7 @@ class QueryExecutionServiceTest {
                     true, 100, 20, 1_000_000, 2_048, Duration.ofSeconds(5), 2,
                     Map.of("local", new QuerySource("sqlite", "jdbc:sqlite:" + file, null, null, null, Map.of()))
             );
-            QueryExecutionService service = new QueryExecutionService(properties, access, lifecycle, store, audit, new ObjectMapper());
+            QueryExecutionService service = new QueryExecutionService(properties, access, lifecycle, store, mock(WorkbookDataBlockService.class), audit, new ObjectMapper());
             var response = service.execute("unit-1", new QueryExecutionRequest(
                     "query-1", "Items", "sqlite", "local", "SELECT name, amount FROM items WHERE amount > ?",
                     null, null, List.of(new com.fasterxml.jackson.databind.node.IntNode(1)), List.of()
@@ -80,7 +80,7 @@ class QueryExecutionServiceTest {
                     true, 100, 20, 1_000_000, 2_048, Duration.ofSeconds(5), 2,
                     Map.of("local", new QuerySource("sqlite", "jdbc:sqlite:" + file, null, null, null, Map.of()))
             );
-            QueryExecutionService service = new QueryExecutionService(properties, access, lifecycle, store, audit, new ObjectMapper());
+            QueryExecutionService service = new QueryExecutionService(properties, access, lifecycle, store, mock(WorkbookDataBlockService.class), audit, new ObjectMapper());
             ObjectMapper mapper = new ObjectMapper();
             var response = service.execute("unit-recipe", new QueryExecutionRequest(
                     "query-recipe", "Recipe", "sqlite", "local", "SELECT name, amount FROM items",
@@ -122,7 +122,7 @@ class QueryExecutionServiceTest {
                     true, 100, 20, 1_000_000, 2_048, Duration.ofSeconds(5), 2,
                     Map.of("local", new QuerySource("sqlite", "jdbc:sqlite:" + file, null, null, null, Map.of()))
             );
-            QueryExecutionService service = new QueryExecutionService(properties, access, lifecycle, store, audit, new ObjectMapper());
+            QueryExecutionService service = new QueryExecutionService(properties, access, lifecycle, store, mock(WorkbookDataBlockService.class), audit, new ObjectMapper());
             var request = new QueryExecutionRequest(
                     "query-blocks", "Items", "sqlite", "local", "SELECT name, amount FROM items ORDER BY amount",
                     null, null, List.of(), List.of()

@@ -267,7 +267,6 @@ import {
   buildQueryLoadPayloadFromBlocks,
   buildQueryResultSnapshot,
   deserializeQueryDefinition,
-  encodeQueryLoadBlock,
   executeQueryDefinition,
   querySourceId,
   prepareQueryLoadPayload,
@@ -759,7 +758,6 @@ export interface LocalObjectInsertInput {
 }
 
 export class WorkbookSession {
-  private static readonly QUERY_BLOCK_TRANSFER_CONCURRENCY = 4;
   private readonly runtime: SpreadsheetRuntime;
   private readonly cellResolver: WorkbookCellResolver;
   private readonly permission: PermissionService;
@@ -7334,61 +7332,41 @@ export class WorkbookSession {
     const request = this.buildServerQueryRequest(query);
     const sourceId = querySourceId(query.id);
     const revision = (this.runtime.model.dataModel.sources.get(sourceId)?.revision ?? -1) + 1;
-    return this.useServerQueryBlocks(request, async (session, unitId) => {
-      assertCurrent();
-      const metadata: QueryBlockLoadMetadata = {
-        columns: session.columns,
-        columnTypes: session.columnTypes as ServerQueryColumnType[],
-        rowCount: session.rowCount,
-        blockRowCount: session.blockRowCount,
-      };
-      const offsets = Array.from(
-        { length: Math.ceil(metadata.rowCount / metadata.blockRowCount) },
-        (_unused, index) => index * metadata.blockRowCount,
-      );
-      let nextOffset = 0;
-      let failure: unknown;
-      const transfer = async (): Promise<void> => {
-        while (failure === undefined) {
-          const index = nextOffset;
-          nextOffset += 1;
-          if (index >= offsets.length) return;
-          const offset = offsets[index]!;
-          try {
-            assertCurrent();
-            const block = await this.runtime.api.getServerQueryBlock(unitId, query.id, session.executionId, offset);
-            if (block.queryId !== query.id || block.executionId !== session.executionId || block.offset !== offset) throw new Error('Java backend returned an out-of-order query block');
-            if (block.rows.length !== Math.min(metadata.blockRowCount, metadata.rowCount - offset)
-              || block.hasMore !== (offset + block.rows.length < metadata.rowCount)) throw new Error('Java backend returned an invalid query block size or continuation flag');
-            const encoded = await encodeQueryLoadBlock(sourceId, revision, metadata, offset, block.rows);
-            assertCurrent();
-            // Record ownership before the remote write: failure cleanup must
-            // also remove a block that reached local persistence first.
-            blockRefs.push(encoded.ref);
-            await this.runtime.dataBlocks.put(encoded.ref, encoded.payload);
-            assertCurrent();
-          } catch (error) {
-            if (failure === undefined) failure = error;
-            return;
-          }
-        }
-      };
-      await Promise.all(Array.from(
-        { length: Math.min(WorkbookSession.QUERY_BLOCK_TRANSFER_CONCURRENCY, offsets.length) },
-        () => transfer(),
-      ));
-      if (failure !== undefined) throw failure;
-      if (blockRefs.length !== offsets.length) {
-        throw new Error('Java backend did not return the declared query block count');
-      }
-      assertCurrent();
-      const payload = buildQueryLoadPayloadFromBlocks(this.runtime.model, query, target, metadata, blockRefs);
-      if (payload.source.revision !== revision) throw new Error('Workbook data source changed while the query was loading');
-      return {
-        result: { columns: [...metadata.columns], rows: [], rowCount: metadata.rowCount },
-        payload,
-      };
-    });
+    const session = await this.runtime.api.startServerQueryDataSource(this.runtime.model.unitId, request);
+    const metadata: QueryBlockLoadMetadata = {
+      columns: session.columns,
+      columnTypes: session.columnTypes as ServerQueryColumnType[],
+      rowCount: session.rowCount,
+      blockRowCount: session.blockRowCount,
+    };
+    const refs = session.blocks.map((block) => ({
+      id: block.blockId,
+      dataSourceId: sourceId,
+      startRow: block.startRow,
+      rowCount: block.rowCount,
+      storageKey: `data-source/${sourceId}/revision-${revision}/${block.blockId}`,
+      checksum: block.checksum,
+      byteLength: block.byteLength,
+      encoding: 'columnar-v1' as const,
+      revision,
+    }));
+    // The server has already persisted these immutable blocks. Register them
+    // for failure cleanup before any stale-workbook check; no block bytes
+    // cross the browser until a viewport or pivot scan asks for them.
+    blockRefs.push(...refs);
+    assertCurrent();
+    if (session.queryId !== query.id || session.connectorId !== query.connectorId || session.sourceRef !== request.sourceRef) {
+      throw new Error('Java backend returned mismatched query data-source metadata');
+    }
+    // Validate the metadata only after ownership is tracked so a malformed
+    // response cannot strand server-side blocks on the failure path.
+    validateQueryBlockLoadMetadata(metadata);
+    const payload = buildQueryLoadPayloadFromBlocks(this.runtime.model, query, target, metadata, refs);
+    if (payload.source.revision !== revision) throw new Error('Workbook data source changed while the query was loading');
+    return {
+      result: { columns: [...metadata.columns], rows: [], rowCount: metadata.rowCount },
+      payload,
+    };
   }
 
   getQuerySnapshot(): {
