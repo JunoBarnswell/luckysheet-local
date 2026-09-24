@@ -265,7 +265,12 @@ function encodeColumn(dataType: PivotFieldDataType, values: readonly PivotScalar
 
 function validateDeclaredType(fieldId: string, dataType: PivotFieldDataType, values: readonly PivotScalar[]): void {
   const invalid = values.find((value) => {
-    if (value == null || value === '' || isPivotError(value)) return false;
+    if (value == null || value === '') return false;
+    // Typed numeric/boolean/date columns cannot carry a formula error: the
+    // transferable representation has no error slot and would otherwise turn
+    // the object into NaN/false. Mixed and error columns retain the canonical
+    // error value in their dictionary representation.
+    if (isPivotError(value)) return dataType !== 'mixed' && dataType !== 'error';
     if (dataType === 'number') return typeof value !== 'number' || !Number.isFinite(value);
     if (dataType === 'boolean') return typeof value !== 'boolean';
     if (dataType === 'text') return typeof value !== 'string';

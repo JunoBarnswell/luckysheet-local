@@ -1,9 +1,6 @@
 import type { CommandContext, CommandRuntime } from '@react-sheets/command-runtime';
 import { MAX_SHEET_COLUMN_COUNT, MAX_SHEET_ROW_COUNT, chartSeriesSupportsErrorBars, chartSeriesSupportsTrendlines, resolveWorksheetChartRanges, retargetChartPayload, isChartSubtypeForType, type ChartAxisModel, type ChartDrawingPayload, type ChartMapResource, type ChartSeriesModel, type ChartSource, type ChartSubtype, type DrawingObject, type RangeRef, type WorksheetModel } from '@react-sheets/core-model';
-
-function sheetRange(sheetId: string) {
-  return [{ sheetId, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }];
-}
+import { chartSourceRanges } from './data';
 
 export type ChartType = ChartDrawingPayload['chartType'];
 export type ChartAxis = ChartAxisModel;
@@ -13,6 +10,21 @@ export type ChartSeries = ChartSeriesModel;
 export type ChartPayload = Omit<ChartDrawingPayload, 'series'> & {
   series?: ChartSeries[];
 };
+
+function chartAffectedRanges(workbook: CommandContext['workbook'], ...payloads: ChartPayload[]): RangeRef[] {
+  const tables = [...workbook.dataModel.tables.values()];
+  const ranges: RangeRef[] = [];
+  const seen = new Set<string>();
+  for (const payload of payloads) {
+    for (const range of chartSourceRanges(payload, tables)) {
+      const key = `${range.sheetId}:${range.startRow}:${range.endRow}:${range.startColumn}:${range.endColumn}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      ranges.push(range);
+    }
+  }
+  return ranges;
+}
 
 export interface ChartInsertParams {
   sheetId: string;
@@ -441,11 +453,11 @@ function updateChartPayload(sheet: WorksheetModel, params: { sheetId: string; ch
   sheet.drawingPayloads.set(current.drawing.payloadId, structuredClone(params.payload));
 }
 
-function executeChartInsert(params: ChartInsertParams, context: CommandContext, expectedType?: ChartType): { operationId: string; mutationCount: number; affectedRanges: ReturnType<typeof sheetRange> } {
+function executeChartInsert(params: ChartInsertParams, context: CommandContext, expectedType?: ChartType): { operationId: string; mutationCount: number; affectedRanges: RangeRef[] } {
   if (expectedType && params.payload.chartType !== expectedType) throw new Error(`Chart command type mismatch: expected ${expectedType}`);
   const sheet = context.workbook.getSheet(params.sheetId);
   validateChartPair(sheet, params.drawing, params.payload);
-  const affectedRanges = sheetRange(params.sheetId);
+  const affectedRanges = chartAffectedRanges(context, params.payload);
   context.applyMutation({
     id: 'drawing.add',
     unitId: context.workbook.unitId,
@@ -462,14 +474,14 @@ function executeChartUpdate<P extends { sheetId: string; chartId: string }>(
   params: P,
   context: CommandContext,
   patch: (payload: ChartPayload, params: P) => ChartPayload,
-): { operationId: string; mutationCount: number; affectedRanges: ReturnType<typeof sheetRange> } {
+): { operationId: string; mutationCount: number; affectedRanges: RangeRef[] } {
   const sheet = context.workbook.getSheet(params.sheetId);
   const current = findChartDrawing(sheet, params.chartId);
   if (!current) throw new Error(`Unknown chart: ${params.chartId}`);
   const nextPayload = patch(structuredClone(current.payload), params);
   if (!isChartPayload(nextPayload)) throw new Error(`Invalid chart payload: ${params.chartId}`);
   validateChartSemantics(nextPayload);
-  const affectedRanges = sheetRange(params.sheetId);
+  const affectedRanges = chartAffectedRanges(context, current.payload, nextPayload);
   const mutationParams = { sheetId: params.sheetId, payloadId: params.chartId, before: current.payload, after: nextPayload };
   context.applyMutation({
     id: 'drawing.payload.update',
@@ -608,8 +620,8 @@ export function registerChartCommands(runtime: CommandRuntime): string[] {
     execute: (params, context) => {
       const sheet = context.workbook.getSheet(params.sheetId);
       const current = findChartDrawing(sheet, params.chartId);
-      if (!current) return { operationId: context.operationId, mutationCount: 0, affectedRanges: sheetRange(params.sheetId) };
-      const affectedRanges = sheetRange(params.sheetId);
+      if (!current) return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
+      const affectedRanges = chartAffectedRanges(context, current.payload);
       const inverseParams: ChartInsertParams = { sheetId: params.sheetId, drawing: structuredClone(current.drawing), payload: structuredClone(current.payload) };
       context.applyMutation({
         id: 'drawing.remove',
