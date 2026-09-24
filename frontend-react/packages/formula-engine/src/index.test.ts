@@ -89,6 +89,19 @@ test('reference index resolves worksheet names without host-locale casing', () =
   assert.deepEqual(index.getDependents(address('sheet-1', 4, 2)), [owner]);
 });
 
+test('reference index resolves display names before colliding worksheet IDs', () => {
+  const index = new RangeIndex([
+    { id: 'owner-id', name: 'Owner' },
+    { id: 'Target', name: 'Other' },
+    { id: 'target-id', name: 'Target' },
+  ]);
+  const owner = address('owner-id', 8, 5);
+  index.set(owner, [{ kind: 'cell', address: address('Target', 4, 2) }]);
+
+  assert.deepEqual(index.getDependents(address('target-id', 4, 2)), [owner]);
+  assert.deepEqual(index.getDependents(address('Target', 4, 2)), []);
+});
+
 test('range moves fail closed when whole-axis references would become non-contiguous', () => {
   const move: MoveRangeReferenceTransform = {
     selection: { sheetId: 'sheet-1', startRow: 0, endRow: 1, startColumn: 0, endColumn: 0 },
