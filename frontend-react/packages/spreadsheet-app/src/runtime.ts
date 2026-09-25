@@ -1037,6 +1037,9 @@ export function attachCoreListeners(runtime: SpreadsheetRuntime): void {
         sheetId: mutation.sheetId,
         params: mutation.params,
         affectedRanges: [...mutation.affectedRanges],
+        ...(mutation.structuralImpactRanges
+          ? { structuralImpactRanges: [...mutation.structuralImpactRanges] }
+          : {}),
       });
     }),
   );

@@ -4,6 +4,7 @@ import type {
   PivotDefinition,
   PivotPresentation,
   RangeRef,
+  StructuralFormulaOwnerDelta,
   SheetDataRegion,
   TableScalar,
   WorkbookSnapshot,
@@ -75,6 +76,13 @@ export interface OperationIntent {
   targetBaseRevision: number;
 }
 
+/** Server-derived reference-owner effects for one committed structural mutation. */
+export interface StructuralPatch {
+  version: 1;
+  mutationId: string;
+  formulaOwnerDeltas: StructuralFormulaOwnerDelta[];
+}
+
 export interface OperationEnvelope {
   clientSessionId: string;
   schema: typeof OPERATION_ENVELOPE_SCHEMA;
@@ -112,6 +120,10 @@ export type DataSourceMutationParams =
 export interface CommittedOperationMutation extends OperationMutation {
   /** Authoritative range calculated by the server; never read from client input. */
   affectedRanges: RangeRef[];
+  /** Server-derived formula-owner conflict/protection scope, separate from the mutation's declared range contract. */
+  structuralImpactRanges?: RangeRef[];
+  /** Server-owned, versioned reference-owner delta for structural mutations. */
+  structuralPatch?: StructuralPatch;
 }
 
 export interface CommittedOperationEnvelope extends Omit<OperationEnvelope, 'mutations'> {
@@ -985,6 +997,52 @@ export function validateDataSourceMutationParams(
   }
 }
 
+export function validateStructuralPatch(value: unknown, mutationId: string): StructuralPatch {
+  const patch = requireRecord(value, 'Committed structural patch');
+  validateExactKeys(patch, ['version', 'mutationId', 'formulaOwnerDeltas'], 'Committed structural patch');
+  if (patch.version !== 1 || patch.mutationId !== mutationId || !Array.isArray(patch.formulaOwnerDeltas)) {
+    throw new Error('Committed structural patch header is invalid');
+  }
+  if (!['rows.inserted', 'rows.deleted', 'columns.inserted', 'columns.deleted', 'cells.inserted', 'cells.deleted', 'cells.inserted.restore', 'cells.deleted.restore'].includes(mutationId)) {
+    throw new Error('Committed structural patch mutation id is invalid');
+  }
+  const formulaOwnerDeltas = patch.formulaOwnerDeltas.map((raw, index) => {
+    const delta = requireRecord(raw, `Committed structural patch delta ${index}`);
+    validateExactKeys(delta, ['kind', 'beforeAddress', 'afterAddress', 'before', 'after'], `Committed structural patch delta ${index}`);
+    if (delta.kind !== 'formula-cell') throw new Error(`Committed structural patch delta ${index} has an unsupported owner kind`);
+    const address = (rawAddress: unknown, label: string) => {
+      const item = requireRecord(rawAddress, label);
+      validateExactKeys(item, ['sheetId', 'row', 'column'], label);
+      if (!isNonEmptyString(item.sheetId)
+        || !Number.isSafeInteger(item.row) || Number(item.row) < 0 || Number(item.row) > 1_048_575
+        || !Number.isSafeInteger(item.column) || Number(item.column) < 0 || Number(item.column) > 16_383) {
+        throw new Error(`${label} is outside worksheet bounds`);
+      }
+      return { sheetId: item.sheetId, row: Number(item.row), column: Number(item.column) };
+    };
+    const state = (rawState: unknown, label: string) => {
+      const item = requireRecord(rawState, label);
+      validateExactKeys(item, ['formula', 'sourceFormula', 'barcodeFormula'], label);
+      for (const field of ['formula', 'sourceFormula', 'barcodeFormula']) {
+        if (item[field] !== null && typeof item[field] !== 'string') throw new Error(`${label}.${field} must be a string or null`);
+      }
+      return {
+        formula: item.formula as string | null,
+        sourceFormula: item.sourceFormula as string | null,
+        barcodeFormula: item.barcodeFormula as string | null,
+      };
+    };
+    return {
+      kind: 'formula-cell' as const,
+      beforeAddress: address(delta.beforeAddress, `Committed structural patch delta ${index} beforeAddress`),
+      afterAddress: address(delta.afterAddress, `Committed structural patch delta ${index} afterAddress`),
+      before: state(delta.before, `Committed structural patch delta ${index} before`),
+      after: state(delta.after, `Committed structural patch delta ${index} after`),
+    };
+  });
+  return { version: 1, mutationId, formulaOwnerDeltas };
+}
+
 /** Validate the shared dashboard state before it enters a recovery journal. */
 export function validateAnalysisViewMutationParams(value: unknown): void {
   const params = requireRecord(value, 'Analysis view mutation');
@@ -1359,8 +1417,8 @@ export function validateOperationEnvelope(value: unknown): OperationEnvelope {
   // Reject fields that used to be client-controlled security inputs instead
   // of silently ignoring them. This prevents accidental reintroduction of
   // obsolete semantics through an untyped JSON caller.
-  if ('actorId' in input || 'affectedRanges' in input) {
-    throw new Error('actorId and affectedRanges are server-owned fields');
+  if ('actorId' in input || 'affectedRanges' in input || 'structuralImpactRanges' in input || 'structuralPatches' in input) {
+    throw new Error('actorId, affectedRanges, structuralImpactRanges, and structuralPatches are server-owned fields');
   }
   let intent: OperationIntent | undefined;
   if (input.intent !== undefined) {
@@ -1390,7 +1448,7 @@ export function validateOperationEnvelope(value: unknown): OperationEnvelope {
       throw new Error(`mutation[${index}] requires id and sheetId`);
     }
     if (!('params' in mutation)) throw new Error(`mutation[${index}] requires params`);
-    if ('affectedRanges' in mutation || 'actorId' in mutation) {
+    if ('affectedRanges' in mutation || 'structuralImpactRanges' in mutation || 'actorId' in mutation || 'structuralPatch' in mutation) {
       throw new Error(`mutation[${index}] contains server-owned fields`);
     }
     if (isDataSourceMutationId(mutation.id)) {
@@ -2479,7 +2537,33 @@ function validateCommittedOperationEnvelope(value: unknown): CommittedOperationE
     const mutation = raw as Record<string, unknown>;
     if (!Array.isArray(mutation.affectedRanges)) throw new Error(`committed mutation[${index}] requires affectedRanges`);
     if (!mutation.affectedRanges.every(isRangeRef)) throw new Error(`committed mutation[${index}] contains invalid affectedRanges`);
-    return { ...operation.mutations[index]!, affectedRanges: mutation.affectedRanges as RangeRef[] };
+    const structuralPatch = mutation.structuralPatch === undefined
+      ? undefined
+      : validateStructuralPatch(mutation.structuralPatch, operation.mutations[index]!.id);
+    const structuralImpactRanges = mutation.structuralImpactRanges;
+    if (structuralImpactRanges !== undefined
+      && (!Array.isArray(structuralImpactRanges) || !structuralImpactRanges.every(isRangeRef))) {
+      throw new Error(`committed mutation[${index}] contains invalid structuralImpactRanges`);
+    }
+    const actualImpact = (structuralImpactRanges ?? []) as RangeRef[];
+    if (structuralPatch !== undefined) {
+      const expectedImpact = structuralPatch.formulaOwnerDeltas.flatMap((delta) => [delta.beforeAddress, delta.afterAddress])
+        .map((address) => ({ sheetId: address.sheetId, startRow: address.row, endRow: address.row, startColumn: address.column, endColumn: address.column }));
+      const uniqueExpected = [...new Map(expectedImpact.map((range) => [JSON.stringify([range.sheetId, range.startRow, range.startColumn]), range])).values()];
+      if (uniqueExpected.length !== actualImpact.length || uniqueExpected.some((range, itemIndex) => {
+        const actual = actualImpact[itemIndex];
+        return !actual || range.sheetId !== actual.sheetId || range.startRow !== actual.startRow || range.endRow !== actual.endRow
+          || range.startColumn !== actual.startColumn || range.endColumn !== actual.endColumn;
+      })) throw new Error(`committed mutation[${index}] structuralImpactRanges do not match its structuralPatch`);
+    } else if (actualImpact.length > 0) {
+      throw new Error(`committed mutation[${index}] structuralImpactRanges require a structuralPatch`);
+    }
+    return {
+      ...operation.mutations[index]!,
+      affectedRanges: mutation.affectedRanges as RangeRef[],
+      ...(structuralImpactRanges === undefined ? {} : { structuralImpactRanges: actualImpact }),
+      ...(structuralPatch === undefined ? {} : { structuralPatch }),
+    };
   });
   return {
     ...operation,

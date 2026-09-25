@@ -1,4 +1,4 @@
-import { WorkbookModel, type ProtectionAction, type RangeRef, type StructuralReferenceOwnerIndex, type WorksheetModel } from '@react-sheets/core-model';
+import { WorkbookModel, type CellData, type ProtectionAction, type RangeRef, type StructuralFormulaOwnerDelta, type StructuralFormulaOwnerIndex, type StructuralFormulaOwnerState, type WorksheetModel } from '@react-sheets/core-model';
 import { collectFormulaDependencies, formatFormula, mapAstStructuralReferences, parseFormula, RangeIndex, ReferenceTransformDomain, MAX_COLUMN_INDEX, MAX_ROW_INDEX } from '@react-sheets/formula-engine';
 
 export interface MutationInfo<P = unknown> {
@@ -7,6 +7,10 @@ export interface MutationInfo<P = unknown> {
   sheetId: string;
   params: P;
   affectedRanges: RangeRef[];
+  /** Local history payload; stripped from the client-authored operation envelope. */
+  structuralFormulaOwnerDeltas?: StructuralFormulaOwnerDelta[];
+  /** Derived local history/OT scope; never replaces a mutation's declared range contract. */
+  structuralImpactRanges?: RangeRef[];
   /** Explicit semantic override used by inverses whose storage mutation id is shared. */
   permission?: {
     capability: string;
@@ -790,6 +794,10 @@ function transformHistoryEntry(
   sheetOrder: readonly { readonly id: string; readonly name: string }[],
   policy: MutationHistoryRebasePolicy | undefined,
 ): HistoryTransformResult {
+  if (policy?.kind === 'axis' && entry.inversePlan.some((mutation) => mutation.structuralFormulaOwnerDeltas?.length)) return {
+    ok: false,
+    reason: `History ${entry.operationId} contains a server-derived structural formula patch that cannot be safely rebased across ${remote.id}`,
+  };
   if (policy?.kind === 'invalidate' && (!policy.when || policy.when(remote))) return {
     ok: false,
     reason: `History ${entry.operationId} cannot be safely rebased across ${remote.id}: ${policy.reason}`,
@@ -983,19 +991,34 @@ export class CommandRuntime {
         this.registry.assertMutation(mutation);
         this.mutationGuard?.(mutation, 'command');
         const effect = mutation.apply(context);
+        const formulaOwnerDeltas = isRecord(effect) && Array.isArray(effect.formulaOwnerDeltas)
+          ? effect.formulaOwnerDeltas as StructuralFormulaOwnerDelta[]
+          : [];
         const info: MutationInfo = {
           id: mutation.id,
           unitId: mutation.unitId,
           sheetId: mutation.sheetId,
           params: mutation.params,
           affectedRanges: mutation.affectedRanges,
+          ...(formulaOwnerDeltas.length > 0
+            ? { structuralImpactRanges: formulaOwnerDeltas.flatMap(formulaOwnerDeltaRanges) }
+            : {}),
           ...(mutation.permission ? { permission: structuredClone(mutation.permission) } : {}),
         };
         mutations.push(info);
-        this.activeEntry?.inversePlan.unshift(...mutation.inverse);
+        const inverse = mutation.inverse.map((item, index) => ({
+          ...item,
+          ...(index === 0 && formulaOwnerDeltas.length > 0
+            ? { structuralFormulaOwnerDeltas: structuredClone(formulaOwnerDeltas) }
+            : {}),
+        }));
+        this.activeEntry?.inversePlan.unshift(...inverse);
         this.activeEntry?.forwardMutations.push(info);
         if (this.activeEntry) {
           this.activeEntry.affectedRanges.push(...mutation.affectedRanges.map((range) => structuredClone(range)));
+          for (const delta of formulaOwnerDeltas) {
+            this.activeEntry.affectedRanges.push(...formulaOwnerDeltaRanges(delta));
+          }
         }
 
         for (const listener of this.mutationListeners) {
@@ -1094,7 +1117,12 @@ export class CommandRuntime {
     // leave the live workbook partially changed.
     this.preflightHistory(items, 'remote');
     this.applyHistory(items, 'remote');
-    for (const item of items) this.transformHistoryAgainstRemote(item);
+    for (const item of items) {
+      const remote = item.structuralImpactRanges?.length
+        ? { ...item, affectedRanges: [...item.affectedRanges, ...item.structuralImpactRanges] }
+        : item;
+      this.transformHistoryAgainstRemote(remote);
+    }
     if (remoteContext.revision !== undefined) {
       this.currentRevision = Math.max(this.currentRevision, remoteContext.revision);
     }
@@ -1106,6 +1134,52 @@ export class CommandRuntime {
       if (entry.operationId === operationId) entry.committedRevision = revision;
     }
     this.currentRevision = Math.max(this.currentRevision, revision);
+  }
+
+  applyCommittedStructuralFormulaPatches(operationId: string, items: readonly MutationInfo[], revision: number): void {
+    if (!Number.isSafeInteger(revision) || revision < 1) throw new Error('Committed revision must be a positive safe integer');
+    const patched = items.filter((item) => item.structuralFormulaOwnerDeltas !== undefined);
+    if (patched.length === 0) {
+      this.setRevision(Math.max(this.currentRevision, revision));
+      return;
+    }
+
+    const entry = [...this.undoStack, ...this.redoStack].find((candidate) => candidate.operationId === operationId);
+    if (entry) {
+      const local = entry.inversePlan.flatMap((mutation) => mutation.structuralFormulaOwnerDeltas ?? []);
+      const authoritative = patched.flatMap((item) => item.structuralFormulaOwnerDeltas ?? []);
+      const ordered = (deltas: readonly StructuralFormulaOwnerDelta[]) => deltas.map((delta) => JSON.stringify(delta)).sort();
+      if (JSON.stringify(ordered(local)) !== JSON.stringify(ordered(authoritative))) {
+        const stack = this.undoStack.includes(entry) ? this.undoStack : this.redoStack;
+        const index = stack.indexOf(entry);
+        if (index >= 0) stack.splice(index, 1);
+        entry.status = 'invalid';
+        entry.invalidReason = 'Server-derived structural formula owners differ from the local history patch';
+        this.invalidHistory.push(entry);
+      }
+    }
+
+    const preview = WorkbookModel.fromSnapshot(this.workbook.snapshot());
+    for (const item of patched) {
+      for (const delta of item.structuralFormulaOwnerDeltas ?? []) applyFormulaOwnerDelta(preview, delta, 'forward');
+    }
+
+    for (const item of patched) {
+      const deltas = item.structuralFormulaOwnerDeltas ?? [];
+      if (deltas.length === 0) continue;
+      for (const delta of deltas) applyFormulaOwnerDelta(this.workbook, delta, 'forward');
+      const effect = {
+        kind: 'structural-transform' as const,
+        removedCells: [],
+        clearInputRanges: [],
+        populateInputRanges: [],
+        rewrittenFormulaOwners: deltas.map((delta) => delta.afterAddress),
+        formulaOwnerDeltas: deltas,
+      };
+      for (const listener of this.mutationListeners) listener(item, 'remote', effect);
+    }
+
+    this.setRevision(Math.max(this.currentRevision, revision));
   }
 
   getInvalidHistoryEntries(): readonly HistoryEntry[] {
@@ -1196,6 +1270,13 @@ export class CommandRuntime {
       const effect = handler(item, {
         ...replayContext,
       });
+      if (item.structuralFormulaOwnerDeltas) {
+        if (source === 'undo') {
+          for (const delta of item.structuralFormulaOwnerDeltas) applyFormulaOwnerDelta(this.workbook, delta, 'undo');
+        } else if (source === 'remote') {
+          for (const delta of item.structuralFormulaOwnerDeltas) applyFormulaOwnerDelta(this.workbook, delta, 'forward');
+        }
+      }
       for (const listener of this.mutationListeners) {
         listener(item, source, effect);
       }
@@ -1207,4 +1288,82 @@ export class CommandRuntime {
     preview.setStructuralReferenceOwnersProvider((workbook) => buildStructuralReferenceIndex(workbook));
     preview.applyHistory(items, source);
   }
+}
+
+function formulaOwnerDeltaRanges(delta: StructuralFormulaOwnerDelta): RangeRef[] {
+  const addresses = [delta.beforeAddress, delta.afterAddress];
+  return addresses.map((address) => ({
+    sheetId: address.sheetId,
+    startRow: address.row,
+    endRow: address.row,
+    startColumn: address.column,
+    endColumn: address.column,
+  }));
+}
+
+function formulaOwnerState(cell: CellData): StructuralFormulaOwnerState {
+  return {
+    formula: cell.formula ?? null,
+    sourceFormula: cell.formulaMetadata?.sourceFormula ?? null,
+    barcodeFormula: cell.presentation?.kind === 'barcode' && cell.presentation.source.kind === 'formula'
+      ? cell.presentation.source.formula
+      : null,
+  };
+}
+
+function sameFormulaOwnerState(left: StructuralFormulaOwnerState, right: StructuralFormulaOwnerState): boolean {
+  return left.formula === right.formula
+    && left.sourceFormula === right.sourceFormula
+    && left.barcodeFormula === right.barcodeFormula;
+}
+
+function applyFormulaOwnerDelta(
+  workbook: WorkbookModel,
+  delta: StructuralFormulaOwnerDelta,
+  direction: 'undo' | 'forward',
+): void {
+  const address = direction === 'undo' ? delta.beforeAddress : delta.afterAddress;
+  const expected = direction === 'undo' ? delta.after : delta.before;
+  const target = direction === 'undo' ? delta.before : delta.after;
+  const { sheetId, row, column } = address;
+  const sheet = workbook.getSheet(sheetId);
+  const cell = sheet.cells.get(row, column);
+  if (!cell) throw new Error(`STRUCTURAL_PATCH_PRECONDITION: formula owner ${sheetId}!${row}:${column} is missing after inverse`);
+  const current = formulaOwnerState(cell);
+  if (sameFormulaOwnerState(current, target)) {
+    if (target.formula !== null && cell.formulaValue !== undefined) {
+      const next = { ...cell };
+      delete next.formulaValue;
+      sheet.cells.set(row, column, next);
+    }
+    return;
+  }
+  if (!sameFormulaOwnerState(current, expected)) {
+    throw new Error(`STRUCTURAL_PATCH_PRECONDITION: formula owner ${sheetId}!${row}:${column} changed since the structural operation`);
+  }
+  const next: CellData = { ...cell };
+  if (target.formula === null) delete next.formula;
+  else next.formula = target.formula;
+  if (target.formula !== null) delete next.formulaValue;
+  if (target.sourceFormula === null) {
+    if (next.formulaMetadata) {
+      const metadata = { ...next.formulaMetadata };
+      delete metadata.sourceFormula;
+      next.formulaMetadata = metadata;
+    }
+  } else {
+    if (!next.formulaMetadata || next.formulaMetadata.preservedOnly) {
+      throw new Error(`STRUCTURAL_PATCH_INVARIANT: formula provenance owner ${sheetId}!${row}:${column} changed type`);
+    }
+    next.formulaMetadata = { ...next.formulaMetadata, sourceFormula: target.sourceFormula };
+  }
+  if (target.barcodeFormula !== null) {
+    if (next.presentation?.kind !== 'barcode' || next.presentation.source.kind !== 'formula') {
+      throw new Error(`STRUCTURAL_PATCH_INVARIANT: barcode formula owner ${sheetId}!${row}:${column} changed type`);
+    }
+    next.presentation = { ...next.presentation, source: { ...next.presentation.source, formula: target.barcodeFormula } };
+  } else if (current.barcodeFormula !== null && expected.barcodeFormula !== null) {
+    throw new Error(`STRUCTURAL_PATCH_INVARIANT: barcode formula owner ${sheetId}!${row}:${column} cannot be removed by a reference delta`);
+  }
+  sheet.cells.set(row, column, next);
 }

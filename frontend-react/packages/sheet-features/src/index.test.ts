@@ -1281,6 +1281,61 @@ test('sheet commands: row insert/delete use StructuralTransform and preserve und
   assert.equal(sheet.cells.get(2, 0)?.value, 42);
 });
 
+test('sheet.rows.delete undo restores a surviving formula owner changed to #REF!', () => {
+  const workbook = new WorkbookModel('unit-structural-formula-undo', 'Structural Formula Undo');
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(1, 0, { value: 7 });
+  sheet.cells.set(0, 1, { value: null, formula: '=A2' });
+
+  runtime.execute('sheet.rows.delete', { sheetId: sheet.id, at: 1, count: 1 });
+  assert.equal(sheet.cells.get(0, 1)?.formula, '=#REF!');
+  sheet.cells.set(0, 1, { ...sheet.cells.get(0, 1)!, formulaValue: 123 });
+
+  assert.equal(runtime.undo(), true);
+  assert.equal(sheet.cells.get(0, 1)?.formula, '=A2');
+  assert.equal(sheet.cells.get(0, 1)?.formulaValue, undefined);
+  assert.equal(sheet.cells.get(1, 0)?.value, 7);
+});
+
+test('structural formula Undo history is invalidated across a remote axis transform', () => {
+  const workbook = new WorkbookModel('unit-structural-formula-rebase', 'Structural Formula Rebase');
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(1, 0, { value: 7 });
+  sheet.cells.set(0, 1, { value: null, formula: '=A2' });
+  runtime.execute('sheet.rows.delete', { sheetId: sheet.id, at: 1, count: 1 });
+
+  runtime.applyRemoteMutations([{
+    id: 'rows.inserted',
+    unitId: workbook.unitId,
+    sheetId: sheet.id,
+    params: { sheetId: sheet.id, at: 0, count: 1 },
+    affectedRanges: [{ sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: sheet.columnCount - 1 }],
+  }], { revision: 1 });
+
+  assert.equal(runtime.getUndoEntries().length, 0);
+  assert.equal(runtime.getInvalidHistoryEntries().length, 1);
+});
+
+test('sheet.rows.delete undo fails closed if a rewritten formula owner changed afterward', () => {
+  const workbook = new WorkbookModel('unit-structural-formula-undo-conflict', 'Structural Formula Undo Conflict');
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(1, 0, { value: 7 });
+  sheet.cells.set(0, 1, { value: null, formula: '=A2' });
+
+  runtime.execute('sheet.rows.delete', { sheetId: sheet.id, at: 1, count: 1 });
+  sheet.cells.set(0, 1, { value: null, formula: '=B1' });
+
+  assert.throws(() => runtime.undo(), /STRUCTURAL_PATCH_PRECONDITION/);
+  assert.equal(sheet.rowCount, 999);
+  assert.equal(sheet.cells.get(0, 1)?.formula, '=B1');
+});
+
 test('selected header insert/delete commands apply non-adjacent dimensions in one history transaction', () => {
   const workbook = new WorkbookModel('unit-selected-dimensions', 'Selected dimensions');
   const runtime = new CommandRuntime(workbook);

@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.xc.luckysheet.server.contract.AutoFilterOwnershipValidator;
 import com.xc.luckysheet.server.contract.RangeRef;
+import com.xc.luckysheet.server.contract.StructuralPatch;
 import com.xc.luckysheet.server.service.ServiceException;
 
 import java.util.ArrayList;
@@ -30,9 +31,65 @@ final class StructuralSnapshotReducer {
     private StructuralSnapshotReducer() {
     }
 
-    static void applyAxis(
+    static JsonNode applyFormulaOwnerPatch(JsonNode snapshot, StructuralPatch patch) {
+        ObjectNode root = SnapshotMutationSupport.root(snapshot.deepCopy());
+        for (StructuralPatch.FormulaOwnerDelta delta : patch.formulaOwnerDeltas()) {
+            StructuralPatch.CellAddress address = delta.afterAddress();
+            ObjectNode sheet = SnapshotMutationSupport.sheet(root, address.sheetId());
+            ObjectNode cell = SnapshotMutationSupport.cell(sheet,
+                    new SnapshotMutationSupport.CellCoordinate(address.row(), address.column()), false);
+            if (cell == null) {
+                throw ServiceException.conflict("STRUCTURAL_PATCH_PRECONDITION: formula owner is missing at "
+                        + address.sheetId() + "!" + address.row() + ":" + address.column());
+            }
+            StructuralPatch.FormulaOwnerState current = formulaOwnerState(cell);
+            if (current.equals(delta.after())) {
+                if (delta.after().formula() != null) cell.remove("formulaValue");
+                continue;
+            }
+            if (!current.equals(delta.before())) {
+                throw ServiceException.conflict("STRUCTURAL_PATCH_PRECONDITION: formula owner changed at "
+                        + address.sheetId() + "!" + address.row() + ":" + address.column());
+            }
+            setFormulaOwnerState(cell, delta.after());
+        }
+        return root;
+    }
+
+    private static void setFormulaOwnerState(ObjectNode cell, StructuralPatch.FormulaOwnerState state) {
+        if (state.formula() == null) cell.remove("formula");
+        else cell.put("formula", state.formula());
+
+        JsonNode rawMetadata = cell.get("formulaMetadata");
+        if (state.sourceFormula() == null) {
+            if (rawMetadata != null && rawMetadata.isObject()) ((ObjectNode) rawMetadata).remove("sourceFormula");
+        } else {
+            if (rawMetadata == null || !rawMetadata.isObject() || rawMetadata.path("preservedOnly").asBoolean(false)) {
+                throw ServiceException.conflict("STRUCTURAL_PATCH_INVARIANT: formula provenance owner changed type");
+            }
+            ((ObjectNode) rawMetadata).put("sourceFormula", state.sourceFormula());
+        }
+
+        JsonNode rawPresentation = cell.get("presentation");
+        JsonNode rawSource = rawPresentation != null && rawPresentation.isObject()
+                && "barcode".equals(rawPresentation.path("kind").asText())
+                ? rawPresentation.get("source") : null;
+        if (state.barcodeFormula() != null) {
+            if (rawSource == null || !rawSource.isObject() || !"formula".equals(rawSource.path("kind").asText())) {
+                throw ServiceException.conflict("STRUCTURAL_PATCH_INVARIANT: barcode formula owner changed type");
+            }
+            ((ObjectNode) rawSource).put("formula", state.barcodeFormula());
+        } else if (rawSource != null && rawSource.isObject()
+                && "formula".equals(rawSource.path("kind").asText()) && rawSource.path("formula").isTextual()) {
+            throw ServiceException.conflict("STRUCTURAL_PATCH_INVARIANT: barcode formula owner cannot be removed by a reference delta");
+        }
+        if (state.formula() != null) cell.remove("formulaValue");
+    }
+
+    static StructuralPatch applyAxis(
             ObjectNode root,
             String sheetId,
+            String mutationId,
             FormulaReferenceTransformer.Axis axis,
             int at,
             int count,
@@ -73,11 +130,12 @@ final class StructuralSnapshotReducer {
         setDimension(target, axis, direction == FormulaReferenceTransformer.Direction.INSERT ? limit + count : Math.max(1, limit - count));
         shiftAllMetadata(root, target, sheetId, axis, at, count, direction);
         applyReportSheetPlan(target, reportSheetAfter);
-        rewriteAxisFormulas(root, target, axis, at, count, direction);
+        List<StructuralPatch.FormulaOwnerDelta> formulaOwnerDeltas = rewriteAxisFormulas(root, target, axis, at, count, direction);
         AutoFilterOwnershipValidator.resolveOwners(target, sheetId);
+        return new StructuralPatch(StructuralPatch.VERSION, mutationId, formulaOwnerDeltas);
     }
 
-    static void shiftCells(ObjectNode root, String sheetId, RangeRef source, String operation, String axis, RangeRef affectedBand) {
+    static StructuralPatch shiftCells(ObjectNode root, String sheetId, String mutationId, RangeRef source, String operation, String axis, RangeRef affectedBand) {
         PivotMutationDescriptor.assertCanonicalSnapshot(root);
         ObjectNode sheet = SnapshotMutationSupport.sheet(root, sheetId);
         SnapshotMutationSupport.requireSheet(source, sheetId);
@@ -114,8 +172,9 @@ final class StructuralSnapshotReducer {
         }
         shiftCellBandMetadata(root, sheet, selection, expectedBand, axis, operation, count);
         applyReportSheetPlan(sheet, reportSheetAfter);
-        rewriteCellShiftFormulas(root, sheet, selection, axis, operation);
+        StructuralPatch structuralPatch = rewriteCellShiftFormulas(root, sheet, mutationId, selection, axis, operation);
         AutoFilterOwnershipValidator.resolveOwners(sheet, sheetId);
+        return structuralPatch;
     }
 
     static void moveRange(ObjectNode root, String sheetId, RangeRef source, RangeRef target) {
@@ -521,14 +580,14 @@ final class StructuralSnapshotReducer {
         });
     }
 
-    static void restoreShiftedCells(ObjectNode root, String sheetId, JsonNode spec, JsonNode cells) {
+    static void restoreShiftedCells(ObjectNode root, String sheetId, String mutationId, JsonNode spec, JsonNode cells) {
         if (spec == null || !spec.isObject()) throw ServiceException.validation("Structural restore spec must be an object");
         ObjectNode value = (ObjectNode) spec;
         RangeRef range = SnapshotMutationSupport.range(root, value.get("range"));
         RangeRef affectedBand = SnapshotMutationSupport.range(root, value.get("affectedBand"));
         String operation = value.path("operation").asText(null);
         String axis = value.path("axis").asText(null);
-        shiftCells(root, sheetId, range, "insert".equals(operation) ? "delete" : "insert", axis, affectedBand);
+        shiftCells(root, sheetId, mutationId, range, "insert".equals(operation) ? "delete" : "insert", axis, affectedBand);
         ObjectNode sheet = SnapshotMutationSupport.sheet(root, sheetId);
         RangeRef normalized = normalize(affectedBand);
         SnapshotMutationSupport.clearCells(sheet, normalized);
@@ -1757,15 +1816,18 @@ final class StructuralSnapshotReducer {
         coordinate.put(key, shifted);
     }
 
-    private static void rewriteAxisFormulas(ObjectNode root, ObjectNode targetSheet, FormulaReferenceTransformer.Axis axis, int at, int count, FormulaReferenceTransformer.Direction direction) {
+    private static List<StructuralPatch.FormulaOwnerDelta> rewriteAxisFormulas(ObjectNode root, ObjectNode targetSheet, FormulaReferenceTransformer.Axis axis, int at, int count, FormulaReferenceTransformer.Direction direction) {
         FormulaReferenceTransformer.SheetIdentity target = identity(targetSheet);
         List<FormulaReferenceTransformer.SheetIdentity> sheetOrder = worksheetOrder(root);
+        List<StructuralPatch.FormulaOwnerDelta> formulaOwnerDeltas = new ArrayList<>();
         for (JsonNode raw : SnapshotMutationSupport.sheets(root)) {
             ObjectNode owner = requireObject(raw, "Sheet");
             FormulaReferenceTransformer.SheetIdentity ownerIdentity = identity(owner);
             rewriteCellFormulaOwners(owner,
                     formula -> FormulaReferenceTransformer.remapAxis(formula, ownerIdentity, target, axis, at, count, direction, sheetOrder),
-                    "axis shift");
+                    "axis shift",
+                    formulaOwnerDeltas,
+                    entry -> axisFormulaOwnerBeforeAddress(ownerIdentity.id(), entry, target.id(), axis, at, count, direction));
             for (String property : List.of("conditionalFormats", "dataValidations")) {
                 for (JsonNode ruleRaw : SnapshotMutationSupport.array(owner, property)) {
                     ObjectNode rule = requireObject(ruleRaw, "Range rule");
@@ -1806,6 +1868,7 @@ final class StructuralSnapshotReducer {
         rewritePersistedFormulaOwners(root, target,
                 (formula, owner) -> FormulaReferenceTransformer.remapAxis(formula, owner, target, axis, at, count, direction, sheetOrder),
                 anchor -> shiftTemplateFormulaAnchor(anchor, target.id(), axis, at, count, direction));
+        return List.copyOf(formulaOwnerDeltas);
     }
 
     private static ArrayNode workbookTables(ObjectNode root) {
@@ -1912,6 +1975,16 @@ final class StructuralSnapshotReducer {
     }
 
     private static void rewriteCellFormulaOwners(ObjectNode sheet, Function<String, String> mapper, String operation) {
+        rewriteCellFormulaOwners(sheet, mapper, operation, null, null);
+    }
+
+    private static void rewriteCellFormulaOwners(
+            ObjectNode sheet,
+            Function<String, String> mapper,
+            String operation,
+            List<StructuralPatch.FormulaOwnerDelta> formulaOwnerDeltas,
+            Function<CellEntry, StructuralPatch.CellAddress> beforeAddressResolver
+    ) {
         String sheetId = sheet.path("id").asText();
         forEachCell(sheet, entry -> {
             ObjectNode cell = entry.cell();
@@ -1926,6 +1999,7 @@ final class StructuralSnapshotReducer {
                     && "formula".equals(rawBarcodeSource.path("kind").asText())
                     && rawBarcodeSource.path("formula").isTextual()
                     ? rawBarcodeSource.path("formula").asText() : null;
+            StructuralPatch.FormulaOwnerState before = new StructuralPatch.FormulaOwnerState(original, sourceFormula, barcodeFormula);
             String rewritten = original == null ? null : mapper.apply(original);
             String rewrittenSourceFormula = sourceFormula == null ? null : mapper.apply(sourceFormula);
             String rewrittenBarcodeFormula = barcodeFormula == null ? null : mapper.apply(barcodeFormula);
@@ -1941,7 +2015,55 @@ final class StructuralSnapshotReducer {
             if (sourceFormulaChanged) SnapshotMutationSupport.requiredObject(cell, "formulaMetadata").put("sourceFormula", rewrittenSourceFormula);
             if (barcodeFormulaChanged) ((ObjectNode) rawBarcodeSource).put("formula", rewrittenBarcodeFormula);
             if (original != null) cell.remove("formulaValue");
+            if (formulaOwnerDeltas != null && (formulaChanged || sourceFormulaChanged || barcodeFormulaChanged)) {
+                StructuralPatch.CellAddress beforeAddress = beforeAddressResolver.apply(entry);
+                formulaOwnerDeltas.add(new StructuralPatch.FormulaOwnerDelta(
+                        "formula-cell",
+                        beforeAddress,
+                        new StructuralPatch.CellAddress(sheetId, entry.row(), entry.column()),
+                        before,
+                        formulaOwnerState(cell)));
+            }
         });
+    }
+
+    private static StructuralPatch.CellAddress axisFormulaOwnerBeforeAddress(
+            String ownerSheetId,
+            CellEntry entry,
+            String targetSheetId,
+            FormulaReferenceTransformer.Axis axis,
+            int at,
+            int count,
+            FormulaReferenceTransformer.Direction direction
+    ) {
+        int row = entry.row();
+        int column = entry.column();
+        if (ownerSheetId.equals(targetSheetId)) {
+            int position = axis == FormulaReferenceTransformer.Axis.ROW ? row : column;
+            if (direction == FormulaReferenceTransformer.Direction.INSERT) {
+                if (position >= at && position < at + count) {
+                    throw ServiceException.unavailable("STRUCTURAL_PATCH_INVARIANT: formula owner is inside the inserted axis band");
+                }
+                if (position >= at + count) position -= count;
+            } else if (position >= at) {
+                position += count;
+            }
+            if (axis == FormulaReferenceTransformer.Axis.ROW) row = position;
+            else column = position;
+        }
+        return new StructuralPatch.CellAddress(ownerSheetId, row, column);
+    }
+
+    private static StructuralPatch.FormulaOwnerState formulaOwnerState(ObjectNode cell) {
+        String formula = cell.path("formula").isTextual() ? cell.path("formula").asText() : null;
+        String sourceFormula = cell.path("formulaMetadata").path("sourceFormula").isTextual()
+                ? cell.path("formulaMetadata").path("sourceFormula").asText() : null;
+        JsonNode presentation = cell.get("presentation");
+        JsonNode source = presentation != null && presentation.isObject() && "barcode".equals(presentation.path("kind").asText())
+                ? presentation.get("source") : null;
+        String barcodeFormula = source != null && source.isObject() && "formula".equals(source.path("kind").asText())
+                && source.path("formula").isTextual() ? source.path("formula").asText() : null;
+        return new StructuralPatch.FormulaOwnerState(formula, sourceFormula, barcodeFormula);
     }
 
     private static void rejectFormulaGroupMetadataInRange(ObjectNode sheet, RangeRef range, String operation) {
@@ -1989,9 +2111,10 @@ final class StructuralSnapshotReducer {
         }
     }
 
-    private static void rewriteCellShiftFormulas(ObjectNode root, ObjectNode targetSheet, RangeRef selection, String axis, String operation) {
+    private static StructuralPatch rewriteCellShiftFormulas(ObjectNode root, ObjectNode targetSheet, String mutationId, RangeRef selection, String axis, String operation) {
         FormulaReferenceTransformer.SheetIdentity target = identity(targetSheet);
         List<FormulaReferenceTransformer.SheetIdentity> sheetOrder = worksheetOrder(root);
+        List<StructuralPatch.FormulaOwnerDelta> formulaOwnerDeltas = new ArrayList<>();
         FormulaReferenceTransformer.Axis shiftAxis = "row".equals(axis)
                 ? FormulaReferenceTransformer.Axis.ROW
                 : FormulaReferenceTransformer.Axis.COLUMN;
@@ -2005,7 +2128,9 @@ final class StructuralSnapshotReducer {
             FormulaReferenceTransformer.SheetIdentity ownerIdentity = identity(owner);
             rewriteCellFormulaOwners(owner,
                     formula -> FormulaReferenceTransformer.remapCellShift(formula, ownerIdentity, target, selected, shiftAxis, direction, sheetOrder),
-                    "cell shift");
+                    "cell shift",
+                    formulaOwnerDeltas,
+                    entry -> cellShiftFormulaOwnerBeforeAddress(ownerIdentity.id(), entry, target.id(), selection, shiftAxis, direction));
             for (String property : List.of("conditionalFormats", "dataValidations")) {
                 for (JsonNode ruleRaw : SnapshotMutationSupport.array(owner, property)) {
                     ObjectNode rule = requireObject(ruleRaw, "Range rule");
@@ -2045,6 +2170,34 @@ final class StructuralSnapshotReducer {
         rewritePersistedFormulaOwners(root, target,
                 (formula, owner) -> FormulaReferenceTransformer.remapCellShift(formula, owner, target, selected, shiftAxis, direction, sheetOrder),
                 anchor -> shiftTemplateFormulaAnchor(anchor, target.id(), selected, shiftAxis, direction));
+        return new StructuralPatch(StructuralPatch.VERSION, mutationId, formulaOwnerDeltas);
+    }
+
+    private static StructuralPatch.CellAddress cellShiftFormulaOwnerBeforeAddress(
+            String ownerSheetId,
+            CellEntry entry,
+            String targetSheetId,
+            RangeRef selection,
+            FormulaReferenceTransformer.Axis axis,
+            FormulaReferenceTransformer.Direction direction
+    ) {
+        int row = entry.row();
+        int column = entry.column();
+        if (ownerSheetId.equals(targetSheetId)) {
+            int count = axis == FormulaReferenceTransformer.Axis.ROW
+                    ? selection.endRow() - selection.startRow() + 1
+                    : selection.endColumn() - selection.startColumn() + 1;
+            if (axis == FormulaReferenceTransformer.Axis.ROW
+                    && column >= selection.startColumn() && column <= selection.endColumn() && row >= selection.startRow()) {
+                if (direction == FormulaReferenceTransformer.Direction.INSERT && row >= selection.startRow() + count) row -= count;
+                else if (direction == FormulaReferenceTransformer.Direction.DELETE) row += count;
+            } else if (axis == FormulaReferenceTransformer.Axis.COLUMN
+                    && row >= selection.startRow() && row <= selection.endRow() && column >= selection.startColumn()) {
+                if (direction == FormulaReferenceTransformer.Direction.INSERT && column >= selection.startColumn() + count) column -= count;
+                else if (direction == FormulaReferenceTransformer.Direction.DELETE) column += count;
+            }
+        }
+        return new StructuralPatch.CellAddress(ownerSheetId, row, column);
     }
 
     private static void rewritePersistedFormulaOwners(

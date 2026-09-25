@@ -36,6 +36,55 @@ test('OperationEnvelope excludes client actor and affected ranges', () => {
     ...envelope,
     mutations: [{ ...envelope.mutations[0], affectedRanges: [] }],
   }), /server-owned/);
+  assert.throws(() => validateOperationEnvelope({
+    ...envelope,
+    mutations: [{ ...envelope.mutations[0], structuralImpactRanges: [] }],
+  }), /server-owned/);
+});
+
+test('committed structural patches and impact ranges survive collaboration decoding', () => {
+  const ownerAddress = { sheetId: 'sheet-1', row: 0, column: 1 };
+  const impactRange = { sheetId: 'sheet-1', startRow: 0, endRow: 0, startColumn: 1, endColumn: 1 };
+  const patch = {
+    version: 1 as const,
+    mutationId: 'rows.deleted',
+    formulaOwnerDeltas: [{
+      kind: 'formula-cell' as const,
+      beforeAddress: ownerAddress,
+      afterAddress: ownerAddress,
+      before: { formula: '=A2', sourceFormula: null, barcodeFormula: null },
+      after: { formula: '=#REF!', sourceFormula: null, barcodeFormula: null },
+    }],
+  };
+  const decoded = decodeOperationMessage(JSON.stringify({
+    type: 'revision.created',
+    revision: 2,
+    payload: {
+      schema: 'OperationEnvelope',
+      clientSessionId: 'fixture-session',
+      operationId: 'op-structural',
+      unitId: 'unit-1',
+      actorId: 'actor-1',
+      origin: 'client',
+      clientSequence: 1,
+      baseRevision: 1,
+      revision: 2,
+      createdAt: '2026-09-25T00:00:00.000Z',
+      committedAt: '2026-09-25T00:00:00.000Z',
+      mutations: [{
+        id: 'rows.deleted',
+        sheetId: 'sheet-1',
+        params: { sheetId: 'sheet-1', at: 1, count: 1 },
+        affectedRanges: [{ sheetId: 'sheet-1', startRow: 1, endRow: 1, startColumn: 0, endColumn: 51 }],
+        structuralImpactRanges: [impactRange],
+        structuralPatch: patch,
+      }],
+    },
+  }));
+  assert.equal(decoded.type, 'revision.created');
+  if (decoded.type !== 'revision.created') throw new Error('Expected a revision event');
+  assert.deepEqual(decoded.payload.mutations[0]?.structuralPatch, patch);
+  assert.deepEqual(decoded.payload.mutations[0]?.structuralImpactRanges, [impactRange]);
 });
 
 test('collaboration messages reject actor-bearing presence and legacy changesets', () => {

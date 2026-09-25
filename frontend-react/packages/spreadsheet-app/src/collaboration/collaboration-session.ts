@@ -5,7 +5,7 @@ import type {
   OperationEnvelope,
   OperationIntent,
 } from '@react-sheets/protocol';
-import { validateOperationEnvelope } from '@react-sheets/protocol';
+import { validateOperationEnvelope, validateStructuralPatch } from '@react-sheets/protocol';
 import { classifyMutation, committedMutationToClassified } from './operation-types';
 import { rebaseAgainstHistory } from './ot-rebase';
 import { OfflineQueue } from './offline-queue';
@@ -24,6 +24,38 @@ export interface CollaborationSessionOptions {
 interface AckWaiter {
   resolve: (revision: number) => void;
   reject: (cause: unknown) => void;
+}
+
+function assertStructuralPatch(value: unknown, mutationId: string): void {
+  validateStructuralPatch(value, mutationId);
+}
+
+type StructuralImpactRange = NonNullable<CommittedOperationEnvelope['mutations'][number]['structuralImpactRanges']>[number];
+
+function structuralPatchImpactRanges(
+  patch: NonNullable<CommittedOperationEnvelope['mutations'][number]['structuralPatch']>,
+): StructuralImpactRange[] {
+  const ranges = new Map<string, StructuralImpactRange>();
+  for (const delta of patch.formulaOwnerDeltas) {
+    for (const address of [delta.beforeAddress, delta.afterAddress]) {
+      const range: StructuralImpactRange = {
+        sheetId: address.sheetId,
+        startRow: address.row,
+        endRow: address.row,
+        startColumn: address.column,
+        endColumn: address.column,
+      };
+      ranges.set(JSON.stringify([range.sheetId, range.startRow, range.startColumn]), range);
+    }
+  }
+  return [...ranges.values()];
+}
+
+function sameRange(left: StructuralImpactRange, right: StructuralImpactRange | undefined): boolean {
+  return right !== undefined
+    && left.sheetId === right.sheetId
+    && left.startRow === right.startRow && left.endRow === right.endRow
+    && left.startColumn === right.startColumn && left.endColumn === right.endColumn;
 }
 
 /** 协同会话 — single operation envelope + OT rebase + ACK-gated offline queue. */
@@ -112,7 +144,7 @@ export class CollaborationSession {
       mutation.id,
       mutation.params,
       mutation.sheetId,
-      [...mutation.affectedRanges],
+      [...mutation.affectedRanges, ...(mutation.structuralImpactRanges ?? [])],
     )));
     this.offlineQueue.enqueue(operation);
     return operation;
@@ -139,8 +171,32 @@ export class CollaborationSession {
     this.assertCommittedOperation(operation);
     if (operation.unitId !== this.runtime.workbook.unitId) throw new Error('Remote operation belongs to another workbook');
     if (!Number.isSafeInteger(operation.revision) || operation.revision < 1) throw new Error('Remote operation revision is invalid');
+    const pendingLocal = this.offlineQueue.getPending().find((entry) => entry.operation.operationId === operation.operationId);
+    if (pendingLocal && !this.committedOperationIds.has(operation.operationId)) {
+      const requested = pendingLocal.operation;
+      const committedMutations = operation.mutations.map(({ id, sheetId, params }) => ({ id, sheetId, params }));
+      if (operation.origin !== 'client'
+        || operation.clientSessionId !== requested.clientSessionId
+        || operation.clientSequence !== requested.clientSequence
+        || operation.baseRevision !== requested.baseRevision
+        || operation.unitId !== requested.unitId
+        || JSON.stringify(committedMutations) !== JSON.stringify(requested.mutations)
+        || JSON.stringify(operation.intent ?? null) !== JSON.stringify(requested.intent ?? null)) {
+        throw new Error('Committed operation does not match the pending local operation');
+      }
+      this.acknowledge(operation.operationId, operation.revision);
+    }
     if (this.committedOperationIds.has(operation.operationId)) {
       this.baseRevision = Math.max(this.baseRevision, operation.revision);
+      this.runtime.applyCommittedStructuralFormulaPatches(operation.operationId, operation.mutations.map((mutation) => ({
+        id: mutation.id,
+        unitId: operation.unitId,
+        sheetId: mutation.sheetId,
+        params: mutation.params,
+        affectedRanges: [...mutation.affectedRanges],
+        ...(mutation.structuralImpactRanges?.length ? { structuralImpactRanges: [...mutation.structuralImpactRanges] } : {}),
+        ...(mutation.structuralPatch ? { structuralFormulaOwnerDeltas: structuredClone(mutation.structuralPatch.formulaOwnerDeltas) } : {}),
+      })), operation.revision);
       return;
     }
     const incoming = operation.mutations.map((mutation) => committedMutationToClassified(mutation));
@@ -151,6 +207,8 @@ export class CollaborationSession {
       sheetId: mutation.sheetId,
       params: mutation.params,
       affectedRanges: [...mutation.affectedRanges],
+      ...(mutation.structuralImpactRanges?.length ? { structuralImpactRanges: [...mutation.structuralImpactRanges] } : {}),
+      ...(mutation.structuralPatch ? { structuralFormulaOwnerDeltas: structuredClone(mutation.structuralPatch.formulaOwnerDeltas) } : {}),
     })), { operationId: operation.operationId, baseRevision: operation.baseRevision, revision: operation.revision });
     this.committedOperationIds.add(operation.operationId);
     for (const classified of incoming) {
@@ -329,6 +387,18 @@ export class CollaborationSession {
     if (!Number.isSafeInteger(operation.revision) || operation.revision < 1) throw new Error('Committed operation revision is invalid');
     if (Number.isNaN(Date.parse(operation.createdAt)) || Number.isNaN(Date.parse(operation.committedAt))) {
       throw new Error('Committed operation timestamps are invalid');
+    }
+    for (const mutation of operation.mutations) {
+      if (mutation.structuralPatch !== undefined) {
+        assertStructuralPatch(mutation.structuralPatch, mutation.id);
+        const expectedImpact = structuralPatchImpactRanges(mutation.structuralPatch);
+        const actualImpact = mutation.structuralImpactRanges ?? [];
+        if (expectedImpact.length !== actualImpact.length || expectedImpact.some((range, index) => !sameRange(range, actualImpact[index]))) {
+          throw new Error('Committed structural patch impact ranges are inconsistent');
+        }
+      } else if ((mutation.structuralImpactRanges?.length ?? 0) > 0) {
+        throw new Error('Committed structural impact ranges require a structural patch');
+      }
     }
     const request = validateOperationEnvelope({
       schema: operation.schema,

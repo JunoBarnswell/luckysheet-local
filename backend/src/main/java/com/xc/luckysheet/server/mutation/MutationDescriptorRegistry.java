@@ -5,7 +5,9 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.xc.luckysheet.server.contract.OperationMutation;
+import com.xc.luckysheet.server.contract.CommittedOperationMutation;
 import com.xc.luckysheet.server.contract.RangeRef;
+import com.xc.luckysheet.server.contract.StructuralPatch;
 import com.xc.luckysheet.server.contract.GeneratedWorkbookContract;
 import com.xc.luckysheet.server.contract.WorkbookAclRole;
 import com.xc.luckysheet.server.service.ServiceException;
@@ -13,8 +15,10 @@ import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -147,11 +151,108 @@ public class MutationDescriptorRegistry {
         return new MutationPreparation(descriptor, ranges);
     }
 
+    /** Finalize authorization and conflict ranges after a structural reducer has derived owner deltas. */
+    public List<RangeRef> committedRanges(
+            JsonNode before,
+            MutationPreparation prepared,
+            WorkbookAclRole role,
+            StructuralPatch structuralPatch
+    ) {
+        if (structuralPatch != null) {
+            List<RangeRef> ownerPreconditions = new ArrayList<>();
+            for (var delta : structuralPatch.formulaOwnerDeltas()) {
+                var beforeAddress = delta.beforeAddress();
+                var afterAddress = delta.afterAddress();
+                ownerPreconditions.add(cellRange(beforeAddress.sheetId(), beforeAddress.row(), beforeAddress.column()));
+                ownerPreconditions.add(cellRange(afterAddress.sheetId(), afterAddress.row(), afterAddress.column()));
+            }
+            if (prepared.descriptor().checksProtection() && role != WorkbookAclRole.OWNER) {
+                List<RangeRef> protectedRanges = new ArrayList<>(prepared.affectedRanges());
+                protectedRanges.addAll(ownerPreconditions);
+                ProtectionResolver.assertAllowed(before, List.copyOf(new LinkedHashSet<>(protectedRanges)), prepared.descriptor().protectionAction());
+            }
+        }
+        return List.copyOf(prepared.affectedRanges());
+    }
+
+    public List<RangeRef> structuralImpactRanges(StructuralPatch structuralPatch) {
+        if (structuralPatch == null) return List.of();
+        LinkedHashSet<RangeRef> ranges = new LinkedHashSet<>();
+        for (var delta : structuralPatch.formulaOwnerDeltas()) {
+            var beforeAddress = delta.beforeAddress();
+            var afterAddress = delta.afterAddress();
+            ranges.add(cellRange(beforeAddress.sheetId(), beforeAddress.row(), beforeAddress.column()));
+            ranges.add(cellRange(afterAddress.sheetId(), afterAddress.row(), afterAddress.column()));
+        }
+        return List.copyOf(ranges);
+    }
+
+    private static RangeRef cellRange(String sheetId, int row, int column) {
+        return new RangeRef(sheetId, row, row, column, column);
+    }
+
     public JsonNode applyPublicMutations(JsonNode snapshot, List<OperationMutation> mutations) {
         if (mutations.isEmpty()) return snapshot.deepCopy();
         JsonNode current = snapshot;
         for (OperationMutation mutation : mutations) current = require(mutation.id(), false).apply(current, mutation);
         return current;
+    }
+
+    public JsonNode applyCommittedMutations(
+            JsonNode snapshot,
+            List<CommittedOperationMutation> mutations,
+            List<StructuralPatch> inversePatches
+    ) {
+        if (inversePatches.size() != mutations.size()) {
+            throw new IllegalArgumentException("Committed replay requires one inverse-patch slot per mutation");
+        }
+        JsonNode current = snapshot.deepCopy();
+        for (int index = 0; index < mutations.size(); index++) {
+            CommittedOperationMutation committed = mutations.get(index);
+            OperationMutation mutation = new OperationMutation(committed.id(), committed.sheetId(), committed.params());
+            MutationApplication application = require(mutation.id(), false).applyWithPatch(current, mutation);
+            StructuralPatch patch = committed.structuralPatch();
+            StructuralPatch expectedPatch = mergeStructuralPatches(mutation.id(), application.structuralPatch(), inversePatches.get(index));
+            if (patch != null) {
+                if (!Objects.equals(patch, expectedPatch)) {
+                    throw new ServiceException("STORAGE_CORRUPT", 409, "Committed structural patch does not match its reducer-derived or undo-target delta");
+                }
+                if (!structuralImpactRanges(patch).equals(committed.structuralImpactRanges())) {
+                    throw new ServiceException("STORAGE_CORRUPT", 409, "Committed structural impact ranges do not match their server-derived patch");
+                }
+            } else if (inversePatches.get(index) != null) {
+                throw new ServiceException("STORAGE_CORRUPT", 409, "Committed structural undo is missing its target-derived patch");
+            } else if (!committed.structuralImpactRanges().isEmpty()) {
+                throw new ServiceException("STORAGE_CORRUPT", 409, "Committed structural impact ranges have no server-derived patch");
+            }
+            current = application.snapshot();
+            if (patch != null) current = StructuralSnapshotReducer.applyFormulaOwnerPatch(current, patch);
+        }
+        return current;
+    }
+
+    public static StructuralPatch mergeStructuralPatches(
+            String mutationId,
+            StructuralPatch generated,
+            StructuralPatch inverse
+    ) {
+        if (generated == null) return inverse;
+        if (inverse == null) return generated;
+        List<StructuralPatch.FormulaOwnerDelta> deltas = new ArrayList<>(generated.formulaOwnerDeltas());
+        for (StructuralPatch.FormulaOwnerDelta candidate : inverse.formulaOwnerDeltas()) {
+            StructuralPatch.FormulaOwnerDelta sameAddress = deltas.stream()
+                    .filter(existing -> existing.afterAddress().equals(candidate.afterAddress()))
+                    .findFirst().orElse(null);
+            if (sameAddress == null) deltas.add(candidate);
+            else if (!sameAddress.equals(candidate)) {
+                throw ServiceException.conflict("STRUCTURAL_PATCH_CONFLICT: inverse and reducer patches disagree for one formula owner");
+            }
+        }
+        return new StructuralPatch(StructuralPatch.VERSION, mutationId, deltas);
+    }
+
+    public JsonNode applyStructuralPatch(JsonNode snapshot, StructuralPatch patch) {
+        return StructuralSnapshotReducer.applyFormulaOwnerPatch(snapshot, patch);
     }
 
     public List<RangeRef> resolveRanges(JsonNode snapshot, OperationMutation mutation) {

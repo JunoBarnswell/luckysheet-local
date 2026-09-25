@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.xc.luckysheet.server.contract.OperationMutation;
 import com.xc.luckysheet.server.contract.RangeRef;
+import com.xc.luckysheet.server.contract.StructuralPatch;
 import com.xc.luckysheet.server.contract.DataRegionContextValidator;
 import com.xc.luckysheet.server.contract.WorkbookAclRole;
 import com.xc.luckysheet.server.service.ServiceException;
@@ -55,15 +56,21 @@ final class StructuralMutationDescriptor extends CanonicalJsonMutationDescriptor
 
     @Override
     public JsonNode apply(JsonNode snapshot, OperationMutation mutation) {
+        return applyWithPatch(snapshot, mutation).snapshot();
+    }
+
+    @Override
+    public MutationApplication applyWithPatch(JsonNode snapshot, OperationMutation mutation) {
         ObjectNode root = SnapshotMutationSupport.root(snapshot.deepCopy());
         ObjectNode params = SnapshotMutationSupport.params(mutation);
+        StructuralPatch structuralPatch = null;
         switch (id()) {
-            case "rows.inserted" -> axis(root, mutation.sheetId(), params, FormulaReferenceTransformer.Axis.ROW, FormulaReferenceTransformer.Direction.INSERT);
-            case "rows.deleted" -> axis(root, mutation.sheetId(), params, FormulaReferenceTransformer.Axis.ROW, FormulaReferenceTransformer.Direction.DELETE);
-            case "columns.inserted" -> axis(root, mutation.sheetId(), params, FormulaReferenceTransformer.Axis.COLUMN, FormulaReferenceTransformer.Direction.INSERT);
-            case "columns.deleted" -> axis(root, mutation.sheetId(), params, FormulaReferenceTransformer.Axis.COLUMN, FormulaReferenceTransformer.Direction.DELETE);
-            case "cells.inserted", "cells.deleted" -> applyCellShift(root, mutation.sheetId(), params);
-            case "cells.inserted.restore", "cells.deleted.restore" -> restore(root, mutation.sheetId(), params);
+            case "rows.inserted" -> structuralPatch = axis(root, mutation.sheetId(), mutation.id(), params, FormulaReferenceTransformer.Axis.ROW, FormulaReferenceTransformer.Direction.INSERT);
+            case "rows.deleted" -> structuralPatch = axis(root, mutation.sheetId(), mutation.id(), params, FormulaReferenceTransformer.Axis.ROW, FormulaReferenceTransformer.Direction.DELETE);
+            case "columns.inserted" -> structuralPatch = axis(root, mutation.sheetId(), mutation.id(), params, FormulaReferenceTransformer.Axis.COLUMN, FormulaReferenceTransformer.Direction.INSERT);
+            case "columns.deleted" -> structuralPatch = axis(root, mutation.sheetId(), mutation.id(), params, FormulaReferenceTransformer.Axis.COLUMN, FormulaReferenceTransformer.Direction.DELETE);
+            case "cells.inserted", "cells.deleted" -> structuralPatch = applyCellShift(root, mutation.sheetId(), mutation.id(), params);
+            case "cells.inserted.restore", "cells.deleted.restore" -> restore(root, mutation.sheetId(), mutation.id(), params);
             case "rows.permuted" -> {
                 DataRegionContextValidator.validateSort(root, mutation.sheetId(), params);
                 RangeRef selected = ownRange(root, mutation.sheetId(), params);
@@ -82,14 +89,14 @@ final class StructuralMutationDescriptor extends CanonicalJsonMutationDescriptor
             }
             default -> throw ServiceException.validation("Unsupported structural mutation: " + id());
         }
-        return root;
+        return new MutationApplication(root, structuralPatch);
     }
 
-    private void axis(ObjectNode root, String sheetId, ObjectNode params, FormulaReferenceTransformer.Axis axis, FormulaReferenceTransformer.Direction direction) {
+    private StructuralPatch axis(ObjectNode root, String sheetId, String mutationId, ObjectNode params, FormulaReferenceTransformer.Axis axis, FormulaReferenceTransformer.Direction direction) {
         int at = integer(params.get("at"), "Structural at");
         int count = integer(params.get("count"), "Structural count");
         if (count < 1) throw ServiceException.validation("Structural count must be positive");
-        StructuralSnapshotReducer.applyAxis(root, sheetId, axis, at, count, direction);
+        return StructuralSnapshotReducer.applyAxis(root, sheetId, mutationId, axis, at, count, direction);
     }
 
     private RangeRef axisAffectedRange(
@@ -119,17 +126,17 @@ final class StructuralMutationDescriptor extends CanonicalJsonMutationDescriptor
                 : new RangeRef(sheetId, 0, orthogonalEnd, at, (int) end);
     }
 
-    private void restore(ObjectNode root, String sheetId, ObjectNode params) {
+    private void restore(ObjectNode root, String sheetId, String mutationId, ObjectNode params) {
         JsonNode spec = params.get("spec");
-        StructuralSnapshotReducer.restoreShiftedCells(root, sheetId, spec, params.get("cells"));
+        StructuralSnapshotReducer.restoreShiftedCells(root, sheetId, mutationId, spec, params.get("cells"));
     }
 
-    private void applyCellShift(ObjectNode root, String sheetId, ObjectNode params) {
+    private StructuralPatch applyCellShift(ObjectNode root, String sheetId, String mutationId, ObjectNode params) {
         RangeRef range = ownRange(root, sheetId, params);
         RangeRef band = ownRangeField(root, sheetId, params, "affectedBand");
         String operation = text(params.get("operation"), "Cell shift operation");
         String axis = text(params.get("axis"), "Cell shift axis");
-        StructuralSnapshotReducer.shiftCells(root, sheetId, range, operation, axis, band);
+        return StructuralSnapshotReducer.shiftCells(root, sheetId, mutationId, range, operation, axis, band);
     }
 
     private RangeRef cellAffectedBand(ObjectNode root, String sheetId, ObjectNode params) {

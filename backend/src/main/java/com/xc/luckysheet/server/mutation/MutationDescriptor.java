@@ -37,4 +37,9 @@ public interface MutationDescriptor {
 
     /** Apply without mutating the input snapshot and return an independent result. */
     JsonNode apply(JsonNode snapshot, OperationMutation mutation);
+
+    /** Apply without mutating the input snapshot and return any server-owned structural delta. */
+    default MutationApplication applyWithPatch(JsonNode snapshot, OperationMutation mutation) {
+        return new MutationApplication(apply(snapshot, mutation), null);
+    }
 }

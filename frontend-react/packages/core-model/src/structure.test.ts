@@ -161,6 +161,23 @@ describe('structural operations', () => {
     assert.equal(sheet.cells.get(6, 0)?.formula, "=SUM($A$2,'Input Sheet'!$B$2,A2)+\"A1\"");
   });
 
+  it('returns reversible formula-owner state when deleting a referenced row', () => {
+    const workbook = new WorkbookModel('unit-formula-owner-delta', 'Formula Owner Delta');
+    const sheet = workbook.getSheet('sheet-1');
+    sheet.cells.set(1, 0, { value: 7 });
+    sheet.cells.set(0, 1, { value: null, formula: '=A2*2' });
+
+    const result = StructuralTransform.apply(workbook, { kind: 'delete-rows', sheetId: sheet.id, at: 1, count: 1 });
+    const delta = result.formulaOwnerDeltas?.find((entry) => entry.beforeAddress.row === 0 && entry.beforeAddress.column === 1);
+
+    assert.ok(delta);
+    assert.deepEqual(delta.beforeAddress, { sheetId: sheet.id, row: 0, column: 1 });
+    assert.deepEqual(delta.afterAddress, { sheetId: sheet.id, row: 0, column: 1 });
+    assert.equal(delta.before.formula, '=A2*2');
+    assert.equal(delta.after.formula, '=#REF!*2');
+    assert.equal(sheet.cells.get(0, 1)?.formula, delta.after.formula);
+  });
+
   it('maps report binding and repeated-header row owners on axis insertion and rejects deleting a binding anchor', () => {
     const { workbook } = seedWorkbook();
     const sheet = workbook.getSheet('s1');

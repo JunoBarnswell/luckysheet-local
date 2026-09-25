@@ -4,10 +4,13 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.xc.luckysheet.server.contract.RangeRef;
+import com.xc.luckysheet.server.contract.StructuralPatch;
 import com.xc.luckysheet.server.service.ServiceException;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class ReportSheetStructuralTransformTest {
@@ -17,7 +20,7 @@ class ReportSheetStructuralTransformTest {
     void rowInsertionMapsBindingAnchorsAndRepeatedHeaderRows() {
         ObjectNode snapshot = snapshotWithReportBinding(4);
 
-        StructuralSnapshotReducer.applyAxis(snapshot, "sheet-1", FormulaReferenceTransformer.Axis.ROW,
+        StructuralSnapshotReducer.applyAxis(snapshot, "sheet-1", "rows.inserted", FormulaReferenceTransformer.Axis.ROW,
                 2, 2, FormulaReferenceTransformer.Direction.INSERT);
 
         JsonNode report = snapshot.path("sheets").get(0).path("reportSheet");
@@ -33,7 +36,7 @@ class ReportSheetStructuralTransformTest {
         JsonNode beforeReport = sheet.path("reportSheet").deepCopy();
         JsonNode beforeCells = sheet.path("cells").deepCopy();
 
-        assertThrows(ServiceException.class, () -> StructuralSnapshotReducer.applyAxis(snapshot, "sheet-1",
+        assertThrows(ServiceException.class, () -> StructuralSnapshotReducer.applyAxis(snapshot, "sheet-1", "rows.deleted",
                 FormulaReferenceTransformer.Axis.ROW, 4, 1, FormulaReferenceTransformer.Direction.DELETE));
 
         assertEquals(beforeReport, sheet.path("reportSheet"));
@@ -47,7 +50,7 @@ class ReportSheetStructuralTransformTest {
         JsonNode before = snapshot.deepCopy();
 
         ServiceException error = assertThrows(ServiceException.class, () -> StructuralSnapshotReducer.applyAxis(snapshot,
-                "sheet-1", FormulaReferenceTransformer.Axis.COLUMN, 2, 1, FormulaReferenceTransformer.Direction.INSERT));
+                "sheet-1", "columns.inserted", FormulaReferenceTransformer.Axis.COLUMN, 2, 1, FormulaReferenceTransformer.Direction.INSERT));
 
         assertEquals("SERVICE_UNAVAILABLE", error.code());
         assertEquals(before, snapshot);
@@ -57,15 +60,76 @@ class ReportSheetStructuralTransformTest {
     void insertingColumnBeforeSheetTableShiftsRangeWithoutChangingColumnSchema() {
         ObjectNode snapshot = snapshotWithSheetTable();
 
-        StructuralSnapshotReducer.applyAxis(snapshot, "sheet-1", FormulaReferenceTransformer.Axis.COLUMN,
+        StructuralSnapshotReducer.applyAxis(snapshot, "sheet-1", "columns.inserted", FormulaReferenceTransformer.Axis.COLUMN,
                 1, 1, FormulaReferenceTransformer.Direction.INSERT);
-        StructuralSnapshotReducer.applyAxis(snapshot, "sheet-1", FormulaReferenceTransformer.Axis.COLUMN,
+        StructuralSnapshotReducer.applyAxis(snapshot, "sheet-1", "columns.inserted", FormulaReferenceTransformer.Axis.COLUMN,
                 4, 1, FormulaReferenceTransformer.Direction.INSERT);
 
         JsonNode table = snapshot.path("sheets").get(0).path("sheetTables").get(0);
         assertEquals(2, table.path("range").path("startColumn").asInt());
         assertEquals(3, table.path("range").path("endColumn").asInt());
         assertEquals(2, table.path("columns").size());
+    }
+
+    @Test
+    void deletingReferencedRowReturnsServerOwnedFormulaOwnerDelta() {
+        ObjectNode snapshot = snapshotWithReportBinding(10);
+        ObjectNode sheet = (ObjectNode) snapshot.path("sheets").get(0);
+        ((ObjectNode) sheet.path("cells")).putObject("0").putObject("1").put("formula", "=A5");
+
+        var patch = StructuralSnapshotReducer.applyAxis(snapshot, "sheet-1", "rows.deleted",
+                FormulaReferenceTransformer.Axis.ROW, 4, 1, FormulaReferenceTransformer.Direction.DELETE);
+
+        assertEquals(StructuralPatch.VERSION, patch.version());
+        assertEquals("rows.deleted", patch.mutationId());
+        assertFalse(patch.formulaOwnerDeltas().isEmpty());
+        var delta = patch.formulaOwnerDeltas().get(0);
+        assertEquals(new StructuralPatch.CellAddress("sheet-1", 0, 1), delta.beforeAddress());
+        assertEquals(new StructuralPatch.CellAddress("sheet-1", 0, 1), delta.afterAddress());
+        assertEquals("=A5", delta.before().formula());
+        assertEquals("=#REF!", delta.after().formula());
+        assertEquals("=#REF!", snapshot.path("sheets").get(0).path("cells").path("0").path("1").path("formula").asText());
+    }
+
+    @Test
+    void inverseStructuralPatchRestoresFormulaAndRejectsChangedOwner() {
+        ObjectNode snapshot = snapshotWithReportBinding(10);
+        ObjectNode sheet = (ObjectNode) snapshot.path("sheets").get(0);
+        ((ObjectNode) sheet.path("cells")).putObject("0").putObject("1").put("formula", "=A5");
+
+        var deleted = StructuralSnapshotReducer.applyAxis(snapshot, "sheet-1", "rows.deleted",
+                FormulaReferenceTransformer.Axis.ROW, 4, 1, FormulaReferenceTransformer.Direction.DELETE);
+        StructuralSnapshotReducer.applyAxis(snapshot, "sheet-1", "rows.inserted",
+                FormulaReferenceTransformer.Axis.ROW, 4, 1, FormulaReferenceTransformer.Direction.INSERT);
+
+        ObjectNode restored = (ObjectNode) StructuralSnapshotReducer.applyFormulaOwnerPatch(
+                snapshot, deleted.inverse("rows.inserted"));
+        assertEquals("=A5", restored.path("sheets").get(0).path("cells").path("0").path("1").path("formula").asText());
+
+        ObjectNode changed = restored.deepCopy();
+        ((ObjectNode) changed.path("sheets").get(0).path("cells").path("0").path("1")).put("formula", "=B1");
+        assertThrows(ServiceException.class, () -> StructuralSnapshotReducer.applyFormulaOwnerPatch(
+                changed, deleted.inverse("rows.inserted")));
+    }
+
+    @Test
+    void cellShiftCollectsFormulaOwnerDeltasOutsideTheShiftedCells() {
+        ObjectNode snapshot = snapshotWithReportBinding(10);
+        ObjectNode sheet = (ObjectNode) snapshot.path("sheets").get(0);
+        ((ObjectNode) sheet.path("cells")).putObject("0").putObject("1").put("formula", "=A5");
+        RangeRef selection = new RangeRef("sheet-1", 4, 4, 0, 0);
+        RangeRef affectedBand = new RangeRef("sheet-1", 4, 19, 0, 0);
+
+        var patch = StructuralSnapshotReducer.shiftCells(snapshot, "sheet-1", "cells.deleted",
+                selection, "delete", "row", affectedBand);
+
+        assertEquals("cells.deleted", patch.mutationId());
+        assertFalse(patch.formulaOwnerDeltas().isEmpty());
+        var delta = patch.formulaOwnerDeltas().get(0);
+        assertEquals(new StructuralPatch.CellAddress("sheet-1", 0, 1), delta.beforeAddress());
+        assertEquals(new StructuralPatch.CellAddress("sheet-1", 0, 1), delta.afterAddress());
+        assertEquals("=A5", delta.before().formula());
+        assertEquals("=#REF!", delta.after().formula());
     }
 
     private ObjectNode snapshotWithSheetTable() {

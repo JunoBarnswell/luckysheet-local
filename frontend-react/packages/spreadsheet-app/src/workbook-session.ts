@@ -2831,6 +2831,18 @@ export class WorkbookSession {
 
   undo(): void {
     const entry = this.runtime.commands.getUndoEntries().at(-1);
+    const hasStructuralMutation = entry?.forwardMutations.some((mutation) => (
+      mutation.id === 'rows.inserted' || mutation.id === 'rows.deleted'
+      || mutation.id === 'columns.inserted' || mutation.id === 'columns.deleted'
+      || mutation.id === 'cells.inserted' || mutation.id === 'cells.deleted'
+    )) ?? false;
+    if (entry?.committedRevision !== undefined
+      && this.runtime.collaboration
+      && hasStructuralMutation
+      && entry.committedRevision !== this.runtime.collaboration.getRevision()) {
+      this.notify('Structural Undo is no longer safe after a later workbook revision');
+      return;
+    }
     if (entry && !this.canReplayHistory(entry.inversePlan)) {
       this.notify('Undo is no longer allowed for the protected selection');
       return;

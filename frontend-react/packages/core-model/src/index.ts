@@ -502,6 +502,8 @@ export {
   StructuralTransform,
   planCellShift,
   type StructuralTransformResult,
+  type StructuralFormulaOwnerDelta,
+  type StructuralFormulaOwnerState,
   type StructuralReferenceOwnerAddress,
   type StructuralReferenceOwnerIndex,
   type CellShiftPlan,

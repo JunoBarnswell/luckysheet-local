@@ -41,7 +41,10 @@ export function operationMutationToClassified(
 export function committedMutationToClassified(
   mutation: CommittedOperationEnvelope['mutations'][number],
 ): ClassifiedMutation {
-  return operationMutationToClassified(mutation, mutation.sheetId, [...mutation.affectedRanges]);
+  return operationMutationToClassified(mutation, mutation.sheetId, [
+    ...mutation.affectedRanges,
+    ...(mutation.structuralImpactRanges ?? []),
+  ]);
 }
 
 const MUTATION_KIND_MAP: Readonly<Record<string, CollaborationOperationKind>> = {

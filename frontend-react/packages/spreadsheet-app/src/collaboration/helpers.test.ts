@@ -5,6 +5,7 @@ import { WorkbookModel } from '@react-sheets/core-model';
 import { createCellSetMutationParams, registerSheetCommands } from '@react-sheets/sheet-features';
 import type { OperationEnvelope } from '@react-sheets/protocol';
 import { CollaborationSession } from './collaboration-session';
+import { committedMutationToClassified } from './operation-types';
 import { OfflineQueue } from './offline-queue';
 import {
   buildOperation,
@@ -14,6 +15,19 @@ import {
 } from './helpers';
 
 describe('collaboration helpers', () => {
+  it('classifies server-derived structural impact separately from declared ranges', () => {
+    const declared = { sheetId: 'sheet-1', startRow: 4, endRow: 4, startColumn: 0, endColumn: 51 };
+    const impact = { sheetId: 'sheet-1', startRow: 0, endRow: 0, startColumn: 1, endColumn: 1 };
+    const classified = committedMutationToClassified({
+      id: 'rows.deleted',
+      sheetId: 'sheet-1',
+      params: { sheetId: 'sheet-1', at: 4, count: 1 },
+      affectedRanges: [declared],
+      structuralImpactRanges: [impact],
+    });
+    assert.deepEqual(classified.affectedRanges, [declared, impact]);
+  });
+
   it('builds the single client operation contract without server-owned fields', () => {
     const operation = buildOperation('op-1', 'wb-1', 1, 0, [{ id: 'cell.set', sheetId: 'sheet-1', params: {} }], '2026-08-23T00:00:00.000Z');
     assert.deepEqual(operation, {
