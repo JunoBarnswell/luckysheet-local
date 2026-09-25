@@ -1004,6 +1004,231 @@ test('copy paste shifts relative references while preserving mixed and absolute 
   assert.equal(sheet.cells.get(1, 1)?.formula, '=A1+$B$1+C$1+$D1');
 });
 
+test('multi-cell and transposed formula paste offsets references from each source cell', () => {
+  const workbook = new WorkbookModel('unit-copy-multicell-formulas', 'Copy Formulas');
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, { value: null, formula: '=A1+$B$1', formulaValue: 99, displayValue: '99' });
+  sheet.cells.set(0, 1, { value: null, formula: '=A1+$B$1' });
+  sheet.cells.set(1, 1, { value: null, formula: '=A1+$B$1' });
+  const source = { sheetId: sheet.id, startRow: 0, endRow: 1, startColumn: 0, endColumn: 1 };
+  const clipboard = copyRangeToClipboardData(workbook, source);
+
+  runtime.execute('sheet.range.paste', {
+    sheetId: sheet.id,
+    targetOrigin: { row: 4, column: 4 },
+    clipboard,
+    transfer: 'copy',
+    spec: createPasteSpecialSpec(),
+  });
+  assert.equal(sheet.cells.get(4, 4)?.formula, '=E5+$B$1');
+  assert.equal(sheet.cells.get(4, 4)?.formulaValue, undefined);
+  assert.equal(sheet.cells.get(4, 4)?.displayValue, undefined);
+  assert.equal(sheet.cells.get(4, 5)?.formula, '=E5+$B$1');
+  assert.equal(sheet.cells.get(5, 5)?.formula, '=E5+$B$1');
+
+  runtime.execute('sheet.range.paste', {
+    sheetId: sheet.id,
+    targetOrigin: { row: 8, column: 3 },
+    clipboard,
+    transfer: 'copy',
+    spec: createPasteSpecialSpec({ transpose: true }),
+  });
+  assert.equal(sheet.cells.get(9, 3)?.formula, '=C10+$B$1');
+});
+
+test('transposed paste maps comments, notes, and hyperlinks with their source cells', () => {
+  const workbook = new WorkbookModel('unit-paste-transposed-cell-metadata', 'Paste Metadata');
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.review.setNote(0, 1, { id: 'transpose-note', author: 'u', text: 'note', createdAt: '2026-01-01', visible: true });
+  sheet.review.addThread({ id: 'transpose-comment', sheetId: sheet.id, row: 0, column: 1, author: 'u', text: 'comment', createdAt: '2026-01-01', replies: [] });
+  sheet.hyperlinks.set('0:1', { id: 'transpose-link', target: { kind: 'url', url: 'https://example.com' } });
+  const clipboard = copyRangeToClipboardData(workbook, { sheetId: sheet.id, startRow: 0, endRow: 1, startColumn: 0, endColumn: 1 });
+
+  runtime.execute('sheet.range.paste', {
+    sheetId: sheet.id,
+    targetOrigin: { row: 4, column: 4 },
+    clipboard,
+    transfer: 'copy',
+    spec: createPasteSpecialSpec({
+      transpose: true,
+      metadata: { commentsNotes: true, validation: false, columnWidths: false, conditionalFormats: false, hyperlinks: true },
+    }),
+  });
+
+  assert.equal(sheet.review.getNoteAt(5, 4)?.text, 'note');
+  assert.equal(sheet.review.getThreadsAt(5, 4)[0]?.text, 'comment');
+  assert.equal(sheet.hyperlinks.get('5:4')?.id, 'transpose-link');
+  assert.equal(sheet.review.getNoteAt(4, 5), undefined);
+  assert.equal(sheet.hyperlinks.get('4:5'), undefined);
+});
+
+test('paste values materializes the resolved formula result', () => {
+  const workbook = new WorkbookModel('unit-paste-resolved-formula-value', 'Paste Values');
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, { value: null, formula: '=1+2', formulaValue: 3 });
+  sheet.cells.set(1, 0, { value: '=A3', formula: '=A3', formulaValue: null });
+  const clipboard = copyRangeToClipboardData(workbook, { sheetId: sheet.id, startRow: 0, endRow: 1, startColumn: 0, endColumn: 0 });
+
+  runtime.execute('sheet.range.paste', {
+    sheetId: sheet.id,
+    targetOrigin: { row: 0, column: 1 },
+    clipboard,
+    transfer: 'copy',
+    spec: createPasteSpecialSpec({
+      content: 'values',
+      formatting: 'none',
+      metadata: { commentsNotes: false, validation: false, columnWidths: false, conditionalFormats: false, hyperlinks: false },
+    }),
+  });
+
+  assert.equal(sheet.cells.get(0, 1)?.value, 3);
+  assert.equal(sheet.cells.get(0, 1)?.formula, undefined);
+  assert.equal(sheet.cells.get(0, 1)?.formulaValue, undefined);
+  assert.equal(sheet.cells.get(1, 1)?.value, null);
+  assert.equal(sheet.cells.get(1, 1)?.formula, undefined);
+});
+
+test('skip-blanks paste preserves target metadata at blank source offsets', () => {
+  const workbook = new WorkbookModel('unit-paste-skip-blank-metadata', 'Paste Skip Blanks');
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, { value: 'source' });
+  sheet.review.setNote(0, 1, { id: 'source-blank-note', author: 'u', text: 'source blank', createdAt: '2026-01-01', visible: true });
+  sheet.hyperlinks.set('0:1', { id: 'source-blank-link', target: { kind: 'url', url: 'https://source.example' } });
+  sheet.review.setNote(4, 5, { id: 'target-note', author: 'u', text: 'keep target', createdAt: '2026-01-01', visible: true });
+  sheet.hyperlinks.set('4:5', { id: 'target-link', target: { kind: 'url', url: 'https://target.example' } });
+  const clipboard = copyRangeToClipboardData(workbook, { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 1 });
+
+  runtime.execute('sheet.range.paste', {
+    sheetId: sheet.id,
+    targetOrigin: { row: 4, column: 4 },
+    clipboard,
+    transfer: 'copy',
+    spec: createPasteSpecialSpec({
+      skipBlanks: true,
+      metadata: { commentsNotes: true, validation: false, columnWidths: false, conditionalFormats: false, hyperlinks: true },
+    }),
+  });
+
+  assert.equal(sheet.cells.get(4, 4)?.value, 'source');
+  assert.equal(sheet.cells.get(4, 5), undefined);
+  assert.equal(sheet.review.getNoteAt(4, 5)?.text, 'keep target');
+  assert.equal(sheet.hyperlinks.get('4:5')?.id, 'target-link');
+});
+
+test('skip-blanks paste treats a formula-error scalar as occupied content and metadata', () => {
+  const workbook = new WorkbookModel('unit-paste-skip-blank-error', 'Paste Error Value');
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, { value: null, formulaValue: { kind: 'error', code: '#DIV/0!', message: '' } });
+  sheet.cells.set(0, 1, { value: null, formulaValue: { kind: 'error', code: '#VALUE!', message: '' } });
+  sheet.review.setNote(0, 0, { id: 'error-note', author: 'u', text: 'error', createdAt: '2026-01-01', visible: true });
+  sheet.hyperlinks.set('0:0', { id: 'error-link', target: { kind: 'url', url: 'https://example.com/error' } });
+  sheet.review.setNote(4, 4, { id: 'old-note', author: 'u', text: 'old', createdAt: '2026-01-01', visible: true });
+  sheet.hyperlinks.set('4:4', { id: 'old-link', target: { kind: 'url', url: 'https://example.com/old' } });
+  sheet.review.setNote(4, 5, { id: 'old-blank-note', author: 'u', text: 'old blank', createdAt: '2026-01-01', visible: true });
+  sheet.hyperlinks.set('4:5', { id: 'old-blank-link', target: { kind: 'url', url: 'https://example.com/old-blank' } });
+  const clipboard = copyRangeToClipboardData(workbook, { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 1 });
+
+  runtime.execute('sheet.range.paste', {
+    sheetId: sheet.id,
+    targetOrigin: { row: 4, column: 4 },
+    clipboard,
+    transfer: 'copy',
+    spec: createPasteSpecialSpec({
+      skipBlanks: true,
+      metadata: { commentsNotes: true, validation: false, columnWidths: false, conditionalFormats: false, hyperlinks: true },
+    }),
+  });
+
+  assert.deepEqual(sheet.cells.get(4, 4)?.formulaValue, { kind: 'error', code: '#DIV/0!', message: '' });
+  assert.deepEqual(sheet.cells.get(4, 5)?.formulaValue, { kind: 'error', code: '#VALUE!', message: '' });
+  assert.equal(sheet.review.getNoteAt(4, 4)?.text, 'error');
+  assert.equal(sheet.hyperlinks.get('4:4')?.id, 'error-link');
+  assert.equal(sheet.review.getNoteAt(4, 5), undefined);
+  assert.equal(sheet.hyperlinks.get('4:5'), undefined);
+});
+
+test('paste clones formula-bearing validation and conditional-format rules at the target anchor', () => {
+  const workbook = new WorkbookModel('unit-paste-rule-formulas', 'Paste Rule Formulas');
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  const sourceRange = { sheetId: sheet.id, startRow: 0, endRow: 1, startColumn: 0, endColumn: 1 };
+  sheet.conditionalFormats.push({
+    id: 'cf-source', sheetId: sheet.id, ranges: [sourceRange], formulaAnchor: { sheetId: sheet.id, row: 0, column: 0 },
+    type: 'highlight', operator: 'formula', value1: '=A1>0',
+  });
+  sheet.dataValidations.push({
+    id: 'dv-source', sheetId: sheet.id, ranges: [sourceRange], formulaAnchor: { sheetId: sheet.id, row: 0, column: 0 },
+    type: 'custom', formula1: '=A1>0', formula2: '=B1',
+    listSource: { kind: 'formula', formula: '=C1:C2' },
+  });
+  const clipboard = copyRangeToClipboardData(workbook, sourceRange);
+
+  runtime.execute('sheet.range.paste', {
+    sheetId: sheet.id,
+    targetOrigin: { row: 4, column: 4 },
+    clipboard,
+    transfer: 'copy',
+    spec: createPasteSpecialSpec({
+      formatting: 'none',
+      metadata: { commentsNotes: false, validation: true, columnWidths: false, conditionalFormats: true, hyperlinks: false },
+    }),
+  });
+
+  const copiedFormat = sheet.conditionalFormats.find((rule) => rule.id === 'cf-source@paste:4:4');
+  const copiedValidation = sheet.dataValidations.find((rule) => rule.id === 'dv-source@paste:4:4');
+  assert.equal(copiedFormat?.value1, '=E5>0');
+  assert.equal(copiedValidation?.formula1, '=E5>0');
+  assert.equal(copiedValidation?.formula2, '=F5');
+  assert.deepEqual(copiedValidation?.listSource, { kind: 'formula', formula: '=G5:G6' });
+});
+
+test('paste clips and reanchors rule formulas when the original formula anchor is outside the source range', () => {
+  const workbook = new WorkbookModel('unit-paste-rule-formula-clipped-anchor', 'Paste Rule Fragment');
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  const ruleRange = { sheetId: sheet.id, startRow: 0, endRow: 9, startColumn: 0, endColumn: 0 };
+  sheet.conditionalFormats.push({
+    id: 'cf-fragment', sheetId: sheet.id, ranges: [ruleRange], formulaAnchor: { sheetId: sheet.id, row: 0, column: 0 },
+    type: 'highlight', operator: 'formula', value1: '=A1>0',
+  });
+  sheet.dataValidations.push({
+    id: 'dv-fragment', sheetId: sheet.id, ranges: [ruleRange], formulaAnchor: { sheetId: sheet.id, row: 0, column: 0 },
+    type: 'custom', formula1: '=A1>0',
+  });
+  sheet.cells.set(4, 0, { value: 'copy fragment' });
+  const clipboard = copyRangeToClipboardData(workbook, { sheetId: sheet.id, startRow: 4, endRow: 4, startColumn: 0, endColumn: 0 });
+
+  runtime.execute('sheet.range.paste', {
+    sheetId: sheet.id,
+    targetOrigin: { row: 4, column: 2 },
+    clipboard,
+    transfer: 'copy',
+    spec: createPasteSpecialSpec({
+      formatting: 'none',
+      metadata: { commentsNotes: false, validation: true, columnWidths: false, conditionalFormats: true, hyperlinks: false },
+    }),
+  });
+
+  const copiedFormat = sheet.conditionalFormats.find((rule) => rule.id === 'cf-fragment@paste:4:2');
+  const copiedValidation = sheet.dataValidations.find((rule) => rule.id === 'dv-fragment@paste:4:2');
+  assert.equal(copiedFormat?.value1, '=C5>0');
+  assert.deepEqual(copiedFormat?.formulaAnchor, { sheetId: sheet.id, row: 4, column: 2 });
+  assert.equal(copiedValidation?.formula1, '=C5>0');
+  assert.deepEqual(copiedValidation?.formulaAnchor, { sheetId: sheet.id, row: 4, column: 2 });
+});
+
 test('paste replay rejects a transfer mismatch before touching the workbook', () => {
   const workbook = new WorkbookModel('unit-paste-contract', 'Paste Contract');
   const runtime = new CommandRuntime(workbook);

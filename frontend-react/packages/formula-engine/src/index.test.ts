@@ -80,6 +80,21 @@ test('structural reference index selects affected owners and retains invalid for
   assert.deepEqual(index.getInvalidFormulaOwners(), []);
 });
 
+test('whole-row and whole-column references preserve absolute endpoints and offset on copy', () => {
+  assert.equal(formatFormula(parseFormula('=SUM(A:A)')), '=SUM(A:A)');
+  assert.equal(formatFormula(offsetAst(parseFormula('=SUM(A:A)'), 2, 1)), '=SUM(B:B)');
+  assert.equal(formatFormula(offsetAst(parseFormula('=SUM($A:A)'), 0, 1)), '=SUM($A:B)');
+  assert.equal(formatFormula(offsetAst(parseFormula('=SUM(1:1)'), 1, 0)), '=SUM(2:2)');
+  assert.equal(formatFormula(offsetAst(parseFormula('=SUM(1:3)'), 1, 0)), '=SUM(2:4)');
+  assert.equal(formatFormula(offsetAst(parseFormula('=SUM($1:1)'), 1, 0)), '=SUM($1:2)');
+  assert.equal(formatFormula(offsetAst(parseFormula('=SUM(XFD:XFD)'), 0, 1)), '=SUM(#REF!)');
+  assert.equal(formatFormula(mapAstStructuralReferences(parseFormula('=SUM($A:B)'), {
+    shift: { axis: 'column', at: 0, count: 2, op: 'insert' },
+    ownerSheetId: 'Sheet1',
+    targetSheetId: 'Sheet1',
+  })), '=SUM($C:D)');
+});
+
 test('structural-only formula sources coexist with calculation owners and retain invalid source failures', () => {
   const index = new RangeIndex([{ id: 'Sheet1', name: 'Sheet1' }]);
   const owner = address('Sheet1', 8, 5);

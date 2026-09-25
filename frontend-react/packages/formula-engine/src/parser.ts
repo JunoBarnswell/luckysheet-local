@@ -184,6 +184,7 @@ class Parser {
   private parsePrimary(): FormulaAst {
     const token = this.peek();
     if (token.kind === 'number') {
+      if (this.checkNext('colon')) return this.parseReference();
       this.advance();
       const node: NumberLiteralNode = { type: 'number-literal', value: Number(token.lexeme), span: token.span };
       return node;
@@ -464,7 +465,20 @@ class Parser {
       const column = allowWhole ? columnNameToIndex(token.lexeme.replace(/^\$/, '')) : undefined;
       if (column !== undefined) {
         this.advance();
-        return { type: 'whole-column-reference', sheetId, startColumn: column, endColumn: column, span: token.span };
+        const absolute = token.lexeme.startsWith('$');
+        return {
+          type: 'whole-column-reference', sheetId, startColumn: column, endColumn: column,
+          ...(absolute ? { absoluteStartColumn: true, absoluteEndColumn: true } : {}),
+          span: token.span,
+        };
+      }
+      const absoluteRowMatch = allowWhole ? /^\$(\d+)$/.exec(token.lexeme) : undefined;
+      if (absoluteRowMatch) {
+        const row = Number(absoluteRowMatch[1]);
+        if (row > 0 && Number.isSafeInteger(row)) {
+          this.advance();
+          return { type: 'whole-row-reference', sheetId, startRow: row - 1, endRow: row - 1, absoluteStartRow: true, absoluteEndRow: true, span: token.span };
+        }
       }
     }
     if (allowWhole && token.kind === 'number' && /^\d+$/.test(token.lexeme)) {
@@ -485,20 +499,30 @@ class Parser {
       return { type: 'range-reference', start, end, span: { start: start.span.start, end: end.span.end } };
     }
     if (start.type === 'whole-column-reference' && end.type === 'whole-column-reference') {
+      const startIsFirst = start.startColumn <= end.startColumn;
+      const first = startIsFirst ? start : end;
+      const last = startIsFirst ? end : start;
       return {
         type: 'whole-column-reference',
         sheetId: start.sheetId ?? end.sheetId,
-        startColumn: Math.min(start.startColumn, end.startColumn),
-        endColumn: Math.max(start.endColumn, end.endColumn),
+        startColumn: first.startColumn,
+        endColumn: last.startColumn,
+        ...(first.absoluteStartColumn ? { absoluteStartColumn: true } : {}),
+        ...(last.absoluteEndColumn ? { absoluteEndColumn: true } : {}),
         span: { start: start.span.start, end: end.span.end },
       };
     }
     if (start.type === 'whole-row-reference' && end.type === 'whole-row-reference') {
+      const startIsFirst = start.startRow <= end.startRow;
+      const first = startIsFirst ? start : end;
+      const last = startIsFirst ? end : start;
       return {
         type: 'whole-row-reference',
         sheetId: start.sheetId ?? end.sheetId,
-        startRow: Math.min(start.startRow, end.startRow),
-        endRow: Math.max(start.endRow, end.endRow),
+        startRow: first.startRow,
+        endRow: last.startRow,
+        ...(first.absoluteStartRow ? { absoluteStartRow: true } : {}),
+        ...(last.absoluteEndRow ? { absoluteEndRow: true } : {}),
         span: { start: start.span.start, end: end.span.end },
       };
     }

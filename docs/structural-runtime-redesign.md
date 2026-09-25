@@ -1213,3 +1213,26 @@ PR 上两个 `canonical-build` job 使用相同 head，前端依赖安装与前�
 6. **触发与 fail-close**：置换范围精确映射器可将完整连续目标映射为一个范围，也会对拆分结果返回多个片段。两类 owner 原先既没有更新也没有 split 检查；新增成功路径校验范围与 cell 同步移动，拒绝路径校验在快照变化前 fail-close。
 
 **修复**：TS 预检暂存相交 table/data-source 的精确新范围，并在所有单元格预计算后应用；未变化及非相交范围不重赋。Java 在写入前验证范围可表示为单矩形，再于 reducer 写回；读取可选 `dataModel.sources` 使用 non-mutating 的 `existingDataModelArray`，不物化缺省数组。新增 TS/Java 成功与 split-range 拒绝回归用例。仅静态源码审查与 `git diff --check`；没有运行本地测试、构建、lint 或 UI。远端 PR CI 尚待新 head 结果；Canonical Structural Planner/ReferenceIndex、其它 owner 家族、OOXML opaque-owner 结构迁移及总目标仍未完成。
+
+### 六轮静态自审 — 复制/转置引用与 owner 完整性（2026-09-26）
+
+六轮分别以坐标代数、公式 owner、结果缓存、稀疏元数据、矩阵变换边界、反向重放为视角，核验后只计独立根因，不把同一缺陷按字段重复计数：
+
+1. **复制公式坐标**：`sheet.range.paste` 遍历稀疏单元格时，原先用目标 cell 减 source range 起点，而非减该公式自己的源地址；多行/多列及转置公式因此多移一次偏移。现改为逐 cell 的 destination-source 坐标差，并为混合绝对引用保留 AST 规则。
+2. **公式结果缓存**：Paste 复制/公式/算术写入会继承目标或源的 `formulaValue`/`displayValue`；矩阵变换也会把旧位置缓存随公式一并写到新位置。现对内容写入和公式 owner 移动清除旧缓存，公式规则的纯引用改写则保留 owner 与 anchor。
+3. **Paste Values 语义**：公式 cell 的 UI 结果由 `formulaValue` 承载，但旧 values 分支只复制 `value`，且 `null` 结果不能用 nullish fallback 判断为“无缓存”。现按 `undefined` 判断缓存缺失，写入标量常量并保留错误结果的公式值投影。
+4. **规则公式 owner**：`SheetRuleRegistry.cloneForPaste` 只 remap rule ranges/anchor，遗漏 conditional-format `value1/value2`、validation `formula1/formula2` 与 `listSource.formula` 的相对引用。现从 `structuralRuleFormulaFields` 取得 canonical 字段，在源/目标 formula anchor 间用公式 AST 转译；无法解析时 fail-close。
+5. **转置及 Skip Blanks 元数据**：notes/comments/hyperlinks 原先按未转置 offset 写回；copy + skipBlanks 又清除整块目标元数据并从空 cell 复制 metadata。现将三类 cell owner 映射到转置目标，并仅清理/复制非空来源对应的目标 metadata；空白目标项保留原 owner。现存 column-width 的转置映射按既有专项契约保持不变。
+6. **矩阵变换所有权与失败边界**：相对公式引用若在选区外，旧逻辑不随 formula owner 位移；block-backed data region 未在 source/target 预检；hyperlink anchors 会留在旧坐标；review/drawing/sparkline 预检有的只看 row、有的全表拒绝；且只检查 target 上界，未验证 source/target 的安全整数与下界。现按 formula owner delta 平移选区外相对引用、移动公式 owner 时清缓存；source 与 transposed target 都拒绝相交 data region；无法迁移的 hyperlink owner 显式 `UNSUPPORTED_FEATURE` 拒绝；anchor guard 使用 row+column 精确范围，并在任何变换前验证 source/target 完整边界。
+
+新增回归测试源码覆盖多格/转置公式、规则公式、结果缓存、Paste Values 的标量和显式空值、转置 metadata、Skip Blanks、矩阵相对引用、data-region/hyperlink fail-close、二维 anchor 与非法边界。静态复核追到 `range.paste` 单 mutation snapshot、undo inverse 与 remote replay 均消费同一快照；本轮未执行测试、构建、lint 或 UI，`git diff --check` 通过。六轮共确认并修复 12 个独立问题（将 paste/matrix 的缓存失效分别计数，规则公式字段按同一 owner 根因合并）；未凑数宣称达到此前提出的 30 项门槛。其余结构 owner 与完整 Canonical Structural Planner/ReferenceIndex 目标继续开放。
+
+额外公式引用边界核对确认第 13 个独立问题：whole-row/whole-column AST 虽可解析，但 copy/fill `offsetAst` 不移动其相对轴端点，且 formatter 曾把 `A:A` / `1:1` 折叠成不再是范围的 `A` / `1`，混合 `$` 端点也未保留。现 AST 按端点保留绝对标记，解析器让数值行范围（如 `1:1`）进入引用分支并支持 `$1`，formatter 保留范围语法，copy/fill 与矩阵 owner 位移按相对轴偏移并对越界生成 `#REF!`。新增回归测试源码覆盖轴引用复制、混合绝对端点、越界和结构插入；仍仅静态审查，未运行测试、构建、lint 或 UI。
+
+第七个补充交叉核对确认第 14 个独立问题：矩阵转置的目标区域可能超出源区域（如 2×1 转置为 1×2），预检只检查源区内的 review/drawing/sparkline owner，目标扩展区的锚点可能留在覆盖后的旧坐标。现这些 owner 按源区和目标区的并集作二维相交检查；新增每种 owner 各自 fail-close 且快照不变的回归测试源码。仍未运行测试、构建、lint 或 UI。
+
+第八个补充交叉核对确认第 15 个独立问题：Paste Skip Blanks 把 `value:null` 且仅有 canonical `formulaValue`（如常量错误值）的单元格当作空白，既跳过值又漏掉其目标元数据清理。现共同的稀疏剪贴板空白判定同时检查 `value`、`formula` 与 `formulaValue`；新增错误常量、便笺和超链接一同粘贴的回归测试源码。仍仅静态审查，未运行测试、构建、lint 或 UI。
+
+第九个补充交叉核对确认第 16 个独立问题：动态数组 spill child 不占据 `CellMatrix`，矩阵转置的目标空格检查无法发现该 owner，可能把写入落到溢出投影并破坏数组结果。现矩阵操作在变更前检查源区与目标区是否相交任一 spill range，并 fail-close；新增目标扩展区命中 spill projection 的原子拒绝回归测试源码。仍未运行测试、构建、lint 或 UI。
+
+第十个补充交叉核对确认第 17 个独立问题：复制规则覆盖区的子区间时，原 formula anchor 可能位于剪贴板 source 之外；把该 anchor 的相对坐标直接映射到 target 会造成公式少偏移被裁剪距离（例如从 A5 复制规则到 C5 却仍引用 C1）。现将规则 anchor 落在实际复制交集的目标坐标，并从原公式 anchor 精确平移公式 AST；新增 CF/DV 子区间复制源码断言公式和 anchor。仍未运行测试、构建、lint 或 UI。

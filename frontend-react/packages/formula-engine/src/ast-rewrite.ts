@@ -708,8 +708,71 @@ export function offsetReference(
   };
 }
 
+/** Shift relative whole-row and whole-column endpoints during copy/fill. */
+export function offsetWholeAxisReferences(node: FormulaAst, rowOffset: number, columnOffset: number): FormulaAst {
+  if (!Number.isSafeInteger(rowOffset) || !Number.isSafeInteger(columnOffset)) {
+    throw new Error('Formula reference offset must use safe integer coordinates');
+  }
+  switch (node.type) {
+    case 'whole-column-reference': {
+      const startColumn = node.absoluteStartColumn ? node.startColumn : node.startColumn + columnOffset;
+      const endColumn = node.absoluteEndColumn ? node.endColumn : node.endColumn + columnOffset;
+      if (!Number.isSafeInteger(startColumn) || startColumn < 0 || startColumn > MAX_COLUMN_INDEX
+        || !Number.isSafeInteger(endColumn) || endColumn < 0 || endColumn > MAX_COLUMN_INDEX) {
+        return { type: 'invalid-reference', code: '#REF!', span: node.span, parenthesized: node.parenthesized };
+      }
+      return { ...node, startColumn, endColumn };
+    }
+    case 'whole-row-reference': {
+      const startRow = node.absoluteStartRow ? node.startRow : node.startRow + rowOffset;
+      const endRow = node.absoluteEndRow ? node.endRow : node.endRow + rowOffset;
+      if (!Number.isSafeInteger(startRow) || startRow < 0 || startRow > MAX_ROW_INDEX
+        || !Number.isSafeInteger(endRow) || endRow < 0 || endRow > MAX_ROW_INDEX) {
+        return { type: 'invalid-reference', code: '#REF!', span: node.span, parenthesized: node.parenthesized };
+      }
+      return { ...node, startRow, endRow };
+    }
+    case 'spill-reference':
+      return { ...node, operand: offsetWholeAxisReferences(node.operand, rowOffset, columnOffset) };
+    case 'reference-union':
+      return { ...node, references: node.references.map((reference) => offsetWholeAxisReferences(reference, rowOffset, columnOffset) as typeof reference) };
+    case 'reference-intersection':
+      return {
+        ...node,
+        left: offsetWholeAxisReferences(node.left, rowOffset, columnOffset) as typeof node.left,
+        right: offsetWholeAxisReferences(node.right, rowOffset, columnOffset) as typeof node.right,
+      };
+    case 'sheet-range-reference':
+    case 'external-reference':
+      return { ...node, reference: offsetWholeAxisReferences(node.reference, rowOffset, columnOffset) as typeof node.reference };
+    case 'unary-expression':
+      return { ...node, operand: offsetWholeAxisReferences(node.operand, rowOffset, columnOffset) };
+    case 'binary-expression':
+      return {
+        ...node,
+        left: offsetWholeAxisReferences(node.left, rowOffset, columnOffset),
+        right: offsetWholeAxisReferences(node.right, rowOffset, columnOffset),
+      };
+    case 'function-call':
+      return { ...node, arguments: node.arguments.map((argument) => offsetWholeAxisReferences(argument, rowOffset, columnOffset)) };
+    case 'number-literal':
+    case 'string-literal':
+    case 'boolean-literal':
+    case 'name-reference':
+    case 'table-reference':
+    case 'cell-reference':
+    case 'range-reference':
+    case 'invalid-reference':
+      return node;
+  }
+}
+
 export function offsetAst(node: FormulaAst, rowOffset: number, columnOffset: number): FormulaAst {
-  return mapAstReferences(node, (reference) => offsetReference(reference, rowOffset, columnOffset));
+  return offsetWholeAxisReferences(
+    mapAstReferences(node, (reference) => offsetReference(reference, rowOffset, columnOffset)),
+    rowOffset,
+    columnOffset,
+  );
 }
 
 /** Rename qualified worksheet references without touching string literals. */

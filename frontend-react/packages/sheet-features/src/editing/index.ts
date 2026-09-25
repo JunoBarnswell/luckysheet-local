@@ -276,6 +276,42 @@ function pasteCellRanges(value: PasteMutationParams): RangeRef[] {
   return ranges;
 }
 
+function pasteMetadataClearRanges(
+  targetRange: RangeRef,
+  clipboard: ClipboardPayload,
+  spec: PasteSpecialSpec,
+  transfer: ClipboardTransfer,
+  sourceRange?: RangeRef,
+): RangeRef[] {
+  const pasteCell = (rowOffset: number, columnOffset: number) => ({
+    row: targetRange.startRow + (spec.transpose ? columnOffset : rowOffset),
+    column: targetRange.startColumn + (spec.transpose ? rowOffset : columnOffset),
+  });
+  const ranges = transfer === 'copy' && spec.skipBlanks
+    ? clipboard.occupiedCells.flatMap((cell) => {
+      if (isClipboardCellBlank(cell.value)) return [];
+      const { row, column } = pasteCell(cell.rowOffset, cell.columnOffset);
+      return [{ sheetId: targetRange.sheetId, startRow: row, endRow: row, startColumn: column, endColumn: column }];
+    })
+    : [structuredClone(targetRange)];
+  if (transfer === 'move' && sourceRange) ranges.push(structuredClone(sourceRange));
+  return ranges;
+}
+
+function isClipboardCellBlank(cell: CellData): boolean {
+  return (cell.value === null || cell.value === undefined)
+    && cell.formula === undefined
+    && cell.formulaValue === undefined;
+}
+
+function shouldSkipClipboardBlankMetadata(
+  nonblankOffsets: ReadonlySet<string> | undefined,
+  rowOffset: number,
+  columnOffset: number,
+): boolean {
+  return nonblankOffsets !== undefined && !nonblankOffsets.has(`${rowOffset}:${columnOffset}`);
+}
+
 function pasteTargetWidthColumns(value: PasteMutationParams): Set<number> | undefined {
   if (!value.spec.metadata.columnWidths) return new Set();
   const columns = new Set<number>();
@@ -301,7 +337,7 @@ function isPasteSnapshotConsistentWithSpec(value: PasteMutationParams): boolean 
   if (value.transfer === 'move' && value.sourceRange) expectedClearRanges.push(value.sourceRange);
   const hasMetadata = Object.values(value.spec.metadata).some(Boolean);
   const expectedMetadataRanges = hasMetadata
-    ? [targetRange, ...(value.transfer === 'move' && value.sourceRange ? [value.sourceRange] : [])]
+    ? pasteMetadataClearRanges(targetRange, value.clipboard, value.spec, value.transfer, value.sourceRange)
     : [];
   const sameRanges = (actual: readonly RangeRef[] | undefined, expected: readonly RangeRef[]) => Array.isArray(actual)
     && actual.length === expected.length
@@ -906,8 +942,8 @@ function applyPasteCell(
   sourceAddress: string,
 ): CellData | undefined {
   const destination = target ? structuredClone(target) : { value: null };
-  const sourceIsBlank = source.value === null || source.value === undefined;
-  if (spec.skipBlanks && sourceIsBlank && !source.formula) return undefined;
+  const sourceIsBlank = isClipboardCellBlank(source);
+  if (spec.skipBlanks && sourceIsBlank) return undefined;
   if (spec.link) {
     return { value: null, formula: `=${sourceAddress}` };
   }
@@ -921,9 +957,7 @@ function applyPasteCell(
       numberFormat: spec.formatting === 'number-format' || spec.formatting === 'source-formatting' || spec.formatting === 'all' ? source.numberFormat : destination.numberFormat,
     };
   }
-  const sourceFormula = source.formula
-    ? transfer === 'move' ? source.formula : shiftFormula(source.formula, rowDelta, colDelta)
-    : undefined;
+  const sourceFormula = source.formula;
 
   if (spec.operation !== 'none') {
     if (sourceFormula || target?.formula) throw new Error('Paste arithmetic cannot operate on formula cells');
@@ -940,26 +974,37 @@ function applyPasteCell(
       : spec.operation === 'subtract' ? left - right
         : spec.operation === 'multiply' ? left * right
           : left / right;
-    return { ...clearFormulaProvenance(destination), value, formula: undefined };
+    return { ...clearPasteFormulaResult(destination), value, formula: undefined };
   }
 
   if (spec.content === 'values') {
     // Values means values only: no formula, style, number format or cached
     // display metadata may leak into the destination.
-    const next: CellData = { value: source.value ?? null };
+    const resolvedValue = source.formulaValue !== undefined ? source.formulaValue : source.value ?? null;
+    const next: CellData = {
+      value: typeof resolvedValue === 'object' && resolvedValue !== null ? null : resolvedValue,
+      ...(typeof resolvedValue === 'object' && resolvedValue !== null ? { formulaValue: structuredClone(resolvedValue) } : {}),
+    };
     if (spec.formatting === 'number-format') next.numberFormat = source.numberFormat;
     if (spec.formatting === 'source-formatting' || spec.formatting === 'all') next.style = source.style ? structuredClone(source.style) : undefined;
     if (spec.formatting === 'all-except-borders' && source.style) next.style = { ...structuredClone(source.style), borders: destination.style?.borders };
     return next;
   }
+  const formulaForPaste = sourceFormula
+    ? transfer === 'move' ? sourceFormula : shiftFormula(sourceFormula, rowDelta, colDelta)
+    : undefined;
   if (spec.content === 'formulas') {
-    if (!sourceFormula) return { ...clearFormulaProvenance(destination), value: source.value ?? null, formula: undefined };
-    const next = clearFormulaProvenance(destination);
+    if (!formulaForPaste) {
+      const next = { ...clearPasteFormulaResult(destination), value: source.value ?? null, formula: undefined };
+      if (source.formulaValue !== undefined) next.formulaValue = structuredClone(source.formulaValue);
+      if (source.displayValue !== undefined) next.displayValue = source.displayValue;
+      return next;
+    }
+    const next = clearPasteFormulaResult(destination);
     return {
       ...next,
       value: null,
-      formula: sourceFormula,
-      formulaValue: undefined,
+      formula: formulaForPaste,
       ...(spec.formatting === 'none' ? { style: destination.style, numberFormat: destination.numberFormat } : {}),
       ...(spec.formatting === 'number-format' ? { numberFormat: source.numberFormat } : {}),
       ...(spec.formatting === 'source-formatting' || spec.formatting === 'all' ? { style: source.style ? structuredClone(source.style) : undefined } : {}),
@@ -967,18 +1012,28 @@ function applyPasteCell(
     };
   }
   if (spec.formatting === 'none') {
-    return { ...clearFormulaProvenance(destination), value: source.value ?? null, formula: sourceFormula };
+    const next = { ...clearPasteFormulaResult(destination), value: source.value ?? null, formula: formulaForPaste };
+    if (!formulaForPaste && source.formulaValue !== undefined) next.formulaValue = structuredClone(source.formulaValue);
+    if (!formulaForPaste && source.displayValue !== undefined) next.displayValue = source.displayValue;
+    return next;
   }
   if (spec.formatting === 'number-format') {
-    return {
-      ...clearFormulaProvenance(destination),
+    const next = {
+      ...clearPasteFormulaResult(destination),
       value: source.value ?? null,
-      formula: sourceFormula,
+      formula: formulaForPaste,
       numberFormat: source.numberFormat,
     };
+    if (!formulaForPaste && source.formulaValue !== undefined) next.formulaValue = structuredClone(source.formulaValue);
+    if (!formulaForPaste && source.displayValue !== undefined) next.displayValue = source.displayValue;
+    return next;
   }
   const next = clearFormulaProvenance(source);
-  if (sourceFormula) next.formula = sourceFormula;
+  if (formulaForPaste) {
+    next.formula = formulaForPaste;
+    delete next.formulaValue;
+    delete next.displayValue;
+  }
   if (transfer === 'copy' && next.presentation?.kind === 'barcode' && next.presentation.source.kind === 'formula') {
     next.presentation = {
       ...next.presentation,
@@ -1001,6 +1056,13 @@ function rangeContains(range: RangeRef, row: number, column: number): boolean {
 function rangesIntersect(left: RangeRef, right: RangeRef): boolean {
   return left.sheetId === right.sheetId && left.startRow <= right.endRow && left.endRow >= right.startRow
     && left.startColumn <= right.endColumn && left.endColumn >= right.startColumn;
+}
+
+function clearPasteFormulaResult(cell: CellData): CellData {
+  const next = clearFormulaProvenance(cell);
+  delete next.formulaValue;
+  delete next.displayValue;
+  return next;
 }
 
 function assertPastePreconditions(workbook: WorkbookModel, params: PasteRangeParams): RangeRef {
@@ -1148,11 +1210,20 @@ function applyPasteMetadataPlan(workbook: WorkbookModel, params: PasteRangeParam
   const sourceSheet = workbook.getSheet(source.sheetId);
   const targetSheet = workbook.getSheet(params.sheetId);
   const metadata = params.clipboard.rangeMetadata;
+  const nonblankOffsets = params.transfer === 'copy' && params.spec.skipBlanks
+    ? new Set(params.clipboard.occupiedCells
+      .filter((entry) => !isClipboardCellBlank(entry.value))
+      .map((entry) => `${entry.rowOffset}:${entry.columnOffset}`))
+    : undefined;
+  const pasteCell = (rowOffset: number, columnOffset: number) => ({
+    row: targetRange.startRow + (params.spec.transpose ? columnOffset : rowOffset),
+    column: targetRange.startColumn + (params.spec.transpose ? rowOffset : columnOffset),
+  });
   if (params.spec.metadata.commentsNotes) {
     const notes = after.notes ?? [];
     for (const entry of metadata.notes) {
-      const row = targetRange.startRow + entry.rowOffset;
-      const column = targetRange.startColumn + entry.columnOffset;
+      if (shouldSkipClipboardBlankMetadata(nonblankOffsets, entry.rowOffset, entry.columnOffset)) continue;
+      const { row, column } = pasteCell(entry.rowOffset, entry.columnOffset);
       notes.push({
         key: keyFor(row, column),
         value: { ...structuredClone(entry.value), id: `${entry.value.id}@paste:${row}:${column}` },
@@ -1161,8 +1232,8 @@ function applyPasteMetadataPlan(workbook: WorkbookModel, params: PasteRangeParam
     after.notes = notes;
     const comments = after.comments ?? [];
     for (const entry of metadata.comments) {
-      const row = targetRange.startRow + entry.rowOffset;
-      const column = targetRange.startColumn + entry.columnOffset;
+      if (shouldSkipClipboardBlankMetadata(nonblankOffsets, entry.rowOffset, entry.columnOffset)) continue;
+      const { row, column } = pasteCell(entry.rowOffset, entry.columnOffset);
       comments.push({
         ...structuredClone(entry.value),
         id: `${entry.value.id}@paste:${row}:${column}`,
@@ -1176,7 +1247,9 @@ function applyPasteMetadataPlan(workbook: WorkbookModel, params: PasteRangeParam
   if (params.spec.metadata.hyperlinks) {
     const hyperlinks = after.hyperlinks ?? [];
     for (const entry of metadata.hyperlinks) {
-      hyperlinks.push({ key: keyFor(targetRange.startRow + entry.rowOffset, targetRange.startColumn + entry.columnOffset), value: structuredClone(entry.value) });
+      if (shouldSkipClipboardBlankMetadata(nonblankOffsets, entry.rowOffset, entry.columnOffset)) continue;
+      const { row, column } = pasteCell(entry.rowOffset, entry.columnOffset);
+      hyperlinks.push({ key: keyFor(row, column), value: structuredClone(entry.value) });
     }
     after.hyperlinks = hyperlinks;
   }
@@ -1413,7 +1486,7 @@ export function registerEditingCommands(runtime: CommandRuntime): void {
       const clearsCells = params.spec.content !== 'none' && !params.spec.skipBlanks ? [structuredClone(targetCellRange)] : [];
       if (transfer === 'move' && sourceRange) clearsCells.push(structuredClone(sourceRange));
       const clearsMetadata = Object.values(params.spec.metadata).some(Boolean)
-        ? [structuredClone(targetCellRange), ...(transfer === 'move' && sourceRange ? [structuredClone(sourceRange)] : [])]
+        ? pasteMetadataClearRanges(targetCellRange, clipboard, params.spec, transfer, sourceRange)
         : [];
       const sparseWidths = (targetSheet: WorksheetModel, ranges: RangeRef[]) => {
         const columns = new Set<number>();
@@ -1480,8 +1553,8 @@ export function registerEditingCommands(runtime: CommandRuntime): void {
             transfer,
             source,
             sheet.cells.get(row, column),
-            row - sourceRow,
-            column - sourceColumn,
+            row - (sourceRow + rowOffset),
+            column - (sourceColumn + columnOffset),
             sourceAddress,
           );
           if (next !== undefined) {

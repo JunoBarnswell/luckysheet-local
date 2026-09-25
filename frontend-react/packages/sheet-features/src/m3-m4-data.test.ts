@@ -741,6 +741,129 @@ test('matrix flip remaps barcode formula references with the transformed cell co
   assert.equal(flippedPresentation?.kind === 'barcode' && flippedPresentation.source.kind === 'formula' ? flippedPresentation.source.formula : undefined, '=A1');
 });
 
+test('matrix flip shifts relative references outside the transformed cells with the formula owner', () => {
+  const { workbook, commands } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, { value: 'left' });
+  sheet.cells.set(0, 1, { value: null, formula: '=D1+$D$1' });
+
+  commands.execute('matrix.flip', {
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 1 },
+    direction: 'horizontal',
+  });
+
+  assert.equal(sheet.cells.get(0, 0)?.formula, '=C1+$D$1');
+});
+
+test('matrix transforms reject block-backed data regions before writing cells', () => {
+  const { workbook, commands } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.addDataRegion({
+    id: 'matrix-region',
+    sourceId: 'source-1',
+    range: { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 1, endColumn: 1 },
+    headerRow: 0,
+    revision: 0,
+  });
+  sheet.cells.set(2, 0, { value: 'unchanged' });
+  const before = workbook.snapshot();
+
+  assert.throws(() => commands.execute('matrix.transpose', {
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 1, startColumn: 0, endColumn: 0 },
+  }), /data-region/);
+  assert.deepEqual(workbook.snapshot(), before);
+});
+
+test('matrix transpose rejects a spill projection intersecting its expanded target', () => {
+  const { workbook, commands } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, { value: null, formula: '=SEQUENCE(1,2)' });
+  sheet.cells.set(1, 0, { value: 'bottom' });
+  sheet.spillRanges.push({
+    sheetId: sheet.id,
+    anchor: { row: 0, column: 0 },
+    range: { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 1 },
+    values: [[1, 2]],
+    state: 'ok',
+  });
+  const before = workbook.snapshot();
+
+  assert.throws(() => commands.execute('matrix.transpose', {
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 1, startColumn: 0, endColumn: 0 },
+  }), /dynamic-array spill range/);
+  assert.deepEqual(workbook.snapshot(), before);
+});
+
+test('matrix transforms reject invalid source coordinates before clearing any cells', () => {
+  const { workbook, commands } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, { value: 'keep' });
+  const before = workbook.snapshot();
+
+  assert.throws(() => commands.execute('matrix.transpose', {
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: -1, endRow: 0, startColumn: 0, endColumn: 0 },
+  }), /source range is outside worksheet bounds/);
+  assert.deepEqual(workbook.snapshot(), before);
+});
+
+test('matrix transforms reject hyperlink owners rather than leaving anchors behind', () => {
+  const { workbook, commands } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, { value: 'left' });
+  sheet.cells.set(0, 1, { value: 'right' });
+  sheet.hyperlinks.set('0:0', { id: 'matrix-link', target: { kind: 'url', url: 'https://example.com' } });
+  const before = workbook.snapshot();
+
+  assert.throws(() => commands.execute('matrix.flip', {
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 1 },
+    direction: 'horizontal',
+  }), /hyperlink anchors/);
+  assert.deepEqual(workbook.snapshot(), before);
+});
+
+test('matrix transform checks review, drawing, and sparkline anchors by both coordinates', () => {
+  const { workbook, commands } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, { value: 'selected' });
+  sheet.review.setNote(0, 1, { id: 'outside-note', author: 'u', text: 'outside', createdAt: '2026-01-01', visible: true });
+  sheet.review.addThread({ id: 'outside-thread', sheetId: sheet.id, row: 0, column: 1, author: 'u', text: 'outside', createdAt: '2026-01-01', replies: [] });
+  sheet.drawings.push({ id: 'outside-drawing', sheetId: sheet.id, kind: 'shape', anchor: { kind: 'one-cell', row: 0, column: 1 }, transform: { x: 0, y: 0, width: 10, height: 10 }, zIndex: 0, payloadId: 'p1' });
+  sheet.sparklines.push({ id: 'outside-sparkline', sheetId: sheet.id, anchor: { row: 0, column: 1 }, sourceRange: { sheetId: sheet.id, startRow: 1, endRow: 1, startColumn: 0, endColumn: 1 }, type: 'line', color: '#000000' });
+
+  commands.execute('matrix.transpose', {
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 },
+  });
+
+  assert.equal(sheet.cells.get(0, 0)?.value, 'selected');
+  assert.equal(sheet.review.getNoteAt(0, 1)?.text, 'outside');
+});
+
+test('matrix transpose rejects owners in the expanded target range before writing cells', () => {
+  for (const owner of ['note', 'thread', 'drawing', 'sparkline'] as const) {
+    const { workbook, commands } = runtime();
+    const sheet = workbook.getSheet(workbook.primarySheetId);
+    sheet.cells.set(0, 0, { value: 'top' });
+    sheet.cells.set(1, 0, { value: 'bottom' });
+    if (owner === 'note') sheet.review.setNote(0, 1, { id: 'target-note', author: 'u', text: 'target', createdAt: '2026-01-01', visible: true });
+    if (owner === 'thread') sheet.review.addThread({ id: 'target-thread', sheetId: sheet.id, row: 0, column: 1, author: 'u', text: 'target', createdAt: '2026-01-01', replies: [] });
+    if (owner === 'drawing') sheet.drawings.push({ id: 'target-drawing', sheetId: sheet.id, kind: 'shape', anchor: { kind: 'one-cell', row: 0, column: 1 }, transform: { x: 0, y: 0, width: 10, height: 10 }, zIndex: 0, payloadId: 'p1' });
+    if (owner === 'sparkline') sheet.sparklines.push({ id: 'target-sparkline', sheetId: sheet.id, anchor: { row: 0, column: 1 }, sourceRange: { sheetId: sheet.id, startRow: 1, endRow: 1, startColumn: 0, endColumn: 1 }, type: 'line', color: '#000000' });
+    const before = workbook.snapshot();
+
+    assert.throws(() => commands.execute('matrix.transpose', {
+      sheetId: sheet.id,
+      range: { sheetId: sheet.id, startRow: 0, endRow: 1, startColumn: 0, endColumn: 0 },
+    }), /drawing anchors|review objects|sparklines/);
+    assert.deepEqual(workbook.snapshot(), before);
+  }
+});
+
 test('matrix flip keeps OOXML source formula provenance aligned with the canonical formula', () => {
   const { workbook, commands } = runtime();
   const sheet = workbook.getSheet(workbook.primarySheetId);
@@ -811,6 +934,8 @@ test('matrix transpose clears formula cache and provenance from source slots out
   });
 
   assert.equal(sheet.cells.get(0, 1)?.formula, '=A1');
+  assert.equal(sheet.cells.get(0, 1)?.formulaValue, undefined);
+  assert.equal(sheet.cells.get(0, 1)?.displayValue, undefined);
   assert.equal(sheet.cells.get(0, 1)?.formulaMetadata?.sourceFormula, '=A1');
   assert.equal(sheet.cells.get(1, 0)?.formula, undefined);
   assert.equal(sheet.cells.get(1, 0)?.formulaValue, undefined);
