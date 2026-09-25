@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { RangeIndex } from '@react-sheets/formula-engine';
-import { applyRowPermutation, createRowPermutationPlan, rowPermutationAffectedColumnEnd, type RangeRef, WorkbookModel } from './index';
+import { applyRowPermutation, createRowPermutationPlan, rowPermutationAffectedColumnEnd, type PivotModel, type RangeRef, WorkbookModel } from './index';
 import type { ReportSheetDefinition } from './data-model';
 
 function range(sheetId: string, startRow: number, endRow: number, startColumn: number, endColumn: number): RangeRef {
@@ -38,6 +38,23 @@ function reportDefinition(sheetId: string): ReportSheetDefinition {
     renderMode: 'preview',
     layout: { orientation: 'portrait', marginTopPx: 0, marginRightPx: 0, marginBottomPx: 0, marginLeftPx: 0 },
     dataEntry: [],
+  };
+}
+
+function pivotDefinition(id: string, targetSheetId: string, source: PivotModel['source']): PivotModel {
+  return {
+    schema: 'PivotDefinition',
+    id,
+    source,
+    target: { sheetId: targetSheetId, anchor: { row: 0, column: 2 } },
+    fieldCatalog: { schema: 'PivotFieldCatalog', fields: [] },
+    layout: {
+      rows: [], columns: [], filters: [], allowMultipleFiltersPerField: true,
+      collation: { locale: 'en-US', sensitivity: 'variant', numeric: false, caseFirst: 'false' },
+      values: [], subtotalLocation: 'bottom', showRowGrandTotals: true,
+      showColumnGrandTotals: true, reportLayout: 'compact',
+    },
+    refreshPolicy: { mode: 'on-change', preserveFormatting: true, refreshOnLoad: true },
   };
 }
 
@@ -120,6 +137,76 @@ describe('canonical row permutation metadata plan', () => {
     assert.deepEqual(sheet.bandedRule?.range, range(sheet.id, 1, 1, 0, 0));
     assert.deepEqual((drawingOwner.drawingPayloads.get('camera-1') as { sourceRange: RangeRef }).sourceRange,
       range(sheet.id, 1, 2, 0, 0));
+  });
+
+  it('remaps cross-sheet Sparkline and Pivot sources without moving their owner anchors', () => {
+    const workbook = new WorkbookModel('permutation-cross-sheet-owners', 'Permutation cross-sheet owners');
+    const source = workbook.getSheet('sheet-1');
+    const owner = workbook.addSheet('sheet-2', 'Reference owner', 4, 3);
+    source.rowCount = 4;
+    source.columnCount = 1;
+    owner.sparklines.push({
+      id: 'cross-sheet-sparkline', sheetId: owner.id, anchor: { row: 0, column: 1 },
+      sourceRange: range(source.id, 0, 0, 0, 0), type: 'line', color: '#000000',
+    });
+    owner.pivots.push(pivotDefinition('cross-sheet-pivot', owner.id, {
+      kind: 'worksheet-ranges',
+      ranges: [
+        { sourceId: 'source', range: range(source.id, 0, 0, 0, 0) },
+        { sourceId: 'owner', range: range(owner.id, 0, 0, 0, 0) },
+        { sourceId: 'outside', range: range(source.id, 3, 3, 0, 0) },
+      ],
+      relationships: [],
+    }));
+    owner.pivots.push(pivotDefinition('cross-sheet-single-pivot', owner.id, {
+      kind: 'worksheet-range', range: range(source.id, 1, 1, 0, 0),
+    }));
+    const pivot = owner.pivots[0]!;
+    assert.equal(pivot.source.kind, 'worksheet-ranges');
+    if (pivot.source.kind !== 'worksheet-ranges') throw new Error('Test pivot source must use explicit worksheet ranges');
+    const ownerRangeIdentity = pivot.source.ranges[1]!.range;
+    const outsideRangeIdentity = pivot.source.ranges[2]!.range;
+
+    applyPermutation(workbook, range(source.id, 0, 2, 0, 0), [2, 0, 1]);
+
+    assert.deepEqual(owner.sparklines[0]?.sourceRange, range(source.id, 1, 1, 0, 0));
+    assert.equal(owner.sparklines[0]?.anchor.row, 0);
+    assert.deepEqual(pivot.source.ranges[0]?.range, range(source.id, 1, 1, 0, 0));
+    assert.strictEqual(pivot.source.ranges[1]?.range, ownerRangeIdentity);
+    assert.deepEqual(pivot.source.ranges[1]?.range, range(owner.id, 0, 0, 0, 0));
+    assert.strictEqual(pivot.source.ranges[2]?.range, outsideRangeIdentity);
+    assert.equal(pivot.target.anchor.row, 0);
+    assert.deepEqual(owner.pivots[1]?.source, {
+      kind: 'worksheet-range', range: range(source.id, 2, 2, 0, 0),
+    });
+  });
+
+  it('rejects cross-sheet single-range owners that a permutation would split before changing cells', () => {
+    const workbook = new WorkbookModel('permutation-cross-sheet-reject', 'Permutation cross-sheet reject');
+    const source = workbook.getSheet('sheet-1');
+    const owner = workbook.addSheet('sheet-2', 'Reference owner', 4, 2);
+    source.rowCount = 4;
+    source.columnCount = 1;
+    owner.sparklines.push({
+      id: 'cross-sheet-sparkline', sheetId: owner.id, anchor: { row: 0, column: 1 },
+      sourceRange: range(source.id, 0, 1, 0, 0), type: 'line', color: '#000000',
+    });
+    owner.pivots.push(pivotDefinition('cross-sheet-pivot', owner.id, {
+      kind: 'worksheet-ranges',
+      ranges: [{ sourceId: 'source', range: range(source.id, 0, 1, 0, 0) }],
+      relationships: [],
+    }));
+    source.cells.set(0, 0, { value: 'first' });
+    source.cells.set(1, 0, { value: 'second' });
+    const selected = range(source.id, 0, 3, 0, 0);
+    const beforeSparklineRejection = workbook.snapshot();
+
+    assert.throws(() => applyPermutation(workbook, selected, [2, 0, 3, 1]), /cannot exactly remap sparkline cross-sheet-sparkline/);
+    assert.deepEqual(workbook.snapshot(), beforeSparklineRejection);
+    owner.sparklines.length = 0;
+    const beforePivotRejection = workbook.snapshot();
+    assert.throws(() => applyPermutation(workbook, selected, [2, 0, 3, 1]), /cannot exactly remap pivot cross-sheet-pivot source/);
+    assert.deepEqual(workbook.snapshot(), beforePivotRejection);
   });
 
   it('rejects a row permutation whose metadata scope overstates the canonical owner extent', () => {

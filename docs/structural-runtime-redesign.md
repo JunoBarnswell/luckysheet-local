@@ -1185,3 +1185,16 @@ PR 上两个 `canonical-build` job 使用相同 head，前端依赖安装与前�
 **修复方案**：快路径改用 Web Crypto SHA-256，codec revision 和 native-document record 升至 v2；仅在 `LocalNativeDocumentStore.load` 的显式迁移边界识别 v1，成功校验后清除旧快路径身份并原子写入 v2，非法旧 artifact 保持拒绝且不改存储。新增 hash 变更与迁移成功/拒绝路径测试源码。静态执行 `git diff --check`；未运行本地测试、构建、lint 或 UI。旧 artifact 在完成一次正常导出之前不会走原字节捷径；若其内容不能安全重写，既有 fail-close 规则仍会拒绝，不声称本次已完成 OOXML opaque-owner 的结构变换。
 
 附加边界检查还发现存储读取用 truthiness 把损坏的 falsy record 当成“无记录”；现在只有 key 缺失（`undefined`）返回空，`null`/其它错误值 fail-close，回归源码同时覆盖无效 v1 hash 与 `false`/`null` record 且确认失败不写入。远端首次编译进一步确认 TypeScript 将 `null` 保留为可能值；显式分支已补齐，该处未在本地构建。
+
+### 六轮静态自审 — 行置换漏更新跨表 Pivot/Sparkline 源区域（2026-09-26）
+
+六轮独立核对确认一个真实 owner 枚举缺口，影响 Pivot 与 Sparkline 两类工作表源引用：
+
+1. **模型契约**：Sparkline 插入 helper 明确说明目标工作表持有对象、`sourceRange` 可属于另一工作表；Pivot 的单源/多源 worksheet source 均使用带 `sheetId` 的 `RangeRef`，没有同表限制。
+2. **TypeScript 预检**：`validatePermutationMetadata` 只读取被排序工作表的 `sparklines`/`pivots`。映射器按 source `sheetId` 判断是否受影响，因此跨表 owner 根本不会进入预检，也就不会在非连续结果时 fail-close。
+3. **TypeScript 写回**：`applyRowPermutation` 同样只写目标表集合；对照之下，跨表 drawing payload 已遍历全工作簿并改写引用范围。对象的锚点仍须按其实际 `sheetId`/pivot target 决定，不能随着源区域一起移动。
+4. **Java 预检**：`validatePermutationMetadataExact` 已接收 workbook root，但 Sparkline 与 Pivot 遍历仍限于目标 `sheet`；`PivotMutationDescriptor.forEachWorksheetSourceRange` 只枚举 range，不会弥补 owner 遍历边界。
+5. **Java 写回**：`remapPermutationMetadata` 也只更新目标表的 Sparkline/Pivot 集合。`writeSingleRange` 已正确按 range sheet ID 映射，根因是没有访问跨表 owner，而不是坐标映射代数。
+6. **对照与回归边界**：现有跨表 drawing-source 行置换用例证明引用源应跟随源单元格移动；旧 Pivot/Sparkline 用例缺失。新增成功用例断言源范围移动而 owner 锚点及另一表源范围不变；拒绝用例分别断言无法表达为单一区域时两类 owner 都在快照变更前被拒绝。
+
+**修复**：TypeScript 与 Java 的预检和写回现在均枚举 workbook 中所有 Pivot/Sparkline 源 owner；只映射与被排序范围相交的源区域，以保留其它 `RangeRef` 的对象身份；Sparkline anchor 只跟随其所在 sheet，Pivot anchor 只按 target sheet 映射。新增 TS/Java 成功与 split-range 拒绝回归测试源码。实现自审还确认若无相交判断，TypeScript 的精确映射器会克隆并重赋无关范围，可能引起无必要的下游刷新；此路径已收窄并用对象身份断言覆盖。进一步核对发现服务端 `SnapshotMutationSupport.array` 会把缺省集合物化为空数组，因此全表只读预检/枚举改用 `existingArray`，并用无关 sheet 的字段缺省断言防止快照被扩写。仅静态审查；未运行本地测试、构建、lint 或 UI；`git diff --check` 通过。全局 StructuralPatch/ReferenceIndex 整改仍未完成。

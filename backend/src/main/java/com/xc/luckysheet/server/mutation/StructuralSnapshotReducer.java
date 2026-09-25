@@ -3454,11 +3454,15 @@ final class StructuralSnapshotReducer {
                 : coordinate);
         for (JsonNode raw : SnapshotMutationSupport.array(sheet, "hyperlinks")) remapCellOwner(requireObject(raw, "Hyperlink"), range, targetRowsBySource);
         for (JsonNode raw : SnapshotMutationSupport.array(sheet, "drawings")) remapDrawingRows(requireObject(raw, "Drawing"), range, targetRowsBySource);
-        for (JsonNode raw : SnapshotMutationSupport.array(sheet, "sparklines")) {
-            ObjectNode sparkline = requireObject(raw, "Sparkline");
-            ObjectNode anchor = SnapshotMutationSupport.requiredObject(sparkline, "anchor");
-            if (contains(range, anchor.path("row").asInt(-1), anchor.path("column").asInt(-1))) anchor.put("row", remapRow(anchor.path("row").asInt(), range, targetRowsBySource));
-            writeSingleRange(sparkline.get("sourceRange"), range, targetRowsBySource, "sparkline source");
+        for (JsonNode rawOwner : SnapshotMutationSupport.sheets(root)) {
+            ObjectNode owner = requireObject(rawOwner, "Worksheet");
+            boolean ownsTargetSheet = range.sheetId().equals(owner.path("id").asText());
+            for (JsonNode raw : existingArray(owner, "sparklines")) {
+                ObjectNode sparkline = requireObject(raw, "Sparkline");
+                ObjectNode anchor = SnapshotMutationSupport.requiredObject(sparkline, "anchor");
+                if (ownsTargetSheet && contains(range, anchor.path("row").asInt(-1), anchor.path("column").asInt(-1))) anchor.put("row", remapRow(anchor.path("row").asInt(), range, targetRowsBySource));
+                writeSingleRange(sparkline.get("sourceRange"), range, targetRowsBySource, "sparkline source");
+            }
         }
         for (JsonNode raw : SnapshotMutationSupport.array(sheet, "spillRanges")) {
             ObjectNode spill = requireObject(raw, "Spill range");
@@ -3488,14 +3492,17 @@ final class StructuralSnapshotReducer {
                 if (table.has("autoFilter")) writeSingleRange(table.get("autoFilter").path("range"), range, targetRowsBySource, "sheet table filter");
             }
         }
-        for (JsonNode rawPivot : SnapshotMutationSupport.array(sheet, "pivots")) {
-            ObjectNode pivot = requireObject(rawPivot, "Pivot");
-            SnapshotMutationSupport.validateKnownKeys(pivot, Set.of("schema", "id", "source", "target", "fieldCatalog", "layout", "refreshPolicy", "presentation", "nativeMetadata"), "Pivot");
-            PivotMutationDescriptor.forEachWorksheetSourceRange(pivot, source -> writeSingleRange(source, range, targetRowsBySource, "pivot source"));
-            ObjectNode target = PivotMutationDescriptor.requiredTarget(pivot);
-            ObjectNode anchor = PivotMutationDescriptor.requiredAnchor(target);
-            if (range.sheetId().equals(target.path("sheetId").asText()) && contains(range, anchor.path("row").asInt(-1), anchor.path("column").asInt(-1))) {
-                anchor.put("row", remapRow(anchor.path("row").asInt(), range, targetRowsBySource));
+        for (JsonNode rawOwner : SnapshotMutationSupport.sheets(root)) {
+            ObjectNode owner = requireObject(rawOwner, "Worksheet");
+            for (JsonNode rawPivot : existingArray(owner, "pivots")) {
+                ObjectNode pivot = requireObject(rawPivot, "Pivot");
+                SnapshotMutationSupport.validateKnownKeys(pivot, Set.of("schema", "id", "source", "target", "fieldCatalog", "layout", "refreshPolicy", "presentation", "nativeMetadata"), "Pivot");
+                PivotMutationDescriptor.forEachWorksheetSourceRange(pivot, source -> writeSingleRange(source, range, targetRowsBySource, "pivot source"));
+                ObjectNode target = PivotMutationDescriptor.requiredTarget(pivot);
+                ObjectNode anchor = PivotMutationDescriptor.requiredAnchor(target);
+                if (range.sheetId().equals(target.path("sheetId").asText()) && contains(range, anchor.path("row").asInt(-1), anchor.path("column").asInt(-1))) {
+                    anchor.put("row", remapRow(anchor.path("row").asInt(), range, targetRowsBySource));
+                }
             }
         }
         for (JsonNode merge : SnapshotMutationSupport.array(sheet, "merges")) {
@@ -3821,7 +3828,10 @@ final class StructuralSnapshotReducer {
 
     private static void validatePermutationMetadataExact(ObjectNode root, ObjectNode sheet, RangeRef range, RangeRef metadataScope, int[] targetRowsBySource) {
         for (JsonNode raw : SnapshotMutationSupport.array(sheet, "drawings")) validateDrawingExact(requireObject(raw, "Drawing"), range);
-        for (JsonNode raw : SnapshotMutationSupport.array(sheet, "sparklines")) requireSingleRange(requireObject(raw, "Sparkline").get("sourceRange"), range, targetRowsBySource, "sparkline source");
+        for (JsonNode rawOwner : SnapshotMutationSupport.sheets(root)) {
+            ObjectNode owner = requireObject(rawOwner, "Worksheet");
+            for (JsonNode raw : existingArray(owner, "sparklines")) requireSingleRange(requireObject(raw, "Sparkline").get("sourceRange"), range, targetRowsBySource, "sparkline source");
+        }
         for (JsonNode raw : SnapshotMutationSupport.array(sheet, "spillRanges")) requireSingleRange(requireObject(raw, "Spill range").get("range"), range, targetRowsBySource, "spill range");
         for (JsonNode raw : SnapshotMutationSupport.array(sheet, "conditionalFormats")) for (JsonNode item : requireObject(raw, "Conditional format").path("ranges")) remapRangeExact(item, metadataScope, targetRowsBySource);
         for (JsonNode raw : SnapshotMutationSupport.array(sheet, "dataValidations")) for (JsonNode item : requireObject(raw, "Data validation").path("ranges")) remapRangeExact(item, metadataScope, targetRowsBySource);
@@ -3836,7 +3846,10 @@ final class StructuralSnapshotReducer {
                 if (table.has("autoFilter")) requireSingleRange(table.get("autoFilter").path("range"), range, targetRowsBySource, "sheet table filter");
             }
         }
-        for (JsonNode raw : SnapshotMutationSupport.array(sheet, "pivots")) PivotMutationDescriptor.forEachWorksheetSourceRange(requireObject(raw, "Pivot"), source -> requireSingleRange(source, range, targetRowsBySource, "pivot source"));
+        for (JsonNode rawOwner : SnapshotMutationSupport.sheets(root)) {
+            ObjectNode owner = requireObject(rawOwner, "Worksheet");
+            for (JsonNode raw : existingArray(owner, "pivots")) PivotMutationDescriptor.forEachWorksheetSourceRange(requireObject(raw, "Pivot"), source -> requireSingleRange(source, range, targetRowsBySource, "pivot source"));
+        }
         for (JsonNode raw : SnapshotMutationSupport.array(sheet, "merges")) requireSingleRange(requireObject(raw, "Merge").get("range"), range, targetRowsBySource, "merge");
         for (JsonNode raw : SnapshotMutationSupport.array(sheet, "protectionRules")) if (raw.has("range")) requireSingleRange(raw.get("range"), metadataScope, targetRowsBySource, "protection rule");
         JsonNode bandedRaw = sheet.get("bandedRule");

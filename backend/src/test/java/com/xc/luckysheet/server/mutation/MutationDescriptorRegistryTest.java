@@ -1036,6 +1036,50 @@ class MutationDescriptorRegistryTest {
     }
 
     @Test
+    void rowPermutationRemapsCrossSheetPivotAndSparklineSourcesWithoutMovingOwnerAnchors() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        JsonNode snapshot = crossSheetRowPermutationSnapshot(0, 0);
+        OperationMutation mutation = withSortContext(new OperationMutation("rows.permuted", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":0,"endRow":2,"startColumn":0,"endColumn":0},"sourceRows":[2,0,1]}
+                """)), range(0, 2, 0, 0), "worksheet", null, false, 0);
+
+        JsonNode current = registry.prepare(snapshot, mutation, WorkbookAclRole.EDITOR).descriptor().apply(snapshot, mutation);
+        JsonNode owner = current.path("sheets").get(1);
+        assertEquals(1, owner.path("sparklines").get(0).path("sourceRange").path("startRow").asInt());
+        assertEquals(0, owner.path("sparklines").get(0).path("anchor").path("row").asInt());
+        JsonNode pivot = owner.path("pivots").get(0);
+        assertEquals(1, pivot.path("source").path("ranges").get(0).path("range").path("startRow").asInt());
+        assertEquals(0, pivot.path("source").path("ranges").get(1).path("range").path("startRow").asInt());
+        assertEquals(0, pivot.path("target").path("anchor").path("row").asInt());
+        assertEquals(2, owner.path("pivots").get(1).path("source").path("range").path("startRow").asInt());
+        JsonNode untouched = current.path("sheets").get(2);
+        assertTrue(untouched.path("pivots").isMissingNode());
+        assertTrue(untouched.path("sparklines").isMissingNode());
+    }
+
+    @Test
+    void rowPermutationRejectsSplitCrossSheetPivotAndSparklineSourcesBeforeChangingSnapshot() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        ObjectNode snapshot = crossSheetRowPermutationSnapshot(0, 1);
+        OperationMutation mutation = withSortContext(new OperationMutation("rows.permuted", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":0,"endRow":3,"startColumn":0,"endColumn":0},"sourceRows":[2,0,3,1]}
+                """)), range(0, 3, 0, 0), "worksheet", null, false, 0);
+        ObjectNode beforeSparklineRejection = snapshot.deepCopy();
+
+        ServiceException sparklineError = assertThrows(ServiceException.class,
+                () -> registry.prepare(snapshot, mutation, WorkbookAclRole.EDITOR));
+        assertEquals("VALIDATION_ERROR", sparklineError.code());
+        assertEquals(beforeSparklineRejection, snapshot);
+
+        ((ArrayNode) snapshot.path("sheets").get(1).path("sparklines")).remove(0);
+        ObjectNode beforePivotRejection = snapshot.deepCopy();
+        ServiceException pivotError = assertThrows(ServiceException.class,
+                () -> registry.prepare(snapshot, mutation, WorkbookAclRole.EDITOR));
+        assertEquals("VALIDATION_ERROR", pivotError.code());
+        assertEquals(beforePivotRejection, snapshot);
+    }
+
+    @Test
     void rowPermutationKeepsRuleAnchorsReportBindingsBandedRangesAndDrawingSourcesCanonical() throws Exception {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         JsonNode snapshot = mapper.readTree("""
@@ -1589,6 +1633,42 @@ class MutationDescriptorRegistryTest {
         return mapper.readTree("""
                 {"schema":"PivotDefinition","id":"%s","source":%s,"target":{"sheetId":"sheet-1","anchor":{"row":4,"column":3}},"fieldCatalog":{"schema":"PivotFieldCatalog","fields":[]},"layout":{"rows":[],"columns":[],"filters":[],"allowMultipleFiltersPerField":true,"collation":{"locale":"en-US","sensitivity":"variant","numeric":false,"caseFirst":"false"},"values":[],"subtotalLocation":"bottom","showRowGrandTotals":true,"showColumnGrandTotals":true,"reportLayout":"compact"},"refreshPolicy":{"mode":"on-change","preserveFormatting":true,"refreshOnLoad":true}}
                 """.formatted(id, source));
+    }
+
+    private ObjectNode crossSheetRowPermutationSnapshot(int sourceStartRow, int sourceEndRow) throws Exception {
+        ObjectNode snapshot = (ObjectNode) mapper.readTree("""
+                {"definedNames":{},"definedNameModels":[],"sheets":[
+                  {"id":"sheet-1","name":"Data","rowCount":4,"columnCount":2,"cells":{},"pane":{"kind":"none"},"review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}},"merges":[],"conditionalFormats":[],"dataValidations":[],"pivots":[],"sparklines":[],"drawings":[],"drawingPayloads":{},"sheetTables":[],"spillRanges":[],"protectionRules":[]},
+                  {"id":"sheet-2","name":"View","rowCount":4,"columnCount":3,"cells":{},"pane":{"kind":"none"},"review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}},"merges":[],"conditionalFormats":[],"dataValidations":[],"pivots":[],"sparklines":[],"drawings":[],"drawingPayloads":{},"sheetTables":[],"spillRanges":[],"protectionRules":[]},
+                  {"id":"sheet-3","name":"Untouched","rowCount":4,"columnCount":2,"cells":{}}
+                ]}
+                """);
+        String source = """
+                {"kind":"worksheet-ranges","ranges":[
+                  {"sourceId":"source","range":{"sheetId":"sheet-1","startRow":%d,"endRow":%d,"startColumn":0,"endColumn":0}},
+                  {"sourceId":"owner","range":{"sheetId":"sheet-2","startRow":0,"endRow":0,"startColumn":0,"endColumn":0}}
+                ],"relationships":[]}
+                """.formatted(sourceStartRow, sourceEndRow);
+        ObjectNode owner = (ObjectNode) snapshot.path("sheets").get(1);
+        ObjectNode pivot = (ObjectNode) pivotWithSource(source, "cross-sheet-pivot");
+        ObjectNode target = (ObjectNode) pivot.get("target");
+        target.put("sheetId", "sheet-2");
+        ((ObjectNode) target.get("anchor")).put("row", 0).put("column", 2);
+        ((ArrayNode) owner.path("pivots")).add(pivot);
+        ObjectNode singlePivot = (ObjectNode) pivotWithSource(
+                "{\"kind\":\"worksheet-range\",\"range\":{\"sheetId\":\"sheet-1\",\"startRow\":1,\"endRow\":1,\"startColumn\":0,\"endColumn\":0}}",
+                "cross-sheet-single-pivot");
+        ObjectNode singleTarget = (ObjectNode) singlePivot.get("target");
+        singleTarget.put("sheetId", "sheet-2");
+        ((ObjectNode) singleTarget.get("anchor")).put("row", 0).put("column", 2);
+        ((ArrayNode) owner.path("pivots")).add(singlePivot);
+
+        ObjectNode sparkline = mapper.createObjectNode();
+        sparkline.put("id", "cross-sheet-sparkline").put("sheetId", "sheet-2").put("type", "line").put("color", "#000000");
+        sparkline.putObject("anchor").put("row", 0).put("column", 1);
+        sparkline.putObject("sourceRange").put("sheetId", "sheet-1").put("startRow", sourceStartRow).put("endRow", sourceEndRow).put("startColumn", 0).put("endColumn", 0);
+        ((ArrayNode) owner.path("sparklines")).add(sparkline);
+        return snapshot;
     }
 
     @Test

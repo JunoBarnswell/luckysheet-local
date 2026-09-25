@@ -454,6 +454,7 @@ export function validatePermutationMetadata(
   referenceOwners: Pick<StructuralReferenceOwnerIndex, 'getDefinedNamesAnchoredInRange'>,
 ): RowPermutationOwnerChanges {
   const sheet = workbook.getSheet(plan.range.sheetId);
+  const worksheetOwners = workbook.getSheets();
   const range = plan.range;
   if (range.endRow >= sheet.rowCount || range.endColumn >= sheet.columnCount) throw new Error('Row permutation range is outside worksheet bounds');
   if (plan.metadataScope.sheetId !== range.sheetId || plan.metadataScope.startColumn !== 0 || plan.metadataScope.startRow !== range.startRow
@@ -497,16 +498,18 @@ export function validatePermutationMetadata(
     if (remapRangeExact(groupRange, plan).length !== 1) throw new Error('Sort cannot exactly remap an outline group');
   }
   for (const drawing of sheet.drawings) remapDrawingAnchor(drawing, plan);
-  for (const sparkline of sheet.sparklines) remapSingleRange(`sparkline ${sparkline.id}`, sparkline.sourceRange, plan);
+  for (const owner of worksheetOwners) {
+    for (const sparkline of owner.sparklines) if (rangesIntersect(sparkline.sourceRange, range)) remapSingleRange(`sparkline ${sparkline.id}`, sparkline.sourceRange, plan);
+    for (const pivot of owner.pivots) {
+      if (pivot.source.kind === 'worksheet-range' && rangesIntersect(pivot.source.range, range)) remapSingleRange(`pivot ${pivot.id} source`, pivot.source.range, plan);
+      if (pivot.source.kind === 'worksheet-ranges') for (const source of pivot.source.ranges) if (rangesIntersect(source.range, range)) remapSingleRange(`pivot ${pivot.id} source`, source.range, plan);
+    }
+  }
   for (const spill of sheet.spillRanges) remapSpill(spill, plan);
   const ruleTransform = ruleTransformForPlan(plan);
   const conditionalFormats = sheet.conditionalFormats.map((rule) => remapRuleForPermutation(rule, ruleTransform, plan, changesRows, false));
   const dataValidations = sheet.dataValidations.map((rule) => remapRuleForPermutation(rule, ruleTransform, plan, changesRows, true));
   if (sheet.autoFilter) remapSingleRange('auto filter', sheet.autoFilter.range, plan);
-  for (const pivot of sheet.pivots) {
-    if (pivot.source.kind === 'worksheet-range') remapSingleRange(`pivot ${pivot.id} source`, pivot.source.range, plan);
-    if (pivot.source.kind === 'worksheet-ranges') for (const source of pivot.source.ranges) remapSingleRange(`pivot ${pivot.id} source`, source.range, plan);
-  }
   for (const rule of sheet.protectionRules) if (rule.range) remapSingleRange(`protection ${rule.id}`, rule.range, plan, plan.metadataScope);
   if (sheet.bandedRule) remapSingleRange('banded rule', sheet.bandedRule.range, plan);
   const definedNames = indexedDefinedNames.flatMap((entry) => {
@@ -528,7 +531,7 @@ export function validatePermutationMetadata(
     offsetPermutationFormulaFields(next.dataValidation!, rowDelta, `cell-style template ${template.id}`);
     return [next];
   });
-  const drawingPayloads = workbook.getSheets().flatMap((owner) => {
+  const drawingPayloads = worksheetOwners.flatMap((owner) => {
     let mapped: Map<string, DrawingPayload> | undefined;
     for (const [payloadId, payload] of owner.drawingPayloads) {
       const next = remapDrawingPayload(payload, payloadId, plan);
@@ -557,6 +560,7 @@ export function applyRowPermutation(
   referenceOwners: Pick<StructuralReferenceOwnerIndex, 'getDefinedNamesAnchoredInRange'>,
 ): RowPermutationResult {
   const sheet = workbook.getSheet(plan.range.sheetId);
+  const worksheetOwners = workbook.getSheets();
   const ownerChanges = validatePermutationMetadata(workbook, plan, referenceOwners);
   const { range, sourceRows } = plan;
   const ruleFormulaOwnerDeltas = [
@@ -592,7 +596,17 @@ export function applyRowPermutation(
   sheet.review.remapCoordinates((row, column) => ({ row: inRange(plan.range, row, column) ? remapRow(row, plan) : row, column }));
   const hyperlinks = remapCellMap(sheet.hyperlinks, plan); sheet.hyperlinks.clear(); for (const [key, value] of hyperlinks) sheet.hyperlinks.set(key, value);
   for (const drawing of sheet.drawings) Object.assign(drawing, remapDrawingAnchor(drawing, plan));
-  for (const sparkline of sheet.sparklines) { sparkline.sourceRange = remapSingleRange(`sparkline ${sparkline.id}`, sparkline.sourceRange, plan); if (inRange(range, sparkline.anchor.row, sparkline.anchor.column)) sparkline.anchor.row = remapRow(sparkline.anchor.row, plan); }
+  for (const owner of worksheetOwners) {
+    for (const sparkline of owner.sparklines) {
+      if (rangesIntersect(sparkline.sourceRange, range)) sparkline.sourceRange = remapSingleRange(`sparkline ${sparkline.id}`, sparkline.sourceRange, plan);
+      if (owner.id === sheet.id && inRange(range, sparkline.anchor.row, sparkline.anchor.column)) sparkline.anchor.row = remapRow(sparkline.anchor.row, plan);
+    }
+    for (const pivot of owner.pivots) {
+      if (pivot.source.kind === 'worksheet-range' && rangesIntersect(pivot.source.range, range)) pivot.source.range = remapSingleRange(`pivot ${pivot.id} source`, pivot.source.range, plan);
+      if (pivot.source.kind === 'worksheet-ranges') for (const source of pivot.source.ranges) if (rangesIntersect(source.range, range)) source.range = remapSingleRange(`pivot ${pivot.id} source`, source.range, plan);
+      if (pivot.target.sheetId === sheet.id && inRange(range, pivot.target.anchor.row, pivot.target.anchor.column)) pivot.target.anchor.row = remapRow(pivot.target.anchor.row, plan);
+    }
+  }
   sheet.spillRanges.splice(0, sheet.spillRanges.length, ...sheet.spillRanges.map((spill) => remapSpill(spill, plan)));
   sheet.conditionalFormats.splice(0, sheet.conditionalFormats.length, ...ownerChanges.conditionalFormats);
   sheet.dataValidations.splice(0, sheet.dataValidations.length, ...ownerChanges.dataValidations);
@@ -604,7 +618,6 @@ export function applyRowPermutation(
       if (table.autoFilter) table.autoFilter.range = remapSingleRange(`table ${table.id} filter`, table.autoFilter.range, plan);
     }
   }
-  for (const pivot of sheet.pivots) { if (pivot.source.kind === 'worksheet-range') pivot.source.range = remapSingleRange(`pivot ${pivot.id} source`, pivot.source.range, plan); if (pivot.source.kind === 'worksheet-ranges') for (const source of pivot.source.ranges) source.range = remapSingleRange(`pivot ${pivot.id} source`, source.range, plan); if (pivot.target.sheetId === sheet.id && inRange(range, pivot.target.anchor.row, pivot.target.anchor.column)) pivot.target.anchor.row = remapRow(pivot.target.anchor.row, plan); }
   for (const merge of sheet.merges) { merge.range = remapSingleRange('merge', merge.range, plan); if (inRange(range, merge.anchor.row, merge.anchor.column)) merge.anchor.row = remapRow(merge.anchor.row, plan); }
   for (const group of sheet.outline?.groups ?? []) if (group.axis === 'row' && group.start >= range.startRow && group.end <= range.endRow) { const mapped = remapRangeExact({ sheetId: sheet.id, startRow: group.start, endRow: group.end, startColumn: range.startColumn, endColumn: range.endColumn }, plan); if (mapped.length !== 1) throw new Error('Sort cannot exactly remap outline group'); group.start = mapped[0]!.startRow; group.end = mapped[0]!.endRow; }
   for (const rule of sheet.protectionRules) if (rule.range) rule.range = remapSingleRange(`protection ${rule.id}`, rule.range, plan, plan.metadataScope);
