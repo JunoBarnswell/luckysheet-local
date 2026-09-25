@@ -1502,6 +1502,205 @@ describe('exchange-excel-ooxml', () => {
       }),
       (error: unknown) => error instanceof Error && error.message.includes('NATIVE_DOCUMENT_UNCHANGED_SAVE_REQUIRED'),
     );
+
+    const unownedRootPackage = loadOpcPackageGraph(exportSnapshotToOoxmlBuffer(extensionWorkbook.snapshot()));
+    const unownedRootPart = unownedRootPackage.packageGraph.workbookPart;
+    unownedRootPackage.packageGraph.parts[unownedRootPart] = strToU8(
+      strFromU8(unownedRootPackage.packageGraph.parts[unownedRootPart]!).replace(
+        '</workbook>',
+        '<futureWorkbookNode ref="Sheet1!A1"/></workbook>',
+      ),
+    );
+    const unownedRootImport = await importOoxmlDocument({
+      fileName: 'unknown-workbook-node.xlsx',
+      buffer: zipOpcPartsBuffer(unownedRootPackage.packageGraph.parts),
+      options: { compatibilityTarget: 'B', compatibilityMode: 'balanced' },
+    });
+    const unownedRootSnapshot = structuredClone(unownedRootImport.snapshot);
+    unownedRootSnapshot.name = 'Edited unknown workbook node';
+    await assert.rejects(
+      () => exportOoxmlDocument({
+        snapshot: unownedRootSnapshot,
+        artifact: unownedRootImport.artifact,
+        fileName: 'unknown-workbook-node.xlsx',
+        options: { compatibilityTarget: 'B' },
+      }),
+      (error: unknown) => error instanceof Error && error.message.includes('NATIVE_DOCUMENT_UNCHANGED_SAVE_REQUIRED'),
+    );
+
+    const unownedPivotCachePackage = loadOpcPackageGraph(exportSnapshotToOoxmlBuffer(extensionWorkbook.snapshot()));
+    const unownedPivotCachePart = unownedPivotCachePackage.packageGraph.workbookPart;
+    unownedPivotCachePackage.packageGraph.parts[unownedPivotCachePart] = strToU8(
+      strFromU8(unownedPivotCachePackage.packageGraph.parts[unownedPivotCachePart]!).replace(
+        '</workbook>',
+        '<pivotCaches count="0"><futurePivotCacheMetadata value="keep"/></pivotCaches></workbook>',
+      ),
+    );
+    const unownedPivotCacheImport = await importOoxmlDocument({
+      fileName: 'unknown-pivot-cache-metadata.xlsx',
+      buffer: zipOpcPartsBuffer(unownedPivotCachePackage.packageGraph.parts),
+      options: { compatibilityTarget: 'B', compatibilityMode: 'balanced' },
+    });
+    const unchangedUnownedPivotCache = await exportOoxmlDocument({
+      snapshot: unownedPivotCacheImport.snapshot,
+      artifact: unownedPivotCacheImport.artifact,
+      fileName: 'unknown-pivot-cache-metadata.xlsx',
+      options: { compatibilityTarget: 'B' },
+    });
+    assert.match(
+      strFromU8(loadOpcPackageGraph(unchangedUnownedPivotCache.buffer).files[unownedPivotCachePart]!),
+      /futurePivotCacheMetadata/,
+    );
+    const editedUnownedPivotCache = structuredClone(unownedPivotCacheImport.snapshot);
+    editedUnownedPivotCache.name = 'Edited unknown pivot-cache metadata';
+    await assert.rejects(
+      () => exportOoxmlDocument({
+        snapshot: editedUnownedPivotCache,
+        artifact: unownedPivotCacheImport.artifact,
+        fileName: 'unknown-pivot-cache-metadata.xlsx',
+        options: { compatibilityTarget: 'B' },
+      }),
+      (error: unknown) => error instanceof Error && error.message.includes('NATIVE_DOCUMENT_UNCHANGED_SAVE_REQUIRED'),
+    );
+
+    const veryHiddenPackage = loadOpcPackageGraph(exportSnapshotToOoxmlBuffer(extensionWorkbook.snapshot()));
+    const veryHiddenPart = veryHiddenPackage.packageGraph.workbookPart;
+    const veryHiddenXml = strFromU8(veryHiddenPackage.packageGraph.parts[veryHiddenPart]!).replace(
+      '<sheet name="Sheet1"',
+      '<sheet name="Sheet1" state="veryHidden"',
+    );
+    assert.match(veryHiddenXml, /state="veryHidden"/);
+    veryHiddenPackage.packageGraph.parts[veryHiddenPart] = strToU8(veryHiddenXml);
+    const veryHiddenImport = await importOoxmlDocument({
+      fileName: 'very-hidden-sheet.xlsx',
+      buffer: zipOpcPartsBuffer(veryHiddenPackage.packageGraph.parts),
+      options: { compatibilityTarget: 'B', compatibilityMode: 'balanced' },
+    });
+    assert.equal(veryHiddenImport.snapshot.sheets[0]?.hidden, true);
+    const editedVeryHiddenSnapshot = structuredClone(veryHiddenImport.snapshot);
+    editedVeryHiddenSnapshot.name = 'Edited very hidden sheet';
+    await assert.rejects(
+      () => exportOoxmlDocument({
+        snapshot: editedVeryHiddenSnapshot,
+        artifact: veryHiddenImport.artifact,
+        fileName: 'very-hidden-sheet.xlsx',
+        options: { compatibilityTarget: 'B' },
+      }),
+      (error: unknown) => error instanceof Error && error.message.includes('NATIVE_DOCUMENT_UNCHANGED_SAVE_REQUIRED'),
+    );
+
+    const namespaceLikeAttributePackage = loadOpcPackageGraph(exportSnapshotToOoxmlBuffer(extensionWorkbook.snapshot()));
+    const namespaceLikeAttributePart = namespaceLikeAttributePackage.packageGraph.workbookPart;
+    namespaceLikeAttributePackage.packageGraph.parts[namespaceLikeAttributePart] = strToU8(
+      strFromU8(namespaceLikeAttributePackage.packageGraph.parts[namespaceLikeAttributePart]!).replace(
+        '<workbook ',
+        '<workbook xmlnsfuture="urn:future" ',
+      ),
+    );
+    const namespaceLikeAttributeImport = await importOoxmlDocument({
+      fileName: 'namespace-like-workbook-attribute.xlsx',
+      buffer: zipOpcPartsBuffer(namespaceLikeAttributePackage.packageGraph.parts),
+      options: { compatibilityTarget: 'B', compatibilityMode: 'balanced' },
+    });
+    const editedNamespaceLikeAttribute = structuredClone(namespaceLikeAttributeImport.snapshot);
+    editedNamespaceLikeAttribute.name = 'Edited namespace-like workbook attribute';
+    await assert.rejects(
+      () => exportOoxmlDocument({
+        snapshot: editedNamespaceLikeAttribute,
+        artifact: namespaceLikeAttributeImport.artifact,
+        fileName: 'namespace-like-workbook-attribute.xlsx',
+        options: { compatibilityTarget: 'B' },
+      }),
+      (error: unknown) => error instanceof Error && error.message.includes('NATIVE_DOCUMENT_UNCHANGED_SAVE_REQUIRED'),
+    );
+
+    const invalidStatePackage = loadOpcPackageGraph(exportSnapshotToOoxmlBuffer(extensionWorkbook.snapshot()));
+    const invalidStatePart = invalidStatePackage.packageGraph.workbookPart;
+    invalidStatePackage.packageGraph.parts[invalidStatePart] = strToU8(
+      strFromU8(invalidStatePackage.packageGraph.parts[invalidStatePart]!).replace(
+        '<sheet name="Sheet1"',
+        '<sheet name="Sheet1" state="future"',
+      ),
+    );
+    const invalidStateImport = await importOoxmlDocument({
+      fileName: 'invalid-sheet-state.xlsx',
+      buffer: zipOpcPartsBuffer(invalidStatePackage.packageGraph.parts),
+      options: { compatibilityTarget: 'B', compatibilityMode: 'balanced' },
+    });
+    const editedInvalidState = structuredClone(invalidStateImport.snapshot);
+    editedInvalidState.name = 'Edited invalid sheet state';
+    await assert.rejects(
+      () => exportOoxmlDocument({
+        snapshot: editedInvalidState,
+        artifact: invalidStateImport.artifact,
+        fileName: 'invalid-sheet-state.xlsx',
+        options: { compatibilityTarget: 'B' },
+      }),
+      (error: unknown) => error instanceof Error && error.message.includes('NATIVE_DOCUMENT_UNCHANGED_SAVE_REQUIRED'),
+    );
+
+    const viewWorkbook = new WorkbookModel('wb-workbook-view-indexes', 'Workbook view indexes');
+    viewWorkbook.addSheet('sheet-2', 'Second');
+    const viewPackage = loadOpcPackageGraph(exportSnapshotToOoxmlBuffer(viewWorkbook.snapshot()));
+    const viewWorkbookPart = viewPackage.packageGraph.workbookPart;
+    viewPackage.packageGraph.parts[viewWorkbookPart] = strToU8(
+      strFromU8(viewPackage.packageGraph.parts[viewWorkbookPart]!).replace(
+        '<sheets>',
+        '<bookViews><workbookView activeTab="0" firstSheet="0"/></bookViews><sheets>',
+      ),
+    );
+    const viewImport = await importOoxmlDocument({
+      fileName: 'workbook-view-indexes.xlsx',
+      buffer: zipOpcPartsBuffer(viewPackage.packageGraph.parts),
+      options: { compatibilityTarget: 'B', compatibilityMode: 'balanced' },
+    });
+    const reorderedViewsSnapshot = structuredClone(viewImport.snapshot);
+    reorderedViewsSnapshot.sheets.reverse();
+    const reorderedViewsExport = await exportOoxmlDocument({
+      snapshot: reorderedViewsSnapshot,
+      artifact: viewImport.artifact,
+      fileName: 'workbook-view-indexes.xlsx',
+      options: { compatibilityTarget: 'B' },
+    });
+    const reorderedWorkbookXml = strFromU8(loadOpcPackageGraph(reorderedViewsExport.buffer).files[viewWorkbookPart]!);
+    assert.match(reorderedWorkbookXml, /activeTab="1" firstSheet="1"/);
+
+    const removedViewedSheetSnapshot = structuredClone(viewImport.snapshot);
+    removedViewedSheetSnapshot.sheets.shift();
+    await assert.rejects(
+      () => exportOoxmlDocument({
+        snapshot: removedViewedSheetSnapshot,
+        artifact: viewImport.artifact,
+        fileName: 'workbook-view-indexes.xlsx',
+        options: { compatibilityTarget: 'B' },
+      }),
+      (error: unknown) => error instanceof Error && error.message.includes('NATIVE_DOCUMENT_UNCHANGED_SAVE_REQUIRED'),
+    );
+
+    const invalidViewPackage = loadOpcPackageGraph(exportSnapshotToOoxmlBuffer(viewWorkbook.snapshot()));
+    const invalidViewPart = invalidViewPackage.packageGraph.workbookPart;
+    invalidViewPackage.packageGraph.parts[invalidViewPart] = strToU8(
+      strFromU8(invalidViewPackage.packageGraph.parts[invalidViewPart]!).replace(
+        '<sheets>',
+        '<bookViews><workbookView activeTab="0x0"/></bookViews><sheets>',
+      ),
+    );
+    const invalidViewImport = await importOoxmlDocument({
+      fileName: 'invalid-workbook-view-index.xlsx',
+      buffer: zipOpcPartsBuffer(invalidViewPackage.packageGraph.parts),
+      options: { compatibilityTarget: 'B', compatibilityMode: 'balanced' },
+    });
+    const editedInvalidView = structuredClone(invalidViewImport.snapshot);
+    editedInvalidView.name = 'Edited invalid workbook view';
+    await assert.rejects(
+      () => exportOoxmlDocument({
+        snapshot: editedInvalidView,
+        artifact: invalidViewImport.artifact,
+        fileName: 'invalid-workbook-view-index.xlsx',
+        options: { compatibilityTarget: 'B' },
+      }),
+      (error: unknown) => error instanceof Error && error.message.includes('NATIVE_DOCUMENT_UNCHANGED_SAVE_REQUIRED'),
+    );
   });
 
   it('regenerates canonically owned sparkline extensions and rejects unowned children', async () => {

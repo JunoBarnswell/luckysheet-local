@@ -75,6 +75,7 @@ export const NATIVE_DOCUMENT_CAPABILITY_MANIFEST = {
   'extended-validation': capability('extended-validation', 'full', 'none', 'none', 'none', 'full'),
   'extended-conditional-format': capability('extended-conditional-format', 'full', 'none', 'none', 'none', 'full'),
   'unknown-worksheet-node': capability('unknown-worksheet-node', 'full', 'none', 'none', 'none', 'none'),
+  'unknown-workbook-node': capability('unknown-workbook-node', 'full', 'none', 'none', 'none', 'none'),
 } as const satisfies Record<string, NativeCapabilityDeclaration>;
 
 function capability(
@@ -110,6 +111,9 @@ const SPARKLINE_GROUP_ATTRIBUTES = new Set([
 ]);
 const SPARKLINE_COLOR_NODES = new Set([
   'colorSeries', 'colorNegative', 'colorAxis', 'colorMarkers', 'colorFirst', 'colorLast', 'colorHigh', 'colorLow',
+]);
+const WORKBOOK_ROOT_NODES = new Set([
+  'workbookPr', 'sheets', 'definedNames', 'pivotCaches', 'bookViews', 'calcPr', 'fileVersion', 'fileSharing', 'workbookProtection', 'extLst',
 ]);
 
 export function detectWorksheetCapabilities(files: Record<string, Uint8Array>, pkg: OpcPackageGraph): CompatibilityFeatureDetection[] {
@@ -161,6 +165,53 @@ export function detectWorkbookCapabilities(files: Record<string, Uint8Array>, pk
   const workbook = descendants(parseXml(strFromU8(bytes)), 'workbook')[0];
   if (!workbook) return [];
   const detections: CompatibilityFeatureDetection[] = [];
+  const detectUnownedNode = (location: string, reason: string): void => {
+    detections.push({ feature: 'unknown-workbook-node', location: `${pkg.workbookPart}#${location}`, reason });
+  };
+  if (!hasOnlyAttributes(workbook, new Set())) detectUnownedNode('workbook@attributes', 'Workbook root attributes are not represented by the canonical writer');
+  for (const node of workbook.children) {
+    const name = localName(node.name);
+    if (!WORKBOOK_ROOT_NODES.has(name)) {
+      detectUnownedNode(name, `No canonical reader/writer owner exists for workbook node <${name}>`);
+      continue;
+    }
+    if (name === 'workbookPr' && (!hasOnlyAttributes(node, new Set(['date1904'])) || node.children.length > 0 || !hasOnlyWhitespace(node.text))) {
+      detectUnownedNode('workbookPr', 'Only workbookPr@date1904 is represented by the canonical writer');
+    }
+    if (name === 'pivotCaches') {
+      if (!hasOnlyAttributes(node, new Set(['count'])) || !hasOnlyWhitespace(node.text)) {
+        detectUnownedNode('pivotCaches', 'Pivot-cache container metadata is not represented by the canonical writer');
+      }
+      for (const cache of node.children) {
+        if (localName(cache.name) !== 'pivotCache'
+          || !hasOnlyAttributes(cache, new Set(['cacheId', 'r:id', 'id']))
+          || cache.children.length > 0 || !hasOnlyWhitespace(cache.text)) {
+          detectUnownedNode('pivotCaches#pivotCache', 'Pivot-cache metadata or child markup is not represented by the canonical writer');
+        }
+      }
+    }
+    if (name === 'sheets') {
+      if (!hasOnlyAttributes(node, new Set()) || !hasOnlyWhitespace(node.text)) detectUnownedNode('sheets', 'Workbook sheet-container metadata is not represented by the canonical writer');
+      for (const sheet of node.children) {
+        if (localName(sheet.name) !== 'sheet'
+          || !hasOnlyAttributes(sheet, new Set(['name', 'sheetId', 'r:id', 'id', 'state']))
+          || sheet.children.length > 0 || !hasOnlyWhitespace(sheet.text)
+          || (sheet.attrs.state !== undefined && !['visible', 'hidden'].includes(sheet.attrs.state))) {
+          detectUnownedNode('sheets#sheet', 'Workbook sheet metadata or visibility state cannot be round-tripped canonically');
+        }
+      }
+    }
+    if (name === 'definedNames') {
+      if (!hasOnlyAttributes(node, new Set()) || !hasOnlyWhitespace(node.text)) detectUnownedNode('definedNames', 'Workbook defined-name container metadata is not represented by the canonical writer');
+      for (const definedName of node.children) {
+        if (localName(definedName.name) !== 'definedName'
+          || !hasOnlyAttributes(definedName, new Set(['name', 'localSheetId', 'hidden']))
+          || definedName.children.length > 0) {
+          detectUnownedNode('definedNames#definedName', 'Defined-name attributes or child markup are not represented by the canonical writer');
+        }
+      }
+    }
+  }
   for (const extensionList of children(workbook, 'extLst')) {
     for (const extension of children(extensionList, 'ext')) {
       if (!isCanonicallyOwnedWorkbookControlExtension(extension, pkg.nativePivotGraph?.controls ?? [])) {
@@ -270,7 +321,7 @@ function readWorksheetNames(files: Record<string, Uint8Array>, pkg: OpcPackageGr
 }
 
 function hasOnlyAttributes(node: XmlNode, allowed: ReadonlySet<string>): boolean {
-  return Object.keys(node.attrs).every((name) => name.startsWith('xmlns') || allowed.has(name));
+  return Object.keys(node.attrs).every((name) => name === 'xmlns' || name.startsWith('xmlns:') || allowed.has(name));
 }
 
 function hasOnlyWhitespace(value: string): boolean {

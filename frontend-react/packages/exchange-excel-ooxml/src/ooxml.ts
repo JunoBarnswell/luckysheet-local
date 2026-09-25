@@ -64,6 +64,7 @@ import type { NativePivotControlDefinition, NativePivotGraph } from './types';
 import { isCanonicallyOwnedNativeControlExtension, isCanonicallyOwnedSparklineExtension, isCanonicallyOwnedWorkbookControlExtension } from './capability-manifest';
 import { builtInNumberFormat, builtInNumberFormatId, collectCustomNumberFormatIds, numberFormatCodeFromSpec } from './native-number-format';
 import { canonicalDateToSerial, isExcelDateFormat, parseDateSystem, serialToCanonicalDate } from './date-system';
+import { NativeDocumentError } from './native-document-error';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -2203,7 +2204,8 @@ function buildWorkbookXml(snapshot: WorkbookSnapshot, workbookPart: string, rela
     let hasExtensionList = false;
     for (const node of originalRoot.children) {
       const name = localName(node.name);
-      if (name === 'bookViews' || name === 'calcPr' || name === 'fileVersion' || name === 'fileSharing' || name === 'workbookProtection') xml += serializeXml(node);
+      if (name === 'bookViews') xml += preserved ? serializeWorkbookViews(node, originalRoot, preserved, workbookPart, descriptors) : serializeXml(node);
+      else if (name === 'calcPr' || name === 'fileVersion' || name === 'fileSharing' || name === 'workbookProtection') xml += serializeXml(node);
       else if (name === 'extLst') { hasExtensionList = true; xml += serializeWorkbookControlExtensions(node, nativePivotGraph?.controls ?? [], relationships, preserved?.nativePivotGraph?.controls ?? nativePivotGraph?.controls ?? []); }
     }
     if (!hasExtensionList && nativePivotGraph?.controls?.some((control) => control.valid)) xml += serializeWorkbookControlExtensions(undefined, nativePivotGraph.controls, relationships);
@@ -2211,6 +2213,64 @@ function buildWorkbookXml(snapshot: WorkbookSnapshot, workbookPart: string, rela
     xml += serializeWorkbookControlExtensions(undefined, nativePivotGraph.controls, relationships);
   }
   return `${xml}</workbook>`;
+}
+
+function serializeWorkbookViews(
+  bookViews: XmlNode,
+  originalWorkbook: XmlNode,
+  sourcePackage: OpcPackageGraph,
+  workbookPart: string,
+  outputSheets: SheetDescriptor[],
+): string {
+  const rewritten = structuredClone(bookViews);
+  const views = children(rewritten, 'workbookView');
+  if (!views.some((view) => view.attrs.activeTab !== undefined || view.attrs.firstSheet !== undefined)) return serializeXml(rewritten);
+  const sourceSheets = children(child(originalWorkbook, 'sheets'), 'sheet');
+  const workbookRelationships = sourcePackage.relationships[workbookPart] ?? [];
+  const sourceSheetParts = sourceSheets.map((sheet, index) => {
+    const relationshipId = sheet.attrs['r:id'] ?? sheet.attrs.id;
+    const relationship = workbookRelationships.find((candidate) => candidate.id === relationshipId && isRelationshipKind(candidate.type, 'worksheet'));
+    if (!relationship) {
+      throw new NativeDocumentError({
+        code: 'NATIVE_DOCUMENT_UNCHANGED_SAVE_REQUIRED',
+        message: 'A workbook view references a worksheet whose source relationship cannot be resolved safely.',
+        format: sourcePackage.format,
+        location: `${workbookPart}#sheets[${index}]`,
+        recovery: 'Keep the source package unchanged or repair its worksheet relationship before editing workbook structure.',
+      });
+    }
+    return resolveTarget(workbookPart, relationship.target);
+  });
+  const outputSheetParts = outputSheets.map((sheet) => sheet.part);
+  for (const view of views) {
+    for (const reference of ['activeTab', 'firstSheet']) {
+      const rawIndex = view.attrs[reference];
+      if (rawIndex === undefined) continue;
+      const normalizedIndex = rawIndex.trim();
+      const sourceIndex = Number(normalizedIndex);
+      if (!/^\d+$/.test(normalizedIndex) || !Number.isSafeInteger(sourceIndex) || sourceIndex >= sourceSheetParts.length) {
+        throw new NativeDocumentError({
+          code: 'NATIVE_DOCUMENT_UNCHANGED_SAVE_REQUIRED',
+          message: `Workbook view ${reference} does not identify a source worksheet.`,
+          format: sourcePackage.format,
+          location: `${workbookPart}#bookViews/workbookView@${reference}`,
+          recovery: 'Keep the source package unchanged or repair the workbook view index before editing workbook structure.',
+        });
+      }
+      const outputIndex = outputSheetParts.indexOf(sourceSheetParts[sourceIndex]!);
+      if (outputIndex < 0) {
+        throw new NativeDocumentError({
+          code: 'NATIVE_DOCUMENT_UNCHANGED_SAVE_REQUIRED',
+          message: `Workbook view ${reference} points to a worksheet removed by the structural edit.`,
+          format: sourcePackage.format,
+          location: `${workbookPart}#bookViews/workbookView@${reference}`,
+          recovery: 'Keep the referenced worksheet or explicitly choose a replacement workbook view before exporting.',
+        });
+      }
+      view.attrs[reference] = String(outputIndex);
+    }
+  }
+  return serializeXml(rewritten);
 }
 
 function buildContentTypesXml(files: Map<string, Uint8Array>, preserved: OpcPackageGraph | undefined, workbookPart: string, stylesPart: string, sharedStringsPart: string, themePart: string, corePropertiesPart: string, extendedPropertiesPart: string, targetVariant?: Extract<NativeDocumentFormat, { family: 'ooxml' }>['variant']): string {

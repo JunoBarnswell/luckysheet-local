@@ -25,7 +25,6 @@ export async function exportOoxmlDocument(request: NativeDocumentExportRequest):
   const sourcePackage = artifact?.nativeGraph.kind === 'opc' ? artifact.nativeGraph.package : undefined;
   if (artifact
     && sourcePackage
-    && !sourcePackage.nativePivotGraph
     && artifact.fileName === request.fileName
     && artifact.sourceSnapshotHash === nativeSnapshotHash(request.snapshot)
     && artifact.compatibility.exportLevel === request.options.compatibilityTarget
@@ -46,7 +45,7 @@ export async function exportOoxmlDocument(request: NativeDocumentExportRequest):
   const sourceWorkbookDetections = sourcePackage ? detectWorkbookCapabilities(sourcePackage.parts, sourcePackage) : [];
   const sourcePackageDetections = [...sourceWorksheetDetections, ...sourceWorkbookDetections];
   const unsafeSourceFeature = sourcePackageDetections.find((detection) => [
-    'unknown-worksheet-node', 'unknown-extension', 'extended-validation', 'extended-conditional-format',
+    'unknown-worksheet-node', 'unknown-workbook-node', 'unknown-extension', 'extended-validation', 'extended-conditional-format',
   ].includes(detection.feature));
   const preservedOnlyChart = sourcePackage?.nativeChartGraph?.charts.find((chart) => !chart.editable)?.chartPart;
   const indexedChartParts = new Set(sourcePackage?.nativeChartGraph?.charts.map((chart) => chart.chartPart) ?? []);
