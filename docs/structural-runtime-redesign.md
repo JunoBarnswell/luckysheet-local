@@ -775,17 +775,31 @@ head `1d8508ea` 的两个后端 CI 已通过 test-compile，随后在 `sheetRena
 
 六轮复核逐轮沿真实调用链确认问题并修复：
 
-1. 从 axis/move preflight 追到全表循环：所有名称都会被解析/重写，改为按目标几何查询。
+1. 从 axis/move preflight 及 row-permutation 锚点计划追到全表循环：所有名称都会被无差别解析/枚举，改为按目标几何查询。
 2. 沿 FormulaEngine 与 CommandRuntime 两条索引构建路径核对 owner 身份：名称引用从未进入 ReferenceIndex，补入 typed name postings。
 3. 对比公式引用与 anchor 坐标的独立变化：无公式引用的 anchor 也必须参与位移，增加单独 anchor 索引。
 4. 检查 workbook 名称解析上下文：无 anchor 的未限定 workbook 引用无法确定 sheet，登记失败并在结构操作前 fail-close。
 5. 反查模型所有写入口和精确查找：公开列表允许 push/splice 且查找是线性扫描，改为 identity map 与不可变投影。
-6. 从结构 apply 追到 FormulaEngine 提交同步：全量名称归一化抵消了预检索引收益，轴、cell-shift、move 改用精确 before/after 增量。
+6. 从结构 apply 追到 FormulaEngine 提交同步：全量名称归一化抵消了预检索引收益，轴、cell-shift、move、row permutation 改用精确 before/after 增量。
 
-现在 `ReferenceIndex` 用 typed defined-name owner posting 同时支持目标范围、结构轴和 anchor 位置查询；`WorkbookModel` 使用受控 identity map 与不可变列表投影；轴、cell-shift、move 的 effect 包含名称 before/after，FormulaEngine 以批量原子 delta 更新名称及 posting，不再在这些编辑后扫描整张名称表。无 anchor 且包含未限定引用的 workbook 名称登记为 `unresolved-context`，结构操作 fail-close；无法解析的名称引用也明确拒绝。CommandRuntime 的冷路径索引及结构测试 fixture 同样登记名称 owners。
+现在 `ReferenceIndex` 用 typed defined-name owner posting 同时支持目标范围、结构轴和 anchor 位置查询；`WorkbookModel` 使用受控 identity map 与不可变列表投影；轴、cell-shift、move、row permutation 的 effect 包含名称 before/after，FormulaEngine 以批量原子 delta 更新名称及 posting，不再在这些编辑后扫描整张名称表。无 anchor 且包含未限定引用的 workbook 名称登记为 `unresolved-context`，结构操作 fail-close；无法解析的名称引用也明确拒绝。CommandRuntime 的冷路径索引及结构测试 fixture 同样登记名称 owners。
+
+#### Row-permutation follow-up — seven static review rounds (2026-09-25)
+
+1. **范围规划全量扫描**：基线 `rowPermutationAffectedColumnEnd` 遍历 `workbook.definedNameModels`，名称总量增长会线性拖慢排序，即使绝大多数 anchor 不在目标行。改为用 `getDefinedNamesAnchoredInRange` 查询所选行、合法列范围内的 owner。
+2. **owner 预检再次全量扫描**：基线 `validatePermutationMetadata` 又对完整名称表执行 `flatMap`，使仅修复范围规划仍保留第二个 O(全部名称) 热点。改为按目标行和完整合法列范围查询 anchor owner，再核对 metadata extent。
+3. **命令链未传 canonical index**：基线本地排序规划及 `rows.permuted` 回放都调用不带索引的 API，无法沿用 `CommandContext.structuralReferenceOwners`。两条生产路径现显式传入同一 typed index。
+4. **模型已改写但结果丢失名称 delta**：基线 `applyRowPermutation` 只返回公式 owner delta，尽管之后通过 `setDefinedName` 更新名称；runtime 因而无法增量维护名称引用 postings。现返回名称 identity 和精确 before/after 状态。
+5. **本地与回放没有传播名称变更**：两条执行入口都只把公式 delta 交给计算 effect，导致 owner 索引及依赖公式只能走完整名称快照同步。现在共享 `RowPermutationResult` 并把名称 delta 纳入 effect。
+6. **空 delta 与缺失 delta 混淆**：`synchronizeStructuralMutation` 明确把 `undefined` 解释为调用 `setDefinedNameModels(workbook.definedNameModels)`；旧 effect 对“本次没有名称变化”也省略字段，仍会全量同步。新 effect 始终带数组（包括 `[]`），表示名称 owner 已由增量路径完整处理。
+7. **预检重复查询同一命中集**：修复全量扫描后，`validatePermutationMetadata` 仍先通过 extent 计算查询并精确查找 anchor owners，随后又查一次相同范围来生成变更。现预检只解析一次 selected-row/full-column 命中集，并复用于 extent 与 name remap；回归测试源码断言规划查询加预检查询共两次，而预检本身只查询一次（未运行）。
+
+复核索引几何覆盖完整 metadata scope；每个查询命中通过 WorkbookModel identity map 精确解析，缺失 owner 或位置不符在首次写入前 fail-close。名称投影冻结后，写回只走 `setDefinedName`。名称变化产生的公式 roots 继续进入 calculation-result/projection invalidation。成功 delta、metadata extent、单次预检查询及 stale-index 拒绝回归断言已加入测试源码；拒绝路径断言 workbook snapshot 不变，测试未运行。
+
+该路径覆盖 CommandRuntime 的本地排序 mutation 与数据排序 command。测试源码未运行；协同 StructuralPatch 仍没有传输 defined-name deltas，属于跨端 patch 未收敛的开放项。
 
 六轮后的反向审查还捕获并修正五处实现缺陷：delta 归一化曾丢掉后续校验必需的 owner identity；行可见性递归仍引用已移除的局部变量；运行时无效 scope 曾可被 identity 计算误当作 workbook scope；row-permutation 仍直接修改现在冻结的名称投影；快照 DTO 的可写数组类型曾接收到只读投影类型。分别恢复身份字段、规范化名称 token、拒绝未知 scope、改走 `WorkbookModel.setDefinedName`，并在 snapshot 边界复制成独立数组；同时增加 delta 拒绝后索引保持不变的回归测试源码。
 
-新增成功路径与拒绝路径测试源码，但按任务约束未运行测试、构建、lint 或浏览器。静态检查仅确认 axis/cell-shift/move 预检无全量名称循环、公开名称列表无直接写入且 `git diff --check` 无 whitespace error。行置换的名称锚点选择及提交后同步仍有全量名称遍历，sheet identity/full calculation rebuild 也仍通过完整快照同步；这些是后续增量索引/patch 边界，不在本轮宣称已解决。跨端版本化 StructuralPatch、其他 owner families、Java 共用结构语义及整体验收仍是开放项，本轮不代表整体目标完成。
+新增成功路径与拒绝路径测试源码，但按任务约束未运行测试、构建、lint 或浏览器。静态检查仅确认 axis/cell-shift/move/row-permutation 名称选择无全量名称循环、row-permutation 单次预检复用 anchor 命中、公开名称列表无直接写入且 `git diff --check` 无 whitespace error。Sheet identity/full calculation rebuild 仍通过完整快照同步名称；跨端版本化 StructuralPatch、其他 owner families、Java 共用结构语义及整体验收仍是开放项，本轮不代表整体目标完成。
 
 本轮仅执行静态源码审查与 `git diff --check`；未运行测试、构建、lint 或浏览器验收。上述变更尚需 PR CI；不能据此宣称完整 Structural Runtime 整改已经完成。

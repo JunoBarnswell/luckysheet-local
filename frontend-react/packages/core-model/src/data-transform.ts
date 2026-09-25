@@ -1,11 +1,23 @@
 import type { CellAddress, CellData, CellStyleTemplate, ConditionalFormatRule, DataValidationRule, RangeRef, Row, WorkbookModel, WorksheetModel } from './index';
 import { cellKey, hasFormulaGroupMetadata } from './index';
 import type { DefinedNameModel, DrawingObject, DrawingPayload, SpillRange } from './domain';
-import type { StructuralFormulaOwnerDelta, StructuralFormulaOwnerState } from './structural-transform';
+import type {
+  StructuralDefinedNameOwnerDelta,
+  StructuralFormulaOwnerDelta,
+  StructuralFormulaOwnerState,
+  StructuralReferenceOwnerIndex,
+} from './structural-transform';
 import { structuralRuleFormulaFields, type StructuralFormulaRule } from './structural-formula-owner';
 import { sheetRuleRegistry, type RuleTransform } from './rule-lifecycle';
 import { mapReportSheetCoordinates } from './report-sheet-transform';
-import { formatFormula, MAX_COLUMN_INDEX, MAX_ROW_INDEX, offsetAst, parseFormula } from '@react-sheets/formula-engine';
+import {
+  formatFormula,
+  MAX_COLUMN_INDEX,
+  MAX_ROW_INDEX,
+  offsetAst,
+  parseFormula,
+  type FormulaDefinedName,
+} from '@react-sheets/formula-engine';
 
 /** Canonical, prevalidated permutation shared by local execution and replay. */
 export interface RowPermutationPlan {
@@ -13,6 +25,11 @@ export interface RowPermutationPlan {
   readonly metadataScope: RangeRef;
   readonly sourceRows: readonly Row[];
   readonly sourceToTarget: ReadonlyMap<Row, Row>;
+}
+
+export interface RowPermutationResult {
+  readonly formulaOwnerDeltas: StructuralFormulaOwnerDelta[];
+  readonly definedNameOwnerDeltas: StructuralDefinedNameOwnerDelta[];
 }
 
 const MAX_SEGMENT_CELLS = 100_000;
@@ -182,7 +199,40 @@ function remapCellMap<T>(source: ReadonlyMap<string, T>, plan: RowPermutationPla
   return next;
 }
 
-export function rowPermutationAffectedColumnEnd(workbook: WorkbookModel, range: RangeRef): number {
+function resolveRowPermutationDefinedNames(
+  workbook: WorkbookModel,
+  range: RangeRef,
+  referenceOwners: Pick<StructuralReferenceOwnerIndex, 'getDefinedNamesAnchoredInRange'>,
+): DefinedNameModel[] {
+  const sheet = workbook.getSheet(range.sheetId);
+  return referenceOwners.getDefinedNamesAnchoredInRange(sheet.id, {
+    startRow: range.startRow,
+    endRow: range.endRow,
+    startColumn: 0,
+    endColumn: MAX_COLUMN_INDEX,
+  }).map((owner) => {
+    const name = workbook.getDefinedNameExact(owner.name, owner.scope, owner.sheetId);
+    if (!name) {
+      throw new Error(`STRUCTURAL_REFERENCE_INDEX_INVARIANT: defined-name anchor owner ${owner.scope}:${owner.sheetId ?? '*'}:${owner.name} is missing from the workbook`);
+    }
+    if (!name.anchor || name.anchor.sheetId !== sheet.id
+      || name.anchor.row < range.startRow || name.anchor.row > range.endRow
+      || name.anchor.column < 0 || name.anchor.column > MAX_COLUMN_INDEX) {
+      throw new Error(`STRUCTURAL_REFERENCE_INDEX_INVARIANT: defined-name anchor owner ${owner.scope}:${owner.sheetId ?? '*'}:${owner.name} does not match its indexed position`);
+    }
+    if (!Number.isSafeInteger(name.anchor.row) || name.anchor.row < 0 || name.anchor.row > MAX_ROW_INDEX
+      || !Number.isSafeInteger(name.anchor.column) || name.anchor.column < 0 || name.anchor.column > MAX_COLUMN_INDEX) {
+      throw new Error('Row permutation formula anchor is outside worksheet bounds');
+    }
+    return name;
+  });
+}
+
+function rowPermutationAffectedColumnEndFromNames(
+  workbook: WorkbookModel,
+  range: RangeRef,
+  definedNames: readonly DefinedNameModel[],
+): number {
   const sheet = workbook.getSheet(range.sheetId);
   let end = sheetRuleRegistry.affectedColumnEnd(sheet, range.endColumn);
   const includeAnchor = (anchor: CellAddress | undefined): void => {
@@ -196,7 +246,7 @@ export function rowPermutationAffectedColumnEnd(workbook: WorkbookModel, range: 
     }
   };
   for (const rule of [...sheet.conditionalFormats, ...sheet.dataValidations]) includeAnchor(rule.formulaAnchor);
-  for (const name of workbook.definedNameModels) includeAnchor(name.anchor);
+  for (const name of definedNames) includeAnchor(name.anchor);
   for (const template of workbook.cellStyleTemplates.values()) includeAnchor(template.dataValidation?.formulaAnchor);
   for (const binding of sheet.reportSheet?.bindings ?? []) {
     const { row, column } = binding.cell;
@@ -207,6 +257,18 @@ export function rowPermutationAffectedColumnEnd(workbook: WorkbookModel, range: 
     if (row >= range.startRow && row <= range.endRow) end = Math.max(end, column);
   }
   return end;
+}
+
+export function rowPermutationAffectedColumnEnd(
+  workbook: WorkbookModel,
+  range: RangeRef,
+  referenceOwners: Pick<StructuralReferenceOwnerIndex, 'getDefinedNamesAnchoredInRange'>,
+): number {
+  return rowPermutationAffectedColumnEndFromNames(
+    workbook,
+    range,
+    resolveRowPermutationDefinedNames(workbook, range, referenceOwners),
+  );
 }
 
 type PermutationFormulaFields = {
@@ -386,13 +448,20 @@ interface RowPermutationOwnerChanges {
 }
 
 /** Validate all owners before the first cell changes. */
-export function validatePermutationMetadata(workbook: WorkbookModel, plan: RowPermutationPlan): RowPermutationOwnerChanges {
+export function validatePermutationMetadata(
+  workbook: WorkbookModel,
+  plan: RowPermutationPlan,
+  referenceOwners: Pick<StructuralReferenceOwnerIndex, 'getDefinedNamesAnchoredInRange'>,
+): RowPermutationOwnerChanges {
   const sheet = workbook.getSheet(plan.range.sheetId);
   const range = plan.range;
   if (range.endRow >= sheet.rowCount || range.endColumn >= sheet.columnCount) throw new Error('Row permutation range is outside worksheet bounds');
   if (plan.metadataScope.sheetId !== range.sheetId || plan.metadataScope.startColumn !== 0 || plan.metadataScope.startRow !== range.startRow
-    || plan.metadataScope.endRow !== range.endRow || plan.metadataScope.endColumn > MAX_COLUMN_INDEX
-    || plan.metadataScope.endColumn !== rowPermutationAffectedColumnEnd(workbook, range)) {
+    || plan.metadataScope.endRow !== range.endRow || plan.metadataScope.endColumn > MAX_COLUMN_INDEX) {
+    throw new Error('Row permutation metadata scope does not match its canonical owners');
+  }
+  const indexedDefinedNames = resolveRowPermutationDefinedNames(workbook, range, referenceOwners);
+  if (plan.metadataScope.endColumn !== rowPermutationAffectedColumnEndFromNames(workbook, range, indexedDefinedNames)) {
     throw new Error('Row permutation metadata scope does not match its canonical owners');
   }
   const changesRows = plan.sourceRows.some((sourceRow, targetOffset) => sourceRow !== range.startRow + targetOffset);
@@ -440,9 +509,9 @@ export function validatePermutationMetadata(workbook: WorkbookModel, plan: RowPe
   }
   for (const rule of sheet.protectionRules) if (rule.range) remapSingleRange(`protection ${rule.id}`, rule.range, plan, plan.metadataScope);
   if (sheet.bandedRule) remapSingleRange('banded rule', sheet.bandedRule.range, plan);
-  const definedNames = workbook.definedNameModels.flatMap((entry) => {
-    const anchor = entry.anchor;
-    if (!anchor || anchor.sheetId !== sheet.id || !inRange(plan.metadataScope, anchor.row, anchor.column)) return [];
+  const definedNames = indexedDefinedNames.flatMap((entry) => {
+    const anchor = entry.anchor!;
+    if (!inRange(plan.metadataScope, anchor.row, anchor.column)) return [];
     const mappedAnchor = { ...anchor, row: remapRow(anchor.row, plan) };
     const rowDelta = mappedAnchor.row - anchor.row;
     return rowDelta === 0 ? [] : [{ entry, formula: offsetPermutationFormula(entry.formula, rowDelta, `defined name ${entry.name}`), anchor: mappedAnchor }];
@@ -482,9 +551,13 @@ export function validatePermutationMetadata(workbook: WorkbookModel, plan: RowPe
   return { conditionalFormats, dataValidations, definedNames, templates, drawingPayloads, reportSheet };
 }
 
-export function applyRowPermutation(workbook: WorkbookModel, plan: RowPermutationPlan): StructuralFormulaOwnerDelta[] {
+export function applyRowPermutation(
+  workbook: WorkbookModel,
+  plan: RowPermutationPlan,
+  referenceOwners: Pick<StructuralReferenceOwnerIndex, 'getDefinedNamesAnchoredInRange'>,
+): RowPermutationResult {
   const sheet = workbook.getSheet(plan.range.sheetId);
-  const ownerChanges = validatePermutationMetadata(workbook, plan);
+  const ownerChanges = validatePermutationMetadata(workbook, plan, referenceOwners);
   const { range, sourceRows } = plan;
   const ruleFormulaOwnerDeltas = [
     ...permutationRuleFormulaDeltas(sheet.conditionalFormats, ownerChanges.conditionalFormats, 'conditional-format'),
@@ -546,7 +619,36 @@ export function applyRowPermutation(workbook: WorkbookModel, plan: RowPermutatio
   }
   if (ownerChanges.reportSheet) sheet.reportSheet = ownerChanges.reportSheet;
   formulaOwnerDeltas.push(...ruleFormulaOwnerDeltas);
-  return formulaOwnerDeltas;
+  return {
+    formulaOwnerDeltas,
+    definedNameOwnerDeltas: ownerChanges.definedNames.map(createPermutationDefinedNameDelta),
+  };
+}
+
+function createPermutationDefinedNameDelta(
+  change: RowPermutationOwnerChanges['definedNames'][number],
+): StructuralDefinedNameOwnerDelta {
+  const before: FormulaDefinedName = {
+    name: change.entry.name,
+    formula: change.entry.formula,
+    scope: change.entry.scope,
+    ...(change.entry.sheetId ? { sheetId: change.entry.sheetId } : {}),
+    ...(change.entry.anchor ? { anchor: structuredClone(change.entry.anchor) } : {}),
+  };
+  const after: FormulaDefinedName = {
+    ...before,
+    formula: change.formula,
+    ...(change.anchor ? { anchor: structuredClone(change.anchor) } : { anchor: undefined }),
+  };
+  return {
+    owner: {
+      scope: change.entry.scope,
+      name: change.entry.name,
+      ...(change.entry.sheetId ? { sheetId: change.entry.sheetId } : {}),
+    },
+    before,
+    after,
+  };
 }
 
 function permutationRuleFormulaDeltas<T extends StructuralFormulaRule>(

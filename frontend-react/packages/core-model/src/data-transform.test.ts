@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import { RangeIndex } from '@react-sheets/formula-engine';
 import { applyRowPermutation, createRowPermutationPlan, rowPermutationAffectedColumnEnd, type RangeRef, WorkbookModel } from './index';
 import type { ReportSheetDefinition } from './data-model';
 
@@ -8,8 +9,25 @@ function range(sheetId: string, startRow: number, endRow: number, startColumn: n
 }
 
 function applyPermutation(workbook: WorkbookModel, selected: RangeRef, sourceRows: readonly number[]): ReturnType<typeof applyRowPermutation> {
-  const affectedColumnEnd = rowPermutationAffectedColumnEnd(workbook, selected);
-  return applyRowPermutation(workbook, createRowPermutationPlan(selected, sourceRows, affectedColumnEnd));
+  const referenceOwners = buildDefinedNameAnchorIndex(workbook);
+  const affectedColumnEnd = rowPermutationAffectedColumnEnd(workbook, selected, referenceOwners);
+  return applyRowPermutation(
+    workbook,
+    createRowPermutationPlan(selected, sourceRows, affectedColumnEnd),
+    referenceOwners,
+  );
+}
+
+function buildDefinedNameAnchorIndex(workbook: WorkbookModel): RangeIndex {
+  const index = new RangeIndex();
+  for (const entry of workbook.definedNameModels) {
+    index.setDefinedNameReference({
+      scope: entry.scope,
+      name: entry.name,
+      ...(entry.sheetId ? { sheetId: entry.sheetId } : {}),
+    }, [], undefined, entry.anchor);
+  }
+  return index;
 }
 
 function reportDefinition(sheetId: string): ReportSheetDefinition {
@@ -32,11 +50,52 @@ describe('canonical row permutation metadata plan', () => {
     sheet.reportSheet = reportDefinition(sheet.id);
     sheet.reportSheet!.bindings[0]!.cell.column = 5;
 
-    applyPermutation(workbook, range(sheet.id, 0, 1, 0, 0), [1, 0]);
+    const changes = applyPermutation(workbook, range(sheet.id, 0, 1, 0, 0), [1, 0]);
 
     assert.deepEqual(sheet.reportSheet?.bindings[0]?.cell, { row: 1, column: 5 });
-    assert.equal(rowPermutationAffectedColumnEnd(workbook, range(sheet.id, 0, 1, 0, 0)), 5);
+    assert.deepEqual(changes.definedNameOwnerDeltas, []);
+    assert.equal(
+      rowPermutationAffectedColumnEnd(workbook, range(sheet.id, 0, 1, 0, 0), buildDefinedNameAnchorIndex(workbook)),
+      5,
+    );
     assert.deepEqual(sheet.reportSheet?.pagination.repeatHeaderRows, [1, 0]);
+  });
+
+  it('includes indexed defined-name anchors when planning the metadata extent', () => {
+    const workbook = new WorkbookModel('permutation-name-extent', 'Permutation name extent');
+    const sheet = workbook.getSheet('sheet-1');
+    sheet.rowCount = 2;
+    sheet.columnCount = 1;
+    workbook.setDefinedName({
+      name: 'AnchoredOwner',
+      scope: 'workbook',
+      formula: '=A1',
+      anchor: { sheetId: sheet.id, row: 0, column: 12 },
+    });
+    const indexedNames = buildDefinedNameAnchorIndex(workbook);
+    let anchorQueries = 0;
+    const referenceOwners = {
+      getDefinedNamesAnchoredInRange: (
+        sheetId: string,
+        anchorRange: Pick<RangeRef, 'startRow' | 'endRow' | 'startColumn' | 'endColumn'>,
+      ) => {
+        anchorQueries += 1;
+        return indexedNames.getDefinedNamesAnchoredInRange(sheetId, anchorRange);
+      },
+    };
+    const selected = range(sheet.id, 0, 1, 0, 0);
+    const affectedColumnEnd = rowPermutationAffectedColumnEnd(workbook, selected, referenceOwners);
+
+    const changes = applyRowPermutation(
+      workbook,
+      createRowPermutationPlan(selected, [1, 0], affectedColumnEnd),
+      referenceOwners,
+    );
+
+    assert.equal(affectedColumnEnd, 12);
+    assert.equal(anchorQueries, 2);
+    assert.equal(workbook.getDefinedNameExact('AnchoredOwner', 'workbook')?.anchor?.row, 1);
+    assert.equal(changes.definedNameOwnerDeltas[0]?.after.formula, '=A2');
   });
 
   it('remaps banding and cross-sheet drawing references with a row permutation', () => {
@@ -72,10 +131,18 @@ describe('canonical row permutation metadata plan', () => {
     sheet.cells.set(1, 0, { value: 'second' });
     const selected = range(sheet.id, 0, 1, 0, 0);
     const before = sheet.cells.toJSON();
-    const canonicalEnd = rowPermutationAffectedColumnEnd(workbook, selected);
+    const canonicalEnd = rowPermutationAffectedColumnEnd(
+      workbook,
+      selected,
+      buildDefinedNameAnchorIndex(workbook),
+    );
 
     assert.throws(
-      () => applyRowPermutation(workbook, createRowPermutationPlan(selected, [1, 0], canonicalEnd + 1)),
+      () => applyRowPermutation(
+        workbook,
+        createRowPermutationPlan(selected, [1, 0], canonicalEnd + 1),
+        buildDefinedNameAnchorIndex(workbook),
+      ),
       /does not match its canonical owners/,
     );
     assert.deepEqual(sheet.cells.toJSON(), before);
@@ -128,9 +195,9 @@ describe('canonical row permutation metadata plan', () => {
       value1: '=A1>0',
     });
 
-    const deltas = applyPermutation(workbook, range(sheet.id, 0, 1, 0, 0), [1, 0]);
+    const changes = applyPermutation(workbook, range(sheet.id, 0, 1, 0, 0), [1, 0]);
 
-    assert.deepEqual(deltas, [
+    assert.deepEqual(changes.formulaOwnerDeltas, [
       {
         kind: 'formula-cell',
         beforeAddress: { sheetId: sheet.id, row: 0, column: 0 },
@@ -230,8 +297,11 @@ describe('canonical row permutation metadata plan', () => {
       },
     });
 
-    assert.equal(rowPermutationAffectedColumnEnd(workbook, range(sheet.id, 0, 1, 0, 0)), 8);
-    applyPermutation(workbook, range(sheet.id, 0, 1, 0, 0), [1, 0]);
+    assert.equal(
+      rowPermutationAffectedColumnEnd(workbook, range(sheet.id, 0, 1, 0, 0), buildDefinedNameAnchorIndex(workbook)),
+      8,
+    );
+    const changes = applyPermutation(workbook, range(sheet.id, 0, 1, 0, 0), [1, 0]);
 
     assert.equal(sheet.conditionalFormats[0]?.formulaAnchor?.row, 1);
     assert.equal(sheet.conditionalFormats[0]?.value1, '=A2>0');
@@ -245,6 +315,15 @@ describe('canonical row permutation metadata plan', () => {
     if (sheet.dataValidations[0]?.listSource?.kind === 'formula') assert.equal(sheet.dataValidations[0].listSource.formula, '=C2:C3');
     assert.equal(workbook.definedNameModels[0]?.formula, '=A2');
     assert.equal(workbook.definedNameModels[0]?.anchor?.row, 1);
+    assert.equal(changes.definedNameOwnerDeltas.length, 1);
+    assert.deepEqual(changes.definedNameOwnerDeltas[0]?.owner, {
+      scope: 'workbook',
+      name: 'RelativeOwner',
+    });
+    assert.equal(changes.definedNameOwnerDeltas[0]?.before.formula, '=A1');
+    assert.equal(changes.definedNameOwnerDeltas[0]?.before.anchor?.row, 0);
+    assert.equal(changes.definedNameOwnerDeltas[0]?.after.formula, '=A2');
+    assert.equal(changes.definedNameOwnerDeltas[0]?.after.anchor?.row, 1);
     assert.equal(workbook.definedNameModels[1]?.formula, '=A1');
     assert.equal(workbook.definedNameModels[1]?.anchor?.row, 0);
     const templateValidation = workbook.cellStyleTemplates.get('template-anchored')?.dataValidation;
@@ -277,6 +356,35 @@ describe('canonical row permutation metadata plan', () => {
     assert.deepEqual(sheet.cells.toJSON(), cellsBefore);
     assert.equal(workbook.definedNameModels[0]?.formula, '=A1');
     assert.equal(workbook.definedNameModels[0]?.anchor?.row, 1);
+  });
+
+  it('rejects a stale defined-name anchor owner before applying a row permutation', () => {
+    const workbook = new WorkbookModel('permutation-stale-name-index', 'Permutation stale name index');
+    const sheet = workbook.getSheet('sheet-1');
+    sheet.rowCount = 2;
+    sheet.columnCount = 1;
+    sheet.cells.set(0, 0, { value: 'first' });
+    sheet.cells.set(1, 0, { value: 'second' });
+    const staleIndex = new RangeIndex();
+    staleIndex.setDefinedNameReference({ scope: 'workbook', name: 'MissingOwner' }, [], undefined, {
+      sheetId: sheet.id,
+      row: 0,
+      column: 0,
+    });
+    const before = workbook.snapshot();
+    const referenceOwners = buildDefinedNameAnchorIndex(workbook);
+    const selected = range(sheet.id, 0, 1, 0, 0);
+    const plan = createRowPermutationPlan(
+      selected,
+      [1, 0],
+      rowPermutationAffectedColumnEnd(workbook, selected, referenceOwners),
+    );
+
+    assert.throws(
+      () => applyRowPermutation(workbook, plan, staleIndex),
+      /STRUCTURAL_REFERENCE_INDEX_INVARIANT: defined-name anchor owner workbook:\*:MissingOwner is missing from the workbook/,
+    );
+    assert.deepEqual(workbook.snapshot(), before);
   });
 
   it('rejects metadata extents beyond the Excel worksheet column limit', () => {

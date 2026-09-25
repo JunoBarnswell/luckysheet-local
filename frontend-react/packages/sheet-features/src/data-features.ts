@@ -82,7 +82,7 @@ function rowsPermutedAffectedRanges(params: RowsPermutedMutationParams): RangeRe
 
 function rowPermutationCalculationEffect(
   range: RangeRef,
-  formulaOwnerDeltas: StructuralTransformResult['formulaOwnerDeltas'] = [],
+  ownerChanges: ReturnType<typeof applyRowPermutation>,
 ): StructuralTransformResult {
   const inputRange = structuredClone(range);
   return {
@@ -91,7 +91,8 @@ function rowPermutationCalculationEffect(
     clearInputRanges: [inputRange],
     populateInputRanges: [structuredClone(inputRange)],
     rewrittenFormulaOwners: [],
-    ...(formulaOwnerDeltas.length === 0 ? {} : { formulaOwnerDeltas }),
+    ...(ownerChanges.formulaOwnerDeltas.length === 0 ? {} : { formulaOwnerDeltas: ownerChanges.formulaOwnerDeltas }),
+    definedNameOwnerDeltas: ownerChanges.definedNameOwnerDeltas,
   };
 }
 
@@ -122,8 +123,12 @@ function setAppliedSortState(sheet: WorksheetModel, state: AppliedSortState | un
   else target.appliedSortState = structuredClone(state);
 }
 
-function rowsPermutedAffectedColumnEnd(workbook: WorkbookModel, range: RangeRef): number {
-  return rowPermutationAffectedColumnEnd(workbook, range);
+function rowsPermutedAffectedColumnEnd(
+  workbook: WorkbookModel,
+  range: RangeRef,
+  referenceOwners: CommandContext['structuralReferenceOwners'],
+): number {
+  return rowPermutationAffectedColumnEnd(workbook, range, referenceOwners);
 }
 
 function inRange(range: RangeRef, row: number, column: number): boolean {
@@ -1777,9 +1782,13 @@ export function registerDataToolCommands(runtime: CommandRuntime): void {
       const params = item.params;
       const range = params.range;
       const sheet = context.workbook.getSheet(params.sheetId);
-      const formulaOwnerDeltas = applyRowPermutation(context.workbook, createRowPermutationPlan(range, params.sourceRows, params.affectedColumnEnd));
+      const ownerChanges = applyRowPermutation(
+        context.workbook,
+        createRowPermutationPlan(range, params.sourceRows, params.affectedColumnEnd),
+        context.structuralReferenceOwners,
+      );
       setAppliedSortState(sheet, params.sortState);
-      return rowPermutationCalculationEffect(range, formulaOwnerDeltas);
+      return rowPermutationCalculationEffect(range, ownerChanges);
     },
     metadata: {
       schema: { name: 'RowsPermuted', validate: isRowsPermutedMutation },
@@ -1820,7 +1829,11 @@ export function registerDataToolCommands(runtime: CommandRuntime): void {
       const bodyRange: RangeRef = { ...range, startRow };
       const inverseRows = new Array<number>(sourceRows.length);
       sourceRows.forEach((sourceRow, offset) => { inverseRows[sourceRow - startRow] = startRow + offset; });
-      const affectedColumnEnd = rowsPermutedAffectedColumnEnd(context.workbook, bodyRange);
+      const affectedColumnEnd = rowsPermutedAffectedColumnEnd(
+        context.workbook,
+        bodyRange,
+        context.structuralReferenceOwners,
+      );
       const affectedRanges = rowsPermutedAffectedRanges({ sheetId: params.sheetId, range: bodyRange, sourceRows, affectedColumnEnd });
       const previousSortState = (sheet as WorksheetModel & { appliedSortState?: AppliedSortState }).appliedSortState;
       const sortState: AppliedSortState = {
@@ -1866,9 +1879,13 @@ export function registerDataToolCommands(runtime: CommandRuntime): void {
           affectedRanges,
         }],
         apply: () => {
-          const formulaOwnerDeltas = applyRowPermutation(context.workbook, createRowPermutationPlan(bodyRange, sourceRows, affectedColumnEnd));
+          const ownerChanges = applyRowPermutation(
+            context.workbook,
+            createRowPermutationPlan(bodyRange, sourceRows, affectedColumnEnd),
+            context.structuralReferenceOwners,
+          );
           setAppliedSortState(sheet, sortState);
-          return rowPermutationCalculationEffect(bodyRange, formulaOwnerDeltas);
+          return rowPermutationCalculationEffect(bodyRange, ownerChanges);
         },
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };

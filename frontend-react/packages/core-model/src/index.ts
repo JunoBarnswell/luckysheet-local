@@ -544,7 +544,14 @@ export {
   type ExcelDateEvaluationContext,
   type ExcelDateSystem,
 } from '@react-sheets/formula-engine';
-export { applyRowPermutation, createRowPermutationPlan, rowPermutationAffectedColumnEnd, validatePermutationMetadata, type RowPermutationPlan } from './data-transform';
+export {
+  applyRowPermutation,
+  createRowPermutationPlan,
+  rowPermutationAffectedColumnEnd,
+  validatePermutationMetadata,
+  type RowPermutationPlan,
+  type RowPermutationResult,
+} from './data-transform';
 export { columnLabel, parseColumnLabel, cellAddress, parseAddress, a1Range } from './address';
 export {
   loadWorkbookFromSnapshot,
