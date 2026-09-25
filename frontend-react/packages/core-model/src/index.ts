@@ -1294,9 +1294,15 @@ export class CellMatrix {
     this.hydrate();
     const entries: Array<[Row, Column, CellData]> = [];
     const delta = direction * count;
-    for (const [row, columns] of this.rows) {
-      if (row < at) continue;
-      for (const [column, cell] of columns) entries.push([row, column, cell]);
+    if (this.sortedRowCoordinates) {
+      this.forEachInRange(at, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, Number.POSITIVE_INFINITY, (cell, row, column) => {
+        entries.push([row, column, cell]);
+      });
+    } else {
+      for (const [row, columns] of this.rows) {
+        if (row < at) continue;
+        for (const [column, cell] of columns) entries.push([row, column, cell]);
+      }
     }
     for (const [row, column] of entries) this.delete(row, column);
     for (const [row, column, cell] of entries) {

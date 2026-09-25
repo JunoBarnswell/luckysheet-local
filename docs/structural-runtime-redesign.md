@@ -292,3 +292,14 @@ Confirmed defects: workbook-root data was silently omitted; `veryHidden` and unr
 6. **Mutation/index coherence:** new-row insertion, last-cell deletion, clear, and existing shift operations invalidate the cache through the canonical `set`/`delete` paths. `getRegion` now shares the range iterator. Regression source covers out-of-order row insertion, deletion, shift invalidation, and row/column output; no tests/builds were run.
 
 Confirmed performance defect: on hydrated matrices, sparse range reads and structural input synchronization were O(total sheet rows/cells) even when the requested row interval was small. The row cache fixes range discovery without changing cell storage or persisted snapshots. Remaining separate cost: deferred-JSON range reads still materialize the matrix, and matching rows still scan their stored columns. Local tests/builds are intentionally not run.
+
+### Six-pass static review — structural row-shift index reuse
+
+1. **Call-chain confirmation:** `StructuralTransform.applyAxis` invokes `CellMatrix.shiftRows` for row insertions and for the surviving suffix after row deletions; the transform computes occupied bounds first but does not enumerate cells to warm the sorted-row cache.
+2. **Cold-path cost check:** unconditionally calling `forEachInRange` would sort every stored row on a cold cache, changing a linear Map scan into O(R log R) before moving the affected cells. That candidate was rejected.
+3. **Warm-path opportunity:** when a prior range query has already built `sortedRowCoordinates`, the Map scan still visits all prefix rows. The shift can reuse the existing lower-bound lookup and visit only the suffix rows.
+4. **Invalidation check:** shifting still snapshots cells before mutation; subsequent `delete`/`set` invalidates the cached row coordinates through the canonical mutation paths, so no stale index is read after the shift.
+5. **Coordinate-boundary check:** the indexed query uses infinite endpoints because the preexisting shift iterated all numeric columns and all rows at or after `at`; finite `MAX_SAFE_INTEGER`/zero bounds would have narrowed that behavior for noncanonical direct callers.
+6. **Semantic/regression check:** the existing source regression creates rows out of coordinate order, confirms prefix preservation, exercises insertion and deletion, and checks that the row index refreshes. No tests/builds were run, as required for this static-only pass.
+
+Confirmed performance issue: a warmed row index was ignored by `shiftRows`, forcing a full prefix scan. The fix reuses it only when already available; a cold shift retains the original O(R) scan rather than paying an O(R log R) cache build. This is a bounded warm-path optimization, not a claim that every structural row shift is sublinear. The same six checks rejected the unconditional candidate before it entered the patch.
