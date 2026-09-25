@@ -681,3 +681,16 @@ Confirmed additional operation paths: 13 in the follow-up audit (the previous 12
 静态追踪确认 TS/Java 对移动 cell formula、source formula、barcode formula、CF/DV formula 字段的 delta 类型及范围形状一致；history 按 owner delta 内容排序比较，impact ranges、server replay 幂等应用和 undo merge 均沿现有 `StructuralPatch` 链处理。补充了 TypeScript 与 Java 回归用例源码。仅执行 `git diff --check`，未运行任何测试、构建或 UI；仍需 PR CI 验证。
 
 本批次只闭合公式 owner delta 的排序接线，不等于实现完整 `CanonicalStructuralPlanner`/`ReferenceIndex`：名称、模板、绘图、普通元数据仍不在完整可逆 patch 中；history rebase 仍会 invalidate 受后续 permutation 影响的历史项；更早已提交且没有 server patch 的旧排序操作也不能据此获得可逆 patch。原六轮列出的其余架构缺口仍开放，PR #345 与总目标均未完成。
+
+### 六轮静态自审 — 计算上下文影响的类型化传播（2026-09-25）
+
+本批次按六条独立调用链复核，每轮只记录能由当前源码与真实调用方确认的问题：
+
+1. **影响契约：** `runtime.ts` 用 mutation-id 集合与 `StructuralTransformResult.requiresCalculationContextRebuild` 布尔值两套来源分派重建；结构结果没有可区分“重建/同步名称/同步表”的动作。新增 `WorkbookCalculationContextEffect`，并将结构结果的公开布尔字段替换为 typed effect。
+2. **工作表身份入口：** `sheet.add/remove/restore/duplicated/reordered` 注册契约没有声明重建影响，执行、撤销与协作 replay 只能依赖运行时 ID 清单。上述五种 mutation 现显式声明 `rebuild`。
+3. **公式上下文数据入口：** `table.add/remove`、`sheetTable.add/remove/update` 与 `name.set/remove` 的表/名称同步规则只在运行时 ID 分支中存在；现分别声明 `sync-tables` 或 `sync-defined-names`。
+4. **本地 effect 传递：** `addSheet`、`removeSheet`、`duplicateSheet`、`removeTable` 的命令回调会返回模型对象；直接采用 `apply()` 返回值时，metadata effect 的 undefined 兜底被这些非 effect 值遮蔽。相关回调现明确返回 `void`，保留结构 effect 的优先级。
+5. **历史与协作传递：** `applyHistory` 只转发 replay handler 返回值，不读取 mutation metadata；所以 undo/redo/remote 对没有显式 handler effect 的身份、名称及表操作会漏掉上下文更新。replay 现与本地 apply 使用同一 metadata 兜底；新增了 command/undo/redo 传播及非法 metadata 拒绝用例源码。
+6. **重算所有权：** 即使同步动作改为 typed effect，`FORMULA_SYNC_MUTATIONS` 仍重复列出相同 mutation ID，导致 effect 契约与重算触发清单继续分叉。计算上下文 effect 现直接进入调度分支，这些重复 ID 已从该集合移除；简单 sheet rename 等仍需独立增量同步的入口保留原分类。
+
+本批次仅静态检查并执行 `git diff --check`；按用户要求未运行测试、构建或 UI。修复覆盖旧 30 项清单中的计算上下文路由缺口及上述直接传播缺陷，不代表其余结构 patch、owner index、Java/OOXML 纵向链已完成；PR #345 和总目标仍未完成。

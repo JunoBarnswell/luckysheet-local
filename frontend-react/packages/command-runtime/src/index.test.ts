@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { WorkbookModel } from '@react-sheets/core-model';
+import { CALCULATION_CONTEXT_EFFECTS, WorkbookModel } from '@react-sheets/core-model';
 import { CommandRegistry, CommandRuntime, type MutationInfo } from './index';
 
 const cellRange = (params: { row: number; column: number; sheetId?: string }) => [{
@@ -103,6 +103,73 @@ test('CommandRuntime executes a registered command and tracks history', () => {
   assert.equal(workbook.getSheet('sheet-1').cells.get(1, 1)?.value, 'A');
 
   unsubscribe();
+});
+
+test('CommandRuntime emits declared calculation-context effects for command, undo, and redo', () => {
+  const workbook = new WorkbookModel('unit-calculation-context', 'Before');
+  const runtime = new CommandRuntime(workbook);
+  runtime.registry.registerMutation({
+    id: 'context.set',
+    handler: (item, context) => { context.workbook.name = (item.params as { name: string }).name; },
+    metadata: {
+      schema: { name: 'ContextSet', validate: (value: unknown) => !!value && typeof value === 'object' && typeof (value as { name?: unknown }).name === 'string' },
+      permission: { capability: 'test.context.write' },
+      affectedRanges: { resolve: () => [] },
+      calculationContextEffect: CALCULATION_CONTEXT_EFFECTS.rebuild,
+      inverseIds: ['context.restore'],
+    },
+  });
+  runtime.registry.registerMutation({
+    id: 'context.restore',
+    handler: (item, context) => { context.workbook.name = (item.params as { name: string }).name; },
+    metadata: {
+      schema: { name: 'ContextRestore', validate: (value: unknown) => !!value && typeof value === 'object' && typeof (value as { name?: unknown }).name === 'string' },
+      permission: { capability: 'test.context.write' },
+      affectedRanges: { resolve: () => [] },
+      calculationContextEffect: CALCULATION_CONTEXT_EFFECTS.rebuild,
+      inverseIds: ['context.set'],
+    },
+  });
+  runtime.registry.registerCommand({
+    id: 'context.set',
+    execute: (_params: unknown, context) => {
+      context.applyMutation({
+        id: 'context.set',
+        unitId: workbook.unitId,
+        sheetId: workbook.primarySheetId,
+        params: { name: 'After' },
+        affectedRanges: [],
+        inverse: [{ id: 'context.restore', unitId: workbook.unitId, sheetId: workbook.primarySheetId, params: { name: 'Before' }, affectedRanges: [] }],
+        apply: () => { workbook.name = 'After'; },
+      });
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges: [] };
+    },
+  });
+
+  const effects: unknown[] = [];
+  runtime.onMutation((_mutation, _source, effect) => effects.push(effect));
+  runtime.execute('context.set', {});
+  assert.equal(workbook.name, 'After');
+  assert.equal(runtime.undo(), true);
+  assert.equal(workbook.name, 'Before');
+  assert.equal(runtime.redo(), true);
+  assert.equal(workbook.name, 'After');
+  assert.deepEqual(effects, Array(3).fill(CALCULATION_CONTEXT_EFFECTS.rebuild));
+});
+
+test('CommandRegistry rejects malformed calculation-context metadata', () => {
+  const runtime = new CommandRuntime(new WorkbookModel('unit-invalid-context-effect', 'Invalid effect'));
+  assert.throws(() => runtime.registry.registerMutation({
+    id: 'context.invalid',
+    handler: () => undefined,
+    metadata: {
+      schema: { name: 'InvalidContext', validate: () => true },
+      permission: { capability: 'test.context.write' },
+      affectedRanges: { resolve: () => [] },
+      calculationContextEffect: { kind: 'calculation-context', action: 'rebuild-all' } as never,
+      inverseIds: ['context.invalid'],
+    },
+  }), /invalid calculation context effect/);
 });
 
 test('CommandRuntime rolls back applied mutations if a command throws mid-execution', () => {

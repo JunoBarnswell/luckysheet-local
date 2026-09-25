@@ -48,6 +48,7 @@ export {
   type CheckboxCellState,
 } from './cell-editor';
 export { DEFAULT_WORKBOOK_EDITING_OPTIONS, isWorkbookEditingOptions, normalizeWorkbookEditingOptions, type WorkbookEditingOptions, type WorkbookEnterDirection } from './editing-options';
+export { CALCULATION_CONTEXT_EFFECTS, isWorkbookCalculationContextEffect, type WorkbookCalculationContextAction, type WorkbookCalculationContextEffect } from './calculation-context-effect';
 import {
   normalizePrintDocumentSnapshot,
   normalizeQueryDefinitionSnapshot,

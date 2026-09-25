@@ -1,6 +1,6 @@
 import { RecoveryJournal } from './features/persistence/recovery-journal';
 import { CheckpointCoordinator } from './features/persistence/checkpoint-coordinator';
-import { WorkbookModel, type CellData, type DataSourceManifest, type StructuralTransformResult } from '@react-sheets/core-model';
+import { WorkbookModel, isWorkbookCalculationContextEffect, type CellData, type DataSourceManifest, type StructuralTransformResult } from '@react-sheets/core-model';
 import { CommandRuntime, type HistoryEntry, type MutationInfo } from '@react-sheets/command-runtime';
 import { canonicalExcelDateFromUtcDate, FormulaEngine, type CanonicalExcelDateParts, type CellAddressInput, type ExcelDateSystem, type CalculationInputUpdate } from '@react-sheets/formula-engine';
 import {
@@ -312,18 +312,6 @@ const FORMULA_SYNC_MUTATIONS = new Set([
   'columns.inserted',
   'columns.deleted',
   'sheet.rename',
-  'sheet.remove',
-  'sheet.restore',
-  'sheet.add',
-  'sheet.reordered',
-  'sheet.duplicated',
-  'sheetTable.add',
-  'sheetTable.remove',
-  'sheetTable.update',
-  'table.add',
-  'table.remove',
-  'name.set',
-  'name.remove',
   'workbook.calculation.mode.set',
   'row.hidden',
   'row.unhidden',
@@ -369,25 +357,6 @@ const DIRECT_CELL_WRITE_MUTATIONS = new Set([
   'query.load.sheet-table',
   'query.load.pivot-source',
   'query.load.workbook-table',
-]);
-
-/** These operations change the dependency address space, not just cell inputs. */
-const CALCULATION_CONTEXT_REBUILDS = new Set([
-  'sheet.reordered',
-  'sheet.remove',
-  'sheet.restore',
-  'sheet.add',
-  'sheet.duplicated',
-]);
-
-const CALCULATION_CONTEXT_UPDATES = new Set([
-  'sheetTable.add',
-  'sheetTable.remove',
-  'sheetTable.update',
-  'table.add',
-  'table.remove',
-  'name.set',
-  'name.remove',
 ]);
 
 function calculationInputUpdate(
@@ -938,8 +907,10 @@ export function attachCoreListeners(runtime: SpreadsheetRuntime): void {
       if (runtime.disposed) return;
       let structuralRoots: readonly CellAddressInput[] | undefined;
       const structuralEffect = isStructuralTransformResult(appliedEffect);
-      const rebuildsCalculationContext = CALCULATION_CONTEXT_REBUILDS.has(mutation.id)
-        || structuralEffect && appliedEffect.requiresCalculationContextRebuild === true;
+      const calculationContextEffect = isWorkbookCalculationContextEffect(appliedEffect)
+        ? appliedEffect
+        : structuralEffect ? appliedEffect.calculationContextEffect : undefined;
+      const rebuildsCalculationContext = calculationContextEffect?.action === 'rebuild';
       const changesVisibilityProjection = VISIBILITY_MUTATIONS.has(mutation.id)
         || rebuildsCalculationContext
         || structuralEffect
@@ -967,12 +938,10 @@ export function attachCoreListeners(runtime: SpreadsheetRuntime): void {
           ...structuralRoots,
           ...runtime.formula.getPendingRecalculationRoots(),
         ].map((address) => [typeof address === 'string' ? address : `${address.sheetId}:${address.row}:${address.column}`, address])).values()];
-      } else if (CALCULATION_CONTEXT_UPDATES.has(mutation.id)) {
-        if (mutation.id === 'name.set' || mutation.id === 'name.remove') {
-          runtime.formula.setDefinedNameModels(runtime.model.definedNameModels, false);
-        } else {
-          syncWorkbookSheetTables(runtime.formula, runtime.model, false);
-        }
+      } else if (calculationContextEffect?.action === 'sync-defined-names') {
+        runtime.formula.setDefinedNameModels(runtime.model.definedNameModels, false);
+      } else if (calculationContextEffect?.action === 'sync-tables') {
+        syncWorkbookSheetTables(runtime.formula, runtime.model, false);
       }
       if (changesVisibilityProjection && !rebuildsCalculationContext && !structuralEffect) {
         runtime.formula.notifyVisibilityChanged();
@@ -995,7 +964,7 @@ export function attachCoreListeners(runtime: SpreadsheetRuntime): void {
         || mutation.id === 'pivot.drilldown.add' || mutation.id === 'pivot.drilldown.remove') {
         initializeDataContent(runtime);
       }
-      if (FORMULA_SYNC_MUTATIONS.has(mutation.id)) {
+      if (FORMULA_SYNC_MUTATIONS.has(mutation.id) || calculationContextEffect !== undefined) {
         const isDirectCellWrite = DIRECT_CELL_WRITE_MUTATIONS.has(mutation.id);
         const roots = rebuildsCalculationContext
           ? undefined

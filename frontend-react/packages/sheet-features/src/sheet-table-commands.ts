@@ -1,4 +1,4 @@
-import { clearFormulaProvenance, type AutoFilterModel, type RangeRef, type SheetTableModel } from '@react-sheets/core-model';
+import { CALCULATION_CONTEXT_EFFECTS, clearFormulaProvenance, type AutoFilterModel, type RangeRef, type SheetTableModel } from '@react-sheets/core-model';
 import type { CommandRuntime } from '@react-sheets/command-runtime';
 import {
   planTotalRowToggle,
@@ -81,6 +81,7 @@ export function registerSheetTableCommands(runtime: CommandRuntime): void {
       permission: { capability: 'sheet.table.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: tableRange, mode: 'exact' },
       historyRebase: { kind: 'invalidate', reason: 'sheet table geometry and structured references have no canonical history transform' },
+      calculationContextEffect: CALCULATION_CONTEXT_EFFECTS.syncTables,
       inverseIds: ['sheetTable.remove'],
     },
   });
@@ -116,6 +117,7 @@ export function registerSheetTableCommands(runtime: CommandRuntime): void {
       permission: { capability: 'sheet.table.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: removedTableRange, mode: 'exact' },
       historyRebase: { kind: 'invalidate', reason: 'sheet table geometry and structured references have no canonical history transform' },
+      calculationContextEffect: CALCULATION_CONTEXT_EFFECTS.syncTables,
       inverseIds: ['sheetTable.add'],
     },
   });
@@ -139,6 +141,7 @@ export function registerSheetTableCommands(runtime: CommandRuntime): void {
       permission: { capability: 'sheet.table.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: tableRange, mode: 'exact' },
       historyRebase: { kind: 'invalidate', reason: 'sheet table geometry and structured references have no canonical history transform' },
+      calculationContextEffect: CALCULATION_CONTEXT_EFFECTS.syncTables,
       inverseIds: ['sheetTable.update'],
     },
   });

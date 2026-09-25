@@ -14,7 +14,7 @@ import type {
   BorderPlacement,
   WorkbookTheme,
 } from '@react-sheets/core-model';
-import { cellKey, clearFormulaProvenance, columnLabel, MAX_SHEET_COLUMN_COUNT, MAX_SHEET_ROW_COUNT, planCellShift, sheetRuleRegistry, type CellShiftSpec } from '@react-sheets/core-model';
+import { CALCULATION_CONTEXT_EFFECTS, cellKey, clearFormulaProvenance, columnLabel, MAX_SHEET_COLUMN_COUNT, MAX_SHEET_ROW_COUNT, planCellShift, sheetRuleRegistry, type CellShiftSpec } from '@react-sheets/core-model';
 import { StructuralTransform } from '@react-sheets/core-model';
 import { parseFormula } from '@react-sheets/formula-engine';
 import { formatValue } from '@react-sheets/number-format';
@@ -1715,6 +1715,7 @@ export function registerEditingCommands(runtime: CommandRuntime): void {
       schema: { name: 'DuplicateSheet', validate: isSheetDuplicateMutation },
       permission: { capability: 'sheet.structure.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: () => [], mode: 'exact' },
+      calculationContextEffect: CALCULATION_CONTEXT_EFFECTS.rebuild,
       inverseIds: ['sheet.remove'],
     },
   });
@@ -1730,7 +1731,7 @@ export function registerEditingCommands(runtime: CommandRuntime): void {
         params,
         affectedRanges,
         inverse: [{ id: 'sheet.remove', unitId: context.workbook.unitId, sheetId: params.newId, params: { id: params.newId }, affectedRanges }],
-        apply: () => context.workbook.duplicateSheet(params.sourceSheetId, params.newId, params.newName),
+        apply: () => { context.workbook.duplicateSheet(params.sourceSheetId, params.newId, params.newName); },
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -1812,6 +1813,7 @@ export function registerEditingCommands(runtime: CommandRuntime): void {
       schema: { name: 'ReorderSheet', validate: isSheetReorderedMutation },
       permission: { capability: 'sheet.structure.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: () => [], mode: 'exact' },
+      calculationContextEffect: CALCULATION_CONTEXT_EFFECTS.rebuild,
       inverseIds: ['sheet.reordered'],
     },
   });
@@ -1829,7 +1831,7 @@ export function registerEditingCommands(runtime: CommandRuntime): void {
         params,
         affectedRanges,
         inverse: [{ id: 'sheet.reordered', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, toIndex: fromIndex }, affectedRanges }],
-        apply: () => context.workbook.reorderSheet(params.sheetId, params.toIndex),
+        apply: () => { context.workbook.reorderSheet(params.sheetId, params.toIndex); },
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },

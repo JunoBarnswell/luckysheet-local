@@ -20,6 +20,7 @@ import type {
   ReportSheetDefinition,
 } from '@react-sheets/core-model';
 import {
+  CALCULATION_CONTEXT_EFFECTS,
   clearFormulaProvenance,
   MAX_SHEET_COLUMN_COUNT,
   MAX_SHEET_ROW_COUNT,
@@ -1066,6 +1067,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       permission: { capability: 'sheet.structure.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: () => [], mode: 'exact' },
       historyRebase: { kind: 'invalidate', reason: 'worksheet identity changes have no canonical history transform' },
+      calculationContextEffect: CALCULATION_CONTEXT_EFFECTS.rebuild,
       inverseIds: ['sheet.remove'],
     },
   });
@@ -1080,6 +1082,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       permission: { capability: 'sheet.structure.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: () => [], mode: 'exact' },
       historyRebase: { kind: 'invalidate', reason: 'worksheet identity changes have no canonical history transform' },
+      calculationContextEffect: CALCULATION_CONTEXT_EFFECTS.rebuild,
       inverseIds: ['sheet.restore'],
     },
   });
@@ -1109,6 +1112,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       permission: { capability: 'sheet.structure.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: () => [], mode: 'exact' },
       historyRebase: { kind: 'invalidate', reason: 'worksheet identity changes have no canonical history transform' },
+      calculationContextEffect: CALCULATION_CONTEXT_EFFECTS.rebuild,
       inverseIds: ['sheet.remove'],
     },
   });
@@ -1182,7 +1186,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
             affectedRanges,
           },
         ],
-        apply: () => workbook.removeSheet(params.id),
+        apply: () => { workbook.removeSheet(params.id); },
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -1207,8 +1211,9 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
             affectedRanges,
           },
         ],
-        apply: () =>
-          context.workbook.addSheet(params.id, params.name, params.rowCount, params.columnCount),
+        apply: () => {
+          context.workbook.addSheet(params.id, params.name, params.rowCount, params.columnCount);
+        },
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -1329,6 +1334,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       schema: { name: 'WorkbookTableModel', validate: isWorkbookTableMutation },
       permission: { capability: 'workbook.table.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: workbookTableRanges, mode: 'exact' },
+      calculationContextEffect: CALCULATION_CONTEXT_EFFECTS.syncTables,
       inverseIds: ['table.remove'],
     },
   });
@@ -1342,6 +1348,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       schema: { name: 'TableRemove', validate: isTableRemoveMutation },
       permission: { capability: 'workbook.table.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: tableRemoveRanges, mode: 'declared' },
+      calculationContextEffect: CALCULATION_CONTEXT_EFFECTS.syncTables,
       inverseIds: ['table.add'],
     },
   });
@@ -1356,7 +1363,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
         params: structuredClone(params),
         affectedRanges,
         inverse: [{ id: 'table.remove', unitId: context.workbook.unitId, sheetId: params.sourceSheetId ?? context.workbook.primarySheetId, params: { tableId: params.id, range: params.sourceRange }, affectedRanges }],
-        apply: () => context.workbook.addTable(params),
+        apply: () => { context.workbook.addTable(params); },
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -1373,7 +1380,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
         params: { tableId: params.tableId, range: previous.sourceRange },
         affectedRanges,
         inverse: [{ id: 'table.add', unitId: context.workbook.unitId, sheetId: params.sheetId, params: previous, affectedRanges }],
-        apply: () => context.workbook.removeTable(params.tableId),
+        apply: () => { context.workbook.removeTable(params.tableId); },
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -3125,6 +3132,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       schema: { name: 'DefinedNameSet', validate: isNameSetMutation },
       permission: { capability: 'workbook.defined-name.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: () => [], mode: 'exact' },
+      calculationContextEffect: CALCULATION_CONTEXT_EFFECTS.syncDefinedNames,
       inverseIds: ['name.set', 'name.remove'],
     },
   });
@@ -3139,6 +3147,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       schema: { name: 'DefinedNameRemove', validate: isNameRemoveMutation },
       permission: { capability: 'workbook.defined-name.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: () => [], mode: 'exact' },
+      calculationContextEffect: CALCULATION_CONTEXT_EFFECTS.syncDefinedNames,
       inverseIds: ['name.set'],
     },
   });

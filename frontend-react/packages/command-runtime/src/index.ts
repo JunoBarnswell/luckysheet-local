@@ -1,4 +1,4 @@
-import { WorkbookModel, type CellData, type ConditionalFormatRule, type DataValidationRule, type ProtectionAction, type RangeRef, type StructuralFormulaOwnerDelta, type StructuralFormulaOwnerState, type StructuralReferenceOwnerIndex, type WorksheetModel } from '@react-sheets/core-model';
+import { WorkbookModel, isWorkbookCalculationContextEffect, type CellData, type ConditionalFormatRule, type DataValidationRule, type ProtectionAction, type RangeRef, type StructuralFormulaOwnerDelta, type StructuralFormulaOwnerState, type StructuralReferenceOwnerIndex, type WorkbookCalculationContextEffect, type WorksheetModel } from '@react-sheets/core-model';
 import { collectFormulaDependencies, formatFormula, mapAstStructuralReferences, parseFormula, RangeIndex, ReferenceTransformDomain, MAX_COLUMN_INDEX, MAX_ROW_INDEX } from '@react-sheets/formula-engine';
 
 export interface MutationInfo<P = unknown> {
@@ -65,6 +65,8 @@ export interface MutationRegistrationMetadata<P = unknown> {
   readonly inverseIds?: readonly string[];
   /** How remote application transforms or invalidates existing local undo/redo entries. */
   readonly historyRebase?: MutationHistoryRebasePolicy;
+  /** Calculation context transition emitted when the handler has no more specific effect. */
+  readonly calculationContextEffect?: WorkbookCalculationContextEffect;
 }
 
 /** Short public name for feature packages that expose a mutation contract. */
@@ -265,6 +267,10 @@ function validateRegistrationMetadata(
   }
   if (!isValidHistoryRebasePolicy(metadata.historyRebase)) {
     issues.push(issue('invalid-registration', id, `Mutation ${id} declares an invalid history rebase policy`));
+  }
+  if (metadata.calculationContextEffect !== undefined
+    && !isWorkbookCalculationContextEffect(metadata.calculationContextEffect)) {
+    issues.push(issue('invalid-registration', id, `Mutation ${id} declares an invalid calculation context effect`));
   }
   const inversePolicy = metadata.inversePolicy;
   const inverseIds = metadata.inverseIds;
@@ -990,7 +996,7 @@ export class CommandRuntime {
         // execution and every replay path fail closed on protocol drift.
         this.registry.assertMutation(mutation);
         this.mutationGuard?.(mutation, 'command');
-        const effect = mutation.apply(context);
+        const effect = mutation.apply(context) ?? this.registry.getMutationMetadata(mutation.id).calculationContextEffect;
         const formulaOwnerDeltas = isRecord(effect) && Array.isArray(effect.formulaOwnerDeltas)
           ? effect.formulaOwnerDeltas as StructuralFormulaOwnerDelta[]
           : [];
@@ -1268,7 +1274,7 @@ export class CommandRuntime {
       };
       const effect = handler(item, {
         ...replayContext,
-      });
+      }) ?? this.registry.getMutationMetadata(item.id).calculationContextEffect;
       if (item.structuralFormulaOwnerDeltas) {
         if (source === 'undo') {
           for (const delta of item.structuralFormulaOwnerDeltas) applyFormulaOwnerDelta(this.workbook, delta, 'undo');

@@ -13,6 +13,7 @@ import type {
   ConditionalFormatRule,
   DataValidationRule,
 } from './index';
+import { CALCULATION_CONTEXT_EFFECTS } from './calculation-context-effect';
 import type {
   DrawingPayload,
   DefinedNameModel,
@@ -695,7 +696,7 @@ export function planSheetIdentityTransform(workbook: WorkbookModel, input: Sheet
             column: change.column,
           })),
           ...(formulaChangePlan.requiresCalculationContextRebuild || definedNameResolvesToRenamedSheet
-            ? { requiresCalculationContextRebuild: true }
+            ? { calculationContextEffect: CALCULATION_CONTEXT_EFFECTS.rebuild }
             : {}),
         };
       },

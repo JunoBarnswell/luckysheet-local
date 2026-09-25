@@ -1,4 +1,5 @@
 import type { CellAddress, CellData, RangeRef, Row, Column } from './index';
+import type { WorkbookCalculationContextEffect } from './calculation-context-effect';
 import type { CellHyperlink, DrawingObject, StructuralTransformParams, SheetTableModel, SpillRange, ProtectionRule, OutlineGroup, CellShiftSpec } from './domain';
 import type { WorkbookTableModel } from './data-model';
 import type { DataSourceManifest } from './data-source';
@@ -38,7 +39,7 @@ export interface StructuralTransformResult {
   /** Reversible pre/post states for formula owners rewritten by this transform. */
   readonly formulaOwnerDeltas?: readonly StructuralFormulaOwnerDelta[];
   /** A caller must rebuild calculation context when incremental owner updates cannot resolve the new identity. */
-  readonly requiresCalculationContextRebuild?: boolean;
+  readonly calculationContextEffect?: WorkbookCalculationContextEffect;
 }
 
 export interface StructuralReferenceOwnerAddress {
