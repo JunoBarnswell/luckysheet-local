@@ -56,12 +56,12 @@ final class StructuralSnapshotReducer {
 
         ObjectNode reportSheetAfter = mapReportSheetCoordinates(target, (row, column) -> {
             int position = axis == FormulaReferenceTransformer.Axis.ROW ? row : column;
-            int mapped = shiftIndex(position, at, count, direction);
+            int mapped = shiftIndex(position, at, count, direction, axis);
             if (mapped < 0) return null;
             return axis == FormulaReferenceTransformer.Axis.ROW ? new int[]{mapped, column} : new int[]{row, mapped};
         }, axis == FormulaReferenceTransformer.Axis.ROW
                 ? row -> {
-                    int mapped = shiftIndex(row, at, count, direction);
+                    int mapped = shiftIndex(row, at, count, direction, axis);
                     return mapped < 0 ? null : mapped;
                 }
                 : null,
@@ -625,8 +625,8 @@ final class StructuralSnapshotReducer {
                 java.util.Map.Entry<String, JsonNode> columnEntry = columns.next();
                 int column = integerKey(columnEntry.getKey(), SnapshotMutationSupport.MAX_COLUMN, "Cell column");
                 if (!columnEntry.getValue().isObject()) throw ServiceException.validation("Cell payload must be an object");
-                int nextRow = axis == FormulaReferenceTransformer.Axis.ROW ? shiftIndex(row, at, count, direction) : row;
-                int nextColumn = axis == FormulaReferenceTransformer.Axis.COLUMN ? shiftIndex(column, at, count, direction) : column;
+                int nextRow = axis == FormulaReferenceTransformer.Axis.ROW ? shiftIndex(row, at, count, direction, axis) : row;
+                int nextColumn = axis == FormulaReferenceTransformer.Axis.COLUMN ? shiftIndex(column, at, count, direction, axis) : column;
                 if (nextRow < 0 || nextColumn < 0) continue;
                 if (nextRow > SnapshotMutationSupport.MAX_ROW || nextColumn > SnapshotMutationSupport.MAX_COLUMN) {
                     throw ServiceException.validation("Structural mutation moves a cell outside worksheet bounds");
@@ -638,9 +638,22 @@ final class StructuralSnapshotReducer {
         sheet.set("cells", next);
     }
 
-    private static int shiftIndex(int value, int at, int count, FormulaReferenceTransformer.Direction direction) {
-        return Math.toIntExact(StructuralAxisCoordinate.mapPoint(
-                value, at, count, direction == FormulaReferenceTransformer.Direction.INSERT));
+    private static int shiftIndex(
+            int value,
+            int at,
+            int count,
+            FormulaReferenceTransformer.Direction direction,
+            FormulaReferenceTransformer.Axis axis
+    ) {
+        int maximum = axis == FormulaReferenceTransformer.Axis.ROW
+                ? ReferenceTransformDomain.MAX_ROW_INDEX
+                : ReferenceTransformDomain.MAX_COLUMN_INDEX;
+        ReferenceTransformDomain.PointMapping mapped = ReferenceTransformDomain.mapPoint(
+                value, at, count, direction == FormulaReferenceTransformer.Direction.INSERT, maximum);
+        if (mapped.kind() == ReferenceTransformDomain.PointKind.OUT_OF_BOUNDS) {
+            throw ServiceException.validation("Structural reference coordinate exceeds worksheet bounds");
+        }
+        return mapped.kind() == ReferenceTransformDomain.PointKind.DELETED ? -1 : Math.toIntExact(mapped.position());
     }
 
     private static ObjectNode mapReportSheetCoordinates(
@@ -896,7 +909,7 @@ final class StructuralSnapshotReducer {
             if (!pageBreak.has(breakProperty) || pageBreak.get(breakProperty).isNull()) continue;
             JsonNode coordinate = pageBreak.get(breakProperty);
             if (!coordinate.isIntegralNumber() || coordinate.intValue() < 0) throw ServiceException.validation("Print page break coordinate is invalid");
-            int shifted = shiftIndex(coordinate.intValue(), at, count, direction);
+            int shifted = shiftIndex(coordinate.intValue(), at, count, direction, axis);
             if (shifted < 0) pageBreaks.remove(index);
             else pageBreak.put(breakProperty, shifted);
         }
@@ -980,7 +993,7 @@ final class StructuralSnapshotReducer {
                 ObjectNode anchor = (ObjectNode) anchorRaw;
                 String key = axis == FormulaReferenceTransformer.Axis.ROW ? "row" : "column";
                 if (!anchor.path(key).isIntegralNumber()) throw ServiceException.validation("Rule formula anchor is invalid");
-                int shifted = shiftIndex(anchor.path(key).intValue(), at, count, direction);
+                int shifted = shiftIndex(anchor.path(key).intValue(), at, count, direction, axis);
                 if (shifted < 0) throw ServiceException.validation("Structural mutation removes a rule formula anchor");
                 anchor.put(key, shifted);
             }
@@ -1003,7 +1016,7 @@ final class StructuralSnapshotReducer {
         ObjectNode next = JsonNodeFactory.instance.objectNode();
         criteria.fields().forEachRemaining(entry -> {
             int column = integerKey(entry.getKey(), SnapshotMutationSupport.MAX_COLUMN, "Filter criteria column");
-            int shifted = shiftIndex(column, at, count, direction);
+            int shifted = shiftIndex(column, at, count, direction, axis);
             if (shifted < 0) throw ServiceException.validation("Structural mutation removes an AutoFilter column");
             ObjectNode condition = requireObject(entry.getValue(), "AutoFilter column").deepCopy();
             condition.put("column", shifted);
@@ -1047,13 +1060,13 @@ final class StructuralSnapshotReducer {
         ArrayNode remapped = JsonNodeFactory.instance.arrayNode();
         for (JsonNode raw : SnapshotMutationSupport.array(sheet, hidden)) {
             if (!raw.isIntegralNumber()) throw ServiceException.validation(hidden + " contains invalid index");
-            int shifted = shiftIndex(raw.intValue(), at, count, direction);
+            int shifted = shiftIndex(raw.intValue(), at, count, direction, axis);
             if (shifted >= 0 && !containsNumber(remapped, shifted)) remapped.add(shifted);
         }
         sheet.set(hidden, remapped);
         ObjectNode nextSizes = JsonNodeFactory.instance.objectNode();
         SnapshotMutationSupport.object(sheet, sizes).fields().forEachRemaining(entry -> {
-            int shifted = shiftIndex(integerKey(entry.getKey(), axis == FormulaReferenceTransformer.Axis.ROW ? SnapshotMutationSupport.MAX_ROW : SnapshotMutationSupport.MAX_COLUMN, sizes), at, count, direction);
+            int shifted = shiftIndex(integerKey(entry.getKey(), axis == FormulaReferenceTransformer.Axis.ROW ? SnapshotMutationSupport.MAX_ROW : SnapshotMutationSupport.MAX_COLUMN, sizes), at, count, direction, axis);
             if (shifted >= 0) nextSizes.set(Integer.toString(shifted), entry.getValue());
         });
         sheet.set(sizes, nextSizes);
@@ -1070,7 +1083,7 @@ final class StructuralSnapshotReducer {
             if (!ownerTarget) continue;
             ObjectNode anchor = SnapshotMutationSupport.requiredObject(sparkline, "anchor");
             String key = axis == FormulaReferenceTransformer.Axis.ROW ? "row" : "column";
-            int shifted = shiftIndex(anchor.path(key).asInt(-1), at, count, direction);
+            int shifted = shiftIndex(anchor.path(key).asInt(-1), at, count, direction, axis);
             if (shifted < 0) throw ServiceException.validation("Structural mutation removes a sparkline anchor");
             anchor.put(key, shifted);
         }
@@ -1089,7 +1102,7 @@ final class StructuralSnapshotReducer {
             if (ownerTarget && anchorRaw != null && anchorRaw.isObject()) {
                 ObjectNode anchor = (ObjectNode) anchorRaw;
                 String key = axis == FormulaReferenceTransformer.Axis.ROW ? "row" : "column";
-                int shifted = shiftIndex(anchor.path(key).asInt(-1), at, count, direction);
+                int shifted = shiftIndex(anchor.path(key).asInt(-1), at, count, direction, axis);
                 if (shifted < 0) throw ServiceException.validation("Structural mutation removes a pivot target anchor");
                 anchor.put(key, shifted);
             }
@@ -1537,14 +1550,14 @@ final class StructuralSnapshotReducer {
     private static void shiftAnchor(FormulaReferenceTransformer.Axis axis, int at, int count, FormulaReferenceTransformer.Direction direction, ObjectNode anchor, String property) {
         if (!anchor.has(property) || anchor.get(property).isNull()) return;
         if (!anchor.path(property).isIntegralNumber()) throw ServiceException.validation("Drawing anchor coordinate is invalid");
-        int shifted = shiftIndex(anchor.path(property).asInt(-1), at, count, direction);
+        int shifted = shiftIndex(anchor.path(property).asInt(-1), at, count, direction, axis);
         if (shifted < 0) throw ServiceException.validation("Structural mutation removes a drawing anchor");
         anchor.put(property, shifted);
     }
 
     private static void shiftTargetReview(ObjectNode target, FormulaReferenceTransformer.Axis axis, int at, int count, FormulaReferenceTransformer.Direction direction) {
         SnapshotMutationSupport.remapReviewCoordinates(target, coordinate -> {
-            int shifted = shiftIndex(axis == FormulaReferenceTransformer.Axis.ROW ? coordinate.row() : coordinate.column(), at, count, direction);
+            int shifted = shiftIndex(axis == FormulaReferenceTransformer.Axis.ROW ? coordinate.row() : coordinate.column(), at, count, direction, axis);
             if (shifted < 0) throw ServiceException.validation("Structural delete would lose review metadata");
             return axis == FormulaReferenceTransformer.Axis.ROW
                     ? new SnapshotMutationSupport.CellCoordinate(shifted, coordinate.column())
@@ -1558,7 +1571,7 @@ final class StructuralSnapshotReducer {
             requireShiftedRange(root, spill.get("range"), targetSheetId, axis, at, count, direction, "spill range");
             ObjectNode anchor = SnapshotMutationSupport.requiredObject(spill, "anchor");
             String key = axis == FormulaReferenceTransformer.Axis.ROW ? "row" : "column";
-            int shifted = shiftIndex(anchor.path(key).asInt(-1), at, count, direction);
+            int shifted = shiftIndex(anchor.path(key).asInt(-1), at, count, direction, axis);
             if (shifted < 0) throw ServiceException.validation("Structural mutation removes a spill anchor");
             anchor.put(key, shifted);
         }
@@ -1644,7 +1657,7 @@ final class StructuralSnapshotReducer {
             if (axis == FormulaReferenceTransformer.Axis.ROW) {
                 int header = region.path("headerRow").asInt(-1);
                 if (header < 0) throw ServiceException.validation("Data region header row is invalid");
-                int shifted = shiftIndex(header, at, count, direction);
+                int shifted = shiftIndex(header, at, count, direction, FormulaReferenceTransformer.Axis.ROW);
                 if (shifted < 0) throw ServiceException.validation("Structural mutation removes a data region header");
                 region.put("headerRow", shifted);
             }
@@ -1711,7 +1724,7 @@ final class StructuralSnapshotReducer {
             int at, int count, FormulaReferenceTransformer.Direction direction, String label) {
         String key = axis == FormulaReferenceTransformer.Axis.ROW ? "row" : "column";
         if (!coordinate.path(key).isIntegralNumber()) return;
-        int shifted = shiftIndex(coordinate.path(key).intValue(), at, count, direction);
+        int shifted = shiftIndex(coordinate.path(key).intValue(), at, count, direction, axis);
         if (shifted < 0) throw ServiceException.validation("Structural mutation removes " + label);
         coordinate.put(key, shifted);
     }
@@ -1753,7 +1766,7 @@ final class StructuralSnapshotReducer {
                 String coordinateKey = axis == FormulaReferenceTransformer.Axis.ROW ? "row" : "column";
                 int maximum = axis == FormulaReferenceTransformer.Axis.ROW ? SnapshotMutationSupport.MAX_ROW : SnapshotMutationSupport.MAX_COLUMN;
                 int coordinate = definedNameAnchorCoordinate(anchor, coordinateKey, maximum);
-                int shifted = shiftIndex(coordinate, at, count, direction);
+                int shifted = shiftIndex(coordinate, at, count, direction, axis);
                 if (shifted < 0) throw ServiceException.validation("Structural mutation removes defined-name anchor: " + name.path("name").asText());
                 if (shifted > maximum) throw ServiceException.validation("Structural mutation moves defined-name anchor outside worksheet bounds");
                 anchor.put(coordinateKey, shifted);
@@ -2140,7 +2153,7 @@ final class StructuralSnapshotReducer {
         String key = axis == FormulaReferenceTransformer.Axis.ROW ? "row" : "column";
         int maximum = axis == FormulaReferenceTransformer.Axis.ROW ? SnapshotMutationSupport.MAX_ROW : SnapshotMutationSupport.MAX_COLUMN;
         int position = definedNameAnchorCoordinate(anchor, key, maximum);
-        int shifted = shiftIndex(position, at, count, direction);
+        int shifted = shiftIndex(position, at, count, direction, axis);
         if (shifted < 0 || shifted > maximum) throw ServiceException.validation("Structural mutation removes cell-style-template formula anchor");
         ObjectNode result = anchor.deepCopy();
         result.put(key, shifted);

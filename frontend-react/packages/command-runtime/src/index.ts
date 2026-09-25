@@ -1,5 +1,5 @@
-import { mapAxisCoordinate, WorkbookModel, type ProtectionAction, type RangeRef, type StructuralReferenceOwnerIndex, type WorksheetModel } from '@react-sheets/core-model';
-import { collectFormulaDependencies, formatFormula, mapAstStructuralReferences, parseFormula, RangeIndex } from '@react-sheets/formula-engine';
+import { WorkbookModel, type ProtectionAction, type RangeRef, type StructuralReferenceOwnerIndex, type WorksheetModel } from '@react-sheets/core-model';
+import { collectFormulaDependencies, formatFormula, mapAstStructuralReferences, parseFormula, RangeIndex, ReferenceTransformDomain, MAX_COLUMN_INDEX, MAX_ROW_INDEX } from '@react-sheets/formula-engine';
 
 export interface MutationInfo<P = unknown> {
   id: string;
@@ -604,9 +604,6 @@ function buildStructuralReferenceIndex(workbook: WorkbookModel): StructuralRefer
   return index;
 }
 
-const MAX_ROW_INDEX = 1_048_575;
-const MAX_COLUMN_INDEX = 16_383;
-
 interface TransformValueResult {
   readonly value: unknown;
   readonly safe: boolean;
@@ -637,9 +634,9 @@ function structuralDelta(mutation: MutationInfo, policy: MutationHistoryRebasePo
 function transformIndex(index: number, delta: StructuralDelta): number | undefined {
   const maximum = delta.axis === 'row' ? MAX_ROW_INDEX : MAX_COLUMN_INDEX;
   if (!Number.isSafeInteger(index) || index < 0 || index > maximum) return undefined;
-  const mapped = mapAxisCoordinate(index, delta.at, delta.count, delta.direction);
-  return mapped !== null && Number.isSafeInteger(mapped) && mapped >= 0 && mapped <= maximum
-    ? mapped
+  const mapped = ReferenceTransformDomain.mapPoint(index, delta.at, delta.count, delta.direction, maximum);
+  return mapped.kind === 'mapped'
+    ? mapped.position
     : undefined;
 }
 

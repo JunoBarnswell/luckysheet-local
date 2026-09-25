@@ -14,11 +14,11 @@ import java.util.TreeSet;
  * syntax while preserving string literals, function names, table references,
  * operators, union/intersection whitespace, implicit-intersection and spill
  * operators. Only parsed A1 references and ranges are offered to a typed
- * mapper; a deleted endpoint becomes one `#REF!` node.
+ * mapper; a deleted or out-of-bounds formula reference becomes one `#REF!` node.
  */
 final class FormulaReferenceTransformer {
-    private static final int MAX_ROW = 1_048_575;
-    private static final int MAX_COLUMN = 16_383;
+    private static final int MAX_ROW = ReferenceTransformDomain.MAX_ROW_INDEX;
+    private static final int MAX_COLUMN = ReferenceTransformDomain.MAX_COLUMN_INDEX;
 
     private FormulaReferenceTransformer() {
     }
@@ -101,10 +101,27 @@ final class FormulaReferenceTransformer {
     }
 
     static int[] remapAxisIntervalCoordinates(int start, int end, Axis axis, int at, int count, Direction direction) {
+        ReferenceTransformDomain.IntervalMapping mapped = mapAxisInterval(start, end, axis, at, count, direction);
+        if (mapped.kind() == ReferenceTransformDomain.IntervalKind.OUT_OF_BOUNDS) {
+            throw ServiceException.validation("Structural reference interval exceeds worksheet bounds");
+        }
+        return mapped.kind() == ReferenceTransformDomain.IntervalKind.MAPPED
+                ? new int[]{Math.toIntExact(mapped.start()), Math.toIntExact(mapped.end())}
+                : null;
+    }
+
+    private static int[] remapFormulaAxisIntervalCoordinates(int start, int end, Axis axis, int at, int count, Direction direction) {
+        ReferenceTransformDomain.IntervalMapping mapped = mapAxisInterval(start, end, axis, at, count, direction);
+        return mapped.kind() == ReferenceTransformDomain.IntervalKind.MAPPED
+                ? new int[]{Math.toIntExact(mapped.start()), Math.toIntExact(mapped.end())}
+                : null;
+    }
+
+    private static ReferenceTransformDomain.IntervalMapping mapAxisInterval(
+            int start, int end, Axis axis, int at, int count, Direction direction) {
         validateAxis(at, count);
-        int[] interval = transformReferenceInterval(start, end, at, count, direction);
         int maximum = axis == Axis.ROW ? MAX_ROW : MAX_COLUMN;
-        return interval == null || interval[0] < 0 || interval[1] > maximum ? null : interval;
+        return ReferenceTransformDomain.mapInterval(start, end, at, count, direction == Direction.INSERT, maximum);
     }
 
     static Range remapAxisRangeCoordinates(Range range, Axis axis, int at, int count, Direction direction) {
@@ -540,7 +557,7 @@ final class FormulaReferenceTransformer {
                 if (qualified != null) {
                     boolean targetsSheet = sameName(prefix.name(), target.name());
                     if (targetsSheet && qualified.axis() == axis) {
-                        int[] interval = remapAxisIntervalCoordinates(qualified.start(), qualified.end(), axis, at, count, direction);
+                        int[] interval = remapFormulaAxisIntervalCoordinates(qualified.start(), qualified.end(), axis, at, count, direction);
                         output.append(formula, copied, qualified.startIndex());
                         output.append(interval == null ? "#REF!" : renderWholeAxisReference(formula, qualified, interval));
                         copied = qualified.endIndex();
@@ -553,7 +570,7 @@ final class FormulaReferenceTransformer {
             WholeAxisReference unqualified = parseWholeAxisReference(formula, index);
             if (unqualified != null) {
                 if (owner.id().equals(target.id()) && unqualified.axis() == axis) {
-                    int[] interval = remapAxisIntervalCoordinates(unqualified.start(), unqualified.end(), axis, at, count, direction);
+                    int[] interval = remapFormulaAxisIntervalCoordinates(unqualified.start(), unqualified.end(), axis, at, count, direction);
                     output.append(formula, copied, unqualified.startIndex());
                     output.append(interval == null ? "#REF!" : renderWholeAxisReference(formula, unqualified, interval));
                     copied = unqualified.endIndex();
@@ -735,7 +752,7 @@ final class FormulaReferenceTransformer {
 
         int startPosition = axis == Axis.ROW ? parsed.start().row() : parsed.start().column();
         int endPosition = axis == Axis.ROW ? parsed.end().row() : parsed.end().column();
-        int[] interval = remapAxisIntervalCoordinates(startPosition, endPosition, axis, at, count, direction);
+        int[] interval = remapFormulaAxisIntervalCoordinates(startPosition, endPosition, axis, at, count, direction);
         if (interval == null) return RangeMapping.handled(null, null);
         boolean reversed = startPosition > endPosition;
         Reference start = withAxisCoordinate(parsed.start(), axis, reversed ? interval[1] : interval[0]);
@@ -866,43 +883,11 @@ final class FormulaReferenceTransformer {
         return result;
     }
 
-    private static int[] transformReferenceInterval(int start, int end, int at, int count, Direction direction) {
-        long low = Math.min(start, end);
-        long high = Math.max(start, end);
-        long nextStart;
-        long nextEnd;
-        if (direction == Direction.INSERT) {
-            if (at <= low) {
-                nextStart = low + count;
-                nextEnd = high + count;
-            } else if (at <= high) {
-                nextStart = low;
-                nextEnd = high + count;
-            } else {
-                nextStart = low;
-                nextEnd = high;
-            }
-        } else {
-            long deletedEnd = (long) at + count - 1;
-            if (high < at) {
-                nextStart = low;
-                nextEnd = high;
-            } else if (low > deletedEnd) {
-                nextStart = low - count;
-                nextEnd = high - count;
-            } else {
-                nextStart = low < at ? low : at;
-                nextEnd = high > deletedEnd ? high - count : (long) at - 1;
-            }
-        }
-        if (nextStart > nextEnd || nextStart < 0 || nextEnd > Integer.MAX_VALUE) return null;
-        return new int[]{(int) nextStart, (int) nextEnd};
-    }
-
     private static int mapAxisPoint(int position, Axis axis, int at, int count, Direction direction) {
-        long mapped = StructuralAxisCoordinate.mapPoint(position, at, count, direction == Direction.INSERT);
         int maximum = axis == Axis.ROW ? MAX_ROW : MAX_COLUMN;
-        return mapped < 0 || mapped > maximum ? -1 : (int) mapped;
+        ReferenceTransformDomain.PointMapping mapped = ReferenceTransformDomain.mapPoint(
+                position, at, count, direction == Direction.INSERT, maximum);
+        return mapped.kind() == ReferenceTransformDomain.PointKind.MAPPED ? (int) mapped.position() : -1;
     }
 
     private static Reference withAxisCoordinate(Reference reference, Axis axis, int coordinate) {

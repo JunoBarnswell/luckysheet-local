@@ -1,15 +1,10 @@
 import type { FormulaAst, ParsedCellReference } from './ast';
 import { formulaSheetReferenceIndex, sameFormulaSheetName } from './sheet-reference';
+import { ReferenceTransformDomain, MAX_COLUMN_INDEX, MAX_ROW_INDEX } from './reference-transform-domain';
+import type { StructuralShift } from './reference-transform-domain';
 
-export const MAX_ROW_INDEX = 1_048_575;
-export const MAX_COLUMN_INDEX = 16_383;
-
-export interface StructuralShift {
-  axis: 'row' | 'column';
-  at: number;
-  count: number;
-  op: 'insert' | 'delete';
-}
+export { MAX_COLUMN_INDEX, MAX_ROW_INDEX } from './reference-transform-domain';
+export type { StructuralShift } from './reference-transform-domain';
 
 export interface StructuralReferenceContext {
   readonly shift: StructuralShift;
@@ -45,38 +40,6 @@ export interface MoveRangeReferenceTransform {
   readonly targetSheetId: string;
   readonly targetSheetName?: string;
   readonly sheetOrder?: readonly { readonly id: string; readonly name: string }[];
-}
-
-/**
- * Transform an inclusive worksheet interval as one reference. Structural
- * deletion removes the deleted coordinates from the interval and joins the
- * surviving sides; it invalidates the reference only when no coordinate
- * survives. This differs from mapping each endpoint independently.
- */
-export function transformReferenceInterval(
-  start: number,
-  end: number,
-  shift: StructuralShift,
-): { readonly start: number; readonly end: number } | undefined {
-  const low = Math.min(start, end);
-  const high = Math.max(start, end);
-  let interval: { readonly start: number; readonly end: number } | undefined;
-  if (shift.op === 'insert') {
-    if (shift.at <= low) interval = { start: low + shift.count, end: high + shift.count };
-    else if (shift.at <= high) interval = { start: low, end: high + shift.count };
-    else interval = { start: low, end: high };
-  } else {
-    const deletedEnd = shift.at + shift.count - 1;
-    if (high < shift.at) interval = { start: low, end: high };
-    else if (low > deletedEnd) interval = { start: low - shift.count, end: high - shift.count };
-    else {
-      const nextStart = low < shift.at ? low : shift.at;
-      const nextEnd = high > deletedEnd ? high - shift.count : shift.at - 1;
-      if (nextStart <= nextEnd) interval = { start: nextStart, end: nextEnd };
-    }
-  }
-  const maximum = shift.axis === 'row' ? MAX_ROW_INDEX : MAX_COLUMN_INDEX;
-  return interval && interval.start >= 0 && interval.end <= maximum ? interval : undefined;
 }
 
 function sameSheet(left: string | undefined, right: string): boolean {
@@ -282,8 +245,8 @@ function transformStructuralRange(
 
   const startCoordinate = context.shift.axis === 'row' ? start.row : start.column;
   const endCoordinate = context.shift.axis === 'row' ? end.row : end.column;
-  const interval = transformReferenceInterval(startCoordinate, endCoordinate, context.shift);
-  if (!interval) return undefined;
+  const interval = ReferenceTransformDomain.mapInterval(startCoordinate, endCoordinate, context.shift);
+  if (interval.kind !== 'mapped') return undefined;
 
   const reversed = startCoordinate > endCoordinate;
   const mappedStartCoordinate = reversed ? interval.end : interval.start;
@@ -335,14 +298,14 @@ export function mapAstStructuralReferences(
     case 'whole-row-reference': {
       if (context.cellShift) return node;
       if (context.shift.axis !== 'row' || !referenceTargetsSheet(node.sheetId, context)) return node;
-      const interval = transformReferenceInterval(node.startRow, node.endRow, context.shift);
-      return interval ? { ...node, startRow: interval.start, endRow: interval.end } : invalid();
+      const interval = ReferenceTransformDomain.mapInterval(node.startRow, node.endRow, context.shift);
+      return interval.kind === 'mapped' ? { ...node, startRow: interval.start, endRow: interval.end } : invalid();
     }
     case 'whole-column-reference': {
       if (context.cellShift) return node;
       if (context.shift.axis !== 'column' || !referenceTargetsSheet(node.sheetId, context)) return node;
-      const interval = transformReferenceInterval(node.startColumn, node.endColumn, context.shift);
-      return interval ? { ...node, startColumn: interval.start, endColumn: interval.end } : invalid();
+      const interval = ReferenceTransformDomain.mapInterval(node.startColumn, node.endColumn, context.shift);
+      return interval.kind === 'mapped' ? { ...node, startColumn: interval.start, endColumn: interval.end } : invalid();
     }
     case 'spill-reference':
       return { ...node, operand: mapAstStructuralReferences(node.operand, context) };
@@ -591,29 +554,17 @@ export function mapAstReferences(node: FormulaAst, mapper: FormulaReferenceMappe
  * changes, so both absolute and relative references move with the structure.
  */
 function remapReference(ref: ParsedCellReference, shift: StructuralShift): ParsedCellReference | undefined {
-  if (shift.op === 'insert') {
-    const before = shift.axis === 'row' ? ref.row : ref.column;
-    if (before >= shift.at) {
-      const coordinate = before + shift.count;
-      const maximum = shift.axis === 'row' ? MAX_ROW_INDEX : MAX_COLUMN_INDEX;
-      if (coordinate > maximum) return undefined;
-      return shift.axis === 'row' ? { ...ref, row: coordinate } : { ...ref, column: coordinate };
-    }
-    return ref;
-  }
   const position = shift.axis === 'row' ? ref.row : ref.column;
-  const end = shift.at + shift.count - 1;
-  if (position > end) {
-    return shift.axis === 'row'
-      ? { ...ref, row: ref.row - shift.count }
-      : { ...ref, column: ref.column - shift.count };
-  }
-  if (position >= shift.at) {
-    // A reference into the deleted region is invalid.  Returning undefined is
-    // handled by mapAstReferences and produces a first-class #REF! node.
-    return undefined;
-  }
-  return ref;
+  const mapped = ReferenceTransformDomain.mapPoint(
+    position,
+    shift.at,
+    shift.count,
+    shift.op === 'insert' ? 1 : -1,
+    shift.axis === 'row' ? MAX_ROW_INDEX : MAX_COLUMN_INDEX,
+  );
+  if (mapped.kind !== 'mapped') return undefined;
+  if (mapped.position === position) return ref;
+  return shift.axis === 'row' ? { ...ref, row: mapped.position } : { ...ref, column: mapped.position };
 }
 
 /** Shift relative references when a formula is copied to another cell. */

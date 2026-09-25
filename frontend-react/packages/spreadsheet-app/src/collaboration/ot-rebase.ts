@@ -1,5 +1,5 @@
-import { mapAxisCoordinate, type RangeRef } from '@react-sheets/core-model';
-import { formatFormula, mapAstStructuralReferences, parseFormula, transformReferenceInterval } from '@react-sheets/formula-engine';
+import type { RangeRef } from '@react-sheets/core-model';
+import { formatFormula, mapAstStructuralReferences, parseFormula, ReferenceTransformDomain, MAX_COLUMN_INDEX, MAX_ROW_INDEX } from '@react-sheets/formula-engine';
 import type { ClassifiedMutation, CollaborationOperationKind } from './operation-types';
 
 export interface StructuralDelta {
@@ -19,9 +19,6 @@ export interface StructuralRebaseContext {
 }
 
 type StructuralAxis = 'row' | 'column';
-const MAX_ROW_INDEX = 1_048_575;
-const MAX_COLUMN_INDEX = 16_383;
-
 function deltaAxis(delta: StructuralDelta): StructuralAxis {
   return delta.kind.endsWith('rows') ? 'row' : 'column';
 }
@@ -37,10 +34,10 @@ function rebaseConflict(message: string): never {
 function shiftPoint(value: number, delta: StructuralDelta): number {
   const maximum = deltaAxis(delta) === 'row' ? MAX_ROW_INDEX : MAX_COLUMN_INDEX;
   if (!Number.isSafeInteger(value) || value < 0 || value > maximum) rebaseConflict('coordinate is outside worksheet bounds');
-  const mapped = mapAxisCoordinate(value, delta.at, delta.count, deltaOperation(delta) === 'insert' ? 1 : -1);
-  if (mapped === null) rebaseConflict(`coordinate ${value} was deleted by the committed operation`);
-  if (!Number.isSafeInteger(mapped) || mapped < 0 || mapped > maximum) rebaseConflict('coordinate exceeds worksheet bounds');
-  return mapped;
+  const mapped = ReferenceTransformDomain.mapPoint(value, delta.at, delta.count, deltaOperation(delta) === 'insert' ? 1 : -1, maximum);
+  if (mapped.kind === 'deleted') rebaseConflict(`coordinate ${value} was deleted by the committed operation`);
+  if (mapped.kind === 'out-of-bounds') rebaseConflict('coordinate exceeds worksheet bounds');
+  return mapped.position;
 }
 
 function shiftRange(range: RangeRef, delta: StructuralDelta): RangeRef {
@@ -56,13 +53,14 @@ function shiftRange(range: RangeRef, delta: StructuralDelta): RangeRef {
   if (deltaOperation(delta) === 'insert' && delta.at > start && delta.at <= end) {
     rebaseConflict('insertion splits the pending range into non-contiguous coordinates');
   }
-  const interval = transformReferenceInterval(range[startKey], range[endKey], {
+  const interval = ReferenceTransformDomain.mapInterval(range[startKey], range[endKey], {
     axis,
     at: delta.at,
     count: delta.count,
     op: deltaOperation(delta),
   });
-  if (!interval) rebaseConflict('the committed deletion removed the entire pending range');
+  if (interval.kind === 'deleted') rebaseConflict('the committed deletion removed the entire pending range');
+  if (interval.kind === 'out-of-bounds') rebaseConflict('range exceeds worksheet bounds after transformation');
   const maximum = axis === 'row' ? MAX_ROW_INDEX : MAX_COLUMN_INDEX;
   if (interval.start < 0 || interval.end > maximum) rebaseConflict('range exceeds worksheet bounds after transformation');
   return { ...range, [startKey]: interval.start, [endKey]: interval.end };

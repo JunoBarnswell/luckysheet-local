@@ -1,6 +1,5 @@
 import type { CellAddress, CellData, RangeRef, Row, Column } from './index';
 import type { CellHyperlink, DrawingObject, StructuralTransformParams, SheetTableModel, SpillRange, ProtectionRule, OutlineGroup, CellShiftSpec } from './domain';
-import { mapAxisCoordinate as shiftIndex } from './axis-coordinate-transform';
 import type { WorkbookTableModel } from './data-model';
 import type { DataSourceManifest } from './data-source';
 import type { PrintDocumentSnapshot } from './workbook-state';
@@ -13,10 +12,19 @@ import {
   mapAstMovedReferences,
   mapAstStructuralReferences,
   parseFormula,
-  transformReferenceInterval,
+  ReferenceTransformDomain,
   type CellShiftReferenceTransform,
   type StructuralShift,
 } from '@react-sheets/formula-engine';
+
+function shiftIndex(position: number, at: number, count: number, direction: 1 | -1, axis: 'row' | 'column'): number | null {
+  const maximum = axis === 'row' ? MAX_ROW_INDEX : MAX_COLUMN_INDEX;
+  const mapped = ReferenceTransformDomain.mapPoint(position, at, count, direction, maximum);
+  if (mapped.kind === 'out-of-bounds') {
+    throw new Error(`UNSUPPORTED_STRUCTURAL_REFERENCE: ${axis} coordinate ${mapped.position} exceeds worksheet bounds`);
+  }
+  return mapped.kind === 'mapped' ? mapped.position : null;
+}
 
 export interface StructuralTransformResult {
   readonly kind: 'structural-transform';
@@ -313,12 +321,12 @@ function applyAxis(
       sheet.reportSheet,
       (cell) => {
         const position = axis === 'row' ? cell.row : cell.column;
-        const mapped = shiftIndex(position, at, count, direction);
+        const mapped = shiftIndex(position, at, count, direction, axis);
         return mapped === null
           ? null
           : axis === 'row' ? { ...cell, row: mapped } : { ...cell, column: mapped };
       },
-      axis === 'row' ? (row) => shiftIndex(row, at, count, direction) : undefined,
+      axis === 'row' ? (row) => shiftIndex(row, at, count, direction, axis) : undefined,
       `${direction === 1 ? 'insert' : 'delete'}-${axis}s`,
     )
     : undefined;
@@ -956,8 +964,11 @@ function shiftPrintDocumentAxis(
   const titleKey = axis === 'row' ? 'repeatRows' : 'repeatColumns';
   const titleSpan = document[titleKey];
   if (titleSpan) {
-    const mapped = transformReferenceInterval(titleSpan.start, titleSpan.end, shift);
-    if (mapped) document[titleKey] = { ...titleSpan, start: mapped.start, end: mapped.end };
+    const mapped = ReferenceTransformDomain.mapInterval(titleSpan.start, titleSpan.end, shift);
+    if (mapped.kind === 'out-of-bounds') {
+      throw new Error(`UNSUPPORTED_STRUCTURAL_REFERENCE: print title ${axis} interval exceeds worksheet bounds`);
+    }
+    if (mapped.kind === 'mapped') document[titleKey] = { ...titleSpan, start: mapped.start, end: mapped.end };
     else delete document[titleKey];
   }
   const breakKey = axis === 'row' ? 'row' : 'column';
@@ -965,7 +976,7 @@ function shiftPrintDocumentAxis(
     const pageBreak = document.pageBreaks[index]!;
     const coordinate = pageBreak[breakKey];
     if (coordinate === undefined) continue;
-    const mapped = shiftIndex(coordinate, at, count, direction);
+    const mapped = shiftIndex(coordinate, at, count, direction, axis);
     if (mapped === null) document.pageBreaks.splice(index, 1);
     else pageBreak[breakKey] = mapped;
   }
@@ -1205,8 +1216,11 @@ function shiftRangeRef(range: RangeRef, axis: 'row' | 'column', at: number, coun
   const shift: StructuralShift = { axis, at, count, op: direction === 1 ? 'insert' : 'delete' };
   const startKey = axis === 'row' ? 'startRow' : 'startColumn';
   const endKey = axis === 'row' ? 'endRow' : 'endColumn';
-  const interval = transformReferenceInterval(range[startKey], range[endKey], shift);
-  if (!interval) return false;
+  const interval = ReferenceTransformDomain.mapInterval(range[startKey], range[endKey], shift);
+  if (interval.kind === 'out-of-bounds') {
+    throw new Error(`UNSUPPORTED_STRUCTURAL_REFERENCE: ${axis} interval exceeds worksheet bounds`);
+  }
+  if (interval.kind === 'deleted') return false;
   range[startKey] = interval.start;
   range[endKey] = interval.end;
   return true;
@@ -1253,7 +1267,7 @@ function shiftRuleRanges(workbook: WorkbookModel, rules: Array<{
   for (const rule of rules) {
     const ownerSheetId = rule.formulaAnchor?.sheetId ?? rule.sheetId;
     if (rule.formulaAnchor?.sheetId === sheetId) {
-      const shifted = shiftIndex(axis === 'row' ? rule.formulaAnchor.row : rule.formulaAnchor.column, at, count, direction);
+      const shifted = shiftIndex(axis === 'row' ? rule.formulaAnchor.row : rule.formulaAnchor.column, at, count, direction, axis);
       if (shifted === null) throw new Error(`Rule ${rule.id} formula anchor is removed by structural mutation`);
       rule.formulaAnchor = axis === 'row'
         ? { ...rule.formulaAnchor, row: shifted }
@@ -1292,7 +1306,7 @@ function shiftFilter(sheet: WorksheetModel, axis: 'row' | 'column', at: number, 
     const next: typeof sheet.autoFilter.columns = {};
     for (const [key, columnDefinition] of Object.entries(sheet.autoFilter.columns)) {
       const column = Number(key);
-      const shifted = shiftIndex(column, at, count, direction);
+      const shifted = shiftIndex(column, at, count, direction, axis);
       if (shifted == null) throw new Error(`Structural mutation removes AutoFilter column ${column}`);
       next[shifted] = { ...columnDefinition, column: shifted };
     }
@@ -1310,7 +1324,7 @@ function shiftTableAutoFilter(table: SheetTableModel, axis: 'row' | 'column', at
   if (axis !== 'column') return;
   const next: typeof autoFilter.columns = {};
   for (const [key, column] of Object.entries(autoFilter.columns)) {
-    const shifted = shiftIndex(Number(key), at, count, direction);
+    const shifted = shiftIndex(Number(key), at, count, direction, axis);
     if (shifted == null) throw new Error(`Structural mutation removes AutoFilter column ${key} for table ${table.id}`);
     next[shifted] = { ...column, column: shifted };
   }
@@ -1347,28 +1361,28 @@ function shiftFreeze(sheet: WorksheetModel, axis: 'row' | 'column', at: number, 
 
 function shiftHiddenAndSizes(sheet: WorksheetModel, axis: 'row' | 'column', at: number, count: number, direction: 1 | -1): void {
   if (axis === 'row') {
-    remapIndexSet(sheet.hiddenRows, at, count, direction);
-    remapSizeMap(sheet.rowHeightsPx, at, count, direction);
+    remapIndexSet(sheet.hiddenRows, at, count, direction, axis);
+    remapSizeMap(sheet.rowHeightsPx, at, count, direction, axis);
     return;
   }
-  remapIndexSet(sheet.hiddenColumns, at, count, direction);
-  remapSizeMap(sheet.columnWidthsPx, at, count, direction);
+  remapIndexSet(sheet.hiddenColumns, at, count, direction, axis);
+  remapSizeMap(sheet.columnWidthsPx, at, count, direction, axis);
 }
 
-function remapIndexSet(set: Set<number>, at: number, count: number, direction: 1 | -1): void {
+function remapIndexSet(set: Set<number>, at: number, count: number, direction: 1 | -1, axis: 'row' | 'column'): void {
   const next = new Set<number>();
   for (const value of set) {
-    const shifted = shiftIndex(value, at, count, direction);
+    const shifted = shiftIndex(value, at, count, direction, axis);
     if (shifted != null) next.add(shifted);
   }
   set.clear();
   for (const value of next) set.add(value);
 }
 
-function remapSizeMap(map: Record<number, number>, at: number, count: number, direction: 1 | -1): void {
+function remapSizeMap(map: Record<number, number>, at: number, count: number, direction: 1 | -1, axis: 'row' | 'column'): void {
   const next: Record<number, number> = {};
   for (const [key, value] of Object.entries(map)) {
-    const shifted = shiftIndex(Number(key), at, count, direction);
+    const shifted = shiftIndex(Number(key), at, count, direction, axis);
     if (shifted != null) next[shifted] = value;
   }
   for (const key of Object.keys(map)) delete map[Number(key)];
@@ -1390,7 +1404,7 @@ function shiftSparklines(
     }
     if (sparkline.sheetId !== targetSheetId) continue;
     const position = axis === 'row' ? sparkline.anchor.row : sparkline.anchor.column;
-    const shifted = shiftIndex(position, at, count, direction);
+    const shifted = shiftIndex(position, at, count, direction, axis);
     if (shifted == null) throw new Error(`Structural mutation removes sparkline anchor ${sparkline.id}`);
     if (axis === 'row') sparkline.anchor.row = shifted;
     else sparkline.anchor.column = shifted;
@@ -1421,7 +1435,7 @@ function shiftPivots(
     }
     if (pivot.target.sheetId === targetSheetId) {
       const position = axis === 'row' ? pivot.target.anchor.row : pivot.target.anchor.column;
-      const shifted = shiftIndex(position, at, count, direction);
+      const shifted = shiftIndex(position, at, count, direction, axis);
       if (shifted == null) throw new Error(`Structural mutation removes pivot target anchor ${pivot.id}`);
       if (axis === 'row') pivot.target.anchor.row = shifted;
       else pivot.target.anchor.column = shifted;
@@ -1465,8 +1479,8 @@ function shiftDrawingPayloadReferences(
       }
     } else if (payload.kind === 'form-control') {
       if ('cellLink' in payload && payload.cellLink?.sheetId === targetSheetId) {
-        const row = axis === 'row' ? shiftIndex(payload.cellLink.row, at, count, direction) : payload.cellLink.row;
-        const column = axis === 'column' ? shiftIndex(payload.cellLink.column, at, count, direction) : payload.cellLink.column;
+        const row = axis === 'row' ? shiftIndex(payload.cellLink.row, at, count, direction, axis) : payload.cellLink.row;
+        const column = axis === 'column' ? shiftIndex(payload.cellLink.column, at, count, direction, axis) : payload.cellLink.column;
         if (row === null || column === null) throw new Error(`Structural mutation removes form-control cell link ${payload.cellLink.sheetId}`);
         payload.cellLink = { ...payload.cellLink, row, column };
       }
@@ -1489,14 +1503,14 @@ function shiftDrawingAnchor(drawing: DrawingObject, axis: 'row' | 'column', at: 
   if (drawing.anchor.kind === 'absolute') return;
   const start = axis === 'row' ? drawing.anchor.row : drawing.anchor.column;
   if (start != null) {
-    const shifted = shiftIndex(start, at, count, direction);
+    const shifted = shiftIndex(start, at, count, direction, axis);
     if (shifted == null) throw new Error(`Drawing ${drawing.id} anchor is removed by structural mutation`);
     if (axis === 'row') drawing.anchor.row = shifted;
     else drawing.anchor.column = shifted;
   }
   const end = axis === 'row' ? drawing.anchor.endRow : drawing.anchor.endColumn;
   if (end != null) {
-    const shifted = shiftIndex(end, at, count, direction);
+    const shifted = shiftIndex(end, at, count, direction, axis);
     if (shifted == null) throw new Error(`Drawing ${drawing.id} end anchor is removed by structural mutation`);
     if (axis === 'row') drawing.anchor.endRow = shifted;
     else drawing.anchor.endColumn = shifted;
@@ -1530,13 +1544,13 @@ function shiftWorkbookTables(
 function shiftReview(sheet: WorksheetModel, axis: 'row' | 'column', at: number, count: number, direction: 1 | -1): void {
   sheet.review.validateRemapCoordinates((row, column) => {
     const position = axis === 'row' ? row : column;
-    const shifted = shiftIndex(position, at, count, direction);
+    const shifted = shiftIndex(position, at, count, direction, axis);
     if (shifted == null) return undefined;
     return { row: axis === 'row' ? shifted : row, column: axis === 'column' ? shifted : column };
   });
   sheet.review.remapCoordinates((row, column) => {
     const position = axis === 'row' ? row : column;
-    const shifted = shiftIndex(position, at, count, direction);
+    const shifted = shiftIndex(position, at, count, direction, axis);
     if (shifted == null) return undefined;
     return { row: axis === 'row' ? shifted : row, column: axis === 'column' ? shifted : column };
   });
@@ -1549,7 +1563,7 @@ function shiftHyperlinks(sheet: WorksheetModel, axis: 'row' | 'column', at: numb
     const row = Number(rowText);
     const column = Number(columnText);
     const position = axis === 'row' ? row : column;
-    const shifted = shiftIndex(position, at, count, direction);
+    const shifted = shiftIndex(position, at, count, direction, axis);
     if (shifted == null) continue;
     const nextRow = axis === 'row' ? shifted : row;
     const nextColumn = axis === 'column' ? shifted : column;
@@ -1575,12 +1589,12 @@ function shiftHyperlinkTargets(
     if (target.kind !== 'sheet' || target.sheetId !== targetSheetId) continue;
     const next = { ...target };
     if (next.row !== undefined) {
-      const row = axis === 'row' ? shiftIndex(next.row, at, count, direction) : next.row;
+      const row = axis === 'row' ? shiftIndex(next.row, at, count, direction, axis) : next.row;
       if (row === null) throw new Error(`Structural mutation removes hyperlink ${hyperlink.id} target`);
       next.row = row;
     }
     if (next.column !== undefined) {
-      const column = axis === 'column' ? shiftIndex(next.column, at, count, direction) : next.column;
+      const column = axis === 'column' ? shiftIndex(next.column, at, count, direction, axis) : next.column;
       if (column === null) throw new Error(`Structural mutation removes hyperlink ${hyperlink.id} target`);
       next.column = column;
     }
@@ -1636,7 +1650,7 @@ function shiftSpills(sheet: WorksheetModel, axis: 'row' | 'column', at: number, 
   for (const spill of sheet.spillRanges) {
     if (!shiftRangeRef(spill.range, axis, at, count, direction)) throw new Error('Structural mutation removes a spill range');
     const position = axis === 'row' ? spill.anchor.row : spill.anchor.column;
-    const shifted = shiftIndex(position, at, count, direction);
+    const shifted = shiftIndex(position, at, count, direction, axis);
     if (shifted == null) throw new Error('Structural mutation removes a spill anchor');
     if (axis === 'row') spill.anchor.row = shifted;
     else spill.anchor.column = shifted;
@@ -1764,7 +1778,7 @@ function preflightFormulaRewrite(
         anchor = { ...anchor, row: moved.row, column: moved.column };
       } else {
         const position = shift.axis === 'row' ? anchor.row : anchor.column;
-        const shifted = shiftIndex(position, shift.at, shift.count, shift.op === 'insert' ? 1 : -1);
+        const shifted = shiftIndex(position, shift.at, shift.count, shift.op === 'insert' ? 1 : -1, shift.axis);
         if (shifted === null) throw new Error(`Defined name ${entry.name} anchor is removed by structural mutation`);
         anchor = shift.axis === 'row'
           ? { ...anchor, row: shifted }
@@ -1782,7 +1796,7 @@ function preflightFormulaRewrite(
       return moved.row === address.row && moved.column === address.column ? address : { ...address, ...moved };
     }
     const position = shift.axis === 'row' ? address.row : address.column;
-    const shifted = shiftIndex(position, shift.at, shift.count, shift.op === 'insert' ? 1 : -1);
+    const shifted = shiftIndex(position, shift.at, shift.count, shift.op === 'insert' ? 1 : -1, shift.axis);
     if (shifted === null) return null;
     if (shifted === position) return address;
     return shift.axis === 'row' ? { ...address, row: shifted } : { ...address, column: shifted };
@@ -2049,7 +2063,7 @@ function applyFormulaRewritePlan(
         coordinate = mapCellShiftCoordinateForOwner(cellShift, change.row, change.column);
       } else {
         const value = shift.axis === 'row' ? change.row : change.column;
-        const shifted = shiftIndex(value, shift.at, shift.count, shift.op === 'insert' ? 1 : -1);
+        const shifted = shiftIndex(value, shift.at, shift.count, shift.op === 'insert' ? 1 : -1, shift.axis);
         coordinate = shifted === null ? null : shift.axis === 'row'
           ? { row: shifted, column: change.column }
           : { row: change.row, column: shifted };
