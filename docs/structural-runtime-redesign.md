@@ -1107,3 +1107,16 @@ PR 上两个 `canonical-build` job 使用相同 head，前端依赖安装与前�
 现仅允许 `preservedOnly dataTable` 且没有可执行公式、仅其来源公式因 table token 改名的窄场景；`range`、bar-code owner 和其他公式字段均不得随之改变。新增 shared-formula 拒绝路径源码，并强化 dataTable range 保持断言。只运行 `git diff --check` 作静态补丁检查；没有运行本地测试、构建、lint 或 UI。修复后的远端 CI 尚待新 head 验证，Structural Editing & Reference Integrity 总体目标仍继续开放。
 
 后续 head `d336b525` 的 CI 将该路径推进到 owner 变换后，暴露原 Java 测试快照缺少两张 worksheet 的 canonical `name`；调用栈落在 `StructuralSnapshotReducer.identity` 的必需字段校验。现只补齐 fixture 名称，没有放宽生产校验；新 head 的远端检查仍待确认。
+
+### 六轮静态复审 — Sheet Table patch 推导的输入不可变性（2026-09-26，head `42d8b0aa`）
+
+后续 CI 已越过 owner identity 并报告原快照在成功的 `applyWithPatch` 后被修改。六轮沿差异内容和读写边界确认一个生产根因：
+
+1. **失败断言**：失败位于原快照等值断言，不是变换结果断言；变更发生在调用者提供的 `snapshot`。
+2. **变化字段**：Surefire expected/actual 首个差异是原始 sheet 新增空 `conditionalFormats` 与 `dataValidations`，证明 patch 推导带来旁路写入。
+3. **对象所有权**：`SnapshotMutationSupport.root` 返回相同 `ObjectNode`，不是副本；传入 before-snapshot 的读取路径必须只读。
+4. **helper 语义**：`SnapshotMutationSupport.array` 在字段缺失时会 `parent.set` 创建数组；它适用于拥有中的 mutation reducer，不适用于 immutable patch preflight。
+5. **调用范围**：table 查找遍历可缺省的 `sheetTables`，formula-rule 扫描遍历可缺省的规则数组，`ruleRanges` 又可能为缺失必需 ranges 写入空数组；三条路径都要避免静默修改 before state。
+6. **修复边界**：使用非变更式 optional-array reader 读取 table/rule 列表；公式规则 `ranges` 缺失时 typed validation fail-close。这样避免为只读计划额外深拷贝整本 workbook，也不生成伪空 owner state。
+
+已把 fixture 的第二张 sheet 设为省略 `sheetTables`，保留首张 sheet 缺省 rule arrays；成功路径的原快照等值断言因此同时覆盖三种可选字段。新增带公式但缺少 ranges 的拒绝且不变更输入的测试源码。只做静态审查和 `git diff --check`，未运行本地测试/构建/lint/UI；新 head 远端检查待运行结果。

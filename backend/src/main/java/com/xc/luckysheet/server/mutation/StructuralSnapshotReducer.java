@@ -193,7 +193,7 @@ final class StructuralSnapshotReducer {
         int matchCount = 0;
         for (JsonNode rawSheet : SnapshotMutationSupport.sheets(root)) {
             ObjectNode sheet = requireObject(rawSheet, "Sheet");
-            for (JsonNode table : SnapshotMutationSupport.array(sheet, "sheetTables")) {
+            for (JsonNode table : readOptionalArray(sheet, "sheetTables")) {
                 if (!tableId.equals(table.path("id").asText())) continue;
                 match = table;
                 matchSheetId = SnapshotMutationSupport.text(sheet, "id");
@@ -215,7 +215,7 @@ final class StructuralSnapshotReducer {
     ) {
         for (String property : List.of("conditionalFormats", "dataValidations")) {
             String ruleKind = "conditionalFormats".equals(property) ? "conditional-format" : "data-validation";
-            for (JsonNode rawRule : SnapshotMutationSupport.array(sheet, property)) {
+            for (JsonNode rawRule : readOptionalArray(sheet, property)) {
                 ObjectNode rule = requireObject(rawRule, "Range rule");
                 Map<String, String> formulas = ruleFormulaFields(rule);
                 if (formulas.isEmpty()) continue;
@@ -520,8 +520,19 @@ final class StructuralSnapshotReducer {
 
     private static List<RangeRef> ruleRanges(ObjectNode root, ObjectNode rule) {
         List<RangeRef> ranges = new ArrayList<>();
-        for (JsonNode raw : SnapshotMutationSupport.array(rule, "ranges")) ranges.add(SnapshotMutationSupport.range(root, raw));
+        JsonNode rawRanges = rule.get("ranges");
+        if (rawRanges == null || !rawRanges.isArray()) {
+            throw ServiceException.validation("Range rule ranges must be an array");
+        }
+        for (JsonNode raw : rawRanges) ranges.add(SnapshotMutationSupport.range(root, raw));
         return List.copyOf(ranges);
+    }
+
+    private static ArrayNode readOptionalArray(ObjectNode owner, String property) {
+        JsonNode value = owner.get(property);
+        if (value == null || value.isNull()) return JsonNodeFactory.instance.arrayNode();
+        if (!value.isArray()) throw ServiceException.validation(property + " must be an array");
+        return (ArrayNode) value;
     }
 
     private static void setFormulaOwnerState(ObjectNode cell, StructuralPatch.FormulaOwnerState state) {

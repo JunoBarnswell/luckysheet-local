@@ -61,7 +61,7 @@ class MutationDescriptorRegistryTest {
                      "showFirstColumn":false,"showLastColumn":false,"showFilterButton":true,"autoExpand":"none",
                      "columns":[{"id":"amount","name":"Amount"},{"id":"other","name":"Other"}]}]},
                   {"id":"sheet-2","name":"Sheet 2","rowCount":20,"columnCount":10,
-                   "cells":{"0":{"0":{"value":null,"formula":"=Sales[Amount]"}}},"sheetTables":[]}
+                   "cells":{"0":{"0":{"value":null,"formula":"=Sales[Amount]"}}}}
                 ]}
                 """);
         JsonNode original = snapshot.deepCopy();
@@ -109,6 +109,17 @@ class MutationDescriptorRegistryTest {
                 () -> registry.require("sheetTable.update", false).applyWithPatch(grouped, rename));
         assertEquals("SERVICE_UNAVAILABLE", groupedError.code());
         assertEquals(groupedOriginal, grouped);
+
+        ObjectNode missingRuleRanges = snapshot.deepCopy();
+        ObjectNode missingRuleSheet = (ObjectNode) missingRuleRanges.path("sheets").get(0);
+        missingRuleSheet.putArray("conditionalFormats").addObject()
+                .put("id", "formula-rule-without-ranges").put("sheetId", "sheet-1")
+                .put("operator", "formula").put("value1", "=Sales[Amount]");
+        JsonNode missingRuleRangesOriginal = missingRuleRanges.deepCopy();
+        ServiceException missingRangesError = assertThrows(ServiceException.class,
+                () -> registry.require("sheetTable.update", false).applyWithPatch(missingRuleRanges, rename));
+        assertEquals("VALIDATION_ERROR", missingRangesError.code());
+        assertEquals(missingRuleRangesOriginal, missingRuleRanges);
     }
 
     @Test
