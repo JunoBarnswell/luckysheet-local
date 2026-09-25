@@ -108,12 +108,14 @@ function readFormulaScalar(engine: FormulaEngine, sheetId: string, row: number, 
 }
 
 function isSpillCell(workbook: WorkbookModel, sheetId: string, row: number, column: number): boolean {
-  return workbook.getSheet(sheetId).spillRanges.some((spill) => (
-    spill.range.startRow <= row
+  return workbook.getSheet(sheetId).spillRanges.some((spill) => {
+    if (spill.anchor.row === row && spill.anchor.column === column) return true;
+    return spill.state === 'ok'
+      && spill.range.startRow <= row
       && row <= spill.range.endRow
       && spill.range.startColumn <= column
-      && column <= spill.range.endColumn
-  ));
+      && column <= spill.range.endColumn;
+  });
 }
 
 function hasArrayResult(engine: FormulaEngine, sheetId: string, row: number, column: number): boolean {

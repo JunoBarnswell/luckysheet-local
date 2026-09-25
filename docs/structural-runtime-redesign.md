@@ -497,7 +497,7 @@ Confirmed additional operation paths: 13 in the follow-up audit (the previous 12
 
 收敛顺序据此固定为：先让结构请求经 typed owner index 进入 side-effect-free `CanonicalStructuralPlanner`，输出包含 cell、metadata、formula、projection、history/inverse 和协作影响的不可变 `StructuralPatch`；再由客户端 runtime、OT、Java commit 和 OOXML capability boundary 消费同一版本化 patch 语义。第一条纵向迁移应覆盖 whole-axis insert/delete（成功、拒绝、inverse、remote replay、server reducer、native save），完成后移除对应旧的 live-mutation 分支，而不是增加并行 wrapper。复杂度目标是 planning/commit 随 affected cells 与 affected owners `O(C+F+M_affected)`，避免每次全 workbook metadata clone `O(M)`；无法证明 opaque owner 不受影响时在计划阶段 fail-close。
 
-以上是源码级复杂度推导，不是 benchmark，也未运行本地测试/构建。此前 PR head `5d378921` 的两项远端 `canonical-build` 均成功。完整 StructuralPatch/owner-index 迁移仍未完成。
+以上是源码级复杂度推导，不是 benchmark，也未运行本地测试/构建。PR head `3752dc28` 的两项远端 `canonical-build` 均成功；本次 What-If 修正尚待推送后的 CI。完整 StructuralPatch/owner-index 迁移仍未完成。
 
 ### Spill 障碍快照与执行语义 — 六轮自审
 
@@ -511,5 +511,6 @@ Confirmed additional operation paths: 13 in the follow-up audit (the previous 12
 8. **失败结果投影：** `spillValueAt` 对 `blocked` Spill 曾只将锚点变为 `#SPILL!`，仍向子格读取者返回被拒绝矩阵中的值；现在 blocked 状态只暴露锚点错误，子格不产生任何值。
 9. **边界溢出：** `spill-error` 曾把越过工作表 extent 的矩阵裁到可见范围并显示首值，导致越界结果部分落地；现越界锚点返回 `#SPILL!`，范围内子格也不读取截断矩阵。
 10. **障碍恢复路径：** runtime/session 曾把 `blocked` 或 `spill-error` 的意向范围当作只读 spill 子格，包含导致 `#SPILL!` 的 authored blocker 本身，用户无法清除障碍；只成功投影的 Spill 子格现在才只读。
+11. **What-If 投影路径：** Goal Seek/Scenario 的 `isSpillCell` 仍以状态无关的矩形包含判断拒绝 blocked Spill 的空闲子格；锚点继续受保护，但只有成功投影的子格现在会被当作 Spill cell。
 
-本轮修复把合并区、Table 区和成功 Spill 范围作为范围障碍传输/查询；Worker 快照同时恢复活动 Spill 投影，静态快照校验拒绝无公式锚点的投影；阻塞或越界 Spill 不再向子格泄漏矩阵值、显示部分数组或锁住障碍单元格。新增了范围阻塞、快照往返、自身投影重算、同批 owner 更新、失败子格不投影、越界拒绝、障碍恢复、工作簿重建和合并/Table 环境回归用例。按用户要求仅静态审查，未执行测试或构建；完整 StructuralPatch/owner-index 跨层迁移仍未完成。
+本轮修复把合并区、Table 区和成功 Spill 范围作为范围障碍传输/查询；Worker 快照同时恢复活动 Spill 投影，静态快照校验拒绝无公式锚点的投影；阻塞或越界 Spill 不再向子格泄漏矩阵值、显示部分数组或锁住障碍单元格，What-If 允许写入未投影的空闲子格。新增了范围阻塞、快照往返、自身投影重算、同批 owner 更新、失败子格不投影、越界拒绝、障碍恢复、What-If blocked-range、工作簿重建和合并/Table 环境回归用例。按用户要求仅静态审查，未执行测试或构建；完整 StructuralPatch/owner-index 跨层迁移仍未完成。
