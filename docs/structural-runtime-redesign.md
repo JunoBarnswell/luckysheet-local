@@ -1184,4 +1184,4 @@ PR 上两个 `canonical-build` job 使用相同 head，前端依赖安装与前�
 
 **修复方案**：快路径改用 Web Crypto SHA-256，codec revision 和 native-document record 升至 v2；仅在 `LocalNativeDocumentStore.load` 的显式迁移边界识别 v1，成功校验后清除旧快路径身份并原子写入 v2，非法旧 artifact 保持拒绝且不改存储。新增 hash 变更与迁移成功/拒绝路径测试源码。静态执行 `git diff --check`；未运行本地测试、构建、lint 或 UI。旧 artifact 在完成一次正常导出之前不会走原字节捷径；若其内容不能安全重写，既有 fail-close 规则仍会拒绝，不声称本次已完成 OOXML opaque-owner 的结构变换。
 
-附加边界检查还发现存储读取用 truthiness 把损坏的 falsy record 当成“无记录”；现在只有 key 缺失（`undefined`）返回空，损坏值 fail-close，回归源码同时覆盖无效 v1 hash 与 falsy record 且确认失败不写入。
+附加边界检查还发现存储读取用 truthiness 把损坏的 falsy record 当成“无记录”；现在只有 key 缺失（`undefined`）返回空，`null`/其它错误值 fail-close，回归源码同时覆盖无效 v1 hash 与 `false`/`null` record 且确认失败不写入。远端首次编译进一步确认 TypeScript 将 `null` 保留为可能值；显式分支已补齐，该处未在本地构建。

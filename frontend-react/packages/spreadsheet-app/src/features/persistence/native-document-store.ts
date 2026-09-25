@@ -66,7 +66,7 @@ export class LocalNativeDocumentStore {
     return this.coordinator.transaction(async (transaction) => {
       const record = transaction.get<unknown>('nativeDocuments', unitId);
       if (record === undefined) return null;
-      if (typeof record !== 'object' || Array.isArray(record)
+      if (record === null || typeof record !== 'object' || Array.isArray(record)
         || !('schema' in record) || record.schema !== 'NativeDocumentRecord'
         || !('unitId' in record) || record.unitId !== unitId
         || !('artifact' in record) || !record.artifact || typeof record.artifact !== 'object' || Array.isArray(record.artifact)

@@ -149,6 +149,12 @@ describe('page-session memory persistence', () => {
     await assert.rejects(persistence.nativeDocuments.load(invalidFalsyUnitId));
     const rejectedFalsy = await persistence.coordinator.read((transaction) => transaction.get<unknown>('nativeDocuments', invalidFalsyUnitId));
     assert.equal(rejectedFalsy, false);
+
+    const invalidNullUnitId = `${snapshot.unitId}-invalid-null`;
+    await persistence.coordinator.transaction((transaction) => transaction.set('nativeDocuments', invalidNullUnitId, null));
+    await assert.rejects(persistence.nativeDocuments.load(invalidNullUnitId));
+    const rejectedNull = await persistence.coordinator.read((transaction) => transaction.get<unknown>('nativeDocuments', invalidNullUnitId));
+    assert.equal(rejectedNull, null);
   });
 
   it('commits operation journal and rejects a stale storage revision', async () => {
