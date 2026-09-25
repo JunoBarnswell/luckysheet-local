@@ -599,3 +599,14 @@ Confirmed additional operation paths: 13 in the follow-up audit (the previous 12
 6. **影响范围篡改：** 服务端和客户端原先只要求 `affectedColumnEnd` 覆盖下界，允许提交者多报列并扩大行元数据迁移范围；现服务端要求与独立 canonical extent 精确相等，客户端在应用前也校验 metadata scope 精确匹配。
 
 已补充前端与 Java 回归用例，覆盖显式/隐式规则锚点、远网格 ReportSheet 绑定、banded range、跨工作表 camera source 及 over-reported extent。按要求未执行本地测试、构建或 UI 验收；`git diff --check` 通过，仍需 PR CI 验证。本轮没有统一 rows.permuted 与 axis/cell-shift/move 的服务端公式 owner patch 协议，其他结构入口和 OOXML 仍需后续静态审查；本目标未完成。
+
+### 六轮静态复审 — rows.permuted 远端门禁回归（2026-09-25）
+
+1. **失败真实性：** 核对 CI head 为 `8cc7c628`，失败发生在两项后端回归断言，不是 Actions 弃用告警或类型编译失败；一项暴露置换后 camera source range 被错误拒绝，另一项暴露显式 CF anchor 被映回旧行。
+2. **映射方向：** `validatePermutation` 返回 target→source，而区间映射消费 source→target。preflight 误收前者；对 `[2,0,1]` 会把源行 0、1映到 2、0并产生两个区间。现从同一 `targetRowsBySource` 构造点映射后复用于 preflight 与 apply。
+3. **区间闭环：** 对照 camera 跨 sheet owner 的静态用例，确认 apply 与 preflight 必须使用完全相同的单区间精确映射；否则可在 prepare 成功后 apply 才失败。已让校验和变换共享同一方向的行映射。
+4. **锚点单一所有权：** 跟踪 CF/DV 从 `remapPermutationRuleFormulaOwners` 到 `SheetRuleLifecycle.transformStructuralFields`，确认显式锚点被连续映射两次；反转排序会偶然掩盖该缺陷。现在锚点与公式偏移在规则置换路径中一次性处理，生命周期阶段仅处理 DV range list source。
+5. **跨端规则语义：** 对照前端 `remapRuleForPermutation` 与 Java 规则 owner 逻辑，确认两端都会为字面值规则无条件生成 `formulaAnchor`；现按各自 CF/DV 公式字段选择器判定真实公式 owner，只有公式规则才物化隐式锚点。
+6. **失败原子性与覆盖：** 再核对 reducer 先在 descriptor 的 snapshot 深拷贝上完成 exact-range preflight，失败不写入持久状态；前后端回归用例覆盖非对称置换、显式/隐式公式 owner、camera range 和字面规则。未运行本地测试/构建；由推送后的 PR CI 负责验证。
+
+该轮只修复上述静态追踪和 CI 明确证实的问题；没有把未验证猜测计入问题数。若远端门禁继续暴露实际失败，将在同一 PR 上继续修复；本目标仍未完成。

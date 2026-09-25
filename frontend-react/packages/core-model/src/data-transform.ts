@@ -255,20 +255,33 @@ function offsetPermutationFormulaFields(owner: PermutationFormulaFields, rowDelt
   if (owner.listSource?.kind === 'formula') owner.listSource.formula = remap(owner.listSource.formula);
 }
 
-function remapRuleForPermutation<T extends ConditionalFormatRule | DataValidationRule>(rule: T, transform: RuleTransform, plan: RowPermutationPlan, changesRows: boolean): T {
+function hasPermutationFormulaOwner(owner: PermutationFormulaFields, isDataValidation: boolean): boolean {
+  const formulaOperator = owner.operator === 'formula';
+  const customValidation = isDataValidation && owner.type === 'custom';
+  return (typeof owner.value1 === 'string' && (formulaOperator || owner.value1.trim().startsWith('=')))
+    || (typeof owner.value2 === 'string' && owner.value2.trim().startsWith('='))
+    || (typeof owner.formula1 === 'string' && owner.formula1.length > 0
+      && (owner.formula1.trim().startsWith('=') || formulaOperator || customValidation))
+    || (typeof owner.formula2 === 'string' && owner.formula2.length > 0
+      && (owner.formula2.trim().startsWith('=') || customValidation))
+    || (isDataValidation && owner.listSource?.kind === 'formula');
+}
+
+function remapRuleForPermutation<T extends ConditionalFormatRule | DataValidationRule>(rule: T, transform: RuleTransform, plan: RowPermutationPlan, changesRows: boolean, isDataValidation: boolean): T {
   const next = sheetRuleRegistry.transform(rule, transform);
   const firstRange = rule.ranges[0];
   if (!firstRange && !rule.formulaAnchor) throw new Error(`Row permutation rule ${rule.id} has no formula anchor`);
   const oldAnchor = rule.formulaAnchor ?? { sheetId: firstRange!.sheetId, row: firstRange!.startRow, column: firstRange!.startColumn };
   const mappedAnchor = transform.mapAddress(oldAnchor);
   const rowDelta = mappedAnchor.row - oldAnchor.row;
-  if (rule.formulaAnchor === undefined && changesRows && oldAnchor.sheetId === plan.metadataScope.sheetId
+  const hasFormulaOwner = hasPermutationFormulaOwner(rule, isDataValidation);
+  if (rule.formulaAnchor === undefined && hasFormulaOwner && changesRows && oldAnchor.sheetId === plan.metadataScope.sheetId
     && inRange(plan.metadataScope, oldAnchor.row, oldAnchor.column)) {
     next.formulaAnchor = mappedAnchor;
   }
   if (rowDelta !== 0) {
-    next.formulaAnchor = mappedAnchor;
-    offsetPermutationFormulaFields(next, rowDelta, `rule ${rule.id}`);
+    if (rule.formulaAnchor !== undefined || hasFormulaOwner) next.formulaAnchor = mappedAnchor;
+    if (hasFormulaOwner) offsetPermutationFormulaFields(next, rowDelta, `rule ${rule.id}`);
   }
   return next;
 }
@@ -416,8 +429,8 @@ export function validatePermutationMetadata(workbook: WorkbookModel, plan: RowPe
   for (const sparkline of sheet.sparklines) remapSingleRange(`sparkline ${sparkline.id}`, sparkline.sourceRange, plan);
   for (const spill of sheet.spillRanges) remapSpill(spill, plan);
   const ruleTransform = ruleTransformForPlan(plan);
-  const conditionalFormats = sheet.conditionalFormats.map((rule) => remapRuleForPermutation(rule, ruleTransform, plan, changesRows));
-  const dataValidations = sheet.dataValidations.map((rule) => remapRuleForPermutation(rule, ruleTransform, plan, changesRows));
+  const conditionalFormats = sheet.conditionalFormats.map((rule) => remapRuleForPermutation(rule, ruleTransform, plan, changesRows, false));
+  const dataValidations = sheet.dataValidations.map((rule) => remapRuleForPermutation(rule, ruleTransform, plan, changesRows, true));
   if (sheet.autoFilter) remapSingleRange('auto filter', sheet.autoFilter.range, plan);
   for (const pivot of sheet.pivots) {
     if (pivot.source.kind === 'worksheet-range') remapSingleRange(`pivot ${pivot.id} source`, pivot.source.range, plan);

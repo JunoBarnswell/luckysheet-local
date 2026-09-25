@@ -770,7 +770,8 @@ class MutationDescriptorRegistryTest {
                   {"id":"sheet-1","name":"Data","rowCount":4,"columnCount":1,"cells":{},"merges":[],
                    "conditionalFormats":[
                      {"id":"cf-implicit","sheetId":"sheet-1","ranges":[{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":2,"endColumn":2}],"type":"highlight","operator":"formula","value1":"=A1>0"},
-                     {"id":"cf-explicit","sheetId":"sheet-1","ranges":[{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":3,"endColumn":3}],"formulaAnchor":{"sheetId":"sheet-1","row":0,"column":3},"type":"highlight","operator":"formula","value1":"=A1>0"}],
+                     {"id":"cf-explicit","sheetId":"sheet-1","ranges":[{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":3,"endColumn":3}],"formulaAnchor":{"sheetId":"sheet-1","row":0,"column":3},"type":"highlight","operator":"formula","value1":"=A1>0"},
+                     {"id":"cf-literal","sheetId":"sheet-1","ranges":[{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":4,"endColumn":4}],"type":"highlight","operator":"greaterThan","value1":"0"}],
                    "dataValidations":[],"pivots":[],"sparklines":[],"drawings":[],"drawingPayloads":{},"sheetTables":[],
                    "spillRanges":[],"protectionRules":[],"bandedRule":{"range":{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0},"firstColor":"#ffffff","secondColor":"#eeeeee"},
                    "reportSheet":{"templateSheetId":"sheet-1","bindings":[{"cell":{"row":0,"column":5},"expression":"field-id","kind":"field"}],"pagination":{"enabled":true,"repeatHeaderRows":[0]},"renderMode":"preview","layout":{"orientation":"portrait","marginTopPx":24,"marginRightPx":24,"marginBottomPx":24,"marginLeftPx":24},"dataEntry":[]}},
@@ -795,6 +796,7 @@ class MutationDescriptorRegistryTest {
         assertEquals("=A2>0", dataSheet.path("conditionalFormats").get(0).path("value1").asText());
         assertEquals(1, dataSheet.path("conditionalFormats").get(1).path("formulaAnchor").path("row").asInt());
         assertEquals("=A2>0", dataSheet.path("conditionalFormats").get(1).path("value1").asText());
+        assertTrue(dataSheet.path("conditionalFormats").get(2).path("formulaAnchor").isMissingNode());
         assertEquals(1, dataSheet.path("bandedRule").path("range").path("startRow").asInt());
         assertEquals(1, dataSheet.path("reportSheet").path("bindings").get(0).path("cell").path("row").asInt());
         assertEquals(5, dataSheet.path("reportSheet").path("bindings").get(0).path("cell").path("column").asInt());

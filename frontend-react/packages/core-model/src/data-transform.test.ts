@@ -137,6 +137,14 @@ describe('canonical row permutation metadata plan', () => {
       operator: 'formula',
       value1: '=A1>0',
     });
+    sheet.conditionalFormats.push({
+      id: 'cf-literal',
+      sheetId: sheet.id,
+      ranges: [range(sheet.id, 0, 0, 6, 6)],
+      type: 'highlight',
+      operator: 'greaterThan',
+      value1: '0',
+    });
     sheet.dataValidations.push({
       id: 'dv-anchored',
       sheetId: sheet.id,
@@ -189,6 +197,7 @@ describe('canonical row permutation metadata plan', () => {
     assert.equal(sheet.conditionalFormats[0]?.value1, '=A2>0');
     assert.equal(sheet.conditionalFormats[1]?.formulaAnchor?.row, 1);
     assert.equal(sheet.conditionalFormats[1]?.value1, '=A2>0');
+    assert.equal(sheet.conditionalFormats[2]?.formulaAnchor, undefined);
     assert.equal(sheet.dataValidations[0]?.formulaAnchor?.row, 1);
     assert.equal(sheet.dataValidations[0]?.formula1, '=A2>0');
     assert.equal(sheet.dataValidations[0]?.formula2, '=B2');

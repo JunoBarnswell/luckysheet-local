@@ -11,7 +11,6 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 import java.util.function.Function;
-import java.util.function.IntUnaryOperator;
 
 /** Canonical server-side lifecycle for worksheet conditional-format and validation ranges. */
 final class SheetRuleLifecycle {
@@ -165,14 +164,10 @@ final class SheetRuleLifecycle {
         return row >= startRow && row <= endRow ? Math.max(end, column) : end;
     }
 
-    static void transformStructuralFields(ObjectNode root, ObjectNode sheet, String sheetId, RangeRef scope,
-                                          Function<RangeRef, List<RangeRef>> mapRange, IntUnaryOperator mapRow) {
-        for (JsonNode raw : SnapshotMutationSupport.array(sheet, "conditionalFormats")) {
-            transformFormulaAnchor(root, requireRule(raw, "Conditional format"), sheetId, scope, mapRow);
-        }
+    static void transformValidationListSources(ObjectNode root, ObjectNode sheet,
+                                               Function<RangeRef, List<RangeRef>> mapRange) {
         for (JsonNode raw : SnapshotMutationSupport.array(sheet, "dataValidations")) {
             ObjectNode rule = requireRule(raw, "Data validation");
-            transformFormulaAnchor(root, rule, sheetId, scope, mapRow);
             JsonNode listSource = rule.get("listSource");
             if (listSource == null || listSource.isNull() || !listSource.isObject() || !"range".equals(listSource.path("kind").asText())) continue;
             RangeRef source = SnapshotMutationSupport.range(root, listSource.get("range"));
@@ -200,19 +195,6 @@ final class SheetRuleLifecycle {
     private static ObjectNode requireRule(JsonNode raw, String label) {
         if (raw == null || !raw.isObject()) throw ServiceException.validation(label + " must be an object");
         return (ObjectNode) raw;
-    }
-
-    private static void transformFormulaAnchor(ObjectNode root, ObjectNode rule, String sheetId, RangeRef scope, IntUnaryOperator mapRow) {
-        JsonNode raw = rule.get("formulaAnchor");
-        if (raw == null || raw.isNull()) return;
-        if (!raw.isObject() || !sheetId.equals(raw.path("sheetId").asText())
-                || !raw.path("row").canConvertToInt() || !raw.path("column").canConvertToInt()
-                || raw.path("row").asInt(-1) < 0 || raw.path("column").asInt(-1) < 0) {
-            throw ServiceException.validation("Sheet rule formula anchor is invalid");
-        }
-        if (contains(scope, raw.path("row").asInt(), raw.path("column").asInt())) {
-            ((ObjectNode) raw).put("row", mapRow.applyAsInt(raw.path("row").asInt()));
-        }
     }
 
     private static void validateFormulaAnchor(ObjectNode root, ObjectNode rule, String sheetId, RangeRef scope) {
@@ -273,8 +255,4 @@ final class SheetRuleLifecycle {
         return node;
     }
 
-    private static boolean contains(RangeRef range, int row, int column) {
-        return range.startRow() <= row && row <= range.endRow()
-                && range.startColumn() <= column && column <= range.endColumn();
-    }
 }
