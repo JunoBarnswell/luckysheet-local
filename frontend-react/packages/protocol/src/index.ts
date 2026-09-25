@@ -6,6 +6,7 @@ import type {
   PivotPresentation,
   RangeRef,
   StructuralFormulaOwnerDelta,
+  StructuralDefinedNameOwnerDelta,
   SheetDataRegion,
   TableScalar,
   WorkbookSnapshot,
@@ -79,9 +80,10 @@ export interface OperationIntent {
 
 /** Server-derived reference-owner effects for one committed structural mutation. */
 export interface StructuralPatch {
-  version: 1;
+  version: 2;
   mutationId: string;
   formulaOwnerDeltas: StructuralFormulaOwnerDelta[];
+  definedNameOwnerDeltas: StructuralDefinedNameOwnerDelta[];
 }
 
 export interface OperationEnvelope {
@@ -1000,8 +1002,9 @@ export function validateDataSourceMutationParams(
 
 export function validateStructuralPatch(value: unknown, mutationId: string): StructuralPatch {
   const patch = requireRecord(value, 'Committed structural patch');
-  validateExactKeys(patch, ['version', 'mutationId', 'formulaOwnerDeltas'], 'Committed structural patch');
-  if (patch.version !== 1 || patch.mutationId !== mutationId || !Array.isArray(patch.formulaOwnerDeltas)) {
+  validateExactKeys(patch, ['version', 'mutationId', 'formulaOwnerDeltas', 'definedNameOwnerDeltas'], 'Committed structural patch');
+  if (patch.version !== 2 || patch.mutationId !== mutationId || !Array.isArray(patch.formulaOwnerDeltas)
+    || !Array.isArray(patch.definedNameOwnerDeltas)) {
     throw new Error('Committed structural patch header is invalid');
   }
   if (!['rows.inserted', 'rows.deleted', 'columns.inserted', 'columns.deleted', 'cells.inserted', 'cells.deleted', 'cells.inserted.restore', 'cells.deleted.restore', 'rows.permuted', 'range.move'].includes(mutationId)) {
@@ -1127,7 +1130,61 @@ export function validateStructuralPatch(value: unknown, mutationId: string): Str
     if (ownerKeys.has(key)) throw new Error('Committed structural patch contains duplicate formula owner deltas');
     ownerKeys.add(key);
   }
-  return { version: 1, mutationId, formulaOwnerDeltas };
+  const definedNameOwnerDeltas = patch.definedNameOwnerDeltas.map((raw, index): StructuralDefinedNameOwnerDelta => {
+    const label = `Committed structural patch defined-name delta ${index}`;
+    const delta = requireRecord(raw, label);
+    validateExactKeys(delta, ['owner', 'before', 'after'], label);
+    const identity = (rawIdentity: unknown, identityLabel: string) => {
+      const item = requireRecord(rawIdentity, identityLabel);
+      validateExactKeys(item, ['scope', 'name', 'sheetId'], identityLabel);
+      if ((item.scope !== 'workbook' && item.scope !== 'sheet')
+        || typeof item.name !== 'string' || item.name.trim() !== item.name || item.name.length === 0 || item.name.length > 255
+        || !/^[A-Za-z_\\][A-Za-z0-9_.]*$/.test(item.name)
+        || (item.scope === 'sheet'
+          ? !isNonEmptyString(item.sheetId) || item.sheetId.trim() !== item.sheetId
+          : item.sheetId !== undefined)) {
+        throw new Error(`${identityLabel} is invalid`);
+      }
+      return {
+        scope: item.scope as 'workbook' | 'sheet',
+        name: item.name,
+        ...(item.scope === 'sheet' ? { sheetId: item.sheetId as string } : {}),
+      };
+    };
+    const owner = identity(delta.owner, `${label}.owner`);
+    const definedNameState = (rawState: unknown, stateLabel: string) => {
+      const item = requireRecord(rawState, stateLabel);
+      validateExactKeys(item, ['name', 'formula', 'scope', 'sheetId', 'anchor'], stateLabel);
+      const stateIdentity = identity({ scope: item.scope, name: item.name, ...(item.sheetId === undefined ? {} : { sheetId: item.sheetId }) }, stateLabel);
+      if (typeof item.formula !== 'string' || item.formula.trim() !== item.formula
+        || item.formula.length === 0 || item.formula.length > 32_767) {
+        throw new Error(`${stateLabel}.formula is invalid`);
+      }
+      const anchor = item.anchor === undefined ? undefined : address(item.anchor, `${stateLabel}.anchor`);
+      return {
+        name: stateIdentity.name,
+        formula: item.formula,
+        scope: stateIdentity.scope,
+        ...(stateIdentity.sheetId ? { sheetId: stateIdentity.sheetId } : {}),
+        ...(anchor ? { anchor } : {}),
+      };
+    };
+    const before = definedNameState(delta.before, `${label}.before`);
+    const after = definedNameState(delta.after, `${label}.after`);
+    if (owner.scope !== before.scope || owner.scope !== after.scope || owner.name !== before.name || owner.name !== after.name
+      || owner.sheetId !== before.sheetId || owner.sheetId !== after.sheetId
+      || before.formula === after.formula && JSON.stringify(before.anchor ?? null) === JSON.stringify(after.anchor ?? null)) {
+      throw new Error(`${label} owner identity or before/after state is invalid`);
+    }
+    return { owner, before, after };
+  });
+  const definedNameOwnerKeys = new Set<string>();
+  for (const delta of definedNameOwnerDeltas) {
+    const key = JSON.stringify([delta.owner.scope, delta.owner.scope === 'sheet' ? delta.owner.sheetId : null, delta.owner.name.toUpperCase()]);
+    if (definedNameOwnerKeys.has(key)) throw new Error('Committed structural patch contains duplicate defined-name owner deltas');
+    definedNameOwnerKeys.add(key);
+  }
+  return { version: 2, mutationId, formulaOwnerDeltas, definedNameOwnerDeltas };
 }
 
 /** Validate the shared dashboard state before it enters a recovery journal. */

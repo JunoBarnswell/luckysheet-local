@@ -190,14 +190,17 @@ export class CollaborationSession {
     }
     if (this.committedOperationIds.has(operation.operationId)) {
       this.baseRevision = Math.max(this.baseRevision, operation.revision);
-      this.runtime.applyCommittedStructuralFormulaPatches(operation.operationId, operation.mutations.map((mutation) => ({
+      this.runtime.applyCommittedStructuralPatches(operation.operationId, operation.mutations.map((mutation) => ({
         id: mutation.id,
         unitId: operation.unitId,
         sheetId: mutation.sheetId,
         params: mutation.params,
         affectedRanges: [...mutation.affectedRanges],
         ...(mutation.structuralImpactRanges?.length ? { structuralImpactRanges: [...mutation.structuralImpactRanges] } : {}),
-        ...(mutation.structuralPatch ? { structuralFormulaOwnerDeltas: structuredClone(mutation.structuralPatch.formulaOwnerDeltas) } : {}),
+        ...(mutation.structuralPatch ? {
+          structuralFormulaOwnerDeltas: structuredClone(mutation.structuralPatch.formulaOwnerDeltas),
+          structuralDefinedNameOwnerDeltas: structuredClone(mutation.structuralPatch.definedNameOwnerDeltas),
+        } : {}),
       })), operation.revision);
       return;
     }
@@ -210,7 +213,10 @@ export class CollaborationSession {
       params: mutation.params,
       affectedRanges: [...mutation.affectedRanges],
       ...(mutation.structuralImpactRanges?.length ? { structuralImpactRanges: [...mutation.structuralImpactRanges] } : {}),
-      ...(mutation.structuralPatch ? { structuralFormulaOwnerDeltas: structuredClone(mutation.structuralPatch.formulaOwnerDeltas) } : {}),
+      ...(mutation.structuralPatch ? {
+        structuralFormulaOwnerDeltas: structuredClone(mutation.structuralPatch.formulaOwnerDeltas),
+        structuralDefinedNameOwnerDeltas: structuredClone(mutation.structuralPatch.definedNameOwnerDeltas),
+      } : {}),
     })), { operationId: operation.operationId, baseRevision: operation.baseRevision, revision: operation.revision });
     this.committedOperationIds.add(operation.operationId);
     for (const classified of incoming) {

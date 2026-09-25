@@ -1068,6 +1068,7 @@ export class FormulaEngine {
     const identities = new Set<string>();
     const referenceUpdates: DefinedNameReferenceIndexUpdate[] = [];
     const changedNames = new Set<string>();
+    const pending: FormulaDefinedNameModelDelta[] = [];
     for (const delta of normalized) {
       const identity = this.definedNameIdentity(delta.before);
       const declaredIdentity = this.definedNameIdentity({
@@ -1086,18 +1087,25 @@ export class FormulaEngine {
       }
       identities.add(identity);
       const current = this.definedNamesByIdentity.get(identity);
-      if (!current || JSON.stringify(current) !== JSON.stringify(delta.before)) {
+      if (!current) {
         throw new Error(`STRUCTURAL_DEFINED_NAME_DELTA_MISMATCH: canonical owner changed before ${identity}`);
       }
-      if (JSON.stringify(delta.before) === JSON.stringify(delta.after)) continue;
+      const currentJson = JSON.stringify(current);
+      const beforeJson = JSON.stringify(delta.before);
+      const afterJson = JSON.stringify(delta.after);
+      if (currentJson === afterJson || beforeJson === afterJson) continue;
+      if (currentJson !== beforeJson) {
+        throw new Error(`STRUCTURAL_DEFINED_NAME_DELTA_MISMATCH: canonical owner changed before ${identity}`);
+      }
+      pending.push(delta);
       referenceUpdates.push(definedNameReferenceIndexUpdate(delta.after));
       changedNames.add(delta.after.name.trim().toUpperCase());
     }
     if (changedNames.size === 0) return { recalculated: [], results: new Map() };
     this.dependencies.updateDefinedNameReferences(referenceUpdates);
-    for (const delta of normalized) {
+    for (const delta of pending) {
       const identity = this.definedNameIdentity(delta.after);
-      if (JSON.stringify(delta.before) !== JSON.stringify(delta.after)) this.definedNamesByIdentity.set(identity, delta.after);
+      this.definedNamesByIdentity.set(identity, delta.after);
     }
     this.calculationContextGeneration += 1;
     this.markCalculationStateChanged();

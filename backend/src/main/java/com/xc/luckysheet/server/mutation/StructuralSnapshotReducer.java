@@ -14,6 +14,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.BiFunction;
@@ -47,11 +48,13 @@ final class StructuralSnapshotReducer {
     private StructuralSnapshotReducer() {
     }
 
-    static JsonNode applyFormulaOwnerPatch(JsonNode snapshot, StructuralPatch patch) {
-        return applyFormulaOwnerPatchOnOwnedSnapshot(snapshot.deepCopy(), patch);
+    private record DefinedNameOwnerKey(String scope, String normalizedName, String sheetId) { }
+
+    static JsonNode applyStructuralOwnerPatch(JsonNode snapshot, StructuralPatch patch) {
+        return applyStructuralOwnerPatchOnOwnedSnapshot(snapshot.deepCopy(), patch);
     }
 
-    static JsonNode applyFormulaOwnerPatchOnOwnedSnapshot(JsonNode ownedSnapshot, StructuralPatch patch) {
+    static JsonNode applyStructuralOwnerPatchOnOwnedSnapshot(JsonNode ownedSnapshot, StructuralPatch patch) {
         ObjectNode root = SnapshotMutationSupport.root(ownedSnapshot);
         for (StructuralPatch.FormulaOwnerDelta delta : patch.formulaOwnerDeltas()) {
             if ("formula-rule".equals(delta.kind())) {
@@ -81,7 +84,146 @@ final class StructuralSnapshotReducer {
             }
             setFormulaOwnerState(cell, delta.after());
         }
+        applyDefinedNameOwnerDeltas(root, patch.definedNameOwnerDeltas());
         return root;
+    }
+
+    static List<StructuralPatch.DefinedNameOwnerDelta> definedNameOwnerDeltas(JsonNode beforeModels, JsonNode afterModels) {
+        Map<DefinedNameOwnerKey, StructuralPatch.DefinedNameState> beforeStates = definedNameStates(beforeModels);
+        Map<DefinedNameOwnerKey, StructuralPatch.DefinedNameState> afterStates = definedNameStates(afterModels);
+        if (!beforeStates.keySet().equals(afterStates.keySet())) {
+            throw ServiceException.unavailable("STRUCTURAL_PATCH_INVARIANT: structural mutation changed defined-name identity membership");
+        }
+        List<StructuralPatch.DefinedNameOwnerDelta> deltas = new ArrayList<>();
+        for (Map.Entry<DefinedNameOwnerKey, StructuralPatch.DefinedNameState> entry : beforeStates.entrySet()) {
+            StructuralPatch.DefinedNameState beforeState = entry.getValue();
+            StructuralPatch.DefinedNameState afterState = afterStates.get(entry.getKey());
+            if (beforeState.equals(afterState)) continue;
+            StructuralPatch.DefinedNameOwnerIdentity owner = new StructuralPatch.DefinedNameOwnerIdentity(
+                    beforeState.scope(), beforeState.name(), beforeState.sheetId());
+            deltas.add(new StructuralPatch.DefinedNameOwnerDelta(owner, beforeState, afterState));
+        }
+        return List.copyOf(deltas);
+    }
+
+    private static Map<DefinedNameOwnerKey, StructuralPatch.DefinedNameState> definedNameStates(JsonNode rawModels) {
+        Map<DefinedNameOwnerKey, StructuralPatch.DefinedNameState> states = new LinkedHashMap<>();
+        if (rawModels == null || rawModels.isNull()) return states;
+        if (!rawModels.isArray()) throw ServiceException.validation("definedNameModels must be an array");
+        for (JsonNode raw : rawModels) {
+            if (!raw.isObject()) throw ServiceException.validation("Defined name model must be an object");
+            String name = SnapshotMutationSupport.text(raw, "name");
+            String formula = SnapshotMutationSupport.text(raw, "formula");
+            String scope = SnapshotMutationSupport.text(raw, "scope");
+            JsonNode sheetIdNode = raw.get("sheetId");
+            String sheetId = sheetIdNode == null || sheetIdNode.isNull() ? null : SnapshotMutationSupport.text(raw, "sheetId");
+            JsonNode rawAnchor = raw.get("anchor");
+            StructuralPatch.CellAddress anchor = null;
+            if (rawAnchor != null && !rawAnchor.isNull()) {
+                if (!rawAnchor.isObject()) throw ServiceException.validation("Defined-name anchor must be an object");
+                anchor = new StructuralPatch.CellAddress(
+                        SnapshotMutationSupport.text(rawAnchor, "sheetId"),
+                        integer(rawAnchor.get("row"), "Defined-name anchor row"),
+                        integer(rawAnchor.get("column"), "Defined-name anchor column"));
+            }
+            StructuralPatch.DefinedNameState state = new StructuralPatch.DefinedNameState(name, formula, scope, sheetId, anchor);
+            DefinedNameOwnerKey key = definedNameOwnerKey(scope, name, sheetId);
+            if (states.putIfAbsent(key, state) != null) {
+                throw ServiceException.validation("Defined-name owner identity is duplicated during structural transform");
+            }
+        }
+        return states;
+    }
+
+    private static void applyDefinedNameOwnerDeltas(
+            ObjectNode root,
+            List<StructuralPatch.DefinedNameOwnerDelta> deltas
+    ) {
+        if (deltas.isEmpty()) return;
+        JsonNode rawModels = root.get("definedNameModels");
+        if (rawModels == null || !rawModels.isArray()) {
+            throw ServiceException.conflict("STRUCTURAL_PATCH_PRECONDITION: defined-name models are missing");
+        }
+        Map<DefinedNameOwnerKey, ObjectNode> owners = new LinkedHashMap<>();
+        for (JsonNode raw : rawModels) {
+            if (!raw.isObject()) throw ServiceException.validation("Defined name model must be an object");
+            ObjectNode model = (ObjectNode) raw;
+            String name = SnapshotMutationSupport.text(model, "name");
+            String scope = SnapshotMutationSupport.text(model, "scope");
+            JsonNode sheetIdNode = model.get("sheetId");
+            String sheetId = sheetIdNode == null || sheetIdNode.isNull() ? null : SnapshotMutationSupport.text(model, "sheetId");
+            DefinedNameOwnerKey key = definedNameOwnerKey(scope, name, sheetId);
+            if (owners.putIfAbsent(key, model) != null) {
+                throw ServiceException.conflict("STRUCTURAL_PATCH_PRECONDITION: defined-name owner identity is ambiguous");
+            }
+        }
+        JsonNode rawProjection = root.get("definedNames");
+        ObjectNode projection = rawProjection == null || rawProjection.isNull() ? null
+                : rawProjection.isObject() ? (ObjectNode) rawProjection
+                : throwInvalidDefinedNamesProjection();
+        for (StructuralPatch.DefinedNameOwnerDelta delta : deltas) {
+            StructuralPatch.DefinedNameOwnerIdentity owner = delta.owner();
+            ObjectNode model = owners.get(definedNameOwnerKey(owner.scope(), owner.name(), owner.sheetId()));
+            if (model == null) {
+                throw ServiceException.conflict("STRUCTURAL_PATCH_PRECONDITION: defined-name owner is missing: " + owner.name());
+            }
+            StructuralPatch.DefinedNameState current = definedNameState(model);
+            if (current.equals(delta.after())) {
+                if (projection != null && "workbook".equals(owner.scope())
+                        && !projectionMatches(projection, owner.name(), delta.after().formula())) {
+                    throw ServiceException.conflict("STRUCTURAL_PATCH_PRECONDITION: defined-name projection changed: " + owner.name());
+                }
+                continue;
+            }
+            if (!current.equals(delta.before())) {
+                throw ServiceException.conflict("STRUCTURAL_PATCH_PRECONDITION: defined-name owner changed: " + owner.name());
+            }
+            if (projection != null && "workbook".equals(owner.scope())
+                    && !projectionMatches(projection, owner.name(), delta.before().formula())) {
+                throw ServiceException.conflict("STRUCTURAL_PATCH_PRECONDITION: defined-name projection changed: " + owner.name());
+            }
+            model.put("formula", delta.after().formula());
+            if (delta.after().anchor() == null) model.remove("anchor");
+            else model.set("anchor", anchorNode(delta.after().anchor()));
+            if (projection != null && "workbook".equals(owner.scope())) {
+                projection.put(owner.name(), delta.after().formula());
+            }
+        }
+    }
+
+    private static ObjectNode throwInvalidDefinedNamesProjection() {
+        throw ServiceException.validation("definedNames must be an object");
+    }
+
+    private static boolean projectionMatches(ObjectNode projection, String name, String formula) {
+        JsonNode projected = projection.get(name);
+        return projected != null && projected.isTextual() && formula.equals(projected.asText());
+    }
+
+    private static StructuralPatch.DefinedNameState definedNameState(ObjectNode model) {
+        String name = SnapshotMutationSupport.text(model, "name");
+        String formula = SnapshotMutationSupport.text(model, "formula");
+        String scope = SnapshotMutationSupport.text(model, "scope");
+        JsonNode sheetIdNode = model.get("sheetId");
+        String sheetId = sheetIdNode == null || sheetIdNode.isNull() ? null : SnapshotMutationSupport.text(model, "sheetId");
+        JsonNode rawAnchor = model.get("anchor");
+        StructuralPatch.CellAddress anchor = rawAnchor == null || rawAnchor.isNull() ? null
+                : new StructuralPatch.CellAddress(SnapshotMutationSupport.text(rawAnchor, "sheetId"),
+                        integer(rawAnchor.get("row"), "Defined-name anchor row"),
+                        integer(rawAnchor.get("column"), "Defined-name anchor column"));
+        return new StructuralPatch.DefinedNameState(name, formula, scope, sheetId, anchor);
+    }
+
+    private static ObjectNode anchorNode(StructuralPatch.CellAddress address) {
+        ObjectNode anchor = JsonNodeFactory.instance.objectNode();
+        anchor.put("sheetId", address.sheetId());
+        anchor.put("row", address.row());
+        anchor.put("column", address.column());
+        return anchor;
+    }
+
+    private static DefinedNameOwnerKey definedNameOwnerKey(String scope, String name, String sheetId) {
+        return new DefinedNameOwnerKey(scope, name.toUpperCase(Locale.ROOT), sheetId);
     }
 
     private static void applyChartTextFormulaOwnerDelta(ObjectNode root, StructuralPatch.FormulaOwnerDelta delta) {

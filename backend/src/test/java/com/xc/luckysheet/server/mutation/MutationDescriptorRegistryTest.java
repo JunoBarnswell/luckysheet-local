@@ -114,7 +114,10 @@ class MutationDescriptorRegistryTest {
                   "rowHeightsPx":{},"columnWidthsPx":{},"merges":[],"conditionalFormats":[],"dataValidations":[],
                   "pivots":[],"sparklines":[],"drawings":[],"drawingPayloads":{},"sheetTables":[],
                   "review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}},
-                  "spillRanges":[],"protectionRules":[],"outline":{"groups":[]}}]}
+                  "spillRanges":[],"protectionRules":[],"outline":{"groups":[]}}],
+                 "definedNames":{"TaxRate":"=A2"},
+                 "definedNameModels":[{"name":"TaxRate","formula":"=A2","scope":"workbook",
+                   "anchor":{"sheetId":"sheet-1","row":3,"column":0}}]}
                 """);
         JsonNode original = snapshot.deepCopy();
         OperationMutation mutation = new OperationMutation("rows.inserted", "sheet-1",
@@ -125,6 +128,9 @@ class MutationDescriptorRegistryTest {
         assertEquals(original, snapshot);
         assertEquals("=A2", standalone.snapshot().path("sheets").get(0)
                 .path("cells").path("1").path("0").path("formula").asText());
+        assertEquals("=A3", standalone.snapshot().path("definedNameModels").get(0).path("formula").asText());
+        assertEquals(4, standalone.snapshot().path("definedNameModels").get(0).path("anchor").path("row").asInt());
+        assertEquals("=A2", snapshot.path("definedNameModels").get(0).path("formula").asText());
 
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         JsonNode reduced = registry.applyPublicMutations(snapshot, List.of(mutation, mutation));
@@ -132,12 +138,38 @@ class MutationDescriptorRegistryTest {
         assertEquals(original, snapshot);
         assertEquals("=A3", reduced.path("sheets").get(0)
                 .path("cells").path("2").path("0").path("formula").asText());
+        assertEquals("=A4", reduced.path("definedNameModels").get(0).path("formula").asText());
+        assertEquals(5, reduced.path("definedNameModels").get(0).path("anchor").path("row").asInt());
 
         ObjectNode ownedSnapshot = snapshot.deepCopy();
         MutationApplication owned = descriptor.applyWithPatchOnOwnedSnapshot(ownedSnapshot, mutation);
         assertSame(ownedSnapshot, owned.snapshot());
         assertEquals("=A2", ownedSnapshot.path("sheets").get(0)
                 .path("cells").path("1").path("0").path("formula").asText());
+        assertEquals("=A3", ownedSnapshot.path("definedNameModels").get(0).path("formula").asText());
+        assertEquals(4, ownedSnapshot.path("definedNameModels").get(0).path("anchor").path("row").asInt());
+        assertEquals(original, snapshot);
+    }
+
+    @Test
+    void structuralMutationRejectsProjectionOnlyDefinedNamesWithoutChangingSnapshot() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        ObjectNode snapshot = (ObjectNode) mapper.readTree("""
+                {"sheets":[{"id":"sheet-1","name":"Sheet1","rowCount":5,"columnCount":3,
+                  "cells":{},"pane":{"kind":"none"},"defaultRowHeightPx":20,"defaultColumnWidthPx":64,
+                  "hiddenRows":[],"hiddenColumns":[],"rowHeightsPx":{},"columnWidthsPx":{},"merges":[],
+                  "conditionalFormats":[],"dataValidations":[],"pivots":[],"sparklines":[],"drawings":[],
+                  "drawingPayloads":{},"sheetTables":[],"spillRanges":[],"protectionRules":[],"outline":{"groups":[]}}],
+                 "definedNames":{"TaxRate":"=A2"}}
+                """);
+        JsonNode original = snapshot.deepCopy();
+        OperationMutation mutation = new OperationMutation("rows.inserted", "sheet-1",
+                mapper.readTree("{\"sheetId\":\"sheet-1\",\"at\":0,\"count\":1}"));
+
+        ServiceException error = assertThrows(ServiceException.class,
+                () -> registry.applyPublicMutations(snapshot, List.of(mutation)));
+
+        assertEquals("SERVICE_UNAVAILABLE", error.code());
         assertEquals(original, snapshot);
     }
 
@@ -151,7 +183,10 @@ class MutationDescriptorRegistryTest {
                   "rowHeightsPx":{},"columnWidthsPx":{},"merges":[],"conditionalFormats":[],"dataValidations":[],
                   "pivots":[],"sparklines":[],"drawings":[],"drawingPayloads":{},"sheetTables":[],
                   "review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}},
-                  "spillRanges":[],"protectionRules":[],"outline":{"groups":[]}}]}
+                  "spillRanges":[],"protectionRules":[],"outline":{"groups":[]}}],
+                 "definedNames":{"TaxRate":"=A2"},
+                 "definedNameModels":[{"name":"TaxRate","formula":"=A2","scope":"workbook",
+                   "anchor":{"sheetId":"sheet-1","row":3,"column":0}}]}
                 """);
         JsonNode original = snapshot.deepCopy();
         OperationMutation mutation = new OperationMutation("rows.inserted", "sheet-1",
@@ -168,6 +203,21 @@ class MutationDescriptorRegistryTest {
                 Collections.singletonList(null));
         assertNotSame(snapshot, replayed);
         assertEquals(generated.snapshot(), replayed);
+        assertEquals(1, patch.definedNameOwnerDeltas().size());
+        StructuralPatch.DefinedNameOwnerDelta nameDelta = patch.definedNameOwnerDeltas().get(0);
+        assertEquals("=A2", nameDelta.before().formula());
+        assertEquals("=A3", nameDelta.after().formula());
+        assertEquals(3, nameDelta.before().anchor().row());
+        assertEquals(4, nameDelta.after().anchor().row());
+        assertEquals("=A3", replayed.path("definedNames").path("TaxRate").asText());
+
+        StructuralPatch nameOnlyInverse = new StructuralPatch(StructuralPatch.VERSION, "rows.deleted", List.of(),
+                List.of(nameDelta.inverse()));
+        JsonNode restoredName = registry.applyStructuralPatch(replayed, nameOnlyInverse);
+        assertEquals("=A2", restoredName.path("definedNameModels").get(0).path("formula").asText());
+        assertEquals(3, restoredName.path("definedNameModels").get(0).path("anchor").path("row").asInt());
+        assertEquals("=A2", restoredName.path("definedNames").path("TaxRate").asText());
+
         assertEquals(original, snapshot);
 
         StructuralPatch corruptPatch = new StructuralPatch(StructuralPatch.VERSION, "rows.deleted",

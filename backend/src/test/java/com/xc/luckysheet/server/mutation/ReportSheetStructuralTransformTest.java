@@ -102,13 +102,13 @@ class ReportSheetStructuralTransformTest {
         StructuralSnapshotReducer.applyAxis(snapshot, "sheet-1", "rows.inserted",
                 FormulaReferenceTransformer.Axis.ROW, 4, 1, FormulaReferenceTransformer.Direction.INSERT);
 
-        ObjectNode restored = (ObjectNode) StructuralSnapshotReducer.applyFormulaOwnerPatch(
+        ObjectNode restored = (ObjectNode) StructuralSnapshotReducer.applyStructuralOwnerPatch(
                 snapshot, deleted.inverse("rows.inserted"));
         assertEquals("=A5", restored.path("sheets").get(0).path("cells").path("0").path("1").path("formula").asText());
 
         ObjectNode changed = restored.deepCopy();
         ((ObjectNode) changed.path("sheets").get(0).path("cells").path("0").path("1")).put("formula", "=B1");
-        assertThrows(ServiceException.class, () -> StructuralSnapshotReducer.applyFormulaOwnerPatch(
+        assertThrows(ServiceException.class, () -> StructuralSnapshotReducer.applyStructuralOwnerPatch(
                 changed, deleted.inverse("rows.inserted")));
     }
 

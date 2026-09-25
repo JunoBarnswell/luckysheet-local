@@ -284,8 +284,17 @@ test('CommandRuntime records and guards defined-name owner patches in history', 
     },
   });
 
-  runtime.execute('defined-name.transform', {});
+  const operation = runtime.execute('defined-name.transform', {});
   assert.deepEqual(runtime.getUndoEntries()[0]?.inversePlan[0]?.structuralDefinedNameOwnerDeltas, [delta]);
+  runtime.applyCommittedStructuralPatches(operation.operationId, [{
+    id: 'defined-name.transform',
+    unitId: workbook.unitId,
+    sheetId,
+    params: after,
+    affectedRanges: ownerRanges,
+    structuralDefinedNameOwnerDeltas: [delta],
+  }], 1);
+  assert.equal(runtime.getInvalidHistoryEntries().length, 0);
   workbook.setDefinedName({ ...after, formula: '=A9' });
   assert.throws(() => runtime.undo(), /STRUCTURAL_PATCH_PRECONDITION: defined-name owner/);
   assert.equal(workbook.getDefinedNameExact('Rate', 'workbook')?.formula, '=A9');

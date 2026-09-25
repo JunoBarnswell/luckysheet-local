@@ -66,8 +66,21 @@ final class StructuralMutationDescriptor extends CanonicalJsonMutationDescriptor
 
     @Override
     public MutationApplication applyWithPatchOnOwnedSnapshot(JsonNode ownedSnapshot, OperationMutation mutation) {
+        if (!id().equals(mutation.id())) {
+            throw ServiceException.validation("Structural mutation descriptor does not match the mutation id");
+        }
         ObjectNode root = SnapshotMutationSupport.root(ownedSnapshot);
         ObjectNode params = SnapshotMutationSupport.params(mutation);
+        JsonNode rawNameModelsBefore = root.get("definedNameModels");
+        JsonNode nameModelsBefore = rawNameModelsBefore == null ? null : rawNameModelsBefore.deepCopy();
+        JsonNode legacyNameProjection = root.get("definedNames");
+        if ((rawNameModelsBefore == null || rawNameModelsBefore.isNull())
+                && legacyNameProjection != null && !legacyNameProjection.isNull()) {
+            if (!legacyNameProjection.isObject()) throw ServiceException.validation("definedNames must be an object");
+            if (!legacyNameProjection.isEmpty()) {
+                throw ServiceException.unavailable("STRUCTURAL_PATCH_INVARIANT: defined-name owner models are required for structural edits");
+            }
+        }
         StructuralPatch structuralPatch = null;
         switch (id()) {
             case "rows.inserted" -> structuralPatch = axis(root, mutation.sheetId(), mutation.id(), params, FormulaReferenceTransformer.Axis.ROW, FormulaReferenceTransformer.Direction.INSERT);
@@ -93,6 +106,15 @@ final class StructuralMutationDescriptor extends CanonicalJsonMutationDescriptor
                 structuralPatch = StructuralSnapshotReducer.moveRange(root, mutation.sheetId(), source, target);
             }
             default -> throw ServiceException.validation("Unsupported structural mutation: " + id());
+        }
+        List<StructuralPatch.DefinedNameOwnerDelta> definedNameOwnerDeltas = StructuralSnapshotReducer.definedNameOwnerDeltas(
+                nameModelsBefore, root.get("definedNameModels"));
+        if (structuralPatch != null || !definedNameOwnerDeltas.isEmpty()) {
+            structuralPatch = new StructuralPatch(
+                    StructuralPatch.VERSION,
+                    mutation.id(),
+                    structuralPatch == null ? List.of() : structuralPatch.formulaOwnerDeltas(),
+                    definedNameOwnerDeltas);
         }
         return new MutationApplication(root, structuralPatch);
     }

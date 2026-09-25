@@ -20,6 +20,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -34,6 +35,15 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 @Component
 public class MutationDescriptorRegistry {
+    public record StructuralPatchMigrationReplay(JsonNode snapshot, List<Optional<StructuralPatch>> structuralPatches) {
+        public StructuralPatchMigrationReplay {
+            if (snapshot == null || snapshot.isNull() || structuralPatches == null) {
+                throw new IllegalArgumentException("Structural patch migration replay result is incomplete");
+            }
+            structuralPatches = List.copyOf(structuralPatches);
+        }
+    }
+
     private static final Set<String> HORIZONTAL_ALIGNMENTS = Set.of("general", "left", "center", "right", "centerContinuous", "justify", "distributed", "fill");
     private static final Set<String> VERTICAL_ALIGNMENTS = Set.of("top", "middle", "bottom", "justify", "distributed");
     private static final Set<String> READING_ORDERS = Set.of("context", "ltr", "rtl");
@@ -262,9 +272,43 @@ public class MutationDescriptorRegistry {
                 throw new ServiceException("STORAGE_CORRUPT", 409, "Committed structural impact ranges have no server-derived patch");
             }
             current = application.snapshot();
-            if (patch != null) current = StructuralSnapshotReducer.applyFormulaOwnerPatchOnOwnedSnapshot(current, patch);
+            if (patch != null) current = StructuralSnapshotReducer.applyStructuralOwnerPatchOnOwnedSnapshot(current, patch);
         }
         return ownsCurrent ? current : snapshot.deepCopy();
+    }
+
+    /** Explicit Flyway-only boundary for replaying verified legacy/v1 history into the canonical v2 patch contract. */
+    public StructuralPatchMigrationReplay replayStructuralPatchesForMigration(
+            JsonNode snapshot,
+            List<OperationMutation> mutations,
+            List<StructuralPatch> inversePatches
+    ) {
+        if (inversePatches.size() != mutations.size()) {
+            throw new IllegalArgumentException("Structural patch migration requires one inverse-patch slot per mutation");
+        }
+        JsonNode current = snapshot;
+        boolean ownsCurrent = false;
+        List<StructuralPatch> patches = new ArrayList<>(mutations.size());
+        for (int index = 0; index < mutations.size(); index++) {
+            OperationMutation mutation = mutations.get(index);
+            MutationDescriptor descriptor = require(mutation.id(), false);
+            MutationApplication application;
+            if (descriptor instanceof OwnedSnapshotMutationDescriptor ownedDescriptor) {
+                if (!ownsCurrent) {
+                    current = current.deepCopy();
+                    ownsCurrent = true;
+                }
+                application = ownedDescriptor.applyWithPatchOnOwnedSnapshot(current, mutation);
+            } else {
+                application = descriptor.applyWithPatch(current, mutation);
+                ownsCurrent = true;
+            }
+            StructuralPatch patch = mergeStructuralPatches(mutation.id(), application.structuralPatch(), inversePatches.get(index));
+            current = application.snapshot();
+            if (patch != null) current = StructuralSnapshotReducer.applyStructuralOwnerPatchOnOwnedSnapshot(current, patch);
+            patches.add(Optional.ofNullable(patch));
+        }
+        return new StructuralPatchMigrationReplay(ownsCurrent ? current : snapshot.deepCopy(), patches);
     }
 
     public static StructuralPatch mergeStructuralPatches(
@@ -284,7 +328,28 @@ public class MutationDescriptorRegistry {
                 throw ServiceException.conflict("STRUCTURAL_PATCH_CONFLICT: inverse and reducer patches disagree for one formula owner");
             }
         }
-        return new StructuralPatch(StructuralPatch.VERSION, mutationId, deltas);
+        List<StructuralPatch.DefinedNameOwnerDelta> definedNameDeltas = new ArrayList<>(generated.definedNameOwnerDeltas());
+        for (StructuralPatch.DefinedNameOwnerDelta candidate : inverse.definedNameOwnerDeltas()) {
+            StructuralPatch.DefinedNameOwnerDelta sameOwner = definedNameDeltas.stream()
+                    .filter(existing -> sameDefinedNameOwner(existing, candidate))
+                    .findFirst().orElse(null);
+            if (sameOwner == null) definedNameDeltas.add(candidate);
+            else if (!sameOwner.equals(candidate)) {
+                throw ServiceException.conflict("STRUCTURAL_PATCH_CONFLICT: inverse and reducer patches disagree for one defined-name owner");
+            }
+        }
+        return new StructuralPatch(StructuralPatch.VERSION, mutationId, deltas, definedNameDeltas);
+    }
+
+    private static boolean sameDefinedNameOwner(
+            StructuralPatch.DefinedNameOwnerDelta left,
+            StructuralPatch.DefinedNameOwnerDelta right
+    ) {
+        StructuralPatch.DefinedNameOwnerIdentity leftOwner = left.owner();
+        StructuralPatch.DefinedNameOwnerIdentity rightOwner = right.owner();
+        return leftOwner.scope().equals(rightOwner.scope())
+                && leftOwner.name().equalsIgnoreCase(rightOwner.name())
+                && Objects.equals(leftOwner.sheetId(), rightOwner.sheetId());
     }
 
     private static boolean sameFormulaOwner(StructuralPatch.FormulaOwnerDelta left, StructuralPatch.FormulaOwnerDelta right) {
@@ -303,7 +368,7 @@ public class MutationDescriptorRegistry {
     }
 
     public JsonNode applyStructuralPatch(JsonNode snapshot, StructuralPatch patch) {
-        return StructuralSnapshotReducer.applyFormulaOwnerPatch(snapshot, patch);
+        return StructuralSnapshotReducer.applyStructuralOwnerPatch(snapshot, patch);
     }
 
     public List<RangeRef> resolveRanges(JsonNode snapshot, OperationMutation mutation) {

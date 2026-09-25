@@ -1299,9 +1299,10 @@ export class CommandRuntime {
     this.currentRevision = Math.max(this.currentRevision, revision);
   }
 
-  applyCommittedStructuralFormulaPatches(operationId: string, items: readonly MutationInfo[], revision: number): void {
+  applyCommittedStructuralPatches(operationId: string, items: readonly MutationInfo[], revision: number): void {
     if (!Number.isSafeInteger(revision) || revision < 1) throw new Error('Committed revision must be a positive safe integer');
-    const patched = items.filter((item) => item.structuralFormulaOwnerDeltas !== undefined);
+    const patched = items.filter((item) => item.structuralFormulaOwnerDeltas !== undefined
+      || item.structuralDefinedNameOwnerDeltas !== undefined);
     if (patched.length === 0) {
       this.setRevision(Math.max(this.currentRevision, revision));
       return;
@@ -1312,12 +1313,16 @@ export class CommandRuntime {
       const local = entry.inversePlan.flatMap((mutation) => mutation.structuralFormulaOwnerDeltas ?? []);
       const authoritative = patched.flatMap((item) => item.structuralFormulaOwnerDeltas ?? []);
       const ordered = (deltas: readonly StructuralFormulaOwnerDelta[]) => deltas.map((delta) => JSON.stringify(delta)).sort();
-      if (JSON.stringify(ordered(local)) !== JSON.stringify(ordered(authoritative))) {
+      const localNames = entry.inversePlan.flatMap((mutation) => mutation.structuralDefinedNameOwnerDeltas ?? []);
+      const authoritativeNames = patched.flatMap((item) => item.structuralDefinedNameOwnerDeltas ?? []);
+      const orderedNames = (deltas: readonly StructuralDefinedNameOwnerDelta[]) => deltas.map((delta) => JSON.stringify(delta)).sort();
+      if (JSON.stringify(ordered(local)) !== JSON.stringify(ordered(authoritative))
+        || JSON.stringify(orderedNames(localNames)) !== JSON.stringify(orderedNames(authoritativeNames))) {
         const stack = this.undoStack.includes(entry) ? this.undoStack : this.redoStack;
         const index = stack.indexOf(entry);
         if (index >= 0) stack.splice(index, 1);
         entry.status = 'invalid';
-        entry.invalidReason = 'Server-derived structural formula owners differ from the local history patch';
+        entry.invalidReason = 'Server-derived structural owners differ from the local history patch';
         this.invalidHistory.push(entry);
       }
     }
@@ -1325,19 +1330,23 @@ export class CommandRuntime {
     const preview = WorkbookModel.fromSnapshot(this.workbook.snapshot());
     for (const item of patched) {
       for (const delta of item.structuralFormulaOwnerDeltas ?? []) applyFormulaOwnerDelta(preview, delta, 'forward');
+      for (const delta of item.structuralDefinedNameOwnerDeltas ?? []) applyDefinedNameOwnerDelta(preview, delta, 'forward');
     }
 
     for (const item of patched) {
-      const deltas = item.structuralFormulaOwnerDeltas ?? [];
-      if (deltas.length === 0) continue;
-      for (const delta of deltas) applyFormulaOwnerDelta(this.workbook, delta, 'forward');
+      const formulaDeltas = item.structuralFormulaOwnerDeltas ?? [];
+      const definedNameDeltas = item.structuralDefinedNameOwnerDeltas ?? [];
+      if (formulaDeltas.length === 0 && definedNameDeltas.length === 0) continue;
+      for (const delta of formulaDeltas) applyFormulaOwnerDelta(this.workbook, delta, 'forward');
+      for (const delta of definedNameDeltas) applyDefinedNameOwnerDelta(this.workbook, delta, 'forward');
       const effect = {
         kind: 'structural-transform' as const,
         removedCells: [],
         clearInputRanges: [],
         populateInputRanges: [],
-        rewrittenFormulaOwners: deltas.flatMap((delta) => delta.kind === 'formula-cell' ? [delta.afterAddress] : []),
-        formulaOwnerDeltas: deltas,
+        rewrittenFormulaOwners: formulaDeltas.flatMap((delta) => delta.kind === 'formula-cell' ? [delta.afterAddress] : []),
+        formulaOwnerDeltas: formulaDeltas,
+        definedNameOwnerDeltas: definedNameDeltas,
       };
       for (const listener of this.mutationListeners) listener(item, 'remote', effect);
     }

@@ -46,7 +46,7 @@ import java.util.concurrent.ConcurrentHashMap;
 public class WorkbookOperationService {
     private static final long CHECKPOINT_OPERATION_LIMIT = 50;
     private static final long CHECKPOINT_BYTES_LIMIT = 512_000;
-    private static final String SYSTEM_RESTORE_ACTOR = "system:workbook-restore";
+    public static final String SYSTEM_RESTORE_ACTOR = "system:workbook-restore";
 
     private final WorkbookStore store;
     private final AccessControlService access;
@@ -256,7 +256,7 @@ public class WorkbookOperationService {
         };
     }
 
-    private StructuralPatch inverseStructuralPatch(OperationMutation inverse, CommittedOperationEnvelope target) {
+    public static StructuralPatch inverseStructuralPatch(OperationMutation inverse, CommittedOperationEnvelope target) {
         if (target == null) return null;
         List<CommittedOperationMutation> matches = target.mutations().stream()
                 .filter(original -> isInverseStructuralMutation(original, inverse)

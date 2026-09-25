@@ -1029,3 +1029,16 @@ head `1d8508ea` 的两个后端 CI 已通过 test-compile，随后在 `sheetRena
 **修复方案**：一次性提升为严格 StructuralPatch v2，增加身份明确的 defined-name owner before/after（公式与 anchor）并在 TypeScript/Java 校验、reducer、impact、collaboration、Undo/Redo 与 remote replay 中使用同一合同；历史迁移从已验证的 revision-0 checkpoint 按连续 revision 重放并派生 v2 patch，同时核验中间 checkpoints/current snapshot、改写 operation log 和 unpublished outbox。迁移遇到缺失连续性、不可验证快照或模糊 undo target 必须中止，不允许 v1 fallback。此架构纵切仍在实现中，不能将本轮两处夹具修复误报为该缺口已解决。
 
 本轮远程 CI 另确认两条测试源码问题：一条结构行变换 fixture 缺少 canonical pane 必需的 `state`；另一条越界插入负例误用 `rows.deleted` descriptor，因而并未执行所声称的插入。已分别补齐 `state: "frozen"` 并使用 `rows.inserted` descriptor。只基于 CI 失败输出与静态源码修复；未运行本地测试、构建、lint 或 UI。
+
+### 六轮自审复核 — StructuralPatch v2 与定义名称回放 (2026-09-26)
+
+按用户要求再次进行六轮彼此独立的静态自审；每轮都沿真实调用链核实，不将同一个根因按多个调用点重复计数：
+
+1. **Java v2 迁移入口**：逐项核对导入、迁移包装类与 replay helper，确认新 migration 的 `Map` 声明缺少导入，会直接阻断 Java 编译；已补齐并移除未用参数/导入。
+2. **快照与 owner 契约**：从快照校验追到 `WorkbookModel.fromSnapshot`，确认 Java 仍接受只有 `definedNames`、没有 `definedNameModels` 的历史投影快照；当前客户端已折叠成模型，但服务端 patch 无法表达对应名称变化。迁移现先核对快照/检查点，再把所有检查点、当前快照及 restore 内嵌快照折叠为模型；未模型化且仍含名称的结构 mutation 现在 fail-close。
+3. **公式引擎调用路径**：沿本地结构命令、FormulaEngine 同步、服务端 ACK 回放确认相同 delta 会第二次到达；旧实现只接受 before 状态，会把正常 ACK 报成冲突。FormulaEngine 现对当前已等于 after 的重复 delta 幂等，对第三种状态仍拒绝，并补回归源码。
+4. **服务器提交与重放**：检查 v2 exact contract、reducer diff、undo inverse 和 command-runtime 对齐，确认公式/anchor owner 的 before/after 与身份进入同一 patch，前后置条件保留；增加服务端 reducer、逆 patch 和破坏性前置条件测试源码。
+5. **restore/checkpoint 连续性与历史版本边界**：逐条核对 revision-0、当前 checkpoint、全部中间 checkpoint、restore 与 operation log 重放。旧 restore 参数内嵌快照也会与规范化后的检查点失配；迁移现同步规范化其快照，并在操作日志重放前验证原 current snapshot/checkpoint 配对。回查 v1 patch 引入提交的父版本后确认，既有历史结构操作本就没有 patch/impact 字段；旧迁移因此会在真实历史上中止。现仅在重放与 checkpoint 全部吻合且两个字段均缺失时从历史派生 v2，已存在 v1 patch 则继续严格比对，部分字段状态 fail-close。
+6. **未发布 outbox 与数据库副本完整性**：核对 H2/MySQL/PostgreSQL repeatable wrapper 和发布器原样发送持久 payload 的路径，确认不能忽略 outbox 自身 patch，也不能把 operation log 已升级后的新字段差异误判为旧 envelope 内容损坏。现先在任何写入前验证待发 outbox 与 operation log 源 envelope 一致，再逐 mutation 校验旧 v1 patch 字段、身份、formula delta 和 impact；对两个副本都缺失的历史格式规范升级，对副本漂移 fail-close，最后以 operation log 的 v2 envelope 重写。已发布事件不重写。
+
+本轮六个审查边界中确认并修复九项独立的实现/数据完整性问题：迁移编译缺陷、投影-only 名称缺少 patch、该旧形状仍可进入结构写入、重复 ACK 非幂等、restore 内嵌快照未迁移、pending outbox patch 差异被忽略、迁移不兼容真实存在的 patchless 历史、升级后的 impact 字段导致旧 outbox 无法规范化、outbox 与 operation log 源副本漂移可能被掩盖。新增测试源码未执行；只允许静态审查，后续仍需远程 CI/迁移门禁与真实应用验收。当前完成的是定义名称 owner 的 v2 纵切，不代表其它结构编辑 owner families 或整体整改目标已完成。

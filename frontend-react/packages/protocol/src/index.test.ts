@@ -47,7 +47,7 @@ test('committed structural patches and impact ranges survive collaboration decod
   const ownerAddress = { sheetId: 'sheet-1', row: 0, column: 1 };
   const impactRange = { sheetId: 'sheet-1', startRow: 0, endRow: 0, startColumn: 1, endColumn: 1 };
   const patch = {
-    version: 1 as const,
+    version: 2 as const,
     mutationId: 'rows.deleted',
     formulaOwnerDeltas: [{
       kind: 'formula-cell' as const,
@@ -63,6 +63,11 @@ test('committed structural patches and impact ranges survive collaboration decod
       field: 'titleText.linkedFormula' as const,
       beforeFormula: '=A1',
       afterFormula: '=A2',
+    }],
+    definedNameOwnerDeltas: [{
+      owner: { scope: 'workbook' as const, name: 'RangeName' },
+      before: { name: 'RangeName', formula: '=Sheet1!A2', scope: 'workbook' as const, anchor: { sheetId: 'sheet-1', row: 1, column: 0 } },
+      after: { name: 'RangeName', formula: '=Sheet1!A3', scope: 'workbook' as const, anchor: { sheetId: 'sheet-1', row: 2, column: 0 } },
     }],
   };
   const decoded = decodeOperationMessage(JSON.stringify({
@@ -98,14 +103,31 @@ test('committed structural patches and impact ranges survive collaboration decod
 
 test('committed row-permutation structural patches are accepted by the protocol', () => {
   assert.deepEqual(validateStructuralPatch({
-    version: 1,
+    version: 2,
     mutationId: 'rows.permuted',
     formulaOwnerDeltas: [],
+    definedNameOwnerDeltas: [],
   }, 'rows.permuted'), {
-    version: 1,
+    version: 2,
     mutationId: 'rows.permuted',
     formulaOwnerDeltas: [],
+    definedNameOwnerDeltas: [],
   });
+});
+
+test('defined-name structural patches reject identity drift, duplicate owners, and legacy schema', () => {
+  const delta = {
+    owner: { scope: 'sheet', name: 'LocalName', sheetId: 'sheet-1' },
+    before: { name: 'LocalName', formula: '=A1', scope: 'sheet', sheetId: 'sheet-1' },
+    after: { name: 'LocalName', formula: '=A2', scope: 'sheet', sheetId: 'sheet-1' },
+  };
+  const patch = { version: 2, mutationId: 'rows.inserted', formulaOwnerDeltas: [], definedNameOwnerDeltas: [delta] };
+  assert.throws(() => validateStructuralPatch({ version: 1, mutationId: 'rows.inserted', formulaOwnerDeltas: [] }, 'rows.inserted'));
+  assert.throws(() => validateStructuralPatch({ ...patch, definedNameOwnerDeltas: [delta, delta] }, 'rows.inserted'), /duplicate defined-name owner/);
+  assert.throws(() => validateStructuralPatch({
+    ...patch,
+    definedNameOwnerDeltas: [{ ...delta, after: { ...delta.after, sheetId: 'sheet-2' } }],
+  }, 'rows.inserted'), /identity or before\/after/);
 });
 
 test('collaboration messages reject actor-bearing presence and legacy changesets', () => {

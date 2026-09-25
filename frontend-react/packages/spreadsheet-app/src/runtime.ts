@@ -978,8 +978,13 @@ export function attachCoreListeners(runtime: SpreadsheetRuntime): void {
       }
 
       const formulaOwnerDeltas = structuralEffect?.formulaOwnerDeltas ?? [];
-      const projectionMutation = formulaOwnerDeltas.length > 0
-        ? { ...mutation, structuralFormulaOwnerDeltas: [...formulaOwnerDeltas] }
+      const definedNameOwnerDeltas = structuralEffect?.definedNameOwnerDeltas ?? [];
+      const projectionMutation = formulaOwnerDeltas.length > 0 || definedNameOwnerDeltas.length > 0
+        ? {
+          ...mutation,
+          ...(formulaOwnerDeltas.length > 0 ? { structuralFormulaOwnerDeltas: [...formulaOwnerDeltas] } : {}),
+          ...(definedNameOwnerDeltas.length > 0 ? { structuralDefinedNameOwnerDeltas: [...definedNameOwnerDeltas] } : {}),
+        }
         : mutation;
       runtime.pendingPivotMutations.push(structuredClone(projectionMutation));
       if (mutation.id === 'dataSource.add' || mutation.id === 'dataSource.update' || mutation.id === 'dataSource.remove'

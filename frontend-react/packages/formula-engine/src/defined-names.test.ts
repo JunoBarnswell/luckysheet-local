@@ -140,6 +140,11 @@ test('FormulaEngine indexes defined-name references and anchors by typed owner i
     before: beforeLocalName,
     after: afterLocalName,
   }], false);
+  assert.doesNotThrow(() => engine.applyDefinedNameModelDeltas([{
+    owner: localName,
+    before: beforeLocalName,
+    after: afterLocalName,
+  }], false));
   assert.deepEqual(engine.dependencies.getRangeDefinedNameDependents('Sheet1', {
     startRow: 0,
     endRow: 2,
