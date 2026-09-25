@@ -1,10 +1,45 @@
-import type { FormulaAst, ParsedCellReference } from './ast';
+import type { FormulaAst, ParsedCellReference, TableReferenceNode } from './ast';
 import { formulaSheetReferenceIndex, sameFormulaSheetName } from './sheet-reference';
 import { ReferenceTransformDomain, MAX_COLUMN_INDEX, MAX_ROW_INDEX } from './reference-transform-domain';
 import type { StructuralShift } from './reference-transform-domain';
 
 export { MAX_COLUMN_INDEX, MAX_ROW_INDEX } from './reference-transform-domain';
 export type { StructuralShift } from './reference-transform-domain';
+
+export function mapAstTableReferences(
+  node: FormulaAst,
+  mapper: (reference: TableReferenceNode) => TableReferenceNode,
+): FormulaAst {
+  switch (node.type) {
+    case 'table-reference':
+      return mapper(node);
+    case 'spill-reference':
+      return { ...node, operand: mapAstTableReferences(node.operand, mapper) as typeof node.operand };
+    case 'reference-union':
+      return { ...node, references: node.references.map((reference) => mapAstTableReferences(reference, mapper) as typeof reference) };
+    case 'reference-intersection':
+      return {
+        ...node,
+        left: mapAstTableReferences(node.left, mapper) as typeof node.left,
+        right: mapAstTableReferences(node.right, mapper) as typeof node.right,
+      };
+    case 'sheet-range-reference':
+    case 'external-reference':
+      return { ...node, reference: mapAstTableReferences(node.reference, mapper) as typeof node.reference };
+    case 'unary-expression':
+      return { ...node, operand: mapAstTableReferences(node.operand, mapper) };
+    case 'binary-expression':
+      return {
+        ...node,
+        left: mapAstTableReferences(node.left, mapper),
+        right: mapAstTableReferences(node.right, mapper),
+      };
+    case 'function-call':
+      return { ...node, arguments: node.arguments.map((argument) => mapAstTableReferences(argument, mapper)) };
+    default:
+      return node;
+  }
+}
 
 export interface StructuralReferenceContext {
   readonly shift: StructuralShift;

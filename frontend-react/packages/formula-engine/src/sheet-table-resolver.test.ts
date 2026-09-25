@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { FormulaEngine } from './formula-engine';
-import type { SheetTableRef } from './sheet-table-resolver';
+import { normalizeSheetTables, type SheetTableRef } from './sheet-table-resolver';
 
 const sampleTable: SheetTableRef = {
   id: 't1',
@@ -15,6 +15,17 @@ const sampleTable: SheetTableRef = {
     { id: 'c2', name: 'Amount' },
   ],
 };
+
+test('Sheet Table formula context rejects duplicate workbook identities', () => {
+  assert.throws(() => normalizeSheetTables([
+    sampleTable,
+    { ...sampleTable, id: 't2', sheetId: 'Sheet2', name: 'sales' },
+  ]), /identities must be unique/);
+  assert.throws(() => normalizeSheetTables([
+    sampleTable,
+    { ...sampleTable, sheetId: 'Sheet2', name: 'Orders' },
+  ]), /identities must be unique/);
+});
 
 test('FormulaEngine resolves structured table column references', () => {
   const engine = new FormulaEngine({ defaultSheetId: 'Sheet1' });

@@ -26,6 +26,7 @@ public final class WorkbookSnapshotValidator {
     private static final java.util.regex.Pattern HYPERLINK_EMAIL_ADDRESS = java.util.regex.Pattern.compile("^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$");
     private static final java.util.regex.Pattern HYPERLINK_SHEET_ADDRESS = java.util.regex.Pattern.compile("^([A-Za-z]+)([1-9][0-9]*)$");
     private static final java.util.regex.Pattern HYPERLINK_DEFINED_NAME = java.util.regex.Pattern.compile("^[A-Za-z_\\\\][A-Za-z0-9_.]*$");
+    private static final java.util.regex.Pattern SHEET_TABLE_NAME = java.util.regex.Pattern.compile("^[A-Za-z_][A-Za-z0-9_.]*$");
 
     private WorkbookSnapshotValidator() {
     }
@@ -137,6 +138,8 @@ public final class WorkbookSnapshotValidator {
             }
         }
         java.util.Set<String> pivotIds = new java.util.HashSet<>();
+        java.util.Set<String> sheetTableIds = new java.util.HashSet<>();
+        java.util.Set<String> sheetTableNames = new java.util.HashSet<>();
         java.util.Map<String, JsonNode> pivotsById = new java.util.HashMap<>();
         java.util.Map<String, String> pivotSourceKeys = new java.util.HashMap<>();
         for (JsonNode sheet : sheets) {
@@ -195,6 +198,15 @@ public final class WorkbookSnapshotValidator {
                 if (!tables.isArray()) throw ServiceException.validation("Workbook snapshot sheetTables is invalid");
                 for (JsonNode table : tables) {
                     if (!table.isObject()) throw ServiceException.validation("Workbook snapshot table is invalid");
+                    JsonNode tableIdNode = table.get("id");
+                    JsonNode tableNameNode = table.get("name");
+                    String tableId = tableIdNode != null && tableIdNode.isTextual() ? tableIdNode.asText().trim() : "";
+                    String tableName = tableNameNode != null && tableNameNode.isTextual() ? tableNameNode.asText().trim() : "";
+                    if (tableId.isBlank() || tableName.isBlank() || !tableId.equals(tableIdNode.asText())
+                            || !tableName.equals(tableNameNode.asText()) || !SHEET_TABLE_NAME.matcher(tableName).matches()
+                            || !sheetTableIds.add(tableId) || !sheetTableNames.add(tableName.toUpperCase(java.util.Locale.ROOT))) {
+                        throw ServiceException.validation("Workbook snapshot Sheet Table identity is invalid or duplicated");
+                    }
                     RangeRef tableRange = rangeOf(table.get("range"), sheetId);
                     JsonNode columns = table.get("columns");
                     int tableWidth = tableRange.endColumn() - tableRange.startColumn() + 1;

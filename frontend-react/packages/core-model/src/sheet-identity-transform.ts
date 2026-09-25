@@ -1,5 +1,6 @@
 import {
   formatFormula,
+  mapAstTableReferences,
   parseFormula,
   renameAstSheetReferences,
 } from '@react-sheets/formula-engine';
@@ -99,6 +100,58 @@ function mapFormula(formula: string, oldName: string, newName: string, participa
   }
 }
 
+function mapFormulaTableReferences(
+  formula: string,
+  tableNames: ReadonlyMap<string, string> | undefined,
+  participant: string,
+  preservedOnly = false,
+): string {
+  if (!tableNames || tableNames.size === 0) return formula;
+  try {
+    const ast = parseFormula(formula);
+    const rewritten = mapAstTableReferences(ast, (reference) => {
+      const name = tableNames.get(reference.tableName.trim().toUpperCase());
+      return name === undefined ? reference : { ...reference, tableName: name };
+    });
+    if (formatFormula(rewritten) === formatFormula(ast)) return formula;
+    if (preservedOnly) {
+      throw new SheetIdentityTransformError(`${participant} preserves a structured reference that cannot be rewritten safely`, [
+        { participant, reference: formula, reason: 'unsupported-formula' },
+      ]);
+    }
+    return formatFormula(rewritten);
+  } catch (error) {
+    if (error instanceof SheetIdentityTransformError) throw error;
+    throw new SheetIdentityTransformError(
+      `${participant} contains an unsupported formula: ${formula}`,
+      [{ participant, reference: formula, reason: 'unsupported-formula' }],
+    );
+  }
+}
+
+function allocateDuplicateTableNames(workbook: WorkbookModel, source: WorksheetModel): Map<string, string> {
+  const usedNames = new Set(workbook.getSheets().flatMap((sheet) => sheet.sheetTables.map((table) => table.name.trim().toUpperCase())));
+  const replacements = new Map<string, string>();
+  const tableIds = new Set<string>();
+  for (const table of source.sheetTables) {
+    const key = table.name.trim().toUpperCase();
+    if (!table.id.trim() || table.id !== table.id.trim() || tableIds.has(table.id)) {
+      throw new SheetIdentityTransformError(`Sheet Table id is invalid or duplicated: ${table.id}`);
+    }
+    if (!key || replacements.has(key)) throw new SheetIdentityTransformError(`Sheet Table name is duplicated: ${table.name}`);
+    tableIds.add(table.id);
+    let candidate = table.name;
+    let suffix = 2;
+    while (usedNames.has(candidate.trim().toUpperCase())) {
+      const suffixText = `_${suffix++}`;
+      candidate = `${table.name.slice(0, Math.max(1, 255 - suffixText.length))}${suffixText}`;
+    }
+    replacements.set(key, candidate);
+    usedNames.add(candidate.trim().toUpperCase());
+  }
+  return replacements;
+}
+
 function formulaReferencesSheet(formula: string, sheetName: string, participant: string, ownerSheetId?: SheetId): boolean {
   try {
     const ast = parseFormula(formula);
@@ -176,14 +229,24 @@ function transformDefinedNames(workbook: WorkbookModel, oldName: string, newName
   }));
 }
 
-function rewriteRuleFormulas<T extends ConditionalFormatRule | DataValidationRule>(rule: T, oldName: string, newName: string): T {
+function rewriteRuleFormulas<T extends ConditionalFormatRule | DataValidationRule>(
+  rule: T,
+  oldName: string,
+  newName: string,
+  tableNames?: ReadonlyMap<string, string>,
+): T {
   const next = structuredClone(rule);
-  if ('value1' in next && typeof next.value1 === 'string') next.value1 = mapFormula(next.value1, oldName, newName, `${next.id}.value1`);
-  if ('value2' in next && typeof next.value2 === 'string') next.value2 = mapFormula(next.value2, oldName, newName, `${next.id}.value2`);
-  if ('formula1' in next && next.formula1) next.formula1 = mapFormula(next.formula1, oldName, newName, `${next.id}.formula1`);
-  if ('formula2' in next && next.formula2) next.formula2 = mapFormula(next.formula2, oldName, newName, `${next.id}.formula2`);
+  const map = (formula: string, field: string): string => mapFormulaTableReferences(
+    mapFormula(formula, oldName, newName, `${next.id}.${field}`),
+    tableNames,
+    `${next.id}.${field}`,
+  );
+  if ('value1' in next && typeof next.value1 === 'string') next.value1 = map(next.value1, 'value1');
+  if ('value2' in next && typeof next.value2 === 'string') next.value2 = map(next.value2, 'value2');
+  if ('formula1' in next && next.formula1) next.formula1 = map(next.formula1, 'formula1');
+  if ('formula2' in next && next.formula2) next.formula2 = map(next.formula2, 'formula2');
   if ('listSource' in next && next.listSource?.kind === 'formula') {
-    next.listSource = { ...next.listSource, formula: mapFormula(next.listSource.formula, oldName, newName, `${next.id}.listSource`) };
+    next.listSource = { ...next.listSource, formula: map(next.listSource.formula, 'listSource') };
   }
   return next as T;
 }
@@ -236,6 +299,7 @@ function remapDrawingPayload(
   drawingIds: ReadonlyMap<string, string>,
   pivotIds: ReadonlyMap<string, string>,
   tableIds: ReadonlyMap<string, string>,
+  tableNames: ReadonlyMap<string, string>,
   sourceName: string,
   targetName: string,
 ): DrawingPayload {
@@ -262,7 +326,11 @@ function remapDrawingPayload(
       break;
     case 'shape':
       if (next.hyperlink) next.hyperlink = remapHyperlinkTarget(next.hyperlink, sourceSheetId, targetSheetId);
-      if (next.propertyFormula) next.propertyFormula = mapFormulaReference(next.propertyFormula, sourceName, targetName, `duplicate-shape:${sourceSheetId}.propertyFormula`);
+      if (next.propertyFormula) next.propertyFormula = mapFormulaTableReferences(
+        mapFormulaReference(next.propertyFormula, sourceName, targetName, `duplicate-shape:${sourceSheetId}.propertyFormula`),
+        tableNames,
+        `duplicate-shape:${sourceSheetId}.propertyFormula`,
+      );
       break;
     case 'chart':
       next.source = next.source.kind === 'worksheet-ranges'
@@ -297,13 +365,9 @@ function remapDrawingPayload(
         trendlines: series.trendlines ? structuredClone(series.trendlines) : undefined,
       }));
       for (const { field, formula } of chartTextFormulaEntries(next)) {
-        writeChartTextFormula(next, field, mapFormulaReference(
-          formula,
-          sourceName,
-          targetName,
-          `duplicate-chart:${sourceSheetId}.${field}`,
-          sourceSheetId,
-        ));
+        const participant = `duplicate-chart:${sourceSheetId}.${field}`;
+        const renamed = mapFormulaReference(formula, sourceName, targetName, participant, sourceSheetId);
+        writeChartTextFormula(next, field, mapFormulaTableReferences(renamed, tableNames, participant));
       }
       break;
     default:
@@ -320,8 +384,20 @@ function allocateId(existing: ReadonlySet<string>, sourceId: string, targetSheet
   return candidate;
 }
 
-function cloneWorksheetWithIdentity(workbook: WorkbookModel, source: WorksheetModel, targetSheetId: SheetId, targetName: string): WorksheetModel {
+function cloneWorksheetWithIdentity(
+  workbook: WorkbookModel,
+  source: WorksheetModel,
+  targetSheetId: SheetId,
+  targetName: string,
+  tableNames: ReadonlyMap<string, string>,
+): WorksheetModel {
   const copy = source.cloneWithIdentity(targetSheetId, targetName);
+  const mapCopiedFormula = (formula: string, participant: string, preservedOnly = false): string => mapFormulaTableReferences(
+    mapFormulaReference(formula, source.name, targetName, participant, targetSheetId, preservedOnly),
+    tableNames,
+    participant,
+    preservedOnly,
+  );
   const allSheets = workbook.getSheets();
   const ids = (selector: (sheet: WorksheetModel) => string[]): Set<string> => new Set(allSheets.flatMap(selector));
   const tableIds = new Map<string, string>();
@@ -353,11 +429,11 @@ function cloneWorksheetWithIdentity(workbook: WorkbookModel, source: WorksheetMo
   copy.pivots.splice(0, copy.pivots.length, ...copy.pivots.map((pivot) => remapPivot(pivot, source.id, targetSheetId, pivotIds.get(pivot.id)!, tableIds)));
   copy.sparklines.splice(0, copy.sparklines.length, ...copy.sparklines.map((sparkline) => ({ ...sparkline, id: sparklineIds.get(sparkline.id)!, sheetId: targetSheetId, sourceRange: mapRange(sparkline.sourceRange, source.id, targetSheetId), groupId: sparkline.groupId ? sparklineGroupIds.get(sparkline.groupId) : undefined })));
   copy.sparklineGroups.splice(0, copy.sparklineGroups.length, ...copy.sparklineGroups.map((group) => ({ ...group, id: sparklineGroupIds.get(group.id)!, sheetId: targetSheetId, sparklineIds: group.sparklineIds.map((id) => sparklineIds.get(id) ?? id) })));
-  copy.conditionalFormats.splice(0, copy.conditionalFormats.length, ...copy.conditionalFormats.map((rule) => ({ ...structuredClone(rule), id: allocateId(ids((sheet) => sheet.conditionalFormats.map((entry) => entry.id)), rule.id, targetSheetId), sheetId: targetSheetId, ranges: rule.ranges.map((range) => mapRange(range, source.id, targetSheetId)), formulaAnchor: rule.formulaAnchor ? { ...rule.formulaAnchor, sheetId: targetSheetId } : undefined })));
-  copy.dataValidations.splice(0, copy.dataValidations.length, ...copy.dataValidations.map((rule) => ({ ...structuredClone(rule), id: allocateId(ids((sheet) => sheet.dataValidations.map((entry) => entry.id)), rule.id, targetSheetId), sheetId: targetSheetId, ranges: rule.ranges.map((range) => mapRange(range, source.id, targetSheetId)), formulaAnchor: rule.formulaAnchor ? { ...rule.formulaAnchor, sheetId: targetSheetId } : undefined, listSource: rule.listSource?.kind === 'range' ? { ...rule.listSource, range: mapRange(rule.listSource.range, source.id, targetSheetId) } : rule.listSource })));
-  copy.sheetTables.splice(0, copy.sheetTables.length, ...copy.sheetTables.map((table) => ({ ...structuredClone(table), id: tableIds.get(table.id)!, sheetId: targetSheetId, range: mapRange(table.range, source.id, targetSheetId), autoFilter: table.autoFilter ? { ...table.autoFilter, sheetId: targetSheetId, range: mapRange(table.autoFilter.range, source.id, targetSheetId) } : undefined })));
+  copy.conditionalFormats.splice(0, copy.conditionalFormats.length, ...copy.conditionalFormats.map((rule) => rewriteRuleFormulas({ ...structuredClone(rule), id: allocateId(ids((sheet) => sheet.conditionalFormats.map((entry) => entry.id)), rule.id, targetSheetId), sheetId: targetSheetId, ranges: rule.ranges.map((range) => mapRange(range, source.id, targetSheetId)), formulaAnchor: rule.formulaAnchor ? { ...rule.formulaAnchor, sheetId: targetSheetId } : undefined }, source.name, targetName, tableNames)));
+  copy.dataValidations.splice(0, copy.dataValidations.length, ...copy.dataValidations.map((rule) => rewriteRuleFormulas({ ...structuredClone(rule), id: allocateId(ids((sheet) => sheet.dataValidations.map((entry) => entry.id)), rule.id, targetSheetId), sheetId: targetSheetId, ranges: rule.ranges.map((range) => mapRange(range, source.id, targetSheetId)), formulaAnchor: rule.formulaAnchor ? { ...rule.formulaAnchor, sheetId: targetSheetId } : undefined, listSource: rule.listSource?.kind === 'range' ? { ...rule.listSource, range: mapRange(rule.listSource.range, source.id, targetSheetId) } : rule.listSource }, source.name, targetName, tableNames)));
+  copy.sheetTables.splice(0, copy.sheetTables.length, ...copy.sheetTables.map((table) => ({ ...structuredClone(table), id: tableIds.get(table.id)!, name: tableNames.get(table.name.trim().toUpperCase())!, sheetId: targetSheetId, range: mapRange(table.range, source.id, targetSheetId), autoFilter: table.autoFilter ? { ...table.autoFilter, sheetId: targetSheetId, range: mapRange(table.autoFilter.range, source.id, targetSheetId) } : undefined })));
   copy.drawings.splice(0, copy.drawings.length, ...copy.drawings.map((drawing) => ({ ...drawing, id: drawingIds.get(drawing.id)!, sheetId: targetSheetId, payloadId: payloadIds.get(drawing.payloadId) ?? drawing.payloadId })));
-  const payloads = [...copy.drawingPayloads.entries()].map(([id, payload]) => [payloadIds.get(id) ?? id, remapDrawingPayload(payload, source.id, targetSheetId, drawingIds, pivotIds, tableIds, source.name, targetName)] as const);
+  const payloads = [...copy.drawingPayloads.entries()].map(([id, payload]) => [payloadIds.get(id) ?? id, remapDrawingPayload(payload, source.id, targetSheetId, drawingIds, pivotIds, tableIds, tableNames, source.name, targetName)] as const);
   copy.drawingPayloads.clear();
   for (const [id, payload] of payloads) copy.drawingPayloads.set(id, payload);
   copy.drawingGroups.splice(0, copy.drawingGroups.length, ...copy.drawingGroups.map((group) => ({ ...group, id: groupIds.get(group.id)!, sheetId: targetSheetId, memberDrawingIds: group.memberDrawingIds.map((id) => drawingIds.get(id) ?? id) })));
@@ -374,7 +450,7 @@ function cloneWorksheetWithIdentity(workbook: WorkbookModel, source: WorksheetMo
       if (!column.formula) return column;
       return {
         ...column,
-        formula: mapFormulaReference(column.formula, source.name, targetName, `duplicate-table-sheet:${source.id}.${column.fieldId}`),
+        formula: mapCopiedFormula(column.formula, `duplicate-table-sheet:${source.id}.${column.fieldId}`),
       };
     }),
   };
@@ -384,24 +460,23 @@ function cloneWorksheetWithIdentity(workbook: WorkbookModel, source: WorksheetMo
     const next = structuredClone(cell);
     let changed = false;
     if (next.formula) {
-      const formula = mapFormula(next.formula, source.name, targetName, `duplicate-cell:${source.id}!${row},${column}`);
+      const participant = `duplicate-cell:${source.id}!${row},${column}`;
+      const formula = mapFormulaTableReferences(mapFormula(next.formula, source.name, targetName, participant), tableNames, participant);
       changed ||= formula !== next.formula;
       next.formula = formula;
     }
     if (next.formulaMetadata?.sourceFormula) {
-      const sourceFormula = mapFormulaReference(next.formulaMetadata.sourceFormula, source.name, targetName, `duplicate-cell:${source.id}!${row},${column}.sourceFormula`, source.id, next.formulaMetadata.preservedOnly);
+      const sourceFormula = mapCopiedFormula(next.formulaMetadata.sourceFormula, `duplicate-cell:${source.id}!${row},${column}.sourceFormula`, next.formulaMetadata.preservedOnly);
       changed ||= sourceFormula !== next.formulaMetadata.sourceFormula;
       next.formulaMetadata.sourceFormula = sourceFormula;
     }
     if (next.presentation?.kind === 'barcode' && next.presentation.source.kind === 'formula') {
-      const formula = mapFormulaReference(next.presentation.source.formula, source.name, targetName, `duplicate-cell:${source.id}!${row},${column}.barcode`, source.id);
+      const formula = mapCopiedFormula(next.presentation.source.formula, `duplicate-cell:${source.id}!${row},${column}.barcode`);
       changed ||= formula !== next.presentation.source.formula;
       next.presentation.source.formula = formula;
     }
     if (changed) copy.cells.set(row, column, next);
   });
-  copy.conditionalFormats.splice(0, copy.conditionalFormats.length, ...copy.conditionalFormats.map((rule) => rewriteRuleFormulas(rule, source.name, targetName)));
-  copy.dataValidations.splice(0, copy.dataValidations.length, ...copy.dataValidations.map((rule) => rewriteRuleFormulas(rule, source.name, targetName)));
   return copy;
 }
 
@@ -756,14 +831,19 @@ export function planSheetIdentityTransform(workbook: WorkbookModel, input: Sheet
       spec: { ...spec, targetSheetId, targetName },
       invalidations: [],
       apply: () => {
-        const copy = cloneWorksheetWithIdentity(workbook, source, targetSheetId, targetName);
-        workbook.sheets.set(targetSheetId, copy);
+        const tableNames = allocateDuplicateTableNames(workbook, source);
+        const copy = cloneWorksheetWithIdentity(workbook, source, targetSheetId, targetName, tableNames);
         const scopedNames = workbook.definedNameModels.filter((entry) => entry.scope === 'sheet' && entry.sheetId === source.id).map((entry) => ({
           ...structuredClone(entry),
           sheetId: targetSheetId,
-          formula: mapFormula(entry.formula, source.name, targetName, `defined-name:${entry.name}`),
+          formula: mapFormulaTableReferences(
+            mapFormula(entry.formula, source.name, targetName, `defined-name:${entry.name}`),
+            tableNames,
+            `duplicate-defined-name:${source.id}.${entry.name}`,
+          ),
           anchor: entry.anchor ? { ...entry.anchor, sheetId: mapSheetId(entry.anchor.sheetId, source.id, targetSheetId) } : undefined,
         }));
+        workbook.sheets.set(targetSheetId, copy);
         for (const definedName of scopedNames) workbook.setDefinedName(definedName);
         const printDocument = workbook.printDocuments.get(source.id);
         if (printDocument) workbook.printDocuments.set(targetSheetId, { ...structuredClone(printDocument), sheetId: targetSheetId, printAreas: printDocument.printAreas.map((area) => ({ ...area, sheetId: targetSheetId, range: mapRange(area.range, source.id, targetSheetId) })), pageBreaks: printDocument.pageBreaks.map((item) => ({ ...item, sheetId: targetSheetId })) });

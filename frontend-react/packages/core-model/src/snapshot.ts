@@ -368,6 +368,8 @@ export function assertCanonicalWorkbookSnapshot(snapshot: WorkbookSnapshot): Wor
   }
   assertCanonicalWorkbookHyperlinks(snapshot);
   const pivotIds = new Set<string>();
+  const sheetTableIds = new Set<string>();
+  const sheetTableNames = new Set<string>();
   for (const sheet of snapshot.sheets) {
     if (!['worksheet', 'table-sheet', 'gantt-sheet', 'report-sheet'].includes(sheet.kind)) throw new Error('Worksheet kind is invalid');
     if (sheet.kind === 'table-sheet' && !sheet.tableSheet) throw new Error('TableSheet definition is required');
@@ -388,6 +390,15 @@ export function assertCanonicalWorkbookSnapshot(snapshot: WorkbookSnapshot): Wor
       }
     }
     for (const table of sheet.sheetTables ?? []) {
+      const tableId = typeof table?.id === 'string' ? table.id.trim() : '';
+      const tableName = typeof table?.name === 'string' ? table.name.trim() : '';
+      const normalizedTableName = tableName.toUpperCase();
+      if (!tableId || tableId !== table.id || !tableName || tableName !== table.name || !/^[A-Za-z_][A-Za-z0-9_.]*$/.test(tableName)
+        || sheetTableIds.has(tableId) || sheetTableNames.has(normalizedTableName)) {
+        throw new Error(`Sheet Table identity is invalid or duplicated: ${tableId || tableName || sheet.id}`);
+      }
+      sheetTableIds.add(tableId);
+      sheetTableNames.add(normalizedTableName);
       const range = table?.range;
       if (!range || typeof range !== 'object' || range.sheetId !== sheet.id
         || ![range.startRow, range.endRow, range.startColumn, range.endColumn].every(Number.isSafeInteger)

@@ -617,6 +617,25 @@ test('sheet rename and duplication preserve every persisted formula owner identi
   assert.equal((externalOwner.drawingPayloads.get('external-formula-shape') as { propertyFormula?: string }).propertyFormula, "='Renamed Sheet'!A1");
 });
 
+test('sheet duplication allocates workbook-unique table identity and rewrites copied structured references', () => {
+  const workbook = new WorkbookModel('sheet-table-identity', 'Sheet Table identity');
+  const source = workbook.getSheet('sheet-1');
+  source.sheetTables.push({
+    id: 'sales-table', sheetId: source.id, name: 'Sales',
+    range: { sheetId: source.id, startRow: 0, endRow: 1, startColumn: 0, endColumn: 1 },
+    hasHeaderRow: true, hasTotalRow: false, showBandedRows: false, showBandedColumns: false,
+    showFirstColumn: false, showLastColumn: false, showFilterButton: false, autoExpand: 'none',
+    columns: [{ id: 'sales-item', name: 'Item' }, { id: 'sales-amount', name: 'Amount' }],
+  });
+  source.cells.set(0, 2, { value: null, formula: '=SUM(Sales[Amount])' });
+
+  const duplicate = workbook.duplicateSheet(source.id, 'sheet-copy', 'Copy Sheet');
+
+  assert.equal(duplicate.sheetTables[0]?.name, 'Sales_2');
+  assert.equal(duplicate.cells.get(0, 2)?.formula, '=SUM(Sales_2[Amount])');
+  assert.equal(source.cells.get(0, 2)?.formula, '=SUM(Sales[Amount])');
+});
+
 test('sheet rename fails closed on a preserved-only formula reference without changing the workbook', () => {
   const workbook = new WorkbookModel('preserved-formula-rename', 'Preserved formula rename');
   const source = workbook.addSheet('preserved-source', 'Preserved Source');

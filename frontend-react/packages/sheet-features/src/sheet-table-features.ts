@@ -4,6 +4,7 @@ import type {
   AutoFilterModel,
   RangeRef,
   SheetTableModel,
+  WorkbookModel,
   WorksheetModel,
 } from '@react-sheets/core-model';
 import { normalizeRangeRef } from './data-features';
@@ -109,7 +110,7 @@ const TABLE_BAND_DARK = '#D9E1F2';
 
 export function validateSheetTableModel(table: SheetTableModel, sheet?: WorksheetModel): SheetTableModel {
   const range = normalizeRangeRef(table.range);
-  if (!table.id.trim() || !table.name.trim()) throw new Error('Sheet Table id and name are required');
+  if (!table.id.trim() || table.id !== table.id.trim() || !table.name.trim()) throw new Error('Sheet Table id and name are required and canonical');
   if (!/^[A-Za-z_][A-Za-z0-9_.]*$/.test(table.name)) throw new Error(`Invalid Sheet Table name: ${table.name}`);
   if (range.sheetId !== table.sheetId) throw new Error('Sheet Table range must target its sheetId');
   if (range.startRow < 0 || range.startColumn < 0 || range.endRow < range.startRow || range.endColumn < range.startColumn) {
@@ -140,6 +141,22 @@ export function validateSheetTableModel(table: SheetTableModel, sheet?: Workshee
     normalized.autoFilter = createAutoFilterModelForTable(normalized);
   }
   return normalized;
+}
+
+export function assertWorkbookSheetTableIdentityAvailable(
+  workbook: WorkbookModel,
+  candidate: SheetTableModel,
+  replacingExisting = false,
+): void {
+  const tableId = candidate.id.trim();
+  const tableName = candidate.name.trim().toUpperCase();
+  for (const sheet of workbook.getSheets()) {
+    for (const table of sheet.sheetTables) {
+      if (replacingExisting && sheet.id === candidate.sheetId && table.id === tableId) continue;
+      if (table.id === tableId) throw new Error(`Sheet Table id already exists in workbook: ${tableId}`);
+      if (table.name.trim().toUpperCase() === tableName) throw new Error(`Sheet Table name already exists in workbook: ${candidate.name}`);
+    }
+  }
 }
 
 /**

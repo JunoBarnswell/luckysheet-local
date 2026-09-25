@@ -3,6 +3,7 @@ import type { CommandRuntime } from '@react-sheets/command-runtime';
 import {
   planTotalRowToggle,
   snapshotTotalRowCells,
+  assertWorkbookSheetTableIdentityAvailable,
   validateFilterOwnership,
   validateSheetTableModel,
 } from './sheet-table-features';
@@ -68,9 +69,7 @@ export function registerSheetTableCommands(runtime: CommandRuntime): void {
       if (!isSheetTable(item.params)) throw new Error('Invalid sheetTable.add mutation payload');
       const sheet = context.workbook.getSheet(item.params.sheetId);
       const table = validateSheetTableModel(item.params, sheet);
-      if (sheet.sheetTables.some((entry) => entry.id === table.id || entry.name.toLocaleLowerCase() === table.name.toLocaleLowerCase())) {
-        throw new Error(`Sheet Table already exists: ${table.name}`);
-      }
+      assertWorkbookSheetTableIdentityAvailable(context.workbook, table);
       if (sheet.sheetTables.some((entry) => entry.range.startRow <= table.range.endRow
         && entry.range.endRow >= table.range.startRow && entry.range.startColumn <= table.range.endColumn
         && entry.range.endColumn >= table.range.startColumn)) throw new Error('Sheet Tables cannot overlap');
@@ -129,6 +128,7 @@ export function registerSheetTableCommands(runtime: CommandRuntime): void {
       const table = validateSheetTableModel(item.params, sheet);
       const index = sheet.sheetTables.findIndex((entry) => entry.id === table.id);
       if (index < 0) throw new Error(`Sheet Table not found: ${table.id}`);
+      assertWorkbookSheetTableIdentityAvailable(context.workbook, table, true);
       if (sheet.sheetTables.some((entry) => entry.id !== table.id
         && entry.range.startRow <= table.range.endRow && entry.range.endRow >= table.range.startRow
         && entry.range.startColumn <= table.range.endColumn && entry.range.endColumn >= table.range.startColumn)) {
@@ -151,9 +151,7 @@ export function registerSheetTableCommands(runtime: CommandRuntime): void {
     execute: (params, context) => {
       const sheet = context.workbook.getSheet(params.sheetId);
       const table = validateSheetTableModel(params, sheet);
-      if (sheet.sheetTables.some((entry) => entry.id === table.id || entry.name.toLocaleLowerCase() === table.name.toLocaleLowerCase())) {
-        throw new Error(`Sheet Table already exists: ${table.name}`);
-      }
+      assertWorkbookSheetTableIdentityAvailable(context.workbook, table);
       const intersects = (left: RangeRef, right: RangeRef): boolean => left.startRow <= right.endRow
         && left.endRow >= right.startRow && left.startColumn <= right.endColumn && left.endColumn >= right.startColumn;
       if (sheet.sheetTables.some((entry) => intersects(entry.range, table.range))) throw new Error('Sheet Tables cannot overlap');
@@ -181,6 +179,7 @@ export function registerSheetTableCommands(runtime: CommandRuntime): void {
       if (index < 0) throw new Error(`Sheet Table not found: ${params.id}`);
       const previous = structuredClone(sheet.sheetTables[index]!);
       const next = validateSheetTableModel(params, sheet);
+      assertWorkbookSheetTableIdentityAvailable(context.workbook, next, true);
       const overlaps = sheet.sheetTables.some((entry) => entry.id !== next.id
         && entry.range.startRow <= next.range.endRow && entry.range.endRow >= next.range.startRow
         && entry.range.startColumn <= next.range.endColumn && entry.range.endColumn >= next.range.startColumn);

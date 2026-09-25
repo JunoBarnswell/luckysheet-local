@@ -961,3 +961,16 @@ head `1d8508ea` 的两个后端 CI 已通过 test-compile，随后在 `sheetRena
 6. 失败语义已有安全落点：publisher 异常会释放 Outbox 供既有重试，subscriber 异常会忽略该消息；因此可在消息边界拒绝不匹配事件，不必将坏数据转成 workbook 状态。
 
 现新增 package-private `RevisionCoordinationEvent` 作为两端共用的强类型事件，构造时核对 UUID、kind、unitId、operationId 与 revision；publisher 先解析规范 envelope 再构造事件，subscriber 反序列化同一 DTO 后才广播。六轮确认的是一个独立身份边界缺口，并非六个问题。只做静态源码/diff 检查；不运行测试、构建、lint 或 UI，StructuralPatch v2 和整体架构目标仍未完成。
+
+### 六轮静态自审 — Sheet Table 工作簿级身份与复制引用（2026-09-26）
+
+六轮分别沿公式解析、依赖索引、前端命令、快照导入、服务端 mutation 与 Sheet 复制做反证，确认一个根因及其入口表现：Sheet Table 名称被公式引擎当成工作簿级 key，实际校验却局限于单 Sheet 或完全缺失。
+
+1. `normalizeSheetTables` 用 `trim().toUpperCase()` 建 map，重复名称原先后写覆盖前写；公式 AST 只保存 tableName，无法用当前 worksheet 消除歧义。
+2. `FormulaEngine.setSheetTables` 和 `tableReferenceIndex` 都以该名称作为受影响公式的 key；冲突会把公式依赖和 evaluator 解析指向同一个被覆盖的表，而不是仅造成显示重名。
+3. 前端 `sheetTable.add`/`update` mutation 与 command 只检查目标 sheet；`update` 原先甚至不检查同一 sheet 的名称重名，跨 sheet 更无唯一性门禁。
+4. TS `assertCanonicalWorkbookSnapshot` 与 Java `WorkbookSnapshotValidator` 原先只核对范围/列宽，不检查跨 sheet 表 ID/名称唯一性；导入和历史快照因此可把歧义对象带入运行时。
+5. Java `SheetDataMutationDescriptor` 的 upsert 也只验证目标 sheet 元数据，协作/持久化路径不会替客户端补做 workbook 级唯一性检查。
+6. `duplicateSheet` 已全局重分配表 ID，却原样克隆 Table 名及副本公式；直接采用全局唯一规则会让过去的静默错指暴露为冲突，因此复制边界必须同时派生新名并改写副本内引用。
+
+已修复：公式引擎拒绝重复 ID/名称而不再覆盖；前端命令、服务端 mutation 及 TS/Java canonical snapshot validator 统一执行 workbook 级唯一性校验；复制 Sheet 为克隆表分配不冲突名称，并用 AST 重写副本单元格、保留公式、验证规则、Sheet-scoped names、shape/chart 文本公式中的结构化引用。追加复核还确认服务端 `sheetTable.update` 原先能把不存在的 ID 当新增项 upsert，现与前端一致地要求目标身份已存在；非规范空白 ID 也在两端边界拒绝。遇到无法安全改写的 preserved-only 公式时复制 fail-close，不留下部分 Sheet。新增了公式索引与 Sheet 复制的回归测试源码，但按本轮要求没有执行测试、构建、lint 或 UI；只进行源码及 diff 静态审查。该六轮验证确认的是一个根因的六条证据，不虚报成六个独立缺陷；整个 Structural Editing & Reference Integrity 目标仍未完成。
