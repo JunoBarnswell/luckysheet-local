@@ -21,9 +21,13 @@ interface CachedSheetProjection {
   snapshot: CanvasSheetSnapshot;
 }
 
-interface ChartSourceBinding {
-  ownerId: string;
-  range: RangeRef;
+type ChartSourceBinding =
+  | { kind: 'range'; ownerId: string; range: RangeRef }
+  | { kind: 'table'; ownerId: string }
+  | { kind: 'pivot'; ownerId: string };
+
+function chartSourceIndexKey(kind: 'sheet' | 'table' | 'pivot', id: string): string {
+  return `${kind}:${id}`;
 }
 
 const PROJECTION_DOMAINS: readonly SheetProjectionDomain[] = [
@@ -76,7 +80,6 @@ export class ProjectionRuntime {
   private readonly sheetProjectionAccessOrder: string[] = [];
   private chartSourceIndexDirty = true;
   private readonly chartSourceIndex = new Map<string, ChartSourceBinding[]>();
-  private readonly pivotChartOwners = new Map<string, Set<string>>();
 
   constructor(
     private readonly runtime: SpreadsheetRuntime,
@@ -111,24 +114,41 @@ export class ProjectionRuntime {
     const structurallyChangedSheets = new Set(
       mutations.filter((mutation) => STRUCTURAL_REFERENCE_MUTATIONS.has(mutation.id)).map((mutation) => mutation.sheetId),
     );
+    const tableIds = new Set<string>();
+    for (const mutation of mutations) {
+      if (mutation.id !== 'table.add' && mutation.id !== 'table.remove') continue;
+      if (mutation.params === null || typeof mutation.params !== 'object' || Array.isArray(mutation.params)) continue;
+      const params = mutation.params as Record<string, unknown>;
+      const tableId = mutation.id === 'table.add' ? params.id : params.tableId;
+      if (typeof tableId === 'string') tableIds.add(tableId);
+    }
     this.invalidateDependentChartProjectionsForRanges(
       mutations.flatMap((mutation) => mutation.affectedRanges),
       structurallyChangedSheets,
+      tableIds,
     );
   }
 
   private invalidateDependentChartProjectionsForRanges(
     ranges: readonly RangeRef[],
     structurallyChangedSheets?: ReadonlySet<string>,
+    tableIds: ReadonlySet<string> = new Set(),
   ): void {
     this.ensureChartSourceIndex();
     const owners = new Set<string>();
     for (const sheetId of structurallyChangedSheets ?? []) {
-      for (const binding of this.chartSourceIndex.get(sheetId) ?? []) owners.add(binding.ownerId);
+      for (const binding of this.chartSourceIndex.get(chartSourceIndexKey('sheet', sheetId)) ?? []) {
+        if (binding.kind === 'range') owners.add(binding.ownerId);
+      }
     }
     for (const affectedRange of ranges) {
-      for (const binding of this.chartSourceIndex.get(affectedRange.sheetId) ?? []) {
-        if (rangesIntersect(binding.range, affectedRange)) owners.add(binding.ownerId);
+      for (const binding of this.chartSourceIndex.get(chartSourceIndexKey('sheet', affectedRange.sheetId)) ?? []) {
+        if (binding.kind === 'range' && rangesIntersect(binding.range, affectedRange)) owners.add(binding.ownerId);
+      }
+    }
+    for (const tableId of tableIds) {
+      for (const binding of this.chartSourceIndex.get(chartSourceIndexKey('table', tableId)) ?? []) {
+        if (binding.kind === 'table') owners.add(binding.ownerId);
       }
     }
     for (const ownerId of owners) this.invalidateSheetProjection(ownerId, ['content', 'formulaResults', 'dataRules']);
@@ -136,8 +156,8 @@ export class ProjectionRuntime {
 
   invalidateChartProjectionsForPivot(pivotId: string): void {
     this.ensureChartSourceIndex();
-    for (const ownerId of this.pivotChartOwners.get(pivotId) ?? []) {
-      this.invalidateSheetProjection(ownerId, ['content', 'formulaResults', 'dataRules']);
+    for (const binding of this.chartSourceIndex.get(chartSourceIndexKey('pivot', pivotId)) ?? []) {
+      if (binding.kind === 'pivot') this.invalidateSheetProjection(binding.ownerId, ['content', 'formulaResults', 'dataRules']);
     }
   }
 
@@ -268,21 +288,27 @@ export class ProjectionRuntime {
   private ensureChartSourceIndex(): void {
     if (!this.chartSourceIndexDirty) return;
     this.chartSourceIndex.clear();
-    this.pivotChartOwners.clear();
     const tables = [...this.runtime.model.dataModel.tables.values()];
     const sheetOrder = this.runtime.model.getSheets().map(({ id, name }) => ({ id, name }));
     for (const owner of this.runtime.model.getSheets()) {
       for (const payload of owner.drawingPayloads.values()) {
         if (payload.kind !== 'chart') continue;
-        for (const range of chartSourceRanges(payload, tables, { ownerSheetId: owner.id, sheetOrder })) {
-          const bindings = this.chartSourceIndex.get(range.sheetId) ?? [];
-          bindings.push({ ownerId: owner.id, range: structuredClone(range) });
-          this.chartSourceIndex.set(range.sheetId, bindings);
+        if (payload.source.kind === 'table') {
+          const key = chartSourceIndexKey('table', payload.source.tableId);
+          const bindings = this.chartSourceIndex.get(key) ?? [];
+          bindings.push({ kind: 'table', ownerId: owner.id });
+          this.chartSourceIndex.set(key, bindings);
+        } else if (payload.source.kind === 'pivot') {
+          const key = chartSourceIndexKey('pivot', payload.source.pivotId);
+          const bindings = this.chartSourceIndex.get(key) ?? [];
+          bindings.push({ kind: 'pivot', ownerId: owner.id });
+          this.chartSourceIndex.set(key, bindings);
         }
-        if ('pivotId' in payload.source) {
-          const owners = this.pivotChartOwners.get(payload.source.pivotId) ?? new Set<string>();
-          owners.add(owner.id);
-          this.pivotChartOwners.set(payload.source.pivotId, owners);
+        for (const range of chartSourceRanges(payload, tables, { ownerSheetId: owner.id, sheetOrder })) {
+          const key = chartSourceIndexKey('sheet', range.sheetId);
+          const bindings = this.chartSourceIndex.get(key) ?? [];
+          bindings.push({ kind: 'range', ownerId: owner.id, range: structuredClone(range) });
+          this.chartSourceIndex.set(key, bindings);
         }
       }
     }

@@ -758,3 +758,7 @@ head `1d8508ea` 的两个后端 CI 已通过 test-compile，随后在 `sheetRena
 6. **OOXML capability 拒绝过晚：** `StructuralTransform.apply` 的输入只有 `WorkbookModel` 与 formula owner index，不包含 native package capability；相反 `exchange-excel-ooxml/src/export.ts` 在重建导出时才检测 unknown worksheet/workbook nodes、extensions 与没有 canonical chart owner 的 parts 并拒绝。故编辑可以成功、到保存才被阻止。方案：将 native-part owner/capability preflight 纳入 canonical planner，不能安全映射的编辑在 live commit 前给出对象定位及 typed error；未知内容仍原样保留，不能为通过编辑而删除。
 
 **收敛实施顺序：** 先定义可逆、版本化的 canonical `StructuralPatch` 与 `ReferenceIndex` owner contract；以一个事务快照生成纯 planner 结果并先闭合轴编辑纵向链（本地提交/撤销、OT/replay、Java 提交/回放、计算/投影、OOXML capability preflight）；再迁移 cell shift、move/paste、permutation、sheet identity、table resize。每个阶段补成功与拒绝行为测试源码，但本任务按用户要求不运行本地测试、构建、lint 或浏览器；用 PR CI 验证。六项均仍属于开放的架构整改，不能把当前 PR 标为完成或合并。
+
+### Projection follow-up — deleted table chart owner invalidation
+
+对 workbook table 删除的后置监听顺序再做静态跟踪，确认了跨表图表缓存的真实失效遗漏：chart source index 在删除后按新模型重建，已不存在的 table 不再产生 worksheet range binding，随后旧受影响范围无法找到仍引用该 table id 的 chart owner。现将 range/table/pivot chart source owner 记录在同一 namespaced chart source index；table binding 独立于当前 table range 是否存在，table.add/remove 以稳定 table id 精确失效 owner，并由 Set 合并同一 mutation 的范围和 table 命中。补充跨 sheet table removal projection-cache 回归测试源码；未本地运行测试或构建，需等待 PR CI。该修复收敛的是 ProjectionRuntime 内部 chart source 索引，不代表其已与 FormulaEngine 的 canonical `ReferenceIndex` 合并。
