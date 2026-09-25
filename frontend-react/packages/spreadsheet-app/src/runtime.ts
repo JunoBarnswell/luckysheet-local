@@ -906,14 +906,14 @@ export function attachCoreListeners(runtime: SpreadsheetRuntime): void {
     runtime.commands.onMutation((mutation, source, appliedEffect) => {
       if (runtime.disposed) return;
       let structuralRoots: readonly CellAddressInput[] | undefined;
-      const structuralEffect = isStructuralTransformResult(appliedEffect);
+      const structuralEffect = isStructuralTransformResult(appliedEffect) ? appliedEffect : undefined;
       const calculationContextEffect = isWorkbookCalculationContextEffect(appliedEffect)
         ? appliedEffect
-        : structuralEffect ? appliedEffect.calculationContextEffect : undefined;
+        : structuralEffect?.calculationContextEffect;
       const rebuildsCalculationContext = calculationContextEffect?.action === 'rebuild';
       const changesVisibilityProjection = VISIBILITY_MUTATIONS.has(mutation.id)
         || rebuildsCalculationContext
-        || structuralEffect
+        || structuralEffect !== undefined
         || mutationTouchesFilterCriteria(runtime.model, mutation.affectedRanges);
       if (changesVisibilityProjection) runtime.rowVisibilityResolver.invalidate();
       if (mutation.id === 'workbook.calculation.mode.set') {
@@ -932,7 +932,7 @@ export function attachCoreListeners(runtime: SpreadsheetRuntime): void {
             runtime.model.sheetOrder.map((id) => ({ id, name: runtime.model.getSheet(id).name })),
           );
         }
-        structuralRoots = synchronizeStructuralMutation(runtime, mutation, appliedEffect);
+        structuralRoots = synchronizeStructuralMutation(runtime, mutation, structuralEffect);
         runtime.formula.notifyVisibilityChanged();
         structuralRoots = [...new Map([
           ...structuralRoots,

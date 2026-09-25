@@ -737,3 +737,7 @@ head `b0217386` 的两个远端 `canonical-build` 都报告同一组 TypeScript 
 本轮仅读取远端既有 CI 日志、源码与 mutation 注册链，并运行 `git diff --check`；没有在本地执行测试、构建、lint 或浏览器验证。Java fixture 编译修复和 projection index mutation-ID 修复均进入现有 #345 草稿 PR；结构 planner 与统一 ReferenceIndex 的总体整改仍未完成。
 
 **结构删除边界复核：** `mapAstStructuralReferences` 会将被删除的单元格引用明确序列化为 `=#REF!`，而不是继续保留一个可索引地址。因此 chart-text range helper 对该 AST 返回“无 cell dependency”，快照继续保留合法错误公式，Canvas 使用公式错误标记而不回退到陈旧缓存标题；其他非单 cell AST 仍拒绝。补充了 snapshot 与标题解析的回归用例源码，未在本地执行。
+
+### CI 静态跟进 — chart formula projection 类型
+
+新 head `34abb455` 的两个 CI 在前端类型检查报告同一组两个确定错误：`RangeRef` 的所有者是 core-model `index.ts`，并非声明它为本地导入但未导出的 `domain.ts`；此外 `isStructuralTransformResult` 原调用结果是 boolean，不能再当结构 effect 读取 `formulaOwnerDeltas`。现改为从类型所有者导入 `RangeRef`，并保留经 type guard 收窄的 effect 值供既有同步逻辑和 projection delta 使用。修复只依据远端失败日志与声明类型，不做本地类型检查或测试；新 PR head 的自动 CI 待确认。

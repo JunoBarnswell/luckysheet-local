@@ -1,5 +1,6 @@
 import { collectFormulaDependencies, parseFormula, type FormulaSheetIdentity } from '@react-sheets/formula-engine';
-import type { ChartDrawingPayload, ChartTextFormulaField, ChartTextModel, RangeRef } from './domain';
+import type { RangeRef } from './index';
+import type { ChartDrawingPayload, ChartTextFormulaField, ChartTextModel } from './domain';
 
 const CHART_TEXT_FORMULA_FIELDS: readonly ChartTextFormulaField[] = [
   'titleText.linkedFormula',
