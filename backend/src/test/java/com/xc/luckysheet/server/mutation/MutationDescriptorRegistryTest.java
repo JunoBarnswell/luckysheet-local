@@ -744,7 +744,7 @@ class MutationDescriptorRegistryTest {
     void rowPermutationChecksProtectedMetadataAcrossEveryColumnItRemaps() throws Exception {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         var snapshot = mapper.readTree("""
-                {"sheets":[{"id":"sheet-1","rowCount":10,"columnCount":2,"cells":{},"review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}},"protectionRules":[
+                {"sheets":[{"id":"sheet-1","name":"Data","rowCount":10,"columnCount":2,"cells":{},"review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}},"protectionRules":[
                   {"id":"lock-outside-grid","scope":"range","range":{"sheetId":"sheet-1","startRow":0,"endRow":4,"startColumn":500,"endColumn":500},"locked":true,"allow":{}}
                 ]}]}
                 """);
@@ -1940,7 +1940,7 @@ class MutationDescriptorRegistryTest {
     void fillSeriesUsesOneCanonicalTargetBandAndRejectsStaleBeforeImages() throws Exception {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         JsonNode snapshot = mapper.readTree("""
-                {"sheets":[{"id":"sheet-1","rowCount":6,"columnCount":3,
+                {"sheets":[{"id":"sheet-1","name":"SortTableSheet","rowCount":6,"columnCount":3,
                   "cells":{"0":{"0":{"value":1}},"1":{"0":{"value":3}}},
                   "protectionRules":[]}]}
                 """);

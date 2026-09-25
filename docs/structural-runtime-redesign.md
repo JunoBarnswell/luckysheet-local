@@ -694,3 +694,7 @@ Confirmed additional operation paths: 13 in the follow-up audit (the previous 12
 6. **重算所有权：** 即使同步动作改为 typed effect，`FORMULA_SYNC_MUTATIONS` 仍重复列出相同 mutation ID，导致 effect 契约与重算触发清单继续分叉。计算上下文 effect 现直接进入调度分支，这些重复 ID 已从该集合移除；简单 sheet rename 等仍需独立增量同步的入口保留原分类。
 
 本批次仅静态检查并执行 `git diff --check`；按用户要求未运行测试、构建或 UI。修复覆盖旧 30 项清单中的计算上下文路由缺口及上述直接传播缺陷，不代表其余结构 patch、owner index、Java/OOXML 纵向链已完成；PR #345 和总目标仍未完成。
+
+### CI fixture follow-up — row-permutation worksheet identity
+
+head `4a4ba321` 的两条 Java CI 都在 row-permutation 用例中以 `name is required` 失败。下载并检查既有 CI Surefire 报告后，调用栈定位到 `captureRuleFormulaSnapshots` 对每张 sheet 读取 canonical `(id, name)`；`WorkbookSnapshotValidator` 也要求 worksheet name 非空。失败的两个测试快照漏了 `name`，并非生产运行时应接受缺失身份的情况。已补齐两个 fixture 的 worksheet name，保留 fail-close 行为；未在本地运行测试，需由新 PR head 的 CI 确认。
