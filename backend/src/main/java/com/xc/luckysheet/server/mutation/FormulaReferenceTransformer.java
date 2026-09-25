@@ -887,7 +887,7 @@ final class FormulaReferenceTransformer {
         int maximum = axis == Axis.ROW ? MAX_ROW : MAX_COLUMN;
         ReferenceTransformDomain.PointMapping mapped = ReferenceTransformDomain.mapPoint(
                 position, at, count, direction == Direction.INSERT, maximum);
-        return mapped.kind() == ReferenceTransformDomain.PointKind.MAPPED ? (int) mapped.position() : -1;
+        return mapped.kind() == ReferenceTransformDomain.PointKind.MAPPED ? Math.toIntExact(mapped.position()) : -1;
     }
 
     private static Reference withAxisCoordinate(Reference reference, Axis axis, int coordinate) {
