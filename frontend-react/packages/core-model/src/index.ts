@@ -509,6 +509,7 @@ export {
   type StructuralFormulaCellOwnerDelta,
   type StructuralFormulaRuleOwnerDelta,
   type StructuralFormulaObjectOwnerDelta,
+  type StructuralDefinedNameOwnerDelta,
   type StructuralFormulaOwnerState,
   type StructuralReferenceOwnerAddress,
   type StructuralReferenceOwnerIndex,

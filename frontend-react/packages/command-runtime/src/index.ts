@@ -1,4 +1,4 @@
-import { WorkbookModel, isWorkbookCalculationContextEffect, readChartTextFormula, writeChartTextFormula, type CellData, type ConditionalFormatRule, type DataValidationRule, type ProtectionAction, type RangeRef, type StructuralFormulaOwnerDelta, type StructuralFormulaOwnerState, type StructuralReferenceOwnerIndex, type WorkbookCalculationContextEffect, type WorksheetModel } from '@react-sheets/core-model';
+import { WorkbookModel, isWorkbookCalculationContextEffect, readChartTextFormula, writeChartTextFormula, type CellData, type ConditionalFormatRule, type DataValidationRule, type ProtectionAction, type RangeRef, type StructuralDefinedNameOwnerDelta, type StructuralFormulaOwnerDelta, type StructuralFormulaOwnerState, type StructuralReferenceOwnerIndex, type WorkbookCalculationContextEffect, type WorksheetModel } from '@react-sheets/core-model';
 import { collectFormulaDependencies, collectFormulaReferenceNodes, formatFormula, mapAstStructuralReferences, parseFormula, RangeIndex, ReferenceTransformDomain, MAX_COLUMN_INDEX, MAX_ROW_INDEX } from '@react-sheets/formula-engine';
 
 export interface MutationInfo<P = unknown> {
@@ -9,6 +9,8 @@ export interface MutationInfo<P = unknown> {
   affectedRanges: RangeRef[];
   /** Local history payload; stripped from the client-authored operation envelope. */
   structuralFormulaOwnerDeltas?: StructuralFormulaOwnerDelta[];
+  /** Exact defined-name states used by local undo and structural-history preconditions. */
+  structuralDefinedNameOwnerDeltas?: StructuralDefinedNameOwnerDelta[];
   /** Derived local history/OT scope; never replaces a mutation's declared range contract. */
   structuralImpactRanges?: RangeRef[];
   /** Explicit semantic override used by inverses whose storage mutation id is shared. */
@@ -819,9 +821,17 @@ function transformHistoryEntry(
   sheetOrder: readonly { readonly id: string; readonly name: string }[],
   policy: MutationHistoryRebasePolicy | undefined,
 ): HistoryTransformResult {
-  if (policy?.kind === 'axis' && entry.inversePlan.some((mutation) => mutation.structuralFormulaOwnerDeltas?.length)) return {
+  const definedNameDeltas = entry.inversePlan.flatMap((mutation) => mutation.structuralDefinedNameOwnerDeltas ?? []);
+  const hasStructuralOwnerPatch = entry.inversePlan.some((mutation) => (
+    mutation.structuralFormulaOwnerDeltas?.length || mutation.structuralDefinedNameOwnerDeltas?.length
+  ));
+  if (policy?.kind === 'axis' && hasStructuralOwnerPatch) return {
     ok: false,
-    reason: `History ${entry.operationId} contains a server-derived structural formula patch that cannot be safely rebased across ${remote.id}`,
+    reason: `History ${entry.operationId} contains a structural owner patch that cannot be safely rebased across ${remote.id}`,
+  };
+  if (definedNameDeltas.some((delta) => remoteChangesDefinedNameOwner(remote, delta.owner))) return {
+    ok: false,
+    reason: `History ${entry.operationId} contains a defined-name owner patch that conflicts with ${remote.id}`,
   };
   if (policy?.kind === 'invalidate' && (!policy.when || policy.when(remote))) return {
     ok: false,
@@ -1019,6 +1029,9 @@ export class CommandRuntime {
         const formulaOwnerDeltas = isRecord(effect) && Array.isArray(effect.formulaOwnerDeltas)
           ? effect.formulaOwnerDeltas as StructuralFormulaOwnerDelta[]
           : [];
+        const definedNameOwnerDeltas = isRecord(effect) && Array.isArray(effect.definedNameOwnerDeltas)
+          ? effect.definedNameOwnerDeltas as StructuralDefinedNameOwnerDelta[]
+          : [];
         const structuralImpactRanges = formulaOwnerDeltasRanges(formulaOwnerDeltas);
         const info: MutationInfo = {
           id: mutation.id,
@@ -1029,6 +1042,9 @@ export class CommandRuntime {
           ...(structuralImpactRanges.length > 0
             ? { structuralImpactRanges }
             : {}),
+          ...(definedNameOwnerDeltas.length > 0
+            ? { structuralDefinedNameOwnerDeltas: structuredClone(definedNameOwnerDeltas) }
+            : {}),
           ...(mutation.permission ? { permission: structuredClone(mutation.permission) } : {}),
         };
         mutations.push(info);
@@ -1036,6 +1052,9 @@ export class CommandRuntime {
           ...item,
           ...(index === 0 && formulaOwnerDeltas.length > 0
             ? { structuralFormulaOwnerDeltas: structuredClone(formulaOwnerDeltas) }
+            : {}),
+          ...(index === 0 && definedNameOwnerDeltas.length > 0
+            ? { structuralDefinedNameOwnerDeltas: structuredClone(definedNameOwnerDeltas) }
             : {}),
         }));
         this.activeEntry?.inversePlan.unshift(...inverse);
@@ -1294,6 +1313,7 @@ export class CommandRuntime {
       const effect = handler(item, {
         ...replayContext,
       }) ?? this.registry.getMutationMetadata(item.id).calculationContextEffect;
+      let notificationEffect = effect;
       if (item.structuralFormulaOwnerDeltas) {
         if (source === 'undo') {
           for (const delta of item.structuralFormulaOwnerDeltas) applyFormulaOwnerDelta(this.workbook, delta, 'undo');
@@ -1301,8 +1321,16 @@ export class CommandRuntime {
           for (const delta of item.structuralFormulaOwnerDeltas) applyFormulaOwnerDelta(this.workbook, delta, 'forward');
         }
       }
+      if (item.structuralDefinedNameOwnerDeltas && (source === 'undo' || source === 'redo' || source === 'remote')) {
+        const direction = source === 'undo' ? 'undo' : 'forward';
+        for (const delta of item.structuralDefinedNameOwnerDeltas) applyDefinedNameOwnerDelta(this.workbook, delta, direction);
+        const notificationDeltas = source === 'undo'
+          ? item.structuralDefinedNameOwnerDeltas.map(inverseDefinedNameOwnerDelta)
+          : item.structuralDefinedNameOwnerDeltas;
+        notificationEffect = definedNamePatchReplayEffect(effect, notificationDeltas);
+      }
       for (const listener of this.mutationListeners) {
-        listener(item, source, effect);
+        listener(item, source, notificationEffect);
       }
     }
   }
@@ -1312,6 +1340,53 @@ export class CommandRuntime {
     preview.setStructuralReferenceOwnersProvider((workbook) => buildStructuralReferenceIndex(workbook));
     preview.applyHistory(items, source);
   }
+}
+
+function remoteChangesDefinedNameOwner(
+  remote: MutationInfo,
+  owner: StructuralDefinedNameOwnerDelta['owner'],
+): boolean {
+  if (remote.id === 'name.set' || remote.id === 'name.remove') {
+    const params = isRecord(remote.params) ? remote.params : undefined;
+    const candidate = remote.id === 'name.set'
+      ? params && isRecord(params.model) ? params.model : undefined
+      : params;
+    if (!candidate || typeof candidate.name !== 'string') return true;
+    const scope = candidate.scope ?? 'workbook';
+    if (scope !== 'workbook' && scope !== 'sheet') return true;
+    if (candidate.sheetId !== undefined && typeof candidate.sheetId !== 'string') return true;
+    const sheetId = candidate.sheetId as string | undefined;
+    if ((scope === 'sheet' && !sheetId) || (scope === 'workbook' && sheetId !== undefined)) return true;
+    return owner.scope === scope
+      && owner.name.trim().toUpperCase() === candidate.name.trim().toUpperCase()
+      && (scope !== 'sheet' || owner.sheetId === sheetId);
+  }
+  return ['sheet.rename', 'sheet.remove', 'sheet.restore', 'sheet.duplicated', 'workbook.restore'].includes(remote.id);
+}
+
+function inverseDefinedNameOwnerDelta(delta: StructuralDefinedNameOwnerDelta): StructuralDefinedNameOwnerDelta {
+  return {
+    owner: structuredClone(delta.owner),
+    before: structuredClone(delta.after),
+    after: structuredClone(delta.before),
+  };
+}
+
+function definedNamePatchReplayEffect(
+  effect: unknown,
+  deltas: readonly StructuralDefinedNameOwnerDelta[],
+): unknown {
+  if (isWorkbookCalculationContextEffect(effect)) return effect;
+  const existing = isRecord(effect) ? effect : {};
+  return {
+    ...existing,
+    kind: 'structural-transform' as const,
+    removedCells: Array.isArray(existing.removedCells) ? existing.removedCells : [],
+    clearInputRanges: Array.isArray(existing.clearInputRanges) ? existing.clearInputRanges : [],
+    populateInputRanges: Array.isArray(existing.populateInputRanges) ? existing.populateInputRanges : [],
+    rewrittenFormulaOwners: Array.isArray(existing.rewrittenFormulaOwners) ? existing.rewrittenFormulaOwners : [],
+    definedNameOwnerDeltas: structuredClone(deltas),
+  };
 }
 
 function formulaOwnerDeltasRanges(deltas: readonly StructuralFormulaOwnerDelta[]): RangeRef[] {
@@ -1349,6 +1424,48 @@ function sameFormulaOwnerState(left: StructuralFormulaOwnerState, right: Structu
   return left.formula === right.formula
     && left.sourceFormula === right.sourceFormula
     && left.barcodeFormula === right.barcodeFormula;
+}
+
+function definedNameStateMatches(
+  current: ReturnType<WorkbookModel['getDefinedNameExact']>,
+  owner: StructuralDefinedNameOwnerDelta['owner'],
+  target: StructuralDefinedNameOwnerDelta['before'],
+): boolean {
+  if (!current
+    || current.scope !== owner.scope
+    || current.sheetId !== owner.sheetId
+    || current.name.trim().toUpperCase() !== owner.name.trim().toUpperCase()
+    || target.scope !== owner.scope
+    || target.sheetId !== owner.sheetId
+    || target.name.trim().toUpperCase() !== owner.name.trim().toUpperCase()
+    || current.formula !== target.formula) return false;
+  const currentAnchor = current.anchor;
+  const targetAnchor = target.anchor;
+  return currentAnchor === undefined
+    ? targetAnchor === undefined
+    : targetAnchor !== undefined
+      && currentAnchor.sheetId === targetAnchor.sheetId
+      && currentAnchor.row === targetAnchor.row
+      && currentAnchor.column === targetAnchor.column;
+}
+
+function applyDefinedNameOwnerDelta(
+  workbook: WorkbookModel,
+  delta: StructuralDefinedNameOwnerDelta,
+  direction: 'undo' | 'forward',
+): void {
+  const current = workbook.getDefinedNameExact(delta.owner.name, delta.owner.scope, delta.owner.sheetId);
+  const expected = direction === 'undo' ? delta.after : delta.before;
+  const target = direction === 'undo' ? delta.before : delta.after;
+  if (definedNameStateMatches(current, delta.owner, target)) return;
+  if (!definedNameStateMatches(current, delta.owner, expected)) {
+    throw new Error(`STRUCTURAL_PATCH_PRECONDITION: defined-name owner ${delta.owner.scope}:${delta.owner.sheetId ?? '*'}:${delta.owner.name} changed since the structural operation`);
+  }
+  workbook.setDefinedName({
+    ...current!,
+    formula: target.formula,
+    anchor: target.anchor ? structuredClone(target.anchor) : undefined,
+  });
 }
 
 function applyFormulaOwnerDelta(

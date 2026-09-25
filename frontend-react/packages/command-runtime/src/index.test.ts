@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { CALCULATION_CONTEXT_EFFECTS, WorkbookModel, type StructuralFormulaOwnerDelta } from '@react-sheets/core-model';
+import { CALCULATION_CONTEXT_EFFECTS, WorkbookModel, type StructuralDefinedNameOwnerDelta, type StructuralFormulaOwnerDelta } from '@react-sheets/core-model';
 import { CommandRegistry, CommandRuntime, type MutationInfo } from './index';
 
 const cellRange = (params: { row: number; column: number; sheetId?: string }) => [{
@@ -179,6 +179,108 @@ test('CommandRuntime restores chart linked formulas through local history', () =
   assert.equal((sheet.drawingPayloads.get('chart-1') as { elements: { titleText: { linkedFormula: string } } }).elements.titleText.linkedFormula, '=A1');
   assert.equal(runtime.redo(), true);
   assert.equal((sheet.drawingPayloads.get('chart-1') as { elements: { titleText: { linkedFormula: string } } }).elements.titleText.linkedFormula, '=A2');
+});
+
+test('CommandRuntime records and guards defined-name owner patches in history', () => {
+  const workbook = new WorkbookModel('unit-defined-name-history', 'Defined Name History');
+  const sheetId = workbook.primarySheetId;
+  const before = { name: 'Rate', formula: '=A1', scope: 'workbook' as const, anchor: { sheetId, row: 0, column: 0 } };
+  const after = { ...before, formula: '=A2', anchor: { sheetId, row: 1, column: 0 } };
+  workbook.setDefinedName(before);
+  const delta: StructuralDefinedNameOwnerDelta = {
+    owner: { name: 'Rate', scope: 'workbook' },
+    before,
+    after,
+  };
+  const ownerRanges = [{ sheetId, startRow: 0, endRow: 1, startColumn: 0, endColumn: 0 }];
+  const runtime = new CommandRuntime(workbook);
+  const replayEffects: unknown[] = [];
+  runtime.onMutation((_mutation, source, effect) => {
+    if (source === 'undo' || source === 'redo') replayEffects.push(effect);
+  });
+  const metadata = (name: string, allowedMutationIds: string[], ranges = ownerRanges) => ({
+    schema: { name, validate: (value: unknown) => !!value && typeof value === 'object' },
+    permission: { capability: 'test.defined-name.write' },
+    affectedRanges: { resolve: () => ranges, mode: 'exact' as const },
+    inversePolicy: { allowedMutationIds, minCount: 1 },
+  });
+
+  runtime.registry.registerMutation({
+    id: 'defined-name.transform',
+    handler: (item, context) => context.workbook.setDefinedName(item.params as StructuralDefinedNameOwnerDelta['after']),
+    metadata: metadata('DefinedNameTransform', ['defined-name.restore']),
+  });
+  runtime.registry.registerMutation({
+    id: 'defined-name.restore',
+    handler: () => undefined,
+    metadata: metadata('DefinedNameRestore', ['defined-name.transform']),
+  });
+  runtime.registry.registerMutation({
+    id: 'name.set',
+    handler: (item, context) => context.workbook.setDefinedName((item.params as { model: typeof before }).model),
+    metadata: metadata('DefinedNameSet', ['name.remove'], []),
+  });
+  runtime.registry.registerMutation({
+    id: 'name.remove',
+    handler: (item, context) => {
+      const params = item.params as { name: string; scope?: 'workbook' | 'sheet'; sheetId?: string };
+      context.workbook.removeDefinedName(params.name, params.scope, params.sheetId);
+    },
+    metadata: metadata('DefinedNameRemove', ['name.set'], []),
+  });
+  runtime.registry.registerCommand({
+    id: 'defined-name.transform',
+    execute: (_params, context) => {
+      context.applyMutation({
+        id: 'defined-name.transform',
+        unitId: workbook.unitId,
+        sheetId,
+        params: after,
+        affectedRanges: ownerRanges,
+        inverse: [{ id: 'defined-name.restore', unitId: workbook.unitId, sheetId, params: {}, affectedRanges: ownerRanges }],
+        apply: () => {
+          workbook.setDefinedName(after);
+          return { definedNameOwnerDeltas: [delta] };
+        },
+      });
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges: ownerRanges };
+    },
+  });
+
+  runtime.execute('defined-name.transform', {});
+  assert.deepEqual(runtime.getUndoEntries()[0]?.inversePlan[0]?.structuralDefinedNameOwnerDeltas, [delta]);
+  workbook.setDefinedName({ ...after, formula: '=A9' });
+  assert.throws(() => runtime.undo(), /STRUCTURAL_PATCH_PRECONDITION: defined-name owner/);
+  assert.equal(workbook.getDefinedNameExact('Rate', 'workbook')?.formula, '=A9');
+  assert.equal(runtime.getHistoryDepth().undo, 1);
+
+  workbook.setDefinedName({ ...after, anchor: { sheetId, row: 4, column: 0 } });
+  assert.throws(() => runtime.undo(), /STRUCTURAL_PATCH_PRECONDITION: defined-name owner/);
+  assert.equal(workbook.getDefinedNameExact('Rate', 'workbook')?.anchor?.row, 4);
+
+  workbook.setDefinedName(after);
+  assert.equal(runtime.undo(), true);
+  assert.equal(workbook.getDefinedNameExact('Rate', 'workbook')?.formula, '=A1');
+  assert.deepEqual(workbook.getDefinedNameExact('Rate', 'workbook')?.anchor, before.anchor);
+  assert.deepEqual((replayEffects[0] as { definedNameOwnerDeltas: StructuralDefinedNameOwnerDelta[] }).definedNameOwnerDeltas, [{
+    owner: delta.owner,
+    before: delta.after,
+    after: delta.before,
+  }]);
+  assert.equal(runtime.redo(), true);
+  assert.equal(workbook.getDefinedNameExact('Rate', 'workbook')?.formula, '=A2');
+  assert.deepEqual((replayEffects[1] as { definedNameOwnerDeltas: StructuralDefinedNameOwnerDelta[] }).definedNameOwnerDeltas, [delta]);
+
+  runtime.applyRemoteMutations([{
+    id: 'name.set', unitId: workbook.unitId, sheetId, params: { model: { name: 'Other', formula: '=B1', scope: 'workbook' } }, affectedRanges: [],
+  }]);
+  assert.equal(runtime.getHistoryDepth().undo, 1);
+  runtime.applyRemoteMutations([{
+    id: 'name.set', unitId: workbook.unitId, sheetId, params: { model: { name: 'Rate', formula: '=A3', scope: 'workbook' } }, affectedRanges: [],
+  }]);
+  assert.equal(runtime.getHistoryDepth().undo, 0);
+  assert.match(runtime.getInvalidHistoryEntries()[0]?.invalidReason ?? '', /defined-name owner patch/);
+  assert.equal(workbook.getDefinedNameExact('Rate', 'workbook')?.formula, '=A3');
 });
 
 test('CommandRuntime emits declared calculation-context effects for command, undo, and redo', () => {

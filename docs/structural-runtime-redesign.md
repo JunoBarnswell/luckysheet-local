@@ -816,3 +816,16 @@ head `1d8508ea` 的两个后端 CI 已通过 test-compile，随后在 `sheetRena
 6. **replay 成功/拒绝的隔离契约缺少回归覆盖**：增加源码测试，覆盖 standalone purity、连续结构编辑、公式 owner replay 成功、损坏 patch fail-close，以及成功和拒绝后原输入保持不变。按静态审查要求，测试未运行。
 
 本轮没有更改 mutation 协议或 workbook 数据格式；owned 接口为 package-private，普通 descriptor 继续遵守 `MutationDescriptor.apply` 的独立结果契约。静态检查仅运行 `git diff --check` 和源码核对；未运行测试、构建、lint、浏览器或 OOXML 验收。WorkbookOperationService commit 的全快照复制仍是已知边界，不声称本 slice 解决了完整结构运行时目标。
+
+### Defined-name deltas in local history — six static review passes (2026-09-25)
+
+本轮沿 command → inverse history → undo/redo → remote rebase 做六轮静态复核并修复本地历史链：
+
+1. `StructuralTransformResult` 已生成 `StructuralDefinedNameOwnerDelta`，但 core-model 公共出口未导出该类型；现向 command runtime 暴露同一 canonical delta 类型。
+2. `CommandRuntime.applyMutation` 只读取 `formulaOwnerDeltas`，丢弃 effect 中的名称 before/after，故 `MutationInfo` 与 undo plan 没有名称 owner 身份；现写入独立 typed 字段，不伪装成 cell range。
+3. inverse plan 只保存公式 owner delta；现把名称 owner delta 放在对应逆 mutation 上，并在 undo/redo 复用它。
+4. `applyHistory` 原先只对 formula cell/rule/chart owner 作 precondition 检查；现按 scope/name/sheetId 定位名称，比较公式与 anchor 的预期状态，保留 hidden/comment 等非引用元数据，只改引用状态；陈旧 owner 在 preview preflight 阶段 fail-close。
+5. `historyRebase` 的 axis 防护只检查公式 patch；现也检查名称 patch。远端同身份 `name.set/remove` 会使冲突历史失效；sheet rename/remove/restore/duplicate 与 workbook restore 对带名称 patch 的历史采取保守失效，避免空 affected-range 绕过冲突判断。
+6. 即使 patch 已改模型，mutation listener 原先只拿到 handler effect；若 handler 未返回名称 delta，FormulaEngine 可能只能退回全量名称同步。undo/redo/remote 现向 listener 传递对应方向的精确 delta；source-level 回归覆盖同名/异名远端写、undo/redo 和 stale-state 拒绝。
+
+协同协议层仍未闭合：server-owned `StructuralPatch` v1 仍只承载 formula owner deltas，未携带上述名称 delta。不能把旧 v1 patch 静默解释为 v2 空名称列表；需先设计操作日志/Outbox 的显式迁移或 canonical patch 版本边界，再贯通 Java、协议校验与协作 ACK/replay。本轮新增测试源码但未执行任何本地测试、构建、lint 或浏览器验收；只做静态源码检查与 `git diff --check`。
