@@ -1041,7 +1041,7 @@ class MutationDescriptorRegistryTest {
         JsonNode snapshot = crossSheetRowPermutationSnapshot(0, 0);
         OperationMutation mutation = withSortContext(new OperationMutation("rows.permuted", "sheet-1", mapper.readTree("""
                 {"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":0,"endRow":2,"startColumn":0,"endColumn":0},"sourceRows":[2,0,1]}
-                """)), range(0, 2, 0, 0), "worksheet", null, false, 0);
+                """)), range(0, 2, 0, 0), "worksheet", null, false, 1);
 
         JsonNode current = registry.prepare(snapshot, mutation, WorkbookAclRole.EDITOR).descriptor().apply(snapshot, mutation);
         JsonNode owner = current.path("sheets").get(1);
@@ -1063,7 +1063,7 @@ class MutationDescriptorRegistryTest {
         ObjectNode snapshot = crossSheetRowPermutationSnapshot(0, 1);
         OperationMutation mutation = withSortContext(new OperationMutation("rows.permuted", "sheet-1", mapper.readTree("""
                 {"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":0,"endRow":3,"startColumn":0,"endColumn":0},"sourceRows":[2,0,3,1]}
-                """)), range(0, 3, 0, 0), "worksheet", null, false, 0);
+                """)), range(0, 3, 0, 0), "worksheet", null, false, 1);
         ObjectNode beforeSparklineRejection = snapshot.deepCopy();
 
         ServiceException sparklineError = assertThrows(ServiceException.class,

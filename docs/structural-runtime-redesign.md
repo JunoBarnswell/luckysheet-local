@@ -1198,3 +1198,5 @@ PR 上两个 `canonical-build` job 使用相同 head，前端依赖安装与前�
 6. **对照与回归边界**：现有跨表 drawing-source 行置换用例证明引用源应跟随源单元格移动；旧 Pivot/Sparkline 用例缺失。新增成功用例断言源范围移动而 owner 锚点及另一表源范围不变；拒绝用例分别断言无法表达为单一区域时两类 owner 都在快照变更前被拒绝。
 
 **修复**：TypeScript 与 Java 的预检和写回现在均枚举 workbook 中所有 Pivot/Sparkline 源 owner；只映射与被排序范围相交的源区域，以保留其它 `RangeRef` 的对象身份；Sparkline anchor 只跟随其所在 sheet，Pivot anchor 只按 target sheet 映射。新增 TS/Java 成功与 split-range 拒绝回归测试源码。实现自审还确认若无相交判断，TypeScript 的精确映射器会克隆并重赋无关范围，可能引起无必要的下游刷新；此路径已收窄并用对象身份断言覆盖。进一步核对发现服务端 `SnapshotMutationSupport.array` 会把缺省集合物化为空数组，因此全表只读预检/枚举改用 `existingArray`，并用无关 sheet 的字段缺省断言防止快照被扩写。仅静态审查；未运行本地测试、构建、lint 或 UI；`git diff --check` 通过。全局 StructuralPatch/ReferenceIndex 整改仍未完成。
+
+**远端门禁反馈**：首个 head 的两个 `canonical-build` 均只报告新增 Java 用例的 `affectedColumnEnd` 夹具错误：sheet `columnCount=2`，测试却传入 0。按 `SheetRuleLifecycle.affectedColumnEnd` 的 `columnCount - 1` 下界改为 1；仅测试上下文修正，不改生产逻辑。此修正 head 的远端门禁结果待记录；未在本地执行测试或构建。
