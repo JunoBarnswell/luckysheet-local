@@ -1039,6 +1039,22 @@ describe('structural operations', () => {
     assert.equal(sheet.drawings[0]?.anchor.row, 1);
   });
 
+  it('preflights cross-sheet owners without reading unrelated worksheet metadata', () => {
+    const workbook = new WorkbookModel('unit-structural-owner-preflight-scope', 'Structural owner preflight scope');
+    const target = workbook.getSheet('sheet-1');
+    target.rowCount = 4;
+    target.columnCount = 2;
+    const owner = workbook.addSheet('owner-sheet', 'Owner sheet', 4, 2);
+    Object.defineProperty(owner, 'drawings', {
+      configurable: true,
+      get() { throw new Error('Unrelated drawing anchors must not be cloned for reference-owner preflight'); },
+    });
+
+    StructuralTransform.apply(workbook, { kind: 'insert-rows', sheetId: target.id, at: 1, count: 1 });
+
+    assert.equal(target.rowCount, 5);
+  });
+
   it('moves complete data regions when rows are inserted before them and keeps manifest coordinates aligned', () => {
     const workbook = new WorkbookModel('unit-data-region-shift', 'Data Region Shift');
     const sheet = workbook.getSheet('sheet-1');

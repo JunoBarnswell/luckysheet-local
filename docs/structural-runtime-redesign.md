@@ -1120,3 +1120,16 @@ PR 上两个 `canonical-build` job 使用相同 head，前端依赖安装与前�
 6. **修复边界**：使用非变更式 optional-array reader 读取 table/rule 列表；公式规则 `ranges` 缺失时 typed validation fail-close。这样避免为只读计划额外深拷贝整本 workbook，也不生成伪空 owner state。
 
 已把 fixture 的第二张 sheet 设为省略 `sheetTables`，保留首张 sheet 缺省 rule arrays；成功路径的原快照等值断言因此同时覆盖三种可选字段。新增带公式但缺少 ranges 的拒绝且不变更输入的测试源码。只做静态审查和 `git diff --check`，未运行本地测试/构建/lint/UI；新 head 远端检查待运行结果。
+
+### 六轮静态复核 — 结构预检的非目标工作表克隆边界（2026-09-26）
+
+沿目标架构中的全表预检成本做六轮相互独立的静态核对，确认一个真实性能问题及其最窄安全修复：
+
+1. **调用入口**：`preflightAxisMetadata` 与 `preflightCellShiftMetadata` 都曾对每张工作表调用完整元数据克隆器；两条路径均属结构编辑热路径。
+2. **Axis owner 枚举**：行列预检跨表仅传递 conditional format、data validation、pivot、sparkline、drawing payload 与 hyperlink target；非目标表的 merge、drawing anchor、review、freeze、filter、print 等集合并未被该遍历消费。
+3. **Cell-shift owner 枚举**：单元格位移的跨表阶段同样只读写规则、pivot、sparkline、drawing payload 与 hyperlink；工作表表格、绘图锚点、review、spill 和 print 范围只属于目标表。
+4. **暂存隔离**：上述被访问的跨表 owner 集合必须深拷贝，否则预检会改写真实工作簿；实现仍结构化克隆这些集合，但 workbook tables 与 sources 只克隆 sourceRange 指向目标表的对象，print document 只暂存目标表对象。
+5. **目标表完整性**：目标表仍使用完整元数据克隆器，避免缩窄目标 owner 集合而改变既有成功/拒绝语义。
+6. **负向回归边界**：新增测试源码用非目标工作表 `drawings` 的读取陷阱证明预检不再触碰不相关元数据；仅静态检查该用例可达结构入口，未执行测试。
+
+**修复**：两条预检路径现在对目标表完整暂存，对非目标表只暂存六类实际跨表引用 owner；workbook tables 与 sources 也只克隆指向目标表的对象，避免复制无关的大型元数据集合。`git diff --check` 通过；没有运行本地测试、构建、lint 或 UI。此修复不消除逐表 owner 遍历，也未替代全类型 `ReferenceIndex`、Canonical Structural Planner 或 patch 原子应用；剩余架构目标继续开放。

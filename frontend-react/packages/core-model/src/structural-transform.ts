@@ -778,13 +778,36 @@ function cloneStructuralMetadataSheet(sheet: WorksheetModel): WorksheetModel {
   return staged;
 }
 
+/** Clone only workbook-wide reference owners for a non-target worksheet. */
+function cloneStructuralReferenceOwnerSheet(sheet: WorksheetModel): WorksheetModel {
+  const staged = new WorksheetModel(sheet.id, sheet.name, sheet.rowCount, sheet.columnCount);
+  staged.pivots.push(...structuredClone(sheet.pivots));
+  staged.sparklines.push(...structuredClone(sheet.sparklines));
+  staged.conditionalFormats.push(...structuredClone(sheet.conditionalFormats));
+  staged.dataValidations.push(...structuredClone(sheet.dataValidations));
+  for (const [key, payload] of sheet.drawingPayloads) staged.drawingPayloads.set(key, structuredClone(payload));
+  for (const [key, hyperlink] of sheet.hyperlinks) staged.hyperlinks.set(key, structuredClone(hyperlink));
+  return staged;
+}
+
+function cloneStructuralPreflightSheets(workbook: WorkbookModel, targetSheet: WorksheetModel): WorksheetModel[] {
+  return workbook.getSheets().map((sheet) => sheet.id === targetSheet.id
+    ? cloneStructuralMetadataSheet(sheet)
+    : cloneStructuralReferenceOwnerSheet(sheet));
+}
+
 function preflightCellShiftMetadata(workbook: WorkbookModel, sheet: WorksheetModel, plan: CellShiftPlan): void {
-  const stagedSheets = workbook.getSheets().map(cloneStructuralMetadataSheet);
+  const stagedSheets = cloneStructuralPreflightSheets(workbook, sheet);
   const staged = stagedSheets.find((candidate) => candidate.id === sheet.id);
   if (!staged) throw new Error(`STRUCTURAL_PATCH_INVARIANT: worksheet ${sheet.id} is absent from metadata preflight`);
-  const tables = [...workbook.dataModel.tables.values()].map((table) => structuredClone(table));
+  const tables: WorkbookTableModel[] = [];
+  for (const table of workbook.dataModel.tables.values()) {
+    if (table.sourceRange?.sheetId === sheet.id) tables.push(structuredClone(table));
+  }
   const sources = new Map<string, DataSourceManifest>();
-  for (const [id, source] of workbook.dataModel.sources) sources.set(id, structuredClone(source));
+  for (const [id, source] of workbook.dataModel.sources) {
+    if (source.sourceRange?.sheetId === sheet.id) sources.set(id, structuredClone(source));
+  }
   const printDocument = workbook.printDocuments.get(sheet.id);
   shiftCellBandMetadata(workbook, staged, plan, tables, stagedSheets, sources,
     printDocument ? structuredClone(printDocument) : undefined);
@@ -810,12 +833,17 @@ function preflightAxisMetadata(
   count: number,
   direction: 1 | -1,
 ): void {
-  const stagedSheets = workbook.getSheets().map(cloneStructuralMetadataSheet);
+  const stagedSheets = cloneStructuralPreflightSheets(workbook, sheet);
   const staged = stagedSheets.find((candidate) => candidate.id === sheet.id);
   if (!staged) throw new Error(`STRUCTURAL_PATCH_INVARIANT: worksheet ${sheet.id} is absent from metadata preflight`);
-  const tables = [...workbook.dataModel.tables.values()].map((table) => structuredClone(table));
+  const tables: WorkbookTableModel[] = [];
+  for (const table of workbook.dataModel.tables.values()) {
+    if (table.sourceRange?.sheetId === sheet.id) tables.push(structuredClone(table));
+  }
   const sources = new Map<string, DataSourceManifest>();
-  for (const [id, source] of workbook.dataModel.sources) sources.set(id, structuredClone(source));
+  for (const [id, source] of workbook.dataModel.sources) {
+    if (source.sourceRange?.sheetId === sheet.id) sources.set(id, structuredClone(source));
+  }
   shiftDataRegionAxis(workbook, staged, axis, at, count, direction, sources);
   shiftMerges(staged, axis, at, count, direction);
   for (const owner of stagedSheets) {
