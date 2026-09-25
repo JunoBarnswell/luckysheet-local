@@ -1,4 +1,4 @@
-import { CALCULATION_CONTEXT_EFFECTS, clearFormulaProvenance, type AutoFilterModel, type RangeRef, type SheetTableModel } from '@react-sheets/core-model';
+import { CALCULATION_CONTEXT_EFFECTS, clearFormulaProvenance, planSheetTableRename, type AutoFilterModel, type RangeRef, type SheetTableModel } from '@react-sheets/core-model';
 import type { CommandRuntime } from '@react-sheets/command-runtime';
 import {
   planTotalRowToggle,
@@ -185,6 +185,9 @@ export function registerSheetTableCommands(runtime: CommandRuntime): void {
         && entry.range.startColumn <= next.range.endColumn && entry.range.endColumn >= next.range.startColumn);
       if (overlaps) throw new Error('Sheet Tables cannot overlap');
       const affectedRanges = [structuredClone(next.range)];
+      const tableRename = previous.name === next.name
+        ? undefined
+        : planSheetTableRename(context.workbook, previous.id, next.name);
       context.applyMutation({
         id: 'sheetTable.update',
         unitId: context.workbook.unitId,
@@ -192,7 +195,11 @@ export function registerSheetTableCommands(runtime: CommandRuntime): void {
         params: next,
         affectedRanges,
         inverse: [{ id: 'sheetTable.update', unitId: context.workbook.unitId, sheetId: params.sheetId, params: previous, affectedRanges: [structuredClone(previous.range)] }],
-        apply: () => { sheet.sheetTables[index] = structuredClone(next); },
+        apply: () => {
+          const effect = tableRename?.apply();
+          sheet.sheetTables[index] = structuredClone(next);
+          return effect;
+        },
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },

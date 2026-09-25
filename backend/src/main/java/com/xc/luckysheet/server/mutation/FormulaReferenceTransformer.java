@@ -434,6 +434,80 @@ final class FormulaReferenceTransformer {
         return rewriteThreeDimensionalSheetNames(rewritten, oldName, newName);
     }
 
+    static String renameTableReferences(String formula, String oldName, String newName) {
+        if (formula == null || formula.isEmpty() || oldName == null || oldName.isBlank()
+                || newName == null || newName.isBlank() || sameName(oldName, newName)) return formula;
+        StringBuilder output = new StringBuilder(formula.length());
+        int copied = 0;
+        int index = 0;
+        while (index < formula.length()) {
+            char current = formula.charAt(index);
+            if (current == '"') {
+                index = consumeString(formula, index);
+                continue;
+            }
+            if (current == '[') {
+                int externalEnd = consumeExternalReference(formula, index);
+                if (externalEnd > index) {
+                    index = externalEnd;
+                    continue;
+                }
+                int closingBook = formula.indexOf(']', index + 1);
+                if (closingBook > index + 1 && closingBook + 1 < formula.length()
+                        && isTableIdentifierStart(formula.charAt(closingBook + 1))) {
+                    int externalTableEnd = scanTableIdentifier(formula, closingBook + 1);
+                    int externalReferenceStart = externalTableEnd;
+                    while (externalReferenceStart < formula.length()
+                            && Character.isWhitespace(formula.charAt(externalReferenceStart))) externalReferenceStart += 1;
+                    if (externalReferenceStart < formula.length() && formula.charAt(externalReferenceStart) == '[') {
+                        index = requireStructuredReferenceEnd(formula, externalReferenceStart);
+                        continue;
+                    }
+                }
+                index = consumeBracketedReference(formula, index);
+                continue;
+            }
+            if (isTableIdentifierStart(current)
+                    && (index == 0 || !isReferenceNamePart(formula.charAt(index - 1)))) {
+                int nameEnd = scanTableIdentifier(formula, index);
+                int referenceStart = nameEnd;
+                while (referenceStart < formula.length() && Character.isWhitespace(formula.charAt(referenceStart))) referenceStart += 1;
+                if (formula.substring(index, nameEnd).equalsIgnoreCase(oldName)
+                        && referenceStart < formula.length() && formula.charAt(referenceStart) == '[') {
+                    int referenceEnd = requireStructuredReferenceEnd(formula, referenceStart);
+                    output.append(formula, copied, index).append(newName).append(formula, nameEnd, referenceEnd);
+                    copied = referenceEnd;
+                    index = referenceEnd;
+                    continue;
+                }
+                index = nameEnd;
+                continue;
+            }
+            index += 1;
+        }
+        if (copied == 0) return formula;
+        output.append(formula, copied, formula.length());
+        return output.toString();
+    }
+
+    private static int requireStructuredReferenceEnd(String formula, int openingBracket) {
+        int end = consumeBracketedReference(formula, openingBracket);
+        if (end <= openingBracket || formula.charAt(end - 1) != ']') {
+            throw ServiceException.unavailable("UNSUPPORTED_STRUCTURAL_REFERENCE: structured table reference is unclosed");
+        }
+        return end;
+    }
+
+    private static int scanTableIdentifier(String formula, int start) {
+        int end = start + 1;
+        while (end < formula.length() && isReferenceNamePart(formula.charAt(end))) end += 1;
+        return end;
+    }
+
+    private static boolean isTableIdentifierStart(char value) {
+        return isAsciiLetter(value) || value == '_';
+    }
+
     static String invalidateSheet(String formula, String sheetId, String sheetName) {
         if (sheetId == null || sheetId.isBlank() || sheetName == null || sheetName.isBlank()) throw ServiceException.validation("Worksheet identity is required for formula invalidation");
         assertNoThreeDimensionalReference(formula);
@@ -984,7 +1058,7 @@ final class FormulaReferenceTransformer {
     }
 
     private static boolean isReferenceNamePart(char value) {
-        return isAsciiLetter(value) || Character.isDigit(value) || value == '_' || value == '.';
+        return Character.isLetterOrDigit(value) || value == '_' || value == '.';
     }
 
     private static int consumeString(String formula, int start) {

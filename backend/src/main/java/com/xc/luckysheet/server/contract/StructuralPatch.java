@@ -17,10 +17,11 @@ public record StructuralPatch(
         @JsonProperty("formulaOwnerDeltas") List<FormulaOwnerDelta> formulaOwnerDeltas,
         @JsonProperty("definedNameOwnerDeltas") List<DefinedNameOwnerDelta> definedNameOwnerDeltas
 ) {
-    public static final int VERSION = 2;
+    public static final int VERSION = 3;
 
     private record FormulaOwnerKey(String kind, String sheetId, Integer row, Integer column,
-            String ruleKind, String ruleId, String field, String ownerKind, String ownerId) { }
+            String ruleKind, String ruleId, String field, String ownerKind, String ownerId,
+            String fieldId, String viewId, String templateId) { }
     private record DefinedNameOwnerKey(String scope, String normalizedName, String sheetId) { }
 
     @JsonCreator
@@ -35,12 +36,13 @@ public record StructuralPatch(
         for (FormulaOwnerDelta delta : formulaOwnerDeltas) {
             FormulaOwnerKey key = "formula-cell".equals(delta.kind())
                     ? new FormulaOwnerKey(delta.kind(), delta.afterAddress().sheetId(), delta.afterAddress().row(),
-                            delta.afterAddress().column(), null, null, null, null, null)
+                            delta.afterAddress().column(), null, null, null, null, null, null, null, null)
                     : "formula-rule".equals(delta.kind())
                             ? new FormulaOwnerKey(delta.kind(), delta.sheetId(), null, null,
-                                    delta.ruleKind(), delta.ruleId(), delta.field(), null, null)
+                                    delta.ruleKind(), delta.ruleId(), delta.field(), null, null, null, null, null)
                             : new FormulaOwnerKey(delta.kind(), delta.sheetId(), null, null,
-                                    null, null, delta.field(), delta.ownerKind(), delta.ownerId());
+                                    null, null, delta.field(), delta.ownerKind(), delta.ownerId(),
+                                    delta.fieldId(), delta.viewId(), delta.templateId());
             if (!ownerKeys.add(key)) throw new IllegalArgumentException("StructuralPatch contains duplicate formula owner deltas");
         }
         Set<DefinedNameOwnerKey> definedNameKeys = new HashSet<>();
@@ -174,20 +176,23 @@ public record StructuralPatch(
             @JsonProperty("beforeRanges") List<RangeRef> beforeRanges,
             @JsonProperty("afterRanges") List<RangeRef> afterRanges,
             @JsonProperty("ownerKind") String ownerKind,
-            @JsonProperty("payloadId") String ownerId
+            @JsonProperty("payloadId") String ownerId,
+            @JsonProperty("fieldId") String fieldId,
+            @JsonProperty("viewId") String viewId,
+            @JsonProperty("templateId") String templateId
     ) {
         @JsonCreator
         public FormulaOwnerDelta {
             if ("formula-cell".equals(kind)) {
                 if (beforeAddress == null || afterAddress == null || before == null || after == null
                         || sheetId != null || ruleKind != null || ruleId != null || field != null
-                        || ownerKind != null || ownerId != null
+                        || ownerKind != null || ownerId != null || fieldId != null || viewId != null || templateId != null
                         || beforeFormula != null || afterFormula != null || beforeRanges != null || afterRanges != null) {
                     throw new IllegalArgumentException("StructuralPatch formula-cell owner delta is incomplete or mixed with rule state");
                 }
             } else if ("formula-rule".equals(kind)) {
                 if (beforeAddress != null || afterAddress != null || before != null || after != null
-                        || ownerKind != null || ownerId != null
+                        || ownerKind != null || ownerId != null || fieldId != null || viewId != null || templateId != null
                         || sheetId == null || sheetId.isBlank() || ruleId == null || ruleId.isBlank()
                         || ruleKind == null || !List.of("conditional-format", "data-validation").contains(ruleKind)
                         || field == null || !List.of("value1", "value2", "formula1", "formula2", "listSource.formula").contains(field)
@@ -203,13 +208,8 @@ public record StructuralPatch(
             } else if ("formula-object".equals(kind)) {
                 if (beforeAddress != null || afterAddress != null || before != null || after != null
                         || ruleKind != null || ruleId != null || beforeRanges != null || afterRanges != null
-                        || sheetId == null || sheetId.isBlank() || !"chart-text".equals(ownerKind)
-                        || ownerId == null || ownerId.isBlank()
-                        || !List.of("titleText.linkedFormula", "legend.text.linkedFormula",
-                                "categoryAxis.titleText.linkedFormula", "valueAxis.titleText.linkedFormula",
-                                "secondaryCategoryAxis.titleText.linkedFormula", "secondaryValueAxis.titleText.linkedFormula",
-                                "dataTable.font.linkedFormula").contains(field)
-                        || beforeFormula == null || afterFormula == null || beforeFormula.equals(afterFormula)) {
+                        || beforeFormula == null || afterFormula == null || beforeFormula.equals(afterFormula)
+                        || !validFormulaObjectOwner(ownerKind, sheetId, ownerId, fieldId, viewId, templateId, field)) {
                     throw new IllegalArgumentException("StructuralPatch formula-object owner delta is incomplete or invalid");
                 }
             } else {
@@ -222,21 +222,50 @@ public record StructuralPatch(
                     && range.endRow() <= 1_048_575 && range.endColumn() <= 16_383);
         }
 
+        private static boolean validFormulaObjectOwner(String ownerKind, String sheetId, String payloadId,
+                String fieldId, String viewId, String templateId, String field) {
+            return switch (ownerKind == null ? "" : ownerKind) {
+                case "chart-text" -> sheetId != null && !sheetId.isBlank() && payloadId != null && !payloadId.isBlank()
+                        && fieldId == null && viewId == null && templateId == null
+                        && List.of("titleText.linkedFormula", "legend.text.linkedFormula",
+                                "categoryAxis.titleText.linkedFormula", "valueAxis.titleText.linkedFormula",
+                                "secondaryCategoryAxis.titleText.linkedFormula", "secondaryValueAxis.titleText.linkedFormula",
+                                "dataTable.font.linkedFormula").contains(field);
+                case "shape-property" -> sheetId != null && !sheetId.isBlank() && payloadId != null && !payloadId.isBlank()
+                        && field == null && fieldId == null && viewId == null && templateId == null;
+                case "table-sheet-column" -> sheetId != null && !sheetId.isBlank() && fieldId != null && !fieldId.isBlank()
+                        && payloadId == null && field == null && viewId == null && templateId == null;
+                case "data-view-field" -> viewId != null && !viewId.isBlank() && fieldId != null && !fieldId.isBlank()
+                        && sheetId == null && payloadId == null && field == null && templateId == null;
+                case "cell-style-template" -> templateId != null && !templateId.isBlank() && fieldId == null
+                        && viewId == null && sheetId == null && payloadId == null
+                        && List.of("formula1", "formula2", "listSource.formula").contains(field);
+                default -> false;
+            };
+        }
+
         public FormulaOwnerDelta(String kind, CellAddress beforeAddress, CellAddress afterAddress,
                 FormulaOwnerState before, FormulaOwnerState after) {
-            this(kind, beforeAddress, afterAddress, before, after, null, null, null, null, null, null, null, null, null, null);
+            this(kind, beforeAddress, afterAddress, before, after, null, null, null, null, null,
+                    null, null, null, null, null, null, null, null);
         }
 
         public static FormulaOwnerDelta formulaRule(String sheetId, String ruleKind, String ruleId, String field,
                 String beforeFormula, String afterFormula, List<RangeRef> beforeRanges, List<RangeRef> afterRanges) {
             return new FormulaOwnerDelta("formula-rule", null, null, null, null, sheetId, ruleKind, ruleId,
-                    field, beforeFormula, afterFormula, beforeRanges, afterRanges, null, null);
+                    field, beforeFormula, afterFormula, beforeRanges, afterRanges, null, null, null, null, null);
         }
 
         public static FormulaOwnerDelta formulaObject(String sheetId, String ownerKind, String ownerId, String field,
                 String beforeFormula, String afterFormula) {
             return new FormulaOwnerDelta("formula-object", null, null, null, null, sheetId, null, null,
-                    field, beforeFormula, afterFormula, null, null, ownerKind, ownerId);
+                    field, beforeFormula, afterFormula, null, null, ownerKind, ownerId, null, null, null);
+        }
+
+        public static FormulaOwnerDelta formulaObject(String ownerKind, String sheetId, String payloadId,
+                String fieldId, String viewId, String templateId, String field, String beforeFormula, String afterFormula) {
+            return new FormulaOwnerDelta("formula-object", null, null, null, null, sheetId, null, null,
+                    field, beforeFormula, afterFormula, null, null, ownerKind, payloadId, fieldId, viewId, templateId);
         }
 
         public FormulaOwnerDelta inverse() {
@@ -244,7 +273,8 @@ public record StructuralPatch(
                 return new FormulaOwnerDelta(kind, afterAddress, beforeAddress, after, before);
             }
             if ("formula-rule".equals(kind)) return formulaRule(sheetId, ruleKind, ruleId, field, afterFormula, beforeFormula, afterRanges, beforeRanges);
-            return formulaObject(sheetId, ownerKind, ownerId, field, afterFormula, beforeFormula);
+            return new FormulaOwnerDelta("formula-object", null, null, null, null, sheetId, null, null,
+                    field, afterFormula, beforeFormula, null, null, ownerKind, ownerId, fieldId, viewId, templateId);
         }
     }
 }

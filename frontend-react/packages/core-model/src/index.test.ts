@@ -9,6 +9,7 @@ import {
   normalizePivotTimelinePeriod,
   pivotNumericValue,
   pivotTimelineInstant,
+  planSheetTableRename,
   WorkbookModel,
   WorksheetModel,
 } from './index';
@@ -319,6 +320,26 @@ test('CellMatrix enumerates non-calculation formula owners without hydrating def
   matrix.forEachFormulaOwner((_cell, row, column) => owners.push(`${row}:${column}`));
   assert.deepEqual(owners, ['2:3', '2:4']);
   assert.equal(matrix.isHydrated, false);
+});
+
+test('CellMatrix rewrites deferred formula owners without hydrating or mutating source JSON', () => {
+  const deferred = {
+    '2': {
+      '3': { value: null, formula: '=Sales[Amount]' },
+      '4': { value: 'unchanged' },
+    },
+  };
+  const matrix = new CellMatrix();
+  matrix.deferJSON(deferred);
+  const current = matrix.getFormulaOwnerWithoutHydration(2, 3)!;
+
+  assert.equal(matrix.replaceFormulaOwnerWithoutHydration(2, 3, { ...current, formula: '=Orders[Amount]' }), true);
+
+  assert.equal(matrix.isHydrated, false);
+  assert.equal(matrix.revision, 3);
+  assert.equal(matrix.toJSON()['2']?.['3']?.formula, '=Orders[Amount]');
+  assert.equal(deferred['2']?.['3']?.formula, '=Sales[Amount]');
+  assert.equal(matrix.replaceFormulaOwnerWithoutHydration(2, 4, { value: 'changed' }), false);
 });
 
 test('CellMatrix keeps deferred cells intact when normalization fails during hydration', () => {
@@ -691,6 +712,39 @@ test('sheet duplication allocates workbook-unique table identity and rewrites co
   assert.equal(duplicate.sheetTables[0]?.name, 'Sales_2');
   assert.equal(duplicate.cells.get(0, 2)?.formula, '=SUM(Sales_2[Amount])');
   assert.equal(source.cells.get(0, 2)?.formula, '=SUM(Sales[Amount])');
+});
+
+test('Sheet Table rename plans complete cell and preserved-source formula owner deltas', () => {
+  const workbook = new WorkbookModel('sheet-table-rename-owners', 'Sheet Table rename owners');
+  const sheet = workbook.getSheet('sheet-1');
+  sheet.sheetTables.push({
+    id: 'sales-table', sheetId: sheet.id, name: 'Sales',
+    range: { sheetId: sheet.id, startRow: 0, endRow: 1, startColumn: 0, endColumn: 1 },
+    hasHeaderRow: true, hasTotalRow: false, showBandedRows: false, showBandedColumns: false,
+    showFirstColumn: false, showLastColumn: false, showFilterButton: true, autoExpand: 'none',
+    columns: [{ id: 'sales-amount', name: 'Amount' }],
+  });
+  const deferredCells = {
+    '0': { '2': { value: null, formula: '=SUM(Sales[Amount])' } },
+    '1': { '2': {
+      value: null,
+      formulaMetadata: { kind: 'dataTable' as const, preservedOnly: true, sourceFormula: '=Sales[Amount]', reason: 'Native OOXML formula' },
+    } },
+  };
+  sheet.cells.deferJSON(deferredCells);
+
+  const plan = planSheetTableRename(workbook, 'sales-table', 'Orders');
+  const effect = plan.apply();
+
+  const cells = sheet.cells.toJSON();
+  assert.equal(cells['0']?.['2']?.formula, '=SUM(Orders[Amount])');
+  assert.equal(cells['1']?.['2']?.formulaMetadata?.sourceFormula, '=Orders[Amount]');
+  assert.equal(sheet.cells.isHydrated, false);
+  assert.equal(deferredCells['0']?.['2']?.formula, '=SUM(Sales[Amount])');
+  assert.equal(deferredCells['1']?.['2']?.formulaMetadata?.sourceFormula, '=Sales[Amount]');
+  assert.equal(effect.formulaOwnerDeltas?.length, 2);
+  assert.equal(effect.formulaOwnerDeltas?.[0]?.kind, 'formula-cell');
+  assert.equal(effect.formulaOwnerDeltas?.[1]?.kind, 'formula-cell');
 });
 
 test('sheet rename fails closed on a preserved-only formula reference without changing the workbook', () => {

@@ -1597,24 +1597,98 @@ function applyDefinedNameOwnerDelta(
   });
 }
 
+function readFormulaObjectOwner(workbook: WorkbookModel, delta: Extract<StructuralFormulaOwnerDelta, { kind: 'formula-object' }>): string | undefined {
+  switch (delta.ownerKind) {
+    case 'chart-text': {
+      const payload = workbook.getSheet(delta.sheetId).drawingPayloads.get(delta.payloadId);
+      return payload?.kind === 'chart' ? readChartTextFormula(payload, delta.field) : undefined;
+    }
+    case 'shape-property': {
+      const payload = workbook.getSheet(delta.sheetId).drawingPayloads.get(delta.payloadId);
+      return payload?.kind === 'shape' ? payload.propertyFormula : undefined;
+    }
+    case 'table-sheet-column': {
+      const columns = workbook.getSheet(delta.sheetId).tableSheet?.columns.filter((column) => column.fieldId === delta.fieldId) ?? [];
+      return columns.length === 1 ? columns[0]!.formula : undefined;
+    }
+    case 'data-view-field': {
+      const fields = workbook.dataModel.views.get(delta.viewId)?.fields.filter((field) => field.fieldId === delta.fieldId) ?? [];
+      return fields.length === 1 ? fields[0]!.formula : undefined;
+    }
+    case 'cell-style-template': {
+      const validation = workbook.cellStyleTemplates.get(delta.templateId)?.dataValidation;
+      if (delta.field === 'formula1') return validation?.formula1;
+      if (delta.field === 'formula2') return validation?.formula2;
+      return validation?.listSource?.kind === 'formula' ? validation.listSource.formula : undefined;
+    }
+  }
+}
+
+function writeFormulaObjectOwner(
+  workbook: WorkbookModel,
+  delta: Extract<StructuralFormulaOwnerDelta, { kind: 'formula-object' }>,
+  formula: string,
+): boolean {
+  switch (delta.ownerKind) {
+    case 'chart-text': {
+      const payload = workbook.getSheet(delta.sheetId).drawingPayloads.get(delta.payloadId);
+      if (!payload || payload.kind !== 'chart') return false;
+      writeChartTextFormula(payload, delta.field, formula);
+      return true;
+    }
+    case 'shape-property': {
+      const payload = workbook.getSheet(delta.sheetId).drawingPayloads.get(delta.payloadId);
+      if (!payload || payload.kind !== 'shape') return false;
+      payload.propertyFormula = formula;
+      return true;
+    }
+    case 'table-sheet-column': {
+      const columns = workbook.getSheet(delta.sheetId).tableSheet?.columns.filter((column) => column.fieldId === delta.fieldId) ?? [];
+      if (columns.length !== 1) return false;
+      columns[0]!.formula = formula;
+      return true;
+    }
+    case 'data-view-field': {
+      const fields = workbook.dataModel.views.get(delta.viewId)?.fields.filter((field) => field.fieldId === delta.fieldId) ?? [];
+      if (fields.length !== 1) return false;
+      fields[0]!.formula = formula;
+      return true;
+    }
+    case 'cell-style-template': {
+      const validation = workbook.cellStyleTemplates.get(delta.templateId)?.dataValidation;
+      if (!validation) return false;
+      if (delta.field === 'formula1') validation.formula1 = formula;
+      else if (delta.field === 'formula2') validation.formula2 = formula;
+      else if (validation.listSource?.kind === 'formula') validation.listSource.formula = formula;
+      else return false;
+      return true;
+    }
+  }
+}
+
 function applyFormulaOwnerDelta(
   workbook: WorkbookModel,
   delta: StructuralFormulaOwnerDelta,
   direction: 'undo' | 'forward',
 ): void {
   if (delta.kind === 'formula-object') {
-    const payload = workbook.getSheet(delta.sheetId).drawingPayloads.get(delta.payloadId);
-    if (!payload || payload.kind !== 'chart') {
-      throw new Error(`STRUCTURAL_PATCH_PRECONDITION: chart text formula owner ${delta.sheetId}:${delta.payloadId} is missing`);
-    }
     const expectedFormula = direction === 'undo' ? delta.afterFormula : delta.beforeFormula;
     const targetFormula = direction === 'undo' ? delta.beforeFormula : delta.afterFormula;
-    const currentFormula = readChartTextFormula(payload, delta.field);
+    const currentFormula = readFormulaObjectOwner(workbook, delta);
+    const ownerIdentity = delta.ownerKind === 'data-view-field'
+      ? `${delta.viewId}:${delta.fieldId}`
+      : delta.ownerKind === 'cell-style-template'
+        ? `${delta.templateId}.${delta.field}`
+        : delta.ownerKind === 'table-sheet-column'
+          ? `${delta.sheetId}:${delta.fieldId}`
+          : `${delta.sheetId}:${delta.payloadId}`;
     if (currentFormula === targetFormula) return;
     if (currentFormula !== expectedFormula) {
-      throw new Error(`STRUCTURAL_PATCH_PRECONDITION: chart text formula owner ${delta.sheetId}:${delta.payloadId}.${delta.field} changed since the structural operation`);
+      throw new Error(`STRUCTURAL_PATCH_PRECONDITION: ${delta.ownerKind} formula owner ${ownerIdentity} changed since the structural operation`);
     }
-    writeChartTextFormula(payload, delta.field, targetFormula);
+    if (!writeFormulaObjectOwner(workbook, delta, targetFormula)) {
+      throw new Error(`STRUCTURAL_PATCH_PRECONDITION: ${delta.ownerKind} formula owner ${ownerIdentity} is missing or ambiguous`);
+    }
     return;
   }
   if (delta.kind === 'formula-rule') {
@@ -1664,14 +1738,16 @@ function applyFormulaOwnerDelta(
   const target = direction === 'undo' ? delta.before : delta.after;
   const { sheetId, row, column } = address;
   const sheet = workbook.getSheet(sheetId);
-  const cell = sheet.cells.get(row, column);
+  const cell = sheet.cells.getWithoutHydration(row, column);
   if (!cell) throw new Error(`STRUCTURAL_PATCH_PRECONDITION: formula owner ${sheetId}!${row}:${column} is missing after inverse`);
   const current = formulaOwnerState(cell);
   if (sameFormulaOwnerState(current, target)) {
     if (target.formula !== null && cell.formulaValue !== undefined) {
       const next = { ...cell };
       delete next.formulaValue;
-      sheet.cells.set(row, column, next);
+      if (!sheet.cells.replaceCellWithoutHydration(row, column, next)) {
+        throw new Error(`STRUCTURAL_PATCH_PRECONDITION: formula owner ${sheetId}!${row}:${column} is missing after inverse`);
+      }
     }
     return;
   }
@@ -1689,7 +1765,7 @@ function applyFormulaOwnerDelta(
       next.formulaMetadata = metadata;
     }
   } else {
-    if (!next.formulaMetadata || next.formulaMetadata.preservedOnly) {
+    if (!next.formulaMetadata) {
       throw new Error(`STRUCTURAL_PATCH_INVARIANT: formula provenance owner ${sheetId}!${row}:${column} changed type`);
     }
     next.formulaMetadata = { ...next.formulaMetadata, sourceFormula: target.sourceFormula };
@@ -1702,5 +1778,7 @@ function applyFormulaOwnerDelta(
   } else if (current.barcodeFormula !== null && expected.barcodeFormula !== null) {
     throw new Error(`STRUCTURAL_PATCH_INVARIANT: barcode formula owner ${sheetId}!${row}:${column} cannot be removed by a reference delta`);
   }
-  sheet.cells.set(row, column, next);
+  if (!sheet.cells.replaceCellWithoutHydration(row, column, next)) {
+    throw new Error(`STRUCTURAL_PATCH_PRECONDITION: formula owner ${sheetId}!${row}:${column} is missing after inverse`);
+  }
 }

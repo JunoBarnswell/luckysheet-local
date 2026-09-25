@@ -16,6 +16,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.function.BiFunction;
 import java.util.function.Function;
@@ -45,6 +46,10 @@ final class StructuralSnapshotReducer {
             Map<String, String> formulas
     ) { }
 
+    private record FormulaChange(String before, String after) {
+        boolean changed() { return before != null && after != null && !before.equals(after); }
+    }
+
     private StructuralSnapshotReducer() {
     }
 
@@ -62,7 +67,7 @@ final class StructuralSnapshotReducer {
                 continue;
             }
             if ("formula-object".equals(delta.kind())) {
-                applyChartTextFormulaOwnerDelta(root, delta);
+                applyFormulaObjectOwnerDelta(root, delta);
                 continue;
             }
             StructuralPatch.CellAddress address = delta.afterAddress();
@@ -104,6 +109,126 @@ final class StructuralSnapshotReducer {
             deltas.add(new StructuralPatch.DefinedNameOwnerDelta(owner, beforeState, afterState));
         }
         return List.copyOf(deltas);
+    }
+
+    static StructuralPatch renameSheetTableReferences(
+            JsonNode beforeSnapshot,
+            JsonNode afterSnapshot,
+            String sheetId,
+            String tableId
+    ) {
+        ObjectNode before = SnapshotMutationSupport.root(beforeSnapshot);
+        ObjectNode after = SnapshotMutationSupport.root(afterSnapshot);
+        JsonNode oldTable = findSheetTable(before, sheetId, tableId);
+        JsonNode newTable = findSheetTable(after, sheetId, tableId);
+        String oldName = SnapshotMutationSupport.text(oldTable, "name");
+        String newName = SnapshotMutationSupport.text(newTable, "name");
+        if (oldName.equalsIgnoreCase(newName)) return null;
+
+        Function<String, String> mapFormula = formula -> FormulaReferenceTransformer.renameTableReferences(formula, oldName, newName);
+        List<StructuralPatch.FormulaOwnerDelta> formulaDeltas = new ArrayList<>();
+        for (JsonNode rawSheet : SnapshotMutationSupport.sheets(before)) {
+            ObjectNode sheet = requireObject(rawSheet, "Sheet");
+            String ownerSheetId = SnapshotMutationSupport.text(sheet, "id");
+            forEachCell(sheet, entry -> {
+                ObjectNode cell = entry.cell();
+                StructuralPatch.FormulaOwnerState beforeState = formulaOwnerState(cell);
+                String formula = beforeState.formula() == null ? null : mapFormula.apply(beforeState.formula());
+                String sourceFormula = beforeState.sourceFormula() == null ? null : mapFormula.apply(beforeState.sourceFormula());
+                String barcodeFormula = beforeState.barcodeFormula() == null ? null : mapFormula.apply(beforeState.barcodeFormula());
+                if (Objects.equals(formula, beforeState.formula())
+                        && Objects.equals(sourceFormula, beforeState.sourceFormula())
+                        && Objects.equals(barcodeFormula, beforeState.barcodeFormula())) return;
+                if (hasFormulaGroupMetadata(cell)) {
+                    throw ServiceException.unavailable("UNSUPPORTED_STRUCTURAL_REFERENCE: formula group at "
+                            + ownerSheetId + "!" + entry.row() + ":" + entry.column()
+                            + " requires an explicit table-reference transform");
+                }
+                formulaDeltas.add(new StructuralPatch.FormulaOwnerDelta(
+                        "formula-cell",
+                        new StructuralPatch.CellAddress(ownerSheetId, entry.row(), entry.column()),
+                        new StructuralPatch.CellAddress(ownerSheetId, entry.row(), entry.column()),
+                        beforeState,
+                        new StructuralPatch.FormulaOwnerState(formula, sourceFormula, barcodeFormula)));
+            });
+        }
+        for (JsonNode rawSheet : SnapshotMutationSupport.sheets(before)) {
+            ObjectNode sheet = requireObject(rawSheet, "Sheet");
+            appendTableRenameRuleDeltas(before, sheet, SnapshotMutationSupport.text(sheet, "id"), mapFormula, formulaDeltas);
+        }
+
+        ObjectNode transformedObjects = before.deepCopy();
+        ObjectNode targetSheet = SnapshotMutationSupport.sheet(transformedObjects, sheetId);
+        List<StructuralPatch.FormulaOwnerDelta> objectDeltas = rewritePersistedFormulaOwners(
+                transformedObjects,
+                identity(targetSheet),
+                (formula, owner) -> mapFormula.apply(formula),
+                ObjectNode::deepCopy,
+                true);
+        formulaDeltas.addAll(objectDeltas);
+
+        JsonNode rawModels = before.get("definedNameModels");
+        JsonNode transformedModels = rawModels == null ? null : rawModels.deepCopy();
+        if (transformedModels instanceof ArrayNode models) {
+            for (JsonNode rawModel : models) {
+                ObjectNode model = requireObject(rawModel, "Defined name");
+                JsonNode rawFormula = model.get("formula");
+                if (rawFormula == null || !rawFormula.isTextual()) {
+                    throw ServiceException.validation("Defined-name formula must be text during table rename");
+                }
+                String formula = rawFormula.asText();
+                String rewritten = mapFormula.apply(formula);
+                if (!formula.equals(rewritten)) model.put("formula", rewritten);
+            }
+        }
+        List<StructuralPatch.DefinedNameOwnerDelta> nameDeltas = definedNameOwnerDeltas(rawModels, transformedModels);
+        if (formulaDeltas.isEmpty() && nameDeltas.isEmpty()) return null;
+        return new StructuralPatch(StructuralPatch.VERSION, "sheetTable.update", formulaDeltas, nameDeltas);
+    }
+
+    private static JsonNode findSheetTable(ObjectNode root, String sheetId, String tableId) {
+        JsonNode match = null;
+        String matchSheetId = null;
+        int matchCount = 0;
+        for (JsonNode rawSheet : SnapshotMutationSupport.sheets(root)) {
+            ObjectNode sheet = requireObject(rawSheet, "Sheet");
+            for (JsonNode table : SnapshotMutationSupport.array(sheet, "sheetTables")) {
+                if (!tableId.equals(table.path("id").asText())) continue;
+                match = table;
+                matchSheetId = SnapshotMutationSupport.text(sheet, "id");
+                matchCount += 1;
+            }
+        }
+        if (matchCount != 1 || !sheetId.equals(matchSheetId)) {
+            throw ServiceException.conflict("STRUCTURAL_PATCH_PRECONDITION: Sheet Table identity must resolve exactly once: " + tableId);
+        }
+        return match;
+    }
+
+    private static void appendTableRenameRuleDeltas(
+            ObjectNode root,
+            ObjectNode sheet,
+            String sheetId,
+            Function<String, String> mapFormula,
+            List<StructuralPatch.FormulaOwnerDelta> formulaDeltas
+    ) {
+        for (String property : List.of("conditionalFormats", "dataValidations")) {
+            String ruleKind = "conditionalFormats".equals(property) ? "conditional-format" : "data-validation";
+            for (JsonNode rawRule : SnapshotMutationSupport.array(sheet, property)) {
+                ObjectNode rule = requireObject(rawRule, "Range rule");
+                Map<String, String> formulas = ruleFormulaFields(rule);
+                if (formulas.isEmpty()) continue;
+                List<RangeRef> ranges = ruleRanges(root, rule);
+                String ruleId = SnapshotMutationSupport.text(rule, "id");
+                for (Map.Entry<String, String> entry : formulas.entrySet()) {
+                    String rewritten = mapFormula.apply(entry.getValue());
+                    if (!entry.getValue().equals(rewritten)) {
+                        formulaDeltas.add(StructuralPatch.FormulaOwnerDelta.formulaRule(
+                                sheetId, ruleKind, ruleId, entry.getKey(), entry.getValue(), rewritten, ranges, ranges));
+                    }
+                }
+            }
+        }
     }
 
     private static Map<DefinedNameOwnerKey, StructuralPatch.DefinedNameState> definedNameStates(JsonNode rawModels) {
@@ -226,23 +351,109 @@ final class StructuralSnapshotReducer {
         return new DefinedNameOwnerKey(scope, name.toUpperCase(Locale.ROOT), sheetId);
     }
 
-    private static void applyChartTextFormulaOwnerDelta(ObjectNode root, StructuralPatch.FormulaOwnerDelta delta) {
-        ObjectNode sheet = SnapshotMutationSupport.sheet(root, delta.sheetId());
-        ObjectNode payloads = SnapshotMutationSupport.object(sheet, "drawingPayloads");
-        JsonNode rawPayload = payloads.get(delta.ownerId());
-        if (rawPayload == null || !rawPayload.isObject() || !"chart".equals(rawPayload.path("kind").asText())) {
-            throw ServiceException.conflict("STRUCTURAL_PATCH_PRECONDITION: chart text formula owner is missing at "
-                    + delta.sheetId() + ":" + delta.ownerId());
-        }
-        ObjectNode text = chartTextFormulaModel((ObjectNode) rawPayload, delta.field());
-        JsonNode rawFormula = text.get("linkedFormula");
-        String current = rawFormula != null && rawFormula.isTextual() ? rawFormula.asText() : null;
+    private static void applyFormulaObjectOwnerDelta(ObjectNode root, StructuralPatch.FormulaOwnerDelta delta) {
+        ObjectNode owner = formulaObjectOwner(root, delta);
+        String property = switch (delta.ownerKind()) {
+            case "chart-text" -> "linkedFormula";
+            case "shape-property" -> "propertyFormula";
+            case "table-sheet-column", "data-view-field" -> "formula";
+            case "cell-style-template" -> "listSource.formula".equals(delta.field()) ? "formula" : delta.field();
+            default -> throw ServiceException.validation("Unsupported formula-object owner kind: " + delta.ownerKind());
+        };
+        JsonNode rawFormula = owner.get(property);
+        String current = rawFormula == null || rawFormula.isNull() ? null
+                : rawFormula.isTextual() ? rawFormula.asText()
+                : throwInvalidFormulaObjectValue(delta);
         if (delta.afterFormula().equals(current)) return;
         if (!delta.beforeFormula().equals(current)) {
-            throw ServiceException.conflict("STRUCTURAL_PATCH_PRECONDITION: chart text formula owner changed at "
-                    + delta.sheetId() + ":" + delta.ownerId() + "." + delta.field());
+            throw ServiceException.conflict("STRUCTURAL_PATCH_PRECONDITION: " + delta.ownerKind()
+                    + " formula owner changed at " + formulaObjectIdentity(delta));
         }
-        text.put("linkedFormula", delta.afterFormula());
+        owner.put(property, delta.afterFormula());
+    }
+
+    private static ObjectNode formulaObjectOwner(ObjectNode root, StructuralPatch.FormulaOwnerDelta delta) {
+        return switch (delta.ownerKind()) {
+            case "chart-text" -> {
+                ObjectNode sheet = SnapshotMutationSupport.sheet(root, delta.sheetId());
+                ObjectNode payloads = SnapshotMutationSupport.object(sheet, "drawingPayloads");
+                JsonNode rawPayload = payloads.get(delta.ownerId());
+                if (rawPayload == null || !rawPayload.isObject() || !"chart".equals(rawPayload.path("kind").asText())) {
+                    throw missingFormulaObject(delta);
+                }
+                yield chartTextFormulaModel((ObjectNode) rawPayload, delta.field());
+            }
+            case "shape-property" -> {
+                ObjectNode sheet = SnapshotMutationSupport.sheet(root, delta.sheetId());
+                JsonNode rawPayload = SnapshotMutationSupport.object(sheet, "drawingPayloads").get(delta.ownerId());
+                if (rawPayload == null || !rawPayload.isObject() || !"shape".equals(rawPayload.path("kind").asText())) {
+                    throw missingFormulaObject(delta);
+                }
+                yield (ObjectNode) rawPayload;
+            }
+            case "table-sheet-column" -> {
+                ObjectNode sheet = SnapshotMutationSupport.sheet(root, delta.sheetId());
+                ObjectNode tableSheet = SnapshotMutationSupport.requiredObject(sheet, "tableSheet");
+                List<ObjectNode> matches = new ArrayList<>();
+                for (JsonNode raw : SnapshotMutationSupport.requiredArray(tableSheet, "columns")) {
+                    ObjectNode column = requireObject(raw, "TableSheet column");
+                    if (delta.fieldId().equals(column.path("fieldId").asText())) matches.add(column);
+                }
+                if (matches.size() != 1) throw missingFormulaObject(delta);
+                yield matches.getFirst();
+            }
+            case "data-view-field" -> {
+                JsonNode rawDataModel = root.get("dataModel");
+                if (rawDataModel == null || !rawDataModel.isObject()) throw missingFormulaObject(delta);
+                List<ObjectNode> matches = new ArrayList<>();
+                for (JsonNode rawView : SnapshotMutationSupport.requiredArray((ObjectNode) rawDataModel, "views")) {
+                    ObjectNode view = requireObject(rawView, "Data view");
+                    if (!delta.viewId().equals(view.path("id").asText())) continue;
+                    for (JsonNode rawField : SnapshotMutationSupport.requiredArray(view, "fields")) {
+                        ObjectNode field = requireObject(rawField, "Data view field");
+                        if (delta.fieldId().equals(field.path("fieldId").asText())) matches.add(field);
+                    }
+                }
+                if (matches.size() != 1) throw missingFormulaObject(delta);
+                yield matches.getFirst();
+            }
+            case "cell-style-template" -> {
+                List<ObjectNode> matches = new ArrayList<>();
+                for (JsonNode rawTemplate : SnapshotMutationSupport.array(root, "cellStyleTemplates")) {
+                    ObjectNode template = requireObject(rawTemplate, "Cell style template");
+                    if (delta.templateId().equals(template.path("id").asText())) {
+                        matches.add(SnapshotMutationSupport.requiredObject(template, "dataValidation"));
+                    }
+                }
+                if (matches.size() != 1) throw missingFormulaObject(delta);
+                if ("listSource.formula".equals(delta.field())) {
+                    ObjectNode listSource = SnapshotMutationSupport.requiredObject(matches.getFirst(), "listSource");
+                    if (!"formula".equals(listSource.path("kind").asText())) throw missingFormulaObject(delta);
+                    yield listSource;
+                }
+                yield matches.getFirst();
+            }
+            default -> throw ServiceException.validation("Unsupported formula-object owner kind: " + delta.ownerKind());
+        };
+    }
+
+    private static String formulaObjectIdentity(StructuralPatch.FormulaOwnerDelta delta) {
+        return switch (delta.ownerKind()) {
+            case "chart-text", "shape-property" -> delta.sheetId() + ":" + delta.ownerId() + "." + delta.field();
+            case "table-sheet-column" -> delta.sheetId() + ":" + delta.fieldId();
+            case "data-view-field" -> delta.viewId() + ":" + delta.fieldId();
+            case "cell-style-template" -> delta.templateId() + "." + delta.field();
+            default -> delta.kind();
+        };
+    }
+
+    private static ServiceException missingFormulaObject(StructuralPatch.FormulaOwnerDelta delta) {
+        return ServiceException.conflict("STRUCTURAL_PATCH_PRECONDITION: " + delta.ownerKind()
+                + " formula owner is missing or ambiguous at " + formulaObjectIdentity(delta));
+    }
+
+    private static String throwInvalidFormulaObjectValue(StructuralPatch.FormulaOwnerDelta delta) {
+        throw ServiceException.validation("Formula-object owner must be text at " + formulaObjectIdentity(delta));
     }
 
     private static void applyFormulaRuleOwnerDelta(ObjectNode root, StructuralPatch.FormulaOwnerDelta delta) {
@@ -310,7 +521,7 @@ final class StructuralSnapshotReducer {
         if (state.sourceFormula() == null) {
             if (rawMetadata != null && rawMetadata.isObject()) ((ObjectNode) rawMetadata).remove("sourceFormula");
         } else {
-            if (rawMetadata == null || !rawMetadata.isObject() || rawMetadata.path("preservedOnly").asBoolean(false)) {
+            if (rawMetadata == null || !rawMetadata.isObject()) {
                 throw ServiceException.conflict("STRUCTURAL_PATCH_INVARIANT: formula provenance owner changed type");
             }
             ((ObjectNode) rawMetadata).put("sourceFormula", state.sourceFormula());
@@ -2734,6 +2945,16 @@ final class StructuralSnapshotReducer {
             BiFunction<String, FormulaReferenceTransformer.SheetIdentity, String> formulaMapper,
             Function<ObjectNode, ObjectNode> anchorMapper
     ) {
+        return rewritePersistedFormulaOwners(root, target, formulaMapper, anchorMapper, false);
+    }
+
+    private static List<StructuralPatch.FormulaOwnerDelta> rewritePersistedFormulaOwners(
+            ObjectNode root,
+            FormulaReferenceTransformer.SheetIdentity target,
+            BiFunction<String, FormulaReferenceTransformer.SheetIdentity, String> formulaMapper,
+            Function<ObjectNode, ObjectNode> anchorMapper,
+            boolean includeNonChartObjectDeltas
+    ) {
         List<StructuralPatch.FormulaOwnerDelta> formulaOwnerDeltas = new ArrayList<>();
         // Global formulas only have relative-reference ownership when a persisted anchor supplies it.
         String workbookOwnerId = "__workbook_formula_owner__";
@@ -2747,8 +2968,13 @@ final class StructuralSnapshotReducer {
                 ObjectNode tableSheet = requireObject(tableSheetRaw, "TableSheet definition");
                 for (JsonNode columnRaw : SnapshotMutationSupport.requiredArray(tableSheet, "columns")) {
                     ObjectNode column = requireObject(columnRaw, "TableSheet column");
-                    rewriteOptionalFormula(column, "formula", ownerIdentity, formulaMapper,
+                    FormulaChange change = rewriteOptionalFormula(column, "formula", ownerIdentity, formulaMapper,
                             "table-sheet:" + ownerIdentity.id() + "." + column.path("fieldId").asText());
+                    if (includeNonChartObjectDeltas && change.changed()) {
+                        formulaOwnerDeltas.add(StructuralPatch.FormulaOwnerDelta.formulaObject(
+                                "table-sheet-column", ownerIdentity.id(), null, column.path("fieldId").asText(),
+                                null, null, null, change.before(), change.after()));
+                    }
                 }
             }
             JsonNode payloadsRaw = owner.get("drawingPayloads");
@@ -2758,8 +2984,13 @@ final class StructuralSnapshotReducer {
                 payloads.fields().forEachRemaining(entry -> {
                     ObjectNode payload = requireObject(entry.getValue(), "Drawing payload");
                     if ("shape".equals(payload.path("kind").asText())) {
-                        rewriteOptionalFormula(payload, "propertyFormula", ownerIdentity, formulaMapper,
+                        FormulaChange change = rewriteOptionalFormula(payload, "propertyFormula", ownerIdentity, formulaMapper,
                                 "drawing:" + entry.getKey() + ".propertyFormula");
+                        if (includeNonChartObjectDeltas && change.changed()) {
+                            formulaOwnerDeltas.add(StructuralPatch.FormulaOwnerDelta.formulaObject(
+                                    "shape-property", ownerIdentity.id(), entry.getKey(), null, null, null,
+                                    null, change.before(), change.after()));
+                        }
                     } else if ("chart".equals(payload.path("kind").asText())) {
                         for (String field : CHART_TEXT_FORMULA_FIELDS) {
                             ObjectNode text = chartTextFormulaModel(payload, field);
@@ -2793,8 +3024,13 @@ final class StructuralSnapshotReducer {
                     ObjectNode view = requireObject(viewRaw, "Data view");
                     for (JsonNode fieldRaw : SnapshotMutationSupport.requiredArray(view, "fields")) {
                         ObjectNode field = requireObject(fieldRaw, "Data view field");
-                        rewriteOptionalFormula(field, "formula", workbookOwner, formulaMapper,
+                        FormulaChange change = rewriteOptionalFormula(field, "formula", workbookOwner, formulaMapper,
                                 "data-view:" + view.path("id").asText() + "." + field.path("fieldId").asText());
+                        if (includeNonChartObjectDeltas && change.changed()) {
+                            formulaOwnerDeltas.add(StructuralPatch.FormulaOwnerDelta.formulaObject(
+                                    "data-view-field", null, null, field.path("fieldId").asText(),
+                                    view.path("id").asText(), null, null, change.before(), change.after()));
+                        }
                     }
                 }
             }
@@ -2826,16 +3062,26 @@ final class StructuralSnapshotReducer {
                 String type = validation.path("type").asText();
                 if (formula1 != null && formula1.isTextual() && !formula1.asText().isEmpty()
                         && (formula1.asText().stripLeading().startsWith("=") || "custom".equals(type))) {
-                    rewriteOptionalFormula(validation, "formula1", formulaOwner, formulaMapper,
+                    FormulaChange change = rewriteOptionalFormula(validation, "formula1", formulaOwner, formulaMapper,
                             "cell-style-template:" + templateId + ".formula1");
+                    if (includeNonChartObjectDeltas && change.changed()) {
+                        formulaOwnerDeltas.add(StructuralPatch.FormulaOwnerDelta.formulaObject(
+                                "cell-style-template", null, null, null, null, templateId,
+                                "formula1", change.before(), change.after()));
+                    }
                 } else if (formula1 != null && !formula1.isNull() && !formula1.isTextual()) {
                     throw ServiceException.validation("Cell style template formula1 must be text");
                 }
                 JsonNode formula2 = validation.get("formula2");
                 if (formula2 != null && formula2.isTextual() && !formula2.asText().isEmpty()
                         && (formula2.asText().stripLeading().startsWith("=") || "custom".equals(type))) {
-                    rewriteOptionalFormula(validation, "formula2", formulaOwner, formulaMapper,
+                    FormulaChange change = rewriteOptionalFormula(validation, "formula2", formulaOwner, formulaMapper,
                             "cell-style-template:" + templateId + ".formula2");
+                    if (includeNonChartObjectDeltas && change.changed()) {
+                        formulaOwnerDeltas.add(StructuralPatch.FormulaOwnerDelta.formulaObject(
+                                "cell-style-template", null, null, null, null, templateId,
+                                "formula2", change.before(), change.after()));
+                    }
                 } else if (formula2 != null && !formula2.isNull() && !formula2.isTextual()) {
                     throw ServiceException.validation("Cell style template formula2 must be text");
                 }
@@ -2847,8 +3093,13 @@ final class StructuralSnapshotReducer {
                         if (formula == null || !formula.isTextual()) {
                             throw ServiceException.validation("Cell style template list formula must be text");
                         }
-                        rewriteOptionalFormula(listSource, "formula", formulaOwner, formulaMapper,
+                        FormulaChange change = rewriteOptionalFormula(listSource, "formula", formulaOwner, formulaMapper,
                                 "cell-style-template:" + templateId + ".listSource");
+                        if (includeNonChartObjectDeltas && change.changed()) {
+                            formulaOwnerDeltas.add(StructuralPatch.FormulaOwnerDelta.formulaObject(
+                                    "cell-style-template", null, null, null, null, templateId,
+                                    "listSource.formula", change.before(), change.after()));
+                        }
                     }
                 }
             }
@@ -2883,7 +3134,7 @@ final class StructuralSnapshotReducer {
         return current;
     }
 
-    private static void rewriteOptionalFormula(
+    private static FormulaChange rewriteOptionalFormula(
             ObjectNode owner,
             String property,
             FormulaReferenceTransformer.SheetIdentity formulaOwner,
@@ -2891,10 +3142,13 @@ final class StructuralSnapshotReducer {
             String participant
     ) {
         JsonNode raw = owner.get(property);
-        if (raw == null || raw.isNull()) return;
+        if (raw == null || raw.isNull()) return new FormulaChange(null, null);
         if (!raw.isTextual()) throw ServiceException.validation(participant + " must be text");
         String formula = raw.asText();
-        if (!formula.isEmpty()) owner.put(property, formulaMapper.apply(formula, formulaOwner));
+        if (formula.isEmpty()) return new FormulaChange(formula, formula);
+        String after = formulaMapper.apply(formula, formulaOwner);
+        if (!formula.equals(after)) owner.put(property, after);
+        return new FormulaChange(formula, after);
     }
 
     private static String requireReversibleStructuralFormula(

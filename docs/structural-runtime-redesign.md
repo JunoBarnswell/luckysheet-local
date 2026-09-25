@@ -1042,3 +1042,16 @@ head `1d8508ea` 的两个后端 CI 已通过 test-compile，随后在 `sheetRena
 6. **未发布 outbox 与数据库副本完整性**：核对 H2/MySQL/PostgreSQL repeatable wrapper 和发布器原样发送持久 payload 的路径，确认不能忽略 outbox 自身 patch，也不能把 operation log 已升级后的新字段差异误判为旧 envelope 内容损坏。现先在任何写入前验证待发 outbox 与 operation log 源 envelope 一致，再逐 mutation 校验旧 v1 patch 字段、身份、formula delta 和 impact；对两个副本都缺失的历史格式规范升级，对副本漂移 fail-close，最后以 operation log 的 v2 envelope 重写。已发布事件不重写。
 
 本轮六个审查边界中确认并修复九项独立的实现/数据完整性问题：迁移编译缺陷、投影-only 名称缺少 patch、该旧形状仍可进入结构写入、重复 ACK 非幂等、restore 内嵌快照未迁移、pending outbox patch 差异被忽略、迁移不兼容真实存在的 patchless 历史、升级后的 impact 字段导致旧 outbox 无法规范化、outbox 与 operation log 源副本漂移可能被掩盖。新增测试源码未执行；只允许静态审查，后续仍需远程 CI/迁移门禁与真实应用验收。当前完成的是定义名称 owner 的 v2 纵切，不代表其它结构编辑 owner families 或整体整改目标已完成。
+
+### 六轮自审复核 — Sheet Table rename 的 owner 原子性与懒加载（2026-09-26）
+
+本轮按用户要求沿六条独立路径复核并确认实际缺陷；不是把同一根因重复计数：
+
+1. **公式改写器**：Java 改名扫描器在多个同名结构化引用间复用错误的源切片边界，会把前一个引用后缀重复输出；现逐段输出改名 token 与原结构化引用，并用多引用源码用例约束。TS/Java 边界同时避免把 Unicode 标识符中的 ASCII 后缀误认成目标表名、误改外部 workbook 表引用；正常字符串字面量保留。
+2. **延迟单元格**：公式 owner 遍历本身不 hydrate deferred JSON，但 rename apply 与通用 Undo/Redo formula-cell patch 原先都会调用 `CellMatrix.get/set`，仍把整张工作表物化。现增加不 hydrate 的稀疏单元格读写与按行 copy-on-write，维持 deferred 状态、隔离输入快照、递增内容 revision；rename 与 Undo/Redo 源码用例都断言不 hydrate。
+3. **公式来源所有权**：Java patch reducer 拒绝修改 `preservedOnly` 的 `formulaMetadata.sourceFormula`，与 TS Undo/Redo 和 rename planner 的 owner 模型冲突。现仅要求 metadata owner 仍存在，允许按前置状态更新 source formula，并覆盖 inverse/redo 源码用例。
+4. **提交与 patch**：`WorkbookOperationService` 将 `applyWithPatch().snapshot()` 作为提交快照；Sheet Table descriptor 原先只返回新表元数据，公式 owner delta 只在回放阶段应用，实时提交会持久化旧公式。descriptor 现于同一 detached snapshot 应用 patch 后再返回，提交与重放使用同一状态。
+5. **对象身份与协议**：table rename 必须携带 cell、rule、defined-name、chart/shape、TableSheet、data-view 和 cell-style-template owners；现由 TS/Java v3 精确契约约束新增 owner 身份，服务端查找 table ID 时要求全工作簿唯一，避免跨 Sheet 重复身份被局部查找遮蔽。
+6. **迁移/恢复边界**：逐项复核 v1/v2 patch、无 patch 的旧 rename、checkpoint、restore 与待发 outbox 的同一迁移链；restore `targetRevision` 现在要求可安全转换为 `long`，避免超大整数溢出后误指向有效历史 revision。迁移仍以连续日志、已验证 checkpoint 和 operation-log/outbox 源一致性 fail-close。
+
+本轮新增 TS/Java 成功与拒绝路径测试源码，未执行测试、构建、lint 或 UI；只允许静态审查。`StructuralPatch` 现提升为 v3，前端/服务端实现及 v2 历史升级仍需后续逐层静态复核与 CI/真实互操作验收；这只是 rename owner 纵切，不能标记整个 Structural Editing & Reference Integrity 目标完成。

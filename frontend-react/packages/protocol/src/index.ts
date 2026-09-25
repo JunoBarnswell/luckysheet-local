@@ -80,7 +80,7 @@ export interface OperationIntent {
 
 /** Server-derived reference-owner effects for one committed structural mutation. */
 export interface StructuralPatch {
-  version: 2;
+  version: 3;
   mutationId: string;
   formulaOwnerDeltas: StructuralFormulaOwnerDelta[];
   definedNameOwnerDeltas: StructuralDefinedNameOwnerDelta[];
@@ -1003,11 +1003,11 @@ export function validateDataSourceMutationParams(
 export function validateStructuralPatch(value: unknown, mutationId: string): StructuralPatch {
   const patch = requireRecord(value, 'Committed structural patch');
   validateExactKeys(patch, ['version', 'mutationId', 'formulaOwnerDeltas', 'definedNameOwnerDeltas'], 'Committed structural patch');
-  if (patch.version !== 2 || patch.mutationId !== mutationId || !Array.isArray(patch.formulaOwnerDeltas)
+  if (patch.version !== 3 || patch.mutationId !== mutationId || !Array.isArray(patch.formulaOwnerDeltas)
     || !Array.isArray(patch.definedNameOwnerDeltas)) {
     throw new Error('Committed structural patch header is invalid');
   }
-  if (!['rows.inserted', 'rows.deleted', 'columns.inserted', 'columns.deleted', 'cells.inserted', 'cells.deleted', 'cells.inserted.restore', 'cells.deleted.restore', 'rows.permuted', 'range.move'].includes(mutationId)) {
+  if (!['rows.inserted', 'rows.deleted', 'columns.inserted', 'columns.deleted', 'cells.inserted', 'cells.deleted', 'cells.inserted.restore', 'cells.deleted.restore', 'rows.permuted', 'range.move', 'sheetTable.update'].includes(mutationId)) {
     throw new Error('Committed structural patch mutation id is invalid');
   }
   const formulaOwnerDeltas = patch.formulaOwnerDeltas.map((raw, index) => {
@@ -1058,7 +1058,6 @@ export function validateStructuralPatch(value: unknown, mutationId: string): Str
       };
     }
     if (delta.kind === 'formula-object') {
-      validateExactKeys(delta, ['kind', 'ownerKind', 'sheetId', 'payloadId', 'field', 'beforeFormula', 'afterFormula'], label);
       const fields: readonly ChartTextFormulaField[] = [
         'titleText.linkedFormula',
         'legend.text.linkedFormula',
@@ -1068,21 +1067,48 @@ export function validateStructuralPatch(value: unknown, mutationId: string): Str
         'secondaryValueAxis.titleText.linkedFormula',
         'dataTable.font.linkedFormula',
       ];
-      if (delta.ownerKind !== 'chart-text' || !isNonEmptyString(delta.sheetId) || !isNonEmptyString(delta.payloadId)
-        || !fields.includes(delta.field as ChartTextFormulaField)
-        || typeof delta.beforeFormula !== 'string' || typeof delta.afterFormula !== 'string'
-        || delta.beforeFormula === delta.afterFormula) {
+      const formulaValuesValid = typeof delta.beforeFormula === 'string' && typeof delta.afterFormula === 'string'
+        && delta.beforeFormula !== delta.afterFormula;
+      if (!formulaValuesValid) {
         throw new Error(`${label} formula-object owner is invalid`);
       }
-      return {
-        kind: 'formula-object' as const,
-        ownerKind: 'chart-text' as const,
-        sheetId: delta.sheetId,
-        payloadId: delta.payloadId,
-        field: delta.field as ChartTextFormulaField,
-        beforeFormula: delta.beforeFormula,
-        afterFormula: delta.afterFormula,
-      };
+      if (delta.ownerKind === 'chart-text') {
+        validateExactKeys(delta, ['kind', 'ownerKind', 'sheetId', 'payloadId', 'field', 'beforeFormula', 'afterFormula'], label);
+        if (!isNonEmptyString(delta.sheetId) || !isNonEmptyString(delta.payloadId)
+          || !fields.includes(delta.field as ChartTextFormulaField)) throw new Error(`${label} chart formula-object owner is invalid`);
+        return { kind: 'formula-object' as const, ownerKind: 'chart-text' as const, sheetId: delta.sheetId,
+          payloadId: delta.payloadId, field: delta.field as ChartTextFormulaField,
+          beforeFormula: delta.beforeFormula as string, afterFormula: delta.afterFormula as string };
+      }
+      if (delta.ownerKind === 'shape-property') {
+        validateExactKeys(delta, ['kind', 'ownerKind', 'sheetId', 'payloadId', 'beforeFormula', 'afterFormula'], label);
+        if (!isNonEmptyString(delta.sheetId) || !isNonEmptyString(delta.payloadId)) throw new Error(`${label} shape formula-object owner is invalid`);
+        return { kind: 'formula-object' as const, ownerKind: 'shape-property' as const, sheetId: delta.sheetId,
+          payloadId: delta.payloadId, beforeFormula: delta.beforeFormula as string, afterFormula: delta.afterFormula as string };
+      }
+      if (delta.ownerKind === 'table-sheet-column') {
+        validateExactKeys(delta, ['kind', 'ownerKind', 'sheetId', 'fieldId', 'beforeFormula', 'afterFormula'], label);
+        if (!isNonEmptyString(delta.sheetId) || !isNonEmptyString(delta.fieldId)) throw new Error(`${label} TableSheet formula-object owner is invalid`);
+        return { kind: 'formula-object' as const, ownerKind: 'table-sheet-column' as const, sheetId: delta.sheetId,
+          fieldId: delta.fieldId, beforeFormula: delta.beforeFormula as string, afterFormula: delta.afterFormula as string };
+      }
+      if (delta.ownerKind === 'data-view-field') {
+        validateExactKeys(delta, ['kind', 'ownerKind', 'viewId', 'fieldId', 'beforeFormula', 'afterFormula'], label);
+        if (!isNonEmptyString(delta.viewId) || !isNonEmptyString(delta.fieldId)) throw new Error(`${label} data-view formula-object owner is invalid`);
+        return { kind: 'formula-object' as const, ownerKind: 'data-view-field' as const, viewId: delta.viewId,
+          fieldId: delta.fieldId, beforeFormula: delta.beforeFormula as string, afterFormula: delta.afterFormula as string };
+      }
+      if (delta.ownerKind === 'cell-style-template') {
+        validateExactKeys(delta, ['kind', 'ownerKind', 'templateId', 'field', 'beforeFormula', 'afterFormula'], label);
+        if (!isNonEmptyString(delta.templateId)
+          || !['formula1', 'formula2', 'listSource.formula'].includes(String(delta.field))) {
+          throw new Error(`${label} cell-style-template formula-object owner is invalid`);
+        }
+        return { kind: 'formula-object' as const, ownerKind: 'cell-style-template' as const, templateId: delta.templateId,
+          field: delta.field as 'formula1' | 'formula2' | 'listSource.formula',
+          beforeFormula: delta.beforeFormula as string, afterFormula: delta.afterFormula as string };
+      }
+      throw new Error(`${label} formula-object owner kind is unsupported`);
     }
     if (delta.kind === 'formula-rule') {
       validateExactKeys(delta, [
@@ -1126,7 +1152,15 @@ export function validateStructuralPatch(value: unknown, mutationId: string): Str
       ? JSON.stringify([delta.kind, delta.afterAddress.sheetId, delta.afterAddress.row, delta.afterAddress.column])
       : delta.kind === 'formula-rule'
         ? JSON.stringify([delta.kind, delta.sheetId, delta.ruleKind, delta.ruleId, delta.field])
-        : JSON.stringify([delta.kind, delta.ownerKind, delta.sheetId, delta.payloadId, delta.field]);
+        : delta.ownerKind === 'chart-text'
+          ? JSON.stringify([delta.kind, delta.ownerKind, delta.sheetId, delta.payloadId, delta.field])
+          : delta.ownerKind === 'shape-property'
+            ? JSON.stringify([delta.kind, delta.ownerKind, delta.sheetId, delta.payloadId])
+            : delta.ownerKind === 'table-sheet-column'
+              ? JSON.stringify([delta.kind, delta.ownerKind, delta.sheetId, delta.fieldId])
+              : delta.ownerKind === 'data-view-field'
+                ? JSON.stringify([delta.kind, delta.ownerKind, delta.viewId, delta.fieldId])
+                : JSON.stringify([delta.kind, delta.ownerKind, delta.templateId, delta.field]);
     if (ownerKeys.has(key)) throw new Error('Committed structural patch contains duplicate formula owner deltas');
     ownerKeys.add(key);
   }
@@ -1184,7 +1218,7 @@ export function validateStructuralPatch(value: unknown, mutationId: string): Str
     if (definedNameOwnerKeys.has(key)) throw new Error('Committed structural patch contains duplicate defined-name owner deltas');
     definedNameOwnerKeys.add(key);
   }
-  return { version: 2, mutationId, formulaOwnerDeltas, definedNameOwnerDeltas };
+  return { version: 3, mutationId, formulaOwnerDeltas, definedNameOwnerDeltas };
 }
 
 /** Validate the shared dashboard state before it enters a recovery journal. */

@@ -2,6 +2,8 @@ import type { FormulaAst, ParsedCellReference, TableReferenceNode } from './ast'
 import { formulaSheetReferenceIndex, sameFormulaSheetName } from './sheet-reference';
 import { ReferenceTransformDomain, MAX_COLUMN_INDEX, MAX_ROW_INDEX } from './reference-transform-domain';
 import type { StructuralShift } from './reference-transform-domain';
+import { lexFormula } from './lexer';
+import { parseFormula } from './parser';
 
 export { MAX_COLUMN_INDEX, MAX_ROW_INDEX } from './reference-transform-domain';
 export type { StructuralShift } from './reference-transform-domain';
@@ -39,6 +41,90 @@ export function mapAstTableReferences(
     default:
       return node;
   }
+}
+
+/** Rewrite only the table-name token of matching structured references. */
+export function rewriteFormulaTableReferences(source: string, tableName: string, replacement: string): string {
+  const normalizedName = tableName.trim().toUpperCase();
+  if (!normalizedName || tableName === replacement) return source;
+
+  let ast: FormulaAst;
+  try {
+    ast = parseFormula(source);
+  } catch (error) {
+    if (hasStructuredTableCandidate(source, normalizedName)) {
+      throw new Error(`UNSUPPORTED_STRUCTURAL_REFERENCE: formula contains an unparseable reference to table ${tableName}`, { cause: error });
+    }
+    return source;
+  }
+
+  const spans: Array<{ start: number; end: number; token: string }> = [];
+  mapAstTableReferences(ast, (reference) => {
+    if (reference.tableName.trim().toUpperCase() === normalizedName) {
+      spans.push({ start: reference.span.start, end: reference.span.start + reference.tableName.length, token: reference.tableName });
+    }
+    return reference;
+  });
+  if (spans.length === 0) return source;
+  spans.sort((left, right) => right.start - left.start);
+  let rewritten = source;
+  for (const span of spans) {
+    if (rewritten.slice(span.start, span.end).toUpperCase() !== span.token.toUpperCase()) {
+      throw new Error(`STRUCTURAL_PATCH_INVARIANT: table reference span no longer matches ${span.token}`);
+    }
+    rewritten = `${rewritten.slice(0, span.start)}${replacement}${rewritten.slice(span.end)}`;
+  }
+  return rewritten;
+}
+
+function hasStructuredTableCandidate(source: string, normalizedName: string): boolean {
+  try {
+    const tokens = lexFormula(source);
+    return tokens.some((token, index) => token.kind === 'identifier'
+      && token.lexeme.trim().toUpperCase() === normalizedName
+      && !isExternalWorkbookTableName(tokens, index)
+      && tokens[index + 1]?.kind === 'left-bracket');
+  } catch {
+    let index = 0;
+    while (index < source.length) {
+      if (source[index] === '"') {
+        const quoteStart = index;
+        index += 1;
+        let terminated = false;
+        while (index < source.length) {
+          if (source[index] !== '"') {
+            index += 1;
+            continue;
+          }
+          if (source[index + 1] === '"') {
+            index += 2;
+            continue;
+          }
+          index += 1;
+          terminated = true;
+          break;
+        }
+        if (!terminated && source.slice(quoteStart + 1).toUpperCase().includes(`${normalizedName}[`)) return true;
+        continue;
+      }
+      const start = source[index]!;
+      if (!/[A-Za-z_]/.test(start) || index > 0 && /[\p{L}\p{N}_.]/u.test(source[index - 1]!)) {
+        index += 1;
+        continue;
+      }
+      let end = index + 1;
+      while (end < source.length && /[A-Za-z0-9_.]/.test(source[end]!)) end += 1;
+      if (source.slice(index, end).toUpperCase() === normalizedName && source[end] === '[') return true;
+      index = end;
+    }
+    return false;
+  }
+}
+
+function isExternalWorkbookTableName(tokens: ReturnType<typeof lexFormula>, index: number): boolean {
+  return tokens[index - 1]?.kind === 'right-bracket'
+    && tokens[index - 2]?.kind === 'identifier'
+    && tokens[index - 3]?.kind === 'left-bracket';
 }
 
 export interface StructuralReferenceContext {

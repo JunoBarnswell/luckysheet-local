@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { rewriteFormulaTableReferences } from './ast-rewrite';
 import { FormulaEngine } from './formula-engine';
 import { normalizeSheetTables, type SheetTableRef } from './sheet-table-resolver';
 
@@ -15,6 +16,16 @@ const sampleTable: SheetTableRef = {
     { id: 'c2', name: 'Amount' },
   ],
 };
+
+test('table rename changes only matching structured-reference names and preserves literals', () => {
+  const formula = '=SUM(Sales[Amount])+Sales [@Amount]+ÅSales[Amount]+IF(A1="Sales[Amount]",1,0)';
+  assert.equal(
+    rewriteFormulaTableReferences(formula, 'Sales', 'Orders'),
+    '=SUM(Orders[Amount])+Orders [@Amount]+ÅSales[Amount]+IF(A1="Sales[Amount]",1,0)',
+  );
+  assert.equal(rewriteFormulaTableReferences('=[Book.xlsx]Sales[Amount]', 'Sales', 'Orders'), '=[Book.xlsx]Sales[Amount]');
+  assert.throws(() => rewriteFormulaTableReferences('=SUM(Sales[Amount]', 'Sales', 'Orders'), /UNSUPPORTED_STRUCTURAL_REFERENCE/);
+});
 
 test('Sheet Table formula context rejects duplicate workbook identities', () => {
   assert.throws(() => normalizeSheetTables([

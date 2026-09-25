@@ -28,7 +28,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.HexFormat;
 
-/** One-time, fail-closed replay boundary from verified legacy/v1 history to canonical v2 owner deltas. */
+/** Fail-closed replay boundary upgrading verified history and snapshots to structural patch v3. */
 public abstract class StructuralPatchV2Migration extends BaseJavaMigration {
     private final ObjectMapper mapper = new ObjectMapper().registerModule(new JavaTimeModule());
 
@@ -39,7 +39,7 @@ public abstract class StructuralPatchV2Migration extends BaseJavaMigration {
 
     @Override
     public Integer getChecksum() {
-        return 2;
+        return 3;
     }
 
     @Override
@@ -189,6 +189,11 @@ public abstract class StructuralPatchV2Migration extends BaseJavaMigration {
 
         Checkpoint baseline = readCheckpoint(connection, workbook.unitId(), 0);
         JsonNode current = baseline.snapshot();
+        JsonNode legacyCurrent = baseline.snapshot();
+        Map<Long, JsonNode> canonicalSnapshotsByRevision = new java.util.HashMap<>();
+        Map<Long, JsonNode> legacySnapshotsByRevision = new java.util.HashMap<>();
+        canonicalSnapshotsByRevision.put(0L, current);
+        legacySnapshotsByRevision.put(0L, legacyCurrent);
         String storedSnapshotJson = readWorkbookSnapshot(connection, workbook.unitId());
         Checkpoint currentCheckpoint = workbook.snapshotRevision() == 0
                 ? baseline
@@ -205,7 +210,6 @@ public abstract class StructuralPatchV2Migration extends BaseJavaMigration {
         Set<String> seenOperationIds = new HashSet<>();
         Map<String, CommittedOperationEnvelope> migratedUndoTargets = new java.util.HashMap<>();
         long previousRevision = 0;
-        Checkpoint checkpointAtWorkbookSnapshot = workbook.snapshotRevision() == 0 ? currentCheckpoint : null;
         try (PreparedStatement query = connection.prepareStatement(
                     "select operation_id, actor_subject, client_session_id, client_sequence, base_revision, revision, envelope_json "
                             + "from operation_log where unit_id = ? order by revision");
@@ -221,8 +225,13 @@ public abstract class StructuralPatchV2Migration extends BaseJavaMigration {
                     if (row.revision() != expectedRevision || row.revision() > workbook.revision()) {
                         throw failure("OPERATION_GAP", workbook.unitId(), "expected revision " + expectedRevision + " but found " + row.revision());
                     }
-                    ObjectNode rawEnvelope = parseEnvelope(row.envelopeJson(), workbook.unitId(), row.revision());
-                    canonicalizeRestoreSnapshots(rawEnvelope, workbook.unitId(), row.revision());
+                    ObjectNode originalEnvelope = parseEnvelope(row.envelopeJson(), workbook.unitId(), row.revision());
+                    ObjectNode legacyEnvelope = originalEnvelope.deepCopy();
+                    canonicalizeRestoreSnapshots(legacyEnvelope, workbook.unitId(), row.revision());
+                    CommittedOperationEnvelope legacyOperation = readEnvelopeWithoutPatches(legacyEnvelope, workbook.unitId(), row.revision());
+                    validateOperationRow(row, legacyOperation, workbook.unitId());
+                    ObjectNode rawEnvelope = originalEnvelope.deepCopy();
+                    canonicalizeRestoreSnapshots(rawEnvelope, workbook.unitId(), row.revision(), canonicalSnapshotsByRevision);
                     CommittedOperationEnvelope operation = readEnvelopeWithoutPatches(rawEnvelope, workbook.unitId(), row.revision());
                     validateOperationRow(row, operation, workbook.unitId());
                     if (!seenOperationIds.add(operation.operationId())) {
@@ -241,16 +250,26 @@ public abstract class StructuralPatchV2Migration extends BaseJavaMigration {
 
                     if (isRestore(operation)) {
                         ensureRestoreHasNoStructuralPatch(rawEnvelope, workbook.unitId(), row.revision());
-                        Checkpoint restoreCheckpoint = requireCheckpointAt(connection, checkpointRevisions, workbook.unitId(), row.revision());
-                        JsonNode embedded = restoreSnapshot(operation, workbook.unitId(), row.revision());
-                        if (!embedded.equals(restoreCheckpoint.snapshot())) {
-                            throw failure("RESTORE_CHECKPOINT_MISMATCH", workbook.unitId(), "restore envelope differs from checkpoint at revision " + row.revision());
+                        long targetRevision = restoreTargetRevision(legacyOperation, workbook.unitId(), row.revision());
+                        JsonNode legacyTarget = legacySnapshotsByRevision.get(targetRevision);
+                        JsonNode canonicalTarget = canonicalSnapshotsByRevision.get(targetRevision);
+                        JsonNode legacyEmbedded = restoreSnapshot(legacyOperation, workbook.unitId(), row.revision());
+                        JsonNode canonicalEmbedded = restoreSnapshot(operation, workbook.unitId(), row.revision());
+                        if (legacyTarget == null || !legacyTarget.equals(legacyEmbedded)) {
+                            throw failure("RESTORE_TARGET_MISMATCH", workbook.unitId(),
+                                    "legacy restore payload differs from reconstructed target revision " + targetRevision);
                         }
-                        current = restoreCheckpoint.snapshot();
+                        if (canonicalTarget == null || !canonicalTarget.equals(canonicalEmbedded)) {
+                            throw failure("RESTORE_TARGET_MISMATCH", workbook.unitId(),
+                                    "canonical restore payload differs from reconstructed target revision " + targetRevision);
+                        }
+                        legacyCurrent = legacyTarget;
+                        current = canonicalTarget;
                     } else {
                         List<OperationMutation> mutations = operation.mutations().stream()
                                 .map(mutation -> new OperationMutation(mutation.id(), mutation.sheetId(), mutation.params()))
                                 .toList();
+                        legacyCurrent = registry.applyLegacyMutations(legacyCurrent, mutations);
                         CommittedOperationEnvelope resolvedUndoTarget = undoTarget;
                         List<StructuralPatch> inversePatches = new ArrayList<>(mutations.size());
                         for (OperationMutation mutation : mutations) {
@@ -273,12 +292,14 @@ public abstract class StructuralPatchV2Migration extends BaseJavaMigration {
                     CommittedOperationEnvelope migrated = readEnvelope(rawEnvelope, workbook.unitId(), row.revision());
                     if (undoTargetIds.contains(migrated.operationId())) migratedUndoTargets.put(migrated.operationId(), migrated);
 
+                    canonicalSnapshotsByRevision.put(row.revision(), current);
+                    legacySnapshotsByRevision.put(row.revision(), legacyCurrent);
                     if (checkpointRevisions.contains(row.revision())) {
                         Checkpoint checkpoint = readCheckpoint(connection, workbook.unitId(), row.revision());
-                        if (!current.equals(checkpoint.snapshot())) {
-                            throw failure("HISTORY_CHECKPOINT_MISMATCH", workbook.unitId(), "replay differs from checkpoint at revision " + row.revision());
+                        if (!legacyCurrent.equals(checkpoint.snapshot())) {
+                            throw failure("LEGACY_HISTORY_CHECKPOINT_MISMATCH", workbook.unitId(),
+                                    "legacy replay differs from checkpoint at revision " + row.revision());
                         }
-                        if (row.revision() == workbook.snapshotRevision()) checkpointAtWorkbookSnapshot = checkpoint;
                     }
                     previousRevision = row.revision();
                 }
@@ -288,8 +309,53 @@ public abstract class StructuralPatchV2Migration extends BaseJavaMigration {
             throw failure("OPERATION_HISTORY_TRUNCATED", workbook.unitId(), "history ends at revision " + previousRevision
                     + " before workbook revision " + workbook.revision());
         }
-        if (checkpointAtWorkbookSnapshot == null || !currentCheckpoint.checksum().equals(checkpointAtWorkbookSnapshot.checksum())) {
-            throw failure("CURRENT_CHECKPOINT_UNVERIFIED", workbook.unitId(), "snapshot_revision checkpoint was not reached by contiguous history");
+        if (!canonicalSnapshotsByRevision.containsKey(workbook.snapshotRevision())) {
+            throw failure("CANONICAL_SNAPSHOT_MISSING", workbook.unitId(), "canonical snapshot revision is not present in replay history");
+        }
+        rewriteCanonicalSnapshots(connection, workbook, checkpointRevisions, canonicalSnapshotsByRevision);
+    }
+
+    private void rewriteCanonicalSnapshots(
+            Connection connection,
+            WorkbookHead workbook,
+            Set<Long> checkpointRevisions,
+            Map<Long, JsonNode> canonicalSnapshotsByRevision
+    ) throws Exception {
+        try (PreparedStatement updateCheckpoint = connection.prepareStatement(
+                    "update snapshot_checkpoint set snapshot_json = ?, checksum = ? where unit_id = ? and revision = ?");
+             PreparedStatement updateWorkbook = connection.prepareStatement(
+                    "update workbooks set snapshot_json = ? where unit_id = ? and snapshot_revision = ?")) {
+            for (long revision : checkpointRevisions) {
+                Checkpoint oldCheckpoint = readCheckpoint(connection, workbook.unitId(), revision);
+                JsonNode canonical = canonicalSnapshotsByRevision.get(revision);
+                if (canonical == null) throw failure("CANONICAL_CHECKPOINT_MISSING", workbook.unitId(), "no canonical snapshot at revision " + revision);
+                if (canonical.equals(oldCheckpoint.snapshot())) continue;
+                String json = mapper.writeValueAsString(canonical);
+                updateCheckpoint.setString(1, json);
+                updateCheckpoint.setString(2, checksum(json));
+                updateCheckpoint.setString(3, workbook.unitId());
+                updateCheckpoint.setLong(4, revision);
+                if (updateCheckpoint.executeUpdate() != 1) {
+                    throw failure("CHECKPOINT_WRITE_FAILED", workbook.unitId(), "checkpoint changed at revision " + revision);
+                }
+            }
+            JsonNode canonicalHead = canonicalSnapshotsByRevision.get(workbook.snapshotRevision());
+            String currentJson = readWorkbookSnapshot(connection, workbook.unitId());
+            if (!mapper.readTree(currentJson).equals(canonicalHead)) {
+                updateWorkbook.setString(1, mapper.writeValueAsString(canonicalHead));
+                updateWorkbook.setString(2, workbook.unitId());
+                updateWorkbook.setLong(3, workbook.snapshotRevision());
+                if (updateWorkbook.executeUpdate() != 1) {
+                    throw failure("WORKBOOK_SNAPSHOT_WRITE_FAILED", workbook.unitId(), "workbook snapshot changed during migration");
+                }
+            }
+            Checkpoint canonicalCheckpoint = readCheckpoint(connection, workbook.unitId(), workbook.snapshotRevision());
+            String finalSnapshot = readWorkbookSnapshot(connection, workbook.unitId());
+            if (!canonicalCheckpoint.snapshot().equals(canonicalHead)
+                    || !checksum(finalSnapshot).equals(canonicalCheckpoint.checksum())
+                    || !mapper.readTree(finalSnapshot).equals(canonicalHead)) {
+                throw failure("CANONICAL_HEAD_CHECKPOINT_MISMATCH", workbook.unitId(), "rewritten workbook snapshot does not match its checkpoint");
+            }
         }
     }
 
@@ -308,11 +374,6 @@ public abstract class StructuralPatchV2Migration extends BaseJavaMigration {
             }
         }
         return revisions;
-    }
-
-    private Checkpoint requireCheckpointAt(Connection connection, Set<Long> revisions, String unitId, long revision) throws Exception {
-        if (!revisions.contains(revision)) throw failure("RESTORE_CHECKPOINT_MISSING", unitId, "restore revision " + revision + " has no checkpoint");
-        return readCheckpoint(connection, unitId, revision);
     }
 
     private Checkpoint readCheckpoint(Connection connection, String unitId, long revision) throws Exception {
@@ -457,6 +518,52 @@ public abstract class StructuralPatchV2Migration extends BaseJavaMigration {
         }
     }
 
+    private void canonicalizeRestoreSnapshots(
+            ObjectNode envelope,
+            String unitId,
+            long revision,
+            Map<Long, JsonNode> canonicalSnapshotsByRevision
+    ) {
+        canonicalizeRestoreSnapshots(envelope, unitId, revision);
+        ArrayNode mutations = (ArrayNode) envelope.get("mutations");
+        for (JsonNode rawMutation : mutations) {
+            if (!(rawMutation instanceof ObjectNode mutation) || !"workbook.restore".equals(mutation.path("id").asText())) continue;
+            JsonNode rawParams = mutation.get("params");
+            if (!(rawParams instanceof ObjectNode params)) {
+                throw failure("RESTORE_SNAPSHOT_INVALID", unitId, "restore parameters are invalid at revision " + revision);
+            }
+            JsonNode rawTargetRevision = params.get("targetRevision");
+            if (rawTargetRevision == null || !rawTargetRevision.isIntegralNumber() || !rawTargetRevision.canConvertToLong()
+                    || rawTargetRevision.longValue() < 0
+                    || rawTargetRevision.longValue() >= revision) {
+                throw failure("RESTORE_TARGET_REVISION_INVALID", unitId, "restore target revision is invalid at revision " + revision);
+            }
+            JsonNode canonicalTarget = canonicalSnapshotsByRevision.get(rawTargetRevision.longValue());
+            if (canonicalTarget == null) {
+                throw failure("RESTORE_TARGET_UNAVAILABLE", unitId,
+                        "canonical target revision " + rawTargetRevision.longValue() + " is not available before restore revision " + revision);
+            }
+            params.set("snapshot", canonicalTarget.deepCopy());
+            mutation.set("params", params);
+        }
+    }
+
+    private long restoreTargetRevision(CommittedOperationEnvelope operation, String unitId, long revision) {
+        Long targetRevision = null;
+        for (CommittedOperationMutation mutation : operation.mutations()) {
+            if (!"workbook.restore".equals(mutation.id())) continue;
+            JsonNode raw = mutation.params().get("targetRevision");
+            if (raw == null || !raw.isIntegralNumber() || !raw.canConvertToLong()
+                    || raw.longValue() < 0 || raw.longValue() >= revision
+                    || targetRevision != null && targetRevision.longValue() != raw.longValue()) {
+                throw failure("RESTORE_TARGET_REVISION_INVALID", unitId, "restore target revision is invalid at revision " + revision);
+            }
+            targetRevision = raw.longValue();
+        }
+        if (targetRevision == null) throw failure("RESTORE_TARGET_REVISION_MISSING", unitId, "restore target revision is missing at revision " + revision);
+        return targetRevision;
+    }
+
     private void ensureRestoreHasNoStructuralPatch(ObjectNode raw, String unitId, long revision) {
         ArrayNode rawMutations = (ArrayNode) raw.get("mutations");
         for (int index = 0; index < rawMutations.size(); index++) {
@@ -470,15 +577,6 @@ public abstract class StructuralPatchV2Migration extends BaseJavaMigration {
             mutation.remove("structuralPatch");
             mutation.set("structuralImpactRanges", mapper.createArrayNode());
         }
-    }
-
-    private boolean containsRestoreMutation(ObjectNode envelope) {
-        JsonNode mutations = envelope.get("mutations");
-        if (!(mutations instanceof ArrayNode array)) return false;
-        for (JsonNode mutation : array) {
-            if (mutation.isObject() && "workbook.restore".equals(mutation.path("id").asText())) return true;
-        }
-        return false;
     }
 
     private void rewriteMutationPatches(
@@ -515,11 +613,11 @@ public abstract class StructuralPatchV2Migration extends BaseJavaMigration {
             }
             StructuralPatch patch = derived.orElseThrow();
             if (oldPatch == null || oldPatch.isNull()) {
-                // The pre-v1 envelope contract had neither structuralPatch nor structuralImpactRanges.
-                // Its verified replay is the migration authority for generating the first canonical patch.
-                if (oldImpact != null && !oldImpact.isNull()) {
+                // Verified legacy table renames had no owner patch; v1/v2 rows may persist an empty impact array.
+                if (oldImpact != null && !oldImpact.isNull()
+                        && (!(oldImpact instanceof ArrayNode ranges) || !ranges.isEmpty())) {
                     throw failure("STRUCTURAL_PATCH_PARTIAL_LEGACY", unitId,
-                            "legacy structural mutation has impact metadata but no v1 patch at revision " + revision);
+                            "legacy mutation has impact metadata but no owner patch at revision " + revision);
                 }
                 rawMutation.set("structuralPatch", mapper.valueToTree(patch));
                 rawMutation.set("structuralImpactRanges", expectedImpactNode);
@@ -529,20 +627,37 @@ public abstract class StructuralPatchV2Migration extends BaseJavaMigration {
                 throw failure("STRUCTURAL_IMPACT_MISMATCH", unitId, "stored impact differs from reducer at revision " + revision);
             }
             if (oldPatch == null || !oldPatch.isObject()
-                    || !oldPatch.path("version").isIntegralNumber() || oldPatch.path("version").asInt(-1) != 1
-                    || !patch.mutationId().equals(oldPatch.path("mutationId").asText())
-                    || !oldPatch.path("formulaOwnerDeltas").isArray()
-                    || oldPatch.has("definedNameOwnerDeltas")) {
-                throw failure("STRUCTURAL_PATCH_V1_INVALID", unitId, "stored v1 patch is invalid at revision " + revision);
+                    || !oldPatch.path("version").isIntegralNumber()
+                    || !patch.mutationId().equals(oldPatch.path("mutationId").asText())) {
+                throw failure("STRUCTURAL_PATCH_LEGACY_INVALID", unitId, "stored structural patch is invalid at revision " + revision);
             }
-            Set<String> fields = new HashSet<>();
-            oldPatch.fieldNames().forEachRemaining(fields::add);
-            if (!fields.equals(Set.of("version", "mutationId", "formulaOwnerDeltas"))) {
-                throw failure("STRUCTURAL_PATCH_V1_FIELDS", unitId, "stored v1 patch has a non-canonical field set at revision " + revision);
-            }
-            JsonNode expectedFormulaOwners = mapper.valueToTree(patch).get("formulaOwnerDeltas");
-            if (!oldPatch.get("formulaOwnerDeltas").equals(expectedFormulaOwners)) {
-                throw failure("STRUCTURAL_FORMULA_PATCH_MISMATCH", unitId, "formula owners changed while upgrading revision " + revision);
+            int oldVersion = oldPatch.path("version").asInt(-1);
+            ObjectNode expectedOldPatch = mapper.valueToTree(patch);
+            if (oldVersion == 1) {
+                if (oldPatch.has("definedNameOwnerDeltas")
+                        || !oldPatch.path("formulaOwnerDeltas").isArray()) {
+                    throw failure("STRUCTURAL_PATCH_V1_INVALID", unitId, "stored v1 patch fields are invalid at revision " + revision);
+                }
+                Set<String> fields = new HashSet<>();
+                oldPatch.fieldNames().forEachRemaining(fields::add);
+                if (!fields.equals(Set.of("version", "mutationId", "formulaOwnerDeltas"))) {
+                    throw failure("STRUCTURAL_PATCH_V1_FIELDS", unitId, "stored v1 patch has a non-canonical field set at revision " + revision);
+                }
+                if (!oldPatch.get("formulaOwnerDeltas").equals(expectedOldPatch.get("formulaOwnerDeltas"))) {
+                    throw failure("STRUCTURAL_FORMULA_PATCH_MISMATCH", unitId, "formula owners changed while upgrading revision " + revision);
+                }
+            } else if (oldVersion == 2) {
+                Set<String> fields = new HashSet<>();
+                oldPatch.fieldNames().forEachRemaining(fields::add);
+                if (!fields.equals(Set.of("version", "mutationId", "formulaOwnerDeltas", "definedNameOwnerDeltas"))) {
+                    throw failure("STRUCTURAL_PATCH_V2_FIELDS", unitId, "stored v2 patch has a non-canonical field set at revision " + revision);
+                }
+                expectedOldPatch.put("version", 2);
+                if (!oldPatch.equals(expectedOldPatch)) {
+                    throw failure("STRUCTURAL_PATCH_V2_MISMATCH", unitId, "stored v2 patch differs from legacy-derived owner state at revision " + revision);
+                }
+            } else {
+                throw failure("STRUCTURAL_PATCH_VERSION_UNSUPPORTED", unitId, "stored patch version is unsupported at revision " + revision);
             }
             rawMutation.set("structuralPatch", mapper.valueToTree(patch));
             rawMutation.set("structuralImpactRanges", expectedImpactNode);
@@ -563,11 +678,9 @@ public abstract class StructuralPatchV2Migration extends BaseJavaMigration {
                     String unitId = rows.getString(2);
                     String operationId = rows.getString(3);
                     long revision = rows.getLong(4);
-                    ObjectNode oldPayload = parseEnvelope(rows.getString(5), unitId, revision);
-                    canonicalizeRestoreSnapshots(oldPayload, unitId, revision);
-                    if (containsRestoreMutation(oldPayload)) ensureRestoreHasNoStructuralPatch(oldPayload, unitId, revision);
-                    if (!operationId.equals(oldPayload.path("operationId").asText())
-                            || oldPayload.path("revision").asLong(-1) != revision) {
+                    ObjectNode pendingPayload = parseEnvelope(rows.getString(5), unitId, revision);
+                    if (!operationId.equals(pendingPayload.path("operationId").asText())
+                            || pendingPayload.path("revision").asLong(-1) != revision) {
                         throw failure("OUTBOX_IDENTITY_MISMATCH", unitId, "pending outbox identity differs at revision " + revision);
                     }
                     operationQuery.setString(1, unitId);
@@ -580,88 +693,18 @@ public abstract class StructuralPatchV2Migration extends BaseJavaMigration {
                         if (operationRow.next()) throw failure("OUTBOX_OPERATION_AMBIGUOUS", unitId, "operation log row is duplicated at revision " + revision);
                     }
                     ObjectNode committed = parseEnvelope(committedJson, unitId, revision);
-                    if (!withoutStructuralMetadata(oldPayload).equals(withoutStructuralMetadata(committed))) {
-                        throw failure("OUTBOX_ENVELOPE_MISMATCH", unitId, "pending payload differs from operation log at revision " + revision);
+                    if (!unitId.equals(committed.path("unitId").asText())
+                            || !operationId.equals(committed.path("operationId").asText())
+                            || committed.path("revision").asLong(-1) != revision) {
+                        throw failure("OUTBOX_OPERATION_MISMATCH", unitId, "committed source identity differs at revision " + revision);
                     }
-                    CommittedOperationEnvelope canonicalOperation = readEnvelope(committed, unitId, revision);
-                    validatePendingOutboxPatches(oldPayload, canonicalOperation, unitId, revision);
+                    // migrate() validated each pending payload against its original operation row before either was rewritten.
                     update.setString(1, committedJson);
                     update.setString(2, eventId);
                     if (update.executeUpdate() != 1) throw failure("OUTBOX_WRITE_FAILED", unitId, "pending event changed: " + eventId);
                 }
             }
         }
-    }
-
-    private void validatePendingOutboxPatches(
-            ObjectNode oldPayload,
-            CommittedOperationEnvelope canonicalOperation,
-            String unitId,
-            long revision
-    ) {
-        JsonNode rawMutations = oldPayload.get("mutations");
-        if (!(rawMutations instanceof ArrayNode oldMutations)
-                || oldMutations.size() != canonicalOperation.mutations().size()) {
-            throw failure("OUTBOX_MUTATION_COUNT_MISMATCH", unitId, "pending mutation count differs at revision " + revision);
-        }
-        for (int index = 0; index < oldMutations.size(); index++) {
-            JsonNode oldMutation = oldMutations.get(index);
-            if (!oldMutation.isObject()) {
-                throw failure("OUTBOX_MUTATION_INVALID", unitId, "pending mutation is malformed at revision " + revision);
-            }
-            JsonNode oldPatch = oldMutation.get("structuralPatch");
-            JsonNode oldImpact = oldMutation.get("structuralImpactRanges");
-            StructuralPatch canonicalPatch = canonicalOperation.mutations().get(index).structuralPatch();
-            if (canonicalPatch == null) {
-                if (oldPatch != null && !oldPatch.isNull()) {
-                    throw failure("OUTBOX_STRUCTURAL_PATCH_MISMATCH", unitId, "pending payload has an unexpected v1 patch at revision " + revision);
-                }
-                if (oldImpact != null && !oldImpact.isNull()
-                        && (!(oldImpact instanceof ArrayNode ranges) || !ranges.isEmpty())) {
-                    throw failure("OUTBOX_STRUCTURAL_IMPACT_MISMATCH", unitId, "pending payload has unexpected structural impact at revision " + revision);
-                }
-                continue;
-            }
-            JsonNode expectedImpact = mapper.valueToTree(canonicalOperation.mutations().get(index).structuralImpactRanges());
-            if (oldPatch == null || oldPatch.isNull()) {
-                // Legacy outbox events did not persist either structural field; the migrated operation log is authoritative.
-                if (oldImpact != null && !oldImpact.isNull()) {
-                    throw failure("OUTBOX_STRUCTURAL_PATCH_PARTIAL_LEGACY", unitId,
-                            "pending legacy mutation has impact metadata but no v1 patch at revision " + revision);
-                }
-                continue;
-            }
-            if (oldImpact == null || !oldImpact.equals(expectedImpact)) {
-                throw failure("OUTBOX_STRUCTURAL_IMPACT_MISMATCH", unitId, "pending v1 impact differs from operation log at revision " + revision);
-            }
-            if (oldPatch == null || !oldPatch.isObject()
-                    || !oldPatch.path("version").isIntegralNumber() || oldPatch.path("version").asInt(-1) != 1
-                    || !canonicalPatch.mutationId().equals(oldPatch.path("mutationId").asText())
-                    || !oldPatch.path("formulaOwnerDeltas").isArray()
-                    || oldPatch.has("definedNameOwnerDeltas")) {
-                throw failure("OUTBOX_STRUCTURAL_PATCH_INVALID", unitId, "pending v1 patch is invalid at revision " + revision);
-            }
-            Set<String> fields = new HashSet<>();
-            oldPatch.fieldNames().forEachRemaining(fields::add);
-            if (!fields.equals(Set.of("version", "mutationId", "formulaOwnerDeltas"))
-                    || !oldPatch.get("formulaOwnerDeltas").equals(mapper.valueToTree(canonicalPatch.formulaOwnerDeltas()))) {
-                throw failure("OUTBOX_STRUCTURAL_PATCH_MISMATCH", unitId, "pending v1 patch differs from operation log at revision " + revision);
-            }
-        }
-    }
-
-    private ObjectNode withoutStructuralMetadata(ObjectNode input) {
-        ObjectNode copy = input.deepCopy();
-        JsonNode mutations = copy.get("mutations");
-        if (mutations instanceof ArrayNode array) {
-            for (JsonNode entry : array) {
-                if (entry instanceof ObjectNode mutation) {
-                    mutation.remove("structuralPatch");
-                    mutation.remove("structuralImpactRanges");
-                }
-            }
-        }
-        return copy;
     }
 
     private String checksum(String json) throws Exception {

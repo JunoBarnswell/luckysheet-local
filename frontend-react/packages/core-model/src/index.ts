@@ -543,6 +543,7 @@ export {
 } from './drawing-planner';
 export {
   StructuralTransform,
+  planSheetTableRename,
   planCellShift,
   type StructuralTransformResult,
   type StructuralFormulaOwnerDelta,
@@ -553,6 +554,7 @@ export {
   type StructuralFormulaOwnerState,
   type StructuralReferenceOwnerAddress,
   type StructuralReferenceOwnerIndex,
+  type SheetTableRenamePlan,
   type CellShiftPlan,
   ensureDrawing,
 } from './structural-transform';
@@ -1051,6 +1053,9 @@ export class CellMatrix {
   private cellCount = 0;
   private revisionCounter = 0;
   private deferredJSON?: Record<string, Record<string, CellData>>;
+  private deferredJSONOwned = false;
+  private readonly deferredOwnedRows = new Set<string>();
+  private deferredRevision = 0;
   private deferredBounds?: {
     count: number;
     startRow: number;
@@ -1073,18 +1078,79 @@ export class CellMatrix {
   deferJSON(input: Record<string, Record<string, CellData>> | undefined): void {
     if (this.rows.size > 0 || this.deferredJSON !== undefined) throw new Error('CellMatrix already contains data');
     this.deferredJSON = input ?? {};
+    this.deferredJSONOwned = false;
+    this.deferredOwnedRows.clear();
+    this.deferredRevision = 0;
     this.sortedRowCoordinates = undefined;
     this.deferredBounds = undefined;
   }
 
   /** Monotonic content revision used by derived caches; it is not persisted. */
   get revision(): number {
-    return this.deferredJSON !== undefined ? this.getDeferredBounds().count : this.revisionCounter;
+    return this.deferredJSON !== undefined
+      ? this.getDeferredBounds().count + this.revisionCounter + this.deferredRevision
+      : this.revisionCounter;
   }
 
   get(row: Row, column: Column): CellData | undefined {
     this.hydrate();
     return this.rows.get(row)?.get(column);
+  }
+
+  /** Read a persisted sparse cell without materializing deferred worksheet data. */
+  getWithoutHydration(row: Row, column: Column): CellData | undefined {
+    return this.deferredJSON !== undefined
+      ? this.deferredJSON[String(row)]?.[String(column)]
+      : this.rows.get(row)?.get(column);
+  }
+
+  /** Read a formula-bearing persisted cell without materializing deferred worksheet data. */
+  getFormulaOwnerWithoutHydration(row: Row, column: Column): CellData | undefined {
+    const cell = this.getWithoutHydration(row, column);
+    if (!cell) return undefined;
+    return cell.formula !== undefined || cell.formulaMetadata?.sourceFormula !== undefined
+      || (cell.presentation?.kind === 'barcode' && cell.presentation.source.kind === 'formula')
+      ? cell
+      : undefined;
+  }
+
+  /** Replace one existing formula-bearing cell while preserving deferred sparse storage. */
+  replaceFormulaOwnerWithoutHydration(row: Row, column: Column, replacement: CellData): boolean {
+    if (this.getFormulaOwnerWithoutHydration(row, column) === undefined) return false;
+    return this.replaceCellWithoutHydration(row, column, replacement);
+  }
+
+  /** Replace one existing sparse cell without materializing deferred worksheet data. */
+  replaceCellWithoutHydration(row: Row, column: Column, replacement: CellData): boolean {
+    const rowKey = String(row);
+    const columnKey = String(column);
+    if (this.deferredJSON !== undefined) {
+      const originalRows = this.deferredJSON;
+      const originalRow = originalRows[rowKey];
+      if (!originalRow) return false;
+      const current = originalRow[columnKey];
+      if (!current) return false;
+      const fontFamily = replacement.style?.fontFamily;
+      const normalized = fontFamily === undefined
+        ? replacement
+        : { ...replacement, style: { ...replacement.style, fontFamily: normalizeFontFamily(fontFamily) } };
+      if (!this.deferredJSONOwned) {
+        this.deferredJSON = { ...originalRows };
+        this.deferredJSONOwned = true;
+      }
+      const mutableRows = this.deferredJSON!;
+      if (!this.deferredOwnedRows.has(rowKey)) {
+        mutableRows[rowKey] = { ...originalRow };
+        this.deferredOwnedRows.add(rowKey);
+      }
+      this.onWrite?.(row, column);
+      mutableRows[rowKey]![columnKey] = normalized;
+      this.deferredRevision += 1;
+      return true;
+    }
+    if (!this.rows.get(row)?.has(column)) return false;
+    this.set(row, column, replacement);
+    return true;
   }
 
   set(row: Row, column: Column, cell: CellData): void {
@@ -1320,6 +1386,10 @@ export class CellMatrix {
     }
     this.deferredJSON = undefined;
     this.deferredBounds = undefined;
+    this.revisionCounter += this.deferredRevision;
+    this.deferredRevision = 0;
+    this.deferredJSONOwned = false;
+    this.deferredOwnedRows.clear();
     for (const [row, columns] of Object.entries(input)) {
       for (const [column, cell] of Object.entries(columns)) {
         const fontFamily = cell.style?.fontFamily;

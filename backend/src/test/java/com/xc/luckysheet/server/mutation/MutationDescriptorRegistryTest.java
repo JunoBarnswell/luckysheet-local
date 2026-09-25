@@ -47,6 +47,55 @@ class MutationDescriptorRegistryTest {
     }
 
     @Test
+    void sheetTableRenameAppliesEveryMatchingStructuredReferenceAndRejectsMalformedReferences() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        ObjectNode snapshot = (ObjectNode) mapper.readTree("""
+                {"sheets":[
+                  {"id":"sheet-1","rowCount":20,"columnCount":10,
+                   "cells":{"0":{"0":{"value":null,"formula":"=SUM(Sales[Amount])+Sales [Other]+ÅSales[Amount]+[Book.xlsx]Sales[Amount]+IF(A1=\\"Sales[Amount]\\",0,1)"},
+                     "1":{"value":null,"formulaMetadata":{"kind":"dataTable","preservedOnly":true,"sourceFormula":"=Sales[Amount]"}}}},
+                   "sheetTables":[{"id":"sales-table","sheetId":"sheet-1","name":"Sales",
+                     "range":{"sheetId":"sheet-1","startRow":0,"endRow":4,"startColumn":0,"endColumn":1},
+                     "hasHeaderRow":true,"hasTotalRow":false,"showBandedRows":true,"showBandedColumns":false,
+                     "showFirstColumn":false,"showLastColumn":false,"showFilterButton":true,"autoExpand":"none",
+                     "columns":[{"id":"amount","name":"Amount"},{"id":"other","name":"Other"}]}]},
+                  {"id":"sheet-2","rowCount":20,"columnCount":10,
+                   "cells":{"0":{"0":{"value":null,"formula":"=Sales[Amount]"}}},"sheetTables":[]}
+                ]}
+                """);
+        JsonNode original = snapshot.deepCopy();
+        ObjectNode params = ((ObjectNode) snapshot.path("sheets").get(0).path("sheetTables").get(0)).deepCopy();
+        params.put("name", "Orders");
+        OperationMutation rename = new OperationMutation("sheetTable.update", "sheet-1", params);
+
+        MutationApplication application = registry.require("sheetTable.update", false).applyWithPatch(snapshot, rename);
+
+        assertEquals(3, application.structuralPatch().formulaOwnerDeltas().size());
+        assertEquals("=SUM(Orders[Amount])+Orders [Other]+ÅSales[Amount]+[Book.xlsx]Sales[Amount]+IF(A1=\"Sales[Amount]\",0,1)",
+                application.snapshot().path("sheets").get(0).path("cells").path("0").path("0").path("formula").asText());
+        assertEquals("=Orders[Amount]", application.snapshot().path("sheets").get(0)
+                .path("cells").path("0").path("1").path("formulaMetadata").path("sourceFormula").asText());
+        assertEquals("=Orders[Amount]",
+                application.snapshot().path("sheets").get(1).path("cells").path("0").path("0").path("formula").asText());
+        assertEquals(original, snapshot);
+        assertEquals(application.snapshot(), registry.applyPublicMutations(snapshot, List.of(rename)));
+        JsonNode undone = registry.applyStructuralPatch(application.snapshot(), application.structuralPatch().inverse("sheetTable.update"));
+        assertEquals("=Sales[Amount]", undone.path("sheets").get(0)
+                .path("cells").path("0").path("1").path("formulaMetadata").path("sourceFormula").asText());
+        JsonNode redone = registry.applyStructuralPatch(undone, application.structuralPatch());
+        assertEquals("=Orders[Amount]", redone.path("sheets").get(0)
+                .path("cells").path("0").path("1").path("formulaMetadata").path("sourceFormula").asText());
+
+        ObjectNode malformed = snapshot.deepCopy();
+        ((ObjectNode) malformed.path("sheets").get(0).path("cells").path("0").path("0")).put("formula", "=SUM(Sales[Amount)");
+        JsonNode malformedOriginal = malformed.deepCopy();
+        ServiceException error = assertThrows(ServiceException.class,
+                () -> registry.require("sheetTable.update", false).applyWithPatch(malformed, rename));
+        assertEquals("SERVICE_UNAVAILABLE", error.code());
+        assertEquals(malformedOriginal, malformed);
+    }
+
+    @Test
     void cellSetUsesServerResolvedRangeAndChangesSnapshot() throws Exception {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         var snapshot = mapper.readTree("{\"sheets\":[{\"id\":\"sheet-1\",\"rowCount\":1000,\"columnCount\":26,\"cells\":{}}]}");

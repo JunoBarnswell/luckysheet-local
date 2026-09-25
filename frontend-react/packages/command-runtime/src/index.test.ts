@@ -218,6 +218,67 @@ test('CommandRuntime restores chart linked formulas through local history', () =
   assert.equal((sheet.drawingPayloads.get('chart-1') as { elements: { titleText: { linkedFormula: string } } }).elements.titleText.linkedFormula, '=A2');
 });
 
+test('CommandRuntime replays formula owner history without hydrating deferred cells', () => {
+  const workbook = new WorkbookModel('unit-deferred-formula-history', 'Deferred Formula History');
+  const sheet = workbook.getSheet('sheet-1');
+  const deferredCells = { '0': { '0': { value: null, formula: '=Sales[Amount]' } } };
+  sheet.cells.deferJSON(deferredCells);
+  const delta: StructuralFormulaOwnerDelta = {
+    kind: 'formula-cell',
+    beforeAddress: { sheetId: sheet.id, row: 0, column: 0 },
+    afterAddress: { sheetId: sheet.id, row: 0, column: 0 },
+    before: { formula: '=Sales[Amount]', sourceFormula: null, barcodeFormula: null },
+    after: { formula: '=Orders[Amount]', sourceFormula: null, barcodeFormula: null },
+  };
+  const runtime = new CommandRuntime(workbook);
+  const metadata = (name: string, inverseId: string) => ({
+    schema: { name, validate: (value: unknown) => !!value && typeof value === 'object' },
+    permission: { capability: 'test.formula.write' },
+    affectedRanges: { resolve: () => [] },
+    inversePolicy: { allowedMutationIds: [inverseId], minCount: 1 },
+  });
+  runtime.registry.registerMutation({
+    id: 'formula.owner.rename',
+    handler: () => undefined,
+    metadata: metadata('FormulaOwnerRename', 'formula.owner.restore'),
+  });
+  runtime.registry.registerMutation({
+    id: 'formula.owner.restore',
+    handler: () => undefined,
+    metadata: metadata('FormulaOwnerRestore', 'formula.owner.rename'),
+  });
+  runtime.registry.registerCommand({
+    id: 'formula.owner.rename',
+    execute: (_params, context) => {
+      context.applyMutation({
+        id: 'formula.owner.rename', unitId: workbook.unitId, sheetId: sheet.id, params: {}, affectedRanges: [],
+        inverse: [{ id: 'formula.owner.restore', unitId: workbook.unitId, sheetId: sheet.id, params: {}, affectedRanges: [] }],
+        apply: () => {
+          const current = sheet.cells.getFormulaOwnerWithoutHydration(0, 0)!;
+          sheet.cells.replaceFormulaOwnerWithoutHydration(0, 0, { ...current, formula: '=Orders[Amount]' });
+          return { formulaOwnerDeltas: [delta] };
+        },
+      });
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges: [] };
+    },
+  });
+
+  runtime.execute('formula.owner.rename', {});
+  assert.equal(sheet.cells.isHydrated, false);
+  assert.equal(runtime.undo(), true);
+  assert.equal(sheet.cells.toJSON()['0']?.['0']?.formula, '=Sales[Amount]');
+  assert.equal(sheet.cells.isHydrated, false);
+  assert.equal(runtime.redo(), true);
+  assert.equal(sheet.cells.toJSON()['0']?.['0']?.formula, '=Orders[Amount]');
+  assert.equal(sheet.cells.isHydrated, false);
+  const changedOwner = sheet.cells.getFormulaOwnerWithoutHydration(0, 0)!;
+  sheet.cells.replaceFormulaOwnerWithoutHydration(0, 0, { ...changedOwner, formula: '=Broken[Amount]' });
+  assert.throws(() => runtime.undo(), /STRUCTURAL_PATCH_PRECONDITION: formula owner/);
+  assert.equal(sheet.cells.toJSON()['0']?.['0']?.formula, '=Broken[Amount]');
+  assert.equal(sheet.cells.isHydrated, false);
+  assert.equal(deferredCells['0']?.['0']?.formula, '=Sales[Amount]');
+});
+
 test('CommandRuntime records and guards defined-name owner patches in history', () => {
   const workbook = new WorkbookModel('unit-defined-name-history', 'Defined Name History');
   const sheetId = workbook.primarySheetId;

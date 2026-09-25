@@ -231,6 +231,20 @@ public class MutationDescriptorRegistry {
         return current;
     }
 
+    /** Replays pre-v3 history for migration verification without the new table-rename owner transform. */
+    public JsonNode applyLegacyMutations(JsonNode snapshot, List<OperationMutation> mutations) {
+        JsonNode current = snapshot;
+        for (OperationMutation mutation : mutations) {
+            MutationDescriptor descriptor = require(mutation.id(), false);
+            if ("sheetTable.update".equals(mutation.id()) && descriptor instanceof SheetDataMutationDescriptor sheetData) {
+                current = sheetData.applyMetadataWithoutStructuralPatch(current, mutation);
+            } else {
+                current = descriptor.apply(current, mutation);
+            }
+        }
+        return current;
+    }
+
     public JsonNode applyCommittedMutations(
             JsonNode snapshot,
             List<CommittedOperationMutation> mutations,
@@ -356,10 +370,20 @@ public class MutationDescriptorRegistry {
         if (!left.kind().equals(right.kind())) return false;
         if ("formula-cell".equals(left.kind())) return left.afterAddress().equals(right.afterAddress());
         if ("formula-object".equals(left.kind())) {
-            return left.sheetId().equals(right.sheetId())
-                    && left.ownerKind().equals(right.ownerKind())
-                    && left.ownerId().equals(right.ownerId())
-                    && left.field().equals(right.field());
+            if (!left.ownerKind().equals(right.ownerKind())) return false;
+            return switch (left.ownerKind()) {
+                case "chart-text" -> Objects.equals(left.sheetId(), right.sheetId())
+                        && Objects.equals(left.ownerId(), right.ownerId()) && Objects.equals(left.field(), right.field());
+                case "shape-property" -> Objects.equals(left.sheetId(), right.sheetId())
+                        && Objects.equals(left.ownerId(), right.ownerId());
+                case "table-sheet-column" -> Objects.equals(left.sheetId(), right.sheetId())
+                        && Objects.equals(left.fieldId(), right.fieldId());
+                case "data-view-field" -> Objects.equals(left.viewId(), right.viewId())
+                        && Objects.equals(left.fieldId(), right.fieldId());
+                case "cell-style-template" -> Objects.equals(left.templateId(), right.templateId())
+                        && Objects.equals(left.field(), right.field());
+                default -> false;
+            };
         }
         return left.sheetId().equals(right.sheetId())
                 && left.ruleKind().equals(right.ruleKind())

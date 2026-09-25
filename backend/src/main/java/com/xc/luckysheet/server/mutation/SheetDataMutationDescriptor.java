@@ -8,6 +8,7 @@ import com.xc.luckysheet.server.contract.AutoFilterOwnershipValidator;
 import com.xc.luckysheet.server.contract.DataRegionContextValidator;
 import com.xc.luckysheet.server.contract.OperationMutation;
 import com.xc.luckysheet.server.contract.RangeRef;
+import com.xc.luckysheet.server.contract.StructuralPatch;
 import com.xc.luckysheet.server.contract.WorkbookAclRole;
 import com.xc.luckysheet.server.service.ServiceException;
 
@@ -61,6 +62,21 @@ final class SheetDataMutationDescriptor extends CanonicalJsonMutationDescriptor 
 
     @Override
     public JsonNode apply(JsonNode snapshot, OperationMutation mutation) {
+        return applyWithPatch(snapshot, mutation).snapshot();
+    }
+
+    @Override
+    public MutationApplication applyWithPatch(JsonNode snapshot, OperationMutation mutation) {
+        JsonNode updated = applyMetadata(snapshot, mutation);
+        if (!"sheetTable.update".equals(id())) return new MutationApplication(updated, null);
+        ObjectNode params = SnapshotMutationSupport.params(mutation);
+        StructuralPatch patch = StructuralSnapshotReducer.renameSheetTableReferences(
+                snapshot, updated, mutation.sheetId(), SnapshotMutationSupport.text(params, "id"));
+        JsonNode transformed = patch == null ? updated : StructuralSnapshotReducer.applyStructuralOwnerPatch(updated, patch);
+        return new MutationApplication(transformed, patch);
+    }
+
+    private JsonNode applyMetadata(JsonNode snapshot, OperationMutation mutation) {
         ObjectNode root = SnapshotMutationSupport.root(snapshot.deepCopy());
         ObjectNode params = SnapshotMutationSupport.params(mutation);
         switch (id()) {
@@ -68,6 +84,13 @@ final class SheetDataMutationDescriptor extends CanonicalJsonMutationDescriptor 
             default -> applyToSheet(root, mutation, params);
         }
         return root;
+    }
+
+    JsonNode applyMetadataWithoutStructuralPatch(JsonNode snapshot, OperationMutation mutation) {
+        if (!"sheetTable.update".equals(id()) || !"sheetTable.update".equals(mutation.id())) {
+            throw new IllegalArgumentException("Legacy table rename replay requires sheetTable.update");
+        }
+        return applyMetadata(snapshot, mutation);
     }
 
     private void applyToSheet(ObjectNode root, OperationMutation mutation, ObjectNode params) {
