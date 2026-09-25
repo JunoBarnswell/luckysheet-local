@@ -149,6 +149,16 @@ function validateAxisMetadataPreservation(
   count: number,
   direction: 1 | -1,
 ): void {
+  for (const table of sheet.sheetTables) {
+    const tableWidth = table.range.endColumn - table.range.startColumn + 1;
+    if (table.columns.length !== tableWidth) {
+      throw new Error(`STRUCTURAL_PATCH_INVARIANT: Sheet Table ${table.id} columns do not match its range width`);
+    }
+    if (axis === 'column' && direction === 1
+      && at > table.range.startColumn && at <= table.range.endColumn) {
+      throw new Error(`UNSUPPORTED_FEATURE: inserting a worksheet column inside Sheet Table ${table.id} requires a table-column structural patch`);
+    }
+  }
   if (direction === 1) return;
   const deleted = (position: number): boolean => position >= at && position < at + count;
   for (const sparkline of sheet.sparklines) {

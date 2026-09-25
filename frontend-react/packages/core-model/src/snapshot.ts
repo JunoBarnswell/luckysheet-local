@@ -394,6 +394,18 @@ export function assertCanonicalWorkbookSnapshot(snapshot: WorkbookSnapshot): Wor
         }
       }
     }
+    for (const table of sheet.sheetTables ?? []) {
+      const range = table?.range;
+      if (!range || typeof range !== 'object' || range.sheetId !== sheet.id
+        || ![range.startRow, range.endRow, range.startColumn, range.endColumn].every(Number.isSafeInteger)
+        || range.startRow < 0 || range.endRow < range.startRow || range.startColumn < 0 || range.endColumn < range.startColumn) {
+        throw new Error('Sheet Table range is invalid');
+      }
+      const width = range.endColumn - range.startColumn + 1;
+      if (!Array.isArray(table.columns) || table.columns.length !== width) {
+        throw new Error('Sheet Table columns must match its range width');
+      }
+    }
     const tableFilters = (sheet.sheetTables ?? []).filter((table) => Boolean(table.autoFilter));
     for (const table of tableFilters) {
       const filter = table.autoFilter!;

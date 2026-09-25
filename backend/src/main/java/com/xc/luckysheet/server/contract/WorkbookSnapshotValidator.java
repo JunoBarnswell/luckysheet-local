@@ -136,9 +136,14 @@ public final class WorkbookSnapshotValidator {
                 if (!tables.isArray()) throw ServiceException.validation("Workbook snapshot sheetTables is invalid");
                 for (JsonNode table : tables) {
                     if (!table.isObject()) throw ServiceException.validation("Workbook snapshot table is invalid");
+                    RangeRef tableRange = rangeOf(table.get("range"), sheetId);
+                    JsonNode columns = table.get("columns");
+                    int tableWidth = tableRange.endColumn() - tableRange.startColumn() + 1;
+                    if (columns == null || !columns.isArray() || columns.size() != tableWidth) {
+                        throw ServiceException.validation("Workbook snapshot Sheet Table columns must match its range width");
+                    }
                     JsonNode tableFilter = table.get("autoFilter");
                     if (tableFilter == null || tableFilter.isNull()) continue;
-                    RangeRef tableRange = rangeOf(table.get("range"), sheetId);
                     validateAutoFilter(tableFilter, sheetId, tableRange);
                 }
             }

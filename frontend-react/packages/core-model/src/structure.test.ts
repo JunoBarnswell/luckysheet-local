@@ -106,6 +106,50 @@ describe('structural operations', () => {
     assert.ok(!sheet.hiddenColumns.has(3));
   });
 
+  it('column insertion before a Sheet Table preserves its column schema', () => {
+    const { workbook } = seedWorkbook();
+    const sheet = workbook.getSheet('s1');
+    sheet.sheetTables.push({
+      id: 'table-1', sheetId: sheet.id, name: 'Table1',
+      range: { sheetId: sheet.id, startRow: 0, endRow: 2, startColumn: 1, endColumn: 2 },
+      hasHeaderRow: true, hasTotalRow: false, showBandedRows: true, showBandedColumns: false,
+      showFirstColumn: false, showLastColumn: false, showFilterButton: false, autoExpand: 'none',
+      columns: [{ id: 'column-1', name: 'A' }, { id: 'column-2', name: 'B' }],
+    });
+
+    StructuralTransform.apply(workbook, { kind: 'insert-columns', sheetId: sheet.id, at: 1, count: 1 });
+    StructuralTransform.apply(workbook, { kind: 'insert-columns', sheetId: sheet.id, at: 4, count: 1 });
+
+    assert.equal(sheet.sheetTables[0]!.range.startColumn, 2);
+    assert.equal(sheet.sheetTables[0]!.range.endColumn, 3);
+    assert.equal(sheet.sheetTables[0]!.columns.length, 2);
+  });
+
+  it('rejects column insertion inside a Sheet Table before changing workbook state', () => {
+    const { workbook } = seedWorkbook();
+    const sheet = workbook.getSheet('s1');
+    sheet.cells.set(4, 4, { value: 'tail' });
+    sheet.sheetTables.push({
+      id: 'table-1', sheetId: sheet.id, name: 'Table1',
+      range: { sheetId: sheet.id, startRow: 0, endRow: 2, startColumn: 1, endColumn: 2 },
+      hasHeaderRow: true, hasTotalRow: false, showBandedRows: true, showBandedColumns: false,
+      showFirstColumn: false, showLastColumn: false, showFilterButton: false, autoExpand: 'none',
+      columns: [{ id: 'column-1', name: 'A' }, { id: 'column-2', name: 'B' }],
+    });
+    const columnCount = sheet.columnCount;
+
+    assert.throws(() => StructuralTransform.apply(workbook, {
+      kind: 'insert-columns', sheetId: sheet.id, at: 2, count: 1,
+    }), /UNSUPPORTED_FEATURE: inserting a worksheet column inside Sheet Table table-1/);
+
+    assert.equal(sheet.columnCount, columnCount);
+    assert.equal(sheet.cells.get(4, 4)?.value, 'tail');
+    assert.deepEqual(sheet.sheetTables[0]!.range, {
+      sheetId: sheet.id, startRow: 0, endRow: 2, startColumn: 1, endColumn: 2,
+    });
+    assert.equal(sheet.sheetTables[0]!.columns.length, 2);
+  });
+
   it('structural formula rewrite uses AST references, including absolute and quoted refs', () => {
     const workbook = new WorkbookModel('unit-formula-structure', 'Structural Formula');
     const sheet = workbook.getSheet('sheet-1');

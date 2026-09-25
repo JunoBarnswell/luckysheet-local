@@ -43,6 +43,7 @@ final class StructuralSnapshotReducer {
         int limit = dimension(target, axis);
         int maximum = axis == FormulaReferenceTransformer.Axis.ROW ? SnapshotMutationSupport.MAX_ROW + 1 : SnapshotMutationSupport.MAX_COLUMN + 1;
         validateAxisBounds(limit, maximum, at, count, direction);
+        validateSheetTableColumnPreservation(root, target, axis, at, direction);
         if (direction == FormulaReferenceTransformer.Direction.DELETE) validateDeletePreservation(root, target, axis, at, count);
         validateAxisDataRegionPreservation(root, target, axis, at, count, direction);
         if (at < limit) {
@@ -822,6 +823,33 @@ final class StructuralSnapshotReducer {
         String start = axis == FormulaReferenceTransformer.Axis.ROW ? "startRow" : "startColumn";
         String end = axis == FormulaReferenceTransformer.Axis.ROW ? "endRow" : "endColumn";
         return range.path(start).asInt(Integer.MAX_VALUE) <= at + count - 1 && range.path(end).asInt(-1) >= at;
+    }
+
+    private static void validateSheetTableColumnPreservation(
+            ObjectNode root,
+            ObjectNode target,
+            FormulaReferenceTransformer.Axis axis,
+            int at,
+            FormulaReferenceTransformer.Direction direction
+    ) {
+        for (JsonNode raw : SnapshotMutationSupport.array(target, "sheetTables")) {
+            ObjectNode table = requireObject(raw, "Sheet table");
+            RangeRef range = SnapshotMutationSupport.range(root, table.get("range"));
+            if (!target.path("id").asText().equals(range.sheetId())) {
+                throw ServiceException.validation("Sheet Table range must target its worksheet");
+            }
+            JsonNode columns = table.get("columns");
+            int width = range.endColumn() - range.startColumn() + 1;
+            if (columns == null || !columns.isArray() || columns.size() != width) {
+                throw ServiceException.validation("Sheet Table columns must match its range width");
+            }
+            if (axis == FormulaReferenceTransformer.Axis.COLUMN
+                    && direction == FormulaReferenceTransformer.Direction.INSERT
+                    && at > range.startColumn() && at <= range.endColumn()) {
+                throw ServiceException.unavailable("UNSUPPORTED_FEATURE: inserting a worksheet column inside Sheet Table "
+                        + table.path("id").asText() + " requires a table-column structural patch");
+            }
+        }
     }
 
     private static void shiftAllMetadata(

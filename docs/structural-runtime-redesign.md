@@ -199,6 +199,19 @@ Confirmed issue: one omitted coordinate owner manifested across axis shifts, cel
 5. **Failure ordering:** conversion is performed while building the ReportSheet plan, before cell extraction/clear, so the correction preserves the pre-mutation rejection boundary.
 6. **Verification discipline:** the remote compile evidence was used as a static diagnostic; no local test/build was run. The corrected commit's remote CI must be checked before treating the fix as verified.
 
+## Static review update — Sheet Table width integrity
+
+Six independent review passes confirmed two real defects in one integrity chain:
+
+1. **Model invariant:** `validateSheetTableModel` requires the table column count to equal the range width.
+2. **TypeScript axis path:** insertion preflight returned immediately for every insert; the later table reducer shifted only `range` and AutoFilter.
+3. **Java axis path:** insert dispatch skipped delete-preservation checks; its table reducer likewise shifted range/filter only, before any schema update.
+4. **Snapshot ingress:** both canonical snapshot validators accepted a Sheet Table with a range/column-count mismatch; the frontend hydration path did not invoke the feature-layer table validator.
+5. **Persistence consequence:** OOXML writes `ref` from the table range and `tableColumns count` from the column list, so the invalid model can produce contradictory package metadata.
+6. **Failure boundary:** both axis reducers can reject the unsupported interior-column case before touching cells or metadata; insertion before a table remains a supported range translation with stable width.
+
+The fixes enforce the width invariant at TS and Java snapshot boundaries and reject interior worksheet-column insertion in both reducers until a canonical table-column patch supplies new stable column identities and names. Regression sources cover valid snapshot/table translation and width mismatch/interior-insert rejection with unchanged state. No local tests or builds were run; remote CI remains the verification gate.
+
 Confirmed defect: one mismatched range type at the new Java cell-shift call site. Fix: pass `formulaRange(selection)` to the existing transformer contract. The correction is committed separately so the failed CI head remains auditable.
 
 ## Six-round static self-review — OOXML unknown worksheet-node fail-close

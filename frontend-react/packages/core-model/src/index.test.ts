@@ -112,6 +112,22 @@ test('canonical snapshots enforce worksheet AutoFilter identity and column bound
   assert.throws(() => assertCanonicalWorkbookSnapshot(snapshot), /AutoFilter column identity is invalid/);
 });
 
+test('canonical snapshots require Sheet Table columns to match the range width', () => {
+  const snapshot = new WorkbookModel('unit-sheet-table-contract', 'Sheet Table contract').snapshot();
+  const sheet = snapshot.sheets[0]!;
+  sheet.sheetTables = [{
+    id: 'table-1', sheetId: sheet.id, name: 'Table1',
+    range: { sheetId: sheet.id, startRow: 0, endRow: 2, startColumn: 1, endColumn: 2 },
+    hasHeaderRow: true, hasTotalRow: false, showBandedRows: true, showBandedColumns: false,
+    showFirstColumn: false, showLastColumn: false, showFilterButton: false, autoExpand: 'none',
+    columns: [{ id: 'column-1', name: 'A' }, { id: 'column-2', name: 'B' }],
+  }];
+  assert.doesNotThrow(() => assertCanonicalWorkbookSnapshot(snapshot));
+
+  sheet.sheetTables[0]!.columns.pop();
+  assert.throws(() => assertCanonicalWorkbookSnapshot(snapshot), /Sheet Table columns must match its range width/);
+});
+
 test('canonical snapshots reject persisted font metadata that cannot be normalized', () => {
   const snapshot = new WorkbookModel('unit-invalid-font-snapshot', 'Invalid font snapshot').snapshot();
   snapshot.sheets[0]!.cells['0'] = { '0': { value: 'invalid', style: { fontFamily: '  ' } } };

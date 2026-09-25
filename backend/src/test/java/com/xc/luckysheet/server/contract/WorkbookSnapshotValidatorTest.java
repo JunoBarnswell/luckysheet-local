@@ -98,7 +98,27 @@ class WorkbookSnapshotValidatorTest {
     }
 
     @Test
-   void rejectsDanglingWorksheetHyperlinkTargetsAndDuplicateAnchors() {
+    void requiresSheetTableColumnCountToMatchItsRangeWidth() {
+        ObjectNode snapshot = snapshot();
+        ObjectNode sheet = (ObjectNode) snapshot.path("sheets").get(0);
+        ObjectNode table = sheet.putArray("sheetTables").addObject();
+        table.put("id", "table-1").put("sheetId", "sheet-1").put("name", "Table1");
+        table.putObject("range").put("sheetId", "sheet-1").put("startRow", 0).put("endRow", 2)
+                .put("startColumn", 1).put("endColumn", 2);
+        ArrayNode columns = table.putArray("columns");
+        columns.addObject().put("id", "column-1").put("name", "A");
+        columns.addObject().put("id", "column-2").put("name", "B");
+        assertEquals(snapshot, WorkbookSnapshotValidator.requireCanonical(snapshot, "book-1"));
+        columns.remove(1);
+
+        ServiceException error = assertThrows(ServiceException.class,
+                () -> WorkbookSnapshotValidator.requireCanonical(snapshot, "book-1"));
+
+        assertEquals("VALIDATION_ERROR", error.code());
+    }
+
+    @Test
+    void rejectsDanglingWorksheetHyperlinkTargetsAndDuplicateAnchors() {
         ObjectNode snapshot = snapshot();
         ObjectNode sheet = (ObjectNode) snapshot.path("sheets").get(0);
         ObjectNode link = mapper.createObjectNode().put("id", "dangling");
