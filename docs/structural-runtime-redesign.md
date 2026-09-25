@@ -544,3 +544,14 @@ Confirmed additional operation paths: 13 in the follow-up audit (the previous 12
 **下一步实施契约：** 把 whole-axis insert/delete 迁移为版本化 `StructuralPatch` 事务。Patch 必须在提交前包含 typed owner locator、before/after、坐标映射、授权目标范围与冲突范围，以及 calculation/projection/history 影响；逆操作由同一 patch 产生。服务端对结构 intent 做唯一权威规划并提交 patch，客户端本地预览与协作重放消费已提交 patch；拒绝未知 owner、旧 patch 版本、失配 revision 或不完整 owner delta，而不是各层重新解析 mutation 再补救。随后把同一消费入口扩到 cells/move/permutation 与 OOXML capability preflight。此结论是静态设计约束，不表示相关实现已完成；本轮未运行本地测试或构建。
 
 **代码迁移边界（由当前调用链确定）：** 将 `MutationDescriptor.apply` 改为返回包含 snapshot 与可选 `StructuralPatch` 的单一 `MutationApplication`；`MutationDescriptorRegistry` 只传递该结果，不再另设结构专用旁路。`StructuralMutationDescriptor`/`StructuralSnapshotReducer` 负责 axis patch 规划，`WorkbookOperationService` 在同一 revision transaction 内提交 patch，并将其放入 `CommittedOperationMutation`。前端 protocol validator、`CollaborationSession` 和 `CommandRuntime.HistoryEntry` 统一消费 committed patch；`assertOperationResultMatches` 仍只比较请求意图，不能允许客户端控制服务端 patch。任何结构 mutation 未返回完整 patch、patch base revision 不匹配或 owner precondition 不符，都必须在提交前 fail-close。完成 axis vertical slice 后，删除 axis reducer 的远端重推和客户端历史逆 mutation 分支，再按相同接口迁移其他结构操作。
+
+### 六轮自审回合 — 非单元格结构引用的可逆性 fail-close（2026-09-25）
+
+1. **改动时序：** `applyAxis` 与 `applyCellShift` 在改 live `WorkbookModel` 前执行公式重写预检；名称、规则、工作簿公式 owner 的往返检查放在该阶段，拒绝不会留下半改模型。
+2. **Owner 覆盖：** 预检与既有写入路径字段对齐：defined-name、CF/DV 的 `value1/value2/formula1/formula2/listSource.formula`，以及 table-sheet、shape drawing、data-view、cell-style-template formula/anchor。轴/单元格删除若变换后不能被反向变换还原，会返回 `UNSUPPORTED_STRUCTURAL_REFERENCE`。
+3. **服务端事务边界：** Java `StructuralMutationDescriptor.applyWithPatch` 先深拷贝 snapshot；reducer 在本地候选快照上的 fail-close 错误会中止提交，不写 operation/revision/checkpoint。
+4. **比较语义：** AST 客户端比较公式规范化后的结构，Java 端规范化 A1 引用 token；避免把公式空格、大小写或 renderer 格式差异误报成不可逆。Java/TS 都只在前向结果变化时执行逆向检查。
+5. **双端对齐：** Java 对 axis、cell shift 和 `range.move` 的公式 cells/rules/names/persisted owners 使用正向映射与反向映射；客户端同样在对应操作的预检阶段检查 cell provenance/barcode、hyperlink address 和上述非单元格 owners。
+6. **剩余边界：** `rows.permuted`、fill/paste、sheet identity、table resize、OOXML owner relocation 尚未统一到可逆 `StructuralPatch`；本次不把 fail-close 子集宣称为完整 runtime。删除受影响引用的非单元格公式现会明确拒绝，直到完整 owner delta 与保护/冲突作用域接入同一 patch。
+
+**本轮交付边界：** 这是现有单元格公式 patch 的临时 fail-close 闭环，避免不可逆公式文本被结构 undo 留成 `#REF!`；不是完整修复非单元格 owner 的提交载荷/冲突/保护范围。严格按用户要求只静态审查，未运行测试、构建或 UI 验收。

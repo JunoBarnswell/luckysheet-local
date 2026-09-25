@@ -528,6 +528,11 @@ final class FormulaReferenceTransformer {
         return output.toString();
     }
 
+    static String canonicalizeFormulaReferences(String formula) {
+        return rewrite(formula, reference -> reference,
+                parsed -> RangeMapping.handled(parsed.start(), parsed.end()), true);
+    }
+
     private static String remapWholeAxisReferences(String formula, SheetIdentity owner, SheetIdentity target,
             Axis axis, int at, int count, Direction direction) {
         if (formula == null || formula.isEmpty()) return formula;

@@ -1046,6 +1046,15 @@ function rewriteReferencesForMovedRegion(
     targetSheetName: targetSheet.name,
     sheetOrder,
   }));
+  const inverseTransformMovedFormula = (formula: string, ownerSheetId: string): string => transformFormula(formula, (ast) => mapAstMovedReferences(ast, {
+    selection: destination,
+    rowDelta: -rowDelta,
+    columnDelta: -columnDelta,
+    ownerSheetId,
+    targetSheetId: targetSheet.id,
+    targetSheetName: targetSheet.name,
+    sheetOrder,
+  }));
 
   const referenceOwnersByAddress = new Map<string, StructuralReferenceOwnerAddress>();
   for (const owner of referenceOwners.getRangeDependents(targetSheet.id, selection)) {
@@ -1064,10 +1073,18 @@ function rewriteReferencesForMovedRegion(
       && (insideCell(selection, referenceOwner.row, referenceOwner.column) || insideCell(destination, referenceOwner.row, referenceOwner.column))) continue;
     const formula = cell.formula === undefined ? undefined : transformMovedFormula(cell.formula, owner.id);
     const formulaChanged = formula !== undefined && formula !== cell.formula;
+    if (formulaChanged && formula !== undefined && cell.formula !== undefined) {
+      assertStructuralFormulaRoundTrip(`${owner.id}!${referenceOwner.row}:${referenceOwner.column}.formula`, cell.formula, formula,
+        (value) => inverseTransformMovedFormula(value, owner.id));
+    }
     const sourceFormula = cell.formulaMetadata?.sourceFormula !== undefined
       ? transformMovedFormula(cell.formulaMetadata.sourceFormula, owner.id)
       : undefined;
     const sourceFormulaChanged = sourceFormula !== undefined && sourceFormula !== cell.formulaMetadata?.sourceFormula;
+    if (sourceFormulaChanged && sourceFormula !== undefined && cell.formulaMetadata?.sourceFormula !== undefined) {
+      assertStructuralFormulaRoundTrip(`${owner.id}!${referenceOwner.row}:${referenceOwner.column}.sourceFormula`, cell.formulaMetadata.sourceFormula, sourceFormula,
+        (value) => inverseTransformMovedFormula(value, owner.id));
+    }
     if ((formulaChanged || sourceFormulaChanged)
       && hasFormulaGroupMetadata(cell)) {
       throw new Error(`UNSUPPORTED_STRUCTURAL_REFERENCE: formula group at ${owner.id}!${referenceOwner.row}:${referenceOwner.column} requires an explicit formula-group transform before a moved range`);
@@ -1079,6 +1096,11 @@ function rewriteReferencesForMovedRegion(
       && cell.presentation?.kind === 'barcode'
       && cell.presentation.source.kind === 'formula'
       && barcode !== cell.presentation.source.formula;
+    if (barcodeFormulaChanged && barcode !== undefined
+      && cell.presentation?.kind === 'barcode' && cell.presentation.source.kind === 'formula') {
+      assertStructuralFormulaRoundTrip(`${owner.id}!${referenceOwner.row}:${referenceOwner.column}.barcodeFormula`,
+        cell.presentation.source.formula, barcode, (value) => inverseTransformMovedFormula(value, owner.id));
+    }
     if (formulaChanged || sourceFormulaChanged || barcodeFormulaChanged) {
       plan.cells.push({
         sheetId: owner.id,
@@ -1096,6 +1118,8 @@ function rewriteReferencesForMovedRegion(
       const ownerSheetId = rule.formulaAnchor?.sheetId ?? rule.sheetId;
       const addRuleFormula = (field: MoveRuleFormulaField, formula: string): void => {
         const next = transformMovedFormula(formula, ownerSheetId);
+        assertStructuralFormulaRoundTrip(`${rule.sheetId}:${rule.id}.${field}`, formula, next,
+          (value) => inverseTransformMovedFormula(value, ownerSheetId));
         if (next !== formula) plan.rules.push({ rule, field, formula: next });
       };
       if (rule.operator === 'formula' && typeof rule.value1 === 'string') addRuleFormula('value1', rule.value1);
@@ -1118,13 +1142,20 @@ function rewriteReferencesForMovedRegion(
         next.row += rowDelta;
         next.column += columnDelta;
       }
-      if (next.address !== undefined) next.address = transformMovedFormula(next.address, targetSheet.id);
+      if (next.address !== undefined) {
+        const address = transformMovedFormula(next.address, targetSheet.id);
+        assertStructuralFormulaRoundTrip(`hyperlink:${hyperlink.id}.address`, next.address, address,
+          (value) => inverseTransformMovedFormula(value, targetSheet.id));
+        next.address = address;
+      }
       if (JSON.stringify(next) !== JSON.stringify(target)) plan.hyperlinks.push({ hyperlink, target: next });
     }
   }
   for (const entry of workbook.definedNameModels) {
     const ownerSheetId = entry.anchor?.sheetId ?? entry.sheetId ?? targetSheet.id;
     const formula = transformMovedFormula(entry.formula, ownerSheetId);
+    assertStructuralFormulaRoundTrip(`defined-name:${entry.scope}:${entry.sheetId ?? '*'}:${entry.name}`, entry.formula, formula,
+      (value) => inverseTransformMovedFormula(value, ownerSheetId));
     let anchor = entry.anchor;
     if (entry.anchor?.sheetId === targetSheet.id
       && insideCell(selection, entry.anchor.row, entry.anchor.column)) {
@@ -1140,6 +1171,7 @@ function rewriteReferencesForMovedRegion(
     workbook,
     targetSheet,
     transformMovedFormula,
+    inverseTransformMovedFormula,
     (anchor) => insideCell(selection, anchor.row, anchor.column)
       ? { ...anchor, row: anchor.row + rowDelta, column: anchor.column + columnDelta }
       : anchor,
@@ -1766,6 +1798,16 @@ function preflightFormulaRewrite(
     targetSheetName: targetSheet.name,
     sheetOrder,
   }));
+  const inverseShift: StructuralShift = { ...shift, op: shift.op === 'insert' ? 'delete' : 'insert' };
+  const inverseCellShift = cellShift ? { ...cellShift, direction: cellShift.direction === 1 ? -1 as const : 1 as const } : undefined;
+  const mapFormulaInverse = (formula: string, ownerSheetId: string): string => transformFormula(formula, (ast) => mapAstStructuralReferences(ast, {
+    shift: inverseShift,
+    cellShift: inverseCellShift,
+    ownerSheetId,
+    targetSheetId: targetSheet.id,
+    targetSheetName: targetSheet.name,
+    sheetOrder,
+  }));
   const owners = new Map<string, StructuralReferenceOwnerAddress>();
   for (const owner of referenceOwners.getStructuralDependents(targetSheet.id, shift.axis, shift.at)) {
     owners.set(structuralOwnerKey(owner), owner);
@@ -1826,8 +1868,11 @@ function preflightFormulaRewrite(
       }
     }
     const formula = mapFormula(entry.formula, ownerSheetId);
+    assertStructuralFormulaRoundTrip(`defined-name:${entry.scope}:${entry.sheetId ?? '*'}:${entry.name}`, entry.formula, formula,
+      (value) => mapFormulaInverse(value, ownerSheetId));
     if (formula !== entry.formula || anchor !== entry.anchor) plan.names.push({ entry, formula, anchor });
   }
+  if (shift.op === 'delete') preflightRuleFormulaRoundTrips(workbook, mapFormula, mapFormulaInverse);
   const mapAddress = (address: CellAddress): CellAddress | null => {
     if (address.sheetId !== targetSheet.id) return address;
     if (cellShift) {
@@ -1841,8 +1886,66 @@ function preflightFormulaRewrite(
     if (shifted === position) return address;
     return shift.axis === 'row' ? { ...address, row: shifted } : { ...address, column: shifted };
   };
-  plan.participantChanges.push(...preflightWorkbookFormulaOwners(workbook, targetSheet, mapFormula, mapAddress));
+  plan.participantChanges.push(...preflightWorkbookFormulaOwners(workbook, targetSheet, mapFormula, mapFormulaInverse, mapAddress));
   return plan;
+}
+
+function assertStructuralFormulaRoundTrip(
+  participant: string,
+  before: string,
+  after: string,
+  inverse: (formula: string) => string,
+): void {
+  if (after !== before && !sameStructuralFormula(inverse(after), before)) {
+    throw new Error(`UNSUPPORTED_STRUCTURAL_REFERENCE: ${participant} cannot be restored by the inverse structural operation`);
+  }
+}
+
+function sameStructuralFormula(left: string, right: string): boolean {
+  const canonicalFormula = (formula: string): string => transformFormula(formula, (ast) => ast);
+  return canonicalFormula(left) === canonicalFormula(right);
+}
+
+function preflightRuleFormulaRoundTrips(
+  workbook: WorkbookModel,
+  mapFormula: (formula: string, ownerSheetId: string) => string,
+  mapFormulaInverse: (formula: string, ownerSheetId: string) => string,
+): void {
+  type FormulaRule = {
+    id: string;
+    sheetId: string;
+    formulaAnchor?: CellAddress;
+    type?: string;
+    operator?: string;
+    value1?: string | number;
+    value2?: string | number;
+    formula1?: string;
+    formula2?: string;
+    listSource?: { kind: 'values'; values: string[] } | { kind: 'range'; range: RangeRef } | { kind: 'formula'; formula: string };
+  };
+  for (const sheet of workbook.getSheets()) {
+    for (const rule of [...sheet.conditionalFormats, ...sheet.dataValidations] as FormulaRule[]) {
+      const ownerSheetId = rule.formulaAnchor?.sheetId ?? rule.sheetId;
+      const check = (field: string, formula: string): void => {
+        assertStructuralFormulaRoundTrip(
+          `${rule.sheetId}:${rule.id}.${field}`,
+          formula,
+          mapFormula(formula, ownerSheetId),
+          (value) => mapFormulaInverse(value, ownerSheetId),
+        );
+      };
+      if (rule.operator === 'formula' && typeof rule.value1 === 'string') check('value1', rule.value1);
+      else {
+        if (typeof rule.value1 === 'string' && rule.value1.trim().startsWith('=')) check('value1', rule.value1);
+        if (typeof rule.value2 === 'string' && rule.value2.trim().startsWith('=')) check('value2', rule.value2);
+      }
+      if (rule.formula1 && (rule.formula1.trim().startsWith('=') || rule.operator === 'formula' || rule.type === 'custom')) {
+        check('formula1', rule.formula1);
+      }
+      if (rule.formula2 && (rule.formula2.trim().startsWith('=') || rule.type === 'custom')) check('formula2', rule.formula2);
+      if (rule.listSource?.kind === 'formula') check('listSource.formula', rule.listSource.formula);
+    }
+  }
 }
 
 /** Formula-bearing workbook/sheet owners outside the cell, rule and name indexes. */
@@ -1850,6 +1953,7 @@ function preflightWorkbookFormulaOwners(
   workbook: WorkbookModel,
   targetSheet: WorksheetModel,
   mapFormula: (formula: string, ownerSheetId: string) => string,
+  mapFormulaInverse: (formula: string, ownerSheetId: string) => string,
   mapAddress: (address: CellAddress) => CellAddress | null,
 ): StagedStructuralFormulaChange[] {
   const changes: StagedStructuralFormulaChange[] = [];
@@ -1862,6 +1966,7 @@ function preflightWorkbookFormulaOwners(
   ): void => {
     if (before === undefined || before.length === 0) return;
     const after = mapFormula(before, ownerSheetId);
+    assertStructuralFormulaRoundTrip(participant, before, after, (value) => mapFormulaInverse(value, ownerSheetId));
     if (after === before) return;
     changes.push({ kind: 'formula', owner, participant, before, after });
   };
@@ -2223,9 +2328,22 @@ function applyMoveRange(
       targetSheetName: sheet.name,
       sheetOrder,
     });
+    const inverseMapMovedReferences = (ast: ReturnType<typeof parseFormula>) => mapAstMovedReferences(ast, {
+      selection: target,
+      rowDelta: -rowDelta,
+      columnDelta: -colDelta,
+      ownerSheetId: sheet.id,
+      targetSheetId: sheet.id,
+      targetSheetName: sheet.name,
+      sheetOrder,
+    });
     const formula = entry.cell.formula === undefined
       ? undefined
       : transformFormula(entry.cell.formula, mapMovedReferences);
+    if (formula !== undefined && entry.cell.formula !== undefined) {
+      assertStructuralFormulaRoundTrip(`${sheet.id}!${entry.row}:${entry.column}.formula`, entry.cell.formula, formula,
+        (value) => transformFormula(value, inverseMapMovedReferences));
+    }
     if (formula !== entry.cell.formula && entry.cell.formulaMetadata?.preservedOnly) {
       throw new Error(`UNSUPPORTED_STRUCTURAL_REFERENCE: preserved-only formula at ${sheet.id}!${entry.row}:${entry.column} cannot be rewritten for a moved range`);
     }
@@ -2238,12 +2356,20 @@ function applyMoveRange(
     const sourceFormula = entry.cell.formulaMetadata?.sourceFormula !== undefined
       ? transformFormula(entry.cell.formulaMetadata.sourceFormula, mapMovedReferences)
       : undefined;
+    if (sourceFormula !== undefined && entry.cell.formulaMetadata?.sourceFormula !== undefined) {
+      assertStructuralFormulaRoundTrip(`${sheet.id}!${entry.row}:${entry.column}.sourceFormula`,
+        entry.cell.formulaMetadata.sourceFormula, sourceFormula,
+        (value) => transformFormula(value, inverseMapMovedReferences));
+    }
     if (sourceFormula !== undefined && sourceFormula !== entry.cell.formulaMetadata?.sourceFormula) {
       if (!entry.cell.formulaMetadata) throw new Error('STRUCTURAL_PATCH_INVARIANT: formula provenance disappeared during move preflight');
       cell = { ...cell, formulaMetadata: { ...entry.cell.formulaMetadata, sourceFormula } };
     }
     if (entry.cell.presentation?.kind === 'barcode' && entry.cell.presentation.source.kind === 'formula') {
       const barcodeFormula = transformFormula(entry.cell.presentation.source.formula, mapMovedReferences);
+      assertStructuralFormulaRoundTrip(`${sheet.id}!${entry.row}:${entry.column}.barcodeFormula`,
+        entry.cell.presentation.source.formula, barcodeFormula,
+        (value) => transformFormula(value, inverseMapMovedReferences));
       if (barcodeFormula !== entry.cell.presentation.source.formula) {
         cell = {
           ...cell,
