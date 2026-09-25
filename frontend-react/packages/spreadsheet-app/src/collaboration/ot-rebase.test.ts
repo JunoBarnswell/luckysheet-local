@@ -512,7 +512,7 @@ test('rebases hidden row and column state indices by their own axis', () => {
   ] as const;
 
   for (const entry of cases) {
-    const pending = classifyMutation(entry.mutationId, entry.params, 's1', entry.affectedRanges);
+    const pending = classifyMutation(entry.mutationId, entry.params, 's1', [...entry.affectedRanges]);
     const { rebased } = rebaseMutation(pending, entry.delta);
     const states = (rebased.params as { states: Array<Record<string, unknown>> }).states;
     assert.equal(rebased.kind, 'visibility');

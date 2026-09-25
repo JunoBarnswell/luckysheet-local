@@ -266,18 +266,24 @@ function transformFillCoordinates(
   ownerSheetId: string,
   context: StructuralRebaseContext,
 ): unknown {
-  if (!isRecord(originalParams) || !isRecord(transformedParams)
-    || !Array.isArray(transformedParams.writes)
-    || !Array.isArray(originalParams.writes)
-    || !isRange(originalParams.sourceRange) || !isRange(originalParams.targetRange)) {
+  if (!isRecord(originalParams) || !isRecord(transformedParams)) {
     rebaseConflict(`pending ${mutationId} parameters are invalid`);
   }
-  assertStructuralEditDoesNotIntersectRange(originalParams.sourceRange, delta, `${mutationId} source range`);
-  assertStructuralEditDoesNotIntersectRange(originalParams.targetRange, delta, `${mutationId} target range`);
+  const originalWrites = originalParams.writes;
+  const transformedWrites = transformedParams.writes;
+  const sourceRange = originalParams.sourceRange;
+  const targetRange = originalParams.targetRange;
+  if (!Array.isArray(originalWrites) || !Array.isArray(transformedWrites)
+    || !isRecord(sourceRange) || !isRange(sourceRange)
+    || !isRecord(targetRange) || !isRange(targetRange)) {
+    rebaseConflict(`pending ${mutationId} parameters are invalid`);
+  }
+  assertStructuralEditDoesNotIntersectRange(sourceRange, delta, `${mutationId} source range`);
+  assertStructuralEditDoesNotIntersectRange(targetRange, delta, `${mutationId} target range`);
   const sheetId = typeof originalParams.sheetId === 'string' ? originalParams.sheetId : ownerSheetId;
-  const writes = transformedParams.writes.map((write, index) => {
+  const writes = transformedWrites.map((write, index) => {
     const shifted = shiftCellCoordinate(write, sheetId, delta, `${mutationId} write`);
-    const source = originalParams.writes[index];
+    const source = originalWrites[index];
     if (!isRecord(source)) rebaseConflict(`pending ${mutationId} write is invalid`);
     for (const key of ['before', 'after'] as const) {
       if (source[key] !== undefined) shifted[key] = transformCellFormulaOwners(source[key], sheetId, delta, context, `${mutationId} ${key} cell`);
@@ -297,10 +303,14 @@ function transformFindReplacementCoordinates(
   if (!isRecord(originalParams) || !isRecord(transformedParams) || !Array.isArray(transformedParams.patches)) {
     rebaseConflict('pending find.replaced parameters are invalid');
   }
-  if (!Array.isArray(originalParams.patches)) rebaseConflict('pending find.replaced source patches are invalid');
-  const patches = transformedParams.patches.map((patch, index) => {
+  const originalPatches = originalParams.patches;
+  const transformedPatches = transformedParams.patches;
+  if (!Array.isArray(originalPatches) || !Array.isArray(transformedPatches)) {
+    rebaseConflict('pending find.replaced source patches are invalid');
+  }
+  const patches = transformedPatches.map((patch, index) => {
     if (!isRecord(patch) || !isRecord(patch.match)) rebaseConflict('pending find.replaced patch has no match address');
-    const sourcePatch = originalParams.patches[index];
+    const sourcePatch = originalPatches[index];
     if (!isRecord(sourcePatch) || !isRecord(sourcePatch.match) || typeof sourcePatch.match.sheetId !== 'string') {
       rebaseConflict('pending find.replaced source patch has no worksheet identity');
     }
@@ -363,20 +373,26 @@ function transformVisibilityCoordinates(
   delta: StructuralDelta,
   ownerSheetId: string,
 ): unknown {
-  if (!isRecord(originalParams) || !isRecord(transformedParams)
-    || !Array.isArray(originalParams.states) || !Array.isArray(transformedParams.states)
-    || originalParams.states.length !== transformedParams.states.length) {
+  if (!isRecord(originalParams) || !isRecord(transformedParams)) {
+    rebaseConflict(`pending ${mutationId} states are invalid`);
+  }
+  const originalStates = originalParams.states;
+  const transformedStates = transformedParams.states;
+  if (!Array.isArray(originalStates) || !Array.isArray(transformedStates)
+    || originalStates.length !== transformedStates.length) {
     rebaseConflict(`pending ${mutationId} states are invalid`);
   }
   const sheetId = typeof originalParams.sheetId === 'string' ? originalParams.sheetId : ownerSheetId;
   const axis = mutationId === 'rows.visibility' ? 'row' : 'column';
   if (sheetId !== delta.sheetId || axis !== deltaAxis(delta)) return transformedParams;
-  const states = transformedParams.states.map((state, index) => {
-    const originalState = originalParams.states[index];
-    if (!isRecord(state) || !isRecord(originalState) || typeof originalState[axis] !== 'number') {
+  const states = transformedStates.map((state, index) => {
+    const originalState = originalStates[index];
+    if (!isRecord(state) || !isRecord(originalState)) {
       rebaseConflict(`pending ${mutationId} contains an invalid ${axis} state`);
     }
-    return { ...state, [axis]: shiftPoint(originalState[axis] as number, delta) };
+    const coordinate = originalState[axis];
+    if (typeof coordinate !== 'number') rebaseConflict(`pending ${mutationId} contains an invalid ${axis} state`);
+    return { ...state, [axis]: shiftPoint(coordinate, delta) };
   });
   return { ...transformedParams, states };
 }
