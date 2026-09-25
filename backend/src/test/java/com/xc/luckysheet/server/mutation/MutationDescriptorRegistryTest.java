@@ -14,6 +14,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.Collections;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -198,6 +199,41 @@ class MutationDescriptorRegistryTest {
         assertEquals("=A3", ownedSnapshot.path("definedNameModels").get(0).path("formula").asText());
         assertEquals(4, ownedSnapshot.path("definedNameModels").get(0).path("anchor").path("row").asInt());
         assertEquals(original, snapshot);
+    }
+
+    @Test
+    void structuralPatchMigrationPreservesPatchlessMutationSlots() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        JsonNode snapshot = mapper.readTree("{\"sheets\":[{\"id\":\"sheet-1\",\"rowCount\":1000,\"columnCount\":26,\"cells\":{}}]}");
+        List<OperationMutation> mutations = List.of(
+                new OperationMutation("cell.set", "sheet-1", mapper.readTree(cellSetParams(1, 1, "{\"value\":1}", "accepted"))),
+                new OperationMutation("cell.set", "sheet-1", mapper.readTree(cellSetParams(2, 2, "{\"value\":2}", "accepted"))));
+
+        var replay = registry.replayStructuralPatchesForMigration(snapshot, mutations, Collections.nCopies(mutations.size(), null));
+
+        assertEquals(List.of(Optional.empty(), Optional.empty()), replay.structuralPatches());
+        assertEquals(1, replay.snapshot().path("sheets").get(0).path("cells").path("1").path("1").path("value").asInt());
+        assertEquals(2, replay.snapshot().path("sheets").get(0).path("cells").path("2").path("2").path("value").asInt());
+    }
+
+    @Test
+    void structuralPatchDefinedNameParsingRejectsInvalidAnchorCoordinates() throws Exception {
+        JsonNode fractionalRow = mapper.readTree("""
+                [{"name":"LocalName","formula":"=A1","scope":"workbook",
+                  "anchor":{"sheetId":"sheet-1","row":1.5,"column":0}}]
+                """);
+        JsonNode outOfBoundsColumn = mapper.readTree("""
+                [{"name":"LocalName","formula":"=A1","scope":"workbook",
+                  "anchor":{"sheetId":"sheet-1","row":0,"column":16384}}]
+                """);
+
+        ServiceException fractionalError = assertThrows(ServiceException.class,
+                () -> StructuralSnapshotReducer.definedNameOwnerDeltas(fractionalRow, fractionalRow));
+        ServiceException boundsError = assertThrows(ServiceException.class,
+                () -> StructuralSnapshotReducer.definedNameOwnerDeltas(outOfBoundsColumn, outOfBoundsColumn));
+
+        assertEquals("VALIDATION_ERROR", fractionalError.code());
+        assertEquals("VALIDATION_ERROR", boundsError.code());
     }
 
     @Test

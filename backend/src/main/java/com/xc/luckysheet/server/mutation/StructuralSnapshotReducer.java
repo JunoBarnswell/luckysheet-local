@@ -121,8 +121,8 @@ final class StructuralSnapshotReducer {
         ObjectNode after = SnapshotMutationSupport.root(afterSnapshot);
         JsonNode oldTable = findSheetTable(before, sheetId, tableId);
         JsonNode newTable = findSheetTable(after, sheetId, tableId);
-        String oldName = SnapshotMutationSupport.text(oldTable, "name");
-        String newName = SnapshotMutationSupport.text(newTable, "name");
+        String oldName = SnapshotMutationSupport.text(requireObject(oldTable, "Sheet Table"), "name");
+        String newName = SnapshotMutationSupport.text(requireObject(newTable, "Sheet Table"), "name");
         if (oldName.equalsIgnoreCase(newName)) return null;
 
         Function<String, String> mapFormula = formula -> FormulaReferenceTransformer.renameTableReferences(formula, oldName, newName);
@@ -236,20 +236,20 @@ final class StructuralSnapshotReducer {
         if (rawModels == null || rawModels.isNull()) return states;
         if (!rawModels.isArray()) throw ServiceException.validation("definedNameModels must be an array");
         for (JsonNode raw : rawModels) {
-            if (!raw.isObject()) throw ServiceException.validation("Defined name model must be an object");
-            String name = SnapshotMutationSupport.text(raw, "name");
-            String formula = SnapshotMutationSupport.text(raw, "formula");
-            String scope = SnapshotMutationSupport.text(raw, "scope");
-            JsonNode sheetIdNode = raw.get("sheetId");
-            String sheetId = sheetIdNode == null || sheetIdNode.isNull() ? null : SnapshotMutationSupport.text(raw, "sheetId");
-            JsonNode rawAnchor = raw.get("anchor");
+            ObjectNode model = requireObject(raw, "Defined name model");
+            String name = SnapshotMutationSupport.text(model, "name");
+            String formula = SnapshotMutationSupport.text(model, "formula");
+            String scope = SnapshotMutationSupport.text(model, "scope");
+            JsonNode sheetIdNode = model.get("sheetId");
+            String sheetId = sheetIdNode == null || sheetIdNode.isNull() ? null : SnapshotMutationSupport.text(model, "sheetId");
+            JsonNode rawAnchor = model.get("anchor");
             StructuralPatch.CellAddress anchor = null;
             if (rawAnchor != null && !rawAnchor.isNull()) {
-                if (!rawAnchor.isObject()) throw ServiceException.validation("Defined-name anchor must be an object");
+                ObjectNode anchorObject = requireObject(rawAnchor, "Defined-name anchor");
                 anchor = new StructuralPatch.CellAddress(
-                        SnapshotMutationSupport.text(rawAnchor, "sheetId"),
-                        integer(rawAnchor.get("row"), "Defined-name anchor row"),
-                        integer(rawAnchor.get("column"), "Defined-name anchor column"));
+                        SnapshotMutationSupport.text(anchorObject, "sheetId"),
+                        integer(anchorObject.get("row"), "Defined-name anchor row", SnapshotMutationSupport.MAX_ROW),
+                        integer(anchorObject.get("column"), "Defined-name anchor column", SnapshotMutationSupport.MAX_COLUMN));
             }
             StructuralPatch.DefinedNameState state = new StructuralPatch.DefinedNameState(name, formula, scope, sheetId, anchor);
             DefinedNameOwnerKey key = definedNameOwnerKey(scope, name, sheetId);
@@ -333,10 +333,20 @@ final class StructuralSnapshotReducer {
         String sheetId = sheetIdNode == null || sheetIdNode.isNull() ? null : SnapshotMutationSupport.text(model, "sheetId");
         JsonNode rawAnchor = model.get("anchor");
         StructuralPatch.CellAddress anchor = rawAnchor == null || rawAnchor.isNull() ? null
-                : new StructuralPatch.CellAddress(SnapshotMutationSupport.text(rawAnchor, "sheetId"),
-                        integer(rawAnchor.get("row"), "Defined-name anchor row"),
-                        integer(rawAnchor.get("column"), "Defined-name anchor column"));
+                : new StructuralPatch.CellAddress(
+                        SnapshotMutationSupport.text(requireObject(rawAnchor, "Defined-name anchor"), "sheetId"),
+                        integer(rawAnchor.get("row"), "Defined-name anchor row", SnapshotMutationSupport.MAX_ROW),
+                        integer(rawAnchor.get("column"), "Defined-name anchor column", SnapshotMutationSupport.MAX_COLUMN));
         return new StructuralPatch.DefinedNameState(name, formula, scope, sheetId, anchor);
+    }
+
+    private static int integer(JsonNode value, String label, int maximum) {
+        if (value == null || !value.isIntegralNumber() || !value.canConvertToInt()) {
+            throw ServiceException.validation(label + " must be an integer");
+        }
+        int result = value.intValue();
+        if (result < 0 || result > maximum) throw ServiceException.validation(label + " is out of bounds");
+        return result;
     }
 
     private static ObjectNode anchorNode(StructuralPatch.CellAddress address) {

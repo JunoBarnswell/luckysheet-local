@@ -1079,3 +1079,16 @@ head `1d8508ea` 的两个后端 CI 已通过 test-compile，随后在 `sheetRena
 6. **刷新顺序**：WorkbookSession 有 mutation 时调用 mutation 投影失效分支，而不执行“无 mutation 时”的全局公式投影失效；因此必须由结构 delta 精确标出额外 owner sheet，不能依赖无关的全局刷新。
 
 现已按 owner 地址失效公式单元格前后工作表和公式依赖图；按 owner sheet 失效 formula-rule、shape-property、chart-text 与 table-sheet-column 的对应投影域。data-view-field 和 cell-style-template 没有被扩大到所有 Canvas sheet cache：它们不在 per-sheet Canvas 快照中，贸然全量清缓存会扩大性能成本而没有快照证据；其非 Canvas 消费者仍须在后续 owner 审计中单独核实。新增跨表单元格、规则、图形及 Table Sheet 投影的回归测试源码；只做源码审查和 `git diff --check`，没有执行测试、构建、lint 或 UI。本次只修复该投影传播切片，整体架构整改及 PR 验收仍未完成。
+
+### 六轮静态复审 — StructuralPatch 远端 Java 编译阻断（2026-09-26，head `327f88c5`）
+
+PR 上两个 `canonical-build` job 使用相同 head，前端依赖安装与前端构建成功，均在 backend-package 编译阶段失败。六轮沿 CI 日志、迁移 slot 契约、可选 patch 的索引语义、JSON 节点类型边界、定义名称解析及坐标拒绝路径交叉核对，确认两类源码根因；重复的 14 条 javac 诊断不按独立缺陷计数：
+
+1. **CI job 归因**：两个失败 job 都报告同一 backend-package 步骤；前端阶段退出码为 0，因此此次失败不是刚修改的 TS projection 源码导致。
+2. **迁移返回契约**：`StructuralPatchMigrationReplay` 要求每条 mutation 对应一个 `Optional<StructuralPatch>` slot；局部集合原先却声明为非 Optional，导致空 patch slot 无法表达并使方法无法编译。
+3. **slot 对齐语义**：不能滤掉没有结构 patch 的普通 mutation，否则后续 patch 与原 mutation 索引错位。现保留 `Optional.empty()`，并补充连续 patchless mutation 的回归源码。
+4. **JSON 对象边界**：`SnapshotMutationSupport.text` 明确只接受 `ObjectNode`；Sheet Table 和 defined-name parser 却把通用 `JsonNode` 直接传入。现先由 `requireObject` 执行类型检查再读取，畸形 owner 保持 typed validation failure。
+5. **定义名称 anchor**：结构 patch 计算前后定义名状态时必须解析模型与 anchor 对象；原路径未完成对象窄化，多个调用因此触发 javac 类型错误。
+6. **坐标数值边界**：anchor row/column 读取调用了不存在的 `integer(JsonNode, String)`，且不能把小数、负数、超出 Excel 上界值传给 `CellAddress` 构造器后变成非业务异常。现显式要求整数并按 row/column 上界 fail-close，新增小数和越界拒绝测试源码。
+
+已修复 migration slot 泛型及 StructuralSnapshotReducer 的对象/坐标解析，补充 patchless slot 与 anchor 拒绝路径测试源码。只依据远端 CI 日志和源码契约静态修复，未运行本地测试或构建；head `327f88c5` 的远端检查已失败，修复提交后的远端重验仍待完成，整体目标继续开放。

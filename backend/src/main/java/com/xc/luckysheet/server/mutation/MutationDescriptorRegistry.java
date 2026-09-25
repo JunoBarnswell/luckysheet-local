@@ -302,7 +302,7 @@ public class MutationDescriptorRegistry {
         }
         JsonNode current = snapshot;
         boolean ownsCurrent = false;
-        List<StructuralPatch> patches = new ArrayList<>(mutations.size());
+        List<Optional<StructuralPatch>> patches = new ArrayList<>(mutations.size());
         for (int index = 0; index < mutations.size(); index++) {
             OperationMutation mutation = mutations.get(index);
             MutationDescriptor descriptor = require(mutation.id(), false);
