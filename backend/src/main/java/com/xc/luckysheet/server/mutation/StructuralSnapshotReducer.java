@@ -11,6 +11,7 @@ import com.xc.luckysheet.server.service.ServiceException;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -28,12 +29,25 @@ import java.util.function.Function;
 final class StructuralSnapshotReducer {
     private static final int MAX_EXACT_RANGE_SEGMENTS = 256;
 
+    private record RuleFormulaSnapshot(
+            ObjectNode rule,
+            String sheetId,
+            String ruleKind,
+            String ruleId,
+            List<RangeRef> ranges,
+            Map<String, String> formulas
+    ) { }
+
     private StructuralSnapshotReducer() {
     }
 
     static JsonNode applyFormulaOwnerPatch(JsonNode snapshot, StructuralPatch patch) {
         ObjectNode root = SnapshotMutationSupport.root(snapshot.deepCopy());
         for (StructuralPatch.FormulaOwnerDelta delta : patch.formulaOwnerDeltas()) {
+            if ("formula-rule".equals(delta.kind())) {
+                applyFormulaRuleOwnerDelta(root, delta);
+                continue;
+            }
             StructuralPatch.CellAddress address = delta.afterAddress();
             ObjectNode sheet = SnapshotMutationSupport.sheet(root, address.sheetId());
             ObjectNode cell = SnapshotMutationSupport.cell(sheet,
@@ -54,6 +68,63 @@ final class StructuralSnapshotReducer {
             setFormulaOwnerState(cell, delta.after());
         }
         return root;
+    }
+
+    private static void applyFormulaRuleOwnerDelta(ObjectNode root, StructuralPatch.FormulaOwnerDelta delta) {
+        ObjectNode owner = SnapshotMutationSupport.sheet(root, delta.sheetId());
+        String property = "conditional-format".equals(delta.ruleKind()) ? "conditionalFormats" : "dataValidations";
+        List<ObjectNode> matches = new ArrayList<>();
+        for (JsonNode raw : SnapshotMutationSupport.array(owner, property)) {
+            ObjectNode rule = requireObject(raw, "Range rule");
+            if (delta.ruleId().equals(rule.path("id").asText())
+                    && delta.sheetId().equals(rule.path("sheetId").asText())) matches.add(rule);
+        }
+        if (matches.size() != 1) {
+            throw ServiceException.conflict("STRUCTURAL_PATCH_PRECONDITION: expected one " + delta.ruleKind()
+                    + " rule " + delta.sheetId() + ":" + delta.ruleId() + ", found " + matches.size());
+        }
+        ObjectNode rule = matches.getFirst();
+        String currentFormula = ruleFormula(rule, delta.field());
+        List<RangeRef> currentRanges = ruleRanges(root, rule);
+        if (!delta.afterRanges().equals(currentRanges)) {
+            throw ServiceException.conflict("STRUCTURAL_PATCH_PRECONDITION: " + delta.ruleKind() + " rule "
+                    + delta.sheetId() + ":" + delta.ruleId() + "." + delta.field() + " changed since the structural operation");
+        }
+        if (delta.afterFormula().equals(currentFormula)) return;
+        if (!delta.beforeFormula().equals(currentFormula)) {
+            throw ServiceException.conflict("STRUCTURAL_PATCH_PRECONDITION: " + delta.ruleKind() + " rule "
+                    + delta.sheetId() + ":" + delta.ruleId() + "." + delta.field() + " changed since the structural operation");
+        }
+        setRuleFormula(rule, delta.field(), delta.afterFormula());
+    }
+
+    private static String ruleFormula(ObjectNode rule, String field) {
+        if ("listSource.formula".equals(field)) {
+            JsonNode source = rule.get("listSource");
+            JsonNode formula = source != null && source.isObject() && "formula".equals(source.path("kind").asText())
+                    ? source.get("formula") : null;
+            return formula != null && formula.isTextual() ? formula.asText() : null;
+        }
+        JsonNode formula = rule.get(field);
+        return formula != null && formula.isTextual() ? formula.asText() : null;
+    }
+
+    private static void setRuleFormula(ObjectNode rule, String field, String formula) {
+        if ("listSource.formula".equals(field)) {
+            JsonNode source = rule.get("listSource");
+            if (source == null || !source.isObject() || !"formula".equals(source.path("kind").asText())) {
+                throw ServiceException.conflict("STRUCTURAL_PATCH_INVARIANT: data-validation list formula owner changed type");
+            }
+            ((ObjectNode) source).put("formula", formula);
+            return;
+        }
+        rule.put(field, formula);
+    }
+
+    private static List<RangeRef> ruleRanges(ObjectNode root, ObjectNode rule) {
+        List<RangeRef> ranges = new ArrayList<>();
+        for (JsonNode raw : SnapshotMutationSupport.array(rule, "ranges")) ranges.add(SnapshotMutationSupport.range(root, raw));
+        return List.copyOf(ranges);
     }
 
     private static void setFormulaOwnerState(ObjectNode cell, StructuralPatch.FormulaOwnerState state) {
@@ -111,6 +182,7 @@ final class StructuralSnapshotReducer {
                     : new RangeRef(sheetId, 0, rowCount - 1, at, columnCount - 1);
             rejectFormulaGroupMetadataInRange(target, affectedBand, "axis shift");
         }
+        List<RuleFormulaSnapshot> ruleFormulaSnapshots = captureRuleFormulaSnapshots(root);
 
         ObjectNode reportSheetAfter = mapReportSheetCoordinates(target, (row, column) -> {
             int position = axis == FormulaReferenceTransformer.Axis.ROW ? row : column;
@@ -130,7 +202,8 @@ final class StructuralSnapshotReducer {
         setDimension(target, axis, direction == FormulaReferenceTransformer.Direction.INSERT ? limit + count : Math.max(1, limit - count));
         shiftAllMetadata(root, target, sheetId, axis, at, count, direction);
         applyReportSheetPlan(target, reportSheetAfter);
-        List<StructuralPatch.FormulaOwnerDelta> formulaOwnerDeltas = rewriteAxisFormulas(root, target, axis, at, count, direction);
+        List<StructuralPatch.FormulaOwnerDelta> formulaOwnerDeltas = rewriteAxisFormulas(
+                root, target, axis, at, count, direction, ruleFormulaSnapshots);
         AutoFilterOwnershipValidator.resolveOwners(target, sheetId);
         return new StructuralPatch(StructuralPatch.VERSION, mutationId, formulaOwnerDeltas);
     }
@@ -161,6 +234,8 @@ final class StructuralSnapshotReducer {
                 null,
                 "cell-shift");
 
+        List<RuleFormulaSnapshot> ruleFormulaSnapshots = captureRuleFormulaSnapshots(root);
+
         List<CellEntry> sourceCells = cellsInRange(sheet, expectedBand);
         SnapshotMutationSupport.clearCells(sheet, expectedBand);
         for (CellEntry entry : sourceCells) {
@@ -172,7 +247,8 @@ final class StructuralSnapshotReducer {
         }
         shiftCellBandMetadata(root, sheet, selection, expectedBand, axis, operation, count);
         applyReportSheetPlan(sheet, reportSheetAfter);
-        StructuralPatch structuralPatch = rewriteCellShiftFormulas(root, sheet, mutationId, selection, axis, operation);
+        StructuralPatch structuralPatch = rewriteCellShiftFormulas(
+                root, sheet, mutationId, selection, axis, operation, ruleFormulaSnapshots);
         AutoFilterOwnershipValidator.resolveOwners(sheet, sheetId);
         return structuralPatch;
     }
@@ -1841,7 +1917,98 @@ final class StructuralSnapshotReducer {
         coordinate.put(key, shifted);
     }
 
-    private static List<StructuralPatch.FormulaOwnerDelta> rewriteAxisFormulas(ObjectNode root, ObjectNode targetSheet, FormulaReferenceTransformer.Axis axis, int at, int count, FormulaReferenceTransformer.Direction direction) {
+    private static List<RuleFormulaSnapshot> captureRuleFormulaSnapshots(ObjectNode root) {
+        List<RuleFormulaSnapshot> snapshots = new ArrayList<>();
+        for (JsonNode rawSheet : SnapshotMutationSupport.sheets(root)) {
+            ObjectNode owner = requireObject(rawSheet, "Sheet");
+            String sheetId = identity(owner).id();
+            for (String property : List.of("conditionalFormats", "dataValidations")) {
+                String ruleKind = "conditionalFormats".equals(property) ? "conditional-format" : "data-validation";
+                ArrayNode rules = SnapshotMutationSupport.array(owner, property);
+                Map<String, Integer> idCounts = new HashMap<>();
+                for (JsonNode rawRule : rules) idCounts.merge(rawRule.path("id").asText(), 1, Integer::sum);
+                for (JsonNode rawRule : rules) {
+                    ObjectNode rule = requireObject(rawRule, "Range rule");
+                    Map<String, String> formulas = ruleFormulaFields(rule);
+                    if (formulas.isEmpty()) continue;
+                    String ruleId = rule.path("id").asText();
+                    if (ruleId.isBlank() || idCounts.get(ruleId) != 1 || !sheetId.equals(rule.path("sheetId").asText())) {
+                        throw ServiceException.validation("Structural formula rule requires a stable worksheet identity");
+                    }
+                    snapshots.add(new RuleFormulaSnapshot(rule, sheetId, ruleKind, ruleId,
+                            ruleRanges(root, rule), formulas));
+                }
+            }
+        }
+        return List.copyOf(snapshots);
+    }
+
+    private static Map<String, String> ruleFormulaFields(ObjectNode rule) {
+        Map<String, String> formulas = new LinkedHashMap<>();
+        boolean formulaOperator = "formula".equals(rule.path("operator").asText());
+        JsonNode value1 = rule.get("value1");
+        if (value1 != null && value1.isTextual()
+                && (formulaOperator || value1.asText().stripLeading().startsWith("="))) {
+            formulas.put("value1", value1.asText());
+        } else {
+            if (value1 != null && value1.isTextual() && value1.asText().stripLeading().startsWith("=")) {
+                formulas.put("value1", value1.asText());
+            }
+            JsonNode value2 = rule.get("value2");
+            if (value2 != null && value2.isTextual() && value2.asText().stripLeading().startsWith("=")) {
+                formulas.put("value2", value2.asText());
+            }
+        }
+        JsonNode formula1 = rule.get("formula1");
+        if (formula1 != null && formula1.isTextual() && !formula1.asText().isEmpty()
+                && (formula1.asText().stripLeading().startsWith("=") || formulaOperator || "custom".equals(rule.path("type").asText()))) {
+            formulas.put("formula1", formula1.asText());
+        }
+        JsonNode formula2 = rule.get("formula2");
+        if (formula2 != null && formula2.isTextual() && !formula2.asText().isEmpty()
+                && (formula2.asText().stripLeading().startsWith("=") || "custom".equals(rule.path("type").asText()))) {
+            formulas.put("formula2", formula2.asText());
+        }
+        JsonNode source = rule.get("listSource");
+        if (source != null && source.isObject() && "formula".equals(source.path("kind").asText())) {
+            JsonNode formula = source.get("formula");
+            if (formula != null && formula.isTextual()) formulas.put("listSource.formula", formula.asText());
+        }
+        return formulas;
+    }
+
+    private static void appendRuleFormulaDeltas(
+            ObjectNode root,
+            List<RuleFormulaSnapshot> snapshots,
+            List<StructuralPatch.FormulaOwnerDelta> formulaOwnerDeltas
+    ) {
+        for (RuleFormulaSnapshot snapshot : snapshots) {
+            Map<String, String> afterFormulas = ruleFormulaFields(snapshot.rule());
+            List<RangeRef> afterRanges = ruleRanges(root, snapshot.rule());
+            for (Map.Entry<String, String> before : snapshot.formulas().entrySet()) {
+                String after = afterFormulas.get(before.getKey());
+                if (after == null) {
+                    throw ServiceException.conflict("STRUCTURAL_PATCH_INVARIANT: formula rule owner disappeared: "
+                            + snapshot.sheetId() + ":" + snapshot.ruleId() + "." + before.getKey());
+                }
+                if (!before.getValue().equals(after)) {
+                    formulaOwnerDeltas.add(StructuralPatch.FormulaOwnerDelta.formulaRule(
+                            snapshot.sheetId(), snapshot.ruleKind(), snapshot.ruleId(), before.getKey(),
+                            before.getValue(), after, snapshot.ranges(), afterRanges));
+                }
+            }
+        }
+    }
+
+    private static List<StructuralPatch.FormulaOwnerDelta> rewriteAxisFormulas(
+            ObjectNode root,
+            ObjectNode targetSheet,
+            FormulaReferenceTransformer.Axis axis,
+            int at,
+            int count,
+            FormulaReferenceTransformer.Direction direction,
+            List<RuleFormulaSnapshot> ruleFormulaSnapshots
+    ) {
         FormulaReferenceTransformer.SheetIdentity target = identity(targetSheet);
         List<FormulaReferenceTransformer.SheetIdentity> sheetOrder = worksheetOrder(root);
         List<StructuralPatch.FormulaOwnerDelta> formulaOwnerDeltas = new ArrayList<>();
@@ -1862,11 +2029,8 @@ final class StructuralSnapshotReducer {
                     FormulaReferenceTransformer.SheetIdentity formulaOwner = formulaOwnerId.equals(ownerIdentity.id())
                             ? ownerIdentity
                             : identity(SnapshotMutationSupport.sheet(root, formulaOwnerId));
-                    rewriteRuleFormulas(rule, formula -> requireReversibleStructuralFormula(
-                            formula,
-                            value -> FormulaReferenceTransformer.remapAxis(value, formulaOwner, target, axis, at, count, direction, sheetOrder),
-                            value -> FormulaReferenceTransformer.remapAxis(value, formulaOwner, target, axis, at, count, inverseDirection, sheetOrder),
-                            "range rule " + ownerIdentity.id() + ":" + rule.path("id").asText()));
+                    rewriteRuleFormulas(rule, formula -> FormulaReferenceTransformer.remapAxis(
+                            formula, formulaOwner, target, axis, at, count, direction, sheetOrder));
                 }
             }
         }
@@ -1910,6 +2074,7 @@ final class StructuralSnapshotReducer {
                         value -> FormulaReferenceTransformer.remapAxis(value, owner, target, axis, at, count, inverseDirection, sheetOrder),
                         "persisted formula owner on " + owner.id()),
                 anchor -> shiftTemplateFormulaAnchor(anchor, target.id(), axis, at, count, direction));
+        appendRuleFormulaDeltas(root, ruleFormulaSnapshots, formulaOwnerDeltas);
         return List.copyOf(formulaOwnerDeltas);
     }
 
@@ -2153,7 +2318,15 @@ final class StructuralSnapshotReducer {
         }
     }
 
-    private static StructuralPatch rewriteCellShiftFormulas(ObjectNode root, ObjectNode targetSheet, String mutationId, RangeRef selection, String axis, String operation) {
+    private static StructuralPatch rewriteCellShiftFormulas(
+            ObjectNode root,
+            ObjectNode targetSheet,
+            String mutationId,
+            RangeRef selection,
+            String axis,
+            String operation,
+            List<RuleFormulaSnapshot> ruleFormulaSnapshots
+    ) {
         FormulaReferenceTransformer.SheetIdentity target = identity(targetSheet);
         List<FormulaReferenceTransformer.SheetIdentity> sheetOrder = worksheetOrder(root);
         List<StructuralPatch.FormulaOwnerDelta> formulaOwnerDeltas = new ArrayList<>();
@@ -2182,11 +2355,8 @@ final class StructuralSnapshotReducer {
                     FormulaReferenceTransformer.SheetIdentity formulaOwner = formulaOwnerId.equals(ownerIdentity.id())
                             ? ownerIdentity
                             : identity(SnapshotMutationSupport.sheet(root, formulaOwnerId));
-                    rewriteRuleFormulas(rule, formula -> requireReversibleStructuralFormula(
-                            formula,
-                            value -> FormulaReferenceTransformer.remapCellShift(value, formulaOwner, target, selected, shiftAxis, direction, sheetOrder),
-                            value -> FormulaReferenceTransformer.remapCellShift(value, formulaOwner, target, selected, shiftAxis, inverseDirection, sheetOrder),
-                            "range rule " + ownerIdentity.id() + ":" + rule.path("id").asText()));
+                    rewriteRuleFormulas(rule, formula -> FormulaReferenceTransformer.remapCellShift(
+                            formula, formulaOwner, target, selected, shiftAxis, direction, sheetOrder));
                 }
             }
         }
@@ -2227,6 +2397,7 @@ final class StructuralSnapshotReducer {
                         value -> FormulaReferenceTransformer.remapCellShift(value, owner, target, selected, shiftAxis, inverseDirection, sheetOrder),
                         "persisted formula owner on " + owner.id()),
                 anchor -> shiftTemplateFormulaAnchor(anchor, target.id(), selected, shiftAxis, direction));
+        appendRuleFormulaDeltas(root, ruleFormulaSnapshots, formulaOwnerDeltas);
         return new StructuralPatch(StructuralPatch.VERSION, mutationId, formulaOwnerDeltas);
     }
 

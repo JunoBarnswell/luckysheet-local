@@ -503,6 +503,8 @@ export {
   planCellShift,
   type StructuralTransformResult,
   type StructuralFormulaOwnerDelta,
+  type StructuralFormulaCellOwnerDelta,
+  type StructuralFormulaRuleOwnerDelta,
   type StructuralFormulaOwnerState,
   type StructuralReferenceOwnerAddress,
   type StructuralReferenceOwnerIndex,

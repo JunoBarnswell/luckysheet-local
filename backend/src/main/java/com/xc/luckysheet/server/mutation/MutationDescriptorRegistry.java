@@ -161,10 +161,7 @@ public class MutationDescriptorRegistry {
         if (structuralPatch != null) {
             List<RangeRef> ownerPreconditions = new ArrayList<>();
             for (var delta : structuralPatch.formulaOwnerDeltas()) {
-                var beforeAddress = delta.beforeAddress();
-                var afterAddress = delta.afterAddress();
-                ownerPreconditions.add(cellRange(beforeAddress.sheetId(), beforeAddress.row(), beforeAddress.column()));
-                ownerPreconditions.add(cellRange(afterAddress.sheetId(), afterAddress.row(), afterAddress.column()));
+                ownerPreconditions.addAll(formulaOwnerRanges(delta));
             }
             if (prepared.descriptor().checksProtection() && role != WorkbookAclRole.OWNER) {
                 List<RangeRef> protectedRanges = new ArrayList<>(prepared.affectedRanges());
@@ -179,16 +176,26 @@ public class MutationDescriptorRegistry {
         if (structuralPatch == null) return List.of();
         LinkedHashSet<RangeRef> ranges = new LinkedHashSet<>();
         for (var delta : structuralPatch.formulaOwnerDeltas()) {
-            var beforeAddress = delta.beforeAddress();
-            var afterAddress = delta.afterAddress();
-            ranges.add(cellRange(beforeAddress.sheetId(), beforeAddress.row(), beforeAddress.column()));
-            ranges.add(cellRange(afterAddress.sheetId(), afterAddress.row(), afterAddress.column()));
+            ranges.addAll(formulaOwnerRanges(delta));
         }
         return List.copyOf(ranges);
     }
 
     private static RangeRef cellRange(String sheetId, int row, int column) {
         return new RangeRef(sheetId, row, row, column, column);
+    }
+
+    private static List<RangeRef> formulaOwnerRanges(StructuralPatch.FormulaOwnerDelta delta) {
+        if ("formula-rule".equals(delta.kind())) {
+            List<RangeRef> ranges = new ArrayList<>(delta.beforeRanges());
+            ranges.addAll(delta.afterRanges());
+            return ranges;
+        }
+        var beforeAddress = delta.beforeAddress();
+        var afterAddress = delta.afterAddress();
+        return List.of(
+                cellRange(beforeAddress.sheetId(), beforeAddress.row(), beforeAddress.column()),
+                cellRange(afterAddress.sheetId(), afterAddress.row(), afterAddress.column()));
     }
 
     public JsonNode applyPublicMutations(JsonNode snapshot, List<OperationMutation> mutations) {
@@ -241,7 +248,7 @@ public class MutationDescriptorRegistry {
         List<StructuralPatch.FormulaOwnerDelta> deltas = new ArrayList<>(generated.formulaOwnerDeltas());
         for (StructuralPatch.FormulaOwnerDelta candidate : inverse.formulaOwnerDeltas()) {
             StructuralPatch.FormulaOwnerDelta sameAddress = deltas.stream()
-                    .filter(existing -> existing.afterAddress().equals(candidate.afterAddress()))
+                    .filter(existing -> sameFormulaOwner(existing, candidate))
                     .findFirst().orElse(null);
             if (sameAddress == null) deltas.add(candidate);
             else if (!sameAddress.equals(candidate)) {
@@ -249,6 +256,15 @@ public class MutationDescriptorRegistry {
             }
         }
         return new StructuralPatch(StructuralPatch.VERSION, mutationId, deltas);
+    }
+
+    private static boolean sameFormulaOwner(StructuralPatch.FormulaOwnerDelta left, StructuralPatch.FormulaOwnerDelta right) {
+        if (!left.kind().equals(right.kind())) return false;
+        if ("formula-cell".equals(left.kind())) return left.afterAddress().equals(right.afterAddress());
+        return left.sheetId().equals(right.sheetId())
+                && left.ruleKind().equals(right.ruleKind())
+                && left.ruleId().equals(right.ruleId())
+                && left.field().equals(right.field());
     }
 
     public JsonNode applyStructuralPatch(JsonNode snapshot, StructuralPatch patch) {

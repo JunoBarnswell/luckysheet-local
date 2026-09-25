@@ -1,4 +1,4 @@
-import { WorkbookModel, type CellData, type ProtectionAction, type RangeRef, type StructuralFormulaOwnerDelta, type StructuralFormulaOwnerIndex, type StructuralFormulaOwnerState, type WorksheetModel } from '@react-sheets/core-model';
+import { WorkbookModel, type CellData, type ConditionalFormatRule, type DataValidationRule, type ProtectionAction, type RangeRef, type StructuralFormulaOwnerDelta, type StructuralFormulaOwnerIndex, type StructuralFormulaOwnerState, type WorksheetModel } from '@react-sheets/core-model';
 import { collectFormulaDependencies, formatFormula, mapAstStructuralReferences, parseFormula, RangeIndex, ReferenceTransformDomain, MAX_COLUMN_INDEX, MAX_ROW_INDEX } from '@react-sheets/formula-engine';
 
 export interface MutationInfo<P = unknown> {
@@ -994,14 +994,15 @@ export class CommandRuntime {
         const formulaOwnerDeltas = isRecord(effect) && Array.isArray(effect.formulaOwnerDeltas)
           ? effect.formulaOwnerDeltas as StructuralFormulaOwnerDelta[]
           : [];
+        const structuralImpactRanges = formulaOwnerDeltasRanges(formulaOwnerDeltas);
         const info: MutationInfo = {
           id: mutation.id,
           unitId: mutation.unitId,
           sheetId: mutation.sheetId,
           params: mutation.params,
           affectedRanges: mutation.affectedRanges,
-          ...(formulaOwnerDeltas.length > 0
-            ? { structuralImpactRanges: formulaOwnerDeltas.flatMap(formulaOwnerDeltaRanges) }
+          ...(structuralImpactRanges.length > 0
+            ? { structuralImpactRanges }
             : {}),
           ...(mutation.permission ? { permission: structuredClone(mutation.permission) } : {}),
         };
@@ -1016,9 +1017,7 @@ export class CommandRuntime {
         this.activeEntry?.forwardMutations.push(info);
         if (this.activeEntry) {
           this.activeEntry.affectedRanges.push(...mutation.affectedRanges.map((range) => structuredClone(range)));
-          for (const delta of formulaOwnerDeltas) {
-            this.activeEntry.affectedRanges.push(...formulaOwnerDeltaRanges(delta));
-          }
+          this.activeEntry.affectedRanges.push(...structuredImpactRanges.map((range) => structuredClone(range)));
         }
 
         for (const listener of this.mutationListeners) {
@@ -1173,7 +1172,7 @@ export class CommandRuntime {
         removedCells: [],
         clearInputRanges: [],
         populateInputRanges: [],
-        rewrittenFormulaOwners: deltas.map((delta) => delta.afterAddress),
+        rewrittenFormulaOwners: deltas.flatMap((delta) => delta.kind === 'formula-cell' ? [delta.afterAddress] : []),
         formulaOwnerDeltas: deltas,
       };
       for (const listener of this.mutationListeners) listener(item, 'remote', effect);
@@ -1290,15 +1289,23 @@ export class CommandRuntime {
   }
 }
 
-function formulaOwnerDeltaRanges(delta: StructuralFormulaOwnerDelta): RangeRef[] {
-  const addresses = [delta.beforeAddress, delta.afterAddress];
-  return addresses.map((address) => ({
-    sheetId: address.sheetId,
-    startRow: address.row,
-    endRow: address.row,
-    startColumn: address.column,
-    endColumn: address.column,
-  }));
+function formulaOwnerDeltasRanges(deltas: readonly StructuralFormulaOwnerDelta[]): RangeRef[] {
+  const ranges = new Map<string, RangeRef>();
+  for (const delta of deltas) {
+    const affected = delta.kind === 'formula-rule'
+      ? [...delta.beforeRanges, ...delta.afterRanges]
+      : [delta.beforeAddress, delta.afterAddress].map((address) => ({
+        sheetId: address.sheetId,
+        startRow: address.row,
+        endRow: address.row,
+        startColumn: address.column,
+        endColumn: address.column,
+      }));
+    for (const range of affected) {
+      ranges.set(JSON.stringify([range.sheetId, range.startRow, range.endRow, range.startColumn, range.endColumn]), structuredClone(range));
+    }
+  }
+  return [...ranges.values()];
 }
 
 function formulaOwnerState(cell: CellData): StructuralFormulaOwnerState {
@@ -1322,6 +1329,48 @@ function applyFormulaOwnerDelta(
   delta: StructuralFormulaOwnerDelta,
   direction: 'undo' | 'forward',
 ): void {
+  if (delta.kind === 'formula-rule') {
+    const sheet = workbook.getSheet(delta.sheetId);
+    const rules = delta.ruleKind === 'conditional-format' ? sheet.conditionalFormats : sheet.dataValidations;
+    const matches = rules.filter((rule) => rule.id === delta.ruleId && rule.sheetId === delta.sheetId);
+    if (matches.length !== 1) {
+      throw new Error(`STRUCTURAL_PATCH_PRECONDITION: expected one ${delta.ruleKind} rule ${delta.sheetId}:${delta.ruleId}, found ${matches.length}`);
+    }
+    const rule = matches[0]!;
+    const conditionalFormat = delta.ruleKind === 'conditional-format' ? rule as ConditionalFormatRule : undefined;
+    const dataValidation = delta.ruleKind === 'data-validation' ? rule as DataValidationRule : undefined;
+    const currentFormula = delta.field === 'value1' ? conditionalFormat?.value1
+      : delta.field === 'value2' ? conditionalFormat?.value2
+        : delta.field === 'formula1' ? dataValidation?.formula1
+          : delta.field === 'formula2' ? dataValidation?.formula2
+            : dataValidation?.listSource?.kind === 'formula' ? dataValidation.listSource.formula : undefined;
+    const expectedFormula = direction === 'undo' ? delta.afterFormula : delta.beforeFormula;
+    const targetFormula = direction === 'undo' ? delta.beforeFormula : delta.afterFormula;
+    const targetRanges = direction === 'undo' ? delta.beforeRanges : delta.afterRanges;
+    const sameRanges = (left: readonly RangeRef[], right: readonly RangeRef[]) => JSON.stringify(left) === JSON.stringify(right);
+    if (!sameRanges(rule.ranges, targetRanges)) {
+      throw new Error(`STRUCTURAL_PATCH_PRECONDITION: ${delta.ruleKind} rule ${delta.sheetId}:${delta.ruleId}.${delta.field} changed since the structural operation`);
+    }
+    if (currentFormula === targetFormula) return;
+    if (currentFormula !== expectedFormula) {
+      throw new Error(`STRUCTURAL_PATCH_PRECONDITION: ${delta.ruleKind} rule ${delta.sheetId}:${delta.ruleId}.${delta.field} changed since the structural operation`);
+    }
+    if (delta.field === 'value1') {
+      if (!conditionalFormat) throw new Error('STRUCTURAL_PATCH_INVARIANT: value1 formula field is not owned by data validation');
+      conditionalFormat.value1 = targetFormula;
+    } else if (delta.field === 'value2') {
+      if (!conditionalFormat) throw new Error('STRUCTURAL_PATCH_INVARIANT: value2 formula field is not owned by data validation');
+      conditionalFormat.value2 = targetFormula;
+    } else if (!dataValidation) {
+      throw new Error(`STRUCTURAL_PATCH_INVARIANT: ${delta.field} is not owned by conditional formatting`);
+    } else if (delta.field === 'formula1') dataValidation.formula1 = targetFormula;
+    else if (delta.field === 'formula2') dataValidation.formula2 = targetFormula;
+    else if (delta.field === 'listSource.formula') {
+      if (dataValidation.listSource?.kind !== 'formula') throw new Error('STRUCTURAL_PATCH_INVARIANT: data-validation list formula owner changed type');
+      dataValidation.listSource = { ...dataValidation.listSource, formula: targetFormula };
+    }
+    return;
+  }
   const address = direction === 'undo' ? delta.beforeAddress : delta.afterAddress;
   const expected = direction === 'undo' ? delta.after : delta.before;
   const target = direction === 'undo' ? delta.before : delta.after;

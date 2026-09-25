@@ -555,3 +555,14 @@ Confirmed additional operation paths: 13 in the follow-up audit (the previous 12
 6. **剩余边界：** `rows.permuted`、fill/paste、sheet identity、table resize、OOXML owner relocation 尚未统一到可逆 `StructuralPatch`；本次不把 fail-close 子集宣称为完整 runtime。删除受影响引用的非单元格公式现会明确拒绝，直到完整 owner delta 与保护/冲突作用域接入同一 patch。
 
 **本轮交付边界：** 这是现有单元格公式 patch 的临时 fail-close 闭环，避免不可逆公式文本被结构 undo 留成 `#REF!`；不是完整修复非单元格 owner 的提交载荷/冲突/保护范围。严格按用户要求只静态审查，未运行测试、构建或 UI 验收。
+
+### 六轮自审复核 — CF/DV 公式 owner 纳入 axis/cell-shift patch（2026-09-25）
+
+1. **模型回合：** `StructuralFormulaOwnerDelta` 仅有 cell 地址与 cell state；真实变更的 CF/DV 规则公式没有 locator 或前后状态。加入 rule-kind、sheet/rule/field 稳定身份、公式 before/after 与适用范围 before/after。
+2. **变换回合：** axis 变换先移动规则范围再改写公式，cell shift 也分阶段改写范围、anchor 与公式；仅在改写前捕获公式和范围，不能构造可逆 patch。两条路径现捕获 pre-state 并以最终规则状态产出 delta；重复规则身份在规划阶段 fail-close。
+3. **历史回合：** cell-only `applyFormulaOwnerDelta` 不能回放规则公式，逆结构操作还可能已恢复适用范围但未恢复公式。历史/远端应用现定位具体规则字段，要求唯一 owner 和逆操作后的目标范围，再执行幂等写入或拒绝漂移。
+4. **协议回合：** protocol validator 与 committed impact 计算硬编码 cell 地址，新增规则 delta 会被拒绝或把范围影响算错。已按 kind 做精确字段校验、拒绝重复 owner key 和越界/异表范围，并将规则的前后适用范围作为去重后的 impact ranges。
+5. **服务端回合：** Java reducer 曾改写 CF/DV 公式但仅返回 cell delta，提交 patch 因而无法描述这部分状态；patch 应用和 inverse 也只支持 cell。现捕获规则 pre-state、生成/反转 rule delta，并在服务端 reducer 中以规则身份、公式与 post-transform ranges 做 fail-close 应用。
+6. **权限/冲突回合：** `committedRanges`、`structuralImpactRanges` 与 patch merge 以 `afterAddress` 为唯一键，无法授权/隔离 rule owner 或合并同一规则字段。现将前后适用范围纳入保护与冲突范围，并以 rule identity + field 对齐 reducer 与 inverse patch；前端历史影响范围也按完整 range 去重，避免每个公式字段重复放大范围列表。
+
+本次只覆盖 axis 和 cell-shift 上 CF/DV 公式字段；move-range、permutation、fill/paste、sheet identity、table resize、其他非单元格公式 owner 与 OOXML 尚未统一到同一 patch，不能据此宣称目标完成。按要求只做静态审查，未运行测试、构建或 UI 验收。

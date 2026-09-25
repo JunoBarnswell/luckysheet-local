@@ -168,9 +168,11 @@ describe('structural operations', () => {
     sheet.cells.set(0, 1, { value: null, formula: '=A2*2' });
 
     const result = StructuralTransform.apply(workbook, { kind: 'delete-rows', sheetId: sheet.id, at: 1, count: 1 });
-    const delta = result.formulaOwnerDeltas?.find((entry) => entry.beforeAddress.row === 0 && entry.beforeAddress.column === 1);
+    const delta = result.formulaOwnerDeltas?.find((entry) => entry.kind === 'formula-cell'
+      && entry.beforeAddress.row === 0 && entry.beforeAddress.column === 1);
 
     assert.ok(delta);
+    if (delta.kind !== 'formula-cell') throw new Error('Expected a formula-cell structural delta');
     assert.deepEqual(delta.beforeAddress, { sheetId: sheet.id, row: 0, column: 1 });
     assert.deepEqual(delta.afterAddress, { sheetId: sheet.id, row: 0, column: 1 });
     assert.equal(delta.before.formula, '=A2*2');
