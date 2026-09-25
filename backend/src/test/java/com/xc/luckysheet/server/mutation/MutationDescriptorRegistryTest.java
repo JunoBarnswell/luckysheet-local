@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.xc.luckysheet.server.contract.CommittedOperationMutation;
 import com.xc.luckysheet.server.contract.OperationMutation;
 import com.xc.luckysheet.server.contract.RangeRef;
 import com.xc.luckysheet.server.contract.StructuralPatch;
@@ -11,12 +12,14 @@ import com.xc.luckysheet.server.contract.WorkbookAclRole;
 import com.xc.luckysheet.server.service.ServiceException;
 import org.junit.jupiter.api.Test;
 
+import java.util.Collections;
 import java.util.List;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -71,6 +74,82 @@ class MutationDescriptorRegistryTest {
         assertEquals(snapshot, emptyReduction);
         ((ObjectNode) emptyReduction).put("isolationProbe", true);
         assertTrue(snapshot.get("isolationProbe") == null);
+    }
+
+    @Test
+    void structuralDescriptorKeepsPublicPurityAndMutatesOnlyOwnedSnapshots() throws Exception {
+        StructuralMutationDescriptor descriptor = new StructuralMutationDescriptor("rows.inserted");
+        ObjectNode snapshot = (ObjectNode) mapper.readTree("""
+                {"sheets":[{"id":"sheet-1","name":"Sheet1","rowCount":5,"columnCount":3,
+                  "cells":{"0":{"0":{"value":null,"formula":"=A1"}}},"pane":{"kind":"none"},
+                  "defaultRowHeightPx":20,"defaultColumnWidthPx":64,"hiddenRows":[],"hiddenColumns":[],
+                  "rowHeightsPx":{},"columnWidthsPx":{},"merges":[],"conditionalFormats":[],"dataValidations":[],
+                  "pivots":[],"sparklines":[],"drawings":[],"drawingPayloads":{},"sheetTables":[],
+                  "review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}},
+                  "spillRanges":[],"protectionRules":[],"outline":{"groups":[]}}]}
+                """);
+        JsonNode original = snapshot.deepCopy();
+        OperationMutation mutation = new OperationMutation("rows.inserted", "sheet-1",
+                mapper.readTree("{\"sheetId\":\"sheet-1\",\"at\":0,\"count\":1}"));
+
+        MutationApplication standalone = descriptor.applyWithPatch(snapshot, mutation);
+        assertNotSame(snapshot, standalone.snapshot());
+        assertEquals(original, snapshot);
+        assertEquals("=A2", standalone.snapshot().path("sheets").get(0)
+                .path("cells").path("1").path("0").path("formula").asText());
+
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        JsonNode reduced = registry.applyPublicMutations(snapshot, List.of(mutation, mutation));
+        assertNotSame(snapshot, reduced);
+        assertEquals(original, snapshot);
+        assertEquals("=A3", reduced.path("sheets").get(0)
+                .path("cells").path("2").path("0").path("formula").asText());
+
+        ObjectNode ownedSnapshot = snapshot.deepCopy();
+        MutationApplication owned = descriptor.applyWithPatchOnOwnedSnapshot(ownedSnapshot, mutation);
+        assertSame(ownedSnapshot, owned.snapshot());
+        assertEquals("=A2", ownedSnapshot.path("sheets").get(0)
+                .path("cells").path("1").path("0").path("formula").asText());
+        assertEquals(original, snapshot);
+    }
+
+    @Test
+    void committedStructuralReplayUsesDetachedBatchAndRejectsCorruptPatchWithoutChangingInput() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        ObjectNode snapshot = (ObjectNode) mapper.readTree("""
+                {"sheets":[{"id":"sheet-1","name":"Sheet1","rowCount":5,"columnCount":3,
+                  "cells":{"0":{"0":{"value":null,"formula":"=A1"}}},"pane":{"kind":"none"},
+                  "defaultRowHeightPx":20,"defaultColumnWidthPx":64,"hiddenRows":[],"hiddenColumns":[],
+                  "rowHeightsPx":{},"columnWidthsPx":{},"merges":[],"conditionalFormats":[],"dataValidations":[],
+                  "pivots":[],"sparklines":[],"drawings":[],"drawingPayloads":{},"sheetTables":[],
+                  "review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}},
+                  "spillRanges":[],"protectionRules":[],"outline":{"groups":[]}}]}
+                """);
+        JsonNode original = snapshot.deepCopy();
+        OperationMutation mutation = new OperationMutation("rows.inserted", "sheet-1",
+                mapper.readTree("{\"sheetId\":\"sheet-1\",\"at\":0,\"count\":1}"));
+        MutationApplication generated = new StructuralMutationDescriptor("rows.inserted")
+                .applyWithPatch(snapshot, mutation);
+        StructuralPatch patch = generated.structuralPatch();
+        List<RangeRef> affectedRanges = registry.resolveRanges(snapshot, mutation);
+        List<RangeRef> impactRanges = registry.structuralImpactRanges(patch);
+        CommittedOperationMutation committed = CommittedOperationMutation.from(
+                mutation, affectedRanges, impactRanges, patch);
+
+        JsonNode replayed = registry.applyCommittedMutations(snapshot, List.of(committed),
+                Collections.singletonList(null));
+        assertNotSame(snapshot, replayed);
+        assertEquals(generated.snapshot(), replayed);
+        assertEquals(original, snapshot);
+
+        StructuralPatch corruptPatch = new StructuralPatch(StructuralPatch.VERSION, "rows.deleted",
+                patch.formulaOwnerDeltas());
+        CommittedOperationMutation corrupt = CommittedOperationMutation.from(
+                mutation, affectedRanges, registry.structuralImpactRanges(corruptPatch), corruptPatch);
+        ServiceException error = assertThrows(ServiceException.class,
+                () -> registry.applyCommittedMutations(snapshot, List.of(corrupt), Collections.singletonList(null)));
+        assertEquals("STORAGE_CORRUPT", error.code());
+        assertEquals(original, snapshot);
     }
 
     @Test

@@ -47,7 +47,11 @@ final class StructuralSnapshotReducer {
     }
 
     static JsonNode applyFormulaOwnerPatch(JsonNode snapshot, StructuralPatch patch) {
-        ObjectNode root = SnapshotMutationSupport.root(snapshot.deepCopy());
+        return applyFormulaOwnerPatchOnOwnedSnapshot(snapshot.deepCopy(), patch);
+    }
+
+    static JsonNode applyFormulaOwnerPatchOnOwnedSnapshot(JsonNode ownedSnapshot, StructuralPatch patch) {
+        ObjectNode root = SnapshotMutationSupport.root(ownedSnapshot);
         for (StructuralPatch.FormulaOwnerDelta delta : patch.formulaOwnerDeltas()) {
             if ("formula-rule".equals(delta.kind())) {
                 applyFormulaRuleOwnerDelta(root, delta);

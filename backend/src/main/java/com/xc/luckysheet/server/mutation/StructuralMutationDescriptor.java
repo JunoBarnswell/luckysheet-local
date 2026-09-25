@@ -13,7 +13,7 @@ import java.util.List;
 import java.util.Set;
 
 /** Server reducers for whole-axis and canonical cell-band structural worksheet mutations. */
-final class StructuralMutationDescriptor extends CanonicalJsonMutationDescriptor {
+final class StructuralMutationDescriptor extends CanonicalJsonMutationDescriptor implements OwnedSnapshotMutationDescriptor {
     static final Set<String> IDS = Set.of(
             "rows.inserted", "rows.deleted", "columns.inserted", "columns.deleted",
             "cells.inserted", "cells.deleted", "cells.inserted.restore", "cells.deleted.restore", "rows.permuted", "range.move"
@@ -61,7 +61,12 @@ final class StructuralMutationDescriptor extends CanonicalJsonMutationDescriptor
 
     @Override
     public MutationApplication applyWithPatch(JsonNode snapshot, OperationMutation mutation) {
-        ObjectNode root = SnapshotMutationSupport.root(snapshot.deepCopy());
+        return applyWithPatchOnOwnedSnapshot(snapshot.deepCopy(), mutation);
+    }
+
+    @Override
+    public MutationApplication applyWithPatchOnOwnedSnapshot(JsonNode ownedSnapshot, OperationMutation mutation) {
+        ObjectNode root = SnapshotMutationSupport.root(ownedSnapshot);
         ObjectNode params = SnapshotMutationSupport.params(mutation);
         StructuralPatch structuralPatch = null;
         switch (id()) {

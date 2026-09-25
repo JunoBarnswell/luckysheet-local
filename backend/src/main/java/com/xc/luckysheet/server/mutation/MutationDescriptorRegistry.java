@@ -202,7 +202,21 @@ public class MutationDescriptorRegistry {
     public JsonNode applyPublicMutations(JsonNode snapshot, List<OperationMutation> mutations) {
         if (mutations.isEmpty()) return snapshot.deepCopy();
         JsonNode current = snapshot;
-        for (OperationMutation mutation : mutations) current = require(mutation.id(), false).apply(current, mutation);
+        // Pure descriptors transfer a detached result; structural reducers mutate only once that result is owned.
+        boolean ownsCurrent = false;
+        for (OperationMutation mutation : mutations) {
+            MutationDescriptor descriptor = require(mutation.id(), false);
+            if (descriptor instanceof OwnedSnapshotMutationDescriptor ownedDescriptor) {
+                if (!ownsCurrent) {
+                    current = current.deepCopy();
+                    ownsCurrent = true;
+                }
+                current = ownedDescriptor.applyWithPatchOnOwnedSnapshot(current, mutation).snapshot();
+            } else {
+                current = descriptor.apply(current, mutation);
+                ownsCurrent = true;
+            }
+        }
         return current;
     }
 
@@ -214,11 +228,24 @@ public class MutationDescriptorRegistry {
         if (inversePatches.size() != mutations.size()) {
             throw new IllegalArgumentException("Committed replay requires one inverse-patch slot per mutation");
         }
-        JsonNode current = snapshot.deepCopy();
+        // Delay isolation until the first owned reducer; an empty replay still returns a detached snapshot below.
+        JsonNode current = snapshot;
+        boolean ownsCurrent = false;
         for (int index = 0; index < mutations.size(); index++) {
             CommittedOperationMutation committed = mutations.get(index);
             OperationMutation mutation = new OperationMutation(committed.id(), committed.sheetId(), committed.params());
-            MutationApplication application = require(mutation.id(), false).applyWithPatch(current, mutation);
+            MutationDescriptor descriptor = require(mutation.id(), false);
+            MutationApplication application;
+            if (descriptor instanceof OwnedSnapshotMutationDescriptor ownedDescriptor) {
+                if (!ownsCurrent) {
+                    current = current.deepCopy();
+                    ownsCurrent = true;
+                }
+                application = ownedDescriptor.applyWithPatchOnOwnedSnapshot(current, mutation);
+            } else {
+                application = descriptor.applyWithPatch(current, mutation);
+                ownsCurrent = true;
+            }
             StructuralPatch patch = committed.structuralPatch();
             StructuralPatch expectedPatch = mergeStructuralPatches(mutation.id(), application.structuralPatch(), inversePatches.get(index));
             if (patch != null) {
@@ -234,9 +261,9 @@ public class MutationDescriptorRegistry {
                 throw new ServiceException("STORAGE_CORRUPT", 409, "Committed structural impact ranges have no server-derived patch");
             }
             current = application.snapshot();
-            if (patch != null) current = StructuralSnapshotReducer.applyFormulaOwnerPatch(current, patch);
+            if (patch != null) current = StructuralSnapshotReducer.applyFormulaOwnerPatchOnOwnedSnapshot(current, patch);
         }
-        return current;
+        return ownsCurrent ? current : snapshot.deepCopy();
     }
 
     public static StructuralPatch mergeStructuralPatches(

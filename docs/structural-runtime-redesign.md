@@ -803,3 +803,16 @@ head `1d8508ea` 的两个后端 CI 已通过 test-compile，随后在 `sheetRena
 新增成功路径与拒绝路径测试源码，但按任务约束未运行测试、构建、lint 或浏览器。静态检查仅确认 axis/cell-shift/move/row-permutation 名称选择无全量名称循环、row-permutation 单次预检复用 anchor 命中、公开名称列表无直接写入且 `git diff --check` 无 whitespace error。Sheet identity/full calculation rebuild 仍通过完整快照同步名称；跨端版本化 StructuralPatch、其他 owner families、Java 共用结构语义及整体验收仍是开放项，本轮不代表整体目标完成。
 
 本轮仅执行静态源码审查与 `git diff --check`；未运行测试、构建、lint 或浏览器验收。上述变更尚需 PR CI；不能据此宣称完整 Structural Runtime 整改已经完成。
+
+### Java transaction-owned snapshot replay — six static review passes (2026-09-25)
+
+六轮静态复核在 Java 结构 mutation / committed replay 的快照边界确认并处理以下问题：
+
+1. **独立结构 API 每次复制整本 workbook**：`StructuralMutationDescriptor.applyWithPatch` 必须隔离调用方输入，但 registry 私有批次也只能走这个纯 API。新增包内 `OwnedSnapshotMutationDescriptor` 能力；独立 API 仍复制，owned 入口只处理调用方已隔离的 root。
+2. **公开 mutation batch 连续结构编辑重复复制**：`applyPublicMutations` 原先每次结构 mutation 都从上一步重新 deep-copy。现先沿用纯 reducer 返回的独立结果；结构 reducer 只在尚未拥有结果时复制一次，随后连续结构编辑复用 transaction-owned root。
+3. **committed replay 在批次开始和每个结构 reducer 各复制一次**：replay 入口改为延迟取得所有权；首个纯 reducer 的输出或首次结构前的 detached copy 成为批次 root，连续结构 mutation 不再逐项复制。
+4. **replay 的公式 owner patch 为每个 mutation 再复制整本快照**：`applyFormulaOwnerPatch` 的公开纯入口保留复制语义；registry replay 改调用独立的 owned-root reducer，与本次结构 mutation 共用同一 root。
+5. **直接去除 `deepCopy` 会破坏输入纯度和拒绝原子性**：现在纯入口与 owned 入口分离；任何 patch 不匹配或 owner precondition 拒绝都只会丢弃 registry 私有 snapshot，调用方对象不被部分写入。服务端 commit 暂未接入 owned 入口，因为 `committedRanges` 和 data-block 检查需要结构编辑前后的两个状态；需要先设计显式 before/after transaction owner，不能通过别名当前快照来规避复制。
+6. **replay 成功/拒绝的隔离契约缺少回归覆盖**：增加源码测试，覆盖 standalone purity、连续结构编辑、公式 owner replay 成功、损坏 patch fail-close，以及成功和拒绝后原输入保持不变。按静态审查要求，测试未运行。
+
+本轮没有更改 mutation 协议或 workbook 数据格式；owned 接口为 package-private，普通 descriptor 继续遵守 `MutationDescriptor.apply` 的独立结果契约。静态检查仅运行 `git diff --check` 和源码核对；未运行测试、构建、lint、浏览器或 OOXML 验收。WorkbookOperationService commit 的全快照复制仍是已知边界，不声称本 slice 解决了完整结构运行时目标。
