@@ -841,4 +841,17 @@ head `1d8508ea` 的两个后端 CI 已通过 test-compile，随后在 `sheetRena
 5. committed envelope 被序列化到 `operation_log.envelope_json`，并可能进入 `coordination_outbox.payload_json`；重放与结构 undo 会再次读取已提交 envelope/target patch。仅改 DTO 而不迁移这些记录会使已有操作在新版读取或 undo 时失败。
 6. 当前 `CanonicalRowsPermutedMigration` 已证明持久层有显式 envelope rewrite 边界，但它对 operation log 与未发布 outbox 分别处理；已发布协同事件、checkpoint 与旧 patch 的可逆语义也必须纳入版本切换，而不是把历史缺失 owner delta 填成空数组。
 
-收敛方案：先定一个带完整 owner coverage 的 canonical patch v2 和 fail-close 规则；实现 Java/TypeScript 同构验证及 owner delta 后，再在显式版本迁移边界重放连续的 revision-0 checkpoint + operation log，重新导出可证明的 owner before/after，并校验各现存 checkpoint。迁移必须同事务更新 operation log 与待发布 outbox；若 operation 缺失、checkpoint 不匹配、opaque owner 无法判定或历史 patch 不能重建，迁移应中止并报告 workbook/revision，而不能制造空 delta。上线边界还需保证已发布旧事件不会与 v2 客户端混读。当前源码尚未实现该迁移，本节是经验证的阻断条件与实施约束，不宣称修复完成。
+收敛方案：先定一个带完整 owner coverage 的 canonical patch v2 和 fail-close 规则；实现 Java/TypeScript 同构验证及 owner delta 后，再在显式版本迁移边界从每个 workbook 最早可用且校验通过的 checkpoint 重放连续 operation log，重新导出可证明的 owner before/after，并校验各现存 checkpoint。迁移必须同事务更新 operation log 与待发布 outbox；若 operation 缺失、checkpoint 不匹配、opaque owner 无法判定或历史 patch 不能重建，迁移应中止并报告 workbook/revision，而不能制造空 delta。上线边界还需保证已发布旧事件不会与 v2 客户端混读。当前源码尚未实现该迁移，本节是经验证的阻断条件与实施约束，不宣称修复完成。
+
+### 六轮自审复核 — structural patch v2 的持久化升级前置条件（2026-09-25，HEAD `f34c0228`）
+
+本轮不是重复计算旧清单中的问题数，而是针对“只补 owner 字段即可升级 v1”的方案做六次独立反证；每一轮都检查真实生产入口，静态审查，无测试/构建/lint/UI 执行。
+
+1. **TypeScript 协议面：** `protocol/src/index.ts` 的 `validateStructuralPatch` 对 key 做精确校验，固定 `version === 1`，只返回 `formulaOwnerDeltas`。因此在 v1 上直接增加名称、cell 或 metadata delta 会被客户端拒绝，不是无害扩字段。
+2. **Java 协议面：** `StructuralPatch` record 也固定 v1，只有公式 owner 列表，`inverse()` 逐项反转的仍只有公式状态。TypeScript 单边扩字段不能形成跨端同一语义。
+3. **提交/重放面：** `WorkbookOperationService` 先由 `StructuralMutationDescriptor` 按 mutation intent 派生候选 snapshot，再合并部分 patch；`MutationDescriptorRegistry.applyCommittedMutations` 重放时重新运行 descriptor 并比较当前可表达的 patch。服务端目前没有可供客户端直接应用的完整结构结果。
+4. **客户端/历史面：** `collaboration-session.ts` 把 committed mutation 的 `params` 交给本地 handler 重放，并只把 `formulaOwnerDeltas` 送进 `MutationInfo`；协议逆 patch 同样没有名称和普通 owner 状态。故本地 handler 与服务端 reducer 仍可独立计算同一意图。
+5. **持久化面：** `operation_log.envelope_json` 保存完整已提交 envelope，`coordination_outbox.payload_json` 保存待发布 envelope；现有 `CanonicalRowsPermutedMigration` 只规范化 mutation params/ranges，不能为历史操作凭空生成缺失的 owner before/after。直接切换 DTO 会令历史读取、结构 undo 或待发布消息失败。
+6. **重建证据面：** 服务端 snapshot 按至少 50 个操作或 512,000 字节批量 checkpoint，并非逐 revision 快照。升级必须沿可验证 checkpoint + 连续 operation log 重放，校验中间 checkpoint 与当前 workbook snapshot；遇到 revision 缺口、校验不匹配或不支持的 owner 时必须整批中止，不能以空 delta 填充。
+
+**已确认问题与修复方案：** 真实缺口是 v1 patch 的 owner 覆盖不完整，且服务端、协作重放和历史撤销依赖该 patch；这是一个跨层 root cause，不把六次验证冒充六个独立 bug。下一实现批次应定义完整且可逆的 v2 patch，再建立显式、事务化的历史迁移：从每个 workbook 最早可用且校验通过的 checkpoint 重放连续日志、重新计算 patch，并同事务改写 operation log 与未发布 outbox；迁移全部校验通过后才允许 runtime 只接受 v2。任何无法重建的 workbook 必须保留原数据并报告 unit/revision，禁止降级到客户端重算或默认空 owner 列表。当前没有改协议或数据，PR #345 与整改目标均未完成。
