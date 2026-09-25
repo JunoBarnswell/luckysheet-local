@@ -610,3 +610,59 @@ Confirmed additional operation paths: 13 in the follow-up audit (the previous 12
 6. **失败原子性与覆盖：** 再核对 reducer 先在 descriptor 的 snapshot 深拷贝上完成 exact-range preflight，失败不写入持久状态；前后端回归用例覆盖非对称置换、显式/隐式公式 owner、camera range 和字面规则。修复后 CI 暴露新增后端用例遗漏规范 `review` 对象；已补齐空 review 结构，这是测试夹具完整性问题，不计为生产缺陷。未运行本地测试/构建；由后续 PR CI 负责验证。
 
 该轮只修复上述静态追踪和 CI 明确证实的问题；没有把未验证猜测计入问题数。若远端门禁继续暴露实际失败，将在同一 PR 上继续修复；本目标仍未完成。
+
+### 六轮自审复核 — 结构统一链未闭环（2026-09-25，HEAD `8155b081`）
+
+以下 30 项是源码可定位的架构缺口，不等同于 30 个独立崩溃缺陷；每轮复核后均对照调用方、mutation 契约及后端 reducer，确认不是旧文档推测。未运行本地测试、构建或 UI。
+
+**第 1 轮：操作入口与语义所有权**
+
+1. 整行/列插删进入 `StructuralTransform.applyAxis`，而不是一个全操作 planner。
+2. 单元格插删另走 `planCellShift` / `applyCellShift`，范围位移契约与轴变换分离。
+3. `range.move` 进入 `applyMoveRange`，粘贴/剪切则由 `applyPasteSnapshot` 重建状态；跨表剪切明确拒绝。
+4. 排序使用独立 `rows.permuted` / `applyRowPermutation`，前后端另有排序 reducer。
+5. Fill/drag 使用公式 offset 后发普通 cell/range mutation；Sheet identity 使用 `SheetIdentityTransform`，表格仅有 add/update/remove 路径而没有专用 resize mutation。
+
+**第 2 轮：引用 Owner 与索引边界**
+
+6. `StructuralReferenceOwnerIndex` 只提供 cell-address 公式依赖查询；无法统一返回名称、规则、表、绘图和范围对象 owner。
+7. `preflightFormulaRewrite` 每次扫描全部 `definedNameModels`，并未用引用索引定位受影响名称。
+8. CF/DV 公式和范围以 `workbook.getSheets()` 全表循环重写、快照，不是按目标 sheet/range 命中 owner。
+9. table-sheet 列、shape payload、data-view 字段、cell-style-template 公式在 `preflightWorkbookFormulaOwners` 全量枚举。
+10. Hyperlink、chart/pivot/sparkline、filter、print、spill、protection 等坐标 owner 由多个 `shift*` / `relocate*` 过程逐类扫描，缺少统一可查询 owner 索引。
+
+**第 3 轮：预检成本与提交原子性**
+
+11. `preflightAxisMetadata` 对每张 worksheet 深拷贝结构元数据，即使其与编辑范围无交集。
+12. `preflightCellShiftMetadata` 也复制所有 worksheet、workbook tables 和 data sources。
+13. 轴/单元格位移对公式规则先对全 workbook capture snapshot，再独立遍历规则执行实际变换。
+14. `StructuralTransform.apply*` 的验证计划仍以 live `WorkbookModel` 为输入并在验证后原位修改；没有可提交/可丢弃的只读 immutable plan。
+15. `StructuralTransformResult` 主要描述计算输入范围、删除的 cells 和公式 owner delta；并非完整 cell/metadata/object before-after patch。`CommandRuntime.applyMutation` 在 mutation callback 返回后才把该 mutation 的 inverse 放入事务，因此 callback 中途失败时事务没有该 mutation 的可重放逆项。
+
+**第 4 轮：Patch 协议及跨端同义性**
+
+16. TypeScript `StructuralPatch` / Java `StructuralPatch` 只有 `formulaOwnerDeltas`，不承载 cell 和普通结构元数据 before/after。
+17. 名称、persisted formula participants（table-sheet、drawing payload、data view、template validation）会被结构变换直接改写，但当前 effect/patch delta 不描述这些 owner。
+18. Java `StructuralMutationDescriptor` 的 `rows.permuted` 分支调用会改写规则、名称、模板、绘图的 reducer 后，仍返回 `structuralPatch == null`；客户端排序 effect 也只给计算清除/重载范围。
+19. 协议 structural-patch allowlist 不含 `rows.permuted`、table resize 或 sheet identity mutation；这些操作因此不能由同一 patch 契约确认 owner 结果。
+20. TypeScript 与 Java 分别实现轴、cell shift、move、sort 与 metadata mapping；共享的点/区间向量只验证原子坐标映射，不校验完整 workbook owner patch 等价。
+
+**第 5 轮：History、OT 与远端重放**
+
+21. `range.move` history policy 是 `invalidate`，不能将已有本地 undo/redo 坐标变换到新结构。
+22. cell shift 同样因没有 canonical history transform 而 invalidate。
+23. `rows.permuted` 也 invalidate history；其 inverse 仍是另一组 permutation mutation，不是同一结构 patch 的逆。
+24. `ot-rebase.ts` 将 move/sort/table-resize/sheet-identity 归为需 canonical patch 的结构类型；缺少 patch 时 fail-close，而不是由共享 ReferenceTransformDomain 变换。
+25. 远端 replay 仍调用本地 mutation handler 重算结构，再把服务端公式 delta 应用到结果；服务端并未发送可直接提交的完整结构 patch。
+
+**第 6 轮：计算、投影、持久化与 OOXML 边界**
+
+26. 计算 context rebuild 由 mutation-id 集合和 effect 上的布尔字段共同决定，重建策略没有与结构变更的 typed owner effect 同源。
+27. 结构 effect 是 command listener 的临时返回值；runtime 持久化/提交 mutation 时只复制 mutation 参数、affected ranges 和现有 impact ranges。
+28. ProjectionRuntime 通过 mutation 分类与 affected ranges 推导失效，不消费完整结构 owner patch；chart 依赖也另有索引与失效过程。
+29. 未建模/opaque OOXML capability 的主要拒绝发生在 `exportOoxmlDocument`；结构 planner 不先证明 opaque part 的坐标 owner 可安全映射，因此编辑可能先成功、到保存才拒绝重建。
+30. Java `applyPublicMutations` 对 mutation 顺序调用 descriptor；结构 descriptor 的 `applyWithPatch` 对每次调用深拷贝完整 JSON snapshot，批次成本随 mutation 数重复承担 snapshot 分配。
+
+**修复收敛方案：** 以上问题收敛到同一条 clean-break 路径：先建立 side-effect-free `CanonicalStructuralPlanner` 和 typed `ReferenceIndex`，让其对已注册 owner 产生版本化、不可变且可逆的完整 `StructuralPatch`；随后本地命令、计算与投影、history/OT、Java commit/replay、持久化和 OOXML capability preflight 全部消费同一 patch。迁移先覆盖整行/列轴变更的完整纵向链，并在同一提交中删除被替代的直接 live-transform 分支；再按同一契约迁移 cell shift、move/paste、permutation、identity、table resize。预检工作量以受影响 cells/owners 为界，服务端一批 mutation 只建立一个事务工作快照；不能登记或安全映射的 owner 在提交任何 live 状态前以 typed error 拒绝。
+
+本轮已完成六次独立静态复核并记录 30 项经源码确认的架构缺口；它们尚未被本节所替代的统一实现修复，故不声称整改完成。下一实施批次必须一次闭合首个轴变更纵向链（成功/拒绝、逆 patch、远端重放、server 和 OOXML capability），本地仍按用户要求不运行测试或构建；修复提交继续进入现有草稿 PR #345。
