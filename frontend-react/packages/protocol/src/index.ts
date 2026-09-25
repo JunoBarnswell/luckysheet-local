@@ -1003,7 +1003,7 @@ export function validateStructuralPatch(value: unknown, mutationId: string): Str
   if (patch.version !== 1 || patch.mutationId !== mutationId || !Array.isArray(patch.formulaOwnerDeltas)) {
     throw new Error('Committed structural patch header is invalid');
   }
-  if (!['rows.inserted', 'rows.deleted', 'columns.inserted', 'columns.deleted', 'cells.inserted', 'cells.deleted', 'cells.inserted.restore', 'cells.deleted.restore', 'range.move'].includes(mutationId)) {
+  if (!['rows.inserted', 'rows.deleted', 'columns.inserted', 'columns.deleted', 'cells.inserted', 'cells.deleted', 'cells.inserted.restore', 'cells.deleted.restore', 'rows.permuted', 'range.move'].includes(mutationId)) {
     throw new Error('Committed structural patch mutation id is invalid');
   }
   const formulaOwnerDeltas = patch.formulaOwnerDeltas.map((raw, index) => {

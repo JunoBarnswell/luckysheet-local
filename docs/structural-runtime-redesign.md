@@ -666,3 +666,18 @@ Confirmed additional operation paths: 13 in the follow-up audit (the previous 12
 **修复收敛方案：** 以上问题收敛到同一条 clean-break 路径：先建立 side-effect-free `CanonicalStructuralPlanner` 和 typed `ReferenceIndex`，让其对已注册 owner 产生版本化、不可变且可逆的完整 `StructuralPatch`；随后本地命令、计算与投影、history/OT、Java commit/replay、持久化和 OOXML capability preflight 全部消费同一 patch。迁移先覆盖整行/列轴变更的完整纵向链，并在同一提交中删除被替代的直接 live-transform 分支；再按同一契约迁移 cell shift、move/paste、permutation、identity、table resize。预检工作量以受影响 cells/owners 为界，服务端一批 mutation 只建立一个事务工作快照；不能登记或安全映射的 owner 在提交任何 live 状态前以 typed error 拒绝。
 
 本轮已完成六次独立静态复核并记录 30 项经源码确认的架构缺口；它们尚未被本节所替代的统一实现修复，故不声称整改完成。下一实施批次必须一次闭合首个轴变更纵向链（成功/拒绝、逆 patch、远端重放、server 和 OOXML capability），本地仍按用户要求不运行测试或构建；修复提交继续进入现有草稿 PR #345。
+
+### 六轮静态自审 — rows.permuted 公式 owner patch 接线（2026-09-25）
+
+本轮按调用链分六轮复核，每轮记录可由源码直接确认的断点，不把同一断点的重复表现扩充成 30 个独立缺陷：
+
+1. `applyRowPermutation` 在重写移动单元格公式后返回 `void`，调用方无法记录 before/after cell formula owner；已改为产出可逆 owner delta。
+2. 同一 permutation 会重写 CF/DV 公式及其 ranges/anchor，但没有把规则公式变化放入 patch；已按现有 structural rule 字段选择器生成规则 delta，并对不稳定规则身份 fail-close。
+3. 已注册的 `rows.permuted` mutation handler 丢弃 cell/rule delta，计算 effect 因而不能进入 runtime history；已将 delta 接入 effect。
+4. `data.sort.rows` 是另一条独立入口，同样丢弃 delta；已同步接入，避免仅修 replay handler 而漏掉交互排序。
+5. Java `permuteRows` 改写公式后原先不返回 patch，协议 allowlist 和 undo patch 分类也不承认该 mutation；已补服务端 patch、协议许可及结构撤销分类。
+6. 撤销端此前无法证明 `sourceRows` 是原 permutation 的逆映射；已加入精确范围/列界/逆序映射核验，并让 undo 使用目标 patch 的 inverse。
+
+静态追踪确认 TS/Java 对移动 cell formula、source formula、barcode formula、CF/DV formula 字段的 delta 类型及范围形状一致；history 按 owner delta 内容排序比较，impact ranges、server replay 幂等应用和 undo merge 均沿现有 `StructuralPatch` 链处理。补充了 TypeScript 与 Java 回归用例源码。仅执行 `git diff --check`，未运行任何测试、构建或 UI；仍需 PR CI 验证。
+
+本批次只闭合公式 owner delta 的排序接线，不等于实现完整 `CanonicalStructuralPlanner`/`ReferenceIndex`：名称、模板、绘图、普通元数据仍不在完整可逆 patch 中；history rebase 仍会 invalidate 受后续 permutation 影响的历史项；更早已提交且没有 server patch 的旧排序操作也不能据此获得可逆 patch。原六轮列出的其余架构缺口仍开放，PR #345 与总目标均未完成。

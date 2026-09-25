@@ -11,6 +11,7 @@ import {
   validateOperationEnvelope,
   validateUserPreferences,
   validatePivotDefinition,
+  validateStructuralPatch,
   validateWorkbookSnapshot,
 } from './index';
 import { PIVOT_MAX_MEMBER_COUNT, PIVOT_MEMBER_DISPLAY_LIMIT, WorkbookModel } from '@react-sheets/core-model';
@@ -85,6 +86,18 @@ test('committed structural patches and impact ranges survive collaboration decod
   if (decoded.type !== 'revision.created') throw new Error('Expected a revision event');
   assert.deepEqual(decoded.payload.mutations[0]?.structuralPatch, patch);
   assert.deepEqual(decoded.payload.mutations[0]?.structuralImpactRanges, [impactRange]);
+});
+
+test('committed row-permutation structural patches are accepted by the protocol', () => {
+  assert.deepEqual(validateStructuralPatch({
+    version: 1,
+    mutationId: 'rows.permuted',
+    formulaOwnerDeltas: [],
+  }, 'rows.permuted'), {
+    version: 1,
+    mutationId: 'rows.permuted',
+    formulaOwnerDeltas: [],
+  });
 });
 
 test('collaboration messages reject actor-bearing presence and legacy changesets', () => {

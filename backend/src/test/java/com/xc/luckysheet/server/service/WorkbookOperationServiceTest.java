@@ -18,7 +18,9 @@ import java.util.List;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
@@ -111,6 +113,28 @@ class WorkbookOperationServiceTest {
         verify(store).insertOperation(captured.capture());
         assertEquals("op-2", captured.getValue().operationId());
         verify(store).updateWorkbookRevisionAndName(eq("book-1"), eq(1L), eq("Book"), any());
+    }
+
+    @Test
+    void rowPermutationUndoRequiresTheExactInverseSourceOrder() throws Exception {
+        var original = mapper.readTree("""
+                {"range":{"sheetId":"sheet-1","startRow":5,"endRow":7,"startColumn":0,"endColumn":2},
+                 "affectedColumnEnd":9,"sourceRows":[7,5,6]}
+                """);
+        var inverse = mapper.readTree("""
+                {"range":{"sheetId":"sheet-1","startRow":5,"endRow":7,"startColumn":0,"endColumn":2},
+                 "affectedColumnEnd":9,"sourceRows":[6,7,5]}
+                """);
+
+        assertTrue(WorkbookOperationService.sameRowPermutationInverse(original, inverse));
+        assertFalse(WorkbookOperationService.sameRowPermutationInverse(original, mapper.readTree("""
+                {"range":{"sheetId":"sheet-1","startRow":5,"endRow":7,"startColumn":0,"endColumn":2},
+                 "affectedColumnEnd":9,"sourceRows":[7,5,6]}
+                """)));
+        assertFalse(WorkbookOperationService.sameRowPermutationInverse(original, mapper.readTree("""
+                {"range":{"sheetId":"sheet-1","startRow":5,"endRow":7,"startColumn":0,"endColumn":2},
+                 "affectedColumnEnd":8,"sourceRows":[6,7,5]}
+                """)));
     }
 
     private String canonicalSnapshot() {

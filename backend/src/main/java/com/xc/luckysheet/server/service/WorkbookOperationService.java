@@ -250,7 +250,7 @@ public class WorkbookOperationService {
 
     private static boolean isStructuralPatchMutation(String mutationId) {
         return switch (mutationId) {
-            case "rows.inserted", "rows.deleted", "columns.inserted", "columns.deleted", "cells.inserted", "cells.deleted", "range.move" -> true;
+            case "rows.inserted", "rows.deleted", "columns.inserted", "columns.deleted", "cells.inserted", "cells.deleted", "rows.permuted", "range.move" -> true;
             default -> false;
         };
     }
@@ -284,6 +284,9 @@ public class WorkbookOperationService {
         if ("range.move".equals(originalId) && "range.move".equals(inverseId)) {
             return sameMoveRanges(original.params(), inverse.params());
         }
+        if ("rows.permuted".equals(originalId) && "rows.permuted".equals(inverseId)) {
+            return sameRowPermutationInverse(original.params(), inverse.params());
+        }
         boolean matchingCellShift = ("cells.inserted".equals(originalId) && "cells.inserted.restore".equals(inverseId))
                 || ("cells.deleted".equals(originalId) && "cells.deleted.restore".equals(inverseId));
         if (!matchingCellShift) return false;
@@ -291,6 +294,36 @@ public class WorkbookOperationService {
         return original.params().path("operation").asText().equals(spec.path("operation").asText())
                 && original.params().path("axis").asText().equals(spec.path("axis").asText())
                 && original.params().path("range").equals(spec.path("range"));
+    }
+
+    static boolean sameRowPermutationInverse(JsonNode original, JsonNode inverse) {
+        JsonNode range = original.path("range");
+        JsonNode inverseRange = inverse.path("range");
+        JsonNode sourceRows = original.path("sourceRows");
+        JsonNode inverseRows = inverse.path("sourceRows");
+        JsonNode affectedColumnEnd = original.path("affectedColumnEnd");
+        JsonNode inverseAffectedColumnEnd = inverse.path("affectedColumnEnd");
+        if (!range.isObject() || !range.equals(inverseRange)
+                || !affectedColumnEnd.isIntegralNumber() || !affectedColumnEnd.equals(inverseAffectedColumnEnd)
+                || !range.path("startRow").isIntegralNumber() || !range.path("startRow").canConvertToInt()
+                || !sourceRows.isArray() || !inverseRows.isArray()
+                || sourceRows.size() == 0 || sourceRows.size() != inverseRows.size()) return false;
+        int startRow = range.path("startRow").intValue();
+        int[] expectedInverse = new int[sourceRows.size()];
+        boolean[] seen = new boolean[sourceRows.size()];
+        for (int targetOffset = 0; targetOffset < sourceRows.size(); targetOffset++) {
+            JsonNode source = sourceRows.get(targetOffset);
+            if (!source.isIntegralNumber() || !source.canConvertToInt()) return false;
+            int sourceOffset = source.intValue() - startRow;
+            if (sourceOffset < 0 || sourceOffset >= expectedInverse.length || seen[sourceOffset]) return false;
+            seen[sourceOffset] = true;
+            expectedInverse[sourceOffset] = startRow + targetOffset;
+        }
+        for (int index = 0; index < expectedInverse.length; index++) {
+            JsonNode actual = inverseRows.get(index);
+            if (!actual.isIntegralNumber() || !actual.canConvertToInt() || actual.intValue() != expectedInverse[index]) return false;
+        }
+        return true;
     }
 
     private static boolean sameMoveRanges(JsonNode original, JsonNode inverse) {

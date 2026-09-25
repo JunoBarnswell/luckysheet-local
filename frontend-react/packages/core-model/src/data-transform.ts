@@ -1,6 +1,8 @@
 import type { CellAddress, CellData, CellStyleTemplate, ConditionalFormatRule, DataValidationRule, RangeRef, Row, WorkbookModel, WorksheetModel } from './index';
 import { cellKey, hasFormulaGroupMetadata } from './index';
 import type { DefinedNameModel, DrawingObject, DrawingPayload, SpillRange } from './domain';
+import type { StructuralFormulaOwnerDelta, StructuralFormulaOwnerState } from './structural-transform';
+import { structuralRuleFormulaFields, type StructuralFormulaRule } from './structural-formula-owner';
 import { sheetRuleRegistry, type RuleTransform } from './rule-lifecycle';
 import { mapReportSheetCoordinates } from './report-sheet-transform';
 import { formatFormula, MAX_COLUMN_INDEX, MAX_ROW_INDEX, offsetAst, parseFormula } from '@react-sheets/formula-engine';
@@ -480,10 +482,15 @@ export function validatePermutationMetadata(workbook: WorkbookModel, plan: RowPe
   return { conditionalFormats, dataValidations, definedNames, templates, drawingPayloads, reportSheet };
 }
 
-export function applyRowPermutation(workbook: WorkbookModel, plan: RowPermutationPlan): void {
+export function applyRowPermutation(workbook: WorkbookModel, plan: RowPermutationPlan): StructuralFormulaOwnerDelta[] {
   const sheet = workbook.getSheet(plan.range.sheetId);
   const ownerChanges = validatePermutationMetadata(workbook, plan);
   const { range, sourceRows } = plan;
+  const ruleFormulaOwnerDeltas = [
+    ...permutationRuleFormulaDeltas(sheet.conditionalFormats, ownerChanges.conditionalFormats, 'conditional-format'),
+    ...permutationRuleFormulaDeltas(sheet.dataValidations, ownerChanges.dataValidations, 'data-validation'),
+  ];
+  const formulaOwnerDeltas: StructuralFormulaOwnerDelta[] = [];
   const cellsByRow = new Map<number, Array<{ column: number; cell: CellData }>>();
   sheet.cells.forEachInRows(new Set(sourceRows), (cell, row, column) => {
     if (column < range.startColumn || column > range.endColumn) return;
@@ -491,6 +498,17 @@ export function applyRowPermutation(workbook: WorkbookModel, plan: RowPermutatio
     if (targetRow === undefined) throw new Error(`ROW_PERMUTATION_INVARIANT: cell owner row ${row} is outside its source map`);
     const rowDelta = targetRow - row;
     const nextCell = rowDelta === 0 ? structuredClone(cell) : remapPermutedFormulaOwner(cell, rowDelta, sheet.id, row, column);
+    const before = permutationFormulaOwnerState(cell);
+    const after = permutationFormulaOwnerState(nextCell);
+    if (targetRow !== row && hasFormulaOwnerState(before)) {
+      formulaOwnerDeltas.push({
+        kind: 'formula-cell',
+        beforeAddress: { sheetId: sheet.id, row, column },
+        afterAddress: { sheetId: sheet.id, row: targetRow, column },
+        before,
+        after,
+      });
+    }
     const entries = cellsByRow.get(row) ?? [];
     entries.push({ column, cell: nextCell });
     cellsByRow.set(row, entries);
@@ -528,6 +546,62 @@ export function applyRowPermutation(workbook: WorkbookModel, plan: RowPermutatio
     for (const [payloadId, payload] of update.payloads) update.owner.drawingPayloads.set(payloadId, payload);
   }
   if (ownerChanges.reportSheet) sheet.reportSheet = ownerChanges.reportSheet;
+  formulaOwnerDeltas.push(...ruleFormulaOwnerDeltas);
+  return formulaOwnerDeltas;
+}
+
+function permutationRuleFormulaDeltas<T extends StructuralFormulaRule>(
+  beforeRules: readonly T[],
+  afterRules: readonly T[],
+  ruleKind: 'conditional-format' | 'data-validation',
+): StructuralFormulaOwnerDelta[] {
+  const beforeIdCounts = new Map<string, number>();
+  for (const rule of beforeRules) beforeIdCounts.set(rule.id, (beforeIdCounts.get(rule.id) ?? 0) + 1);
+  const deltas: StructuralFormulaOwnerDelta[] = [];
+  for (const before of beforeRules) {
+    const beforeFormulas = structuralRuleFormulaFields(before);
+    if (beforeFormulas.size === 0) continue;
+    const matches = afterRules.filter((candidate) => candidate.id === before.id && candidate.sheetId === before.sheetId);
+    if (beforeIdCounts.get(before.id) !== 1 || matches.length !== 1 || !before.id.trim()) {
+      throw new Error(`STRUCTURAL_PATCH_INVARIANT: formula rule identity ${before.sheetId}:${before.id} is not unique`);
+    }
+    const after = matches[0]!;
+    const afterFormulas = structuralRuleFormulaFields(after);
+    for (const [field, beforeFormula] of beforeFormulas) {
+      const afterFormula = afterFormulas.get(field);
+      if (afterFormula === undefined) {
+        throw new Error(`STRUCTURAL_PATCH_INVARIANT: formula rule owner ${before.sheetId}:${before.id}.${field} disappeared`);
+      }
+      if (afterFormula !== beforeFormula) {
+        deltas.push({
+          kind: 'formula-rule',
+          sheetId: before.sheetId,
+          ruleKind,
+          ruleId: before.id,
+          field,
+          beforeFormula,
+          afterFormula,
+          beforeRanges: structuredClone(before.ranges),
+          afterRanges: structuredClone(after.ranges),
+        });
+      }
+    }
+  }
+  return deltas;
+}
+
+function permutationFormulaOwnerState(cell: CellData): StructuralFormulaOwnerState {
+  return {
+    formula: cell.formula ?? null,
+    sourceFormula: cell.formulaMetadata?.sourceFormula ?? null,
+    barcodeFormula: cell.presentation?.kind === 'barcode' && cell.presentation.source.kind === 'formula'
+      ? cell.presentation.source.formula
+      : null,
+  };
+}
+
+function hasFormulaOwnerState(state: StructuralFormulaOwnerState): boolean {
+  return state.formula !== null || state.sourceFormula !== null || state.barcodeFormula !== null;
 }
 
 function remapPermutedFormulaOwner(cell: CellData, rowDelta: number, sheetId: string, row: number, column: number): CellData {

@@ -7,9 +7,9 @@ function range(sheetId: string, startRow: number, endRow: number, startColumn: n
   return { sheetId, startRow, endRow, startColumn, endColumn };
 }
 
-function applyPermutation(workbook: WorkbookModel, selected: RangeRef, sourceRows: readonly number[]): void {
+function applyPermutation(workbook: WorkbookModel, selected: RangeRef, sourceRows: readonly number[]): ReturnType<typeof applyRowPermutation> {
   const affectedColumnEnd = rowPermutationAffectedColumnEnd(workbook, selected);
-  applyRowPermutation(workbook, createRowPermutationPlan(selected, sourceRows, affectedColumnEnd));
+  return applyRowPermutation(workbook, createRowPermutationPlan(selected, sourceRows, affectedColumnEnd));
 }
 
 function reportDefinition(sheetId: string): ReportSheetDefinition {
@@ -110,6 +110,46 @@ describe('canonical row permutation metadata plan', () => {
       assert.equal(movedPresentation.source.kind, 'formula');
       if (movedPresentation.source.kind === 'formula') assert.equal(movedPresentation.source.formula, '=E3');
     }
+  });
+
+  it('returns reversible cell and rule formula-owner deltas for a row permutation', () => {
+    const workbook = new WorkbookModel('permutation-owner-deltas', 'Permutation owner deltas');
+    const sheet = workbook.getSheet('sheet-1');
+    sheet.rowCount = 3;
+    sheet.columnCount = 1;
+    sheet.cells.set(0, 0, { value: null, formula: '=A1' });
+    sheet.conditionalFormats.push({
+      id: 'cf-permuted',
+      sheetId: sheet.id,
+      ranges: [range(sheet.id, 0, 0, 4, 4)],
+      formulaAnchor: { sheetId: sheet.id, row: 0, column: 4 },
+      type: 'highlight',
+      operator: 'formula',
+      value1: '=A1>0',
+    });
+
+    const deltas = applyPermutation(workbook, range(sheet.id, 0, 1, 0, 0), [1, 0]);
+
+    assert.deepEqual(deltas, [
+      {
+        kind: 'formula-cell',
+        beforeAddress: { sheetId: sheet.id, row: 0, column: 0 },
+        afterAddress: { sheetId: sheet.id, row: 1, column: 0 },
+        before: { formula: '=A1', sourceFormula: null, barcodeFormula: null },
+        after: { formula: '=A2', sourceFormula: null, barcodeFormula: null },
+      },
+      {
+        kind: 'formula-rule',
+        sheetId: sheet.id,
+        ruleKind: 'conditional-format',
+        ruleId: 'cf-permuted',
+        field: 'value1',
+        beforeFormula: '=A1>0',
+        afterFormula: '=A2>0',
+        beforeRanges: [range(sheet.id, 0, 0, 4, 4)],
+        afterRanges: [range(sheet.id, 1, 1, 4, 4)],
+      },
+    ]);
   });
 
   it('rebases rule, defined-name, and reusable-template formulas when their anchors move outside the sorted columns', () => {

@@ -80,7 +80,10 @@ function rowsPermutedAffectedRanges(params: RowsPermutedMutationParams): RangeRe
   }];
 }
 
-function rowPermutationCalculationEffect(range: RangeRef): StructuralTransformResult {
+function rowPermutationCalculationEffect(
+  range: RangeRef,
+  formulaOwnerDeltas: StructuralTransformResult['formulaOwnerDeltas'] = [],
+): StructuralTransformResult {
   const inputRange = structuredClone(range);
   return {
     kind: 'structural-transform',
@@ -88,6 +91,7 @@ function rowPermutationCalculationEffect(range: RangeRef): StructuralTransformRe
     clearInputRanges: [inputRange],
     populateInputRanges: [structuredClone(inputRange)],
     rewrittenFormulaOwners: [],
+    ...(formulaOwnerDeltas.length === 0 ? {} : { formulaOwnerDeltas }),
   };
 }
 
@@ -1773,9 +1777,9 @@ export function registerDataToolCommands(runtime: CommandRuntime): void {
       const params = item.params;
       const range = params.range;
       const sheet = context.workbook.getSheet(params.sheetId);
-      applyRowPermutation(context.workbook, createRowPermutationPlan(range, params.sourceRows, params.affectedColumnEnd));
+      const formulaOwnerDeltas = applyRowPermutation(context.workbook, createRowPermutationPlan(range, params.sourceRows, params.affectedColumnEnd));
       setAppliedSortState(sheet, params.sortState);
-      return rowPermutationCalculationEffect(range);
+      return rowPermutationCalculationEffect(range, formulaOwnerDeltas);
     },
     metadata: {
       schema: { name: 'RowsPermuted', validate: isRowsPermutedMutation },
@@ -1862,9 +1866,9 @@ export function registerDataToolCommands(runtime: CommandRuntime): void {
           affectedRanges,
         }],
         apply: () => {
-          applyRowPermutation(context.workbook, createRowPermutationPlan(bodyRange, sourceRows, affectedColumnEnd));
+          const formulaOwnerDeltas = applyRowPermutation(context.workbook, createRowPermutationPlan(bodyRange, sourceRows, affectedColumnEnd));
           setAppliedSortState(sheet, sortState);
-          return rowPermutationCalculationEffect(bodyRange);
+          return rowPermutationCalculationEffect(bodyRange, formulaOwnerDeltas);
         },
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };

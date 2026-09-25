@@ -747,7 +747,7 @@ final class StructuralSnapshotReducer {
         }
     }
 
-    static void permuteRows(ObjectNode root, String sheetId, RangeRef range, int affectedColumnEnd, JsonNode sourceRows) {
+    static StructuralPatch permuteRows(ObjectNode root, String sheetId, RangeRef range, int affectedColumnEnd, JsonNode sourceRows) {
         PivotMutationDescriptor.assertCanonicalSnapshot(root);
         ObjectNode sheet = SnapshotMutationSupport.sheet(root, sheetId);
         SnapshotMutationSupport.requireSheet(range, sheetId);
@@ -771,11 +771,15 @@ final class StructuralSnapshotReducer {
                 row -> row >= selected.startRow() && row <= selected.endRow()
                         ? remapRow(row, selected, targetRowsBySource) : row,
                 "row-permutation");
-        remapPermutedCells(sheet, selected, targetRowsBySource);
+        List<StructuralPatch.FormulaOwnerDelta> formulaOwnerDeltas = new ArrayList<>();
+        List<RuleFormulaSnapshot> ruleFormulaSnapshots = captureRuleFormulaSnapshots(root);
+        remapPermutedCells(sheet, selected, targetRowsBySource, formulaOwnerDeltas);
         remapPermutationMetadata(root, sheet, selected, metadataScope, targetRowsBySource);
+        appendRuleFormulaDeltas(root, ruleFormulaSnapshots, formulaOwnerDeltas);
         applyReportSheetPlan(sheet, reportSheetAfter);
         invalidateFormulaCaches(root);
         AutoFilterOwnershipValidator.resolveOwners(sheet, sheetId);
+        return new StructuralPatch(StructuralPatch.VERSION, "rows.permuted", formulaOwnerDeltas);
     }
 
     private static void validateAxisBounds(int limit, int maximum, int at, int count, FormulaReferenceTransformer.Direction direction) {
@@ -2803,7 +2807,12 @@ final class StructuralSnapshotReducer {
         }
     }
 
-    private static void remapPermutedCells(ObjectNode sheet, RangeRef range, int[] targetRowsBySource) {
+    private static void remapPermutedCells(
+            ObjectNode sheet,
+            RangeRef range,
+            int[] targetRowsBySource,
+            List<StructuralPatch.FormulaOwnerDelta> formulaOwnerDeltas
+    ) {
         ObjectNode cells = SnapshotMutationSupport.cells(sheet);
         List<CellEntry> entries = new ArrayList<>();
         for (int row = range.startRow(); row <= range.endRow(); row++) {
@@ -2816,7 +2825,16 @@ final class StructuralSnapshotReducer {
                 ObjectNode cell = requireObject(column.getValue(), "Cell").deepCopy();
                 int targetRow = targetRowsBySource[sourceRow - range.startRow()];
                 if (targetRow != sourceRow) {
+                    StructuralPatch.FormulaOwnerState before = formulaOwnerState(cell);
                     remapPermutedFormulaOwner(cell, targetRow - sourceRow, range.sheetId(), sourceRow, columnIndex);
+                    if (before.formula() != null || before.sourceFormula() != null || before.barcodeFormula() != null) {
+                        formulaOwnerDeltas.add(new StructuralPatch.FormulaOwnerDelta(
+                                "formula-cell",
+                                new StructuralPatch.CellAddress(range.sheetId(), sourceRow, columnIndex),
+                                new StructuralPatch.CellAddress(range.sheetId(), targetRow, columnIndex),
+                                before,
+                                formulaOwnerState(cell)));
+                    }
                 }
                 entries.add(new CellEntry(sourceRow, columnIndex, cell));
             });

@@ -79,7 +79,7 @@ final class StructuralMutationDescriptor extends CanonicalJsonMutationDescriptor
                 if (declaredEndColumn != canonicalEndColumn || declaredEndColumn > SnapshotMutationSupport.MAX_COLUMN) {
                     throw ServiceException.validation("Rows permutation affected column extent does not match current worksheet metadata");
                 }
-                StructuralSnapshotReducer.permuteRows(root, mutation.sheetId(), selected, declaredEndColumn, params.get("sourceRows"));
+                structuralPatch = StructuralSnapshotReducer.permuteRows(root, mutation.sheetId(), selected, declaredEndColumn, params.get("sourceRows"));
             }
             case "range.move" -> {
                 SnapshotMutationSupport.validateKnownKeys(params, Set.of("sheetId", "sourceRange", "targetOrigin"), "range.move");

@@ -767,7 +767,7 @@ class MutationDescriptorRegistryTest {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         JsonNode snapshot = mapper.readTree("""
                 {"definedNameModels":[],"cellStyleTemplates":[],"sheets":[
-                  {"id":"sheet-1","name":"Data","rowCount":4,"columnCount":1,"cells":{},"review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}},"merges":[],
+                  {"id":"sheet-1","name":"Data","rowCount":4,"columnCount":1,"cells":{"0":{"0":{"value":null,"formula":"=A1","formulaMetadata":{"kind":"normal","sourceFormula":"=A1"}}}},"review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}},"merges":[],
                    "conditionalFormats":[
                      {"id":"cf-implicit","sheetId":"sheet-1","ranges":[{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":2,"endColumn":2}],"type":"highlight","operator":"formula","value1":"=A1>0"},
                      {"id":"cf-explicit","sheetId":"sheet-1","ranges":[{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":3,"endColumn":3}],"formulaAnchor":{"sheetId":"sheet-1","row":0,"column":3},"type":"highlight","operator":"formula","value1":"=A1>0"},
@@ -790,8 +790,21 @@ class MutationDescriptorRegistryTest {
 
         OperationMutation mutation = withSortContext(raw, selected, "worksheet", null, false, 5);
         var prepared = registry.prepare(snapshot, mutation, WorkbookAclRole.OWNER);
-        JsonNode updated = prepared.descriptor().apply(snapshot, mutation);
+        var application = prepared.descriptor().applyWithPatch(snapshot, mutation);
+        JsonNode updated = application.snapshot();
+        assertTrue(application.structuralPatch() != null);
+        assertEquals("rows.permuted", application.structuralPatch().mutationId());
+        assertTrue(application.structuralPatch().formulaOwnerDeltas().stream().anyMatch(delta ->
+                "formula-cell".equals(delta.kind())
+                        && delta.beforeAddress().row() == 0
+                        && delta.afterAddress().row() == 1
+                        && "=A1".equals(delta.before().formula())
+                        && "=A2".equals(delta.after().formula())));
+        assertTrue(application.structuralPatch().formulaOwnerDeltas().stream().anyMatch(delta ->
+                "formula-rule".equals(delta.kind()) && "cf-implicit".equals(delta.ruleId())
+                        && "=A1>0".equals(delta.beforeFormula()) && "=A2>0".equals(delta.afterFormula())));
         JsonNode dataSheet = updated.path("sheets").get(0);
+        assertEquals("=A2", dataSheet.path("cells").path("1").path("0").path("formula").asText());
         assertEquals(1, dataSheet.path("conditionalFormats").get(0).path("formulaAnchor").path("row").asInt());
         assertEquals("=A2>0", dataSheet.path("conditionalFormats").get(0).path("value1").asText());
         assertEquals(1, dataSheet.path("conditionalFormats").get(1).path("formulaAnchor").path("row").asInt());
