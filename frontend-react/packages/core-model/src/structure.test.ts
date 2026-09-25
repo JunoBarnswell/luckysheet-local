@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { collectFormulaDependencies, parseFormula, RangeIndex } from '@react-sheets/formula-engine';
-import { CellMatrix, StructuralTransform as CoreStructuralTransform, WorkbookModel, type StructuralTransformParams } from './index';
+import { CellMatrix, planSheetIdentityTransform, StructuralTransform as CoreStructuralTransform, WorkbookModel, type StructuralTransformParams } from './index';
 import type { ReportSheetDefinition } from './data-model';
 
 const StructuralTransform = {
@@ -578,10 +578,19 @@ describe('structural operations', () => {
       source: { kind: 'worksheet-ranges', ranges: [{ sheetId: sheet.id, startRow: 1, endRow: 3, startColumn: 0, endColumn: 1 }] },
       categoryRange: { sheetId: sheet.id, startRow: 1, endRow: 3, startColumn: 0, endColumn: 0 },
       series: [{ name: 'Sales', range: { sheetId: sheet.id, startRow: 1, endRow: 3, startColumn: 1, endColumn: 1 } }],
-      elements: { hiddenData: 'show' },
+      elements: {
+        hiddenData: 'show',
+        titleText: { linkedFormula: '=A2' },
+        legend: { visible: true, position: 'bottom', text: { linkedFormula: '=B2' } },
+        categoryAxis: { id: 'category', position: 'bottom', titleText: { linkedFormula: '=C2' } },
+        valueAxis: { id: 'value', position: 'left', titleText: { linkedFormula: '=D2' } },
+        secondaryCategoryAxis: { id: 'secondary-category', position: 'top', titleText: { linkedFormula: '=F2' } },
+        secondaryValueAxis: { id: 'secondary-value', position: 'right', titleText: { linkedFormula: '=G2' } },
+        dataTable: { visible: true, font: { linkedFormula: '=E2' } },
+      },
     });
 
-    StructuralTransform.apply(workbook, { kind: 'insert-rows', sheetId: sheet.id, at: 1, count: 2 });
+    const result = StructuralTransform.apply(workbook, { kind: 'insert-rows', sheetId: sheet.id, at: 1, count: 2 });
 
     const payload = sheet.drawingPayloads.get('chart-1');
     assert.equal(payload?.kind, 'chart');
@@ -591,7 +600,61 @@ describe('structural operations', () => {
     assert.deepEqual(payload.source.kind === 'worksheet-ranges' ? payload.source.ranges[0] : undefined, { sheetId: sheet.id, startRow: 3, endRow: 5, startColumn: 0, endColumn: 1 });
     assert.deepEqual(payload.categoryRange, { sheetId: sheet.id, startRow: 3, endRow: 5, startColumn: 0, endColumn: 0 });
     assert.deepEqual(payload.series?.[0]?.range, { sheetId: sheet.id, startRow: 3, endRow: 5, startColumn: 1, endColumn: 1 });
+    assert.equal(payload.elements.titleText?.linkedFormula, '=A4');
+    assert.equal(payload.elements.legend?.text?.linkedFormula, '=B4');
+    assert.equal(payload.elements.categoryAxis?.titleText?.linkedFormula, '=C4');
+    assert.equal(payload.elements.valueAxis?.titleText?.linkedFormula, '=D4');
+    assert.equal(payload.elements.secondaryCategoryAxis?.titleText?.linkedFormula, '=F4');
+    assert.equal(payload.elements.secondaryValueAxis?.titleText?.linkedFormula, '=G4');
+    assert.equal(payload.elements.dataTable?.font?.linkedFormula, '=E4');
+    assert.equal(result.formulaOwnerDeltas?.filter((delta) => delta.kind === 'formula-object').length, 7);
     assert.equal(sheet.drawings.filter((drawing) => drawing.kind === 'chart').length, 1);
+  });
+
+  it('sheet identity transforms rewrite, duplicate, and reject chart linked-formula references', () => {
+    const workbook = new WorkbookModel('unit-chart-linked-formula', 'Chart Linked Formula');
+    const source = workbook.getSheet('sheet-1');
+    const owner = workbook.addSheet('sheet-2', 'Chart Owner');
+    owner.drawingPayloads.set('chart-1', {
+      kind: 'chart',
+      chartId: 'chart-1',
+      chartType: 'line',
+      subtype: 'line',
+      source: { kind: 'worksheet-ranges', ranges: [{ sheetId: source.id, startRow: 0, endRow: 2, startColumn: 0, endColumn: 0 }] },
+      elements: { hiddenData: 'show', titleText: { linkedFormula: "='Sheet1'!$A$1" } },
+    });
+
+    const rename = planSheetIdentityTransform(workbook, {
+      kind: 'rename', sourceSheetId: source.id, sourceName: 'Sheet1', targetName: 'Renamed',
+    }).apply();
+    const renamed = owner.drawingPayloads.get('chart-1');
+    assert.equal(renamed?.kind, 'chart');
+    if (renamed?.kind !== 'chart') throw new Error('Expected chart payload after rename');
+    assert.equal(renamed.elements.titleText?.linkedFormula, "=Renamed!$A$1");
+    assert.equal(rename?.formulaOwnerDeltas?.some((delta) => delta.kind === 'formula-object'), true);
+
+    const duplicateWorkbook = new WorkbookModel('unit-chart-duplicate-formula', 'Chart Duplicate Formula');
+    const duplicateSource = duplicateWorkbook.getSheet('sheet-1');
+    duplicateSource.drawingPayloads.set('chart-1', {
+      kind: 'chart',
+      chartId: 'chart-1',
+      chartType: 'line',
+      subtype: 'line',
+      source: { kind: 'worksheet-ranges', ranges: [{ sheetId: duplicateSource.id, startRow: 0, endRow: 2, startColumn: 0, endColumn: 0 }] },
+      elements: { hiddenData: 'show', titleText: { linkedFormula: "='Sheet1'!$A$1" } },
+    });
+    planSheetIdentityTransform(duplicateWorkbook, {
+      kind: 'duplicate', sourceSheetId: duplicateSource.id, sourceName: 'Sheet1',
+      targetSheetId: 'sheet-copy', targetName: 'Sheet1 Copy',
+    }).apply();
+    const copied = duplicateWorkbook.getSheet('sheet-copy').drawingPayloads.get('chart-1::sheet-copy');
+    assert.equal(copied?.kind, 'chart');
+    if (copied?.kind !== 'chart') throw new Error('Expected duplicated chart payload');
+    assert.equal(copied.elements.titleText?.linkedFormula, "='Sheet1 Copy'!$A$1");
+
+    assert.throws(() => planSheetIdentityTransform(workbook, {
+      kind: 'delete', sourceSheetId: source.id, sourceName: 'Renamed',
+    }), /Cannot delete sheet/);
   });
 
   it('structural transforms keep sheet-backed workbook table sources aligned', () => {
@@ -631,8 +694,16 @@ describe('structural operations', () => {
     sheet.cells.set(0, 1, { value: null, formula: '=A1' });
     sheet.cells.set(2, 3, { value: 'stale' });
     sheet.cells.set(0, 3, { value: null, formula: '=A1' });
+    sheet.drawingPayloads.set('chart-move', {
+      kind: 'chart',
+      chartId: 'chart-move',
+      chartType: 'line',
+      subtype: 'line',
+      source: { kind: 'worksheet-ranges', ranges: [{ sheetId: sheet.id, startRow: 5, endRow: 6, startColumn: 0, endColumn: 0 }] },
+      elements: { hiddenData: 'show', titleText: { linkedFormula: '=A1' } },
+    });
 
-    StructuralTransform.apply(workbook, {
+    const result = StructuralTransform.apply(workbook, {
       kind: 'move-range',
       sheetId: sheet.id,
       sourceRange: { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 1 },
@@ -643,6 +714,11 @@ describe('structural operations', () => {
     assert.equal(sheet.cells.get(2, 3)?.formula, '=C3');
     assert.equal(sheet.cells.get(0, 0), undefined);
     assert.equal(sheet.cells.get(0, 3)?.formula, '=C3');
+    const chart = sheet.drawingPayloads.get('chart-move');
+    assert.equal(chart?.kind, 'chart');
+    if (chart?.kind !== 'chart') throw new Error('Expected chart payload after move');
+    assert.equal(chart.elements.titleText?.linkedFormula, '=C3');
+    assert.equal(result.formulaOwnerDeltas?.some((delta) => delta.kind === 'formula-object'), true);
   });
 
   it('rewrites rule formulas and hyperlink addresses on other worksheets when a referenced range moves', () => {

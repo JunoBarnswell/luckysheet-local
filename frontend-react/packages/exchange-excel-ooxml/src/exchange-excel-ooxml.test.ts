@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { createPivotMemberKey, defaultChartSubtype, planConnectorRoute, WorkbookModel } from '@react-sheets/core-model';
+import { createPivotMemberKey, defaultChartSubtype, planConnectorRoute, planSheetIdentityTransform, WorkbookModel } from '@react-sheets/core-model';
 import { exportOoxmlDocument } from './export';
 import { importOoxmlDocument } from './import';
 import { scanFormulaPreserveIssues, scanSnapshotFeatures } from './feature-scan';
@@ -986,6 +986,49 @@ describe('exchange-excel-ooxml', () => {
     const rewrittenXml = strFromU8(rewritten.files[preservedChartPart!]!);
     assert.match(rewrittenXml, /unknownChartNode/);
     assert.match(rewrittenXml, /uri="\{test\}"/);
+  });
+
+  it('round-trips linked chart titles and rejects unmodeled chart text formulas', () => {
+    const workbook = new WorkbookModel('wb-linked-chart-title', 'Linked Chart Title');
+    const sheet = workbook.getSheet(workbook.primarySheetId);
+    sheet.cells.set(0, 0, { value: 'Quarterly Sales' });
+    sheet.cells.set(1, 0, { value: 10 });
+    sheet.drawings.push({
+      id: 'linked-title-drawing', sheetId: sheet.id, kind: 'chart',
+      anchor: { kind: 'one-cell', row: 3, column: 2 },
+      transform: { x: 0, y: 0, width: 320, height: 220 }, zIndex: 1, payloadId: 'linked-title-chart',
+    });
+    sheet.drawingPayloads.set('linked-title-chart', {
+      kind: 'chart', chartId: 'linked-title-chart', chartType: 'line', subtype: 'line',
+      source: { kind: 'worksheet-ranges', ranges: [{ sheetId: sheet.id, startRow: 0, endRow: 1, startColumn: 0, endColumn: 0 }] },
+      elements: { hiddenData: 'show', titleText: { text: 'Quarterly Sales', linkedFormula: "='Sheet1'!$A$1" } },
+    });
+    planSheetIdentityTransform(workbook, {
+      kind: 'rename', sourceSheetId: sheet.id, sourceName: 'Sheet1', targetName: 'Renamed Sheet',
+    }).apply();
+
+    const output = loadOpcPackageGraph(exportSnapshotToOoxmlBuffer(workbook.snapshot()));
+    const chartPart = Object.keys(output.files).find((name) => name.startsWith('xl/charts/react-chart-'));
+    assert.ok(chartPart);
+    const xml = strFromU8(output.files[chartPart!]!);
+    assert.match(xml, /<c:f>&apos;Renamed Sheet&apos;!\$A\$1<\/c:f>/);
+    const imported = parseLoadedOoxml(output).snapshot;
+    const importedChart = Object.values(imported.sheets[0]!.drawingPayloads).find((payload) => payload.kind === 'chart');
+    assert.equal(importedChart?.kind, 'chart');
+    if (importedChart?.kind !== 'chart') throw new Error('Linked chart title did not import as a canonical chart');
+    assert.equal(importedChart.elements.titleText?.linkedFormula, "='Renamed Sheet'!$A$1");
+    assert.equal(importedChart.elements.titleText?.text, 'Quarterly Sales');
+
+    const unsupported = structuredClone(workbook.snapshot());
+    const unsupportedChart = unsupported.sheets[0]!.drawingPayloads['linked-title-chart'];
+    if (unsupportedChart?.kind !== 'chart') throw new Error('Linked chart title fixture is missing');
+    unsupportedChart.elements.valueAxis = {
+      id: 'value', position: 'left', titleText: { linkedFormula: "='Sheet1'!$A$1" },
+    };
+    assert.throws(
+      () => exportSnapshotToOoxmlBuffer(unsupported),
+      /UNSUPPORTED_FEATURE: OOXML chart text formula valueAxis\.titleText\.linkedFormula/,
+    );
   });
 
   it('serializes and imports native Sparkline design and group semantics', async () => {

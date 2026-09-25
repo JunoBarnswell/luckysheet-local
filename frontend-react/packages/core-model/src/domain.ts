@@ -870,6 +870,15 @@ export interface ChartTextModel {
   alignment?: 'left' | 'center' | 'right';
 }
 
+export type ChartTextFormulaField =
+  | 'titleText.linkedFormula'
+  | 'legend.text.linkedFormula'
+  | 'categoryAxis.titleText.linkedFormula'
+  | 'valueAxis.titleText.linkedFormula'
+  | 'secondaryCategoryAxis.titleText.linkedFormula'
+  | 'secondaryValueAxis.titleText.linkedFormula'
+  | 'dataTable.font.linkedFormula';
+
 export interface ChartAxisModel {
   id: string;
   position: ChartAxisPosition;

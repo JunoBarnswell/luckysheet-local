@@ -1,6 +1,7 @@
 import { assertCanonicalWorkbookHyperlinks, createPivotCollator, normalizePivotRefreshPolicy, parsePivotCalculatedItemFormula, PIVOT_MAX_MEMBER_COUNT } from '@react-sheets/core-model';
 import type {
   DataSourceManifest,
+  ChartTextFormulaField,
   PivotDefinition,
   PivotPresentation,
   RangeRef,
@@ -1053,6 +1054,33 @@ export function validateStructuralPatch(value: unknown, mutationId: string): Str
         after: state(delta.after, `${label} after`),
       };
     }
+    if (delta.kind === 'formula-object') {
+      validateExactKeys(delta, ['kind', 'ownerKind', 'sheetId', 'payloadId', 'field', 'beforeFormula', 'afterFormula'], label);
+      const fields: readonly ChartTextFormulaField[] = [
+        'titleText.linkedFormula',
+        'legend.text.linkedFormula',
+        'categoryAxis.titleText.linkedFormula',
+        'valueAxis.titleText.linkedFormula',
+        'secondaryCategoryAxis.titleText.linkedFormula',
+        'secondaryValueAxis.titleText.linkedFormula',
+        'dataTable.font.linkedFormula',
+      ];
+      if (delta.ownerKind !== 'chart-text' || !isNonEmptyString(delta.sheetId) || !isNonEmptyString(delta.payloadId)
+        || !fields.includes(delta.field as ChartTextFormulaField)
+        || typeof delta.beforeFormula !== 'string' || typeof delta.afterFormula !== 'string'
+        || delta.beforeFormula === delta.afterFormula) {
+        throw new Error(`${label} formula-object owner is invalid`);
+      }
+      return {
+        kind: 'formula-object' as const,
+        ownerKind: 'chart-text' as const,
+        sheetId: delta.sheetId,
+        payloadId: delta.payloadId,
+        field: delta.field as ChartTextFormulaField,
+        beforeFormula: delta.beforeFormula,
+        afterFormula: delta.afterFormula,
+      };
+    }
     if (delta.kind === 'formula-rule') {
       validateExactKeys(delta, [
         'kind', 'sheetId', 'ruleKind', 'ruleId', 'field', 'beforeFormula', 'afterFormula', 'beforeRanges', 'afterRanges',
@@ -1093,7 +1121,9 @@ export function validateStructuralPatch(value: unknown, mutationId: string): Str
   for (const delta of formulaOwnerDeltas) {
     const key = delta.kind === 'formula-cell'
       ? JSON.stringify([delta.kind, delta.afterAddress.sheetId, delta.afterAddress.row, delta.afterAddress.column])
-      : JSON.stringify([delta.kind, delta.sheetId, delta.ruleKind, delta.ruleId, delta.field]);
+      : delta.kind === 'formula-rule'
+        ? JSON.stringify([delta.kind, delta.sheetId, delta.ruleKind, delta.ruleId, delta.field])
+        : JSON.stringify([delta.kind, delta.ownerKind, delta.sheetId, delta.payloadId, delta.field]);
     if (ownerKeys.has(key)) throw new Error('Committed structural patch contains duplicate formula owner deltas');
     ownerKeys.add(key);
   }
@@ -2608,7 +2638,7 @@ function validateCommittedOperationEnvelope(value: unknown): CommittedOperationE
         ? [delta.beforeAddress, delta.afterAddress].map((address) => ({
           sheetId: address.sheetId, startRow: address.row, endRow: address.row, startColumn: address.column, endColumn: address.column,
         }))
-        : [...delta.beforeRanges, ...delta.afterRanges]);
+        : delta.kind === 'formula-rule' ? [...delta.beforeRanges, ...delta.afterRanges] : []);
       const uniqueExpected = [...new Map(expectedImpact.map((range) => [
         JSON.stringify([range.sheetId, range.startRow, range.endRow, range.startColumn, range.endColumn]), range,
       ])).values()];

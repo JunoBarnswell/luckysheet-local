@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { CALCULATION_CONTEXT_EFFECTS, WorkbookModel } from '@react-sheets/core-model';
+import { CALCULATION_CONTEXT_EFFECTS, WorkbookModel, type StructuralFormulaOwnerDelta } from '@react-sheets/core-model';
 import { CommandRegistry, CommandRuntime, type MutationInfo } from './index';
 
 const cellRange = (params: { row: number; column: number; sheetId?: string }) => [{
@@ -103,6 +103,82 @@ test('CommandRuntime executes a registered command and tracks history', () => {
   assert.equal(workbook.getSheet('sheet-1').cells.get(1, 1)?.value, 'A');
 
   unsubscribe();
+});
+
+test('CommandRuntime restores chart linked formulas through local history', () => {
+  const workbook = new WorkbookModel('unit-chart-formula-history', 'Chart Formula History');
+  const sheet = workbook.getSheet('sheet-1');
+  sheet.drawingPayloads.set('chart-1', {
+    kind: 'chart',
+    chartId: 'chart-1',
+    chartType: 'line',
+    subtype: 'line',
+    source: { kind: 'worksheet-ranges', ranges: [{ sheetId: sheet.id, startRow: 0, endRow: 1, startColumn: 0, endColumn: 0 }] },
+    elements: { hiddenData: 'show', titleText: { linkedFormula: '=A1' } },
+  });
+  const delta: StructuralFormulaOwnerDelta = {
+    kind: 'formula-object',
+    ownerKind: 'chart-text',
+    sheetId: sheet.id,
+    payloadId: 'chart-1',
+    field: 'titleText.linkedFormula',
+    beforeFormula: '=A1',
+    afterFormula: '=A2',
+  };
+  const runtime = new CommandRuntime(workbook);
+  const metadata = (name: string, inverseId: string) => ({
+    schema: { name, validate: (value: unknown) => !!value && typeof value === 'object' },
+    permission: { capability: 'test.chart.write' },
+    affectedRanges: { resolve: () => [] },
+    inversePolicy: { allowedMutationIds: [inverseId], minCount: 1 },
+  });
+  runtime.registry.registerMutation({
+    id: 'chart.formula.set',
+    handler: (item, context) => {
+      const payload = context.workbook.getSheet(item.sheetId).drawingPayloads.get('chart-1');
+      if (payload?.kind !== 'chart') throw new Error('Expected chart payload during replay');
+      payload.elements.titleText!.linkedFormula = (item.params as { formula: string }).formula;
+    },
+    metadata: metadata('ChartFormulaSet', 'chart.formula.restore'),
+  });
+  runtime.registry.registerMutation({
+    id: 'chart.formula.restore',
+    handler: () => undefined,
+    metadata: metadata('ChartFormulaRestore', 'chart.formula.set'),
+  });
+  runtime.registry.registerCommand({
+    id: 'chart.formula.set',
+    execute: (_params: unknown, context) => {
+      context.applyMutation({
+        id: 'chart.formula.set',
+        unitId: workbook.unitId,
+        sheetId: sheet.id,
+        params: { formula: '=A2' },
+        affectedRanges: [],
+        inverse: [{
+          id: 'chart.formula.restore',
+          unitId: workbook.unitId,
+          sheetId: sheet.id,
+          params: {},
+          affectedRanges: [],
+        }],
+        apply: () => {
+          const payload = sheet.drawingPayloads.get('chart-1');
+          if (payload?.kind !== 'chart') throw new Error('Expected chart payload during command');
+          payload.elements.titleText!.linkedFormula = '=A2';
+          return { formulaOwnerDeltas: [delta] };
+        },
+      });
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges: [] };
+    },
+  });
+
+  runtime.execute('chart.formula.set', {});
+  assert.equal((sheet.drawingPayloads.get('chart-1') as { elements: { titleText: { linkedFormula: string } } }).elements.titleText.linkedFormula, '=A2');
+  assert.equal(runtime.undo(), true);
+  assert.equal((sheet.drawingPayloads.get('chart-1') as { elements: { titleText: { linkedFormula: string } } }).elements.titleText.linkedFormula, '=A1');
+  assert.equal(runtime.redo(), true);
+  assert.equal((sheet.drawingPayloads.get('chart-1') as { elements: { titleText: { linkedFormula: string } } }).elements.titleText.linkedFormula, '=A2');
 });
 
 test('CommandRuntime emits declared calculation-context effects for command, undo, and redo', () => {

@@ -55,6 +55,14 @@ test('committed structural patches and impact ranges survive collaboration decod
       afterAddress: ownerAddress,
       before: { formula: '=A2', sourceFormula: null, barcodeFormula: null },
       after: { formula: '=#REF!', sourceFormula: null, barcodeFormula: null },
+    }, {
+      kind: 'formula-object' as const,
+      ownerKind: 'chart-text' as const,
+      sheetId: 'sheet-1',
+      payloadId: 'chart-1',
+      field: 'titleText.linkedFormula' as const,
+      beforeFormula: '=A1',
+      afterFormula: '=A2',
     }],
   };
   const decoded = decodeOperationMessage(JSON.stringify({

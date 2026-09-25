@@ -1,9 +1,10 @@
 import { strFromU8, strToU8 } from 'fflate';
-import { resolveWorksheetChartRanges } from '@react-sheets/core-model';
+import { chartTextFormulaEntries, resolveWorksheetChartRanges } from '@react-sheets/core-model';
 import type {
   ChartDrawingPayload,
   ChartAxisModel,
   ChartSeriesModel,
+  ChartTextModel,
   DrawingObject,
   RangeRef,
   SheetSnapshot,
@@ -224,14 +225,40 @@ function buildPivotChartXml(payload: ChartDrawingPayload, drawingId: string, she
 }
 
 function buildChartSpace(payload: ChartDrawingPayload, drawingId: string, sheet: SheetSnapshot, seriesXml: string, snapshot: WorkbookSnapshot, pivot?: NativePivotTableDefinition): string {
+  assertSupportedChartTextFormulaFields(payload, drawingId);
   const dataLabels = payload.elements.dataLabels?.visible ? `<c:dLbls>${payload.elements.dataLabels.showValue === false ? '' : '<c:showVal val="1"/>'}${payload.elements.dataLabels.showCategoryName ? '<c:showCatName val="1"/>' : ''}${payload.elements.dataLabels.showSeriesName ? '<c:showSerName val="1"/>' : ''}${payload.elements.dataLabels.showPercentage ? '<c:showPercent val="1"/>' : ''}${payload.elements.dataLabels.showLegendKey ? '<c:showLegendKey val="1"/>' : ''}<c:showLeaderLines val="${payload.elements.dataLabels.leaderLines ? 1 : 0}"/></c:dLbls>` : '';
   const bodies = chartBodies(payload, seriesXml, dataLabels);
-  const title = payload.elements.title ? `<c:title><c:tx><c:rich><a:bodyPr/><a:lstStyle/><a:p><a:r><a:t>${encodeXml(payload.elements.title)}</a:t></a:r></a:p></c:rich></c:tx><c:layout/><c:overlay val="0"/></c:title>` : '<c:autoTitleDeleted val="1"/>';
+  const title = chartTitleXml(payload.elements.title, payload.elements.titleText);
   const legend = payload.elements.legend?.visible === false ? '' : `<c:legend><c:legendPos val="${legendPosition(payload.elements.legend?.position)}"/><c:layout/><c:overlay val="${payload.elements.legend?.overlay ? 1 : 0}"/></c:legend>`;
   const axes = ['pie', 'doughnut', 'funnel', 'treemap', 'sunburst', 'histogram', 'box-whisker', 'waterfall', 'stock', 'surface', 'radar', 'map'].includes(payload.chartType) ? '' : axisXml(payload);
   const pivotSource = pivot ? `<c:pivotSource><c:name>${encodeXml(pivot.name)}</c:name><c:fmtId val="0"/></c:pivotSource>` : '';
   const blank = payload.elements.emptyCells === 'zero' ? 'zero' : payload.elements.emptyCells === 'connect' ? 'span' : 'gap';
   return withXmlDeclaration(`<c:chartSpace xmlns:c="${NS_CHART}" xmlns:a="${NS_DRAWING_MAIN}" xmlns:r="${NS_DOC_REL}">${pivotSource}<c:chart>${title}<c:plotArea><c:layout/>${bodies}${axes}${payload.elements.dataTable?.visible ? '<c:dTable><c:showHorzBorder val="1"/><c:showVertBorder val="1"/><c:showOutline val="1"/><c:showKeys val="1"/></c:dTable>' : ''}</c:plotArea>${legend}<c:plotVisOnly val="1"/><c:dispBlanksAs val="${blank}"/></c:chart><c:printSettings><c:headerFooter/><c:pageMargins b="0.75" l="0.7" r="0.7" t="0.75" header="0.3" footer="0.3"/><c:pageSetup/></c:printSettings>${chartAreaXml(payload)}</c:chartSpace>`);
+}
+
+function assertSupportedChartTextFormulaFields(payload: ChartDrawingPayload, drawingId: string): void {
+  for (const { field } of chartTextFormulaEntries(payload)) {
+    if (field !== 'titleText.linkedFormula') {
+      throw new Error(`UNSUPPORTED_FEATURE: OOXML chart text formula ${field} on ${drawingId} has no canonical codec`);
+    }
+  }
+}
+
+function chartTitleXml(title: string | undefined, textModel: ChartTextModel | undefined): string {
+  if (textModel?.linkedFormula !== undefined) {
+    const formula = textModel.linkedFormula.trim();
+    if (!formula.startsWith('=') || formula.length < 2) {
+      throw new Error('INVALID_CHART_FORMULA: linked chart title must be a canonical formula');
+    }
+    const cachedText = textModel.text ?? title;
+    const cache = cachedText === undefined ? ''
+      : `<c:strCache><c:ptCount val="1"/><c:pt idx="0"><c:v>${encodeXml(cachedText)}</c:v></c:pt></c:strCache>`;
+    return `<c:title><c:tx><c:strRef><c:f>${encodeXml(formula.slice(1))}</c:f>${cache}</c:strRef></c:tx><c:layout/><c:overlay val="0"/></c:title>`;
+  }
+  const literal = textModel?.text ?? title;
+  return literal
+    ? `<c:title><c:tx><c:rich><a:bodyPr/><a:lstStyle/><a:p><a:r><a:t>${encodeXml(literal)}</a:t></a:r></a:p></c:rich></c:tx><c:layout/><c:overlay val="0"/></c:title>`
+    : '<c:autoTitleDeleted val="1"/>';
 }
 
 function chartBodies(payload: ChartDrawingPayload, seriesXml: string, dataLabels: string): string {
@@ -537,6 +564,11 @@ function intNode(parent: XmlNode | undefined, name: string, fallback: number): n
 function parseNativeChartPayload(xml: string, definition: NativeChartDefinition, snapshot: WorkbookSnapshot, sheet: SheetSnapshot, pivotGraph?: NativePivotGraph): ChartDrawingPayload | undefined {
   const root = parseXml(xml);
   const plot = descendants(root, 'plotArea')[0];
+  const chartNode = child(root, 'chart');
+  const chartTitleNode = child(chartNode, 'title');
+  if (descendants(root, 'title').some((node) => node !== chartTitleNode && hasLinkedChartTextFormula(node))
+    || hasLinkedChartTextFormula(child(chartNode, 'legend'))
+    || hasLinkedChartTextFormula(child(plot, 'dTable'))) return undefined;
   const chartType = definition.family as ChartDrawingPayload['chartType'];
   if (!['column', 'bar', 'line', 'area', 'pie', 'doughnut', 'scatter', 'bubble', 'radar', 'stock', 'surface', 'treemap', 'sunburst', 'histogram', 'waterfall', 'funnel', 'combo'].includes(chartType)) return undefined;
   const chartNodes = plot?.children.filter((node) => localName(node.name).endsWith('Chart')) ?? [];
@@ -578,13 +610,32 @@ function parseNativeChartPayload(xml: string, definition: NativeChartDefinition,
     }
   }
   if (!series.length) return undefined;
-  const title = textContent(descendants(root, 'title')[0] ? descendants(descendants(root, 'title')[0]!, 't')[0] : undefined).trim();
+  const titleText = parseChartTextModel(chartTitleNode);
+  if (hasLinkedChartTextFormula(chartTitleNode) && !titleText) return undefined;
+  const title = titleText?.text ?? textContent(descendants(chartTitleNode, 't')[0]).trim();
   const categoryRange = (series[0] as ChartSeriesModel & { categoryRange?: RangeRef }).categoryRange;
   const firstRange = series[0]!.range;
   const pivotName = textContent(descendants(root, 'pivotSource')[0] ? descendants(descendants(root, 'pivotSource')[0]!, 'name')[0] : undefined).trim();
   const pivot = pivotGraph?.tables.find((candidate) => candidate.name === pivotName);
   const source: ChartDrawingPayload['source'] = pivot?.pivotId ? { kind: 'pivot', pivotId: pivot.pivotId } : { kind: 'worksheet-ranges', ranges: [firstRange] };
-  return { kind: 'chart', chartId: definition.drawingId, chartType, subtype: definition.subtype as ChartDrawingPayload['subtype'], source, series, ...(categoryRange && source.kind === 'worksheet-ranges' ? { categoryRange } : {}), elements: { ...(title ? { title } : {}), legend: { visible: descendants(root, 'legend').length > 0, position: 'bottom' }, hiddenData: 'show' } };
+  return { kind: 'chart', chartId: definition.drawingId, chartType, subtype: definition.subtype as ChartDrawingPayload['subtype'], source, series, ...(categoryRange && source.kind === 'worksheet-ranges' ? { categoryRange } : {}), elements: { ...(title ? { title } : {}), ...(titleText ? { titleText } : {}), legend: { visible: descendants(root, 'legend').length > 0, position: 'bottom' }, hiddenData: 'show' } };
+}
+
+function hasLinkedChartTextFormula(owner: XmlNode | undefined): boolean {
+  return descendants(owner, 'strRef').some((reference) => {
+    const formula = child(reference, 'f');
+    return formula !== undefined;
+  });
+}
+
+function parseChartTextModel(title: XmlNode | undefined): ChartTextModel | undefined {
+  if (!title) return undefined;
+  const textNode = child(title, 'tx');
+  const stringReference = child(textNode, 'strRef');
+  const formula = textContent(child(stringReference, 'f')).trim();
+  const cachedValue = textContent(descendants(stringReference, 'v')[0] ?? descendants(textNode, 't')[0]).trim();
+  if (!formula) return undefined;
+  return { linkedFormula: formula.startsWith('=') ? formula : `=${formula}`, ...(cachedValue ? { text: cachedValue } : {}) };
 }
 
 function nativeSeriesType(name: string): Exclude<ChartDrawingPayload['chartType'], 'combo'> | undefined {

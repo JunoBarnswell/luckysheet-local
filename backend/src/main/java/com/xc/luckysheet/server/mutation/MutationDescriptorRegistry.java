@@ -191,6 +191,7 @@ public class MutationDescriptorRegistry {
             ranges.addAll(delta.afterRanges());
             return ranges;
         }
+        if ("formula-object".equals(delta.kind())) return List.of();
         var beforeAddress = delta.beforeAddress();
         var afterAddress = delta.afterAddress();
         return List.of(
@@ -261,6 +262,12 @@ public class MutationDescriptorRegistry {
     private static boolean sameFormulaOwner(StructuralPatch.FormulaOwnerDelta left, StructuralPatch.FormulaOwnerDelta right) {
         if (!left.kind().equals(right.kind())) return false;
         if ("formula-cell".equals(left.kind())) return left.afterAddress().equals(right.afterAddress());
+        if ("formula-object".equals(left.kind())) {
+            return left.sheetId().equals(right.sheetId())
+                    && left.ownerKind().equals(right.ownerKind())
+                    && left.ownerId().equals(right.ownerId())
+                    && left.field().equals(right.field());
+        }
         return left.sheetId().equals(right.sheetId())
                 && left.ruleKind().equals(right.ruleKind())
                 && left.ruleId().equals(right.ruleId())

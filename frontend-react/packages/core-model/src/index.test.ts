@@ -86,6 +86,20 @@ test('canonical snapshots bound drawing source work', () => {
   assert.throws(() => assertCanonicalWorkbookSnapshot(snapshot), /rendering limit/);
 });
 
+test('canonical snapshots reject malformed chart linked formulas', () => {
+  const snapshot = new WorkbookModel('unit-invalid-chart-formula', 'Invalid chart formula').snapshot();
+  const sheet = snapshot.sheets[0]!;
+  sheet.drawingPayloads['chart-1'] = {
+    kind: 'chart',
+    chartId: 'chart-1',
+    chartType: 'line',
+    subtype: 'line',
+    source: { kind: 'worksheet-ranges', ranges: [{ sheetId: sheet.id, startRow: 0, endRow: 1, startColumn: 0, endColumn: 0 }] },
+    elements: { hiddenData: 'show', titleText: { linkedFormula: 7 as unknown as string } },
+  };
+  assert.throws(() => assertCanonicalWorkbookSnapshot(snapshot), /is not a non-empty formula/);
+});
+
 test('canonical snapshots enforce worksheet AutoFilter identity and column bounds', () => {
   const workbook = new WorkbookModel('unit-auto-filter-contract', 'AutoFilter contract');
   const snapshot = workbook.snapshot();

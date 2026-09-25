@@ -20,6 +20,11 @@ import java.util.Set;
 
 /** Canonical snapshot reducers for worksheet lifecycle and persisted hyperlinks. */
 final class WorkbookStructureMutationDescriptor extends CanonicalJsonMutationDescriptor {
+    private static final List<String> CHART_TEXT_FORMULA_FIELDS = List.of(
+            "titleText.linkedFormula", "legend.text.linkedFormula",
+            "categoryAxis.titleText.linkedFormula", "valueAxis.titleText.linkedFormula",
+            "secondaryCategoryAxis.titleText.linkedFormula", "secondaryValueAxis.titleText.linkedFormula",
+            "dataTable.font.linkedFormula");
     static final Set<String> IDS = Set.of(
             "sheet.add", "sheet.remove", "sheet.rename", "sheet.duplicated", "sheet.restore",
             "hyperlink.set", "hyperlink.remove"
@@ -488,6 +493,10 @@ final class WorkbookStructureMutationDescriptor extends CanonicalJsonMutationDes
                         && sourceSheetId.equals(hyperlink.path("sheetId").asText())) references.add(participant + ":hyperlink");
                 addFormulaReference(references, participant + ".propertyFormula", payload.get("propertyFormula"), sourceName);
             } else if ("chart".equals(kind)) {
+                for (String field : CHART_TEXT_FORMULA_FIELDS) {
+                    addFormulaReference(references, participant + "." + field,
+                            readChartTextFormula((ObjectNode) payload, field), sourceName);
+                }
                 JsonNode source = payload.get("source");
                 if (source == null || !source.isObject()) throw ServiceException.validation("Chart source must be canonical");
                 String sourceKind = source.path("kind").asText();
@@ -1005,6 +1014,8 @@ final class WorkbookStructureMutationDescriptor extends CanonicalJsonMutationDes
             JsonNode payload = entry.getValue();
             if (payload.isObject() && "shape".equals(payload.path("kind").asText())) {
                 rewriteFormulaField((ObjectNode) payload, "propertyFormula", sourceName, targetName);
+            } else if (payload.isObject() && "chart".equals(payload.path("kind").asText())) {
+                rewriteChartTextFormulas((ObjectNode) payload, sourceName, targetName);
             }
         });
         rewriteRuleFormulaFields(copy.get("conditionalFormats"), sourceName, targetName);
@@ -1043,6 +1054,8 @@ final class WorkbookStructureMutationDescriptor extends CanonicalJsonMutationDes
                 JsonNode payload = entry.getValue();
                 if (payload.isObject() && "shape".equals(payload.path("kind").asText())) {
                     rewriteFormulaField((ObjectNode) payload, "propertyFormula", previousName, nextName);
+                } else if (payload.isObject() && "chart".equals(payload.path("kind").asText())) {
+                    rewriteChartTextFormulas((ObjectNode) payload, previousName, nextName);
                 }
             });
         }
@@ -1097,6 +1110,52 @@ final class WorkbookStructureMutationDescriptor extends CanonicalJsonMutationDes
     private void rewriteFormulaField(ObjectNode owner, String field, String previousName, String nextName) {
         JsonNode formula = owner.get(field);
         if (formula != null && formula.isTextual()) owner.put(field, renameFormula(formula.asText(), previousName, nextName));
+    }
+
+    private void rewriteChartTextFormulas(ObjectNode payload, String previousName, String nextName) {
+        for (String field : CHART_TEXT_FORMULA_FIELDS) {
+            JsonNode formula = readChartTextFormula(payload, field);
+            if (formula != null) {
+                chartTextFormulaModel(payload, field).put("linkedFormula", renameFormula(formula.asText(), previousName, nextName));
+            }
+        }
+    }
+
+    private JsonNode readChartTextFormula(ObjectNode payload, String field) {
+        JsonNode formula = chartTextFormulaModel(payload, field).get("linkedFormula");
+        if (formula == null || formula.isNull()) return null;
+        if (!formula.isTextual() || formula.asText().isBlank()) {
+            throw ServiceException.validation("drawing:" + payload.path("chartId").asText() + "." + field + " must be a non-empty formula");
+        }
+        return formula;
+    }
+
+    private ObjectNode chartTextFormulaModel(ObjectNode payload, String field) {
+        JsonNode rawElements = payload.get("elements");
+        if (rawElements == null || !rawElements.isObject()) {
+            throw ServiceException.validation("Chart elements must be an object when linked text formulas are inspected");
+        }
+        ObjectNode elements = (ObjectNode) rawElements;
+        String ownerField = switch (field) {
+            case "titleText.linkedFormula" -> "titleText";
+            case "legend.text.linkedFormula" -> "legend.text";
+            case "categoryAxis.titleText.linkedFormula" -> "categoryAxis.titleText";
+            case "valueAxis.titleText.linkedFormula" -> "valueAxis.titleText";
+            case "secondaryCategoryAxis.titleText.linkedFormula" -> "secondaryCategoryAxis.titleText";
+            case "secondaryValueAxis.titleText.linkedFormula" -> "secondaryValueAxis.titleText";
+            case "dataTable.font.linkedFormula" -> "dataTable.font";
+            default -> throw ServiceException.validation("Unsupported chart text formula field: " + field);
+        };
+        String[] path = ownerField.split("\\.");
+        ObjectNode current = elements;
+        for (String segment : path) {
+            JsonNode child = current.get(segment);
+            if (child == null) return JsonNodeFactory.instance.objectNode();
+            if (child.isNull()) throw ServiceException.validation("Chart text formula owner must not be null: " + field);
+            if (!child.isObject()) throw ServiceException.validation("Chart text formula owner must be an object: " + field);
+            current = (ObjectNode) child;
+        }
+        return current;
     }
 
     private String renameFormula(String formula, String previousName, String nextName) {

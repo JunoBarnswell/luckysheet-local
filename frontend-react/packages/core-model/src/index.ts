@@ -67,6 +67,7 @@ import type { ReviewStoreSnapshot } from './review-store';
 export * from './sheet-extent';
 export * from './sheet-identity-transform';
 export * from './review-store';
+export * from './chart-text-reference';
 
 export * from './font-family';
 export {
@@ -378,6 +379,7 @@ export type {
   ChartEffectModel,
   ChartLineStyle,
   ChartTextModel,
+  ChartTextFormulaField,
   ChartMarkerModel,
   ChartTrendlineModel,
   ChartErrorBarsModel,
@@ -506,6 +508,7 @@ export {
   type StructuralFormulaOwnerDelta,
   type StructuralFormulaCellOwnerDelta,
   type StructuralFormulaRuleOwnerDelta,
+  type StructuralFormulaObjectOwnerDelta,
   type StructuralFormulaOwnerState,
   type StructuralReferenceOwnerAddress,
   type StructuralReferenceOwnerIndex,

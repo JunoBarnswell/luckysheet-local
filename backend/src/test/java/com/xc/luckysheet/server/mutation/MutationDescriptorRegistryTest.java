@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.xc.luckysheet.server.contract.OperationMutation;
 import com.xc.luckysheet.server.contract.RangeRef;
+import com.xc.luckysheet.server.contract.StructuralPatch;
 import com.xc.luckysheet.server.contract.WorkbookAclRole;
 import com.xc.luckysheet.server.service.ServiceException;
 import org.junit.jupiter.api.Test;
@@ -1455,7 +1456,16 @@ class MutationDescriptorRegistryTest {
                    "pane":{"kind":"none"},"defaultRowHeightPx":20,"defaultColumnWidthPx":64,
                    "review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}},
                    "merges":[],"hiddenRows":[],"hiddenColumns":[],"rowHeightsPx":{},"columnWidthsPx":{},
-                   "drawings":[],"drawingPayloads":{"shape":{"kind":"shape","propertyFormula":"=A1"}},
+                   "drawings":[],"drawingPayloads":{"shape":{"kind":"shape","propertyFormula":"=A1"},
+                    "chart-1":{"kind":"chart","chartId":"chart-1","chartType":"combo","subtype":"custom-combo",
+                      "source":{"kind":"worksheet-ranges","ranges":[{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0}]},
+                      "elements":{"hiddenData":"show","titleText":{"linkedFormula":"=A1"},
+                        "legend":{"visible":true,"position":"bottom","text":{"linkedFormula":"=B1"}},
+                        "categoryAxis":{"id":"category","position":"bottom","titleText":{"linkedFormula":"=C1"}},
+                        "valueAxis":{"id":"value","position":"left","titleText":{"linkedFormula":"=D1"}},
+                        "secondaryCategoryAxis":{"id":"secondary-category","position":"top","titleText":{"linkedFormula":"=F1"}},
+                        "secondaryValueAxis":{"id":"secondary-value","position":"right","titleText":{"linkedFormula":"=G1"}},
+                        "dataTable":{"visible":true,"font":{"linkedFormula":"=E1"}}}}},
                    "tableSheet":{"viewId":"formula-view","columns":[{"fieldId":"table-calc","caption":"Table Calc","formula":"=A1"}],"grouping":[]},
                    "spillRanges":[],"sheetTables":[],"conditionalFormats":[],"dataValidations":[],
                    "protectionRules":[],"outline":{"groups":[]},"sparklines":[],"pivots":[],"dataRegions":[],"hyperlinks":[]}]}
@@ -1464,11 +1474,27 @@ class MutationDescriptorRegistryTest {
                 {"sheetId":"sheet-1","at":0,"count":1}
                 """));
 
-        JsonNode shifted = registry.applyPublicMutations(snapshot, List.of(insert));
+        var preparedInsert = registry.prepare(snapshot, insert, WorkbookAclRole.OWNER);
+        var axisApplication = preparedInsert.descriptor().applyWithPatch(snapshot, insert);
+        JsonNode shifted = axisApplication.snapshot();
         JsonNode sheet = shifted.path("sheets").get(0);
         JsonNode validation = shifted.path("cellStyleTemplates").get(0).path("dataValidation");
         assertEquals("=A2", sheet.path("tableSheet").path("columns").get(0).path("formula").asText());
         assertEquals("=A2", sheet.path("drawingPayloads").path("shape").path("propertyFormula").asText());
+        assertEquals("=A2", sheet.path("drawingPayloads").path("chart-1").path("elements").path("titleText").path("linkedFormula").asText());
+        assertEquals("=B2", sheet.path("drawingPayloads").path("chart-1").path("elements").path("legend").path("text").path("linkedFormula").asText());
+        assertEquals("=C2", sheet.path("drawingPayloads").path("chart-1").path("elements").path("categoryAxis").path("titleText").path("linkedFormula").asText());
+        assertEquals("=D2", sheet.path("drawingPayloads").path("chart-1").path("elements").path("valueAxis").path("titleText").path("linkedFormula").asText());
+        assertEquals("=F2", sheet.path("drawingPayloads").path("chart-1").path("elements").path("secondaryCategoryAxis").path("titleText").path("linkedFormula").asText());
+        assertEquals("=G2", sheet.path("drawingPayloads").path("chart-1").path("elements").path("secondaryValueAxis").path("titleText").path("linkedFormula").asText());
+        assertEquals("=E2", sheet.path("drawingPayloads").path("chart-1").path("elements").path("dataTable").path("font").path("linkedFormula").asText());
+        var chartFormulaDeltas = axisApplication.structuralPatch().formulaOwnerDeltas().stream()
+                .filter(delta -> "formula-object".equals(delta.kind())).toList();
+        assertEquals(7, chartFormulaDeltas.size());
+        var chartPatch = new StructuralPatch(StructuralPatch.VERSION, "rows.inserted", chartFormulaDeltas);
+        JsonNode restoredChart = registry.applyStructuralPatch(shifted, chartPatch.inverse("rows.deleted"));
+        assertEquals("=A1", restoredChart.path("sheets").get(0).path("drawingPayloads").path("chart-1")
+                .path("elements").path("titleText").path("linkedFormula").asText());
         assertEquals("=Sheet1!A2", shifted.path("dataModel").path("views").get(0).path("fields").get(0).path("formula").asText());
         assertEquals(1, validation.path("formulaAnchor").path("row").asInt());
         assertEquals("=A2", validation.path("formula1").asText());
@@ -1484,6 +1510,7 @@ class MutationDescriptorRegistryTest {
         JsonNode shiftedValidation = cellShifted.path("cellStyleTemplates").get(0).path("dataValidation");
         assertEquals("=A3", shiftedSheet.path("tableSheet").path("columns").get(0).path("formula").asText());
         assertEquals("=A3", shiftedSheet.path("drawingPayloads").path("shape").path("propertyFormula").asText());
+        assertEquals("=A3", shiftedSheet.path("drawingPayloads").path("chart-1").path("elements").path("titleText").path("linkedFormula").asText());
         assertEquals("=Sheet1!A3", cellShifted.path("dataModel").path("views").get(0).path("fields").get(0).path("formula").asText());
         assertEquals(2, shiftedValidation.path("formulaAnchor").path("row").asInt());
         assertEquals("=A3", shiftedValidation.path("formula1").asText());
@@ -1496,6 +1523,7 @@ class MutationDescriptorRegistryTest {
         JsonNode movedValidation = moved.path("cellStyleTemplates").get(0).path("dataValidation");
         assertEquals("=B4", movedSheet.path("tableSheet").path("columns").get(0).path("formula").asText());
         assertEquals("=B4", movedSheet.path("drawingPayloads").path("shape").path("propertyFormula").asText());
+        assertEquals("=B4", movedSheet.path("drawingPayloads").path("chart-1").path("elements").path("titleText").path("linkedFormula").asText());
         assertEquals("=Sheet1!B4", moved.path("dataModel").path("views").get(0).path("fields").get(0).path("formula").asText());
         assertEquals(3, movedValidation.path("formulaAnchor").path("row").asInt());
         assertEquals(1, movedValidation.path("formulaAnchor").path("column").asInt());
@@ -2207,6 +2235,8 @@ class MutationDescriptorRegistryTest {
         ObjectNode tableSheet = source.putObject("tableSheet");
         tableSheet.putArray("columns").addObject().put("fieldId", "calculated").put("formula", "='Source'!A1");
         source.putObject("drawingPayloads").putObject("formula-shape").put("kind", "shape").put("propertyFormula", "='Source'!A1");
+        source.path("drawingPayloads").putObject("chart").put("kind", "chart").put("chartId", "chart")
+                .putObject("elements").put("hiddenData", "show").putObject("titleText").put("linkedFormula", "='Source'!A1");
 
         ObjectNode external = sheets.addObject().put("id", "owner").put("name", "Owner");
         external.putObject("cells").putObject("1").putObject("0").putObject("formulaMetadata")
@@ -2215,6 +2245,9 @@ class MutationDescriptorRegistryTest {
         external.putArray("dataValidations").addObject().put("id", "dv").put("listSource", mapper.createObjectNode()
                 .put("kind", "formula").put("formula", "='Source'!A1"));
         external.putObject("drawingPayloads").putObject("external-shape").put("kind", "shape").put("propertyFormula", "='Source'!A1");
+        external.path("drawingPayloads").putObject("external-chart").put("kind", "chart").put("chartId", "external-chart")
+                .putObject("elements").put("hiddenData", "show").putObject("legend").put("visible", true)
+                .put("position", "bottom").putObject("text").put("linkedFormula", "='Source'!A1");
 
         snapshot.putArray("definedNameModels").addObject().put("name", "SourceName").put("formula", "='Source'!A1");
         snapshot.putObject("definedNames").put("SourceName", "='Source'!A1");
@@ -2233,10 +2266,12 @@ class MutationDescriptorRegistryTest {
         assertEquals("='Renamed Sheet'!A1", renamed.path("sheets").get(0).path("cells").path("0").path("1").path("presentation").path("source").path("formula").asText());
         assertEquals("='Renamed Sheet'!A1", renamed.path("sheets").get(0).path("tableSheet").path("columns").get(0).path("formula").asText());
         assertEquals("='Renamed Sheet'!A1", renamed.path("sheets").get(0).path("drawingPayloads").path("formula-shape").path("propertyFormula").asText());
+        assertEquals("='Renamed Sheet'!A1", renamed.path("sheets").get(0).path("drawingPayloads").path("chart").path("elements").path("titleText").path("linkedFormula").asText());
         assertEquals("='Renamed Sheet'!A1", renamed.path("sheets").get(1).path("cells").path("1").path("0").path("formulaMetadata").path("sourceFormula").asText());
         assertEquals("='Renamed Sheet'!A1", renamed.path("sheets").get(1).path("conditionalFormats").get(0).path("formula1").asText());
         assertEquals("='Renamed Sheet'!A1", renamed.path("sheets").get(1).path("dataValidations").get(0).path("listSource").path("formula").asText());
         assertEquals("='Renamed Sheet'!A1", renamed.path("sheets").get(1).path("drawingPayloads").path("external-shape").path("propertyFormula").asText());
+        assertEquals("='Renamed Sheet'!A1", renamed.path("sheets").get(1).path("drawingPayloads").path("external-chart").path("elements").path("legend").path("text").path("linkedFormula").asText());
         assertEquals("='Renamed Sheet'!A1", renamed.path("dataModel").path("views").get(0).path("fields").get(0).path("formula").asText());
         assertEquals("='Renamed Sheet'!A1", renamed.path("cellStyleTemplates").get(0).path("dataValidation").path("formula1").asText());
         assertEquals("='Renamed Sheet'!A1", renamed.path("definedNameModels").get(0).path("formula").asText());
@@ -2257,6 +2292,21 @@ class MutationDescriptorRegistryTest {
         assertThrows(ServiceException.class, () -> new WorkbookStructureMutationDescriptor("sheet.rename").apply(snapshot, rename));
         assertEquals("Source", snapshot.path("sheets").get(0).path("name").asText());
         assertEquals("='Source'!A1", snapshot.path("sheets").get(0).path("cells").path("0").path("0").path("formulaMetadata").path("sourceFormula").asText());
+    }
+
+    @Test
+    void sheetRenameRejectsMalformedChartLinkedFormulaWithoutChangingInput() throws Exception {
+        ObjectNode snapshot = sheetDeletionSnapshot();
+        ObjectNode chart = sheetDeletionOwner(snapshot).putObject("drawingPayloads").putObject("chart");
+        chart.put("kind", "chart").put("chartId", "chart");
+        chart.putObject("elements").put("hiddenData", "show").putObject("titleText").put("linkedFormula", 7);
+        OperationMutation rename = new OperationMutation("sheet.rename", "source",
+                mapper.readTree("{\"sheetId\":\"source\",\"name\":\"Renamed\"}"));
+
+        assertThrows(ServiceException.class, () -> new WorkbookStructureMutationDescriptor("sheet.rename").apply(snapshot, rename));
+        assertEquals("Source", snapshot.path("sheets").get(1).path("name").asText());
+        assertEquals(7, snapshot.path("sheets").get(0).path("drawingPayloads").path("chart")
+                .path("elements").path("titleText").path("linkedFormula").asInt());
     }
 
     @Test
@@ -2328,9 +2378,15 @@ class MutationDescriptorRegistryTest {
                 .addObject().put("sheetId", "owner");
         chart.putArray("series").addObject().putObject("stockRoles").putObject("high").put("sheetId", "source");
 
+        ObjectNode chartFormula = sheetDeletionSnapshot();
+        ObjectNode formulaChart = sheetDeletionOwner(chartFormula).putObject("drawingPayloads").putObject("chart");
+        formulaChart.put("kind", "chart").putObject("source").put("kind", "worksheet-ranges").putArray("ranges");
+        formulaChart.putObject("elements").put("hiddenData", "show").putObject("titleText")
+                .put("linkedFormula", "='Source'!A1");
+
         for (ObjectNode snapshot : List.of(formulaMetadata, barcode, tableSheet, ruleFormula, viewFormula,
                 templateFormula, drawingFormula, tableRange, queryTarget, printArea, definedNameFormula,
-                definedNameAnchor, dataSource, templateAnchor, reportTemplate, shapeHyperlink, chartSeriesRange)) {
+                definedNameAnchor, dataSource, templateAnchor, reportTemplate, shapeHyperlink, chartSeriesRange, chartFormula)) {
             assertSheetRemovalRejected(snapshot);
         }
     }

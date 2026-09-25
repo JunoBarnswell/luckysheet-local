@@ -9,6 +9,7 @@ import { isCellEditorConfig } from './cell-editor';
 import { DEFAULT_WORKBOOK_EDITING_OPTIONS, isWorkbookEditingOptions, type WorkbookEditingOptions } from './editing-options';
 import { chartSeriesSupportsErrorBars, chartSeriesSupportsTrendlines, isChartSubtypeForType } from './domain';
 import type { ChartDrawingPayload } from './domain';
+import { chartTextFormulaEntries } from './chart-text-reference';
 import { isEmbeddedObjectDrawingPayload, isEquationDrawingPayload, isIconDrawingPayload, isModel3dDrawingPayload, isScreenshotDrawingPayload, isSignatureLineDrawingPayload, isSmartArtDrawingPayload, isWordArtDrawingPayload } from './domain';
 import { isCellPhoneticMetadata } from './phonetic';
 import { normalizeFontFamily } from './font-family';
@@ -746,6 +747,7 @@ function validateChartBindingShape(bindings: unknown, chartId: string): void {
 }
 
 function validateChartSnapshotPayload(payload: ChartDrawingPayload, snapshot: WorkbookSnapshot, ownerSheetId: string): void {
+  chartTextFormulaEntries(payload);
   if (!isChartSubtypeForType(payload.chartType, payload.subtype)) throw new Error(`Chart subtype ${payload.subtype} does not belong to ${payload.chartType}`);
   const owned = payload.nativeIdentity?.status !== 'preserved-native';
   if (payload.source.kind === 'worksheet-ranges') {

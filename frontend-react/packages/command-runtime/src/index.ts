@@ -1,4 +1,4 @@
-import { WorkbookModel, isWorkbookCalculationContextEffect, type CellData, type ConditionalFormatRule, type DataValidationRule, type ProtectionAction, type RangeRef, type StructuralFormulaOwnerDelta, type StructuralFormulaOwnerState, type StructuralReferenceOwnerIndex, type WorkbookCalculationContextEffect, type WorksheetModel } from '@react-sheets/core-model';
+import { WorkbookModel, isWorkbookCalculationContextEffect, readChartTextFormula, writeChartTextFormula, type CellData, type ConditionalFormatRule, type DataValidationRule, type ProtectionAction, type RangeRef, type StructuralFormulaOwnerDelta, type StructuralFormulaOwnerState, type StructuralReferenceOwnerIndex, type WorkbookCalculationContextEffect, type WorksheetModel } from '@react-sheets/core-model';
 import { collectFormulaDependencies, formatFormula, mapAstStructuralReferences, parseFormula, RangeIndex, ReferenceTransformDomain, MAX_COLUMN_INDEX, MAX_ROW_INDEX } from '@react-sheets/formula-engine';
 
 export interface MutationInfo<P = unknown> {
@@ -1300,13 +1300,15 @@ function formulaOwnerDeltasRanges(deltas: readonly StructuralFormulaOwnerDelta[]
   for (const delta of deltas) {
     const affected = delta.kind === 'formula-rule'
       ? [...delta.beforeRanges, ...delta.afterRanges]
-      : [delta.beforeAddress, delta.afterAddress].map((address) => ({
-        sheetId: address.sheetId,
-        startRow: address.row,
-        endRow: address.row,
-        startColumn: address.column,
-        endColumn: address.column,
-      }));
+      : delta.kind === 'formula-cell'
+        ? [delta.beforeAddress, delta.afterAddress].map((address) => ({
+          sheetId: address.sheetId,
+          startRow: address.row,
+          endRow: address.row,
+          startColumn: address.column,
+          endColumn: address.column,
+        }))
+        : [];
     for (const range of affected) {
       ranges.set(JSON.stringify([range.sheetId, range.startRow, range.endRow, range.startColumn, range.endColumn]), structuredClone(range));
     }
@@ -1335,6 +1337,21 @@ function applyFormulaOwnerDelta(
   delta: StructuralFormulaOwnerDelta,
   direction: 'undo' | 'forward',
 ): void {
+  if (delta.kind === 'formula-object') {
+    const payload = workbook.getSheet(delta.sheetId).drawingPayloads.get(delta.payloadId);
+    if (!payload || payload.kind !== 'chart') {
+      throw new Error(`STRUCTURAL_PATCH_PRECONDITION: chart text formula owner ${delta.sheetId}:${delta.payloadId} is missing`);
+    }
+    const expectedFormula = direction === 'undo' ? delta.afterFormula : delta.beforeFormula;
+    const targetFormula = direction === 'undo' ? delta.beforeFormula : delta.afterFormula;
+    const currentFormula = readChartTextFormula(payload, delta.field);
+    if (currentFormula === targetFormula) return;
+    if (currentFormula !== expectedFormula) {
+      throw new Error(`STRUCTURAL_PATCH_PRECONDITION: chart text formula owner ${delta.sheetId}:${delta.payloadId}.${delta.field} changed since the structural operation`);
+    }
+    writeChartTextFormula(payload, delta.field, targetFormula);
+    return;
+  }
   if (delta.kind === 'formula-rule') {
     const sheet = workbook.getSheet(delta.sheetId);
     const rules = delta.ruleKind === 'conditional-format' ? sheet.conditionalFormats : sheet.dataValidations;

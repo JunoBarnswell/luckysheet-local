@@ -45,7 +45,7 @@ function structuralPatchImpactRanges(
         startColumn: address.column,
         endColumn: address.column,
       }))
-      : [...delta.beforeRanges, ...delta.afterRanges];
+      : delta.kind === 'formula-rule' ? [...delta.beforeRanges, ...delta.afterRanges] : [];
     for (const range of deltaRanges) {
       ranges.set(JSON.stringify([range.sheetId, range.startRow, range.endRow, range.startColumn, range.endColumn]), range);
     }

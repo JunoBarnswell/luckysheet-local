@@ -19,8 +19,9 @@ import type {
   DefinedNameModel,
   HyperlinkTarget,
 } from './domain';
+import { chartTextFormulaEntries, writeChartTextFormula } from './chart-text-reference';
 import type { PivotModel, PivotSource } from './pivot';
-import type { StructuralTransformResult } from './structural-transform';
+import type { StructuralFormulaObjectOwnerDelta, StructuralTransformResult } from './structural-transform';
 
 export type SheetIdentityTransformKind = 'rename' | 'duplicate' | 'delete';
 
@@ -295,6 +296,15 @@ function remapDrawingPayload(
         dataLabels: series.dataLabels?.valuesFromCells ? { ...series.dataLabels, valuesFromCells: mapRange(series.dataLabels.valuesFromCells, sourceSheetId, targetSheetId) } : series.dataLabels,
         trendlines: series.trendlines ? structuredClone(series.trendlines) : undefined,
       }));
+      for (const { field, formula } of chartTextFormulaEntries(next)) {
+        writeChartTextFormula(next, field, mapFormulaReference(
+          formula,
+          sourceName,
+          targetName,
+          `duplicate-chart:${sourceSheetId}.${field}`,
+          sourceSheetId,
+        ));
+      }
       break;
     default:
       break;
@@ -492,6 +502,11 @@ function collectDeletedSheetReferences(workbook: WorkbookModel, sourceSheetId: S
           }
           break;
         case 'chart':
+          for (const { field, formula } of chartTextFormulaEntries(payload)) {
+            if (formulaReferencesSheet(formula, sourceName, `${participant}.${field}`, sheet.id)) {
+              invalidate(`${participant}.${field}`, sheet.id, formula);
+            }
+          }
           if (payload.source.kind === 'worksheet-ranges') {
             for (const range of payload.source.ranges) inspectRange(`${participant}.source`, sheet.id, range);
           } else if (payload.source.kind === 'report-range') {
@@ -645,10 +660,30 @@ export function planSheetIdentityTransform(workbook: WorkbookModel, input: Sheet
     const cellStyleTemplateChanges = targetName === sourceName ? [] : [...workbook.cellStyleTemplates.values()]
       .map((template) => rewriteCellStyleTemplateFormulas(template, sourceName, targetName));
     const drawingPayloadChanges = targetName === sourceName ? [] : workbook.getSheets().flatMap((sheet) => [...sheet.drawingPayloads.entries()].flatMap(([payloadId, payload]) => {
-      if (payload.kind !== 'shape' || !payload.propertyFormula) return [];
-      const propertyFormula = mapFormulaReference(payload.propertyFormula, sourceName, targetName, `drawing:${payloadId}.propertyFormula`, sheet.id);
-      return propertyFormula === payload.propertyFormula ? [] : [{ sheetId: sheet.id, payloadId, payload: { ...structuredClone(payload), propertyFormula } }];
+      if (payload.kind === 'shape' && payload.propertyFormula) {
+        const propertyFormula = mapFormulaReference(payload.propertyFormula, sourceName, targetName, `drawing:${payloadId}.propertyFormula`, sheet.id);
+        return propertyFormula === payload.propertyFormula ? [] : [{ sheetId: sheet.id, payloadId, payload: { ...structuredClone(payload), propertyFormula }, formulaOwnerDeltas: [] as StructuralFormulaObjectOwnerDelta[] }];
+      }
+      if (payload.kind !== 'chart') return [];
+      const next = structuredClone(payload);
+      const formulaOwnerDeltas: StructuralFormulaObjectOwnerDelta[] = [];
+      for (const { field, formula } of chartTextFormulaEntries(payload)) {
+        const afterFormula = mapFormulaReference(formula, sourceName, targetName, `drawing:${payloadId}.${field}`, sheet.id);
+        if (afterFormula === formula) continue;
+        writeChartTextFormula(next, field, afterFormula);
+        formulaOwnerDeltas.push({
+          kind: 'formula-object',
+          ownerKind: 'chart-text',
+          sheetId: sheet.id,
+          payloadId,
+          field,
+          beforeFormula: formula,
+          afterFormula,
+        });
+      }
+      return formulaOwnerDeltas.length === 0 ? [] : [{ sheetId: sheet.id, payloadId, payload: next, formulaOwnerDeltas }];
     }));
+    const drawingFormulaOwnerDeltas = drawingPayloadChanges.flatMap((change) => change.formulaOwnerDeltas);
     return {
       spec: { ...spec, targetName },
       invalidations: [],
@@ -695,6 +730,7 @@ export function planSheetIdentityTransform(workbook: WorkbookModel, input: Sheet
             row: change.row,
             column: change.column,
           })),
+          ...(drawingFormulaOwnerDeltas.length > 0 ? { formulaOwnerDeltas: drawingFormulaOwnerDeltas } : {}),
           ...(formulaChangePlan.requiresCalculationContextRebuild || definedNameResolvesToRenamedSheet
             ? { calculationContextEffect: CALCULATION_CONTEXT_EFFECTS.rebuild }
             : {}),

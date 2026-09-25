@@ -1,10 +1,11 @@
 import type { CellAddress, CellData, RangeRef, Row, Column } from './index';
 import type { WorkbookCalculationContextEffect } from './calculation-context-effect';
-import type { CellHyperlink, DrawingObject, StructuralTransformParams, SheetTableModel, SpillRange, ProtectionRule, OutlineGroup, CellShiftSpec } from './domain';
+import type { CellHyperlink, ChartTextFormulaField, DrawingObject, StructuralTransformParams, SheetTableModel, SpillRange, ProtectionRule, OutlineGroup, CellShiftSpec } from './domain';
 import type { WorkbookTableModel } from './data-model';
 import type { DataSourceManifest } from './data-source';
 import type { PrintDocumentSnapshot } from './workbook-state';
 import { mapReportSheetCoordinates } from './report-sheet-transform';
+import { chartTextFormulaEntries, readChartTextFormula, writeChartTextFormula } from './chart-text-reference';
 import { structuralRuleFormulaFields, type StructuralFormulaRule, type StructuralFormulaRuleField } from './structural-formula-owner';
 import { WorkbookModel, WorksheetModel, cellKey, hasFormulaGroupMetadata } from './index';
 import {
@@ -68,7 +69,17 @@ export interface StructuralFormulaRuleOwnerDelta {
   readonly afterRanges: readonly RangeRef[];
 }
 
-export type StructuralFormulaOwnerDelta = StructuralFormulaCellOwnerDelta | StructuralFormulaRuleOwnerDelta;
+export interface StructuralFormulaObjectOwnerDelta {
+  readonly kind: 'formula-object';
+  readonly ownerKind: 'chart-text';
+  readonly sheetId: string;
+  readonly payloadId: string;
+  readonly field: ChartTextFormulaField;
+  readonly beforeFormula: string;
+  readonly afterFormula: string;
+}
+
+export type StructuralFormulaOwnerDelta = StructuralFormulaCellOwnerDelta | StructuralFormulaRuleOwnerDelta | StructuralFormulaObjectOwnerDelta;
 
 export interface StructuralFormulaOwnerState {
   readonly formula: string | null;
@@ -359,6 +370,7 @@ function validateDataRegionAxisPreservation(
 type StructuralFormulaOwnerLocator =
   | { readonly kind: 'table-sheet-column'; readonly sheetId: string; readonly columnIndex: number; readonly fieldId: string }
   | { readonly kind: 'shape-drawing-payload'; readonly sheetId: string; readonly payloadId: string }
+  | { readonly kind: 'chart-text-drawing-payload'; readonly sheetId: string; readonly payloadId: string; readonly field: ChartTextFormulaField }
   | { readonly kind: 'data-view-field'; readonly viewId: string; readonly fieldIndex: number; readonly fieldId: string }
   | { readonly kind: 'cell-style-template-formula'; readonly templateId: string; readonly field: 'formula1' | 'formula2' | 'listSource.formula' };
 
@@ -1303,9 +1315,20 @@ interface MovedFormulaRewritePlan {
 }
 
 function applyMovedFormulaRewritePlan(workbook: WorkbookModel, plan: MovedFormulaRewritePlan): FormulaRewriteApplication {
+  const deltas: StructuralFormulaOwnerDelta[] = plan.participantChanges.flatMap((change) => {
+    if (change.kind !== 'formula' || change.owner.kind !== 'chart-text-drawing-payload') return [];
+    return [{
+      kind: 'formula-object' as const,
+      ownerKind: 'chart-text' as const,
+      sheetId: change.owner.sheetId,
+      payloadId: change.owner.payloadId,
+      field: change.owner.field,
+      beforeFormula: change.before,
+      afterFormula: change.after,
+    }];
+  });
   applyStagedStructuralFormulaChanges(workbook, plan.participantChanges);
   const rewrittenOwners: StructuralReferenceOwnerAddress[] = [];
-  const deltas: StructuralFormulaOwnerDelta[] = [];
   for (const change of plan.cells) {
     const sheet = workbook.getSheet(change.sheetId);
     const cell = sheet.cells.get(change.row, change.column);
@@ -2053,13 +2076,23 @@ function preflightWorkbookFormulaOwners(
       );
     }
     for (const [payloadId, payload] of sheet.drawingPayloads) {
-      if (payload.kind !== 'shape') continue;
-      stage(
-        { kind: 'shape-drawing-payload', sheetId: sheet.id, payloadId },
-        `drawing:${payloadId}.propertyFormula`,
-        payload.propertyFormula,
-        sheet.id,
-      );
+      if (payload.kind === 'shape') {
+        stage(
+          { kind: 'shape-drawing-payload', sheetId: sheet.id, payloadId },
+          `drawing:${payloadId}.propertyFormula`,
+          payload.propertyFormula,
+          sheet.id,
+        );
+      } else if (payload.kind === 'chart') {
+        for (const { field, formula } of chartTextFormulaEntries(payload)) {
+          stage(
+            { kind: 'chart-text-drawing-payload', sheetId: sheet.id, payloadId, field },
+            `drawing:${payloadId}.${field}`,
+            formula,
+            sheet.id,
+          );
+        }
+      }
     }
   }
   for (const view of workbook.dataModel.views.values()) {
@@ -2130,6 +2163,10 @@ function readStructuralFormulaOwner(
       const payload = workbook.getSheet(owner.sheetId).drawingPayloads.get(owner.payloadId);
       return payload?.kind === 'shape' ? payload.propertyFormula : undefined;
     }
+    case 'chart-text-drawing-payload': {
+      const payload = workbook.getSheet(owner.sheetId).drawingPayloads.get(owner.payloadId);
+      return payload?.kind === 'chart' ? readChartTextFormula(payload, owner.field) : undefined;
+    }
     case 'data-view-field': {
       const field = workbook.dataModel.views.get(owner.viewId)?.fields[owner.fieldIndex];
       return field?.fieldId === owner.fieldId ? field.formula : undefined;
@@ -2163,6 +2200,12 @@ function writeStructuralFormulaOwner(
       const payload = workbook.getSheet(owner.sheetId).drawingPayloads.get(owner.payloadId);
       if (!payload || payload.kind !== 'shape') return false;
       payload.propertyFormula = formula;
+      return true;
+    }
+    case 'chart-text-drawing-payload': {
+      const payload = workbook.getSheet(owner.sheetId).drawingPayloads.get(owner.payloadId);
+      if (!payload || payload.kind !== 'chart') return false;
+      writeChartTextFormula(payload, owner.field, formula);
       return true;
     }
     case 'data-view-field': {
@@ -2258,9 +2301,20 @@ function applyFormulaRewritePlan(
   plan: FormulaRewritePlan,
   cellShiftPlan?: CellShiftPlan,
 ): FormulaRewriteApplication {
+  const deltas: StructuralFormulaOwnerDelta[] = plan.participantChanges.flatMap((change) => {
+    if (change.kind !== 'formula' || change.owner.kind !== 'chart-text-drawing-payload') return [];
+    return [{
+      kind: 'formula-object' as const,
+      ownerKind: 'chart-text' as const,
+      sheetId: change.owner.sheetId,
+      payloadId: change.owner.payloadId,
+      field: change.owner.field,
+      beforeFormula: change.before,
+      afterFormula: change.after,
+    }];
+  });
   applyStagedStructuralFormulaChanges(workbook, plan.participantChanges);
   const rewrittenOwners: StructuralReferenceOwnerAddress[] = [];
-  const deltas: StructuralFormulaOwnerDelta[] = [];
   for (const change of plan.cells) {
     const sheet = workbook.getSheet(change.sheetId);
     let coordinate: { row: number; column: number } | null = { row: change.row, column: change.column };
