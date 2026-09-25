@@ -2,10 +2,21 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { WorkbookModel } from '@react-sheets/core-model';
 import { ApiRequestError } from '@react-sheets/protocol';
-import { createSpreadsheetRuntime, startCollaborationSession, startPersistenceSession } from '../../runtime';
+import {
+  createSpreadsheetRuntime,
+  isLocalSnapshotCheckpointDue,
+  startCollaborationSession,
+  startPersistenceSession,
+} from '../../runtime';
 import { WorkspacePersistence } from './storage';
 
 describe('local workspace runtime persistence', () => {
+  it('schedules a full local snapshot every fifty local revisions', () => {
+    assert.equal(isLocalSnapshotCheckpointDue(49, 0), false);
+    assert.equal(isLocalSnapshotCheckpointDue(50, 0), true);
+    assert.equal(isLocalSnapshotCheckpointDue(75, 50), false);
+  });
+
   it('restores local-only workspaces without invoking API or collaboration transport', async () => {
     const runtime = createSpreadsheetRuntime({
       localOnly: true,
@@ -28,7 +39,7 @@ describe('local workspace runtime persistence', () => {
     assert.equal(runtime.workspaceRecord?.syncMode, 'local-only');
   });
 
-  it('checkpoints the canonical snapshot after each root transaction', async () => {
+  it('checkpoints the canonical snapshot when explicitly requested after a root transaction', async () => {
     const runtime = createSpreadsheetRuntime({
       localOnly: true,
     });

@@ -855,3 +855,16 @@ head `1d8508ea` 的两个后端 CI 已通过 test-compile，随后在 `sheetRena
 6. **重建证据面：** 服务端 snapshot 按至少 50 个操作或 512,000 字节批量 checkpoint，并非逐 revision 快照。升级必须沿可验证 checkpoint + 连续 operation log 重放，校验中间 checkpoint 与当前 workbook snapshot；遇到 revision 缺口、校验不匹配或不支持的 owner 时必须整批中止，不能以空 delta 填充。
 
 **已确认问题与修复方案：** 真实缺口是 v1 patch 的 owner 覆盖不完整，且服务端、协作重放和历史撤销依赖该 patch；这是一个跨层 root cause，不把六次验证冒充六个独立 bug。下一实现批次应定义完整且可逆的 v2 patch，再建立显式、事务化的历史迁移：从每个 workbook 最早可用且校验通过的 checkpoint 重放连续日志、重新计算 patch，并同事务改写 operation log 与未发布 outbox；迁移全部校验通过后才允许 runtime 只接受 v2。任何无法重建的 workbook 必须保留原数据并报告 unit/revision，禁止降级到客户端重算或默认空 owner 列表。当前没有改协议或数据，PR #345 与整改目标均未完成。
+
+### Local snapshot frequency — six static safety passes (2026-09-25)
+
+确认本地编辑在每个操作 journal 已持久化后仍无条件安排 1 秒完整 workbook snapshot，导致长期编辑的大 workbook 即使 journal 可恢复也持续承担全量序列化成本。本轮六次反证检查后将完整快照改为每 50 个 local revision 执行一次；journal 写入仍逐次保留，显式保存仍立即产生完整快照。
+
+1. `runtime.ts` command-completion listener 每个根事务递增 local revision 并触发本地持久化，确认原有 timer 对单次编辑也会启动。
+2. `commitLocalOperationJournal` 先把完整 pending operations 写入 workspace operation store；只有成功后才可能调度 snapshot，因此完整快照不是 journal durability 的先决条件。
+3. journal 提交同时更新 workspace head 的 local revision 与 pending log；启动恢复比较 `pending.snapshotRevision` 和 `localRevision`，差值存在时重放 pending operations。
+4. 完整 checkpoint 将当前 workbook snapshot 与 pending journal 一起保存，并把 pending journal 的 snapshot revision 推进到该快照 revision；runtime 在成功后同步新的 compaction baseline。
+5. `saveWorkbook` 提交 native artifact 时走 `checkpointWithArtifact` 的立即 checkpoint 路径，不受 50-revision 的自动 compaction 阈值限制。
+6. snapshot 写入失败不会清除已持久化 journal；阈值未到时 journal 仍可恢复，达到阈值后的 checkpoint 失败会保留旧 baseline，后续 journal 提交仍可重试。
+
+实现位于 `spreadsheet-app/src/runtime.ts`，新增边界测试源码但未执行。静态 diff 检查通过；没有改变 operation journal schema、重放次序、显式保存语义或服务端 checkpoint policy。整项 Excel runtime 重构及前述 StructuralPatch v2 迁移仍未完成。

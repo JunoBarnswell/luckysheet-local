@@ -739,10 +739,16 @@ interface LocalPersistenceState {
   journalChecksum: string | null;
   queuedJournalChecksum: string | null;
   storageRevision: number | null;
+  snapshotLocalRevision: number;
   snapshotTimer: ReturnType<typeof setTimeout> | null;
 }
 
 const localPersistenceStates = new WeakMap<SpreadsheetRuntime, LocalPersistenceState>();
+const LOCAL_SNAPSHOT_CHECKPOINT_REVISION_LIMIT = 50;
+
+export function isLocalSnapshotCheckpointDue(localRevision: number, snapshotLocalRevision: number): boolean {
+  return localRevision - snapshotLocalRevision >= LOCAL_SNAPSHOT_CHECKPOINT_REVISION_LIMIT;
+}
 
 function localPersistenceState(runtime: SpreadsheetRuntime): LocalPersistenceState {
   const existing = localPersistenceStates.get(runtime);
@@ -751,10 +757,19 @@ function localPersistenceState(runtime: SpreadsheetRuntime): LocalPersistenceSta
     journalChecksum: null,
     queuedJournalChecksum: null,
     storageRevision: runtime.workspaceRecord?.storageRevision ?? null,
+    snapshotLocalRevision: runtime.workspaceRecord?.pending.snapshotRevision ?? runtime.localRevision,
     snapshotTimer: null,
   };
   localPersistenceStates.set(runtime, created);
   return created;
+}
+
+function adoptLocalSnapshotBaseline(runtime: SpreadsheetRuntime, record: WorkspaceRecord): void {
+  const state = localPersistenceState(runtime);
+  state.storageRevision = record.storageRevision;
+  state.snapshotLocalRevision = record.pending.snapshotRevision;
+  state.journalChecksum = record.pending.checksum;
+  state.queuedJournalChecksum = null;
 }
 
 function enqueuePersistenceWrite<T>(runtime: SpreadsheetRuntime, operation: () => Promise<T>): Promise<T> {
@@ -767,6 +782,8 @@ function enqueuePersistenceWrite<T>(runtime: SpreadsheetRuntime, operation: () =
 function scheduleLocalSnapshotCheckpoint(runtime: SpreadsheetRuntime): void {
   if (runtime.disposed || !runtime.localOnly) return;
   const state = localPersistenceState(runtime);
+  // The operation journal is already durable; full workbook snapshots are periodic compaction, not per-edit durability.
+  if (!isLocalSnapshotCheckpointDue(runtime.localRevision, state.snapshotLocalRevision)) return;
   if (state.snapshotTimer !== null) return;
   state.snapshotTimer = setTimeout(() => {
     state.snapshotTimer = null;
@@ -852,9 +869,7 @@ function writeLocalSnapshotCheckpoint(runtime: SpreadsheetRuntime, artifact?: Na
         : await runtime.workspacePersistence.checkpoint(snapshot, localRevision, serverRevision, syncMode, pendingJournal, metadata);
       if (runtime.disposed) return;
       runtime.workspaceRecord = record;
-      localPersistenceState(runtime).storageRevision = record.storageRevision;
-      localPersistenceState(runtime).journalChecksum = record.pending.checksum;
-      localPersistenceState(runtime).queuedJournalChecksum = null;
+      adoptLocalSnapshotBaseline(runtime, record);
       runtime.operationJournal.write(runtime.model.unitId, record.pending.operations, record.pending.nextClientSequence, record.localRevision);
       await runtime.assetStore.reconcile(collectAssetReferences(snapshot, [
         ...record.pending.operations,
@@ -1570,6 +1585,7 @@ async function initializePersistence(runtime: SpreadsheetRuntime, isActive: () =
   if (localRecord) {
     runtime.workspaceRecord = localRecord;
     runtime.localRevision = localRecord.localRevision;
+    adoptLocalSnapshotBaseline(runtime, localRecord);
     runtime.remoteRevision = resolution?.revision ?? localRecord.serverRevision;
     runtime.localOnly = runtime.localOnly || localRecord.syncMode === 'local-only';
     runtime.remoteSyncRequested = runtime.remoteSyncRequested || localRecord.syncMode === 'remote';
@@ -1680,6 +1696,7 @@ async function checkpointStartupLocally(runtime: SpreadsheetRuntime): Promise<vo
       role: runtime.workspaceRecord?.metadata.role ?? 'viewer',
     } : undefined,
   );
+  adoptLocalSnapshotBaseline(runtime, runtime.workspaceRecord);
 }
 
 function publishPersistenceFailure(runtime: SpreadsheetRuntime, error: unknown): void {
