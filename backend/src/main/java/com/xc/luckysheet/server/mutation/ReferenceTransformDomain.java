@@ -12,7 +12,7 @@ final class ReferenceTransformDomain {
 
     enum IntervalKind { MAPPED, DELETED, OUT_OF_BOUNDS }
 
-    record IntervalMapping(IntervalKind kind, long start, long end) {
+    record IntervalMapping(IntervalKind kind, Long start, Long end) {
     }
 
     private ReferenceTransformDomain() {
@@ -68,7 +68,7 @@ final class ReferenceTransformDomain {
                 nextEnd = high > deletedEnd ? high - count : (long) at - 1;
             }
         }
-        if (nextStart > nextEnd) return new IntervalMapping(IntervalKind.DELETED, -1, -1);
+        if (nextStart > nextEnd) return new IntervalMapping(IntervalKind.DELETED, null, null);
         if (nextStart < 0 || nextEnd > maximum) {
             return new IntervalMapping(IntervalKind.OUT_OF_BOUNDS, nextStart, nextEnd);
         }

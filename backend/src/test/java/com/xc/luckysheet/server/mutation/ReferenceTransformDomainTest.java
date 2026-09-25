@@ -23,11 +23,11 @@ class ReferenceTransformDomainTest {
                 ReferenceTransformDomain.mapPoint(3, 3, 2, false, ReferenceTransformDomain.MAX_ROW_INDEX));
         assertEquals(new ReferenceTransformDomain.PointMapping(ReferenceTransformDomain.PointKind.MAPPED, 3L),
                 ReferenceTransformDomain.mapPoint(5, 3, 2, false, ReferenceTransformDomain.MAX_ROW_INDEX));
-        assertEquals(new ReferenceTransformDomain.IntervalMapping(ReferenceTransformDomain.IntervalKind.MAPPED, 2, 6),
+        assertEquals(new ReferenceTransformDomain.IntervalMapping(ReferenceTransformDomain.IntervalKind.MAPPED, 2L, 6L),
                 ReferenceTransformDomain.mapInterval(2, 4, 3, 2, true, ReferenceTransformDomain.MAX_ROW_INDEX));
-        assertEquals(new ReferenceTransformDomain.IntervalMapping(ReferenceTransformDomain.IntervalKind.MAPPED, 2, 3),
+        assertEquals(new ReferenceTransformDomain.IntervalMapping(ReferenceTransformDomain.IntervalKind.MAPPED, 2L, 3L),
                 ReferenceTransformDomain.mapInterval(2, 5, 3, 2, false, ReferenceTransformDomain.MAX_ROW_INDEX));
-        assertEquals(new ReferenceTransformDomain.IntervalMapping(ReferenceTransformDomain.IntervalKind.DELETED, -1, -1),
+        assertEquals(new ReferenceTransformDomain.IntervalMapping(ReferenceTransformDomain.IntervalKind.DELETED, null, null),
                 ReferenceTransformDomain.mapInterval(3, 4, 3, 2, false, ReferenceTransformDomain.MAX_ROW_INDEX));
     }
 
@@ -77,6 +77,8 @@ class ReferenceTransformDomainTest {
 
             for (JsonNode vector : vectors.path("intervals")) {
                 JsonNode expected = vector.path("expected");
+                Long expectedStart = expected.has("start") ? expected.path("start").asLong() : null;
+                Long expectedEnd = expected.has("end") ? expected.path("end").asLong() : null;
                 ReferenceTransformDomain.IntervalMapping actual = ReferenceTransformDomain.mapInterval(
                         vector.path("start").asInt(),
                         vector.path("end").asInt(),
@@ -86,8 +88,8 @@ class ReferenceTransformDomainTest {
                         maximum(vector));
                 assertEquals(new ReferenceTransformDomain.IntervalMapping(
                                 ReferenceTransformDomain.IntervalKind.valueOf(expected.path("kind").asText().toUpperCase(Locale.ROOT)),
-                                expected.path("start").asLong(-1),
-                                expected.path("end").asLong(-1)),
+                                expectedStart,
+                                expectedEnd),
                         actual, vector.path("id").asText());
             }
         }
