@@ -607,6 +607,6 @@ Confirmed additional operation paths: 13 in the follow-up audit (the previous 12
 3. **区间闭环：** 对照 camera 跨 sheet owner 的静态用例，确认 apply 与 preflight 必须使用完全相同的单区间精确映射；否则可在 prepare 成功后 apply 才失败。已让校验和变换共享同一方向的行映射。
 4. **锚点单一所有权：** 跟踪 CF/DV 从 `remapPermutationRuleFormulaOwners` 到 `SheetRuleLifecycle.transformStructuralFields`，确认显式锚点被连续映射两次；反转排序会偶然掩盖该缺陷。现在锚点与公式偏移在规则置换路径中一次性处理，生命周期阶段仅处理 DV range list source。
 5. **跨端规则语义：** 对照前端 `remapRuleForPermutation` 与 Java 规则 owner 逻辑，确认两端都会为字面值规则无条件生成 `formulaAnchor`；现按各自 CF/DV 公式字段选择器判定真实公式 owner，只有公式规则才物化隐式锚点。
-6. **失败原子性与覆盖：** 再核对 reducer 先在 descriptor 的 snapshot 深拷贝上完成 exact-range preflight，失败不写入持久状态；前后端回归用例覆盖非对称置换、显式/隐式公式 owner、camera range 和字面规则。未运行本地测试/构建；由推送后的 PR CI 负责验证。
+6. **失败原子性与覆盖：** 再核对 reducer 先在 descriptor 的 snapshot 深拷贝上完成 exact-range preflight，失败不写入持久状态；前后端回归用例覆盖非对称置换、显式/隐式公式 owner、camera range 和字面规则。修复后 CI 暴露新增后端用例遗漏规范 `review` 对象；已补齐空 review 结构，这是测试夹具完整性问题，不计为生产缺陷。未运行本地测试/构建；由后续 PR CI 负责验证。
 
 该轮只修复上述静态追踪和 CI 明确证实的问题；没有把未验证猜测计入问题数。若远端门禁继续暴露实际失败，将在同一 PR 上继续修复；本目标仍未完成。

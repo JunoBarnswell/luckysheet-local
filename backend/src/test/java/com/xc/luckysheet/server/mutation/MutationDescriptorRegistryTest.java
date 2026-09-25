@@ -767,7 +767,7 @@ class MutationDescriptorRegistryTest {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         JsonNode snapshot = mapper.readTree("""
                 {"definedNameModels":[],"cellStyleTemplates":[],"sheets":[
-                  {"id":"sheet-1","name":"Data","rowCount":4,"columnCount":1,"cells":{},"merges":[],
+                  {"id":"sheet-1","name":"Data","rowCount":4,"columnCount":1,"cells":{},"review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}},"merges":[],
                    "conditionalFormats":[
                      {"id":"cf-implicit","sheetId":"sheet-1","ranges":[{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":2,"endColumn":2}],"type":"highlight","operator":"formula","value1":"=A1>0"},
                      {"id":"cf-explicit","sheetId":"sheet-1","ranges":[{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":3,"endColumn":3}],"formulaAnchor":{"sheetId":"sheet-1","row":0,"column":3},"type":"highlight","operator":"formula","value1":"=A1>0"},
