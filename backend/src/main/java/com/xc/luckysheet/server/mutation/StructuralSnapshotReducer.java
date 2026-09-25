@@ -253,7 +253,7 @@ final class StructuralSnapshotReducer {
         return structuralPatch;
     }
 
-    static void moveRange(ObjectNode root, String sheetId, RangeRef source, RangeRef target) {
+    static StructuralPatch moveRange(ObjectNode root, String sheetId, RangeRef source, RangeRef target) {
         PivotMutationDescriptor.assertCanonicalSnapshot(root);
         ObjectNode sheet = SnapshotMutationSupport.sheet(root, sheetId);
         SnapshotMutationSupport.requireSheet(source, sheetId);
@@ -278,6 +278,7 @@ final class StructuralSnapshotReducer {
         if (intersects(selected, destination)) throw ServiceException.validation("Move source and destination cannot overlap");
         rejectFormulaGroupMetadataInRange(sheet, selected, "range.move source");
         rejectFormulaGroupMetadataInRange(sheet, destination, "range.move destination");
+        List<RuleFormulaSnapshot> ruleFormulaSnapshots = captureRuleFormulaSnapshots(root);
         int rowDelta = destination.startRow() - selected.startRow();
         int columnDelta = destination.startColumn() - selected.startColumn();
         ObjectNode reportSheetAfter = mapReportSheetCoordinates(sheet, (row, column) -> {
@@ -306,9 +307,11 @@ final class StructuralSnapshotReducer {
 
         moveRangeMetadata(root, sheet, selected, destination, rowDelta, columnDelta);
         applyReportSheetPlan(sheet, reportSheetAfter);
-        rewriteMovedFormulas(root, sheet, selected, destination, rowDelta, columnDelta);
+        StructuralPatch structuralPatch = rewriteMovedFormulas(
+                root, sheet, selected, destination, rowDelta, columnDelta, ruleFormulaSnapshots);
         invalidateFormulaCaches(root);
         AutoFilterOwnershipValidator.resolveOwners(sheet, sheetId);
+        return structuralPatch;
     }
 
     private static void moveRangeMetadata(ObjectNode root, ObjectNode sheet, RangeRef source, RangeRef target, int rowDelta, int columnDelta) {
@@ -591,7 +594,15 @@ final class StructuralSnapshotReducer {
         }
     }
 
-    private static void rewriteMovedFormulas(ObjectNode root, ObjectNode targetSheet, RangeRef source, RangeRef destination, int rowDelta, int columnDelta) {
+    private static StructuralPatch rewriteMovedFormulas(
+            ObjectNode root,
+            ObjectNode targetSheet,
+            RangeRef source,
+            RangeRef destination,
+            int rowDelta,
+            int columnDelta,
+            List<RuleFormulaSnapshot> ruleFormulaSnapshots
+    ) {
         FormulaReferenceTransformer.SheetIdentity targetIdentity = identity(targetSheet);
         Map<DefinedNameKey, FormulaReferenceTransformer.SheetIdentity> definedNameOwners = definedNameFormulaOwners(root, targetIdentity);
         FormulaReferenceTransformer.Range selected = formulaRange(source);
@@ -600,16 +611,22 @@ final class StructuralSnapshotReducer {
         for (JsonNode raw : SnapshotMutationSupport.sheets(root)) {
             sheetOrder.add(identity(requireObject(raw, "Sheet")));
         }
+        List<StructuralPatch.FormulaOwnerDelta> movedFormulaDeltas = new ArrayList<>();
         for (JsonNode raw : SnapshotMutationSupport.sheets(root)) {
             ObjectNode owner = requireObject(raw, "Sheet");
             FormulaReferenceTransformer.SheetIdentity ownerIdentity = identity(owner);
+            List<StructuralPatch.FormulaOwnerDelta> formulaOwnerDeltas = new ArrayList<>();
             rewriteCellFormulaOwners(owner,
                     formula -> requireReversibleStructuralFormula(
                             formula,
                             value -> FormulaReferenceTransformer.remapMovedRegion(value, ownerIdentity, targetIdentity, selected, rowDelta, columnDelta, sheetOrder),
                             value -> FormulaReferenceTransformer.remapMovedRegion(value, ownerIdentity, targetIdentity, inverseSelection, -rowDelta, -columnDelta, sheetOrder),
                             "formula-cell owner on " + ownerIdentity.id()),
-                    "range.move");
+                    "range.move",
+                    formulaOwnerDeltas,
+                    entry -> movedFormulaOwnerBeforeAddress(
+                            ownerIdentity.id(), entry, targetIdentity.id(), source, destination, rowDelta, columnDelta));
+            movedFormulaDeltas.addAll(formulaOwnerDeltas);
             for (String property : List.of("conditionalFormats", "dataValidations")) {
                 for (JsonNode rawRule : SnapshotMutationSupport.array(owner, property)) {
                     ObjectNode rule = requireObject(rawRule, "Range rule");
@@ -669,6 +686,29 @@ final class StructuralSnapshotReducer {
                         value -> FormulaReferenceTransformer.remapMovedRegion(value, owner, targetIdentity, inverseSelection, -rowDelta, -columnDelta, sheetOrder),
                         "persisted formula owner on " + owner.id()),
                 anchor -> moveTemplateFormulaAnchor(anchor, targetIdentity.id(), source, rowDelta, columnDelta));
+        appendRuleFormulaDeltas(root, ruleFormulaSnapshots, movedFormulaDeltas);
+        return new StructuralPatch(StructuralPatch.VERSION, "range.move", movedFormulaDeltas);
+    }
+
+    private static StructuralPatch.CellAddress movedFormulaOwnerBeforeAddress(
+            String ownerSheetId,
+            CellEntry entry,
+            String targetSheetId,
+            RangeRef source,
+            RangeRef destination,
+            int rowDelta,
+            int columnDelta
+    ) {
+        int row = entry.row();
+        int column = entry.column();
+        if (ownerSheetId.equals(targetSheetId) && contains(destination, row, column)) {
+            row -= rowDelta;
+            column -= columnDelta;
+            if (!contains(source, row, column)) {
+                throw ServiceException.conflict("STRUCTURAL_PATCH_INVARIANT: moved formula owner has no source address");
+            }
+        }
+        return new StructuralPatch.CellAddress(ownerSheetId, row, column);
     }
 
     private static void shiftCellBandAnchors(ObjectNode sheet, RangeRef selection, RangeRef band, String axis, String operation, int count) {

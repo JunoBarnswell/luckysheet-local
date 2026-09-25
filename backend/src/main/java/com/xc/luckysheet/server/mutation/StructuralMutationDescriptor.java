@@ -85,7 +85,7 @@ final class StructuralMutationDescriptor extends CanonicalJsonMutationDescriptor
                 SnapshotMutationSupport.validateKnownKeys(params, Set.of("sheetId", "sourceRange", "targetOrigin"), "range.move");
                 RangeRef source = ownRangeField(root, mutation.sheetId(), params, "sourceRange");
                 RangeRef target = moveTarget(root, mutation.sheetId(), source, params.get("targetOrigin"));
-                StructuralSnapshotReducer.moveRange(root, mutation.sheetId(), source, target);
+                structuralPatch = StructuralSnapshotReducer.moveRange(root, mutation.sheetId(), source, target);
             }
             default -> throw ServiceException.validation("Unsupported structural mutation: " + id());
         }

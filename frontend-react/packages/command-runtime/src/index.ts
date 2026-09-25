@@ -1,4 +1,4 @@
-import { WorkbookModel, type CellData, type ConditionalFormatRule, type DataValidationRule, type ProtectionAction, type RangeRef, type StructuralFormulaOwnerDelta, type StructuralFormulaOwnerIndex, type StructuralFormulaOwnerState, type WorksheetModel } from '@react-sheets/core-model';
+import { WorkbookModel, type CellData, type ConditionalFormatRule, type DataValidationRule, type ProtectionAction, type RangeRef, type StructuralFormulaOwnerDelta, type StructuralFormulaOwnerState, type StructuralReferenceOwnerIndex, type WorksheetModel } from '@react-sheets/core-model';
 import { collectFormulaDependencies, formatFormula, mapAstStructuralReferences, parseFormula, RangeIndex, ReferenceTransformDomain, MAX_COLUMN_INDEX, MAX_ROW_INDEX } from '@react-sheets/formula-engine';
 
 export interface MutationInfo<P = unknown> {
@@ -1017,7 +1017,7 @@ export class CommandRuntime {
         this.activeEntry?.forwardMutations.push(info);
         if (this.activeEntry) {
           this.activeEntry.affectedRanges.push(...mutation.affectedRanges.map((range) => structuredClone(range)));
-          this.activeEntry.affectedRanges.push(...structuredImpactRanges.map((range) => structuredClone(range)));
+          this.activeEntry.affectedRanges.push(...structuralImpactRanges.map((range) => structuredClone(range)));
         }
 
         for (const listener of this.mutationListeners) {

@@ -250,7 +250,7 @@ public class WorkbookOperationService {
 
     private static boolean isStructuralPatchMutation(String mutationId) {
         return switch (mutationId) {
-            case "rows.inserted", "rows.deleted", "columns.inserted", "columns.deleted", "cells.inserted", "cells.deleted" -> true;
+            case "rows.inserted", "rows.deleted", "columns.inserted", "columns.deleted", "cells.inserted", "cells.deleted", "range.move" -> true;
             default -> false;
         };
     }
@@ -281,6 +281,9 @@ public class WorkbookOperationService {
         if (isInverseAxisMutation(originalId, inverseId)) {
             return sameAxisRange(original.params(), inverse.params());
         }
+        if ("range.move".equals(originalId) && "range.move".equals(inverseId)) {
+            return sameMoveRanges(original.params(), inverse.params());
+        }
         boolean matchingCellShift = ("cells.inserted".equals(originalId) && "cells.inserted.restore".equals(inverseId))
                 || ("cells.deleted".equals(originalId) && "cells.deleted.restore".equals(inverseId));
         if (!matchingCellShift) return false;
@@ -288,6 +291,34 @@ public class WorkbookOperationService {
         return original.params().path("operation").asText().equals(spec.path("operation").asText())
                 && original.params().path("axis").asText().equals(spec.path("axis").asText())
                 && original.params().path("range").equals(spec.path("range"));
+    }
+
+    private static boolean sameMoveRanges(JsonNode original, JsonNode inverse) {
+        JsonNode source = original.path("sourceRange");
+        JsonNode targetOrigin = original.path("targetOrigin");
+        JsonNode inverseSource = inverse.path("sourceRange");
+        JsonNode inverseOrigin = inverse.path("targetOrigin");
+        for (String coordinate : List.of("startRow", "endRow", "startColumn", "endColumn")) {
+            if (!source.path(coordinate).isIntegralNumber() || !inverseSource.path(coordinate).isIntegralNumber()) return false;
+        }
+        if (!source.path("sheetId").isTextual()
+                || !source.path("sheetId").equals(inverseSource.path("sheetId"))
+                || !targetOrigin.path("row").isIntegralNumber()
+                || !targetOrigin.path("column").isIntegralNumber()
+                || !inverseOrigin.path("row").isIntegralNumber()
+                || !inverseOrigin.path("column").isIntegralNumber()) return false;
+        long startRow = source.path("startRow").asLong();
+        long endRow = source.path("endRow").asLong();
+        long startColumn = source.path("startColumn").asLong();
+        long endColumn = source.path("endColumn").asLong();
+        long targetRow = targetOrigin.path("row").asLong();
+        long targetColumn = targetOrigin.path("column").asLong();
+        return inverseOrigin.path("row").asLong() == startRow
+                && inverseOrigin.path("column").asLong() == startColumn
+                && inverseSource.path("startRow").asLong() == targetRow
+                && inverseSource.path("endRow").asLong() == targetRow + endRow - startRow
+                && inverseSource.path("startColumn").asLong() == targetColumn
+                && inverseSource.path("endColumn").asLong() == targetColumn + endColumn - startColumn;
     }
 
     private static boolean isInverseAxisMutation(String originalId, String inverseId) {

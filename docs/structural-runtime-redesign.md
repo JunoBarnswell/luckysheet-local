@@ -566,3 +566,14 @@ Confirmed additional operation paths: 13 in the follow-up audit (the previous 12
 6. **权限/冲突回合：** `committedRanges`、`structuralImpactRanges` 与 patch merge 以 `afterAddress` 为唯一键，无法授权/隔离 rule owner 或合并同一规则字段。现将前后适用范围纳入保护与冲突范围，并以 rule identity + field 对齐 reducer 与 inverse patch；前端历史影响范围也按完整 range 去重，避免每个公式字段重复放大范围列表。
 
 本次只覆盖 axis 和 cell-shift 上 CF/DV 公式字段；move-range、permutation、fill/paste、sheet identity、table resize、其他非单元格公式 owner 与 OOXML 尚未统一到同一 patch，不能据此宣称目标完成。按要求只做静态审查，未运行测试、构建或 UI 验收。
+
+### 六轮自审 — range.move owner patch 与 undo 闭环（2026-09-25）
+
+1. **CI 类型诊断复核：** PR 远端编译日志证实 command-runtime 导入了不存在的 `StructuralFormulaOwnerIndex`、影响范围变量名与定义不一致，且 `MoveFormulaRule` 缺少使用中的 `id`。已按实际导出名、变量名和稳定 owner 字段修正；未在本地重跑构建。
+2. **单元格 owner 复核：** move 会重写源区域公式及外部依赖公式，但 effect 过去只报告重写地址，不生成 before/after formula-cell delta。现分别记录源地址到目标地址的 moved-owner delta，以及同地址 dependent-owner delta；计划已排除 source/destination owner，避免重复 key。
+3. **CF/DV owner 复核：** move 的规则公式已有可逆预检与写入，但没有进入历史/保护/冲突 patch。现于任何范围或公式变更前捕获稳定 rule identity、公式和范围，完成变更后生成 formula-rule delta。
+4. **Java reducer 复核：** `range.move` 的 descriptor 原先返回 null patch，snapshot reducer 也丢弃单元格与规则公式重写结果。现 reducer 依据变换前后 owner 状态生成 patch，descriptor 将其返回给提交与 journal replay 链。
+5. **协议与影响范围复核：** protocol mutation-id allowlist 明确拒绝 `range.move` patch；补入 move 后，cell 与 rule 前后范围会走既有严格字段/边界/重复 owner 校验及去重后的 impact range 计算。
+6. **Undo/授权复核：** 服务端 undo 原来既不把 `range.move` 纳入 structural-patch mutation，也不能匹配其反向 source/destination；因此不会取回/校验目标 patch。现验证逆源范围等于前向目标几何、逆 targetOrigin 等于原 source 起点，只有精确逆操作才可复用 inverse patch；patch 应用对 reducer 已恢复的状态保持幂等。
+
+本轮静态改动覆盖 move 的 cell 与 CF/DV formula owner patch、protocol 接受范围、Java patch 派生及服务端 structural undo 匹配。Formula names、table/drawing/template 等其他 persisted formula owners、permutation、fill/paste、table resize 与 OOXML 尚未进入同一 owner-delta/impact 契约；整体整改仍未完成。按用户要求未运行测试、构建或 UI 验收。
