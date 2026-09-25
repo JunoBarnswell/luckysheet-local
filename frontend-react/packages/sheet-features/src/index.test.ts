@@ -14,6 +14,7 @@ import {
   createPasteSpecialSpec,
   createCellSetMutationParams,
   isCellSetMutationParams,
+  createClearRangePlan,
 } from './index';
 import type { CellInputInterpretationContext } from './text-input';
 import { CellEntryError } from './cell-entry-error';
@@ -1110,24 +1111,48 @@ test('range clear modes are independent and restore auxiliary metadata', () => {
     value: 10,
     formula: '=A1',
     style: { bold: true },
-    hyperlink: 'https://example.com',
   });
+  const hyperlink = { id: 'clear-link', target: { kind: 'url' as const, url: 'https://example.com' } };
+  sheet.hyperlinks.set('0:0', hyperlink);
   sheet.review.setNote(0, 0, { id: 'note', author: 'u', text: 'standalone', createdAt: '2026-01-01', visible: true });
   const range = { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 };
   runtime.execute('sheet.range.clear', { sheetId: sheet.id, range, family: 'formats' });
   assert.equal(sheet.cells.get(0, 0)?.value, 10);
   assert.equal(sheet.cells.get(0, 0)?.formula, '=A1');
   assert.equal(sheet.cells.get(0, 0)?.style, undefined);
-  assert.equal(sheet.cells.get(0, 0)?.hyperlink, 'https://example.com');
+  assert.deepEqual(sheet.hyperlinks.get('0:0'), hyperlink);
   runtime.execute('sheet.range.clear', { sheetId: sheet.id, range, family: 'comments-and-notes' });
   assert.equal(sheet.review.hasNoteAt(0, 0), false);
   runtime.execute('sheet.range.clear', { sheetId: sheet.id, range, family: 'hyperlinks' });
   assert.equal(sheet.cells.get(0, 0)?.value, 10);
-  assert.equal(sheet.cells.get(0, 0)?.hyperlink, undefined);
+  assert.equal(sheet.hyperlinks.has('0:0'), false);
+  runtime.undo();
+  assert.deepEqual(sheet.hyperlinks.get('0:0'), hyperlink);
   runtime.execute('sheet.range.clear', { sheetId: sheet.id, range, family: 'all' });
   assert.equal(sheet.cells.get(0, 0), undefined);
   runtime.undo();
   assert.equal(sheet.cells.get(0, 0)?.value, 10);
+});
+
+test('metadata-only clear and undo keep deferred cell storage untouched', () => {
+  const workbook = new WorkbookModel('unit-clear-deferred-links', 'Deferred Links');
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.deferJSON({ '0': { '0': { value: 'preserved' } } });
+  const hyperlink = { id: 'deferred-link', target: { kind: 'url' as const, url: 'https://example.com' } };
+  sheet.hyperlinks.set('0:0', hyperlink);
+  const range = { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 };
+  const plan = createClearRangePlan(sheet, { sheetId: sheet.id, range, family: 'hyperlinks' });
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+
+  assert.equal(plan.snapshot.cells, undefined);
+  assert.equal(sheet.cells.isHydrated(), false);
+  runtime.execute('sheet.range.clear', { sheetId: sheet.id, range, family: 'hyperlinks' });
+  assert.equal(sheet.hyperlinks.has('0:0'), false);
+  assert.equal(sheet.cells.isHydrated(), false);
+  runtime.undo();
+  assert.deepEqual(sheet.hyperlinks.get('0:0'), hyperlink);
+  assert.equal(sheet.cells.isHydrated(), false);
 });
 
 test('clear formats/all crop conditional-format intersections and restore atomically', () => {

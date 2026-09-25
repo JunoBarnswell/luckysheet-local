@@ -305,7 +305,7 @@ public class MutationDescriptorRegistry {
             if (id().equals("range.clear")) {
                 SnapshotMutationSupport.validateKnownKeys(params, Set.of("sheetId", "range", "family"), "range.clear");
             } else if (id().equals("range.clear.restore")) {
-                SnapshotMutationSupport.validateKnownKeys(params, Set.of("sheetId", "range", "snapshot"), "range.clear.restore");
+                validateClearRestore(params);
             }
             return switch (id()) {
                 case "cell.set", "cell.restore" -> List.of(SnapshotMutationSupport.cellRange(root, mutation.sheetId(), params));
@@ -689,22 +689,25 @@ public class MutationDescriptorRegistry {
         }
 
         private void restoreRange(ObjectNode root, ObjectNode sheet, String sheetId, ObjectNode params) {
+            validateClearRestore(params);
             RangeRef range = requireOwnRange(root, sheetId, params);
-            SnapshotMutationSupport.clearCells(sheet, range);
             SnapshotMutationSupport.removeNotes(sheet, range);
             SnapshotMutationSupport.removeThreads(sheet, range);
             ObjectNode snapshot = SnapshotMutationSupport.requiredObject(params, "snapshot");
-            JsonNode cells = snapshot.get("cells");
-            if (cells == null || !cells.isArray()) throw ServiceException.validation("range.clear.restore cells must be an array");
-            if (cells.size() > SnapshotMutationSupport.MAX_CHANGED_CELLS) throw ServiceException.validation("Range restore is too large");
-            for (JsonNode entry : cells) {
-                if (!entry.isObject()) throw ServiceException.validation("Range restore cell must be an object");
-                SnapshotMutationSupport.CellCoordinate coordinate = SnapshotMutationSupport.coordinate(root, sheetId, (ObjectNode) entry);
-                if (!SnapshotMutationSupport.contains(range, coordinate)) throw ServiceException.validation("Range restore cell is outside its range");
-                JsonNode value = entry.get("value");
-                if (value != null && !value.isNull()) {
-                    if (!value.isObject()) throw ServiceException.validation("Range restore value must be an object");
-                    SnapshotMutationSupport.putCell(sheet, coordinate, value);
+            if (snapshot.has("cells")) {
+                JsonNode cells = snapshot.get("cells");
+                if (!cells.isArray()) throw ServiceException.validation("range.clear.restore cells must be an array");
+                if (cells.size() > SnapshotMutationSupport.MAX_CHANGED_CELLS) throw ServiceException.validation("Range restore is too large");
+                SnapshotMutationSupport.clearCells(sheet, range);
+                for (JsonNode entry : cells) {
+                    if (!entry.isObject()) throw ServiceException.validation("Range restore cell must be an object");
+                    SnapshotMutationSupport.CellCoordinate coordinate = SnapshotMutationSupport.coordinate(root, sheetId, (ObjectNode) entry);
+                    if (!SnapshotMutationSupport.contains(range, coordinate)) throw ServiceException.validation("Range restore cell is outside its range");
+                    JsonNode value = entry.get("value");
+                    if (value != null && !value.isNull()) {
+                        if (!value.isObject()) throw ServiceException.validation("Range restore value must be an object");
+                        SnapshotMutationSupport.putCell(sheet, coordinate, value);
+                    }
                 }
             }
             SnapshotMutationSupport.restoreNotes(root, sheet, sheetId, range, snapshot.get("notes"));
@@ -719,6 +722,31 @@ public class MutationDescriptorRegistry {
                 JsonNode rules = snapshot.get("dataValidations");
                 if (!rules.isArray()) throw ServiceException.validation("Range restore dataValidations must be an array");
                 sheet.set("dataValidations", rules.deepCopy());
+            }
+        }
+
+        private void validateClearRestore(ObjectNode params) {
+            SnapshotMutationSupport.validateKnownKeys(params, Set.of("sheetId", "range", "family", "snapshot"), "range.clear.restore");
+            String family = params.path("family").asText(null);
+            if (!CLEAR_FAMILIES.contains(family)) throw ServiceException.validation("Unsupported clear restore family: " + family);
+            ObjectNode snapshot = SnapshotMutationSupport.requiredObject(params, "snapshot");
+            SnapshotMutationSupport.validateKnownKeys(snapshot,
+                    Set.of("cells", "notes", "hyperlinks", "comments", "conditionalFormats", "dataValidations"),
+                    "range.clear.restore snapshot");
+            boolean metadataOnly = "comments-and-notes".equals(family) || "hyperlinks".equals(family);
+            if (snapshot.has("cells") == metadataOnly) {
+                throw ServiceException.validation("range.clear.restore cell snapshot does not match its clear family");
+            }
+            if (snapshot.has("cells") && !snapshot.get("cells").isArray()) {
+                throw ServiceException.validation("range.clear.restore cells must be an array");
+            }
+            if (!snapshot.path("notes").isArray() || !snapshot.path("hyperlinks").isArray() || !snapshot.path("comments").isArray()) {
+                throw ServiceException.validation("range.clear.restore metadata snapshots are required");
+            }
+            boolean includesRules = "formats".equals(family) || "all".equals(family);
+            if (snapshot.has("conditionalFormats") != includesRules || snapshot.has("dataValidations") != includesRules
+                    || includesRules && (!snapshot.path("conditionalFormats").isArray() || !snapshot.path("dataValidations").isArray())) {
+                throw ServiceException.validation("range.clear.restore rule snapshots do not match its clear family");
             }
         }
 

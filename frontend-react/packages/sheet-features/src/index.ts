@@ -178,6 +178,7 @@ export interface SetRangeValuesParams {
 interface ClearRangeRestoreParams {
   sheetId: string;
   range: RangeRef;
+  family: ClearFamily;
   snapshot: ClearRangeSnapshot;
 }
 
@@ -585,12 +586,22 @@ function isClearRangeMutation(value: unknown): value is ClearRangeParams {
 }
 
 function isClearRangeRestoreMutation(value: unknown): value is ClearRangeRestoreParams {
-  return isRecord(value) && typeof value.sheetId === 'string' && isRange(value.range)
-    && isRecord(value.snapshot)
-    && Array.isArray(value.snapshot.cells) && value.snapshot.cells.every((entry) => isRecord(entry) && Number.isInteger(entry.row) && Number.isInteger(entry.column) && (entry.value === undefined || isCellData(entry.value)))
-    && Array.isArray(value.snapshot.notes) && Array.isArray(value.snapshot.hyperlinks) && Array.isArray(value.snapshot.comments)
-    && (value.snapshot.conditionalFormats === undefined || Array.isArray(value.snapshot.conditionalFormats))
-    && (value.snapshot.dataValidations === undefined || Array.isArray(value.snapshot.dataValidations));
+  if (!isRecord(value) || typeof value.sheetId !== 'string' || !isRange(value.range)
+    || !isRecord(value.snapshot)
+    || !Object.keys(value).every((key) => ['sheetId', 'range', 'family', 'snapshot'].includes(key))) return false;
+  const { family, snapshot } = value;
+  if (family !== 'all' && family !== 'contents' && family !== 'formats' && family !== 'comments-and-notes' && family !== 'hyperlinks') return false;
+  if (!Object.keys(snapshot).every((key) => ['cells', 'notes', 'hyperlinks', 'comments', 'conditionalFormats', 'dataValidations'].includes(key))) return false;
+  const metadataOnly = family === 'comments-and-notes' || family === 'hyperlinks';
+  const includesRules = family === 'formats' || family === 'all';
+  const cellsValid = metadataOnly
+    ? snapshot.cells === undefined
+    : Array.isArray(snapshot.cells) && snapshot.cells.every((entry) => isRecord(entry) && Number.isInteger(entry.row) && Number.isInteger(entry.column) && (entry.value === undefined || isCellData(entry.value)));
+  return cellsValid
+    && Array.isArray(snapshot.notes) && Array.isArray(snapshot.hyperlinks) && Array.isArray(snapshot.comments)
+    && (includesRules
+      ? Array.isArray(snapshot.conditionalFormats) && Array.isArray(snapshot.dataValidations)
+      : snapshot.conditionalFormats === undefined && snapshot.dataValidations === undefined);
 }
 
 function isStyleMutation(value: unknown): value is SetRangeStyleParams | { sheetId: string; ranges: RangeRef[]; numberFormat: string } {
@@ -1794,7 +1805,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
           id: 'range.clear.restore',
           unitId: context.workbook.unitId,
           sheetId: params.sheetId,
-          params: { sheetId: params.sheetId, range, snapshot: plan.snapshot },
+          params: { sheetId: params.sheetId, range, family: params.family, snapshot: plan.snapshot },
           affectedRanges,
         }],
         apply: () => runtime.registry.getMutation('range.clear')({ id: 'range.clear', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { ...params, range }, affectedRanges }, context),

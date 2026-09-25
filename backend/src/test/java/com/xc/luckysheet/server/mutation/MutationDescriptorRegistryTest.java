@@ -296,6 +296,61 @@ class MutationDescriptorRegistryTest {
     }
 
     @Test
+    void metadataOnlyClearRestorePreservesCellStorageWhenCellSnapshotIsOmitted() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        var snapshot = mapper.readTree("""
+                {"sheets":[{"id":"sheet-1","rowCount":10,"columnCount":10,"cells":{"0":{"0":{"value":"keep"}}},
+                  "hyperlinks":[],"review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}}}]}
+                """);
+        var mutation = new OperationMutation("range.clear.restore", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","family":"hyperlinks","range":{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0},
+                 "snapshot":{"notes":[],"comments":[],"hyperlinks":[{"row":0,"column":0,"hyperlink":{"id":"link","target":{"kind":"url","url":"https://example.com"}}}]}}
+                """));
+
+        var next = registry.applyPublicMutations(snapshot, List.of(mutation));
+
+        assertEquals("keep", next.path("sheets").get(0).path("cells").path("0").path("0").path("value").asText());
+        assertEquals("link", next.path("sheets").get(0).path("hyperlinks").get(0).path("hyperlink").path("id").asText());
+    }
+
+    @Test
+    void clearRestoreRejectsMissingCellSnapshotForCellClearingFamily() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        var snapshot = mapper.readTree("""
+                {"sheets":[{"id":"sheet-1","rowCount":10,"columnCount":10,"cells":{"0":{"0":{"value":"keep"}}},
+                  "hyperlinks":[],"review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}}}]}
+                """);
+        var mutation = new OperationMutation("range.clear.restore", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","family":"contents","range":{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0},
+                 "snapshot":{"notes":[],"comments":[],"hyperlinks":[]}}
+                """));
+
+        ServiceException error = assertThrows(ServiceException.class,
+                () -> registry.applyPublicMutations(snapshot, List.of(mutation)));
+
+        assertEquals("VALIDATION_ERROR", error.code());
+    }
+
+    @Test
+    void clearRestoreRejectsMissingMetadataSnapshotBeforeRemovingExistingReviewData() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        var snapshot = mapper.readTree("""
+                {"sheets":[{"id":"sheet-1","rowCount":10,"columnCount":10,"cells":{},"hyperlinks":[],
+                  "review":{"notesByCell":{"0:0":"keep"},"notesById":{"note-1":{"id":"note-1","sheetId":"sheet-1","row":0,"column":0,"content":"keep"}},
+                  "threadIdsByCell":{},"threadsById":{}}}]}
+                """);
+        var mutation = new OperationMutation("range.clear.restore", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","family":"hyperlinks","range":{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0},
+                 "snapshot":{"hyperlinks":[],"comments":[]}}
+                """));
+
+        ServiceException error = assertThrows(ServiceException.class,
+                () -> registry.applyPublicMutations(snapshot, List.of(mutation)));
+
+        assertEquals("VALIDATION_ERROR", error.code());
+    }
+
+    @Test
     void rangePasteAcceptsMetadataWhoseEveryOwnedRangeIsInsideTheTarget() throws Exception {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         var snapshot = mapper.readTree("""

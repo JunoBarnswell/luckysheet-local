@@ -262,7 +262,7 @@ export function parseLoadedOoxml(loaded: LoadedOpcPackageGraph, options: ParseLo
   const unitId = `imported-${randomId()}`;
   const snapshot: WorkbookSnapshot = {
     schema: 'WorkbookSnapshot',
-    version: 9,
+    version: 10,
     unitId,
     name: options.workbookName ?? 'Imported Workbook',
     dimensionMetrics: { normalFontFamily: styles.normalFont.family, normalFontSizePx: pointsToPixels(styles.normalFont.sizePt), maximumDigitWidthPx: styles.maximumDigitWidthPx },
@@ -790,7 +790,7 @@ function parseSheet(
     hiddenRows: manualHiddenRows,
     hiddenColumns,
     tabColor,
-    ...(hyperlinks.length ? { hyperlinks } : {}),
+    hyperlinks,
     review,
     ...(autoFilter ? { autoFilter } : {}),
     ...(outline ? { outline } : {}),
@@ -1794,7 +1794,7 @@ function buildWorksheetXml(
   }
   if (sheet.conditionalFormats?.length) xml += serializeConditionalFormats(sheet.conditionalFormats, differentialStyleIndexes);
   if (sheet.dataValidations?.length) xml += serializeDataValidations(sheet.dataValidations);
-  const hyperlinks = (sheet.hyperlinks ?? []).map((entry) => {
+  const hyperlinks = sheet.hyperlinks.map((entry) => {
     const link = entry.hyperlink;
     const address = `${columnToLetter(entry.column)}${entry.row + 1}`;
     const relation = relationships.find((candidate) => isRelationshipKind(candidate.type, 'hyperlink') && candidate.target === hyperlinkTarget(link));
@@ -2450,7 +2450,7 @@ function mergeRelationships(existing: NativeRelationship[], required: Array<Pick
 
 function collectHyperlinkRelationships(sheet: SheetSnapshot, existing: NativeRelationship[]): Array<Pick<NativeRelationship, 'type' | 'target' | 'targetMode'>> {
   const links: Array<Pick<NativeRelationship, 'type' | 'target' | 'targetMode'>> = [];
-  for (const entry of sheet.hyperlinks ?? []) {
+  for (const entry of sheet.hyperlinks) {
     const target = entry.hyperlink.target;
     if (target.kind !== 'url' && target.kind !== 'email') continue;
     const href = hyperlinkTarget(entry.hyperlink);
@@ -2493,10 +2493,12 @@ function hyperlinkForCell(root: XmlNode, relationships: NativeRelationship[], ro
     const separator = location.lastIndexOf('!');
     if (separator > 0) {
       const rawSheetName = location.slice(0, separator).replace(/^'(.*)'$/, '$1').replace(/''/g, "'");
-      const targetSheet = sheetDescriptors.find((descriptor) => descriptor.name === rawSheetName);
+      const targetSheet = sheetDescriptors.find((descriptor) => descriptor.name.toLocaleLowerCase('en-US') === rawSheetName.toLocaleLowerCase('en-US'));
       const targetAddress = location.slice(separator + 1);
-      if (!targetSheet || !parseA1(targetAddress)) throw new Error(`Hyperlink worksheet location is invalid: ${location}`);
-      return { id: `hyperlink-${row}-${column}`, target: { kind: 'sheet', sheetId: targetSheet.id, address: targetAddress }, ...(node.attrs.tooltip ? { tooltip: node.attrs.tooltip } : {}) };
+      const parsedAddress = parseA1(targetAddress);
+      if (!targetSheet || !parsedAddress) throw new Error(`Hyperlink worksheet location is invalid: ${location}`);
+      const canonicalAddress = `${columnToLetter(parsedAddress.column)}${parsedAddress.row + 1}`;
+      return { id: `hyperlink-${row}-${column}`, target: { kind: 'sheet', sheetId: targetSheet.id, address: canonicalAddress }, ...(node.attrs.tooltip ? { tooltip: node.attrs.tooltip } : {}) };
     }
     return { id: `hyperlink-${row}-${column}`, target: { kind: 'name', name: location }, ...(node.attrs.tooltip ? { tooltip: node.attrs.tooltip } : {}) };
   }
@@ -3307,7 +3309,7 @@ function validateOoxmlExchangeBoundary(sheet: SheetSnapshot): void {
   for (const rule of sheet.dataValidations ?? []) {
     if (rule.listSource?.kind === 'range') validateOoxmlRange(rule.listSource.range, `${sheet.name}!validation source`);
   }
-  for (const hyperlink of sheet.hyperlinks ?? []) assertOoxmlAddress(hyperlink.row, hyperlink.column, `${sheet.name}!hyperlink`);
+  for (const hyperlink of sheet.hyperlinks) assertOoxmlAddress(hyperlink.row, hyperlink.column, `${sheet.name}!hyperlink`);
 }
 
 function validateOoxmlRange(range: RangeRef, subject: string): void {

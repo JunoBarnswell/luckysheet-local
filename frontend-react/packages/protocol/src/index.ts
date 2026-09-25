@@ -1,4 +1,4 @@
-import { createPivotCollator, normalizePivotRefreshPolicy, parsePivotCalculatedItemFormula, PIVOT_MAX_MEMBER_COUNT } from '@react-sheets/core-model';
+import { assertCanonicalWorkbookHyperlinks, createPivotCollator, normalizePivotRefreshPolicy, parsePivotCalculatedItemFormula, PIVOT_MAX_MEMBER_COUNT } from '@react-sheets/core-model';
 import type {
   DataSourceManifest,
   PivotDefinition,
@@ -1139,7 +1139,8 @@ export function validateWorkbookSnapshot(value: unknown): WorkbookSnapshot {
       || !sheet.cells || typeof sheet.cells !== 'object'
       || !Array.isArray(sheet.merges)
       || !Array.isArray(sheet.pivots)
-      || !Array.isArray(sheet.sparklines)) {
+      || !Array.isArray(sheet.sparklines)
+      || !Array.isArray(sheet.hyperlinks)) {
       throw new Error(`WorkbookSnapshot sheet[${index}] has invalid grid data`);
     }
     validateReviewSnapshot(sheet.review, String(sheet.id));
@@ -1161,10 +1162,8 @@ export function validateWorkbookSnapshot(value: unknown): WorkbookSnapshot {
     if (!Array.isArray(sheet.drawings) || !sheet.drawingPayloads || typeof sheet.drawingPayloads !== 'object') {
       throw new Error(`WorkbookSnapshot sheet[${index}] requires canonical drawings and payloads`);
     }
-    if (sheet.hyperlinks !== undefined) {
-      if (!Array.isArray(sheet.hyperlinks) || sheet.hyperlinks.some((entry) => !entry || typeof entry !== 'object')) {
-        throw new Error(`WorkbookSnapshot sheet[${index}] hyperlinks are invalid`);
-      }
+    if (sheet.hyperlinks.some((entry) => !entry || typeof entry !== 'object' || Array.isArray(entry))) {
+      throw new Error(`WorkbookSnapshot sheet[${index}] hyperlinks are invalid`);
     }
     for (const pivot of sheet.pivots) validatePivotDefinition(pivot);
     if (sheet.dataRegions !== undefined) {
@@ -1180,6 +1179,7 @@ export function validateWorkbookSnapshot(value: unknown): WorkbookSnapshot {
       }
     }
   }
+  assertCanonicalWorkbookHyperlinks(value as WorkbookSnapshot);
   return value as WorkbookSnapshot;
 }
 

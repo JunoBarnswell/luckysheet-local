@@ -19,11 +19,20 @@ public final class SnapshotUpgrade {
         if (snapshot.path("version").asInt(-1) == GeneratedWorkbookContract.SNAPSHOT_VERSION) {
             return requireCanonical(snapshot, expectedUnitId);
         }
+        if (snapshot.path("version").asInt(-1) == 9 && snapshot.path("sheets").isArray()) {
+            snapshot.put("version", GeneratedWorkbookContract.SNAPSHOT_VERSION);
+            for (JsonNode raw : (ArrayNode) snapshot.path("sheets")) {
+                if (!raw.isObject()) throw ServiceException.validation("Stored workbook snapshot sheet is invalid");
+                migrateLegacyHyperlinks((ObjectNode) raw);
+            }
+            return requireCanonical(snapshot, expectedUnitId);
+        }
         if (snapshot.path("version").asInt(-1) == 7 && snapshot.path("sheets").isArray()) {
             snapshot.put("version", GeneratedWorkbookContract.SNAPSHOT_VERSION);
             for (JsonNode raw : (ArrayNode) snapshot.path("sheets")) {
                 if (!raw.isObject()) throw ServiceException.validation("Stored workbook snapshot sheet is invalid");
                 migrateLegacyReview((ObjectNode) raw);
+                migrateLegacyHyperlinks((ObjectNode) raw);
             }
             return requireCanonical(snapshot, expectedUnitId);
         }
@@ -33,6 +42,7 @@ public final class SnapshotUpgrade {
             for (JsonNode raw : (ArrayNode) snapshot.path("sheets")) {
                 if (!raw.isObject()) throw ServiceException.validation("Stored workbook snapshot sheet is invalid");
                 migrateLegacyReview((ObjectNode) raw);
+                migrateLegacyHyperlinks((ObjectNode) raw);
             }
             return requireCanonical(snapshot, expectedUnitId);
         }
@@ -52,6 +62,7 @@ public final class SnapshotUpgrade {
                 ObjectNode sheet = (ObjectNode) raw;
                 if (!sheet.has("kind")) sheet.put("kind", "worksheet");
                 migrateLegacyReview(sheet);
+                migrateLegacyHyperlinks(sheet);
             }
             return requireCanonical(snapshot, expectedUnitId);
         }
@@ -158,6 +169,61 @@ public final class SnapshotUpgrade {
         });
         sheet.set("review", review);
         sheet.remove(java.util.List.of("notes", "commentThreads"));
+    }
+
+    private static void migrateLegacyHyperlinks(ObjectNode sheet) {
+        JsonNode cells = sheet.get("cells");
+        if (cells == null || !cells.isObject()) throw ServiceException.validation("Stored workbook snapshot cells are invalid");
+        JsonNode current = sheet.get("hyperlinks");
+        if (current != null && !current.isArray()) throw ServiceException.validation("Stored worksheet hyperlinks are invalid");
+        ArrayNode existing = current == null ? sheet.arrayNode() : (ArrayNode) current;
+        java.util.Set<String> canonicalPositions = new java.util.HashSet<>();
+        for (JsonNode entry : existing) {
+            if (entry.isObject() && entry.path("row").isIntegralNumber() && entry.path("row").canConvertToInt()
+                    && entry.path("column").isIntegralNumber() && entry.path("column").canConvertToInt()) {
+                canonicalPositions.add(entry.path("row").intValue() + ":" + entry.path("column").intValue());
+            }
+        }
+        ArrayNode legacyLinks = sheet.arrayNode();
+        cells.fields().forEachRemaining(rowEntry -> {
+            int row = parseLegacyCoordinate(rowEntry.getKey(), "row");
+            if (!rowEntry.getValue().isObject()) throw ServiceException.validation("Legacy cell row is invalid");
+            rowEntry.getValue().fields().forEachRemaining(columnEntry -> {
+                int column = parseLegacyCoordinate(columnEntry.getKey(), "column");
+                if (!columnEntry.getValue().isObject()) throw ServiceException.validation("Legacy cell is invalid");
+                ObjectNode cell = (ObjectNode) columnEntry.getValue();
+                JsonNode detail = cell.get("hyperlinkDetail");
+                JsonNode legacy = detail != null && !detail.isNull() ? detail : null;
+                if (legacy == null && isTruthy(cell.get("hyperlink"))) {
+                    ObjectNode target = sheet.objectNode().put("kind", "url");
+                    target.set("url", cell.get("hyperlink").deepCopy());
+                    ObjectNode generated = sheet.objectNode().put("id", "legacy-hyperlink-" + row + "-" + column);
+                    generated.set("target", target);
+                    legacy = generated;
+                }
+                if (isTruthy(legacy)) {
+                    ObjectNode entry = sheet.objectNode().put("row", row).put("column", column);
+                    entry.set("hyperlink", legacy.deepCopy());
+                    legacyLinks.add(entry);
+                }
+                cell.remove(java.util.List.of("hyperlink", "hyperlinkDetail"));
+            });
+        });
+        ArrayNode migrated = sheet.arrayNode();
+        for (JsonNode entry : legacyLinks) {
+            String position = entry.path("row").asInt() + ":" + entry.path("column").asInt();
+            if (!canonicalPositions.contains(position)) migrated.add(entry);
+        }
+        migrated.addAll(existing.deepCopy());
+        sheet.set("hyperlinks", migrated);
+    }
+
+    private static boolean isTruthy(JsonNode value) {
+        if (value == null || value.isNull() || value.isMissingNode()) return false;
+        if (value.isBoolean()) return value.booleanValue();
+        if (value.isNumber()) return value.asDouble() != 0;
+        if (value.isTextual()) return !value.asText().isEmpty();
+        return true;
     }
 
     private static int parseLegacyCoordinate(String value, String label) {

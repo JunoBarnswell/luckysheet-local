@@ -204,9 +204,6 @@ export interface CellData {
   formulaMetadata?: FormulaMetadata;
   /** 公式引擎结果（含错误）。禁止再用 error: string 当真相 */
   formulaValue?: import('./domain').FormulaValue;
-  /** @deprecated prefer hyperlinkDetail */
-  hyperlink?: string;
-  hyperlinkDetail?: CellHyperlink;
   /** Native AutoFilter color/icon identity resolved at the import boundary. */
   filterMetadata?: {
     color?: { target: 'cell' | 'font'; dxfId?: number; value?: string };
@@ -546,6 +543,7 @@ export {
   loadWorkbookFromSnapshot,
   createWorkbookSnapshot,
   migrateStoredWorkbookSnapshot,
+  assertCanonicalWorkbookHyperlinks,
   assertCanonicalWorkbookSnapshot,
   MAX_DRAWING_SOURCE_CELLS,
   type WorkbookSnapshot,
@@ -1572,7 +1570,7 @@ export interface SheetSnapshot {
   drawingPayloads: Record<string, DrawingPayload>;
   drawingGroups?: DrawingGroup[];
   snapSettings?: WorksheetSnapSettings;
-  hyperlinks?: Array<{ row: number; column: number; hyperlink: CellHyperlink }>;
+  hyperlinks: Array<{ row: number; column: number; hyperlink: CellHyperlink }>;
   review: ReviewStoreSnapshot;
   conditionalFormats?: ConditionalFormatRule[];
   dataValidations?: DataValidationRule[];
@@ -1988,7 +1986,7 @@ export class WorkbookModel {
   snapshot(): WorkbookSnapshot {
     return {
       schema: 'WorkbookSnapshot',
-      version: 9,
+      version: 10,
       unitId: this.unitId,
       name: this.name,
       dimensionMetrics: structuredClone(this.dimensionMetrics),
@@ -2054,7 +2052,7 @@ export class WorkbookModel {
 
   static fromSnapshot(snapshot: WorkbookSnapshot): WorkbookModel {
     if (snapshot.schema !== 'WorkbookSnapshot') throw new Error('Unsupported workbook snapshot schema');
-    if (snapshot.version !== 9) throw new Error('Unsupported workbook snapshot version');
+    if (snapshot.version !== 10) throw new Error('Unsupported workbook snapshot version');
     if (snapshot.sheets.length === 0) throw new Error('Workbook snapshot must contain at least one sheet');
     const workbook = new WorkbookModel(snapshot.unitId, snapshot.name);
     workbook.dimensionMetrics = structuredClone(snapshot.dimensionMetrics);
@@ -2080,24 +2078,6 @@ export class WorkbookModel {
       sheet.ganttSheet = input.ganttSheet ? structuredClone(input.ganttSheet) : undefined;
       sheet.reportSheet = input.reportSheet ? structuredClone(input.reportSheet) : undefined;
       sheet.cells.deferJSON(input.cells);
-      // Canonical snapshots keep hyperlink metadata outside CellMatrix. The
-      // legacy hyperlink carrier is migrated only when this sheet is first
-      // materialized, so opening a workbook does not parse every sheet's
-      // sparse cell map up front.
-      if (Object.values(input.cells).some((columns) => Object.values(columns).some((cell) => cell.hyperlinkDetail !== undefined || cell.hyperlink !== undefined))) {
-        sheet.cells.forEach((cell, row, column) => {
-          const normalized = structuredClone(cell);
-          const legacy = normalized.hyperlinkDetail
-            ?? (normalized.hyperlink ? {
-              id: `legacy-hyperlink-${row}-${column}`,
-              target: { kind: 'url' as const, url: normalized.hyperlink },
-            } : undefined);
-          delete normalized.hyperlink;
-          delete normalized.hyperlinkDetail;
-          sheet.cells.set(row, column, normalized);
-          if (legacy) sheet.hyperlinks.set(cellKey(row, column), legacy);
-        });
-      }
       if (input.dataRegions) sheet.replaceDataRegions(input.dataRegions);
       sheet.merges.push(...structuredClone(input.merges));
       sheet.pane = normalizeWorksheetPane(input.pane);
@@ -2110,9 +2090,7 @@ export class WorkbookModel {
       }
       if (input.drawingGroups) sheet.drawingGroups.push(...structuredClone(input.drawingGroups));
       sheet.snapSettings = input.snapSettings ? structuredClone(input.snapSettings) : structuredClone(DEFAULT_WORKSHEET_SNAP_SETTINGS);
-      if (input.hyperlinks) {
-        for (const entry of input.hyperlinks) sheet.hyperlinks.set(cellKey(entry.row, entry.column), structuredClone(entry.hyperlink));
-      }
+      for (const entry of input.hyperlinks) sheet.hyperlinks.set(cellKey(entry.row, entry.column), structuredClone(entry.hyperlink));
       const review = ReviewStore.fromSnapshot(input.id, input.review);
       sheet.review.replaceNotes(review.noteEntries());
       sheet.review.replaceThreads(review.threadEntries());

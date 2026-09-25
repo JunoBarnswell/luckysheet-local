@@ -446,7 +446,9 @@ describe('exchange-excel-ooxml', () => {
     const emitted = loadOpcPackageGraph(buffer);
     assert.match(strFromU8(emitted.files['xl/worksheets/sheet1.xml']!), /<hyperlink ref="A1"/);
     assert.match(strFromU8(emitted.files['xl/worksheets/_rels/sheet1.xml.rels']!), /https:\/\/openai\.com\//);
-    const imported = await importOoxmlDocument({ fileName: 'links.xlsx', buffer, options: { compatibilityTarget: 'B' } });
+    const worksheetXml = strFromU8(emitted.packageGraph.parts['xl/worksheets/sheet1.xml']!);
+    emitted.packageGraph.parts['xl/worksheets/sheet1.xml'] = strToU8(worksheetXml.replace('location="Target!B2"', 'location="target!$b$2"'));
+    const imported = await importOoxmlDocument({ fileName: 'links.xlsx', buffer: zipOpcPartsBuffer(emitted.packageGraph.parts), options: { compatibilityTarget: 'B' } });
     assert.equal(imported.snapshot.sheets[0]?.hyperlinks?.[0]?.hyperlink.target.kind, 'url');
     assert.deepEqual(imported.snapshot.sheets[0]?.hyperlinks?.[1]?.hyperlink.target, { kind: 'email', address: 'team@example.com', subject: 'Review' });
     assert.deepEqual(imported.snapshot.sheets[0]?.hyperlinks?.[2]?.hyperlink.target, { kind: 'sheet', sheetId: 'sheet-target', address: 'B2' });

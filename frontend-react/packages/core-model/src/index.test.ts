@@ -14,13 +14,58 @@ import {
 } from './index';
 import { assertCanonicalWorkbookSnapshot, migrateStoredWorkbookSnapshot } from './snapshot';
 
-test('v8 storage migration creates the single canonical v9 editing options contract', () => {
+test('v8 storage migration creates the single canonical v10 editing options contract', () => {
   const legacy = structuredClone(new WorkbookModel('unit-v8-editing', 'Legacy').snapshot()) as unknown as Record<string, unknown>;
   legacy.version = 8;
   delete legacy.editingOptions;
   const migrated = migrateStoredWorkbookSnapshot(legacy);
-  assert.equal(migrated.version, 9);
+  assert.equal(migrated.version, 10);
   assert.deepEqual(migrated.editingOptions, { allowEditDirectly: true, moveAfterEnter: true, enterDirection: 'down', formulaAutoComplete: true, valueAutoComplete: true, fixedDecimalPlaces: null });
+});
+
+test('v9 migration extracts legacy cell hyperlinks without hydrating deferred sheets', () => {
+  const legacy = structuredClone(new WorkbookModel('unit-v9-hyperlinks', 'Legacy hyperlinks').snapshot()) as unknown as Record<string, any>;
+  legacy.version = 9;
+  const sheet = legacy.sheets[0] as Record<string, any>;
+  sheet.cells = {
+    '0': {
+      '0': { value: 'legacy url', hyperlink: 'https://legacy.example' },
+      '1': { value: 'legacy detail', hyperlinkDetail: { id: 'legacy-detail', target: { kind: 'email', address: 'link@example.com' } } },
+    },
+  };
+  sheet.hyperlinks = [{ row: 0, column: 0, hyperlink: { id: 'canonical', target: { kind: 'url', url: 'https://canonical.example' } } }];
+
+  const migrated = migrateStoredWorkbookSnapshot(legacy);
+  const migratedSheet = migrated.sheets[0]!;
+  assert.equal(migrated.version, 10);
+  assert.deepEqual(migratedSheet.hyperlinks, [
+    { row: 0, column: 1, hyperlink: { id: 'legacy-detail', target: { kind: 'email', address: 'link@example.com' } } },
+    { row: 0, column: 0, hyperlink: { id: 'canonical', target: { kind: 'url', url: 'https://canonical.example' } } },
+  ]);
+  assert.equal('hyperlink' in migratedSheet.cells['0']!['0']!, false);
+  assert.equal('hyperlinkDetail' in migratedSheet.cells['0']!['1']!, false);
+
+  const restored = WorkbookModel.fromSnapshot(migrated);
+  const restoredSheet = restored.getSheet(migratedSheet.id);
+  assert.equal(restoredSheet.cells.isHydrated, false);
+  assert.equal(restoredSheet.hyperlinks.get('0:0')?.id, 'canonical');
+  assert.equal(restoredSheet.hyperlinks.get('0:1')?.id, 'legacy-detail');
+});
+
+test('canonical snapshots reject legacy cell hyperlinks and dangling sheet hyperlink targets', () => {
+  const snapshot = new WorkbookModel('unit-hyperlink-contract', 'Hyperlink contract').snapshot();
+  const sheet = snapshot.sheets[0]!;
+  const cells = sheet.cells as unknown as Record<string, Record<string, Record<string, unknown>>>;
+  cells['0'] = { '0': { hyperlink: 'https://legacy.example' } };
+  assert.throws(() => assertCanonicalWorkbookSnapshot(snapshot), /legacy hyperlink metadata/);
+
+  delete cells['0'];
+  sheet.hyperlinks = [{
+    row: 0,
+    column: 0,
+    hyperlink: { id: 'dangling', target: { kind: 'sheet', sheetId: 'missing-sheet', address: 'A1' } },
+  }];
+  assert.throws(() => assertCanonicalWorkbookSnapshot(snapshot), /target worksheet not found/);
 });
 
 test('canonical snapshots bound drawing source work', () => {

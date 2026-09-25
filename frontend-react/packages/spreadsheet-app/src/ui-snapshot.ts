@@ -303,8 +303,7 @@ export function buildCanvasSheetSnapshot(
     const thread = findCommentThreadAt(sheet, row, column);
     const note = sheet.review.getNoteAt(row, column);
     const comment = thread ? threadToCellComment(thread) : undefined;
-    const hyperlinkDetail = getCellHyperlink(sheet, row, column) ?? modelCell?.hyperlinkDetail;
-    const hyperlink = resolveHyperlinkDisplay(hyperlinkDetail);
+    const hyperlink = resolveHyperlinkDisplay(getCellHyperlink(sheet, row, column));
     return {
       address: cellAddress(row, column),
       formula: modelCell?.formula,

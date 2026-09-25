@@ -1,4 +1,4 @@
-import type { DefinedNameModel, SheetSnapshot, RangeRef, CellStyleTemplate, UnitId, WorkbookModel, WorkbookTheme } from './index';
+import type { CellHyperlink, DefinedNameModel, SheetSnapshot, RangeRef, CellStyleTemplate, UnitId, WorkbookModel, WorkbookTheme } from './index';
 import type { PrintDocumentSnapshot, QueryDefinitionSnapshot } from './workbook-state';
 import { WorkbookModel as WorkbookModelClass } from './index';
 import { MAX_DRAWING_SOURCE_CELLS } from './generated-workbook-limits';
@@ -16,6 +16,10 @@ import type { ReviewStoreSnapshot } from './review-store';
 import { isAnalysisViewDefinition, type AnalysisViewDefinition } from './data-model';
 import { DEFAULT_WORKBOOK_CALCULATION_SETTINGS, isWorkbookCalculationSettings, type WorkbookCalculationSettings, type WorkbookCollationContext } from '@react-sheets/formula-engine';
 
+const HYPERLINK_EMAIL_ADDRESS = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const HYPERLINK_SHEET_ADDRESS = /^([A-Za-z]+)([1-9][0-9]*)$/;
+const HYPERLINK_DEFINED_NAME = /^[A-Za-z_\\][A-Za-z0-9_.]*$/;
+
 /**
  * The single persisted/transport snapshot contract. Floating objects are
  * represented only by the canonical drawing collection and payload map.
@@ -24,7 +28,7 @@ import { DEFAULT_WORKBOOK_CALCULATION_SETTINGS, isWorkbookCalculationSettings, t
 export interface WorkbookSnapshot {
   schema: 'WorkbookSnapshot';
   /** Canonical persisted schema revision. Non-matching snapshots are rejected. */
-  version: 9;
+  version: 10;
   unitId: UnitId;
   name: string;
   dimensionMetrics: WorkbookDimensionMetrics;
@@ -53,7 +57,7 @@ export interface WorkbookDimensionMetrics {
   maximumDigitWidthPx: number;
 }
 
-export const WORKBOOK_SNAPSHOT_SCHEMA_REVISION = 9 as const;
+export const WORKBOOK_SNAPSHOT_SCHEMA_REVISION = 10 as const;
 
 /**
  * One-way browser-storage migration. It preserves v2 native geometry exactly
@@ -68,15 +72,22 @@ export function migrateStoredWorkbookSnapshot(value: unknown): WorkbookSnapshot 
     input.version = input.dimensionMetrics && input.sheets.every((sheet: Record<string, unknown>) => sheet.pane && sheet.defaultRowHeightPx && sheet.defaultColumnWidthPx) ? 4 : 2;
   }
   if (input.version === WORKBOOK_SNAPSHOT_SCHEMA_REVISION) return assertCanonicalWorkbookSnapshot(input as WorkbookSnapshot);
+  if (input.version === 9 && Array.isArray(input.sheets)) {
+    input.version = WORKBOOK_SNAPSHOT_SCHEMA_REVISION;
+    migrateLegacyHyperlinks(input.sheets);
+    return assertCanonicalWorkbookSnapshot(input as WorkbookSnapshot);
+  }
   if (input.version === 8 && Array.isArray(input.sheets)) {
     input.version = WORKBOOK_SNAPSHOT_SCHEMA_REVISION;
     input.editingOptions = structuredClone(DEFAULT_WORKBOOK_EDITING_OPTIONS);
+    migrateLegacyHyperlinks(input.sheets);
     return assertCanonicalWorkbookSnapshot(input as WorkbookSnapshot);
   }
   if (input.version === 7 && Array.isArray(input.sheets)) {
     input.version = WORKBOOK_SNAPSHOT_SCHEMA_REVISION;
     input.editingOptions = structuredClone(DEFAULT_WORKBOOK_EDITING_OPTIONS);
     for (const sheet of input.sheets as Array<Record<string, any>>) migrateLegacyReview(sheet);
+    migrateLegacyHyperlinks(input.sheets);
     return assertCanonicalWorkbookSnapshot(input as WorkbookSnapshot);
   }
   if (input.version === 6 && Array.isArray(input.sheets)) {
@@ -85,6 +96,7 @@ export function migrateStoredWorkbookSnapshot(value: unknown): WorkbookSnapshot 
     input.calculationSettings = input.calculationSettings ?? structuredClone(DEFAULT_WORKBOOK_CALCULATION_SETTINGS);
     if (containsLegacyImageDataUrl(input)) throw new Error('ASSET_MIGRATION_REQUIRED: legacy image data must be assetized before runtime load');
     for (const sheet of input.sheets as Array<Record<string, any>>) migrateLegacyReview(sheet);
+    migrateLegacyHyperlinks(input.sheets);
     return assertCanonicalWorkbookSnapshot(input as WorkbookSnapshot);
   }
   if (input.version === 5 && Array.isArray(input.sheets)) {
@@ -92,6 +104,7 @@ export function migrateStoredWorkbookSnapshot(value: unknown): WorkbookSnapshot 
     input.editingOptions = structuredClone(DEFAULT_WORKBOOK_EDITING_OPTIONS);
     input.calculationSettings = input.calculationSettings ?? structuredClone(DEFAULT_WORKBOOK_CALCULATION_SETTINGS);
     for (const sheet of input.sheets as Array<Record<string, any>>) migrateLegacyReview(sheet);
+    migrateLegacyHyperlinks(input.sheets);
     return assertCanonicalWorkbookSnapshot(input as WorkbookSnapshot);
   }
   if (input.version === 4 && Array.isArray(input.sheets)) {
@@ -221,6 +234,56 @@ function migrateLegacyReview(sheet: Record<string, any>): void {
   delete sheet.commentThreads;
 }
 
+function migrateLegacyHyperlinks(sheets: unknown[]): void {
+  for (const rawSheet of sheets) {
+    if (!rawSheet || typeof rawSheet !== 'object' || Array.isArray(rawSheet)) {
+      throw new Error('Stored workbook snapshot sheet is invalid');
+    }
+    const sheet = rawSheet as Record<string, any>;
+    if (!sheet.cells || typeof sheet.cells !== 'object' || Array.isArray(sheet.cells)) {
+      throw new Error('Stored workbook snapshot cells are invalid');
+    }
+    const legacyLinks: Array<{ row: number; column: number; hyperlink: CellHyperlink }> = [];
+    for (const [rowKey, rawColumns] of Object.entries(sheet.cells as Record<string, unknown>)) {
+      if (!rawColumns || typeof rawColumns !== 'object' || Array.isArray(rawColumns)) {
+        throw new Error('Stored workbook snapshot cell row is invalid');
+      }
+      for (const [columnKey, rawCell] of Object.entries(rawColumns as Record<string, unknown>)) {
+        if (!rawCell || typeof rawCell !== 'object' || Array.isArray(rawCell)) {
+          throw new Error('Stored workbook snapshot cell is invalid');
+        }
+        const cell = rawCell as Record<string, any>;
+        const detail = cell.hyperlinkDetail;
+        const legacy = detail ?? (cell.hyperlink ? {
+          id: `legacy-hyperlink-${rowKey}-${columnKey}`,
+          target: { kind: 'url', url: cell.hyperlink },
+        } : undefined);
+        if (legacy) {
+          if (!/^\d+$/.test(rowKey) || !/^\d+$/.test(columnKey)) {
+            throw new Error('Legacy cell hyperlink coordinate is invalid');
+          }
+          legacyLinks.push({ row: Number(rowKey), column: Number(columnKey), hyperlink: legacy as CellHyperlink });
+        }
+        delete cell.hyperlink;
+        delete cell.hyperlinkDetail;
+      }
+    }
+    if (sheet.hyperlinks !== undefined && !Array.isArray(sheet.hyperlinks)) {
+      throw new Error('Stored worksheet hyperlinks are invalid');
+    }
+    const canonicalLinks = (sheet.hyperlinks ?? []) as Array<{ row?: unknown; column?: unknown }>;
+    const canonicalCoordinates = new Set(canonicalLinks.flatMap((entry) =>
+      entry && Number.isSafeInteger(entry.row) && Number.isSafeInteger(entry.column)
+        ? [`${entry.row}:${entry.column}`]
+        : [],
+    ));
+    sheet.hyperlinks = [
+      ...legacyLinks.filter((entry) => !canonicalCoordinates.has(`${entry.row}:${entry.column}`)),
+      ...canonicalLinks,
+    ];
+  }
+}
+
 function migrateLegacyFilter(sheet: Record<string, any>): void {
   if (!sheet.filter || typeof sheet.filter !== 'object') return;
   const legacy = sheet.filter as Record<string, any>;
@@ -302,6 +365,7 @@ export function assertCanonicalWorkbookSnapshot(snapshot: WorkbookSnapshot): Wor
       throw new Error('Workbook theme is invalid');
     }
   }
+  assertCanonicalWorkbookHyperlinks(snapshot);
   const pivotIds = new Set<string>();
   for (const sheet of snapshot.sheets) {
     if (!['worksheet', 'table-sheet', 'gantt-sheet', 'report-sheet'].includes(sheet.kind)) throw new Error('Worksheet kind is invalid');
@@ -375,6 +439,7 @@ export function assertCanonicalWorkbookSnapshot(snapshot: WorkbookSnapshot): Wor
     for (const row of Object.values(sheet.cells)) {
       for (const cell of Object.values(row)) {
         if ('note' in cell || 'comment' in cell) throw new Error(`Cell ${sheet.id} contains legacy review metadata`);
+        if ('hyperlink' in cell || 'hyperlinkDetail' in cell) throw new Error(`Cell ${sheet.id} contains legacy hyperlink metadata`);
         if (cell.phonetic && !isCellPhoneticMetadata(cell.phonetic)) throw new Error(`Cell ${sheet.id} contains invalid phonetic metadata`);
         if (cell.presentation?.kind === 'image' && !isAssetRef(cell.presentation.asset)) throw new Error('Cell image asset is invalid');
         if (cell.style?.fontFamily !== undefined) normalizeFontFamily(cell.style.fontFamily);
@@ -442,6 +507,119 @@ export function assertCanonicalWorkbookSnapshot(snapshot: WorkbookSnapshot): Wor
     templateIds.add(template.id);
   }
   return canonical;
+}
+
+export function assertCanonicalWorkbookHyperlinks(snapshot: WorkbookSnapshot): void {
+  if (!snapshot || !Array.isArray(snapshot.sheets) || snapshot.sheets.length === 0) {
+    throw new Error('Workbook snapshot worksheets are invalid');
+  }
+  const sheetsById = new Map<string, SheetSnapshot>();
+  for (const sheet of snapshot.sheets) {
+    if (!sheet || typeof sheet.id !== 'string' || !sheet.id.trim() || sheetsById.has(sheet.id)
+      || !Number.isSafeInteger(sheet.rowCount) || sheet.rowCount < 1
+      || !Number.isSafeInteger(sheet.columnCount) || sheet.columnCount < 1) {
+      throw new Error('Workbook snapshot worksheet identity or dimensions are invalid');
+    }
+    sheetsById.set(sheet.id, sheet);
+  }
+  for (const sheet of snapshot.sheets) {
+    if (!Array.isArray(sheet.hyperlinks)) throw new Error(`Worksheet hyperlinks are invalid for ${sheet.id}`);
+    const positions = new Set<string>();
+    for (const entry of sheet.hyperlinks) {
+      if (!entry || !hasOnlyKeys(entry, ['row', 'column', 'hyperlink'])
+        || !Number.isSafeInteger(entry.row) || !Number.isSafeInteger(entry.column)
+        || entry.row < 0 || entry.row >= sheet.rowCount || entry.column < 0 || entry.column >= sheet.columnCount) {
+        throw new Error(`Worksheet hyperlink coordinate is outside the worksheet: ${sheet.id}`);
+      }
+      const position = `${entry.row}:${entry.column}`;
+      if (positions.has(position)) throw new Error(`Worksheet hyperlink coordinate is duplicated: ${sheet.id}!${position}`);
+      positions.add(position);
+      const hyperlink = entry.hyperlink;
+      if (!hyperlink || typeof hyperlink.id !== 'string' || !hyperlink.id.trim()
+        || !hasOnlyKeys(hyperlink, ['id', 'target', 'tooltip'])
+        || !hyperlink.target || typeof hyperlink.target !== 'object'
+        || (hyperlink.tooltip !== undefined && typeof hyperlink.tooltip !== 'string')) {
+        throw new Error(`Worksheet hyperlink is invalid: ${sheet.id}!${position}`);
+      }
+      validateCanonicalHyperlinkTarget(hyperlink.target, sheet, snapshot, sheetsById);
+    }
+  }
+}
+
+function validateCanonicalHyperlinkTarget(
+  target: CellHyperlink['target'],
+  sourceSheet: SheetSnapshot,
+  snapshot: WorkbookSnapshot,
+  sheetsById: ReadonlyMap<string, SheetSnapshot>,
+): void {
+  if (target.kind === 'url') {
+    if (!hasOnlyKeys(target, ['kind', 'url'])) throw new Error('Hyperlink URL target contains unsupported fields');
+    if (typeof target.url !== 'string' || !target.url.trim()) throw new Error('Hyperlink URL is required');
+    let parsed: URL;
+    try { parsed = new URL(target.url.trim()); } catch { throw new Error('Invalid hyperlink URL'); }
+    if (!['http:', 'https:', 'ftp:'].includes(parsed.protocol) || !parsed.hostname) throw new Error('Unsupported hyperlink URL scheme');
+    return;
+  }
+  if (target.kind === 'email') {
+    if (!hasOnlyKeys(target, ['kind', 'address', 'subject'])) throw new Error('Email hyperlink target contains unsupported fields');
+    if (typeof target.address !== 'string' || !HYPERLINK_EMAIL_ADDRESS.test(target.address.trim())
+      || (target.subject !== undefined && typeof target.subject !== 'string')) throw new Error('Email hyperlink is invalid');
+    return;
+  }
+  if (target.kind === 'sheet') {
+    const targetSheet = sheetsById.get(target.sheetId);
+    if (!targetSheet) throw new Error(`Hyperlink target worksheet not found: ${target.sheetId}`);
+    const hasAddress = target.address !== undefined;
+    const hasRow = target.row !== undefined;
+    const hasColumn = target.column !== undefined;
+    if (!hasOnlyKeys(target, hasAddress ? ['kind', 'sheetId', 'address'] : ['kind', 'sheetId', 'row', 'column'])) {
+      throw new Error('Worksheet hyperlink target contains unsupported fields');
+    }
+    if (hasAddress && (hasRow || hasColumn) || !hasAddress && !(hasRow && hasColumn)) {
+      throw new Error('Worksheet hyperlink address must be canonical');
+    }
+    let row: number;
+    let column: number;
+    if (hasAddress) {
+      if (typeof target.address !== 'string') throw new Error('Worksheet hyperlink address is invalid');
+      const match = HYPERLINK_SHEET_ADDRESS.exec(target.address.trim());
+      if (!match) throw new Error('Worksheet hyperlink address is invalid');
+      column = 0;
+      for (const letter of match[1]!.toUpperCase()) {
+        column = column * 26 + letter.charCodeAt(0) - 64;
+        if (!Number.isSafeInteger(column)) throw new Error('Worksheet hyperlink column is invalid');
+      }
+      column -= 1;
+      row = Number(match[2]) - 1;
+    } else {
+      row = target.row as number;
+      column = target.column as number;
+    }
+    if (!Number.isSafeInteger(row) || !Number.isSafeInteger(column) || row < 0 || column < 0
+      || row >= targetSheet.rowCount || column >= targetSheet.columnCount) {
+      throw new Error('Worksheet hyperlink address is outside the worksheet bounds');
+    }
+    return;
+  }
+  if (target.kind === 'name') {
+    if (!hasOnlyKeys(target, ['kind', 'name'])) throw new Error('Defined-name hyperlink target contains unsupported fields');
+    if (typeof target.name !== 'string' || !HYPERLINK_DEFINED_NAME.test(target.name.trim())) {
+      throw new Error('Defined-name hyperlink is invalid');
+    }
+    const name = target.name.toLocaleLowerCase();
+    const definitions = snapshot.definedNameModels
+      ?? Object.entries(snapshot.definedNames ?? {}).map(([entryName, formula]) => ({ name: entryName, formula, scope: 'workbook' as const }));
+    if (!definitions.some((entry) => typeof entry.name === 'string' && entry.name.toLocaleLowerCase() === name
+      && (entry.scope === 'workbook' || (entry.scope === 'sheet' && entry.sheetId === sourceSheet.id)))) {
+      throw new Error(`Defined name not found: ${target.name}`);
+    }
+    return;
+  }
+  throw new Error('Unsupported hyperlink target kind');
+}
+
+function hasOnlyKeys(value: object, allowed: readonly string[]): boolean {
+  return Object.keys(value).every((key) => allowed.includes(key));
 }
 
 function validateAnalysisViews(views: import('./data-model').DataViewDefinition[], tables: import('./data-model').WorkbookTableModel[]): void {

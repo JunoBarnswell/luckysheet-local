@@ -13,7 +13,7 @@ import {
   validatePivotDefinition,
   validateWorkbookSnapshot,
 } from './index';
-import { PIVOT_MAX_MEMBER_COUNT, PIVOT_MEMBER_DISPLAY_LIMIT } from '@react-sheets/core-model';
+import { PIVOT_MAX_MEMBER_COUNT, PIVOT_MEMBER_DISPLAY_LIMIT, WorkbookModel } from '@react-sheets/core-model';
 
 test('WebSocket presence messages round-trip without becoming a mutation transport', () => {
   const message = { type: 'cursor.updated' as const, unitId: 'unit-1', state: { row: 2, column: 4, sheetId: 'sheet-1' } };
@@ -70,7 +70,7 @@ test('WorkbookApiClient injects bearer authentication and fails closed without a
       return new Response(JSON.stringify({
         snapshot: {
           schema: 'WorkbookSnapshot',
-          version: 9,
+          version: 10,
           unitId: 'unit-1',
           name: 'Workbook',
           dimensionMetrics: { normalFontFamily: 'Calibri', normalFontSizePx: 14.6666666667, maximumDigitWidthPx: 7 },
@@ -91,6 +91,7 @@ test('WorkbookApiClient injects bearer authentication and fails closed without a
             sparklines: [],
             drawings: [],
             drawingPayloads: {},
+            hyperlinks: [],
             review: { notesByCell: {}, notesById: {}, threadIdsByCell: {}, threadsById: {} },
           }],
         },
@@ -115,7 +116,7 @@ test('WorkbookApiClient uses a server-issued guest share token when no bearer ex
       return new Response(JSON.stringify({
         snapshot: {
           schema: 'WorkbookSnapshot',
-          version: 9,
+          version: 10,
           unitId: 'unit-guest',
           name: 'Guest workbook',
           dimensionMetrics: { normalFontFamily: 'Calibri', normalFontSizePx: 14.6666666667, maximumDigitWidthPx: 7 },
@@ -125,7 +126,7 @@ test('WorkbookApiClient uses a server-issued guest share token when no bearer ex
           sheets: [{
             kind: 'worksheet', id: 'sheet-1', name: 'Sheet1', rowCount: 10, columnCount: 10,
             cells: {}, merges: [], pane: { kind: 'none' }, defaultRowHeightPx: 20, defaultColumnWidthPx: 64,
-            pivots: [], sparklines: [], drawings: [], drawingPayloads: {},
+            pivots: [], sparklines: [], drawings: [], drawingPayloads: {}, hyperlinks: [],
             review: { notesByCell: {}, notesById: {}, threadIdsByCell: {}, threadsById: {} },
           }],
         },
@@ -253,7 +254,7 @@ test('snapshot trust boundary rejects versioned or legacy drawing payloads', () 
   assert.throws(() => validateWorkbookSnapshot({ schema: 'LegacyWorkbookSnapshot', unitId: 'unit-1' }), /Unsupported workbook snapshot schema/);
   assert.throws(() => validateWorkbookSnapshot({
     schema: 'WorkbookSnapshot',
-    version: 9,
+    version: 10,
     unitId: 'unit-1',
     name: 'Workbook',
     dimensionMetrics: { normalFontFamily: 'Calibri', normalFontSizePx: 14.6666666667, maximumDigitWidthPx: 7 },
@@ -275,9 +276,30 @@ test('snapshot trust boundary rejects versioned or legacy drawing payloads', () 
       charts: [],
       drawings: [],
       drawingPayloads: {},
+      hyperlinks: [],
       review: { notesByCell: {}, notesById: {}, threadIdsByCell: {}, threadsById: {} },
     }],
   }), /legacy drawing collections/);
+});
+
+test('v10 wire validation rejects dangling worksheet hyperlink references', () => {
+  const snapshot = new WorkbookModel('unit-link-wire', 'Links').snapshot();
+  snapshot.sheets[0]!.hyperlinks = [{
+    row: 0,
+    column: 0,
+    hyperlink: { id: 'dangling', target: { kind: 'sheet', sheetId: 'missing-sheet', address: 'A1' } },
+  }];
+
+  assert.throws(() => validateWorkbookSnapshot(snapshot), /target worksheet not found/);
+});
+
+test('v10 wire validation rejects undeclared hyperlink target properties', () => {
+  const snapshot = new WorkbookModel('unit-link-shape', 'Links').snapshot();
+  const target = { kind: 'url' as const, url: 'https://example.com' };
+  Object.assign(target, { sheetId: 'unexpected' });
+  snapshot.sheets[0]!.hyperlinks = [{ row: 0, column: 0, hyperlink: { id: 'link', target } }];
+
+  assert.throws(() => validateWorkbookSnapshot(snapshot), /unsupported fields/);
 });
 
 test('Pivot subtotal contract rejects malformed custom functions and accepts field-owned modes', () => {

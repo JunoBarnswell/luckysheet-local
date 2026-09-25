@@ -1484,11 +1484,6 @@ export function registerEditingCommands(runtime: CommandRuntime): void {
             column - sourceColumn,
             sourceAddress,
           );
-          if (params.spec.metadata.hyperlinks && (source.hyperlink || source.hyperlinkDetail)) {
-            next ??= structuredClone(sheet.cells.get(row, column) ?? { value: null });
-            if (source.hyperlink) next.hyperlink = source.hyperlink;
-            if (source.hyperlinkDetail) next.hyperlinkDetail = structuredClone(source.hyperlinkDetail);
-          }
           if (next !== undefined) {
             const key = keyFor(row, column);
             if (!beforeCellKeys.has(key) && !inRanges(row, column, before.clearRanges ?? [])) {
