@@ -974,3 +974,18 @@ head `1d8508ea` 的两个后端 CI 已通过 test-compile，随后在 `sheetRena
 6. `duplicateSheet` 已全局重分配表 ID，却原样克隆 Table 名及副本公式；直接采用全局唯一规则会让过去的静默错指暴露为冲突，因此复制边界必须同时派生新名并改写副本内引用。
 
 已修复：公式引擎拒绝重复 ID/名称而不再覆盖；前端命令、服务端 mutation 及 TS/Java canonical snapshot validator 统一执行 workbook 级唯一性校验；复制 Sheet 为克隆表分配不冲突名称，并用 AST 重写副本单元格、保留公式、验证规则、Sheet-scoped names、shape/chart 文本公式中的结构化引用。追加复核还确认服务端 `sheetTable.update` 原先能把不存在的 ID 当新增项 upsert，现与前端一致地要求目标身份已存在；非规范空白 ID 也在两端边界拒绝。遇到无法安全改写的 preserved-only 公式时复制 fail-close，不留下部分 Sheet。新增了公式索引与 Sheet 复制的回归测试源码，但按本轮要求没有执行测试、构建、lint 或 UI；只进行源码及 diff 静态审查。该六轮验证确认的是一个根因的六条证据，不虚报成六个独立缺陷；整个 Structural Editing & Reference Integrity 目标仍未完成。
+
+### 六轮静态自审 — Sheet Table rename 的公式 owner 完整性（2026-09-26）
+
+六轮分别沿命令入口、公式重算、Undo/Redo、服务端 reducer、协作 patch 与 OOXML 序列化反证，确认一个真实跨层缺陷：表名更新只修改 Sheet Table 元数据，没有把结构化引用的 formula owner before/after 纳入同一事务。
+
+1. `WorkbookSession.setActiveSheetTableName` 只将新名称送入 `sheetTable.update`；命令 mutation 的逆操作只保存旧表模型，没有公式 owner 状态。
+2. `FormulaEngine.setSheetTables` 按表名变化查询并标记依赖，但公式 AST 仍持有旧 `tableName`；运行时随后重算时旧名已从表索引消失，相关公式解析为 `#NAME?`，不是单纯缓存未刷新。
+3. 本地 Undo/Redo 重放 `sheetTable.update` 的前后表模型，不带结构化引用 owner delta，因此正向 rename、Undo、Redo 没有共享一个可逆引用变换。
+4. Java `SheetDataMutationDescriptor` 对 `sheetTable.update` 只验证并 upsert 表对象；该 mutation 不走生成 StructuralPatch 的结构 reducer，服务端持久快照会保留旧公式文本。
+5. TS/Java StructuralPatch v1 对 key 与版本做精确校验，只覆盖 cell、rule、chart-text owner，且 mutation 白名单不含 `sheetTable.update`；协作 ACK/Replay 仅转交 patch 中已有的 formula owner deltas，不能补出缺失变换。
+6. OOXML cell writer 从当前公式文本生成 `<f>`，table writer 则输出新名称；因此保存会把新 Table 名与仍引用旧名的公式一起写入文件，持久化不会自行修复。
+
+这些是同一 owner-transaction 缺口在六个真实消费者上的证据，不计作六个独立根因。修复边界必须是完整切片：由 canonical rename planner 生成全部受影响 owner 的 typed before/after delta；服务端提交、协作、Undo/Redo 与 OOXML 都消费该 delta；同时在显式迁移边界从校验通过的 checkpoint 和连续 operation log 重建旧 rename 的 owner delta，并事务更新历史 envelope 与未发布 outbox。当前 v1 精确契约无法承载完整 owner 集，也没有安全的纯字段升级方式；在该迁移与 v2 消费链闭合前，不提交单端公式改写或仅拒绝常见 rename 的局部补丁，以免客户端、服务端和历史快照产生新的语义分叉。
+
+本轮只完成静态自审和有界修复方案记录；未改运行时代码，未运行测试、构建、lint 或 UI，也未将该缺陷标记为已修复。后续实现需在同一 PR 中完成协议、迁移、所有 owner 家族及回归用例后再验收。
