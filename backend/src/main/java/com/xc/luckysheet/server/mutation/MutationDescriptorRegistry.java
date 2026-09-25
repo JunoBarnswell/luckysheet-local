@@ -10,6 +10,7 @@ import com.xc.luckysheet.server.contract.RangeRef;
 import com.xc.luckysheet.server.contract.StructuralPatch;
 import com.xc.luckysheet.server.contract.GeneratedWorkbookContract;
 import com.xc.luckysheet.server.contract.WorkbookAclRole;
+import com.xc.luckysheet.server.contract.WorkbookSnapshotValidator;
 import com.xc.luckysheet.server.service.ServiceException;
 import org.springframework.stereotype.Component;
 
@@ -1049,18 +1050,7 @@ public class MutationDescriptorRegistry {
         private void freeze(ObjectNode params, ObjectNode sheet) {
             JsonNode pane = params.get("pane");
             if (pane == null || !pane.isObject()) throw ServiceException.validation("freeze.set requires pane");
-            String kind = pane.path("kind").asText();
-            if (!Set.of("none", "frozen", "split").contains(kind)) throw ServiceException.validation("pane.kind is invalid");
-            if ("none".equals(kind)) { sheet.set("pane", pane.deepCopy()); return; }
-            String state = pane.path("state").asText();
-            if (("frozen".equals(kind) && !Set.of("frozen", "frozenSplit").contains(state))
-                    || ("split".equals(kind) && !"split".equals(state))) {
-                throw ServiceException.validation("pane.state is invalid for pane.kind");
-            }
-            for (String field : List.of("xSplit", "ySplit", "startRow", "startColumn")) {
-                if (!pane.path(field).isNumber() || pane.path(field).asDouble() < 0) throw ServiceException.validation("pane." + field + " must be non-negative");
-            }
-            if (!pane.path("startRow").isIntegralNumber() || !pane.path("startColumn").isIntegralNumber()) throw ServiceException.validation("pane start coordinates must be integers");
+            WorkbookSnapshotValidator.requireCanonicalPane(pane);
             sheet.set("pane", pane.deepCopy());
         }
 

@@ -7,6 +7,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.xc.luckysheet.server.contract.AutoFilterOwnershipValidator;
 import com.xc.luckysheet.server.contract.RangeRef;
 import com.xc.luckysheet.server.contract.StructuralPatch;
+import com.xc.luckysheet.server.contract.WorkbookSnapshotValidator;
 import com.xc.luckysheet.server.service.ServiceException;
 
 import java.util.ArrayList;
@@ -1309,15 +1310,33 @@ final class StructuralSnapshotReducer {
 
     private static void shiftFreeze(ObjectNode sheet, FormulaReferenceTransformer.Axis axis, int at, int count, FormulaReferenceTransformer.Direction direction) {
         ObjectNode freeze = SnapshotMutationSupport.requiredObject(sheet, "pane");
+        WorkbookSnapshotValidator.requireCanonicalPane(freeze);
         if ("none".equals(freeze.path("kind").asText())) return;
+        String kind = freeze.path("kind").asText();
         String split = axis == FormulaReferenceTransformer.Axis.ROW ? "ySplit" : "xSplit";
         String start = axis == FormulaReferenceTransformer.Axis.ROW ? "startRow" : "startColumn";
-        List<String> keys = "frozen".equals(freeze.path("kind").asText()) ? List.of(split, start) : List.of(start);
+        int maximum = axis == FormulaReferenceTransformer.Axis.ROW
+                ? ReferenceTransformDomain.MAX_ROW_INDEX
+                : ReferenceTransformDomain.MAX_COLUMN_INDEX;
+        List<String> keys = "frozen".equals(kind) ? List.of(split, start) : List.of(start);
         for (String key : keys) {
-            int value = freeze.path(key).asInt(0);
-            if (direction == FormulaReferenceTransformer.Direction.INSERT && value >= at) freeze.put(key, value + count);
-            if (direction == FormulaReferenceTransformer.Direction.DELETE && value > at) freeze.put(key, Math.max(0, value - count));
+            JsonNode coordinate = freeze.get(key);
+            if (coordinate == null || !coordinate.isIntegralNumber() || !coordinate.canConvertToInt()) {
+                throw ServiceException.validation("Pane coordinate " + key + " must be an integer before structural transform");
+            }
+            long value = coordinate.intValue();
+            long shifted = value;
+            if (direction == FormulaReferenceTransformer.Direction.INSERT && value >= at) shifted += count;
+            if (direction == FormulaReferenceTransformer.Direction.DELETE && value > at) {
+                shifted = value >= (long) at + count ? value - count : at;
+            }
+            long limit = key.equals(split) ? (long) maximum + 1 : maximum;
+            if (shifted < 0 || shifted > limit) {
+                throw ServiceException.validation("Pane coordinate " + key + " exceeds worksheet bounds after structural transform");
+            }
+            freeze.put(key, (int) shifted);
         }
+        WorkbookSnapshotValidator.requireCanonicalPane(freeze);
     }
 
     private static void shiftHiddenAndSizes(ObjectNode sheet, FormulaReferenceTransformer.Axis axis, int at, int count, FormulaReferenceTransformer.Direction direction) {

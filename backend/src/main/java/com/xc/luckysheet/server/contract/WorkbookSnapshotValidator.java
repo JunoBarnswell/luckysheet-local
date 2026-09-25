@@ -11,6 +11,8 @@ import com.xc.luckysheet.server.service.ServiceException;
  * before they become a historical checkpoint.
  */
 public final class WorkbookSnapshotValidator {
+    private static final int MAX_ROW_INDEX = 1_048_575;
+    private static final int MAX_COLUMN_INDEX = 16_383;
     private static final java.util.Set<String> HYPERLINK_ENTRY_FIELDS = java.util.Set.of("row", "column", "hyperlink");
     private static final java.util.Set<String> HYPERLINK_FIELDS = java.util.Set.of("id", "target", "tooltip");
     private static final java.util.Set<String> HYPERLINK_URL_FIELDS = java.util.Set.of("kind", "url");
@@ -24,6 +26,63 @@ public final class WorkbookSnapshotValidator {
     private static final java.util.regex.Pattern HYPERLINK_DEFINED_NAME = java.util.regex.Pattern.compile("^[A-Za-z_\\\\][A-Za-z0-9_.]*$");
 
     private WorkbookSnapshotValidator() {
+    }
+
+    public static void requireCanonicalPane(JsonNode pane) {
+        if (pane == null || !pane.isObject()) throw ServiceException.validation("Workbook snapshot pane is invalid");
+        String kind = pane.path("kind").asText();
+        if ("none".equals(kind)) {
+            if (pane.has("state") || pane.has("xSplit") || pane.has("ySplit")
+                    || pane.has("startRow") || pane.has("startColumn") || pane.has("activePane")) {
+                throw ServiceException.validation("Workbook snapshot none pane contains split state");
+            }
+            return;
+        }
+        if (!("frozen".equals(kind) || "split".equals(kind))) {
+            throw ServiceException.validation("Workbook snapshot pane kind is invalid");
+        }
+        String state = pane.path("state").asText();
+        if (("frozen".equals(kind) && !("frozen".equals(state) || "frozenSplit".equals(state)))
+                || ("split".equals(kind) && !"split".equals(state))) {
+            throw ServiceException.validation("Workbook snapshot pane state is invalid");
+        }
+        requirePaneCoordinate(pane, "startRow", MAX_ROW_INDEX);
+        requirePaneCoordinate(pane, "startColumn", MAX_COLUMN_INDEX);
+        if ("frozen".equals(kind)) {
+            requireFrozenSplit(pane, "xSplit", MAX_COLUMN_INDEX + 1);
+            requireFrozenSplit(pane, "ySplit", MAX_ROW_INDEX + 1);
+        } else {
+            requireSplitPosition(pane, "xSplit");
+            requireSplitPosition(pane, "ySplit");
+        }
+        JsonNode activePane = pane.get("activePane");
+        if (activePane != null && (!activePane.isTextual()
+                || !java.util.Set.of("topLeft", "topRight", "bottomLeft", "bottomRight").contains(activePane.asText()))) {
+            throw ServiceException.validation("Workbook snapshot pane activePane is invalid");
+        }
+    }
+
+    private static void requirePaneCoordinate(JsonNode pane, String field, int maximum) {
+        JsonNode coordinate = pane.get(field);
+        if (coordinate == null || !coordinate.isIntegralNumber() || !coordinate.canConvertToInt()
+                || coordinate.intValue() < 0 || coordinate.intValue() > maximum) {
+            throw ServiceException.validation("Workbook snapshot pane " + field + " is invalid");
+        }
+    }
+
+    private static void requireFrozenSplit(JsonNode pane, String field, int maximum) {
+        JsonNode split = pane.get(field);
+        if (split == null || !split.isIntegralNumber() || !split.canConvertToInt()
+                || split.intValue() < 0 || split.intValue() > maximum) {
+            throw ServiceException.validation("Workbook snapshot frozen pane " + field + " is invalid");
+        }
+    }
+
+    private static void requireSplitPosition(JsonNode pane, String field) {
+        JsonNode split = pane.get(field);
+        if (split == null || !split.isNumber() || !Double.isFinite(split.asDouble()) || split.asDouble() < 0) {
+            throw ServiceException.validation("Workbook snapshot split pane " + field + " is invalid");
+        }
     }
 
     public static ObjectNode requireCanonical(JsonNode value, String expectedUnitId) {
@@ -99,12 +158,10 @@ public final class WorkbookSnapshotValidator {
             }
             if (!sheet.path("defaultRowHeightPx").isNumber() || sheet.path("defaultRowHeightPx").asDouble() <= 0
                     || !sheet.path("defaultColumnWidthPx").isNumber() || sheet.path("defaultColumnWidthPx").asDouble() <= 0
-                    || !sheet.path("pane").isObject()
-                    || !("none".equals(sheet.path("pane").path("kind").asText())
-                    || "frozen".equals(sheet.path("pane").path("kind").asText())
-                    || "split".equals(sheet.path("pane").path("kind").asText()))) {
+                    || !sheet.path("pane").isObject()) {
                 throw ServiceException.validation("Workbook snapshot sheet pixel geometry is invalid");
             }
+            requireCanonicalPane(sheet.path("pane"));
             sheet.path("drawingPayloads").fields().forEachRemaining(entry -> {
                 JsonNode payload = entry.getValue();
                 if ("camera".equals(payload.path("kind").asText())) {
@@ -121,14 +178,6 @@ public final class WorkbookSnapshotValidator {
             }));
             validateCellBounds(sheet);
             validateCanonicalHyperlinks(sheet, snapshot, sheetId, sheetDimensions);
-            JsonNode pane = sheet.path("pane");
-            if (!"none".equals(pane.path("kind").asText())) {
-                String state = pane.path("state").asText();
-                if (("frozen".equals(pane.path("kind").asText()) && !("frozen".equals(state) || "frozenSplit".equals(state)))
-                        || ("split".equals(pane.path("kind").asText()) && !"split".equals(state))) {
-                    throw ServiceException.validation("Workbook snapshot pane state is invalid");
-                }
-            }
             JsonNode autoFilter = sheet.get("autoFilter");
             if (autoFilter != null && !autoFilter.isNull()) validateAutoFilter(autoFilter, sheetId, null);
             JsonNode tables = sheet.get("sheetTables");

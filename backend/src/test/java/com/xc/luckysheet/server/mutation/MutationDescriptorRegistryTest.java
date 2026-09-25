@@ -812,7 +812,10 @@ class MutationDescriptorRegistryTest {
         for (String pane : List.of(
                 "{\"kind\":\"frozen\",\"xSplit\":1,\"ySplit\":0,\"startRow\":0,\"startColumn\":1}",
                 "{\"kind\":\"frozen\",\"state\":\"split\",\"xSplit\":1,\"ySplit\":0,\"startRow\":0,\"startColumn\":1}",
-                "{\"kind\":\"split\",\"state\":\"frozen\",\"xSplit\":1,\"ySplit\":1,\"startRow\":1,\"startColumn\":1}")) {
+                "{\"kind\":\"split\",\"state\":\"frozen\",\"xSplit\":1,\"ySplit\":1,\"startRow\":1,\"startColumn\":1}",
+                "{\"kind\":\"frozen\",\"state\":\"frozen\",\"xSplit\":1.5,\"ySplit\":0,\"startRow\":0,\"startColumn\":1}",
+                "{\"kind\":\"frozen\",\"state\":\"frozen\",\"xSplit\":1,\"ySplit\":0,\"startRow\":0,\"startColumn\":16384}",
+                "{\"kind\":\"split\",\"state\":\"split\",\"xSplit\":20,\"ySplit\":10,\"startRow\":0,\"startColumn\":0,\"activePane\":\"center\"}")) {
             OperationMutation mutation = new OperationMutation("freeze.set", "sheet-1", mapper.readTree("{\"pane\":" + pane + "}"));
             ServiceException error = assertThrows(ServiceException.class,
                     () -> registry.applyPublicMutations(snapshot, List.of(mutation)));
@@ -1823,6 +1826,39 @@ class MutationDescriptorRegistryTest {
             assertEquals("SERVICE_UNAVAILABLE", rejection.code());
             assertEquals(before, snapshot);
         }
+    }
+
+    @Test
+    void structuralDeletionClampsFrozenPaneAndViewportInsideDeletedInterval() throws Exception {
+        StructuralMutationDescriptor descriptor = new StructuralMutationDescriptor("rows.deleted");
+        ObjectNode snapshot = (ObjectNode) mapper.readTree("""
+                {"sheets":[{"id":"sheet-1","name":"Sheet1","rowCount":20,"columnCount":4,
+                  "cells":{},"pane":{"kind":"frozen","state":"frozen","xSplit":0,"ySplit":7,"startRow":6,"startColumn":0},
+                  "defaultRowHeightPx":20,"defaultColumnWidthPx":64,"hiddenRows":[],"hiddenColumns":[],
+                  "rowHeightsPx":{},"columnWidthsPx":{},"merges":[],"conditionalFormats":[],"dataValidations":[],
+                  "pivots":[],"sparklines":[],"drawings":[],"drawingPayloads":{},"sheetTables":[],
+                  "review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}},
+                  "spillRanges":[],"protectionRules":[],"outline":{"groups":[]}}]}
+                """);
+        OperationMutation mutation = new OperationMutation("rows.deleted", "sheet-1",
+                mapper.readTree("{\"sheetId\":\"sheet-1\",\"at\":5,\"count\":3}"));
+
+        JsonNode result = descriptor.applyWithPatch(snapshot, mutation).snapshot();
+
+        assertEquals(5, result.path("sheets").get(0).path("pane").path("ySplit").intValue());
+        assertEquals(5, result.path("sheets").get(0).path("pane").path("startRow").intValue());
+
+        ObjectNode overflow = snapshot.deepCopy();
+        ((ObjectNode) overflow.path("sheets").get(0).path("pane")).put("startRow", 1_048_575);
+        JsonNode overflowBefore = overflow.deepCopy();
+        OperationMutation insertion = new OperationMutation("rows.inserted", "sheet-1",
+                mapper.readTree("{\"sheetId\":\"sheet-1\",\"at\":0,\"count\":1}"));
+
+        ServiceException error = assertThrows(ServiceException.class,
+                () -> descriptor.applyWithPatch(overflow, insertion));
+
+        assertEquals("VALIDATION_ERROR", error.code());
+        assertEquals(overflowBefore, overflow);
     }
 
     @Test

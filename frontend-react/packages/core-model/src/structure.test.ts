@@ -146,6 +146,44 @@ describe('structural operations', () => {
     assert.equal(sheet.rowCount, 1003);
   });
 
+  it('maps pane boundaries through deletion and rejects coordinate overflow before mutation', () => {
+    const { workbook } = seedWorkbook();
+    const sheet = workbook.getSheet('s1');
+    sheet.pane = { kind: 'frozen', xSplit: 0, ySplit: 7, startRow: 6, startColumn: 0, state: 'frozen' };
+
+    StructuralTransform.apply(workbook, { kind: 'delete-rows', sheetId: sheet.id, at: 5, count: 3 });
+
+    assert.equal(sheet.pane.kind === 'frozen' ? sheet.pane.ySplit : -1, 5);
+    assert.equal(sheet.pane.kind === 'frozen' ? sheet.pane.startRow : -1, 5);
+
+    const overflow = seedWorkbook();
+    const overflowSheet = overflow.workbook.getSheet('s1');
+    overflowSheet.pane = {
+      kind: 'frozen', xSplit: 0, ySplit: 0, startRow: MAX_ROW_INDEX, startColumn: 0, state: 'frozen',
+    };
+    const before = overflow.workbook.snapshot();
+
+    assert.throws(
+      () => StructuralTransform.apply(overflow.workbook, { kind: 'insert-rows', sheetId: overflowSheet.id, at: 0, count: 1 }),
+      /UNSUPPORTED_STRUCTURAL_REFERENCE: pane startRow exceeds worksheet bounds after structural transform/,
+    );
+    assert.deepEqual(overflow.workbook.snapshot(), before);
+
+    const invalidOtherAxis = seedWorkbook();
+    const invalidSheet = invalidOtherAxis.workbook.getSheet('s1');
+    invalidSheet.pane = {
+      kind: 'frozen', xSplit: 0, ySplit: 1.5, startRow: 0, startColumn: 0, state: 'frozen',
+    };
+    const invalidBefore = invalidOtherAxis.workbook.snapshot();
+    assert.throws(
+      () => StructuralTransform.apply(invalidOtherAxis.workbook, {
+        kind: 'insert-columns', sheetId: invalidSheet.id, at: 0, count: 1,
+      }),
+      /UNSUPPORTED_STRUCTURAL_REFERENCE: pane ySplit is invalid/,
+    );
+    assert.deepEqual(invalidOtherAxis.workbook.snapshot(), invalidBefore);
+  });
+
   it('rewrites indexed defined-name references and moves their anchors incrementally', () => {
     const { workbook, sheetId } = seedWorkbook();
     workbook.setDefinedName({

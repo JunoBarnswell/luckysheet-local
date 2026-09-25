@@ -881,3 +881,18 @@ head `1d8508ea` 的两个后端 CI 已通过 test-compile，随后在 `sheetRena
 6. 旧 checkpoint 若晚于较新 journal baseline 才完成，不得把 baseline 倒退；新增 `STALE_SNAPSHOT_CHECKPOINT` fail-close，并保证拒绝前 cache 不变。
 
 代码在 `features/persistence/storage.ts` 与 `runtime.ts`；测试源码覆盖新操作保留、checkpoint baseline 重基及陈旧 checkpoint 拒绝，未执行。静态审查确认了 queued journal 在 dispose 后继续完成存储写入、snapshot completion 在 dispose 后仍同步 storage revision，且不再向已卸载 runtime 派发 UI 通知。只执行 `git diff --check`；未运行测试、构建、lint 或 UI。StructuralPatch v2 与其历史迁移仍是总体整改的开放项。
+
+### Six-pass static review — worksheet pane structural coordinates (2026-09-25)
+
+六轮逐一做了如下静态复核：
+
+1. 对照前端 `WorksheetPane` union 和服务端快照规则，确认服务端只校验 pane kind/state，没有实现相同坐标与分支字段约束。
+2. 沿 `freeze.set` 生产入口确认其接受越过 Excel 地址空间的视口坐标、frozen split 小数及非法 `activePane`，并直接写入 candidate snapshot。
+3. 反查 checkpoint/current snapshot validator，确认快照里的缺失坐标、越界坐标及 `kind: none` 携带 split-only state 原先均可通过 canonical 校验。
+4. 沿 axis reducer 检查失败语义，确认 `asInt(0)` 会把缺失或非整数坐标静默转成 0，而不是拒绝损坏的 pane。
+5. 分别推演 TS 与 Java 删除映射，确认删除区间穿过 frozen split 或 viewport start 时，原算法减去完整 count，会把坐标移到删除区间之前。
+6. 反查 staged metadata preflight 与服务端 owned-snapshot 提交边界，确认位移后未校验 pane 上限，越界状态能随结构编辑提交；两侧应共享映射规则并在事务发布前 fail-close。
+
+这些证据确认了 pane contract 缺口、删除区间映射错误及位移后缺少边界验证，不把同一字段的多个坏值虚增成 30 个独立问题。`freeze.set` 曾接受超出 Excel 地址空间的视口坐标、冻结计数小数及非法 `activePane`；canonical snapshot validator 只检查 kind/state；结构 reducer 再用 `asInt(0)` 把缺失或非整数坐标静默变为 0。该缺口会在结构编辑后制造与前端 `WorksheetPane` 不同的状态。
+
+现在 `WorkbookSnapshotValidator.requireCanonicalPane` 统一校验 frozen/split 必需字段、冻结计数整数域、Excel 地址上限、split 数值和 `activePane` 枚举，并拒绝 `kind: none` 携带冻结专属状态；mutation ingress、快照入口及结构 reducer 共用此校验，reducer 不再提供 0 默认值。复核还发现并修复第二个真实语义错误：删除区间若穿过 frozen split 或 viewport start，旧算法减去完整 count 会把边界映射到删除区间之前；TS/Java 现在均将区间内边界钳到删除起点，并在映射后检查坐标上限。新增 validator、mutation 及客户端 pane boundary 成功/拒绝路径测试源码；按本任务要求未运行测试、构建、lint 或 UI。本节记录两个独立缺陷，且六轮审查不等于声称本轮满足每轮 30 项的总体审计目标。总体结构 patch v2、历史迁移与其余 owner families 仍未完成。

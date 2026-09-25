@@ -63,6 +63,25 @@ class WorkbookSnapshotValidatorTest {
     }
 
     @Test
+    void rejectsPaneCoordinatesAndFrozenSplitsOutsideTheirCanonicalDomains() throws Exception {
+        for (String pane : java.util.List.of(
+                "{\"kind\":\"none\",\"activePane\":\"center\"}",
+                "{\"kind\":\"frozen\",\"state\":\"frozen\",\"xSplit\":1,\"ySplit\":0,\"startRow\":0}",
+                "{\"kind\":\"frozen\",\"state\":\"frozen\",\"xSplit\":1.5,\"ySplit\":0,\"startRow\":0,\"startColumn\":1}",
+                "{\"kind\":\"frozen\",\"state\":\"frozen\",\"xSplit\":1,\"ySplit\":0,\"startRow\":0,\"startColumn\":16384}",
+                "{\"kind\":\"split\",\"state\":\"split\",\"xSplit\":-0.5,\"ySplit\":10,\"startRow\":0,\"startColumn\":0}",
+                "{\"kind\":\"split\",\"state\":\"split\",\"xSplit\":20,\"ySplit\":10,\"startRow\":1048576,\"startColumn\":0}",
+                "{\"kind\":\"split\",\"state\":\"split\",\"xSplit\":20,\"ySplit\":10,\"startRow\":0,\"startColumn\":0,\"activePane\":\"center\"}")) {
+            ObjectNode candidate = snapshot();
+            ((ObjectNode) candidate.path("sheets").get(0)).set("pane", mapper.readTree(pane));
+
+            ServiceException error = assertThrows(ServiceException.class,
+                    () -> WorkbookSnapshotValidator.requireCanonical(candidate, "book-1"));
+            assertEquals("VALIDATION_ERROR", error.code());
+        }
+    }
+
+    @Test
     void migratesV9CellHyperlinksToTheCanonicalWorksheetOwner() {
         ObjectNode snapshot = snapshot().put("version", 9);
         ObjectNode sheet = (ObjectNode) snapshot.path("sheets").get(0);
