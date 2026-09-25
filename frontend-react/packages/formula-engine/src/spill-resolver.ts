@@ -134,9 +134,10 @@ export function spillValueAt(spill: ResolvedSpill | SpillRange, row: number, col
   if (row < spill.range.startRow || row > spill.range.endRow || column < spill.range.startColumn || column > spill.range.endColumn) {
     return undefined;
   }
-  if (spill.state === 'blocked') {
+  if (spill.state !== 'ok') {
     if (row === spill.anchor.row && column === spill.anchor.column) {
-      return createFormulaError('#SPILL!', 'Spill range is not blank');
+      const message = spill.state === 'blocked' ? 'Spill range is not blank' : 'Spill range exceeds worksheet bounds';
+      return createFormulaError('#SPILL!', message);
     }
     return undefined;
   }
@@ -145,6 +146,7 @@ export function spillValueAt(spill: ResolvedSpill | SpillRange, row: number, col
 }
 
 export function isSpillChild(spill: SpillRange, row: number, column: number): boolean {
+  if (spill.state !== 'ok') return false;
   if (row === spill.anchor.row && column === spill.anchor.column) return false;
   return row >= spill.range.startRow
     && row <= spill.range.endRow
@@ -153,7 +155,10 @@ export function isSpillChild(spill: SpillRange, row: number, column: number): bo
 }
 
 export function anchorDisplayValue(spill: ResolvedSpill | SpillRange, matrix: ArrayValue): FormulaValue {
-  if (spill.state === 'blocked') return createFormulaError('#SPILL!', 'Spill range is not blank');
+  if (spill.state !== 'ok') {
+    const message = spill.state === 'blocked' ? 'Spill range is not blank' : 'Spill range exceeds worksheet bounds';
+    return createFormulaError('#SPILL!', message);
+  }
   return matrix[0]?.[0] ?? null;
 }
 

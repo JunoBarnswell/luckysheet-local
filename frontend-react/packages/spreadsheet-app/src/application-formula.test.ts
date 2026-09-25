@@ -374,4 +374,19 @@ describe('WorkbookSession formula integration', () => {
     assert.equal(app['runtime'].model.getSheet(sheetId).cells.get(0, 1), undefined);
     assert.equal(cellValue(app, 0, 1), '2');
   });
+
+  it('allows editing a blocker to recover a blocked dynamic-array spill', async () => {
+    const app = new WorkbookSession();
+    const sheetId = app.getActiveSheetId();
+    app.runCommand('sheet.cell.set', { sheetId, row: 0, column: 1, value: { value: 99 } });
+    app.runCommand('sheet.cell.set', { sheetId, row: 0, column: 0, value: { formula: '=SEQUENCE(2,2,1,1)' } });
+    await app.waitForFormulaCalculation();
+    assert.equal(app['runtime'].model.getSheet(sheetId).spillRanges[0]?.state, 'blocked');
+
+    app.runCommand('sheet.cell.set', { sheetId, row: 0, column: 1, value: { value: null } });
+    await app.waitForFormulaCalculation();
+
+    assert.equal(app['runtime'].model.getSheet(sheetId).spillRanges[0]?.state, 'ok');
+    assert.equal(cellValue(app, 0, 1), '2');
+  });
 });

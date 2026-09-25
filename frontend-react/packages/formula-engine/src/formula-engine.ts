@@ -1696,7 +1696,7 @@ export class FormulaEngine {
     });
     this.spills.set(key, spill);
     if (!sameCalculationValue(previous, spill)) this.recordSpillProjectionChange(address, previous, spill);
-    if (spill.state === 'blocked') {
+    if (spill.state !== 'ok') {
       const display = anchorDisplayValue(spill, value);
       const cell = this.cells.get(cellAddressKey(address));
       if (cell) cell.result = { ...cell.result, value: display };

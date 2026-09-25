@@ -725,6 +725,7 @@ function assertNoSpillChildWrite(
   for (const range of mutation.affectedRanges) {
     if (range.sheetId !== sheet.id) continue;
     for (const spill of sheet.spillRanges) {
+      if (spill.state !== 'ok') continue;
       const startRow = Math.max(range.startRow, spill.range.startRow);
       const endRow = Math.min(range.endRow, spill.range.endRow);
       const startColumn = Math.max(range.startColumn, spill.range.startColumn);

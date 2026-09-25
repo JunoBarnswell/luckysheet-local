@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { FormulaEngine } from './formula-engine';
 import { isFormulaError } from './values';
-import { isSpillChild, resolveSpill, spillValueAt } from './spill-resolver';
+import { anchorDisplayValue, isSpillChild, resolveSpill, spillValueAt } from './spill-resolver';
 
 test('resolveSpill detects blockers and ok states', () => {
   const ok = resolveSpill({
@@ -64,6 +64,8 @@ test('isSpillChild excludes anchor cell', () => {
   };
   assert.equal(isSpillChild(spill, 0, 0), false);
   assert.equal(isSpillChild(spill, 1, 1), true);
+  assert.equal(isSpillChild({ ...spill, state: 'blocked' }, 1, 1), false);
+  assert.equal(isSpillChild({ ...spill, state: 'spill-error' }, 1, 1), false);
 });
 
 test('FormulaEngine tracks spill ranges and child values', () => {
@@ -113,6 +115,38 @@ test('blocked spill results never project matrix values into child cells', () =>
   assert.equal(anchor.code, '#SPILL!');
   assert.equal(spillValueAt(spill, 0, 1), undefined);
   assert.equal(spillValueAt(spill, 1, 0), undefined);
+});
+
+test('out-of-bounds spill fails with #SPILL! instead of exposing a truncated projection', () => {
+  const values = [[1, 2], [3, 4]];
+  const spill = resolveSpill({
+    sheetId: 'Sheet1',
+    anchor: { row: 0, column: 0 },
+    values,
+    rowCount: 2,
+    columnCount: 1,
+    isOccupied: () => false,
+  });
+
+  assert.equal(spill.state, 'spill-error');
+  const anchor = spillValueAt(spill, 0, 0);
+  assert.ok(isFormulaError(anchor));
+  if (!isFormulaError(anchor)) throw new Error('expected #SPILL! at the out-of-bounds anchor');
+  assert.equal(anchor.code, '#SPILL!');
+  assert.ok(isFormulaError(anchorDisplayValue(spill, values)));
+  assert.equal(spillValueAt(spill, 0, 1), undefined);
+  assert.equal(spillValueAt(spill, 1, 0), undefined);
+});
+
+test('FormulaEngine fails out-of-bounds dynamic arrays closed', () => {
+  const engine = new FormulaEngine({ defaultSheetId: 'Sheet1' });
+  engine.setSpillEnvironment('Sheet1', { rowCount: 2, columnCount: 1, isOccupied: () => false });
+
+  const result = engine.setFormula('A1', '=SEQUENCE(2,2,1,1)').value;
+  assert.ok(isFormulaError(result));
+  if (!isFormulaError(result)) throw new Error('expected out-of-bounds spill error');
+  assert.equal(result.code, '#SPILL!');
+  assert.equal(engine.getCellValue('A2'), null);
 });
 
 test('calculation snapshots preserve spill geometry and exclude the spill formula own projection', async () => {
