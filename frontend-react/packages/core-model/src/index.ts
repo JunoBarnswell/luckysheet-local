@@ -66,7 +66,6 @@ import type { ReviewStoreSnapshot } from './review-store';
 export * from './sheet-extent';
 export * from './sheet-identity-transform';
 export * from './review-store';
-export * from './axis-coordinate-transform';
 
 export * from './font-family';
 export {

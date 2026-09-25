@@ -364,3 +364,14 @@ A subsequent audit found metadata-only inverse snapshots intentionally omit `cel
 6. **Bounds ownership:** command history and collaboration each carried their own worksheet maximum constants. They now consume the formula-engine domain constants and handle its typed point outcomes; repository-wide source search found no references to the removed point helpers or duplicated interval transformer.
 
 All six findings were traced to executable call sites before counting. TS and Java regression source covers insert/delete vectors, deletion, point/range overflow, interval boundaries, and invalid inputs. As requested, no tests, builds, or browser checks were run; only static source and diff checks are used for this slice.
+
+### CI correction — TypeScript compile diagnostics
+
+1. **Remote evidence:** the PR's Linux and Windows `canonical-build` jobs reported the same three TypeScript diagnostics; no local build was run.
+2. **Deleted module boundary:** the transform refactor removed `axis-coordinate-transform.ts` but left its core-model barrel export. Removed the stale export and searched the frontend packages for remaining references.
+3. **Type ownership:** `ClearFamily` is declared and exported by `clear-planner.ts`; the command restore payload used it without importing the type. Added the direct type import from that owner.
+4. **Accessor contract:** `CellMatrix.isHydrated` is a boolean getter, as confirmed by its declaration and existing callers. Corrected the three new assertions that invoked it as a method.
+5. **Call-site countercheck:** direct structural-transform tests either build a `RangeIndex` in their local adapter or supply the required owner index; no missing third-argument migration was found in production callsites.
+6. **Patch boundary:** the changes are limited to the stale export, missing type import, and three getter assertions; `git diff --check` passed. Local tests/builds remain intentionally unrun, and GitHub CI must rerun on the pushed commit.
+
+Confirmed defects: one stale export, one missing type import, and one accessor misuse repeated at three assertions. These are counted by root cause, not as five independent runtime defects.

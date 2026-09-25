@@ -44,7 +44,7 @@ import { registerOutlineCommands } from './outline-commands';
 import { registerHomeCommands } from './home-commands';
 import { registerPhoneticCommands } from './phonetic-commands';
 import { normalizeCheckboxCellValue, registerCellTemplateCommands } from './cell-template-commands';
-import { applyClearRangePlan, createClearRangePlan, restoreClearRangeSnapshot, type ClearRangeParams, type ClearRangeSnapshot } from './clear-planner';
+import { applyClearRangePlan, createClearRangePlan, restoreClearRangeSnapshot, type ClearFamily, type ClearRangeParams, type ClearRangeSnapshot } from './clear-planner';
 import { assertCellWriteAuthority, createCellSetMutationParams, isCellSetMutationParams, type CellSetMutationParams } from './cell-write-authority';
 import { CellEntryError } from './cell-entry-error';
 

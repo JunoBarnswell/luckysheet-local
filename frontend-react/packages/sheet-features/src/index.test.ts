@@ -1146,13 +1146,13 @@ test('metadata-only clear and undo keep deferred cell storage untouched', () => 
   registerSheetCommands(runtime);
 
   assert.equal(plan.snapshot.cells, undefined);
-  assert.equal(sheet.cells.isHydrated(), false);
+  assert.equal(sheet.cells.isHydrated, false);
   runtime.execute('sheet.range.clear', { sheetId: sheet.id, range, family: 'hyperlinks' });
   assert.equal(sheet.hyperlinks.has('0:0'), false);
-  assert.equal(sheet.cells.isHydrated(), false);
+  assert.equal(sheet.cells.isHydrated, false);
   runtime.undo();
   assert.deepEqual(sheet.hyperlinks.get('0:0'), hyperlink);
-  assert.equal(sheet.cells.isHydrated(), false);
+  assert.equal(sheet.cells.isHydrated, false);
 });
 
 test('clear formats/all crop conditional-format intersections and restore atomically', () => {
