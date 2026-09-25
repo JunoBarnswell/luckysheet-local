@@ -922,3 +922,16 @@ head `1d8508ea` 的两个后端 CI 已通过 test-compile，随后在 `sheetRena
 6. 核对拒绝发生在 local mutation schema、TS snapshot hydration 及 Java snapshot/mutation 边界，测试源码分别覆盖有效本地 pane与损坏/未知 pane 拒绝。
 
 确认的根因是 pane canonical schema 在多个入口各自实现且未约束对象 key。现在 TS core-model 的单一 validator 拒绝未声明 key 与缺失的必需字段，结构变换、freeze mutation、`assertCanonicalWorkbookSnapshot` 及公开 `WorkbookModel.fromSnapshot` 共用它；Java 对 frozen/split 与 none 执行相同的 exact-key 校验。增加 TS/Java snapshot 与 mutation 拒绝用例源码，未运行测试或构建。该项不代表 StructuralPatch v2、ReferenceIndex 收敛、OOXML planner preflight 或整体目标已完成。
+
+### 六轮静态复审 — operation history continuity and identity (2026-09-26)
+
+本轮只确认并修复一个根因，不把多个调用点重复计数：
+
+1. 核对提交入口，确认每次成功操作将 workbook revision 精确加一；因此 checkpoint revision 到目标 revision 之间的 operation history 必须逐号连续。
+2. 核对 `WorkbookStore.listOperationsBetween` 与 repository 查询，确认它只按 revision 区间过滤并升序返回，不检查缺失 revision、重复 revision 或记录身份。
+3. 追踪 `currentSnapshot`，确认它直接应用查询返回的记录并返回快照，没有验证首尾覆盖；缺项会静默留下旧状态。
+4. 独立追踪 `snapshotAtRevision`，确认同样只遍历返回记录；snapshot canonical validator 只验证快照结构，不能检测事件历史缺项。
+5. 追踪 stale-base commit 的冲突检查，确认缺失的 intervening operation 会被跳过，可能漏掉结构变化或重叠范围冲突。
+6. 检查数据影响与反例：`currentSnapshot` 会被后续 commit 复用并增加新 revision，故不完整重建可能被继续固化；同时静态复核修复本身，发现并显式保留 `SYSTEM` restore 的服务伪主体与 envelope 操作者差异，避免误拒绝合法 restore 记录。
+
+根因已在 `WorkbookOperationService` 收敛到连续历史读取：current snapshot 重建、历史 revision 重建与 stale-base 冲突检查共用完整性校验，缺口、重复、错误边界及数据库行/envelope 身份不一致均以 `STORAGE_CORRUPT` fail-close；系统 restore 只接受其专用 `system:workbook-restore` 行身份。静态 diff 检查之外未运行测试、构建、lint 或 UI。本轮仅确认一个独立根因；不声称满足此前每轮至少 30 个问题的总体验收偏好，StructuralPatch v2、历史迁移及整体架构目标仍未完成。

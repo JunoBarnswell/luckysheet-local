@@ -12,6 +12,7 @@ import com.xc.luckysheet.server.contract.CommittedOperationMutation;
 import com.xc.luckysheet.server.contract.OperationEnvelope;
 import com.xc.luckysheet.server.contract.OperationIntent;
 import com.xc.luckysheet.server.contract.OperationMutation;
+import com.xc.luckysheet.server.contract.OperationOrigin;
 import com.xc.luckysheet.server.contract.RangeRef;
 import com.xc.luckysheet.server.contract.RestoreRequest;
 import com.xc.luckysheet.server.contract.RevisionRecord;
@@ -164,8 +165,8 @@ public class WorkbookOperationService {
         }
 
         if (operation.baseRevision() < row.revision()) {
-            for (OperationRow intervening : store.listOperationsBetween(routeUnitId, operation.baseRevision(), row.revision())) {
-                var interveningMutations = readCommitted(intervening).mutations();
+            for (OperationRow intervening : contiguousOperationRowsBetween(routeUnitId, operation.baseRevision(), row.revision())) {
+                var interveningMutations = readCommittedHistoryRow(intervening).mutations();
                 if (registry.requiresExactBase(interveningMutations.stream()
                         .map(mutation -> new OperationMutation(mutation.id(), mutation.sheetId(), mutation.params())).toList())) {
                     throw ServiceException.conflict("Workbook structure changed after base revision; reload and review the draft");
@@ -499,7 +500,8 @@ public class WorkbookOperationService {
         try {
             return mapper.readValue(row.envelopeJson(), CommittedOperationEnvelope.class);
         } catch (Exception error) {
-            throw new IllegalStateException("Stored operation envelope is invalid", error);
+            throw new ServiceException("STORAGE_CORRUPT", 409,
+                    "Stored operation envelope is invalid at revision " + row.revision() + "; restore a verified backup");
         }
     }
 
@@ -512,9 +514,8 @@ public class WorkbookOperationService {
         }
         JsonNode snapshot = WorkbookSnapshotValidator.requireCanonical(readJson(row.snapshotJson()), row.unitId());
         if (row.snapshotRevision() == row.revision()) return snapshot;
-        for (OperationRow operation : store.listOperationsBetween(row.unitId(), row.snapshotRevision(), row.revision())) {
-            CommittedOperationEnvelope committed = readCommitted(operation);
-            snapshot = applyCommittedEnvelope(snapshot, committed);
+        for (OperationRow operation : contiguousOperationRowsBetween(row.unitId(), row.snapshotRevision(), row.revision())) {
+            snapshot = applyCommittedEnvelope(snapshot, readCommittedHistoryRow(operation));
         }
         return snapshot;
     }
@@ -526,14 +527,58 @@ public class WorkbookOperationService {
         verifyCheckpoint(checkpoint);
         JsonNode snapshot = WorkbookSnapshotValidator.requireCanonical(readJson(checkpoint.snapshotJson()), current.unitId());
         if (checkpoint.revision() == targetRevision) return snapshot;
-        for (OperationRow operation : store.listOperationsBetween(current.unitId(), checkpoint.revision(), targetRevision)) {
-            CommittedOperationEnvelope committed = readCommitted(operation);
+        for (OperationRow operation : contiguousOperationRowsBetween(current.unitId(), checkpoint.revision(), targetRevision)) {
+            CommittedOperationEnvelope committed = readCommittedHistoryRow(operation);
             if (committed.mutations().stream().anyMatch(mutation -> "workbook.restore".equals(mutation.id()))) {
-                throw ServiceException.conflict("Restore checkpoint is missing for revision " + operation.revision());
+                throw ServiceException.conflict("Restore checkpoint is missing for revision " + committed.revision());
             }
             snapshot = applyCommittedEnvelope(snapshot, committed);
         }
         return snapshot;
+    }
+
+    private List<OperationRow> contiguousOperationRowsBetween(String unitId, long afterRevision, long throughRevision) {
+        if (afterRevision < 0 || throughRevision < afterRevision) {
+            throw new ServiceException("STORAGE_CORRUPT", 409,
+                    "Invalid operation history range for " + unitId + "; restore a verified backup");
+        }
+        List<OperationRow> rows = store.listOperationsBetween(unitId, afterRevision, throughRevision);
+        long previousRevision = afterRevision;
+        for (OperationRow row : rows) {
+            long expectedRevision = previousRevision + 1;
+            if (!unitId.equals(row.unitId()) || row.revision() != expectedRevision) {
+                throw new ServiceException("STORAGE_CORRUPT", 409,
+                        "Operation history gap or duplicate for " + unitId + ": expected revision "
+                                + expectedRevision + " but found " + row.revision() + "; restore a verified backup");
+            }
+            previousRevision = row.revision();
+        }
+        if (previousRevision != throughRevision) {
+            throw new ServiceException("STORAGE_CORRUPT", 409,
+                    "Operation history for " + unitId + " ends at revision " + previousRevision
+                            + " before required revision " + throughRevision + "; restore a verified backup");
+        }
+        return rows;
+    }
+
+    private CommittedOperationEnvelope readCommittedHistoryRow(OperationRow row) {
+        CommittedOperationEnvelope committed = readCommitted(row);
+        boolean actorMatches = switch (committed.origin()) {
+            case CLIENT -> row.actorSubject().equals(committed.actorId());
+            case SYSTEM -> SYSTEM_RESTORE_ACTOR.equals(row.actorSubject());
+        };
+        if (!row.operationId().equals(committed.operationId())
+                || !row.unitId().equals(committed.unitId())
+                || row.revision() != committed.revision()
+                || !actorMatches
+                || !row.clientSessionId().equals(committed.clientSessionId())
+                || row.clientSequence() != committed.clientSequence()
+                || row.baseRevision() != committed.baseRevision()) {
+            throw new ServiceException("STORAGE_CORRUPT", 409,
+                    "Operation row and envelope identity disagree at revision " + row.revision()
+                            + "; restore a verified backup");
+        }
+        return committed;
     }
 
     private JsonNode applyCommittedEnvelope(JsonNode snapshot, CommittedOperationEnvelope committed) {
