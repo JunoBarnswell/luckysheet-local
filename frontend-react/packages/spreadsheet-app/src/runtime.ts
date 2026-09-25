@@ -769,7 +769,7 @@ function adoptLocalSnapshotBaseline(runtime: SpreadsheetRuntime, record: Workspa
   state.storageRevision = record.storageRevision;
   state.snapshotLocalRevision = record.pending.snapshotRevision;
   state.journalChecksum = record.pending.checksum;
-  state.queuedJournalChecksum = null;
+  if (state.queuedJournalChecksum === record.pending.checksum) state.queuedJournalChecksum = null;
 }
 
 function enqueuePersistenceWrite<T>(runtime: SpreadsheetRuntime, operation: () => Promise<T>): Promise<T> {
@@ -782,12 +782,13 @@ function enqueuePersistenceWrite<T>(runtime: SpreadsheetRuntime, operation: () =
 function scheduleLocalSnapshotCheckpoint(runtime: SpreadsheetRuntime): void {
   if (runtime.disposed || !runtime.localOnly) return;
   const state = localPersistenceState(runtime);
-  // The operation journal is already durable; full workbook snapshots are periodic compaction, not per-edit durability.
+  // The journal for this revision is durable; full workbook snapshots are periodic compaction, not per-edit durability.
   if (!isLocalSnapshotCheckpointDue(runtime.localRevision, state.snapshotLocalRevision)) return;
   if (state.snapshotTimer !== null) return;
   state.snapshotTimer = setTimeout(() => {
     state.snapshotTimer = null;
     void writeLocalSnapshotCheckpoint(runtime).catch((error: unknown) => {
+      if (runtime.disposed) return;
       runtime.handlers.onSaveState?.('error');
       runtime.handlers.onNotice?.(error instanceof Error ? error.message : 'Local snapshot checkpoint failed');
     });
@@ -813,7 +814,7 @@ function commitLocalOperationJournal(runtime: SpreadsheetRuntime, pendingJournal
   const next = previous
     .catch(() => undefined)
     .then(() => enqueuePersistenceWrite(runtime, async () => {
-      if (runtime.disposed) return;
+      // A root operation already committed to this queue must survive a runtime unmount.
       const expectedStorageRevision = state.storageRevision ?? runtime.workspaceRecord?.storageRevision;
       const storageRevision = await runtime.workspacePersistence.commitOperationJournal(
         runtime.model.unitId,
@@ -834,8 +835,10 @@ function commitLocalOperationJournal(runtime: SpreadsheetRuntime, pendingJournal
           updatedAt: new Date().toISOString(),
         };
       }
-      scheduleLocalSnapshotCheckpoint(runtime);
-      runtime.handlers.onWorkspacePersisted?.();
+      if (!runtime.disposed) {
+        scheduleLocalSnapshotCheckpoint(runtime);
+        runtime.handlers.onWorkspacePersisted?.();
+      }
     }));
   checkpointChains.set(runtime, next);
   void next.catch(() => {
@@ -867,10 +870,10 @@ function writeLocalSnapshotCheckpoint(runtime: SpreadsheetRuntime, artifact?: Na
       const record = artifact
         ? await runtime.workspacePersistence.checkpointWithArtifact(snapshot, localRevision, serverRevision, syncMode, artifact, pendingJournal, metadata)
         : await runtime.workspacePersistence.checkpoint(snapshot, localRevision, serverRevision, syncMode, pendingJournal, metadata);
-      if (runtime.disposed) return;
+      runtime.operationJournal.adoptSnapshotCheckpoint(runtime.model.unitId, record.pending);
       runtime.workspaceRecord = record;
       adoptLocalSnapshotBaseline(runtime, record);
-      runtime.operationJournal.write(runtime.model.unitId, record.pending.operations, record.pending.nextClientSequence, record.localRevision);
+      if (runtime.disposed) return;
       await runtime.assetStore.reconcile(collectAssetReferences(snapshot, [
         ...record.pending.operations,
         ...runtime.commands.getUndoEntries(),

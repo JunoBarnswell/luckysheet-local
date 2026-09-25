@@ -868,3 +868,16 @@ head `1d8508ea` 的两个后端 CI 已通过 test-compile，随后在 `sheetRena
 6. snapshot 写入失败不会清除已持久化 journal；阈值未到时 journal 仍可恢复，达到阈值后的 checkpoint 失败会保留旧 baseline，后续 journal 提交仍可重试。
 
 实现位于 `spreadsheet-app/src/runtime.ts`，新增边界测试源码但未执行。静态 diff 检查通过；没有改变 operation journal schema、重放次序、显式保存语义或服务端 checkpoint policy。整项 Excel runtime 重构及前述 StructuralPatch v2 迁移仍未完成。
+
+### Local checkpoint overlap regression — six static review passes (2026-09-25)
+
+对上轮 50-revision compaction 再做六轮反向审查，确认异步 checkpoint 与新 mutation 交叠时的真实 journal 丢失路径，并一起修正：
+
+1. checkpoint 在 await 前捕获 snapshot、revision 与 pending journal；期间新根事务会同步更新同一个 `OperationJournalStore`。
+2. checkpoint 成功回调原先把捕获的旧 `record.pending` 无条件写回 journal cache，会抹掉期间追加的操作；现改为按 checkpoint baseline 重基当前 journal。
+3. 重基保留当前 operation IDs 与单调 sequence，采用 checkpoint 的 `snapshotRevision`；因此继续保留未确认操作，但不会复活已经从当前 pending journal 移除的已确认操作。
+4. journal commit 仍在 checkpoint 链后排队；若 runtime 在 checkpoint 完成前卸载，旧 disposed guard 会直接丢弃已入队的 mutation journal commit。
+5. checkpoint 返回后即使 runtime 已卸载，也必须同步新 storage revision 与 journal baseline，后续已入队的 journal commit 才能用正确 CAS revision 写入；用户界面回调及 asset reconcile 则可以停止。
+6. 旧 checkpoint 若晚于较新 journal baseline 才完成，不得把 baseline 倒退；新增 `STALE_SNAPSHOT_CHECKPOINT` fail-close，并保证拒绝前 cache 不变。
+
+代码在 `features/persistence/storage.ts` 与 `runtime.ts`；测试源码覆盖新操作保留、checkpoint baseline 重基及陈旧 checkpoint 拒绝，未执行。静态审查确认了 queued journal 在 dispose 后继续完成存储写入、snapshot completion 在 dispose 后仍同步 storage revision，且不再向已卸载 runtime 派发 UI 通知。只执行 `git diff --check`；未运行测试、构建、lint 或 UI。StructuralPatch v2 与其历史迁移仍是总体整改的开放项。
