@@ -978,10 +978,22 @@ class DataRegionBoundsIndex {
   }
 }
 
+function firstCoordinateAtLeast(coordinates: readonly number[], target: number): number {
+  let low = 0;
+  let high = coordinates.length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    if (coordinates[middle]! < target) low = middle + 1;
+    else high = middle;
+  }
+  return low;
+}
+
 export class CellMatrix {
   private readonly rows = new Map<Row, Map<Column, CellData>>();
   private readonly rowBounds = new SparseAxisBounds();
   private readonly columnBounds = new SparseAxisBounds();
+  private sortedRowCoordinates?: Row[];
   private cellCount = 0;
   private revisionCounter = 0;
   private deferredJSON?: Record<string, Record<string, CellData>>;
@@ -1007,6 +1019,7 @@ export class CellMatrix {
   deferJSON(input: Record<string, Record<string, CellData>> | undefined): void {
     if (this.rows.size > 0 || this.deferredJSON !== undefined) throw new Error('CellMatrix already contains data');
     this.deferredJSON = input ?? {};
+    this.sortedRowCoordinates = undefined;
     this.deferredBounds = undefined;
   }
 
@@ -1027,6 +1040,7 @@ export class CellMatrix {
     if (!rowMap) {
       rowMap = new Map<Column, CellData>();
       this.rows.set(row, rowMap);
+      this.sortedRowCoordinates = undefined;
     }
     const fontFamily = cell.style?.fontFamily;
     const normalizedCell = fontFamily === undefined
@@ -1047,7 +1061,10 @@ export class CellMatrix {
     const rowMap = this.rows.get(row);
     const existed = rowMap?.has(column) ?? false;
     rowMap?.delete(column);
-    if (rowMap?.size === 0) this.rows.delete(row);
+    if (rowMap?.size === 0) {
+      this.rows.delete(row);
+      this.sortedRowCoordinates = undefined;
+    }
     if (existed) {
       this.cellCount -= 1;
       this.rowBounds.remove(row);
@@ -1067,6 +1084,7 @@ export class CellMatrix {
     this.rows.clear();
     this.rowBounds.clear();
     this.columnBounds.clear();
+    this.sortedRowCoordinates = undefined;
     this.cellCount = 0;
   }
 
@@ -1184,12 +1202,23 @@ export class CellMatrix {
     callback: (cell: CellData, row: Row, column: Column) => void,
   ): void {
     this.hydrate();
-    for (const [row, columns] of this.rows) {
-      if (row < startRow || row > endRow) continue;
+    const rows = this.getSortedRowCoordinates();
+    for (let index = firstCoordinateAtLeast(rows, startRow); index < rows.length; index += 1) {
+      const row = rows[index]!;
+      if (row > endRow) break;
+      const columns = this.rows.get(row);
+      if (!columns) continue;
       for (const [column, cell] of columns) {
         if (column >= startColumn && column <= endColumn) callback(cell, row, column);
       }
     }
+  }
+
+  private getSortedRowCoordinates(): Row[] {
+    if (!this.sortedRowCoordinates) {
+      this.sortedRowCoordinates = [...this.rows.keys()].sort((left, right) => left - right);
+    }
+    return this.sortedRowCoordinates;
   }
 
   clone(): CellMatrix {
@@ -1293,15 +1322,9 @@ export class CellMatrix {
   /** 按稀疏行列索引读取范围内实际存在的单元格。 */
   getRegion(startRow: Row, endRow: Row, startColumn: Column, endColumn: Column): Array<{ row: Row; column: Column; cell: CellData }> {
     const extracted: Array<{ row: Row; column: Column; cell: CellData }> = [];
-    this.hydrate();
-    for (const [row, columns] of this.rows) {
-      if (row < startRow || row > endRow) continue;
-      for (const [column, cell] of columns) {
-        if (column >= startColumn && column <= endColumn) {
-          extracted.push({ row, column, cell: structuredClone(cell) });
-        }
-      }
-    }
+    this.forEachInRange(startRow, endRow, startColumn, endColumn, (cell, row, column) => {
+      extracted.push({ row, column, cell: structuredClone(cell) });
+    });
     return extracted;
   }
 

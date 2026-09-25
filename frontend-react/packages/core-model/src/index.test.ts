@@ -94,6 +94,24 @@ test('CellMatrix range iteration visits only persisted cells', () => {
   assert.deepEqual(entries, ['2:3']);
 });
 
+test('CellMatrix range traversal stays ordered and refreshes row indexes after sparse mutations', () => {
+  const matrix = new CellMatrix();
+  matrix.set(100_000, 2, { value: 'far' });
+  matrix.set(50, 2, { value: 'middle' });
+  matrix.set(2, 2, { value: 'near' });
+
+  const visited: number[] = [];
+  matrix.forEachInRange(2, 50, 2, 2, (_cell, row) => visited.push(row));
+  assert.deepEqual(visited, [2, 50]);
+
+  matrix.set(5, 2, { value: 'inserted-row' });
+  matrix.delete(50, 2);
+  assert.deepEqual(matrix.getRegion(2, 5, 2, 2).map(({ row }) => row), [2, 5]);
+
+  matrix.shiftRows(5, 2, 1);
+  assert.deepEqual(matrix.getRegion(5, 7, 2, 2).map(({ row }) => row), [7]);
+});
+
 test('CellMatrix enumerates non-calculation formula owners without hydrating deferred cells', () => {
   const matrix = new CellMatrix();
   matrix.deferJSON({
