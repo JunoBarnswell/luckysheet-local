@@ -948,3 +948,16 @@ head `1d8508ea` 的两个后端 CI 已通过 test-compile，随后在 `sheetRena
 6. 对照 SYSTEM restore 的行主体约定，确认通用行/envelope 校验必须保留服务伪主体映射，并由数据库列与 envelope 内的 session 值彼此相等，而不能硬编码只接受新写入的 `system` session。
 
 确认的是一个根因：非顺序读取绕过了 operation-row/envelope 身份一致性边界。所有直接业务读取现统一经过 `readCommittedHistoryRow`，原始 JSON 反序列化只留在该校验器内部；SYSTEM restore 继续按其专用行主体验证。未运行测试、构建、lint 或 UI；该检查和前一轮的连续性校验均只做静态复核，不把两个根因虚增为 30 项，也不代表完整结构架构已完成。
+
+### 六轮静态自审 — coordination outbox revision identity (2026-09-26)
+
+沿 operation commit → Outbox → Redis → WebSocket 做六轮核查，确认：
+
+1. `WorkbookOperationService.enqueueRevisionEvent` 从同一 committed envelope 构造 Outbox 行，但 unit/operation/revision 另存为独立数据库列。
+2. `CoordinationOutboxPublisher` 将数据库列写入 Redis 外层消息，同时原样附上 payload；此前没有比较两套身份。
+3. `RedisCoordinationSubscriber` 只将外层 `operation` 解析为 envelope，忽略外层 unitId、operationId、revision。
+4. `WebSocketSessionRegistry.broadcastRevision` 按内层 envelope 的 operationId 去重，并按内层 unitId 选择接收会话，故身份不一致会改变实际投递目标。
+5. WorkbookOperationService 的 operation_log 校验器不覆盖 outbox 发布路径；Outbox 的独立 payload 即使与其行身份不一致仍可进入 Redis。
+6. 失败语义已有安全落点：publisher 异常会释放 Outbox 供既有重试，subscriber 异常会忽略该消息；因此可在消息边界拒绝不匹配事件，不必将坏数据转成 workbook 状态。
+
+现新增 package-private `RevisionCoordinationEvent` 作为两端共用的强类型事件，构造时核对 UUID、kind、unitId、operationId 与 revision；publisher 先解析规范 envelope 再构造事件，subscriber 反序列化同一 DTO 后才广播。六轮确认的是一个独立身份边界缺口，并非六个问题。只做静态源码/diff 检查；不运行测试、构建、lint 或 UI，StructuralPatch v2 和整体架构目标仍未完成。

@@ -2,7 +2,6 @@ package com.xc.luckysheet.server.coordination;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.xc.luckysheet.server.contract.CommittedOperationEnvelope;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.data.redis.connection.Message;
@@ -26,8 +25,8 @@ public class RedisCoordinationSubscriber implements MessageListener {
             JsonNode root = mapper.readTree(message.getBody());
             switch (root.path("kind").asText()) {
                 case "revision" -> {
-                    CommittedOperationEnvelope operation = mapper.treeToValue(root.path("operation"), CommittedOperationEnvelope.class);
-                    sessions.broadcastRevision(operation);
+                    RevisionCoordinationEvent event = mapper.treeToValue(root, RevisionCoordinationEvent.class);
+                    sessions.broadcastRevision(event.operation());
                 }
                 case "ephemeral" -> {
                     EphemeralEvent event = new EphemeralEvent(
