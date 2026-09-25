@@ -1095,7 +1095,8 @@ final class StructuralSnapshotReducer {
                         value -> FormulaReferenceTransformer.remapMovedRegion(value, owner, targetIdentity, selected, rowDelta, columnDelta, sheetOrder),
                         value -> FormulaReferenceTransformer.remapMovedRegion(value, owner, targetIdentity, inverseSelection, -rowDelta, -columnDelta, sheetOrder),
                         "persisted formula owner on " + owner.id()),
-                anchor -> moveTemplateFormulaAnchor(anchor, targetIdentity.id(), source, rowDelta, columnDelta)));
+                anchor -> moveTemplateFormulaAnchor(anchor, targetIdentity.id(), source, rowDelta, columnDelta),
+                true));
         appendRuleFormulaDeltas(root, ruleFormulaSnapshots, movedFormulaDeltas);
         return new StructuralPatch(StructuralPatch.VERSION, "range.move", movedFormulaDeltas);
     }
@@ -2545,7 +2546,8 @@ final class StructuralSnapshotReducer {
                         value -> FormulaReferenceTransformer.remapAxis(value, owner, target, axis, at, count, direction, sheetOrder),
                         value -> FormulaReferenceTransformer.remapAxis(value, owner, target, axis, at, count, inverseDirection, sheetOrder),
                         "persisted formula owner on " + owner.id()),
-                anchor -> shiftTemplateFormulaAnchor(anchor, target.id(), axis, at, count, direction)));
+                anchor -> shiftTemplateFormulaAnchor(anchor, target.id(), axis, at, count, direction),
+                true));
         appendRuleFormulaDeltas(root, ruleFormulaSnapshots, formulaOwnerDeltas);
         return List.copyOf(formulaOwnerDeltas);
     }
@@ -2929,7 +2931,8 @@ final class StructuralSnapshotReducer {
                         value -> FormulaReferenceTransformer.remapCellShift(value, owner, target, selected, shiftAxis, direction, sheetOrder),
                         value -> FormulaReferenceTransformer.remapCellShift(value, owner, target, selected, shiftAxis, inverseDirection, sheetOrder),
                         "persisted formula owner on " + owner.id()),
-                anchor -> shiftTemplateFormulaAnchor(anchor, target.id(), selected, shiftAxis, direction)));
+                anchor -> shiftTemplateFormulaAnchor(anchor, target.id(), selected, shiftAxis, direction),
+                true));
         appendRuleFormulaDeltas(root, ruleFormulaSnapshots, formulaOwnerDeltas);
         return new StructuralPatch(StructuralPatch.VERSION, mutationId, formulaOwnerDeltas);
     }

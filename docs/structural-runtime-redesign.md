@@ -1133,3 +1133,16 @@ PR 上两个 `canonical-build` job 使用相同 head，前端依赖安装与前�
 6. **负向回归边界**：新增测试源码用非目标工作表 `drawings` 的读取陷阱证明预检不再触碰不相关元数据；仅静态检查该用例可达结构入口，未执行测试。
 
 **修复**：两条预检路径现在对目标表完整暂存，对非目标表只暂存六类实际跨表引用 owner；workbook tables 与 sources 也只克隆指向目标表的对象，避免复制无关的大型元数据集合。`git diff --check` 通过；没有运行本地测试、构建、lint 或 UI。此修复不消除逐表 owner 遍历，也未替代全类型 `ReferenceIndex`、Canonical Structural Planner 或 patch 原子应用；剩余架构目标继续开放。
+
+### 六轮静态复核 — 结构变换遗漏非图表公式对象 patch（2026-09-26）
+
+六轮分别核对状态生成、delta 编码、历史/投影消费者、Java reducer 与 wire 契约，只确认一个跨端根因：
+
+1. **Owner 收集**：轴插入/删除、单元格位移和 move 的公式预检都会收集 table-sheet 列、shape property、chart text、data-view field 与 cell-style-template 的公式变化；这些字段已实际写回模型。
+2. **TS delta 编码**：`structuralFormulaObjectDelta` 已能为五类公式对象生成类型化 delta，但轴/cell-shift 的 `applyFormulaRewritePlan` 与 move 的 `applyMovedFormulaRewritePlan` 都只保留 chart-text，丢弃其余四类。
+3. **History 契约**：`CommandRuntime.applyMutation` 用返回 delta 记录 inverse history；提交 patch 与本地 history owner 集不一致时会将条目作废。因此缺失 delta 会让已有结构操作在服务器确认后失去可撤销历史。
+4. **Projection/remote 契约**：projection runtime 对 chart-text、shape-property、table-sheet-column 使用公式对象 delta；本地 effect 未带这些 owner 时，提交前缺少对应 owner 失效，服务器 patch 又会与本地记录不一致。另追踪 data-view/template 调用点后确认它们没有 per-sheet 投影缓存，分别由模型集合和 session getter 直接读取，不因其缺少 projection 分支再增加全表失效逻辑。
+5. **Java patch 生成**：Java axis、cell-shift、move reducer 会同步改写五类 owner，但调用默认 `includeNonChartObjectDeltas=false` 的重载；Sheet Table rename 已证明同一 reducer 可发出这些 owner 类型。
+6. **协议与拒绝边界**：StructuralPatch v3、TS protocol 与 Java reducer 已支持全部五类公式对象 owner，因此无需变更 wire shape；既有 anchor 删除用例继续验证拒绝不写入快照。
+
+现已让 TS 两条应用路径对所有 staged 公式对象统一生成 delta，并让 Java axis/cell-shift/move patch 发出同一组 owner 变化。TS fixture 覆盖三类操作的 owner-kind 集；Java fixture 覆盖 13 个轴插入 owner delta、轴 patch inverse 以及 cell-shift/move 的完整对象 delta。只做静态源码审查和 `git diff --check`，未运行本地测试、构建、lint 或 UI。没有更改 patch 字段或版本；本修复不补齐 permutation、sheet identity、OOXML 或普通非公式 metadata patch，Canonical Planner/ReferenceIndex 与完整跨层链仍未完成。

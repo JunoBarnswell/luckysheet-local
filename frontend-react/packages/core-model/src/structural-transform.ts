@@ -404,6 +404,15 @@ function structuralFormulaObjectDelta(change: StagedStructuralFormulaChange): St
   }
 }
 
+function structuralFormulaObjectDeltas(
+  changes: readonly StagedStructuralFormulaChange[],
+): StructuralFormulaObjectOwnerDelta[] {
+  return changes.flatMap((change) => {
+    const delta = structuralFormulaObjectDelta(change);
+    return delta ? [delta] : [];
+  });
+}
+
 // Workbook-level formulas have no worksheet-relative origin unless they persist an explicit anchor.
 const UNANCHORED_WORKBOOK_FORMULA_OWNER = '';
 
@@ -1310,12 +1319,7 @@ interface MovedFormulaRewritePlan {
 }
 
 function applyMovedFormulaRewritePlan(workbook: WorkbookModel, plan: MovedFormulaRewritePlan): FormulaRewriteApplication {
-  const deltas: StructuralFormulaOwnerDelta[] = plan.participantChanges.flatMap((change) => {
-    const delta = change.kind === 'formula' && change.owner.kind === 'chart-text-drawing-payload'
-      ? structuralFormulaObjectDelta(change)
-      : undefined;
-    return delta ? [delta] : [];
-  });
+  const deltas: StructuralFormulaOwnerDelta[] = structuralFormulaObjectDeltas(plan.participantChanges);
   applyStagedStructuralFormulaChanges(workbook, plan.participantChanges);
   const rewrittenOwners: StructuralReferenceOwnerAddress[] = [];
   const formulaRuleDeltas: StructuralFormulaOwnerDelta[] = [];
@@ -2397,12 +2401,7 @@ function applyFormulaRewritePlan(
   plan: FormulaRewritePlan,
   cellShiftPlan?: CellShiftPlan,
 ): FormulaRewriteApplication {
-  const deltas: StructuralFormulaOwnerDelta[] = plan.participantChanges.flatMap((change) => {
-    const delta = change.kind === 'formula' && change.owner.kind === 'chart-text-drawing-payload'
-      ? structuralFormulaObjectDelta(change)
-      : undefined;
-    return delta ? [delta] : [];
-  });
+  const deltas: StructuralFormulaOwnerDelta[] = structuralFormulaObjectDeltas(plan.participantChanges);
   const formulaRuleTargets = plan.formulaRules.map((change) => {
     const rule = getStructuralFormulaRule(workbook, change.owner);
     const beforeFormula = structuralRuleFormulaFields(rule).get(change.owner.field as StructuralFormulaRuleField);

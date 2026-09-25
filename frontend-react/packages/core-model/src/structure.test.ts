@@ -487,7 +487,14 @@ describe('structural operations', () => {
       },
     });
 
-    StructuralTransform.apply(workbook, { kind: 'insert-rows', sheetId: sheet.id, at: 0, count: 1 });
+    const formulaObjectKinds = (result: ReturnType<typeof StructuralTransform.apply>) =>
+      (result.formulaOwnerDeltas ?? []).flatMap((delta) => delta.kind === 'formula-object' ? [delta.ownerKind] : []).sort();
+    const expectedAxisFormulaObjectKinds = [
+      'cell-style-template', 'cell-style-template', 'cell-style-template',
+      'data-view-field', 'shape-property', 'table-sheet-column',
+    ].sort();
+    const axisResult = StructuralTransform.apply(workbook, { kind: 'insert-rows', sheetId: sheet.id, at: 0, count: 1 });
+    assert.deepEqual(formulaObjectKinds(axisResult), expectedAxisFormulaObjectKinds);
 
     assert.equal(sheet.tableSheet?.columns[0]?.formula, '=A2');
     assert.equal((sheet.drawingPayloads.get('formula-shape') as { propertyFormula?: string }).propertyFormula, '=A2');
@@ -497,22 +504,28 @@ describe('structural operations', () => {
     assert.equal(validation?.formula1, '=A2');
     assert.equal(validation?.formula2, '=B2');
 
-    StructuralTransform.apply(workbook, {
+    const cellShiftResult = StructuralTransform.apply(workbook, {
       kind: 'cell-shift', sheetId: sheet.id,
       sourceRange: { sheetId: sheet.id, startRow: 1, endRow: 1, startColumn: 0, endColumn: 0 },
       operation: 'insert', axis: 'row',
     });
+    assert.deepEqual(formulaObjectKinds(cellShiftResult), [
+      'data-view-field', 'shape-property', 'table-sheet-column', 'cell-style-template',
+    ].sort());
     assert.equal(sheet.tableSheet?.columns[0]?.formula, '=A3');
     assert.equal((sheet.drawingPayloads.get('formula-shape') as { propertyFormula?: string }).propertyFormula, '=A3');
     assert.equal(workbook.dataModel.views.get('formula-view')?.fields[0]?.formula, "='Input Sheet'!A3");
     assert.equal(validation?.formulaAnchor?.row, 2);
     assert.equal(validation?.formula1, '=A3');
 
-    StructuralTransform.apply(workbook, {
+    const moveResult = StructuralTransform.apply(workbook, {
       kind: 'move-range', sheetId: sheet.id,
       sourceRange: { sheetId: sheet.id, startRow: 2, endRow: 2, startColumn: 0, endColumn: 0 },
       targetOrigin: { row: 3, column: 1 },
     });
+    assert.deepEqual(formulaObjectKinds(moveResult), [
+      'data-view-field', 'shape-property', 'table-sheet-column', 'cell-style-template',
+    ].sort());
     assert.equal(sheet.tableSheet?.columns[0]?.formula, '=B4');
     assert.equal((sheet.drawingPayloads.get('formula-shape') as { propertyFormula?: string }).propertyFormula, '=B4');
     assert.equal(workbook.dataModel.views.get('formula-view')?.fields[0]?.formula, "='Input Sheet'!B4");

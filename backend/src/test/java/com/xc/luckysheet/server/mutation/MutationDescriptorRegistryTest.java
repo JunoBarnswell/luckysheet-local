@@ -1760,12 +1760,18 @@ class MutationDescriptorRegistryTest {
         assertEquals("=F2", sheet.path("drawingPayloads").path("chart-1").path("elements").path("secondaryCategoryAxis").path("titleText").path("linkedFormula").asText());
         assertEquals("=G2", sheet.path("drawingPayloads").path("chart-1").path("elements").path("secondaryValueAxis").path("titleText").path("linkedFormula").asText());
         assertEquals("=E2", sheet.path("drawingPayloads").path("chart-1").path("elements").path("dataTable").path("font").path("linkedFormula").asText());
-        var chartFormulaDeltas = axisApplication.structuralPatch().formulaOwnerDeltas().stream()
+        var formulaObjectDeltas = axisApplication.structuralPatch().formulaOwnerDeltas().stream()
                 .filter(delta -> "formula-object".equals(delta.kind())).toList();
-        assertEquals(7, chartFormulaDeltas.size());
-        var chartPatch = new StructuralPatch(StructuralPatch.VERSION, "rows.inserted", chartFormulaDeltas);
-        JsonNode restoredChart = registry.applyStructuralPatch(shifted, chartPatch.inverse("rows.deleted"));
-        assertEquals("=A1", restoredChart.path("sheets").get(0).path("drawingPayloads").path("chart-1")
+        assertEquals(13, formulaObjectDeltas.size());
+        var formulaObjectPatch = new StructuralPatch(StructuralPatch.VERSION, "rows.inserted", formulaObjectDeltas);
+        JsonNode restoredObjects = registry.applyStructuralPatch(shifted, formulaObjectPatch.inverse("rows.deleted"));
+        assertEquals("=A1", restoredObjects.path("sheets").get(0).path("tableSheet").path("columns").get(0).path("formula").asText());
+        assertEquals("=A1", restoredObjects.path("sheets").get(0).path("drawingPayloads").path("shape").path("propertyFormula").asText());
+        assertEquals("=Sheet1!A1", restoredObjects.path("dataModel").path("views").get(0).path("fields").get(0).path("formula").asText());
+        assertEquals("=A1", restoredObjects.path("cellStyleTemplates").get(0).path("dataValidation").path("formula1").asText());
+        assertEquals("=B1", restoredObjects.path("cellStyleTemplates").get(0).path("dataValidation").path("formula2").asText());
+        assertEquals("=C1", restoredObjects.path("cellStyleTemplates").get(0).path("dataValidation").path("listSource").path("formula").asText());
+        assertEquals("=A1", restoredObjects.path("sheets").get(0).path("drawingPayloads").path("chart-1")
                 .path("elements").path("titleText").path("linkedFormula").asText());
         assertEquals("=Sheet1!A2", shifted.path("dataModel").path("views").get(0).path("fields").get(0).path("formula").asText());
         assertEquals(1, validation.path("formulaAnchor").path("row").asInt());
@@ -1777,7 +1783,11 @@ class MutationDescriptorRegistryTest {
                 {"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":1,"endRow":1,"startColumn":0,"endColumn":0},
                  "affectedBand":{"sheetId":"sheet-1","startRow":1,"endRow":5,"startColumn":0,"endColumn":0},"operation":"insert","axis":"row"}
                 """));
-        JsonNode cellShifted = registry.applyPublicMutations(shifted, List.of(cellShift));
+        var preparedCellShift = registry.prepare(shifted, cellShift, WorkbookAclRole.OWNER);
+        var cellShiftApplication = preparedCellShift.descriptor().applyWithPatch(shifted, cellShift);
+        JsonNode cellShifted = cellShiftApplication.snapshot();
+        assertEquals(5, cellShiftApplication.structuralPatch().formulaOwnerDeltas().stream()
+                .filter(delta -> "formula-object".equals(delta.kind())).count());
         JsonNode shiftedSheet = cellShifted.path("sheets").get(0);
         JsonNode shiftedValidation = cellShifted.path("cellStyleTemplates").get(0).path("dataValidation");
         assertEquals("=A3", shiftedSheet.path("tableSheet").path("columns").get(0).path("formula").asText());
@@ -1790,7 +1800,11 @@ class MutationDescriptorRegistryTest {
         OperationMutation move = new OperationMutation("range.move", "sheet-1", mapper.readTree("""
                 {"sheetId":"sheet-1","sourceRange":{"sheetId":"sheet-1","startRow":2,"endRow":2,"startColumn":0,"endColumn":0},"targetOrigin":{"row":3,"column":1}}
                 """));
-        JsonNode moved = registry.applyPublicMutations(cellShifted, List.of(move));
+        var preparedMove = registry.prepare(cellShifted, move, WorkbookAclRole.OWNER);
+        var moveApplication = preparedMove.descriptor().applyWithPatch(cellShifted, move);
+        JsonNode moved = moveApplication.snapshot();
+        assertEquals(5, moveApplication.structuralPatch().formulaOwnerDeltas().stream()
+                .filter(delta -> "formula-object".equals(delta.kind())).count());
         JsonNode movedSheet = moved.path("sheets").get(0);
         JsonNode movedValidation = moved.path("cellStyleTemplates").get(0).path("dataValidation");
         assertEquals("=B4", movedSheet.path("tableSheet").path("columns").get(0).path("formula").asText());
