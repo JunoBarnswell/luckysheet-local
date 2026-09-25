@@ -38,4 +38,5 @@ export {
   resolveSpill,
   spillValueAt,
   type ResolvedSpill,
+  type SpillBlockerRange,
 } from './spill-resolver';

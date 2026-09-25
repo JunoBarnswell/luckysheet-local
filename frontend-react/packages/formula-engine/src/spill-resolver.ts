@@ -9,6 +9,14 @@ export interface SpillResolveInput {
   rowCount: number;
   columnCount: number;
   isOccupied: (row: number, column: number) => boolean;
+  blockedRanges?: readonly SpillBlockerRange[];
+}
+
+export interface SpillBlockerRange {
+  readonly startRow: number;
+  readonly endRow: number;
+  readonly startColumn: number;
+  readonly endColumn: number;
 }
 
 export interface ResolvedSpill {
@@ -50,21 +58,21 @@ export function resolveSpill(input: SpillResolveInput): ResolvedSpill {
     };
   }
 
+  const rangeBlocker = findRangeBlocker(input.anchor, endRow, endColumn, input.blockedRanges ?? []);
+
   for (let row = input.anchor.row; row <= endRow; row++) {
     for (let column = input.anchor.column; column <= endColumn; column++) {
       if (row === input.anchor.row && column === input.anchor.column) continue;
+      if (rangeBlocker && isAtOrBefore(rangeBlocker, row, column)) {
+        return blockedSpill(input, range, rangeBlocker);
+      }
       if (input.isOccupied(row, column)) {
-        return {
-          sheetId: input.sheetId,
-          anchor: { ...input.anchor },
-          range,
-          values: toCoreMatrix(input.values),
-          state: 'blocked',
-          blocker: { row, column },
-        };
+        return blockedSpill(input, range, { row, column });
       }
     }
   }
+
+  if (rangeBlocker) return blockedSpill(input, range, rangeBlocker);
 
   return {
     sheetId: input.sheetId,
@@ -72,6 +80,50 @@ export function resolveSpill(input: SpillResolveInput): ResolvedSpill {
     range,
     values: toCoreMatrix(input.values),
     state: 'ok',
+  };
+}
+
+function findRangeBlocker(
+  anchor: { readonly row: number; readonly column: number },
+  endRow: number,
+  endColumn: number,
+  blockedRanges: readonly SpillBlockerRange[],
+): { readonly row: number; readonly column: number } | undefined {
+  let first: { row: number; column: number } | undefined;
+  for (const blocker of blockedRanges) {
+    let row = Math.max(anchor.row, blocker.startRow);
+    let column = Math.max(anchor.column, blocker.startColumn);
+    const lastRow = Math.min(endRow, blocker.endRow);
+    const lastColumn = Math.min(endColumn, blocker.endColumn);
+    if (row > lastRow || column > lastColumn) continue;
+    if (row === anchor.row && column === anchor.column) {
+      if (column < lastColumn) column += 1;
+      else if (row < lastRow) {
+        row += 1;
+        column = anchor.column;
+      } else continue;
+    }
+    if (!first || row < first.row || (row === first.row && column < first.column)) first = { row, column };
+  }
+  return first;
+}
+
+function isAtOrBefore(blocker: { readonly row: number; readonly column: number }, row: number, column: number): boolean {
+  return blocker.row < row || (blocker.row === row && blocker.column <= column);
+}
+
+function blockedSpill(
+  input: SpillResolveInput,
+  range: SpillRange['range'],
+  blocker: { readonly row: number; readonly column: number },
+): ResolvedSpill {
+  return {
+    sheetId: input.sheetId,
+    anchor: { ...input.anchor },
+    range,
+    values: toCoreMatrix(input.values),
+    state: 'blocked',
+    blocker: { ...blocker },
   };
 }
 

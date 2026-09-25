@@ -7,7 +7,7 @@ import type { CalculationEntropyContext } from './random';
 
 /** Stable wire identity for the calculation task transport. */
 export const CALCULATION_TASK_PROTOCOL = 'react-sheets.formula-calculation' as const;
-export const CALCULATION_TASK_VERSION = 1 as const;
+export const CALCULATION_TASK_VERSION = 2 as const;
 
 export type CalculationTaskKind = 'recalculate';
 

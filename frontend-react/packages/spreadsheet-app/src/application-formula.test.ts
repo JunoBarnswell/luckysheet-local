@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { createPasteSpecialSpec } from '@react-sheets/sheet-features';
+import { createSpillEnvironment } from './formula-spill-sync';
 import { hydrateRuntime } from './runtime';
 import { WorkbookSession } from './workbook-session';
 
@@ -217,6 +218,62 @@ describe('WorkbookSession formula integration', () => {
     assert.equal(cellValue(app, 0, 1), '2');
     assert.equal(cellValue(app, 1, 0), '3');
     assert.equal(cellValue(app, 1, 1), '4');
+  });
+
+  it('rebuilds persisted dynamic-array spills without self-blocking', async () => {
+    const app = new WorkbookSession();
+    const runtime = app['runtime'];
+    const sheetId = app.getActiveSheetId();
+    app.runCommand('sheet.cell.set', {
+      sheetId,
+      row: 0,
+      column: 0,
+      value: { formula: '=SEQUENCE(2,2,1,1)' },
+    });
+    await app.waitForFormulaCalculation();
+
+    hydrateRuntime(runtime, { snapshot: runtime.model.snapshot(), revision: 0 });
+    await app.waitForFormulaCalculation();
+
+    const spill = runtime.model.getSheet(sheetId).spillRanges[0];
+    assert.equal(spill?.state, 'ok');
+    assert.equal(cellValue(app, 1, 1), '4');
+  });
+
+  it('blocks spills against merged and table geometry through the canonical environment', () => {
+    const app = new WorkbookSession();
+    const runtime = app['runtime'];
+    const sheetId = app.getActiveSheetId();
+    const sheet = runtime.model.getSheet(sheetId);
+    sheet.merges.push({
+      range: { sheetId, startRow: 0, endRow: 0, startColumn: 2, endColumn: 2 },
+      anchor: { row: 0, column: 2 },
+    });
+    sheet.sheetTables.push({
+      id: 'table-blocker',
+      sheetId,
+      name: 'TableBlocker',
+      range: { sheetId, startRow: 3, endRow: 3, startColumn: 3, endColumn: 3 },
+      hasHeaderRow: false,
+      hasTotalRow: false,
+      showBandedRows: false,
+      showBandedColumns: false,
+      showFirstColumn: false,
+      showLastColumn: false,
+      showFilterButton: true,
+      autoExpand: 'none',
+      columns: [],
+    });
+    runtime.formula.setSpillEnvironment(sheetId, createSpillEnvironment(sheet));
+
+    runtime.formula.setFormula({ sheetId, row: 0, column: 0 }, '=SEQUENCE(1,3)');
+    runtime.formula.setFormula({ sheetId, row: 3, column: 0 }, '=SEQUENCE(1,4)');
+
+    const spills = runtime.formula.getSpillsForSheet(sheetId);
+    assert.deepEqual(spills.map(({ state, blocker }) => ({ state, blocker })), [
+      { state: 'blocked', blocker: { row: 0, column: 2 } },
+      { state: 'blocked', blocker: { row: 3, column: 3 } },
+    ]);
   });
 
   it('synchronizes formulas after range paste and cell insert shifts', async () => {

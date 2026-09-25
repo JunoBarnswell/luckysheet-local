@@ -2,18 +2,29 @@ import type { WorkbookModel, WorksheetModel } from '@react-sheets/core-model';
 import type { FormulaEngine, SheetTableRef, SpillEnvironment } from '@react-sheets/formula-engine';
 
 export function createSpillEnvironment(sheet: WorksheetModel): SpillEnvironment {
+  const blockedRanges = [
+    ...sheet.merges.map(({ range }) => ({
+      startRow: range.startRow,
+      endRow: range.endRow,
+      startColumn: range.startColumn,
+      endColumn: range.endColumn,
+    })),
+    ...sheet.sheetTables.map(({ range }) => ({
+      startRow: range.startRow,
+      endRow: range.endRow,
+      startColumn: range.startColumn,
+      endColumn: range.endColumn,
+    })),
+  ];
   const environment: SpillEnvironment = {
     rowCount: sheet.rowCount,
     columnCount: sheet.columnCount,
     isOccupied: (row, column) => {
       const cell = sheet.cells.get(row, column);
       if (cell && (cell.formula !== undefined || (cell.value != null && cell.value !== ''))) return true;
-      if (sheet.isMerged(row, column)) return true;
-      if (sheet.sheetTables.some((table) => row >= table.range.startRow && row <= table.range.endRow
-        && column >= table.range.startColumn && column <= table.range.endColumn)) return true;
-      return sheet.spillRanges.some((spill) => row >= spill.range.startRow && row <= spill.range.endRow
-        && column >= spill.range.startColumn && column <= spill.range.endColumn);
+      return false;
     },
+    getBlockedRanges: () => blockedRanges,
     ensureExtent: (rowCount, columnCount) => {
       sheet.ensureRangeExtent(0, Math.max(0, rowCount - 1), 0, Math.max(0, columnCount - 1));
       environment.rowCount = sheet.rowCount;

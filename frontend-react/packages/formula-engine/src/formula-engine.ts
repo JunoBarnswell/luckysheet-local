@@ -34,6 +34,7 @@ import {
   type CalculationTaskReport,
   type CalculationTaskRequest,
   type CalculationTaskResult,
+  CALCULATION_TASK_VERSION,
 } from './calculation-task-port';
 import {
   BrowserCalculationTaskPort,
@@ -52,6 +53,7 @@ import {
   spillKey,
   spillValueAt,
   type ResolvedSpill,
+  type SpillBlockerRange,
 } from './spill-resolver';
 
 export interface SpillEnvironment {
@@ -64,6 +66,8 @@ export interface SpillEnvironment {
   ensureExtent?: (rowCount: number, columnCount: number) => void;
   /** Optional exact occupancy materializer for Worker-bound calculation. */
   getOccupiedAddresses?: () => readonly { readonly row: number; readonly column: number }[];
+  /** Static non-cell geometry that blocks a spill, such as merged/table ranges. */
+  getBlockedRanges?: () => readonly SpillBlockerRange[];
 }
 
 export type CellAddressInput = CellAddress | string;
@@ -208,6 +212,7 @@ export class FormulaEngine {
   private activeResultChangeBaselines: Map<string, FormulaValue> | null = null;
   private activeSpillChangeCollector: Map<string, CellAddress> | null = null;
   private activeSpillChangeBaselines: Map<string, ResolvedSpill | undefined> | null = null;
+  private pendingSpillRecalculationOwners: Set<string> | null = null;
   private pendingSpillChangeBaselines = new Map<string, { address: CellAddress; spill: ResolvedSpill }>();
 
   private readonly cells = new Map<string, StoredCell>();
@@ -265,6 +270,7 @@ export class FormulaEngine {
         columnCount: spillSpace.columnCount,
         isOccupied: (row, column) => occupied.has(cellAddressKey({ sheetId: spillSpace.sheetId, row, column })),
         getOccupiedAddresses: () => [...occupied.values()].map((address) => ({ ...address })),
+        getBlockedRanges: () => spillSpace.blockedRanges.map((range) => ({ ...range })),
         applyOccupiedUpdate: (address, isOccupied) => {
           const key = cellAddressKey(address);
           if (isOccupied) occupied.set(key, { row: address.row, column: address.column });
@@ -275,6 +281,11 @@ export class FormulaEngine {
     for (const cell of snapshot.cells) {
       if (cell.input.kind === 'formula') engine.loadFormula(cell.address, cell.input.formula);
       else engine.loadValue(cell.address, cell.input.value);
+    }
+    for (const spillSpace of snapshot.spillSpaces) {
+      for (const spill of spillSpace.spills) {
+        engine.spills.set(spillKey({ sheetId: spill.sheetId, row: spill.anchor.row, column: spill.anchor.column }), copySpill(spill));
+      }
     }
     engine.pendingRecalculationRoots = new Set(snapshot.pendingRoots.map(cellAddressKey));
     engine.calculationSettings = structuredClone(snapshot.calculationSettings);
@@ -577,7 +588,7 @@ export class FormulaEngine {
       : (Array.isArray(addressInput) ? addressInput : [addressInput]).map((address) => this.resolveAddress(address));
     const result = await taskPort.submit({
       protocol: 'react-sheets.formula-calculation',
-      version: 1,
+      version: CALCULATION_TASK_VERSION,
       taskId,
       kind: 'recalculate',
       revision,
@@ -731,6 +742,13 @@ export class FormulaEngine {
           rowCount: environment.rowCount,
           columnCount: environment.columnCount,
           occupied: [...occupied.values()].sort(compareCellAddresses),
+          blockedRanges: (environment.getBlockedRanges?.() ?? []).map((range) => ({ ...range })),
+          spills: this.getSpillsForSheet(sheetId)
+            .sort((left, right) => compareCellAddresses(
+              { sheetId: left.sheetId, row: left.anchor.row, column: left.anchor.column },
+              { sheetId: right.sheetId, row: right.anchor.row, column: right.anchor.column },
+            ))
+            .map(copySpill),
         };
       })
       .sort((left, right) => left.sheetId.localeCompare(right.sheetId));
@@ -1286,6 +1304,7 @@ export class FormulaEngine {
     const previousResultBaselines = this.activeResultChangeBaselines;
     const previousSpillCollector = this.activeSpillChangeCollector;
     const previousSpillBaselines = this.activeSpillChangeBaselines;
+    const previousPendingSpillOwners = this.pendingSpillRecalculationOwners;
     const resultChanges = new Map<string, CellAddress>();
     const resultBaselines = new Map<string, FormulaValue>();
     const spillChanges = new Map<string, CellAddress>();
@@ -1296,6 +1315,11 @@ export class FormulaEngine {
     this.activeResultChangeBaselines = resultBaselines;
     this.activeSpillChangeCollector = spillChanges;
     this.activeSpillChangeBaselines = spillBaselines;
+    this.pendingSpillRecalculationOwners = new Set(
+      [...affected.values()]
+        .filter((address) => this.cells.get(cellAddressKey(address))?.formula !== undefined)
+        .map(spillKey),
+    );
     try {
       return this.recalculateAffectedCore(affected, resultChanges, spillChanges);
     } finally {
@@ -1303,6 +1327,7 @@ export class FormulaEngine {
       this.activeResultChangeBaselines = previousResultBaselines;
       this.activeSpillChangeCollector = previousSpillCollector;
       this.activeSpillChangeBaselines = previousSpillBaselines;
+      this.pendingSpillRecalculationOwners = previousPendingSpillOwners;
     }
   }
 
@@ -1629,6 +1654,7 @@ export class FormulaEngine {
 
   private refreshSpill(address: CellAddress, value: FormulaValue, cache?: Map<string, FormulaValue>): void {
     const key = spillKey(address);
+    this.pendingSpillRecalculationOwners?.delete(key);
     const previous = this.spills.get(key);
     if (!isSpillMatrix(value)) {
       this.spills.delete(key);
@@ -1649,6 +1675,24 @@ export class FormulaEngine {
       rowCount: environment.rowCount,
       columnCount: environment.columnCount,
       isOccupied: environment.isOccupied,
+      blockedRanges: [
+        ...(environment.getBlockedRanges?.() ?? []),
+        ...[...this.spills.values()]
+          .filter((candidate) => candidate.sheetId === address.sheetId
+            && candidate.state === 'ok'
+            && !this.pendingSpillRecalculationOwners?.has(spillKey({
+              sheetId: candidate.sheetId,
+              row: candidate.anchor.row,
+              column: candidate.anchor.column,
+            }))
+            && (candidate.anchor.row !== address.row || candidate.anchor.column !== address.column))
+          .map((candidate) => ({
+            startRow: candidate.range.startRow,
+            endRow: candidate.range.endRow,
+            startColumn: candidate.range.startColumn,
+            endColumn: candidate.range.endColumn,
+          })),
+      ],
     });
     this.spills.set(key, spill);
     if (!sameCalculationValue(previous, spill)) this.recordSpillProjectionChange(address, previous, spill);

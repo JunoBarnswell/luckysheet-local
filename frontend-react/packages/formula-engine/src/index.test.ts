@@ -374,7 +374,7 @@ test('calculation task port is versioned and serializable without pretending to 
   const port = engine.createCalculationTaskPort();
   const result = await port.submit({
     protocol: 'react-sheets.formula-calculation',
-    version: 1,
+    version: 2,
     taskId: 'task-1',
     kind: 'recalculate',
     revision: 4,
@@ -383,7 +383,7 @@ test('calculation task port is versioned and serializable without pretending to 
 
   assert.equal(result.status, 'completed');
   assert.equal(result.protocol, 'react-sheets.formula-calculation');
-  assert.equal(result.version, 1);
+  assert.equal(result.version, 2);
   assert.equal(result.revision, 4);
   assert.equal(result.report?.results.some((entry) => entry.value === 6), true);
 });

@@ -470,7 +470,7 @@ Confirmed additional operation paths: 13 in the follow-up audit (the previous 12
 
 ## 当前源码全链路与复杂度审计（2026-09-25）
 
-本节按 `origin/main=a2a6140a` 与 PR 当前 HEAD `3db8d9f3` 的源码记录入口和已有边界，不以文档中的目标设计代替实现事实。复杂度是按数据结构及循环静态推导，未做性能基准。符号：`M`=全 workbook 的结构元数据对象数，`C`=本次涉及的已物化单元格数，`F`=被查出或改写的公式引用 owner 数，`V/E`=公式/值输入数及依赖边数，`N/K`=排序行数/排序键数，`P/R`=待重放/已提交 mutation 数，`S/B`=JSON snapshot 大小/原生包字节与 parts 大小。
+本节按 `origin/main=a2a6140a` 与结构整改 PR 的当前源码记录入口和已有边界，不以文档中的目标设计代替实现事实。复杂度是按数据结构及循环静态推导，未做性能基准。符号：`M`=全 workbook 的结构元数据对象数，`C`=本次涉及的已物化单元格数，`F`=被查出或改写的公式引用 owner 数，`V/E`=公式/值输入数及依赖边数，`N/K`=排序行数/排序键数，`P/R`=待重放/已提交 mutation 数，`S/B`=JSON snapshot 大小/原生包字节与 parts 大小。
 
 | 操作 | 当前入口与运行时 owner 路径 | History / Collaboration / Server / OOXML 边界 | 静态复杂度与已证实缺口 |
 |---|---|---|---|
@@ -497,4 +497,16 @@ Confirmed additional operation paths: 13 in the follow-up audit (the previous 12
 
 收敛顺序据此固定为：先让结构请求经 typed owner index 进入 side-effect-free `CanonicalStructuralPlanner`，输出包含 cell、metadata、formula、projection、history/inverse 和协作影响的不可变 `StructuralPatch`；再由客户端 runtime、OT、Java commit 和 OOXML capability boundary 消费同一版本化 patch 语义。第一条纵向迁移应覆盖 whole-axis insert/delete（成功、拒绝、inverse、remote replay、server reducer、native save），完成后移除对应旧的 live-mutation 分支，而不是增加并行 wrapper。复杂度目标是 planning/commit 随 affected cells 与 affected owners `O(C+F+M_affected)`，避免每次全 workbook metadata clone `O(M)`；无法证明 opaque owner 不受影响时在计划阶段 fail-close。
 
-以上是源码级复杂度推导，不是 benchmark，也未运行本地测试/构建。PR head `3db8d9f3` 的两项远端 `canonical-build` 均成功；worktree 保持干净。完整 StructuralPatch/owner-index 迁移仍未完成。
+以上是源码级复杂度推导，不是 benchmark，也未运行本地测试/构建。此前 PR head `5d378921` 的两项远端 `canonical-build` 均成功。完整 StructuralPatch/owner-index 迁移仍未完成。
+
+### Spill 障碍快照与执行语义 — 六轮自审
+
+1. **合并区域路径：** 主线程 `createSpillEnvironment` 曾通过 `sheet.isMerged` 阻止 Spill；Worker snapshot 只包含占用单元格坐标，`fromCalculationSnapshot` 重建时没有合并几何，故同一数组公式在线程内外可产生不同结果。
+2. **Table 路径：** snapshot 虽另存 `sheetTables`，Worker Spill resolver 并不查询该列表；原 `isOccupied` 闭包中的 Table 范围无法跨 Worker 边界，Table 内的空白单元格因而错误地允许 Spill。
+3. **既有 Spill 路径：** Workbook snapshot 持久化 `spillRanges`，主线程占用闭包会将它们当障碍；计算快照没有活动 Spill 状态，Worker 重建后遗漏其它公式的投影占用。
+4. **自身投影路径：** 重建引擎时先加载的模型仍带着已保存 `spillRanges`，而公式引擎重新解析该锚点后会检查旧子格；既有公式可能在首次重算时把自己的输出判成阻塞。新环境不再把模型输出投影误作 authored occupancy，Resolver 明确排除同一锚点的旧 Spill。
+5. **历史预览路径：** `hydratePreviewFormula` 原先只以 `sheet.cells.get(...)` 判占用，语义不同于正常运行时，且没有合并/Table/动态 Spill 统一边界；预览现复用主运行时创建的 Spill environment。
+6. **同批重算路径：** 多个受影响 Spill owner 按地址依次重算时，较早 owner 曾会被较晚 owner 的旧范围阻塞，即使后者在同一轮会缩小并释放该区域；现在仅尚未处理的受影响旧投影不参与冲突，新投影仍按稳定顺序互斥。
+7. **性能与协议路径：** 原几何检查在候选 Spill 的每个子格重复扫描 merges/tables/spills，成本随输出面积与障碍物数量相乘；现在范围障碍每个候选只做一次范围相交，普通 authored cell 仍用坐标查询，且快照校验/Worker 协议版本一同升级。
+
+本轮修复把合并区、Table 区和成功 Spill 范围作为范围障碍传输/查询；Worker 快照同时恢复活动 Spill 投影，静态快照校验拒绝无公式锚点的投影。新增了范围阻塞、快照往返、自身投影重算、同批 owner 更新、工作簿重建和合并/Table 环境回归用例。按用户要求仅静态审查，未执行测试或构建；完整 StructuralPatch/owner-index 跨层迁移仍未完成。

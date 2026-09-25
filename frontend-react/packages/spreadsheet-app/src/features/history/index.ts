@@ -1,6 +1,7 @@
 import { pivotSourceIdentity, WorkbookModel, type PivotResultTree, type WorkbookSnapshot } from '@react-sheets/core-model';
 import type { CommandRegistry, CommandResult } from '@react-sheets/command-runtime';
 import { FormulaEngine, type SheetTableRef } from '@react-sheets/formula-engine';
+import { createSpillEnvironment } from '../../formula-spill-sync';
 import { preparePivotTaskDescriptor, preparePivotTaskInputAsync } from '../pivot/engine';
 import { InlinePivotTaskPort, type PivotTaskPort } from '../pivot/task-port';
 import { createPivotCalculateRequest, createPivotSourceRegisterRequest, createPivotSourceReleaseRequest, type PivotTaskError } from '../pivot/task-protocol';
@@ -224,11 +225,7 @@ async function hydratePreviewFormula(workbook: WorkbookModel): Promise<FormulaEn
   })));
   engine.setSheetTables(tableRefs);
   for (const sheet of workbook.getSheets()) {
-    engine.setSpillEnvironment(sheet.id, {
-      rowCount: sheet.rowCount,
-      columnCount: sheet.columnCount,
-      isOccupied: (row, column) => sheet.cells.get(row, column) !== undefined,
-    });
+    engine.setSpillEnvironment(sheet.id, createSpillEnvironment(sheet));
     sheet.cells.forEach((cell, row, column) => {
       const address = { sheetId: sheet.id, row, column };
       if (cell.formula !== undefined) engine.setFormula(address, cell.formula);
