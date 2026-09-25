@@ -539,4 +539,6 @@ Confirmed additional operation paths: 13 in the follow-up audit (the previous 12
 
 **方案约束：** 禁止在命令层事后拼接 `cell.restore`。它会把结构副作用变成普通单元格写入，造成权限动作/范围不匹配；若不把 owner 影响范围并入 history conflict keys，远端对公式 owner 的并发写还可能被 Undo 覆盖。服务端 `OperationMutation` 当前只有 mutation id、sheet id、params，并由 Java reducer 独立重推结构语义，所以仅修改客户端历史也不能恢复持久化及其他协作者状态。
 
+**服务端权威边界：** `OperationEnvelope` 是客户端提交的 intent；`WorkbookOperationService` 逐项 prepare/apply 后才生成 `CommittedOperationMutation`，其中目前只有原 mutation、服务端 affected ranges 和 revision。幂等检查比较 request intent，不应把服务端产生的 patch 当作可由客户端伪造的请求字段。因而在线结构提交应由服务端从精确 base revision 规划并持久化 patch；committed envelope 返回 patch 与 owner-impact conflict keys。客户端 optimistic preview 可继续使用 TS planner，但 ACK/remote replay 必须消费服务端 patch；hash/precondition 不匹配时停止并重载，不再运行第二套 reducer 修补结果。离线队列只保存结构 intent，重连时必须针对当前 revision 重新规划，不能重放旧 patch。
+
 **下一步实施契约：** 把 whole-axis insert/delete 迁移为版本化 `StructuralPatch` 事务。Patch 必须在提交前包含 typed owner locator、before/after、坐标映射、授权目标范围与冲突范围，以及 calculation/projection/history 影响；逆操作由同一 patch 产生。服务端对结构 intent 做唯一权威规划并提交 patch，客户端本地预览与协作重放消费已提交 patch；拒绝未知 owner、旧 patch 版本、失配 revision 或不完整 owner delta，而不是各层重新解析 mutation 再补救。随后把同一消费入口扩到 cells/move/permutation 与 OOXML capability preflight。此结论是静态设计约束，不表示相关实现已完成；本轮未运行本地测试或构建。
