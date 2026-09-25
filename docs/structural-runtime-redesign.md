@@ -454,3 +454,34 @@ Confirmed additional operation paths: 13 in the follow-up audit (the previous 12
 推送后远端编译门禁进一步暴露点映射 `Long` 装箱后的一个真实编译错误：公式转换器仍使用不能应用于 `Long` 的直接 `(int)` 强转。现改为仅在 `MAPPED` 分支执行 `Math.toIntExact`；本地仍不运行构建或测试，等待新提交的远端门禁确认。
 
 随后远端门禁通过编译但发现共享向量测试未将 JSON 的 `out-of-bounds` 规范化为 Java 枚举 `OUT_OF_BOUNDS`，造成一个测试错误。点与区间向量解析现都先将连字符转换为下划线；等待包含此修复的新门禁结果。
+
+## 当前源码全链路与复杂度审计（2026-09-25）
+
+本节按 `origin/main=a2a6140a` 与 PR 当前 HEAD `3db8d9f3` 的源码记录入口和已有边界，不以文档中的目标设计代替实现事实。复杂度是按数据结构及循环静态推导，未做性能基准。符号：`M`=全 workbook 的结构元数据对象数，`C`=本次涉及的已物化单元格数，`F`=被查出或改写的公式引用 owner 数，`V/E`=公式/值输入数及依赖边数，`N/K`=排序行数/排序键数，`P/R`=待重放/已提交 mutation 数，`S/B`=JSON snapshot 大小/原生包字节与 parts 大小。
+
+| 操作 | 当前入口与运行时 owner 路径 | History / Collaboration / Server / OOXML 边界 | 静态复杂度与已证实缺口 |
+|---|---|---|---|
+| Insert/Delete Rows/Columns | `sheet-features/data-features.ts` 发出 `rows.*`/`columns.*`；客户端进入 `StructuralTransform.applyAxis`，回传清除/重载公式输入范围及改写 owner；`runtime.ts` 增量同步并失效投影。 | 删除 inverse 另外快照已占用 cells；OT 对轴变更有独立 `StructuralDelta`；Java `StructuralMutationDescriptor` 分派 `StructuralSnapshotReducer`；OOXML 在保存时另作 owner 检查。 | 客户端至少 `O(M+C+F)`；`preflightAxisMetadata` 对每个 sheet 深拷贝结构 metadata，临时内存 `O(M)`，随后又逐 owner 应用。TS 与 Java 仍各自计算完整 owner 变换。 |
+| Insert/Delete Cells | `sheet-features/editing/index.ts` 生成 `CellShiftPlan`，再由 `applyCellShift` 改动 cell band 和 metadata；命令保存 inverse snapshot。 | 服务端有独立 cell-shift reducer；OT 仅对登记过的 cell/range mutation 执行参数变换；历史以 cell snapshot 与 inverse mutation 重放。 | 客户端约 `O(M+C+F)`，临时空间包含全 metadata staging 与 band cells；范围和公式 owner 由不同机制检索，尚非一份 patch。 |
+| Move / Copy / Cut / Paste | `range.move` 进入 `applyMoveRange`；`range.paste` 走 `applyPasteSnapshot`，剪贴板/填充公式另用 formula offset 和数据命令。 | 移动类 history rebase 失效；Java 对跨 sheet `clearSource` 明确返回 `UNSUPPORTED_FEATURE`；OT 不猜测 move/cut 坐标。 | Move 随源/目标 cells、相关 `F` 和检查过的 metadata 增长；Paste 随 payload cells/metadata 增长。两路尚未汇合到统一逆 patch，跨 sheet cut/paste 不支持。 |
+| Drag / Fill | command runtime 对公式使用 `offsetAst`，再生成普通 cell/range 写入；不是 `StructuralTransform` 操作。 | 历史记录 cell/range mutation；远端按具体 mutation schema 重放。 | 与输出 cell 数 `C` 及每个复制公式引用数成正比；同类坐标偏移与结构插入仍由不同 API 定义。 |
+| Sort | `data.sort.rows` 计算 `sourceRows` 后发出 `rows.permuted`，客户端走 `applyRowPermutation`（独立于 `StructuralTransform`）。 | runtime 用排序范围同步计算；mutation metadata 将 row permutation 标为 history-rebase invalidate；Java reducer 有另一套 permutation 逻辑；OT 对 sort fail-close。 | 排序本身约 `O(N log N × K)`，随后还要映射 cells/owners；执行、inverse/history 与远端 OT 均没有共用 permutation patch。 |
+| Sheet Rename / Delete / Reorder | `sheet.rename/remove/add` 经 `WorkbookModel` 与 `SheetIdentityTransform`；reorder 直接改 sheet identity/order。 | rename 有精确公式 owner delta，但存在新名称解析歧义时重建 FormulaEngine；add/remove/reorder 在 `CALCULATION_CONTEXT_REBUILDS` 中全量重建；OT 对 sheet identity fail-close。 | 身份变更需要遍历 workbook owners，约 `O(M+F)`；重建另需枚举 `V` 与依赖边 `E`。history、OT 和 server 并未消费同一个身份 patch。 |
+| Table Resize | 未找到独立 `table.resize` mutation；sheet table 通过 `sheetTable.update`，workbook table 通过 `table.add/remove`，轴插删又各自改 table ranges。 | 各命令有各自 inverse；OT 将 table-resize 列为无 canonical patch；服务端/OOXML 以另一组 table owner reducers 处理。 | 专用跨层 resize 事务和统一 range/reference delta 缺失；当前局部代价取决于被扫描/复制的 table 与 filter owners。 |
+| Undo / Redo | CommandRuntime 重放 mutation 的 inverse/redo mutation；没有记录 `StructuralTransformResult` 的完整 owner before/after 值。 | row delete 保存 removed cells；move、sort 等被标记不能跨结构历史安全 rebase；server 接收到的是 mutation 序列而不是历史 patch。 | 回放成本为对应操作成本再加 inverse payload；delete/move 的快照空间随被保存对象数增长。inverse 语义由每种命令重复维护。 |
+| Remote Replay | `ot-rebase.ts` 以 `rebaseAgainstHistory` 顺序叠加已提交操作；当前只对轴 delta 做完整坐标映射，其他结构 kinds 拒绝猜测。 | `transformParams` 仍递归检查字段名并结合 mutation-specific 转换；move/sort/table resize/sheet identity 已 fail-close；server commit 与本地 replay 各自执行 reducer。 | 单个 pending 跨 `R` 条 history 是 `O(R × payload)`；`P` 个 pending 约 `O(P×R×payload)`。缺少统一 patch 是支持被拒绝与字段推断仍存在的共同根因。 |
+| Server Commit | `MutationDescriptorRegistry.applyPublicMutations` 顺序调用 descriptor；结构 descriptor 对每次 mutation `snapshot.deepCopy()` 后由 Java reducer 执行。 | 同一 batch 的后续 mutation 接收前一结果；Java `FormulaReferenceTransformer` 和 TS AST transform 是独立实现。 | `K` 次结构 mutation 的 snapshot copy 上界为 `O(K×S)` 时间/累计分配，再加每次局部 reducer；尚无 server 可消费的共享 StructuralPatch。 |
+| OOXML Structural Save | `exportOoxmlDocument` 对 snapshot hash 匹配的未改文档回传原 bytes；已改文档经 package graph、能力检测、serializer、输出重载检查。 | 部分 unknown nodes/extensions/未建模 chart 会阻止重建；其余 opaque parts 由导入 artifact 保留，包层并非结构 planner 的参与者。 | untouched 路径仍需计算 `O(S)` hash 和复制 `O(B)` bytes；改动后成本涉及 `O(S+B)` 序列化/扫描。未知 part 是否含坐标 owner 不是所有结构 mutation 的前置检查。 |
+
+### 六轮交叉审计结论与收敛方案
+
+1. **入口审计：** Rows/columns、cell shifts、move、row permutation、sheet identity、table updates 来自不同 mutation/command；并不存在一个涵盖上述 kinds 的 planner 入口。
+2. **副作用边界：** `StructuralTransform.apply` 在 live `WorkbookModel` 上写 cells/metadata，`StructuralTransformResult` 只携带 calculation deltas 和少量标记，不是可复用的 immutable patch。
+3. **Owner 查询：** FormulaEngine `ReferenceIndex` 覆盖公式依赖/公式 owner；其他 metadata owners 由结构函数遍历/深拷贝，无法用一个 owner index 查询并产生变更集。
+4. **计算与投影：** runtime 以 mutation ID 集合、临时 structural effect、affected ranges 三种信息决定 rebuild、计算同步和投影失效；这些 effect 不随持久化/历史 mutation 一同保存。
+5. **历史、协作、服务端：** undo inverse、OT 的字段推断/明确拒绝、TS mutation reducer 和 Java snapshot reducer 分别编码语义；共享点/区间向量只能约束原子 mapping，不能保证各 owner 结果一致。
+6. **OOXML 与失败原子性：** OOXML 的部分 opaque-owner 拒绝发生在 export 而不是 planning；planner 若不先纳入 owner capability，用户可能先成功修改内存，再在保存时才遇到 fail-close。
+
+收敛顺序据此固定为：先让结构请求经 typed owner index 进入 side-effect-free `CanonicalStructuralPlanner`，输出包含 cell、metadata、formula、projection、history/inverse 和协作影响的不可变 `StructuralPatch`；再由客户端 runtime、OT、Java commit 和 OOXML capability boundary 消费同一版本化 patch 语义。第一条纵向迁移应覆盖 whole-axis insert/delete（成功、拒绝、inverse、remote replay、server reducer、native save），完成后移除对应旧的 live-mutation 分支，而不是增加并行 wrapper。复杂度目标是 planning/commit 随 affected cells 与 affected owners `O(C+F+M_affected)`，避免每次全 workbook metadata clone `O(M)`；无法证明 opaque owner 不受影响时在计划阶段 fail-close。
+
+以上是源码级复杂度推导，不是 benchmark，也未运行本地测试/构建。PR head `3db8d9f3` 的两项远端 `canonical-build` 均成功；worktree 保持干净。完整 StructuralPatch/owner-index 迁移仍未完成。
