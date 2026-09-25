@@ -1606,6 +1606,10 @@ export interface SheetSnapshot {
   lifecyclePrintDocument?: PrintDocumentSnapshot;
 }
 
+function definedNameStoreKey(name: string, scope: DefinedNameScope, sheetId?: SheetId): string {
+  return JSON.stringify([scope, scope === 'sheet' ? sheetId : null, name.trim().toUpperCase()]);
+}
+
 export class WorkbookModel {
   readonly sheets = new Map<SheetId, WorksheetModel>();
   /** Sole canonical structured-data owner; bytes referenced by sources remain in the block store. */
@@ -1624,7 +1628,8 @@ export class WorkbookModel {
   /** 工作表 Tab 顺序 */
   sheetOrder: SheetId[] = [];
   /** The sole canonical defined-name store. Formula consumers receive a derived workbook-scope view. */
-  readonly definedNameModels: DefinedNameModel[] = [];
+  private definedNamesByIdentity = new Map<string, DefinedNameModel>();
+  private definedNameModelsProjection: readonly DefinedNameModel[] | undefined;
   dimensionMetrics: WorkbookDimensionMetrics = { normalFontFamily: 'Calibri', normalFontSizePx: 14.6666666667, maximumDigitWidthPx: 7 };
   collationContext: WorkbookCollationContext = normalizeWorkbookCollation(DEFAULT_WORKBOOK_COLLATION);
   /** Canonical authored calculation policy shared by the runtime and workers. */
@@ -1645,6 +1650,15 @@ export class WorkbookModel {
       if (entry.scope === 'workbook') result[entry.name] = entry.formula;
     }
     return result;
+  }
+
+  get definedNameModels(): readonly DefinedNameModel[] {
+    this.definedNameModelsProjection ??= Object.freeze([...this.definedNamesByIdentity.values()].map((entry) => {
+      const copy = structuredClone(entry);
+      if (copy.anchor) Object.freeze(copy.anchor);
+      return Object.freeze(copy);
+    }));
+    return this.definedNameModelsProjection;
   }
 
   setCalculationSettings(settings: Partial<WorkbookCalculationSettings>): void {
@@ -1821,23 +1835,17 @@ export class WorkbookModel {
   }
 
   getDefinedName(name: string, sheetId?: SheetId): DefinedNameModel | undefined {
-    const normalized = name.trim().toUpperCase();
     if (sheetId) {
-      const local = this.definedNameModels.find((entry) => entry.scope === 'sheet'
-        && entry.sheetId === sheetId
-        && entry.name.toUpperCase() === normalized);
+      const local = this.definedNamesByIdentity.get(definedNameStoreKey(name, 'sheet', sheetId));
       if (local) return structuredClone(local);
     }
-    const global = this.definedNameModels.find((entry) => entry.scope === 'workbook'
-      && entry.name.toUpperCase() === normalized);
+    const global = this.definedNamesByIdentity.get(definedNameStoreKey(name, 'workbook'));
     return global ? structuredClone(global) : undefined;
   }
 
   getDefinedNameExact(name: string, scope: DefinedNameScope, sheetId?: SheetId): DefinedNameModel | undefined {
-    const normalized = name.trim().toUpperCase();
-    const exact = this.definedNameModels.find((entry) => entry.scope === scope
-      && entry.sheetId === sheetId
-      && entry.name.toUpperCase() === normalized);
+    if ((scope === 'workbook' && sheetId !== undefined) || (scope === 'sheet' && !sheetId)) return undefined;
+    const exact = this.definedNamesByIdentity.get(definedNameStoreKey(name, scope, sheetId));
     return exact ? structuredClone(exact) : undefined;
   }
 
@@ -1849,22 +1857,30 @@ export class WorkbookModel {
 
   setDefinedName(input: DefinedNameModel): DefinedNameModel {
     const model = normalizeDefinedNameModel(input);
-    const index = this.definedNameModels.findIndex((entry) => entry.scope === model.scope
-      && entry.sheetId === model.sheetId
-      && entry.name.toUpperCase() === model.name.toUpperCase());
-    if (index >= 0) this.definedNameModels[index] = structuredClone(model);
-    else this.definedNameModels.push(structuredClone(model));
+    this.definedNamesByIdentity.set(definedNameStoreKey(model.name, model.scope, model.sheetId), structuredClone(model));
+    this.definedNameModelsProjection = undefined;
     return structuredClone(model);
   }
 
   removeDefinedName(name: string, scope: DefinedNameScope = 'workbook', sheetId?: SheetId): DefinedNameModel | undefined {
-    const normalized = name.trim().toUpperCase();
-    const index = this.definedNameModels.findIndex((entry) => entry.scope === scope
-      && entry.sheetId === sheetId
-      && entry.name.toUpperCase() === normalized);
-    const previous = index >= 0 ? this.definedNameModels[index] : undefined;
-    if (index >= 0) this.definedNameModels.splice(index, 1);
+    if ((scope === 'workbook' && sheetId !== undefined) || (scope === 'sheet' && !sheetId)) return undefined;
+    const key = definedNameStoreKey(name, scope, sheetId);
+    const previous = this.definedNamesByIdentity.get(key);
+    if (previous) {
+      this.definedNamesByIdentity.delete(key);
+      this.definedNameModelsProjection = undefined;
+    }
     return previous ? structuredClone(previous) : undefined;
+  }
+
+  replaceDefinedNames(inputs: readonly DefinedNameModel[]): void {
+    const next = new Map<string, DefinedNameModel>();
+    for (const input of inputs) {
+      const model = normalizeDefinedNameModel(input);
+      next.set(definedNameStoreKey(model.name, model.scope, model.sheetId), structuredClone(model));
+    }
+    this.definedNamesByIdentity = next;
+    this.definedNameModelsProjection = undefined;
   }
 
   addTable(table: WorkbookTableModel): void {
@@ -1984,7 +2000,9 @@ export class WorkbookModel {
     const hydrated = WorkbookModel.fromSnapshot({ ...current, sheets: [structuredClone(snapshot)] });
     const sheet = hydrated.getSheet(snapshot.id);
     this.sheets.set(sheet.id, sheet);
-    if (snapshot.lifecycleDefinedNames) this.definedNameModels.push(...structuredClone(snapshot.lifecycleDefinedNames));
+    if (snapshot.lifecycleDefinedNames) {
+      for (const entry of snapshot.lifecycleDefinedNames) this.setDefinedName(entry);
+    }
     if (snapshot.lifecyclePrintDocument) this.printDocuments.set(snapshot.id, structuredClone(snapshot.lifecyclePrintDocument));
     const bounded = Math.max(0, Math.min(index, this.sheetOrder.length));
     this.sheetOrder.splice(bounded, 0, sheet.id);
@@ -2004,7 +2022,7 @@ export class WorkbookModel {
       // Keep the legacy formula-map field as a derived wire projection for
       // import/export consumers. It is never hydrated as mutable state.
       definedNames: { ...this.definedNames },
-      definedNameModels: structuredClone(this.definedNameModels),
+      definedNameModels: structuredClone([...this.definedNameModels]),
       dataModel: this.getDataModel(),
       printDocuments: this.listPrintDocuments(),
       queryDefinitions: this.listQueryDefinitions(),

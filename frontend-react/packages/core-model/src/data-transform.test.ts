@@ -195,13 +195,13 @@ describe('canonical row permutation metadata plan', () => {
       formula2: '=B1',
       listSource: { kind: 'formula', formula: '=C1:C2' },
     });
-    workbook.definedNameModels.push({
+    workbook.setDefinedName({
       name: 'RelativeOwner',
       scope: 'workbook',
       formula: '=A1',
       anchor: { sheetId: sheet.id, row: 0, column: 6 },
     });
-    workbook.definedNameModels.push({
+    workbook.setDefinedName({
       name: 'OtherSheetOwner',
       scope: 'workbook',
       formula: '=A1',
@@ -265,7 +265,7 @@ describe('canonical row permutation metadata plan', () => {
     sheet.columnCount = 2;
     sheet.cells.set(0, 0, { value: 'first' });
     sheet.cells.set(1, 0, { value: 'second' });
-    workbook.definedNameModels.push({
+    workbook.setDefinedName({
       name: 'OutOfBoundsOwner',
       scope: 'workbook',
       formula: '=A1',

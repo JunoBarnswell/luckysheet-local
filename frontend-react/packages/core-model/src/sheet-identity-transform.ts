@@ -720,7 +720,7 @@ export function planSheetIdentityTransform(workbook: WorkbookModel, input: Sheet
           }
           sheet.cells.set(change.row, change.column, next);
         }
-        workbook.definedNameModels.splice(0, workbook.definedNameModels.length, ...definedNames);
+        workbook.replaceDefinedNames(definedNames);
         for (const sheet of workbook.getSheets()) {
           sheet.conditionalFormats.splice(0, sheet.conditionalFormats.length, ...(conditionalFormatChanges.get(sheet.id) ?? []));
           sheet.dataValidations.splice(0, sheet.dataValidations.length, ...(dataValidationChanges.get(sheet.id) ?? []));
@@ -764,7 +764,7 @@ export function planSheetIdentityTransform(workbook: WorkbookModel, input: Sheet
           formula: mapFormula(entry.formula, source.name, targetName, `defined-name:${entry.name}`),
           anchor: entry.anchor ? { ...entry.anchor, sheetId: mapSheetId(entry.anchor.sheetId, source.id, targetSheetId) } : undefined,
         }));
-        workbook.definedNameModels.push(...scopedNames);
+        for (const definedName of scopedNames) workbook.setDefinedName(definedName);
         const printDocument = workbook.printDocuments.get(source.id);
         if (printDocument) workbook.printDocuments.set(targetSheetId, { ...structuredClone(printDocument), sheetId: targetSheetId, printAreas: printDocument.printAreas.map((area) => ({ ...area, sheetId: targetSheetId, range: mapRange(area.range, source.id, targetSheetId) })), pageBreaks: printDocument.pageBreaks.map((item) => ({ ...item, sheetId: targetSheetId })) });
         const sourceIndex = workbook.sheetOrder.indexOf(source.id);
@@ -782,9 +782,10 @@ export function planSheetIdentityTransform(workbook: WorkbookModel, input: Sheet
       workbook.sheets.delete(source.id);
       workbook.sheetOrder = workbook.sheetOrder.filter((id) => id !== source.id);
       workbook.printDocuments.delete(source.id);
-      for (let index = workbook.definedNameModels.length - 1; index >= 0; index -= 1) {
-        const entry = workbook.definedNameModels[index];
-        if (entry?.scope === 'sheet' && entry.sheetId === source.id) workbook.definedNameModels.splice(index, 1);
+      for (const entry of workbook.definedNameModels) {
+        if (entry.scope === 'sheet' && entry.sheetId === source.id) {
+          workbook.removeDefinedName(entry.name, entry.scope, entry.sheetId);
+        }
       }
     },
   };

@@ -537,8 +537,7 @@ export function applyRowPermutation(workbook: WorkbookModel, plan: RowPermutatio
   for (const rule of sheet.protectionRules) if (rule.range) rule.range = remapSingleRange(`protection ${rule.id}`, rule.range, plan, plan.metadataScope);
   if (sheet.bandedRule) sheet.bandedRule.range = remapSingleRange('banded rule', sheet.bandedRule.range, plan);
   for (const change of ownerChanges.definedNames) {
-    change.entry.formula = change.formula;
-    change.entry.anchor = change.anchor;
+    workbook.setDefinedName({ ...change.entry, formula: change.formula, anchor: change.anchor });
   }
   for (const template of ownerChanges.templates) workbook.cellStyleTemplates.set(template.id, template);
   for (const update of ownerChanges.drawingPayloads) {

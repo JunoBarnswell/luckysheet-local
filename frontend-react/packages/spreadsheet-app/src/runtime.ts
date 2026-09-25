@@ -522,7 +522,11 @@ function synchronizeStructuralMutation(
 
   const hadFormulaInputs = engine.getFormulaCount() > 0;
   const roots = [...engine.synchronizeInputs([...cleared.values(), ...populated.values()])];
-  engine.setDefinedNameModels(workbook.definedNameModels, false);
+  if (effect.definedNameOwnerDeltas !== undefined) {
+    engine.applyDefinedNameModelDeltas(effect.definedNameOwnerDeltas, false);
+  } else {
+    engine.setDefinedNameModels(workbook.definedNameModels, false);
+  }
   syncWorkbookSheetTables(engine, workbook, false);
   configureFormulaSpillEnvironment(engine, workbook.getSheet(mutation.sheetId));
   if (!hadFormulaInputs && engine.getFormulaCount() > 0) {

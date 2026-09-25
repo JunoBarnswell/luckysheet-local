@@ -23,6 +23,45 @@ export function collectFormulaDependencies(
   return dependencies;
 }
 
+export function collectFormulaReferenceNodes(ast: FormulaAst): readonly FormulaReferenceNode[] {
+  const references: FormulaReferenceNode[] = [];
+  const visitNode = (node: FormulaAst): void => {
+    switch (node.type) {
+      case 'cell-reference':
+      case 'range-reference':
+      case 'whole-column-reference':
+      case 'whole-row-reference':
+      case 'reference-union':
+      case 'reference-intersection':
+      case 'sheet-range-reference':
+      case 'external-reference':
+      case 'spill-reference':
+        references.push(node);
+        return;
+      case 'unary-expression':
+        visitNode(node.operand);
+        return;
+      case 'binary-expression':
+        visitNode(node.left);
+        visitNode(node.right);
+        return;
+      case 'function-call':
+        for (const argument of node.arguments) visitNode(argument);
+        return;
+      case 'number-literal':
+      case 'string-literal':
+      case 'boolean-literal':
+      case 'name-reference':
+      case 'invalid-reference':
+        return;
+      case 'table-reference':
+        return;
+    }
+  };
+  visitNode(ast);
+  return references.map((reference) => structuredClone(reference));
+}
+
 export function resolveCellReference(
   reference: ParsedCellReference,
   currentCell: CellAddress,

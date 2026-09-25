@@ -69,6 +69,68 @@ test('FormulaEngine resolves sheet-scoped names before workbook-scoped names', (
   assert.equal(engine.getCellValue({ sheetId: 'Sheet2', row: 0, column: 0 }), 3);
 });
 
+test('FormulaEngine indexes defined-name references and anchors by typed owner identity', () => {
+  const engine = new FormulaEngine({
+    defaultSheetId: 'Sheet1',
+    sheetOrder: [{ id: 'Sheet1', name: 'Sheet1' }, { id: 'Sheet2', name: 'Sheet2' }],
+  });
+  const localName = { scope: 'sheet' as const, sheetId: 'Sheet1', name: 'LocalRange' };
+  const qualifiedName = { scope: 'workbook' as const, name: 'QualifiedRange' };
+  const beforeLocalName = {
+    ...localName,
+    formula: '=A1:A3',
+    anchor: { sheetId: 'Sheet1', row: 4, column: 2 },
+  };
+  const afterLocalName = {
+    ...localName,
+    formula: '=C9',
+    anchor: { sheetId: 'Sheet1', row: 6, column: 2 },
+  };
+  engine.setDefinedNameModels([
+    beforeLocalName,
+    { ...qualifiedName, formula: "='Sheet2'!B2:B5" },
+  ]);
+
+  assert.deepEqual(engine.dependencies.getStructuralDefinedNameDependents('Sheet1', 'row', 1), [localName]);
+  assert.deepEqual(engine.dependencies.getRangeDefinedNameDependents('Sheet1', {
+    startRow: 1,
+    endRow: 1,
+    startColumn: 0,
+    endColumn: 0,
+  }), [localName]);
+  assert.deepEqual(engine.dependencies.getDefinedNamesAnchoredAtOrAfter('Sheet1', 'row', 4), [localName]);
+  assert.deepEqual(engine.dependencies.getStructuralDefinedNameDependents('Sheet2', 'row', 2), [qualifiedName]);
+
+  assert.throws(() => engine.applyDefinedNameModelDeltas([{
+    owner: { scope: 'invalid' as never, name: 'LocalRange' },
+    before: beforeLocalName,
+    after: afterLocalName,
+  }], false), /defined-name owner identity is not unique and stable/);
+  assert.deepEqual(engine.dependencies.getStructuralDefinedNameDependents('Sheet1', 'row', 1), [localName]);
+
+  engine.applyDefinedNameModelDeltas([{
+    owner: localName,
+    before: beforeLocalName,
+    after: afterLocalName,
+  }], false);
+  assert.deepEqual(engine.dependencies.getRangeDefinedNameDependents('Sheet1', {
+    startRow: 0,
+    endRow: 2,
+    startColumn: 0,
+    endColumn: 0,
+  }), []);
+  assert.deepEqual(engine.dependencies.getDefinedNamesAnchoredAtOrAfter('Sheet1', 'row', 6), [localName]);
+});
+
+test('FormulaEngine keeps contextless workbook-name references fail-closed in the structural index', () => {
+  const engine = new FormulaEngine({ defaultSheetId: 'Sheet1' });
+  engine.setDefinedNameModels([{ name: 'Contextual', formula: '=A1', scope: 'workbook' }]);
+
+  assert.deepEqual(engine.dependencies.getDefinedNameReferenceFailures(), [
+    { owner: { scope: 'workbook', name: 'Contextual' }, reason: 'unresolved-context' },
+  ]);
+});
+
 test('scoped names survive the calculation worker snapshot boundary', () => {
   const engine = new FormulaEngine({ defaultSheetId: 'Sheet1', recalculationMode: 'manual' });
   engine.setDefinedNameModels([

@@ -160,7 +160,7 @@ function applyRestoredWorkbook(target: WorkbookModel, snapshot: WorkbookSnapshot
   target.dataModel.sources.clear();
   target.dataModel.relationships.clear();
   target.dataModel.views.clear();
-  target.definedNameModels.splice(0, target.definedNameModels.length, ...structuredClone(restored.definedNameModels));
+  target.replaceDefinedNames(restored.definedNameModels);
   target.name = restored.name;
   target.sheetOrder = [...restored.sheetOrder];
   // `definedNameModels` is the canonical store; the workbook-scoped formula

@@ -18,6 +18,8 @@ import {
   ReferenceTransformDomain,
   type CellShiftReferenceTransform,
   type StructuralShift,
+  type DefinedNameReferenceOwnerIdentity,
+  type FormulaDefinedName,
 } from '@react-sheets/formula-engine';
 
 function shiftIndex(position: number, at: number, count: number, direction: 1 | -1, axis: 'row' | 'column'): number | null {
@@ -39,6 +41,8 @@ export interface StructuralTransformResult {
   readonly rewrittenFormulaOwners: readonly StructuralReferenceOwnerAddress[];
   /** Reversible pre/post states for formula owners rewritten by this transform. */
   readonly formulaOwnerDeltas?: readonly StructuralFormulaOwnerDelta[];
+  /** Exact defined-name before/after values; present when name owners were fully indexed. */
+  readonly definedNameOwnerDeltas?: readonly StructuralDefinedNameOwnerDelta[];
   /** A caller must rebuild calculation context when incremental owner updates cannot resolve the new identity. */
   readonly calculationContextEffect?: WorkbookCalculationContextEffect;
 }
@@ -79,6 +83,12 @@ export interface StructuralFormulaObjectOwnerDelta {
   readonly afterFormula: string;
 }
 
+export interface StructuralDefinedNameOwnerDelta {
+  readonly owner: DefinedNameReferenceOwnerIdentity;
+  readonly before: FormulaDefinedName;
+  readonly after: FormulaDefinedName;
+}
+
 export type StructuralFormulaOwnerDelta = StructuralFormulaCellOwnerDelta | StructuralFormulaRuleOwnerDelta | StructuralFormulaObjectOwnerDelta;
 
 export interface StructuralFormulaOwnerState {
@@ -92,6 +102,11 @@ export interface StructuralReferenceOwnerIndex {
   getStructuralDependents(sheetId: string, axis: 'row' | 'column', at: number): readonly StructuralReferenceOwnerAddress[];
   getRangeDependents(sheetId: string, range: Pick<RangeRef, 'startRow' | 'endRow' | 'startColumn' | 'endColumn'>): readonly StructuralReferenceOwnerAddress[];
   getInvalidFormulaOwners(): readonly StructuralReferenceOwnerAddress[];
+  getStructuralDefinedNameDependents(sheetId: string, axis: 'row' | 'column', at: number): readonly DefinedNameReferenceOwnerIdentity[];
+  getRangeDefinedNameDependents(sheetId: string, range: Pick<RangeRef, 'startRow' | 'endRow' | 'startColumn' | 'endColumn'>): readonly DefinedNameReferenceOwnerIdentity[];
+  getDefinedNamesAnchoredInRange(sheetId: string, range: Pick<RangeRef, 'startRow' | 'endRow' | 'startColumn' | 'endColumn'>): readonly DefinedNameReferenceOwnerIdentity[];
+  getDefinedNamesAnchoredAtOrAfter(sheetId: string, axis: 'row' | 'column', at: number): readonly DefinedNameReferenceOwnerIdentity[];
+  getDefinedNameReferenceFailures(): readonly { readonly owner: DefinedNameReferenceOwnerIdentity; readonly reason: string }[];
 }
 
 interface StructuralFormulaRuleSnapshot {
@@ -436,7 +451,7 @@ function applyAxis(
   validateAxisBounds(sheet, axis, at, count, direction);
   validateAxisMetadataPreservation(workbook, sheet, axis, at, count, direction);
   validateDataRegionAxisPreservation(workbook, sheet, axis, at, count, direction);
-  if (count <= 0) return { kind: 'structural-transform', removedCells: [], clearInputRanges: [], populateInputRanges: [], rewrittenFormulaOwners: [] };
+  if (count <= 0) return { kind: 'structural-transform', removedCells: [], clearInputRanges: [], populateInputRanges: [], rewrittenFormulaOwners: [], definedNameOwnerDeltas: [] };
   const reportSheetAfter = sheet.reportSheet
     ? mapReportSheetCoordinates(
       sheet.reportSheet,
@@ -521,6 +536,7 @@ function applyAxis(
     populateInputRanges: calculationRanges.populateInputRanges,
     rewrittenFormulaOwners: formulaRewriteResult.owners,
     formulaOwnerDeltas: [...formulaRewriteResult.deltas, ...formulaRuleDeltas],
+    definedNameOwnerDeltas: formulaRewriteResult.definedNameDeltas,
   };
 }
 
@@ -634,6 +650,7 @@ function applyCellShift(
     populateInputRanges: [structuredClone(plan.band)],
     rewrittenFormulaOwners: formulaRewriteResult.owners,
     formulaOwnerDeltas: [...formulaRewriteResult.deltas, ...formulaRuleDeltas],
+    definedNameOwnerDeltas: formulaRewriteResult.definedNameDeltas,
   };
 }
 
@@ -1135,6 +1152,7 @@ function rewriteReferencesForMovedRegion(
   referenceOwners: StructuralReferenceOwnerIndex,
 ): MovedFormulaRewritePlan {
   const plan: MovedFormulaRewritePlan = { cells: [], names: [], rules: [], hyperlinks: [], participantChanges: [] };
+  assertDefinedNameReferenceIndexUsable(referenceOwners);
   const sheetOrder = workbook.sheetOrder.map((id) => ({ id, name: workbook.getSheet(id).name }));
   const transformMovedFormula = (formula: string, ownerSheetId: string): string => transformFormula(formula, (ast) => mapAstMovedReferences(ast, {
     selection,
@@ -1251,7 +1269,15 @@ function rewriteReferencesForMovedRegion(
       if (JSON.stringify(next) !== JSON.stringify(target)) plan.hyperlinks.push({ hyperlink, target: next });
     }
   }
-  for (const entry of workbook.definedNameModels) {
+  const nameOwners = new Map<string, DefinedNameReferenceOwnerIdentity>();
+  for (const owner of referenceOwners.getRangeDefinedNameDependents(targetSheet.id, selection)) {
+    nameOwners.set(definedNameReferenceOwnerKey(owner), owner);
+  }
+  for (const owner of referenceOwners.getDefinedNamesAnchoredInRange(targetSheet.id, selection)) {
+    nameOwners.set(definedNameReferenceOwnerKey(owner), owner);
+  }
+  for (const identity of nameOwners.values()) {
+    const entry = getIndexedDefinedName(workbook, identity);
     const ownerSheetId = entry.anchor?.sheetId ?? entry.sheetId ?? targetSheet.id;
     const formula = transformMovedFormula(entry.formula, ownerSheetId);
     assertStructuralFormulaRoundTrip(`defined-name:${entry.scope}:${entry.sheetId ?? '*'}:${entry.name}`, entry.formula, formula,
@@ -1329,6 +1355,7 @@ function applyMovedFormulaRewritePlan(workbook: WorkbookModel, plan: MovedFormul
   });
   applyStagedStructuralFormulaChanges(workbook, plan.participantChanges);
   const rewrittenOwners: StructuralReferenceOwnerAddress[] = [];
+  const definedNameDeltas: StructuralDefinedNameOwnerDelta[] = [];
   for (const change of plan.cells) {
     const sheet = workbook.getSheet(change.sheetId);
     const cell = sheet.cells.get(change.row, change.column);
@@ -1360,8 +1387,8 @@ function applyMovedFormulaRewritePlan(workbook: WorkbookModel, plan: MovedFormul
     });
   }
   for (const change of plan.names) {
-    change.entry.formula = change.formula;
-    change.entry.anchor = change.anchor;
+    workbook.setDefinedName({ ...change.entry, formula: change.formula, anchor: change.anchor });
+    definedNameDeltas.push(createDefinedNameOwnerDelta(change.entry, change.formula, change.anchor));
   }
   for (const change of plan.rules) {
     if (change.field === 'listSource.formula') {
@@ -1377,7 +1404,7 @@ function applyMovedFormulaRewritePlan(workbook: WorkbookModel, plan: MovedFormul
     }
   }
   for (const change of plan.hyperlinks) change.hyperlink.target = change.target;
-  return { owners: rewrittenOwners, deltas };
+  return { owners: rewrittenOwners, deltas, definedNameDeltas };
 }
 
 function transformFormula(formula: string, transform: (ast: ReturnType<typeof parseFormula>) => ReturnType<typeof parseFormula>): string {
@@ -1910,6 +1937,7 @@ function preflightFormulaRewrite(
   cellShift?: CellShiftReferenceTransform,
 ): FormulaRewritePlan {
   const plan: FormulaRewritePlan = { cells: [], names: [], participantChanges: [] };
+  assertDefinedNameReferenceIndexUsable(referenceOwners);
   const sheetOrder = workbook.sheetOrder.map((id) => ({ id, name: workbook.getSheet(id).name }));
   const mapFormula = (formula: string, ownerSheetId: string): string => transformFormula(formula, (ast) => mapAstStructuralReferences(ast, {
     shift,
@@ -1971,7 +1999,15 @@ function preflightFormulaRewrite(
       });
     }
   }
-  for (const entry of workbook.definedNameModels) {
+  const nameOwners = new Map<string, DefinedNameReferenceOwnerIdentity>();
+  for (const owner of referenceOwners.getStructuralDefinedNameDependents(targetSheet.id, shift.axis, shift.at)) {
+    nameOwners.set(definedNameReferenceOwnerKey(owner), owner);
+  }
+  for (const owner of referenceOwners.getDefinedNamesAnchoredAtOrAfter(targetSheet.id, shift.axis, shift.at)) {
+    nameOwners.set(definedNameReferenceOwnerKey(owner), owner);
+  }
+  for (const identity of nameOwners.values()) {
+    const entry = getIndexedDefinedName(workbook, identity);
     const ownerSheetId = entry.anchor?.sheetId ?? entry.sheetId ?? targetSheet.id;
     let anchor = entry.anchor;
     if (anchor?.sheetId === targetSheet.id) {
@@ -2263,6 +2299,30 @@ function structuralOwnerKey(owner: StructuralReferenceOwnerAddress): string {
   return `${owner.sheetId}\u0000${owner.row}\u0000${owner.column}`;
 }
 
+function definedNameReferenceOwnerKey(owner: DefinedNameReferenceOwnerIdentity): string {
+  return JSON.stringify([owner.scope, owner.scope === 'sheet' ? owner.sheetId : null, owner.name.trim().toUpperCase()]);
+}
+
+function getIndexedDefinedName(workbook: WorkbookModel, owner: DefinedNameReferenceOwnerIdentity): WorkbookModel['definedNameModels'][number] {
+  const entry = workbook.getDefinedNameExact(owner.name, owner.scope, owner.sheetId);
+  if (!entry) {
+    throw new Error(`STRUCTURAL_REFERENCE_INDEX_INVARIANT: defined-name owner ${owner.scope}:${owner.sheetId ?? '*'}:${owner.name} is missing from the workbook`);
+  }
+  return entry;
+}
+
+function assertDefinedNameReferenceIndexUsable(referenceOwners: StructuralReferenceOwnerIndex): void {
+  const failure = referenceOwners.getDefinedNameReferenceFailures()[0];
+  if (!failure) return;
+  const identity = `${failure.owner.scope}:${failure.owner.sheetId ?? '*'}:${failure.owner.name}`;
+  const reason = failure.reason === 'unresolved-context'
+    ? 'does not have a stable worksheet context'
+    : failure.reason === 'invalid-formula'
+      ? 'contains a formula that cannot be parsed'
+      : 'contains a reference that cannot be resolved';
+  throw new Error(`UNSUPPORTED_STRUCTURAL_REFERENCE: defined name ${identity} ${reason}`);
+}
+
 function rejectFormulaGroupMetadataInRange(sheet: WorksheetModel, range: RangeRef, operation: string): void {
   sheet.cells.forEachInRange(range.startRow, range.endRow, range.startColumn, range.endColumn, (cell, row, column) => {
     if (!hasFormulaGroupMetadata(cell)) return;
@@ -2291,6 +2351,7 @@ function mapCellShiftCoordinateForOwner(
 interface FormulaRewriteApplication {
   readonly owners: StructuralReferenceOwnerAddress[];
   readonly deltas: StructuralFormulaOwnerDelta[];
+  readonly definedNameDeltas: StructuralDefinedNameOwnerDelta[];
 }
 
 function applyFormulaRewritePlan(
@@ -2315,6 +2376,7 @@ function applyFormulaRewritePlan(
   });
   applyStagedStructuralFormulaChanges(workbook, plan.participantChanges);
   const rewrittenOwners: StructuralReferenceOwnerAddress[] = [];
+  const definedNameDeltas: StructuralDefinedNameOwnerDelta[] = [];
   for (const change of plan.cells) {
     const sheet = workbook.getSheet(change.sheetId);
     let coordinate: { row: number; column: number } | null = { row: change.row, column: change.column };
@@ -2359,10 +2421,34 @@ function applyFormulaRewritePlan(
     });
   }
   for (const change of plan.names) {
-    change.entry.formula = change.formula;
-    change.entry.anchor = change.anchor;
+    workbook.setDefinedName({ ...change.entry, formula: change.formula, anchor: change.anchor });
+    definedNameDeltas.push(createDefinedNameOwnerDelta(change.entry, change.formula, change.anchor));
   }
-  return { owners: rewrittenOwners, deltas };
+  return { owners: rewrittenOwners, deltas, definedNameDeltas };
+}
+
+function createDefinedNameOwnerDelta(
+  entry: WorkbookModel['definedNameModels'][number],
+  formula: string,
+  anchor: WorkbookModel['definedNameModels'][number]['anchor'],
+): StructuralDefinedNameOwnerDelta {
+  const before: FormulaDefinedName = {
+    name: entry.name,
+    formula: entry.formula,
+    scope: entry.scope,
+    ...(entry.sheetId ? { sheetId: entry.sheetId } : {}),
+    ...(entry.anchor ? { anchor: structuredClone(entry.anchor) } : {}),
+  };
+  const after: FormulaDefinedName = {
+    ...before,
+    formula,
+    ...(anchor ? { anchor: structuredClone(anchor) } : { anchor: undefined }),
+  };
+  return {
+    owner: { scope: entry.scope, name: entry.name, ...(entry.sheetId ? { sheetId: entry.sheetId } : {}) },
+    before,
+    after,
+  };
 }
 
 function applyMoveRange(
@@ -2664,6 +2750,7 @@ function applyMoveRange(
     populateInputRanges: [structuredClone(normalizedSource), structuredClone(target)],
     rewrittenFormulaOwners: formulaRewriteResult.owners,
     formulaOwnerDeltas: [...movedFormulaDeltas, ...formulaRewriteResult.deltas, ...formulaRuleDeltas],
+    definedNameOwnerDeltas: formulaRewriteResult.definedNameDeltas,
   };
 }
 

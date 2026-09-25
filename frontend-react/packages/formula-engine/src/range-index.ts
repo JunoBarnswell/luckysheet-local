@@ -1,7 +1,14 @@
 import type { CellAddress, FormulaReferenceNode } from './ast';
 import { assertCellAddress, cellAddressKey, compareCellAddresses } from './address';
 import { FormulaReferenceError } from './errors';
-import { ReferenceIndex, type IndexedReferenceOwnerSource } from './reference-index';
+import {
+  ReferenceIndex,
+  type DefinedNameReferenceFailure,
+  type DefinedNameReferenceFailureReason,
+  type DefinedNameReferenceIndexUpdate,
+  type DefinedNameReferenceOwnerIdentity,
+  type IndexedReferenceOwnerSource,
+} from './reference-index';
 import type { FormulaSheetIdentity } from './sheet-reference';
 
 export type { FormulaSheetIdentity } from './sheet-reference';
@@ -94,6 +101,58 @@ export class RangeIndex {
   ): readonly StructuralReferenceOwnerSource[] {
     return this.referenceIndex.getOwnersInRange(sheetId, range)
       .filter(({ sourceId }) => sourceId.startsWith('structural:'));
+  }
+
+  setDefinedNameReference(
+    owner: DefinedNameReferenceOwnerIdentity,
+    references: readonly FormulaReferenceNode[],
+    context?: CellAddress,
+    anchor?: CellAddress,
+    failure?: DefinedNameReferenceFailureReason,
+  ): void {
+    this.referenceIndex.setDefinedName(owner, references, context, anchor, failure);
+  }
+
+  removeDefinedNameReference(owner: DefinedNameReferenceOwnerIdentity): boolean {
+    return this.referenceIndex.removeDefinedName(owner);
+  }
+
+  updateDefinedNameReferences(updates: readonly DefinedNameReferenceIndexUpdate[]): void {
+    this.referenceIndex.updateDefinedNames(updates);
+  }
+
+  getStructuralDefinedNameDependents(
+    sheetId: string,
+    axis: 'row' | 'column',
+    at: number,
+  ): readonly DefinedNameReferenceOwnerIdentity[] {
+    return this.referenceIndex.getStructuralDefinedNameDependents(sheetId, axis, at);
+  }
+
+  getRangeDefinedNameDependents(
+    sheetId: string,
+    range: { readonly startRow: number; readonly endRow: number; readonly startColumn: number; readonly endColumn: number },
+  ): readonly DefinedNameReferenceOwnerIdentity[] {
+    return this.referenceIndex.getRangeDefinedNameDependents(sheetId, range);
+  }
+
+  getDefinedNamesAnchoredInRange(
+    sheetId: string,
+    range: { readonly startRow: number; readonly endRow: number; readonly startColumn: number; readonly endColumn: number },
+  ): readonly DefinedNameReferenceOwnerIdentity[] {
+    return this.referenceIndex.getDefinedNamesAnchoredInRange(sheetId, range);
+  }
+
+  getDefinedNamesAnchoredAtOrAfter(
+    sheetId: string,
+    axis: 'row' | 'column',
+    at: number,
+  ): readonly DefinedNameReferenceOwnerIdentity[] {
+    return this.referenceIndex.getDefinedNamesAnchoredAtOrAfter(sheetId, axis, at);
+  }
+
+  getDefinedNameReferenceFailures(): readonly DefinedNameReferenceFailure[] {
+    return this.referenceIndex.getDefinedNameReferenceFailures();
   }
 
   add(owner: CellAddress, dependencies: readonly FormulaDependency[]): void {

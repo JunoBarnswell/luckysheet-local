@@ -1,6 +1,6 @@
 import type { CellAddress, FormulaAst, FormulaReferenceNode } from './ast';
 import { cellAddressKey, compareCellAddresses, parseCellAddress } from './address';
-import { collectFormulaDependencies } from './dependencies';
+import { collectFormulaDependencies, collectFormulaReferenceNodes } from './dependencies';
 import {
   evaluateFormula,
   evaluateFormulaWithTrace,
@@ -13,7 +13,13 @@ import { formatFormula } from './ast-format';
 import { offsetAst } from './ast-rewrite';
 import { FormulaLexError, FormulaReferenceError, FormulaSyntaxError } from './errors';
 import { parseFormula as parseFormulaSource } from './parser';
-import { RangeIndex, type FormulaDependency, type FormulaSheetIdentity, type RangeDependency } from './range-index';
+import {
+  RangeIndex,
+  type FormulaDependency,
+  type FormulaSheetIdentity,
+  type RangeDependency,
+} from './range-index';
+import type { DefinedNameReferenceIndexUpdate, DefinedNameReferenceOwnerIdentity } from './reference-index';
 import { resolveFormulaSheetId } from './sheet-reference';
 import { createFormulaError, isArrayValue, isFormulaError, type ArrayValue, type FormulaError, type FormulaValue, type ScalarValue } from './values';
 import { normalizeDefinedNameModels, normalizeDefinedNames, parseDefinedNameFormula, resolveDefinedNameSource, type FormulaDefinedName } from './defined-names';
@@ -97,6 +103,12 @@ export interface RecalculationReport {
   readonly results: ReadonlyMap<string, FormulaResult>;
 }
 
+export interface FormulaDefinedNameModelDelta {
+  readonly owner: DefinedNameReferenceOwnerIdentity;
+  readonly before: FormulaDefinedName;
+  readonly after: FormulaDefinedName;
+}
+
 function sameCalculationValue(left: unknown, right: unknown): boolean {
   if (Object.is(left, right)) return true;
   if (typeof left !== 'object' || left === null || typeof right !== 'object' || right === null) return false;
@@ -139,6 +151,37 @@ function changedDefinedNameTokens(
   return changed;
 }
 
+function definedNameReferenceOwner(definition: FormulaDefinedName): DefinedNameReferenceIndexUpdate['owner'] {
+  return {
+    scope: definition.scope,
+    name: definition.name,
+    ...(definition.sheetId ? { sheetId: definition.sheetId } : {}),
+  };
+}
+
+function isDefinedNameScope(scope: unknown): scope is FormulaDefinedName['scope'] {
+  return scope === 'workbook' || scope === 'sheet';
+}
+
+function definedNameReferenceIndexUpdate(definition: FormulaDefinedName): DefinedNameReferenceIndexUpdate {
+  const owner = definedNameReferenceOwner(definition);
+  const context = definition.anchor ?? (definition.scope === 'sheet'
+    ? { sheetId: definition.sheetId!, row: 0, column: 0 }
+    : undefined);
+  try {
+    const source = definition.formula.trim();
+    const ast = parseFormulaSource(source.startsWith('=') ? source : `=${source}`);
+    return {
+      owner,
+      references: collectFormulaReferenceNodes(ast),
+      context,
+      anchor: definition.anchor,
+    };
+  } catch {
+    return { owner, references: [], context, anchor: definition.anchor, failure: 'invalid-formula' };
+  }
+}
+
 export interface FormulaEngineOptions {
   readonly defaultSheetId?: string;
   readonly sheetOrder?: readonly FormulaSheetIdentity[];
@@ -175,7 +218,7 @@ export class FormulaEngine {
   readonly dependencies: RangeIndex;
   private sheetOrder: readonly FormulaSheetIdentity[];
   /** Canonical scoped names. Workbook-only lookup is derived on demand. */
-  private definedNameModels: FormulaDefinedName[] = [];
+  private definedNamesByIdentity = new Map<string, FormulaDefinedName>();
   private spillEnvironments = new Map<string, SpillEnvironment>();
   private spills = new Map<string, ResolvedSpill>();
   private nameIndex = new Map<string, Set<string>>();
@@ -256,7 +299,7 @@ export class FormulaEngine {
     });
     engine.activeCalculationEntropy = structuredClone(snapshot.calculationEntropy);
     engine.calculationCycleSequence = snapshot.calculationEntropy.cycleId;
-    engine.definedNameModels = normalizeDefinedNameModels(snapshot.definedNameModels);
+    engine.setDefinedNameModels(snapshot.definedNameModels, false);
     engine.sheetTables = new Map(
       [...normalizeSheetTables(snapshot.sheetTables)].map(([name, table]) => [name, structuredClone(table)] as const),
     );
@@ -381,6 +424,7 @@ export class FormulaEngine {
     if (next.every((sheet, index) => sheet.name === this.sheetOrder[index]?.name)) return;
     this.sheetOrder = next;
     this.dependencies.setSheetOrder(next);
+    this.dependencies.updateDefinedNameReferences(this.getDefinedNameModels().map(definedNameReferenceIndexUpdate));
     this.calculationContextGeneration += 1;
     this.markCalculationStateChanged();
   }
@@ -977,12 +1021,84 @@ export class FormulaEngine {
   setDefinedNameModels(names: readonly FormulaDefinedName[], recalculate = true): RecalculationReport {
     const nextNames = normalizeDefinedNameModels(names);
     const changedNames = changedDefinedNameTokens(
-      this.definedNameModels,
+      this.getDefinedNameModels(),
       nextNames,
       (entry) => this.definedNameIdentity(entry),
     );
     if (changedNames.size === 0) return { recalculated: [], results: new Map() };
-    this.definedNameModels = nextNames;
+    const previousByIdentity = new Map(this.definedNamesByIdentity);
+    const nextByIdentity = new Map(nextNames.map((entry) => [this.definedNameIdentity(entry), entry] as const));
+    const referenceUpdates: DefinedNameReferenceIndexUpdate[] = [];
+    for (const [identity, previous] of previousByIdentity) {
+      const next = nextByIdentity.get(identity);
+      if (JSON.stringify(previous) === JSON.stringify(next)) continue;
+      if (!next) {
+        referenceUpdates.push({ owner: definedNameReferenceOwner(previous), remove: true });
+      }
+    }
+    for (const [identity, next] of nextByIdentity) {
+      const previous = previousByIdentity.get(identity);
+      if (JSON.stringify(previous) === JSON.stringify(next)) continue;
+      referenceUpdates.push(definedNameReferenceIndexUpdate(next));
+    }
+    this.dependencies.updateDefinedNameReferences(referenceUpdates);
+    this.definedNamesByIdentity = new Map(nextNames.map((entry) => [this.definedNameIdentity(entry), entry] as const));
+    this.calculationContextGeneration += 1;
+    this.markCalculationStateChanged();
+    const affected = this.formulasReferencing(this.nameIndex, changedNames);
+    this.refreshFormulaDependencies(affected);
+    if (affected.size === 0) return { recalculated: [], results: new Map() };
+    if (!recalculate || this.recalculationMode !== 'automatic') {
+      for (const key of affected.keys()) this.pendingRecalculationRoots.add(key);
+      return { recalculated: [], results: new Map() };
+    }
+    return this.recalculateAffected(affected);
+  }
+
+  applyDefinedNameModelDeltas(
+    deltas: readonly FormulaDefinedNameModelDelta[],
+    recalculate = true,
+  ): RecalculationReport {
+    if (deltas.length === 0) return { recalculated: [], results: new Map() };
+    const normalized = deltas.map((delta) => ({
+      owner: { ...delta.owner },
+      before: normalizeDefinedNameModels([delta.before])[0]!,
+      after: normalizeDefinedNameModels([delta.after])[0]!,
+    }));
+    const identities = new Set<string>();
+    const referenceUpdates: DefinedNameReferenceIndexUpdate[] = [];
+    const changedNames = new Set<string>();
+    for (const delta of normalized) {
+      const identity = this.definedNameIdentity(delta.before);
+      const declaredIdentity = this.definedNameIdentity({
+        ...delta.before,
+        name: delta.owner.name,
+        scope: delta.owner.scope,
+        ...(delta.owner.sheetId ? { sheetId: delta.owner.sheetId } : { sheetId: undefined }),
+      });
+      if ((delta.owner.scope === 'workbook' && delta.owner.sheetId !== undefined)
+        || !isDefinedNameScope(delta.owner.scope)
+        || (delta.owner.scope === 'sheet' && !delta.owner.sheetId)
+        || identity !== this.definedNameIdentity(delta.after)
+        || identity !== declaredIdentity
+        || identities.has(identity)) {
+        throw new Error('STRUCTURAL_DEFINED_NAME_DELTA_MISMATCH: defined-name owner identity is not unique and stable');
+      }
+      identities.add(identity);
+      const current = this.definedNamesByIdentity.get(identity);
+      if (!current || JSON.stringify(current) !== JSON.stringify(delta.before)) {
+        throw new Error(`STRUCTURAL_DEFINED_NAME_DELTA_MISMATCH: canonical owner changed before ${identity}`);
+      }
+      if (JSON.stringify(delta.before) === JSON.stringify(delta.after)) continue;
+      referenceUpdates.push(definedNameReferenceIndexUpdate(delta.after));
+      changedNames.add(delta.after.name.trim().toUpperCase());
+    }
+    if (changedNames.size === 0) return { recalculated: [], results: new Map() };
+    this.dependencies.updateDefinedNameReferences(referenceUpdates);
+    for (const delta of normalized) {
+      const identity = this.definedNameIdentity(delta.after);
+      if (JSON.stringify(delta.before) !== JSON.stringify(delta.after)) this.definedNamesByIdentity.set(identity, delta.after);
+    }
     this.calculationContextGeneration += 1;
     this.markCalculationStateChanged();
     const affected = this.formulasReferencing(this.nameIndex, changedNames);
@@ -1017,14 +1133,14 @@ export class FormulaEngine {
 
   getDefinedNames(): Record<string, string> {
     const result: Record<string, string> = {};
-    for (const entry of this.definedNameModels) {
+    for (const entry of this.definedNamesByIdentity.values()) {
       if (entry.scope === 'workbook') result[entry.name.toUpperCase()] = entry.formula;
     }
     return result;
   }
 
   getDefinedNameModels(): FormulaDefinedName[] {
-    return structuredClone(this.definedNameModels);
+    return structuredClone([...this.definedNamesByIdentity.values()]);
   }
 
   /** 清空全部公式与缓存(结构操作后整体重建前调用) */
@@ -1042,6 +1158,7 @@ export class FormulaEngine {
     this.pendingRecalculationRoots.clear();
     this.sheetTables.clear();
     this.dependencies.clear?.();
+    this.dependencies.updateDefinedNameReferences(this.getDefinedNameModels().map(definedNameReferenceIndexUpdate));
     this.formulaCount = 0;
     this.markFormulaTopologyChanged();
     this.calculationContextGeneration += 1;
@@ -1743,10 +1860,7 @@ export class FormulaEngine {
     if (formulaUsesRowVisibility(ast)) return true;
     for (const reference of collectNameReferences(ast)) {
       const normalized = reference.trim().toUpperCase();
-      const definition = this.definedNameModels.find((entry) => entry.scope === 'sheet'
-        && entry.sheetId === ownerSheetId && entry.name.trim().toUpperCase() === normalized)
-        ?? this.definedNameModels.find((entry) => entry.scope === 'workbook'
-          && entry.name.trim().toUpperCase() === normalized);
+      const definition = this.findDefinedName(reference, { sheetId: ownerSheetId, row: 0, column: 0 });
       if (!definition) continue;
       const key = `${definition.scope}:${definition.sheetId ?? ''}:${normalized}`;
       if (visitedNames.has(key)) continue;
@@ -1883,11 +1997,8 @@ export class FormulaEngine {
   private findDefinedName(name: string, currentCell: CellAddress): FormulaDefinedName | undefined {
     const normalized = name.trim().toUpperCase();
     const sheetKey = currentCell.sheetId.trim().toUpperCase();
-    return this.definedNameModels.find((entry) => entry.scope === 'sheet'
-      && entry.sheetId?.trim().toUpperCase() === sheetKey
-      && entry.name.trim().toUpperCase() === normalized)
-      ?? this.definedNameModels.find((entry) => entry.scope === 'workbook'
-        && entry.name.trim().toUpperCase() === normalized);
+    return this.definedNamesByIdentity.get(`sheet:${sheetKey}:${normalized}`)
+      ?? this.definedNamesByIdentity.get(`workbook:${normalized}`);
   }
 
   private definedNameIdentity(definition: FormulaDefinedName): string {

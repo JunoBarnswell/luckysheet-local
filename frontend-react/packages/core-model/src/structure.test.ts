@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { collectFormulaDependencies, parseFormula, RangeIndex } from '@react-sheets/formula-engine';
+import { collectFormulaDependencies, collectFormulaReferenceNodes, parseFormula, RangeIndex } from '@react-sheets/formula-engine';
 import { CellMatrix, planSheetIdentityTransform, StructuralTransform as CoreStructuralTransform, WorkbookModel, type StructuralTransformParams } from './index';
 import type { ReportSheetDefinition } from './data-model';
 
@@ -19,6 +19,16 @@ const StructuralTransform = {
           index.set(owner, [], true);
         }
       });
+    }
+    for (const entry of workbook.definedNameModels) {
+      const owner = { scope: entry.scope, name: entry.name, ...(entry.sheetId ? { sheetId: entry.sheetId } : {}) };
+      const context = entry.anchor ?? (entry.scope === 'sheet' ? { sheetId: entry.sheetId!, row: 0, column: 0 } : undefined);
+      try {
+        const formula = entry.formula.trimStart().startsWith('=') ? entry.formula : `=${entry.formula}`;
+        index.setDefinedNameReference(owner, collectFormulaReferenceNodes(parseFormula(formula)), context, entry.anchor);
+      } catch {
+        index.setDefinedNameReference(owner, [], context, entry.anchor, 'invalid-formula');
+      }
     }
     return CoreStructuralTransform.apply(workbook, params, index);
   },
@@ -80,6 +90,36 @@ describe('structural operations', () => {
     assert.equal(sheet.merges[0]!.range.startRow, 5);
     assert.equal(sheet.pane.kind === 'frozen' ? sheet.pane.ySplit : 0, 5);
     assert.equal(sheet.rowCount, 1003);
+  });
+
+  it('rewrites indexed defined-name references and moves their anchors incrementally', () => {
+    const { workbook, sheetId } = seedWorkbook();
+    workbook.setDefinedName({
+      name: 'ScopedRange',
+      formula: '=A2',
+      scope: 'sheet',
+      sheetId,
+      anchor: { sheetId, row: 5, column: 0 },
+    });
+
+    const result = StructuralTransform.apply(workbook, { kind: 'insert-rows', sheetId, at: 1, count: 1 });
+
+    const name = workbook.getDefinedNameExact('ScopedRange', 'sheet', sheetId);
+    assert.equal(name?.formula, '=A3');
+    assert.equal(name?.anchor?.row, 6);
+    assert.equal(result.definedNameOwnerDeltas?.length, 1);
+  });
+
+  it('rejects contextless workbook-name references before mutating a structural edit', () => {
+    const { workbook, sheetId } = seedWorkbook();
+    workbook.setDefinedName({ name: 'Contextual', formula: '=A1', scope: 'workbook' });
+    const before = workbook.snapshot();
+
+    assert.throws(
+      () => StructuralTransform.apply(workbook, { kind: 'insert-rows', sheetId, at: 0, count: 1 }),
+      /does not have a stable worksheet context/,
+    );
+    assert.deepEqual(workbook.snapshot(), before);
   });
 
   it('StructuralTransform deleteRows removes region and returns extracted cells for undo', () => {

@@ -1,5 +1,5 @@
 import { WorkbookModel, isWorkbookCalculationContextEffect, readChartTextFormula, writeChartTextFormula, type CellData, type ConditionalFormatRule, type DataValidationRule, type ProtectionAction, type RangeRef, type StructuralFormulaOwnerDelta, type StructuralFormulaOwnerState, type StructuralReferenceOwnerIndex, type WorkbookCalculationContextEffect, type WorksheetModel } from '@react-sheets/core-model';
-import { collectFormulaDependencies, formatFormula, mapAstStructuralReferences, parseFormula, RangeIndex, ReferenceTransformDomain, MAX_COLUMN_INDEX, MAX_ROW_INDEX } from '@react-sheets/formula-engine';
+import { collectFormulaDependencies, collectFormulaReferenceNodes, formatFormula, mapAstStructuralReferences, parseFormula, RangeIndex, ReferenceTransformDomain, MAX_COLUMN_INDEX, MAX_ROW_INDEX } from '@react-sheets/formula-engine';
 
 export interface MutationInfo<P = unknown> {
   id: string;
@@ -610,6 +610,25 @@ function buildStructuralReferenceIndex(workbook: WorkbookModel): StructuralRefer
         addFormulaOwner(owner, cell.presentation.source.formula, 'structural:barcode');
       }
     });
+  }
+  for (const entry of workbook.definedNameModels) {
+    const owner = {
+      scope: entry.scope,
+      name: entry.name,
+      ...(entry.sheetId ? { sheetId: entry.sheetId } : {}),
+    };
+    const context = entry.anchor ?? (entry.scope === 'sheet'
+      ? { sheetId: entry.sheetId!, row: 0, column: 0 }
+      : undefined);
+    let references: ReturnType<typeof collectFormulaReferenceNodes>;
+    try {
+      const normalized = entry.formula.trimStart().startsWith('=') ? entry.formula : `=${entry.formula}`;
+      references = collectFormulaReferenceNodes(parseFormula(normalized));
+    } catch {
+      index.setDefinedNameReference(owner, [], context, entry.anchor, 'invalid-formula');
+      continue;
+    }
+    index.setDefinedNameReference(owner, references, context, entry.anchor);
   }
   return index;
 }

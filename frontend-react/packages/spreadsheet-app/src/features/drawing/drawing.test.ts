@@ -348,6 +348,11 @@ describe('drawing feature', () => {
       getStructuralDependents: () => [],
       getRangeDependents: () => [],
       getInvalidFormulaOwners: () => [],
+      getStructuralDefinedNameDependents: () => [],
+      getRangeDefinedNameDependents: () => [],
+      getDefinedNamesAnchoredInRange: () => [],
+      getDefinedNamesAnchoredAtOrAfter: () => [],
+      getDefinedNameReferenceFailures: () => [],
     });
     assert.deepEqual(workbook.getSheet('sheet-1').drawings[0]?.anchor, { kind: 'two-cell', row: 4, column: 2, endRow: 7, endColumn: 4 });
   });

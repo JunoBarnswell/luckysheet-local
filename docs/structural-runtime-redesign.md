@@ -625,8 +625,8 @@ Confirmed additional operation paths: 13 in the follow-up audit (the previous 12
 
 **第 2 轮：引用 Owner 与索引边界**
 
-6. `StructuralReferenceOwnerIndex` 只提供 cell-address 公式依赖查询；无法统一返回名称、规则、表、绘图和范围对象 owner。
-7. `preflightFormulaRewrite` 每次扫描全部 `definedNameModels`，并未用引用索引定位受影响名称。
+6. `StructuralReferenceOwnerIndex` 原先只提供 cell-address 查询；本轮已把 defined name 身份、引用几何与 anchor 查询纳入同一个 `ReferenceIndex`，规则、表、绘图和范围对象仍未统一。
+7. `preflightFormulaRewrite` 原先扫描全部 `definedNameModels`；轴插删、单元格位移与 move 现在只查询受影响名称，并通过 typed before/after delta 增量同步 FormulaEngine。Sheet identity/full rebuild 生命周期仍有全量名称同步。
 8. CF/DV 公式和范围以 `workbook.getSheets()` 全表循环重写、快照，不是按目标 sheet/range 命中 owner。
 9. table-sheet 列、shape payload、data-view 字段、cell-style-template 公式在 `preflightWorkbookFormulaOwners` 全量枚举。
 10. Hyperlink、chart/pivot/sparkline、filter、print、spill、protection 等坐标 owner 由多个 `shift*` / `relocate*` 过程逐类扫描，缺少统一可查询 owner 索引。
@@ -642,7 +642,7 @@ Confirmed additional operation paths: 13 in the follow-up audit (the previous 12
 **第 4 轮：Patch 协议及跨端同义性**
 
 16. TypeScript `StructuralPatch` / Java `StructuralPatch` 只有 `formulaOwnerDeltas`，不承载 cell 和普通结构元数据 before/after。
-17. 名称、persisted formula participants（table-sheet、drawing payload、data view、template validation）会被结构变换直接改写，但当前 effect/patch delta 不描述这些 owner。
+17. Defined-name before/after 已加入客户端结构 effect，但尚未进入版本化跨端 `StructuralPatch`；persisted formula participants（table-sheet、drawing payload、data view、template validation）仍缺少 effect/patch delta。
 18. Java `StructuralMutationDescriptor` 的 `rows.permuted` 分支调用会改写规则、名称、模板、绘图的 reducer 后，仍返回 `structuralPatch == null`；客户端排序 effect 也只给计算清除/重载范围。
 19. 协议 structural-patch allowlist 不含 `rows.permuted`、table resize 或 sheet identity mutation；这些操作因此不能由同一 patch 契约确认 owner 结果。
 20. TypeScript 与 Java 分别实现轴、cell shift、move、sort 与 metadata mapping；共享的点/区间向量只验证原子坐标映射，不校验完整 workbook owner patch 等价。
@@ -770,5 +770,22 @@ head `1d8508ea` 的两个后端 CI 已通过 test-compile，随后在 `sheetRena
 现在图表 postings 使用按引用身份可直接删除的集合；非 cell 图形/审阅 mutation 不再参与 chart source range 求交，chart add/remove/update 仍按 drawing/payload identity 更新；pivot refresh 只使相关 owner projection 失效；owner 重索引从候选解析开始即标记 dirty，批量 rename 先构造候选 sheet order，所有 replacement bindings 与旧 posting 预校验后才提交，只有完整成功才清除 dirty，任意失败后的下一次查询都从 canonical model 重建。静态检查确认首次初始化及 sheet identity/order 生命周期仍全量建索引，日常结构编辑只读取受影响 source-sheet postings 并重索引命中的 chart owners。
 
 补充确认：`drawing.payload.update` 也承载 form-control 等非图表载荷；只有 `before` 或 `after` 的 `kind` 为 `chart` 时才将其加入 chart owner 重索引。
+
+### Defined-name reference owners — six static self-audit rounds (2026-09-25)
+
+六轮复核逐轮沿真实调用链确认问题并修复：
+
+1. 从 axis/move preflight 追到全表循环：所有名称都会被解析/重写，改为按目标几何查询。
+2. 沿 FormulaEngine 与 CommandRuntime 两条索引构建路径核对 owner 身份：名称引用从未进入 ReferenceIndex，补入 typed name postings。
+3. 对比公式引用与 anchor 坐标的独立变化：无公式引用的 anchor 也必须参与位移，增加单独 anchor 索引。
+4. 检查 workbook 名称解析上下文：无 anchor 的未限定 workbook 引用无法确定 sheet，登记失败并在结构操作前 fail-close。
+5. 反查模型所有写入口和精确查找：公开列表允许 push/splice 且查找是线性扫描，改为 identity map 与不可变投影。
+6. 从结构 apply 追到 FormulaEngine 提交同步：全量名称归一化抵消了预检索引收益，轴、cell-shift、move 改用精确 before/after 增量。
+
+现在 `ReferenceIndex` 用 typed defined-name owner posting 同时支持目标范围、结构轴和 anchor 位置查询；`WorkbookModel` 使用受控 identity map 与不可变列表投影；轴、cell-shift、move 的 effect 包含名称 before/after，FormulaEngine 以批量原子 delta 更新名称及 posting，不再在这些编辑后扫描整张名称表。无 anchor 且包含未限定引用的 workbook 名称登记为 `unresolved-context`，结构操作 fail-close；无法解析的名称引用也明确拒绝。CommandRuntime 的冷路径索引及结构测试 fixture 同样登记名称 owners。
+
+六轮后的反向审查还捕获并修正五处实现缺陷：delta 归一化曾丢掉后续校验必需的 owner identity；行可见性递归仍引用已移除的局部变量；运行时无效 scope 曾可被 identity 计算误当作 workbook scope；row-permutation 仍直接修改现在冻结的名称投影；快照 DTO 的可写数组类型曾接收到只读投影类型。分别恢复身份字段、规范化名称 token、拒绝未知 scope、改走 `WorkbookModel.setDefinedName`，并在 snapshot 边界复制成独立数组；同时增加 delta 拒绝后索引保持不变的回归测试源码。
+
+新增成功路径与拒绝路径测试源码，但按任务约束未运行测试、构建、lint 或浏览器。静态检查仅确认 axis/cell-shift/move 预检无全量名称循环、公开名称列表无直接写入且 `git diff --check` 无 whitespace error。行置换的名称锚点选择及提交后同步仍有全量名称遍历，sheet identity/full calculation rebuild 也仍通过完整快照同步；这些是后续增量索引/patch 边界，不在本轮宣称已解决。跨端版本化 StructuralPatch、其他 owner families、Java 共用结构语义及整体验收仍是开放项，本轮不代表整体目标完成。
 
 本轮仅执行静态源码审查与 `git diff --check`；未运行测试、构建、lint 或浏览器验收。上述变更尚需 PR CI；不能据此宣称完整 Structural Runtime 整改已经完成。
