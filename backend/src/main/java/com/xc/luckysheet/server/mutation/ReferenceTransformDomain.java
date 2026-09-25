@@ -7,7 +7,7 @@ final class ReferenceTransformDomain {
 
     enum PointKind { MAPPED, DELETED, OUT_OF_BOUNDS }
 
-    record PointMapping(PointKind kind, long position) {
+    record PointMapping(PointKind kind, Long position) {
     }
 
     enum IntervalKind { MAPPED, DELETED, OUT_OF_BOUNDS }
@@ -22,9 +22,9 @@ final class ReferenceTransformDomain {
         if (position < 0 || at < 0 || count < 1 || maximum < 0 || at > maximum || (long) count > (long) maximum + 1) {
             throw new IllegalArgumentException("Reference transform point inputs are invalid");
         }
-        if (position > maximum) return new PointMapping(PointKind.OUT_OF_BOUNDS, position);
+        if (position > maximum) return new PointMapping(PointKind.OUT_OF_BOUNDS, (long) position);
         if (!insert && position >= at && (long) position - at < count) {
-            return new PointMapping(PointKind.DELETED, -1);
+            return new PointMapping(PointKind.DELETED, null);
         }
         long mapped = insert
                 ? position < at ? position : (long) position + count

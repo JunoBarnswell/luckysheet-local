@@ -428,3 +428,14 @@ Confirmed additional operation paths: 13 in the follow-up audit (the previous 12
 6. **改动边界复核：** 初次 `loadFormulaInputs`、首次出现公式的 `synchronizeCellMutation`、对应的结构变更同步，共三个值收集路径都改为复用 `calculationInputUpdate` 的 canonical 分类，仅追加值输入；普通空单元格仍不复制，公式输入仍由公式路径装载。新增两条回归用例分别覆盖首次 hydration 与首次公式创建。
 
 六轮交叉审查确认的是一个真实根因、两个受影响入口，不把重复表现计作独立缺陷。只做静态检查；本轮未运行测试、构建或浏览器验收。
+
+### 六轮静态审查 — TS/Java 结构映射向量契约
+
+1. **运行时入口：** TypeScript `ReferenceTransformDomain` 接收 `direction`，Java 对应入口接收 `insert`；向量以 `operation` 表达，再由各自测试适配到真实 API，不在生产运行时增加跨语言桥接。
+2. **坐标域：** 行与列最大索引来自两侧各自的公开常量；向量只保存轴，不重复维护一个可能漂移的 `maximum` 数值。
+3. **点映射结果：** 共同数据覆盖未受影响、插入后移、删除、越界和已有越界点；复审发现 Java 原先用 `-1` 表示删除坐标，而 TypeScript 的 `deleted` 结果不含坐标。
+4. **闭区间语义：** 区间数据覆盖插入前/内/后、删除前/相交/全删、列轴和反向输入端点；输出按映射域规范化为闭区间。
+5. **加载路径：** 前端测试从仓库根 `contracts` 读取同一 JSON；Maven 仅将该文件作为 test resource 加入类路径，同时保留原 `src/test/resources`，不改生产资源或运行时。
+6. **漂移修复：** 两个 Java 消费点先检查映射 kind，再读取坐标；将 Java deleted 坐标改为 `null` 后，不引入空值解引用，并与 TypeScript 的无坐标结果对齐。共享向量现在直接检查这一语义，不再把 `-1` 当作跨语言契约。
+
+六轮静态复审确认并修复一个跨语言结果契约差异；区间映射分支未发现同类差异。此契约只统一并锁定坐标映射样例，不宣称 Java/TypeScript 已共享实现，也不替代仍待完成的不可变 `StructuralPatch` 与端到端消费者迁移。测试源码已接线，但按静态审查要求未执行测试或构建。

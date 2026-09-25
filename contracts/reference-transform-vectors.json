@@ -1,0 +1,26 @@
+{
+  "schema": "ReferenceTransformVectors",
+  "version": 1,
+  "points": [
+    { "id": "row-insert-before", "axis": "row", "position": 2, "at": 3, "count": 2, "operation": "insert", "expected": { "kind": "mapped", "position": 2 } },
+    { "id": "row-insert-at", "axis": "row", "position": 3, "at": 3, "count": 2, "operation": "insert", "expected": { "kind": "mapped", "position": 5 } },
+    { "id": "row-delete-before", "axis": "row", "position": 2, "at": 3, "count": 2, "operation": "delete", "expected": { "kind": "mapped", "position": 2 } },
+    { "id": "row-delete-inside", "axis": "row", "position": 4, "at": 3, "count": 2, "operation": "delete", "expected": { "kind": "deleted" } },
+    { "id": "row-delete-after", "axis": "row", "position": 6, "at": 3, "count": 2, "operation": "delete", "expected": { "kind": "mapped", "position": 4 } },
+    { "id": "row-insert-at-last", "axis": "row", "position": 1048575, "at": 1048575, "count": 1, "operation": "insert", "expected": { "kind": "out-of-bounds", "position": 1048576 } },
+    { "id": "column-insert-at-last", "axis": "column", "position": 16383, "at": 16383, "count": 1, "operation": "insert", "expected": { "kind": "out-of-bounds", "position": 16384 } },
+    { "id": "row-point-already-outside", "axis": "row", "position": 1048576, "at": 0, "count": 1, "operation": "insert", "expected": { "kind": "out-of-bounds", "position": 1048576 } }
+  ],
+  "intervals": [
+    { "id": "row-insert-before", "axis": "row", "start": 4, "end": 6, "at": 1, "count": 2, "operation": "insert", "expected": { "kind": "mapped", "start": 6, "end": 8 } },
+    { "id": "row-insert-inside", "axis": "row", "start": 2, "end": 5, "at": 3, "count": 2, "operation": "insert", "expected": { "kind": "mapped", "start": 2, "end": 7 } },
+    { "id": "row-insert-after", "axis": "row", "start": 2, "end": 5, "at": 6, "count": 2, "operation": "insert", "expected": { "kind": "mapped", "start": 2, "end": 5 } },
+    { "id": "row-delete-before", "axis": "row", "start": 4, "end": 7, "at": 1, "count": 2, "operation": "delete", "expected": { "kind": "mapped", "start": 2, "end": 5 } },
+    { "id": "row-delete-overlap-start", "axis": "row", "start": 1, "end": 5, "at": 2, "count": 2, "operation": "delete", "expected": { "kind": "mapped", "start": 1, "end": 3 } },
+    { "id": "row-delete-interior", "axis": "row", "start": 1, "end": 7, "at": 3, "count": 2, "operation": "delete", "expected": { "kind": "mapped", "start": 1, "end": 5 } },
+    { "id": "row-delete-all", "axis": "row", "start": 3, "end": 4, "at": 3, "count": 2, "operation": "delete", "expected": { "kind": "deleted" } },
+    { "id": "column-delete-after", "axis": "column", "start": 2, "end": 5, "at": 6, "count": 2, "operation": "delete", "expected": { "kind": "mapped", "start": 2, "end": 5 } },
+    { "id": "row-insert-at-limit", "axis": "row", "start": 1048575, "end": 1048575, "at": 1048575, "count": 1, "operation": "insert", "expected": { "kind": "out-of-bounds", "start": 1048576, "end": 1048576 } },
+    { "id": "column-delete-reversed-input", "axis": "column", "start": 7, "end": 2, "at": 4, "count": 2, "operation": "delete", "expected": { "kind": "mapped", "start": 2, "end": 5 } }
+  ]
+}
