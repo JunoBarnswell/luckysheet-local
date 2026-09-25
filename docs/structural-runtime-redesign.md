@@ -525,3 +525,18 @@ Confirmed additional operation paths: 13 in the follow-up audit (the previous 12
 6. **失败边界：** 结构 mutation 的服务端 rebase policy 是 `EXACT_BASE`；全表范围并非并发重放保护所必需，却改变了保护判定语义并造成跨端结果不一致。
 
 **确认缺陷与修复：** 服务端现从结构 mutation 的 `axis/at/count` 生成与客户端相同的请求轴 band，并在权限判断前验证工作表 extent 与 Excel 坐标上界。Java 回归用例覆盖不相交的锁列可删除、相交锁列拒绝及行插入范围。该源码测试尚未执行；本地测试/构建仍按要求跳过。
+
+### 六轮自审 — 删除轴变换的公式历史可逆性
+
+1. **引用语义：** 删除覆盖公式引用时，`mapAstStructuralReferences` 生成 `invalid-reference`（`#REF!`）；该 AST 分支后续结构变换保持不变，因此反向插入不能推回原引用。
+2. **Owner 覆盖：** `preflightFormulaRewrite` 从结构引用索引取出受影响公式 owner，确认这种情况不是漏扫公式，而是 owner 已被找到并改写。
+3. **计划数据：** `FormulaRewritePlan.cells` 仅记录新公式字段和原坐标；没有可持久化的 before/after owner 值供历史消费。
+4. **提交效果：** `applyFormulaRewritePlan` 改写活动 workbook 并返回 owner 地址；`StructuralTransformResult` 不包含这些 owner 的可逆数据。
+5. **命令逆序：** 行/列删除命令的 inverse 只包括反向插入和被删轴带内单元格恢复；带外公式 owner 不在快照中。
+6. **历史重放：** `CommandRuntime.applyMutation` 把 mutation 声明的 inverse 写入 history；effect 只传给 mutation listeners。Undo 因而只重放轴插入和已声明快照，无法还原变为 `#REF!` 的公式。
+
+**确认缺陷：** 删除包含直接公式引用的行/列后，Undo 会恢复工作表地址空间和被删单元格，但不会恢复存活公式 owner 原先的引用。相同缺口适用于由结构变更改写的其他公式型 owner；修复验收不能只覆盖 cell formula。
+
+**方案约束：** 禁止在命令层事后拼接 `cell.restore`。它会把结构副作用变成普通单元格写入，造成权限动作/范围不匹配；若不把 owner 影响范围并入 history conflict keys，远端对公式 owner 的并发写还可能被 Undo 覆盖。服务端 `OperationMutation` 当前只有 mutation id、sheet id、params，并由 Java reducer 独立重推结构语义，所以仅修改客户端历史也不能恢复持久化及其他协作者状态。
+
+**下一步实施契约：** 把 whole-axis insert/delete 迁移为版本化 `StructuralPatch` 事务。Patch 必须在提交前包含 typed owner locator、before/after、坐标映射、授权目标范围与冲突范围，以及 calculation/projection/history 影响；逆操作由同一 patch 产生。服务端对结构 intent 做唯一权威规划并提交 patch，客户端本地预览与协作重放消费已提交 patch；拒绝未知 owner、旧 patch 版本、失配 revision 或不完整 owner delta，而不是各层重新解析 mutation 再补救。随后把同一消费入口扩到 cells/move/permutation 与 OOXML capability preflight。此结论是静态设计约束，不表示相关实现已完成；本轮未运行本地测试或构建。
