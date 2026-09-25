@@ -139,12 +139,36 @@ test('defined-name structural patches reject identity drift, duplicate owners, a
     after: { name: 'LocalName', formula: '=A2', scope: 'sheet', sheetId: 'sheet-1' },
   };
   const patch = { version: 3, mutationId: 'rows.inserted', formulaOwnerDeltas: [], definedNameOwnerDeltas: [delta] };
+  assert.equal(validateStructuralPatch(patch, 'rows.inserted').definedNameOwnerDeltas.length, 1);
   assert.throws(() => validateStructuralPatch({ version: 1, mutationId: 'rows.inserted', formulaOwnerDeltas: [] }, 'rows.inserted'));
   assert.throws(() => validateStructuralPatch({ ...patch, definedNameOwnerDeltas: [delta, delta] }, 'rows.inserted'), /duplicate defined-name owner/);
   assert.throws(() => validateStructuralPatch({
     ...patch,
     definedNameOwnerDeltas: [{ ...delta, after: { ...delta.after, sheetId: 'sheet-2' } }],
   }, 'rows.inserted'), /identity or before\/after/);
+  const workbookName = {
+    owner: { scope: 'workbook', name: 'GlobalRate' },
+    before: { name: 'GlobalRate', formula: '=A1', scope: 'workbook' },
+    after: { name: 'GlobalRate', formula: '=A2', scope: 'workbook' },
+  };
+  assert.equal(validateStructuralPatch({ ...patch, definedNameOwnerDeltas: [workbookName] }, 'rows.inserted').definedNameOwnerDeltas.length, 1);
+  const anchoredSheetName = {
+    owner: { scope: 'sheet', name: 'AnchoredRate', sheetId: 'sheet-1' },
+    before: { name: 'AnchoredRate', formula: '=A1', scope: 'sheet', sheetId: 'sheet-1', anchor: { sheetId: 'sheet-1', row: 0, column: 0 } },
+    after: { name: 'AnchoredRate', formula: '=A2', scope: 'sheet', sheetId: 'sheet-1', anchor: { sheetId: 'sheet-1', row: 1, column: 0 } },
+  };
+  assert.equal(validateStructuralPatch({ ...patch, definedNameOwnerDeltas: [anchoredSheetName] }, 'rows.inserted').definedNameOwnerDeltas.length, 1);
+  assert.throws(() => validateStructuralPatch({
+    ...patch,
+    definedNameOwnerDeltas: [{
+      ...anchoredSheetName,
+      after: { ...anchoredSheetName.after, anchor: { sheetId: 'sheet-1', row: -1, column: 0 } },
+    }],
+  }, 'rows.inserted'), /outside worksheet bounds/);
+  assert.throws(() => validateStructuralPatch({
+    ...patch,
+    definedNameOwnerDeltas: [{ ...workbookName, owner: { ...workbookName.owner, extra: true } }],
+  }, 'rows.inserted'), /Unexpected fields/);
 });
 
 test('collaboration messages reject actor-bearing presence and legacy changesets', () => {

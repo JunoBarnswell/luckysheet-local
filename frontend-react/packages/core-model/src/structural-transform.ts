@@ -1282,7 +1282,7 @@ interface MovedFormulaRewritePlan {
 }
 
 function applyMovedFormulaRewritePlan(workbook: WorkbookModel, plan: MovedFormulaRewritePlan): FormulaRewriteApplication {
-  const deltas = plan.participantChanges.flatMap((change) => {
+  const deltas: StructuralFormulaOwnerDelta[] = plan.participantChanges.flatMap((change) => {
     const delta = change.kind === 'formula' && change.owner.kind === 'chart-text-drawing-payload'
       ? structuralFormulaObjectDelta(change)
       : undefined;
@@ -2369,7 +2369,7 @@ function applyFormulaRewritePlan(
   plan: FormulaRewritePlan,
   cellShiftPlan?: CellShiftPlan,
 ): FormulaRewriteApplication {
-  const deltas = plan.participantChanges.flatMap((change) => {
+  const deltas: StructuralFormulaOwnerDelta[] = plan.participantChanges.flatMap((change) => {
     const delta = change.kind === 'formula' && change.owner.kind === 'chart-text-drawing-payload'
       ? structuralFormulaObjectDelta(change)
       : undefined;

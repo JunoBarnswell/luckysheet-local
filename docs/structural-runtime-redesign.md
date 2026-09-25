@@ -1055,3 +1055,14 @@ head `1d8508ea` 的两个后端 CI 已通过 test-compile，随后在 `sheetRena
 6. **迁移/恢复边界**：逐项复核 v1/v2 patch、无 patch 的旧 rename、checkpoint、restore 与待发 outbox 的同一迁移链；restore `targetRevision` 现在要求可安全转换为 `long`，避免超大整数溢出后误指向有效历史 revision。迁移仍以连续日志、已验证 checkpoint 和 operation-log/outbox 源一致性 fail-close。
 
 本轮新增 TS/Java 成功与拒绝路径测试源码，未执行测试、构建、lint 或 UI；只允许静态审查。`StructuralPatch` 现提升为 v3，前端/服务端实现及 v2 历史升级仍需后续逐层静态复核与 CI/真实互操作验收；这只是 rename owner 纵切，不能标记整个 Structural Editing & Reference Integrity 目标完成。
+
+### 六轮静态复审 — v3 结构 patch 类型流与定义名称 wire exactness（2026-09-26，CI baseline `d3f0fc34`）
+
+1. **远程编译证据**：push 自动运行的两个 `canonical-build` job 在同一三个 TS 错误处失败：移动公式计划与普通结构公式计划各将 `formula-cell` 推入只推断为 `formula-object` 的数组；定义名称 anchor 校验引用了 map 回调内部的 `address`。
+2. **移动引用路径**：`applyMovedFormulaRewritePlan` 同时收集 chart-text object delta 与公式单元格 delta，数组必须声明为完整 `StructuralFormulaOwnerDelta[]`，否则移动工作簿快照的前后态 patch 无法构建。
+3. **结构轴/单元格变换路径**：`applyFormulaRewritePlan` 具有相同的完整联合类型契约；单独修移动路径不足以恢复插删/单元格位移相关结构入口。
+4. **协议闭包与地址约束**：`validateStructuralPatch` 的 cell 地址与 defined-name anchor 共用同一 bounds/exact-key 校验；解析器现位于 patch validator 作用域，消除编译错误且不绕过边界验证。
+5. **TS/Java wire 形状**：defined-name owner identity 的 `sheetId` 仅 sheet scope 必需；Java identity/state record 使用 `NON_NULL`，因此 workbook scope 的 `sheetId` 与无 anchor 状态在 JSON 中合法省略。TS validator 原先仍将这些 optional key 列为必需，导致服务端合法 v3 patch 被客户端拒绝。
+6. **提交入口与正反例**：`validateCommittedOperationEnvelope` 在历史和实时 committed envelope 入口调用同一 patch validator；测试源码现覆盖 workbook/sheet scope、anchor 缺省/存在、identity 漂移、重复 owner 和额外字段拒绝。
+
+已修复三条编译诊断对应的两个类型/作用域根因，以及一个 TS/Java optional wire 字段契约分叉；没有把相同的根因重复包装成更多问题。当前只做源码检查与 `git diff --check`，未在本地运行测试、构建、lint 或 UI。CI baseline `d3f0fc34` 的失败已确认；修复后的新 head 仍需远端 checks 验证，整体整改目标继续开放。

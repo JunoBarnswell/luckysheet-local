@@ -1010,19 +1010,19 @@ export function validateStructuralPatch(value: unknown, mutationId: string): Str
   if (!['rows.inserted', 'rows.deleted', 'columns.inserted', 'columns.deleted', 'cells.inserted', 'cells.deleted', 'cells.inserted.restore', 'cells.deleted.restore', 'rows.permuted', 'range.move', 'sheetTable.update'].includes(mutationId)) {
     throw new Error('Committed structural patch mutation id is invalid');
   }
+  const address = (rawAddress: unknown, label: string) => {
+    const item = requireRecord(rawAddress, label);
+    validateExactKeys(item, ['sheetId', 'row', 'column'], label);
+    if (!isNonEmptyString(item.sheetId)
+      || !Number.isSafeInteger(item.row) || Number(item.row) < 0 || Number(item.row) > 1_048_575
+      || !Number.isSafeInteger(item.column) || Number(item.column) < 0 || Number(item.column) > 16_383) {
+      throw new Error(`${label} is outside worksheet bounds`);
+    }
+    return { sheetId: item.sheetId, row: Number(item.row), column: Number(item.column) };
+  };
   const formulaOwnerDeltas = patch.formulaOwnerDeltas.map((raw, index) => {
     const delta = requireRecord(raw, `Committed structural patch delta ${index}`);
     const label = `Committed structural patch delta ${index}`;
-    const address = (rawAddress: unknown, label: string) => {
-      const item = requireRecord(rawAddress, label);
-      validateExactKeys(item, ['sheetId', 'row', 'column'], label);
-      if (!isNonEmptyString(item.sheetId)
-        || !Number.isSafeInteger(item.row) || Number(item.row) < 0 || Number(item.row) > 1_048_575
-        || !Number.isSafeInteger(item.column) || Number(item.column) < 0 || Number(item.column) > 16_383) {
-        throw new Error(`${label} is outside worksheet bounds`);
-      }
-      return { sheetId: item.sheetId, row: Number(item.row), column: Number(item.column) };
-    };
     const range = (rawRange: unknown, label: string): RangeRef => {
       const item = requireRecord(rawRange, label);
       validateExactKeys(item, ['sheetId', 'startRow', 'endRow', 'startColumn', 'endColumn'], label);
@@ -1170,7 +1170,7 @@ export function validateStructuralPatch(value: unknown, mutationId: string): Str
     validateExactKeys(delta, ['owner', 'before', 'after'], label);
     const identity = (rawIdentity: unknown, identityLabel: string) => {
       const item = requireRecord(rawIdentity, identityLabel);
-      validateExactKeys(item, ['scope', 'name', 'sheetId'], identityLabel);
+      validateExactKeys(item, ['scope', 'name', ...(item.sheetId === undefined ? [] : ['sheetId'])], identityLabel);
       if ((item.scope !== 'workbook' && item.scope !== 'sheet')
         || typeof item.name !== 'string' || item.name.trim() !== item.name || item.name.length === 0 || item.name.length > 255
         || !/^[A-Za-z_\\][A-Za-z0-9_.]*$/.test(item.name)
@@ -1188,7 +1188,11 @@ export function validateStructuralPatch(value: unknown, mutationId: string): Str
     const owner = identity(delta.owner, `${label}.owner`);
     const definedNameState = (rawState: unknown, stateLabel: string) => {
       const item = requireRecord(rawState, stateLabel);
-      validateExactKeys(item, ['name', 'formula', 'scope', 'sheetId', 'anchor'], stateLabel);
+      validateExactKeys(item, [
+        'name', 'formula', 'scope',
+        ...(item.sheetId === undefined ? [] : ['sheetId']),
+        ...(item.anchor === undefined ? [] : ['anchor']),
+      ], stateLabel);
       const stateIdentity = identity({ scope: item.scope, name: item.name, ...(item.sheetId === undefined ? {} : { sheetId: item.sheetId }) }, stateLabel);
       if (typeof item.formula !== 'string' || item.formula.trim() !== item.formula
         || item.formula.length === 0 || item.formula.length > 32_767) {
