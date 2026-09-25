@@ -2234,8 +2234,9 @@ class MutationDescriptorRegistryTest {
                 .put("kind", "formula").put("formula", "='Source'!A1");
         ObjectNode tableSheet = source.putObject("tableSheet");
         tableSheet.putArray("columns").addObject().put("fieldId", "calculated").put("formula", "='Source'!A1");
-        source.putObject("drawingPayloads").putObject("formula-shape").put("kind", "shape").put("propertyFormula", "='Source'!A1");
-        source.putObject("drawingPayloads").putObject("chart").put("kind", "chart").put("chartId", "chart")
+        ObjectNode sourceDrawings = source.putObject("drawingPayloads");
+        sourceDrawings.putObject("formula-shape").put("kind", "shape").put("propertyFormula", "='Source'!A1");
+        sourceDrawings.putObject("chart").put("kind", "chart").put("chartId", "chart")
                 .putObject("elements").put("hiddenData", "show").putObject("titleText").put("linkedFormula", "='Source'!A1");
 
         ObjectNode external = sheets.addObject().put("id", "owner").put("name", "Owner");
@@ -2244,8 +2245,9 @@ class MutationDescriptorRegistryTest {
         external.putArray("conditionalFormats").addObject().put("id", "cf").put("formula1", "='Source'!A1");
         external.putArray("dataValidations").addObject().put("id", "dv").put("listSource", mapper.createObjectNode()
                 .put("kind", "formula").put("formula", "='Source'!A1"));
-        external.putObject("drawingPayloads").putObject("external-shape").put("kind", "shape").put("propertyFormula", "='Source'!A1");
-        external.putObject("drawingPayloads").putObject("external-chart").put("kind", "chart").put("chartId", "external-chart")
+        ObjectNode externalDrawings = external.putObject("drawingPayloads");
+        externalDrawings.putObject("external-shape").put("kind", "shape").put("propertyFormula", "='Source'!A1");
+        externalDrawings.putObject("external-chart").put("kind", "chart").put("chartId", "external-chart")
                 .putObject("elements").put("hiddenData", "show").putObject("legend").put("visible", true)
                 .put("position", "bottom").putObject("text").put("linkedFormula", "='Source'!A1");
 

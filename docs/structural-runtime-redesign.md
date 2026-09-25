@@ -741,3 +741,7 @@ head `b0217386` 的两个远端 `canonical-build` 都报告同一组 TypeScript 
 ### CI 静态跟进 — chart formula projection 类型
 
 新 head `34abb455` 的两个 CI 在前端类型检查报告同一组两个确定错误：`RangeRef` 的所有者是 core-model `index.ts`，并非声明它为本地导入但未导出的 `domain.ts`；此外 `isStructuralTransformResult` 原调用结果是 boolean，不能再当结构 effect 读取 `formulaOwnerDeltas`。现改为从类型所有者导入 `RangeRef`，并保留经 type guard 收窄的 effect 值供既有同步逻辑和 projection delta 使用。修复只依据远端失败日志与声明类型，不做本地类型检查或测试；新 PR head 的自动 CI 待确认。
+
+### CI 静态跟进 — Java drawing fixture 对象覆盖
+
+head `1d8508ea` 的两个后端 CI 已通过 test-compile，随后在 `sheetRenameRewritesAllPersistedFormulaOwnerCategories` 的既有 shape 公式断言失败。对照 fixture 逐行确认：为通过 `JsonNode` 的静态类型编译而将第二次 `source.putObject("drawingPayloads")` 改成 `ObjectNode.putObject`，会替换而非复用原子对象，丢掉 `formula-shape`；external drawing map 也有相同覆盖风险。现为每张 sheet 创建一次具名 `ObjectNode` 并向其追加 shape 与 chart，保持 fixture 的兄弟 owner。未本地运行测试；新 head CI 待确认。
