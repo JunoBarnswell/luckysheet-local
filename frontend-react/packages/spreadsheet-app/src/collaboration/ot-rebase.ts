@@ -506,7 +506,7 @@ function hasUnqualifiedFormulaReference(node: FormulaAst): boolean {
   switch (node.type) {
     case 'cell-reference': return node.reference.sheetId === undefined;
     case 'range-reference':
-      return node.start.reference.sheetId === undefined || node.end.reference.sheetId === undefined;
+      return node.start.reference.sheetId === undefined && node.end.reference.sheetId === undefined;
     case 'whole-column-reference':
     case 'whole-row-reference': return node.sheetId === undefined;
     case 'spill-reference': return hasUnqualifiedFormulaReference(node.operand);

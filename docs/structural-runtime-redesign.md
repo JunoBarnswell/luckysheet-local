@@ -1159,3 +1159,16 @@ PR 上两个 `canonical-build` job 使用相同 head，前端依赖安装与前�
 6. **缺省上下文与拒绝路径**：FormulaEngine 使用显式 name anchor，sheet-scope 默认 A1；无 anchor 的 workbook name 没有可推断的相对 owner。因此只变换有明确 owner 的公式；无 anchor 的 workbook 名称仅允许安全映射全限定引用，遇到相对引用即 fail-close；删除 anchor 的结构变更也必须拒绝。
 
 **修复**：将 `name.set`/`name.remove` 分类为 defined-name；名称 set 使用专用变换，按模型 anchor 或 sheet-scope owner 改写公式并映射 anchor，remove 保持坐标不变。新增成功与拒绝路径回归测试源码，覆盖 anchored 公式/anchor 同步移动、全限定 workbook 名称、无 anchor 的相对引用、anchor 删除及 name removal。仅静态审查；未运行测试、构建、lint 或 UI。此修复不声明其它非结构性名称冲突已解决，Canonical Structural Planner/ReferenceIndex 与完整跨层迁移继续开放。
+
+### 六轮静态复核 — workbook 名称的单前缀范围引用（2026-09-26）
+
+对上节新增的 owner-context 识别再次执行六轮交叉复核，确认并修复一个真实的合法公式拒绝回归：
+
+1. **词法形式**：`Target!A10:A20` 是一个显式指向 `Target` 的范围，而不是一个目标表引用加一个 owner-relative 端点。
+2. **AST 形状**：parser 把 `Target` 放在 range start 的 reference 上，右端点 `A20` 的 `sheetId` 留空；这是合法范围的标准 AST 表示。
+3. **现有变换语义**：`transformStructuralRange` 以 `start.sheetId ?? end.sheetId` 判定范围 owner，明确支持单端带 qualifier 的同表范围。
+4. **失败触发点**：workbook name 无 anchor 的前置检查曾对两个端点分别检查并用 OR 汇总，因而把任一空字段误当作相对 owner，阻断本可安全转换的全限定范围。
+5. **影响边界**：此问题仅影响无 anchor 的 workbook name 范围引用；带 anchor、sheet-scoped 默认 owner、相对引用 fail-close 与删除 anchor 拒绝路径不受该修正放宽。
+6. **回归锁定**：新增 `SUM(Target!A10:A20)` 跨行插入的期望输出源码，要求左右端点随引用目标一起移动且只保留一处 qualifier；未执行测试。
+
+现改为仅在 range 两端都没有 qualifier 时判定为 owner-relative。`git diff --check` 通过；未运行本地测试、构建、lint 或 UI。该复核修复的是上一提交引入的一处合法输入拒绝，不新增第二个独立架构根因。

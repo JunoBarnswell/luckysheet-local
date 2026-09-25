@@ -112,6 +112,21 @@ test('transforms qualified workbook-name references without inventing an owner s
   assert.equal((rebased.params as { model: { formula: string } }).model.formula, '=Target!A11');
 });
 
+test('keeps a single sheet qualifier across a workbook-name range reference', () => {
+  const committed = classifyMutation('row.insert', { at: 5, count: 1 }, 'target-sheet', []);
+  const pending = classifyMutation('name.set', {
+    model: { name: 'QualifiedRange', scope: 'workbook', formula: '=SUM(Target!A10:A20)' },
+  }, 'primary-sheet', []);
+
+  const { rebased } = rebaseMutation(pending, committed, {
+    sheetOrder: [
+      { id: 'primary-sheet', name: 'Primary' },
+      { id: 'target-sheet', name: 'Target' },
+    ],
+  });
+  assert.equal((rebased.params as { model: { formula: string } }).model.formula, '=SUM(Target!A11:A21)');
+});
+
 test('fails closed for unanchored workbook-name formulas with relative references', () => {
   const committed = classifyMutation('row.insert', { at: 5, count: 1 }, 'target-sheet', []);
   const pending = classifyMutation('name.set', {
