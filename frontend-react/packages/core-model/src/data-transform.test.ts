@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { applyRowPermutation, createRowPermutationPlan, rowPermutationAffectedColumnEnd, type RangeRef, WorkbookModel } from './index';
+import type { ReportSheetDefinition } from './data-model';
 
 function range(sheetId: string, startRow: number, endRow: number, startColumn: number, endColumn: number): RangeRef {
   return { sheetId, startRow, endRow, startColumn, endColumn };
@@ -11,7 +12,31 @@ function applyPermutation(workbook: WorkbookModel, selected: RangeRef, sourceRow
   applyRowPermutation(workbook, createRowPermutationPlan(selected, sourceRows, affectedColumnEnd));
 }
 
+function reportDefinition(sheetId: string): ReportSheetDefinition {
+  return {
+    templateSheetId: sheetId,
+    bindings: [{ cell: { row: 0, column: 0 }, expression: 'field-id', kind: 'field' }],
+    pagination: { enabled: true, repeatHeaderRows: [0, 1] },
+    renderMode: 'preview',
+    layout: { orientation: 'portrait', marginTopPx: 0, marginRightPx: 0, marginBottomPx: 0, marginLeftPx: 0 },
+    dataEntry: [],
+  };
+}
+
 describe('canonical row permutation metadata plan', () => {
+  it('permutes report binding anchors and repeated header rows with their data rows', () => {
+    const workbook = new WorkbookModel('permutation-report-sheet', 'Permutation report sheet');
+    const sheet = workbook.getSheet('sheet-1');
+    sheet.rowCount = 4;
+    sheet.columnCount = 2;
+    sheet.reportSheet = reportDefinition(sheet.id);
+
+    applyPermutation(workbook, range(sheet.id, 0, 1, 0, 0), [1, 0]);
+
+    assert.deepEqual(sheet.reportSheet?.bindings[0]?.cell, { row: 1, column: 0 });
+    assert.deepEqual(sheet.reportSheet?.pagination.repeatHeaderRows, [1, 0]);
+  });
+
   it('rebases moved formula owners, provenance formulas, and barcode formulas', () => {
     const workbook = new WorkbookModel('permutation-formulas', 'Permutation formulas');
     const sheet = workbook.getSheet('sheet-1');

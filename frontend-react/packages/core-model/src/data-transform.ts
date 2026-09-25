@@ -2,6 +2,7 @@ import type { CellAddress, CellData, CellStyleTemplate, ConditionalFormatRule, D
 import { cellKey, hasFormulaGroupMetadata } from './index';
 import type { DefinedNameModel, DrawingObject, SpillRange } from './domain';
 import { sheetRuleRegistry, type RuleTransform } from './rule-lifecycle';
+import { mapReportSheetCoordinates } from './report-sheet-transform';
 import { formatFormula, MAX_COLUMN_INDEX, MAX_ROW_INDEX, offsetAst, parseFormula } from '@react-sheets/formula-engine';
 
 /** Canonical, prevalidated permutation shared by local execution and replay. */
@@ -269,6 +270,7 @@ interface RowPermutationOwnerChanges {
   readonly dataValidations: DataValidationRule[];
   readonly definedNames: Array<{ entry: DefinedNameModel; formula: string; anchor: DefinedNameModel['anchor'] }>;
   readonly templates: CellStyleTemplate[];
+  readonly reportSheet?: WorksheetModel['reportSheet'];
 }
 
 /** Validate all owners before the first cell changes. */
@@ -345,7 +347,17 @@ export function validatePermutationMetadata(workbook: WorkbookModel, plan: RowPe
     offsetPermutationFormulaFields(next.dataValidation!, rowDelta, `cell-style template ${template.id}`);
     return [next];
   });
-  return { conditionalFormats, dataValidations, definedNames, templates };
+  const reportSheet = sheet.reportSheet
+    ? mapReportSheetCoordinates(
+      sheet.reportSheet,
+      (cell) => inRange(plan.metadataScope, cell.row, cell.column)
+        ? { ...cell, row: remapRow(cell.row, plan) }
+        : { ...cell },
+      (row) => row >= plan.range.startRow && row <= plan.range.endRow ? remapRow(row, plan) : row,
+      'row-permutation',
+    )
+    : undefined;
+  return { conditionalFormats, dataValidations, definedNames, templates, reportSheet };
 }
 
 export function applyRowPermutation(workbook: WorkbookModel, plan: RowPermutationPlan): void {
@@ -391,6 +403,7 @@ export function applyRowPermutation(workbook: WorkbookModel, plan: RowPermutatio
     change.entry.anchor = change.anchor;
   }
   for (const template of ownerChanges.templates) workbook.cellStyleTemplates.set(template.id, template);
+  if (ownerChanges.reportSheet) sheet.reportSheet = ownerChanges.reportSheet;
 }
 
 function remapPermutedFormulaOwner(cell: CellData, rowDelta: number, sheetId: string, row: number, column: number): CellData {

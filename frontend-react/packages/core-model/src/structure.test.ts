@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { collectFormulaDependencies, parseFormula, RangeIndex } from '@react-sheets/formula-engine';
 import { CellMatrix, StructuralTransform as CoreStructuralTransform, WorkbookModel, type StructuralTransformParams } from './index';
+import type { ReportSheetDefinition } from './data-model';
 
 const StructuralTransform = {
   apply(workbook: WorkbookModel, params: StructuralTransformParams) {
@@ -30,6 +31,21 @@ function seedWorkbook(): { workbook: WorkbookModel; sheetId: string } {
   sheet.cells.set(1, 0, { value: 'A1' });
   sheet.cells.set(2, 0, { value: 'A2' });
   return { workbook, sheetId: sheet.id };
+}
+
+function reportDefinition(
+  sheetId: string,
+  cells: readonly { row: number; column: number }[],
+  repeatHeaderRows: number[] = [],
+): ReportSheetDefinition {
+  return {
+    templateSheetId: sheetId,
+    bindings: cells.map((cell) => ({ cell: { ...cell }, expression: 'field-id', kind: 'field' as const })),
+    pagination: { enabled: true, rowsPerPage: 20, repeatHeaderRows },
+    renderMode: 'preview',
+    layout: { orientation: 'portrait', marginTopPx: 0, marginRightPx: 0, marginBottomPx: 0, marginLeftPx: 0 },
+    dataEntry: [],
+  };
 }
 
 describe('structural operations', () => {
@@ -99,6 +115,74 @@ describe('structural operations', () => {
     StructuralTransform.apply(workbook, { kind: 'insert-rows', sheetId: sheet.id, at: 0, count: 1 });
 
     assert.equal(sheet.cells.get(6, 0)?.formula, "=SUM($A$2,'Input Sheet'!$B$2,A2)+\"A1\"");
+  });
+
+  it('maps report binding and repeated-header row owners on axis insertion and rejects deleting a binding anchor', () => {
+    const { workbook } = seedWorkbook();
+    const sheet = workbook.getSheet('s1');
+    sheet.reportSheet = reportDefinition(sheet.id, [{ row: 2, column: 0 }], [0, 2]);
+
+    StructuralTransform.apply(workbook, { kind: 'insert-rows', sheetId: sheet.id, at: 2, count: 1 });
+
+    assert.deepEqual(sheet.reportSheet?.bindings[0]?.cell, { row: 3, column: 0 });
+    assert.deepEqual(sheet.reportSheet?.pagination.repeatHeaderRows, [0, 3]);
+
+    const before = structuredClone(sheet.reportSheet);
+    const value = sheet.cells.get(3, 0);
+    assert.throws(() => StructuralTransform.apply(workbook, {
+      kind: 'delete-rows', sheetId: sheet.id, at: 3, count: 1,
+    }), /removes report binding/);
+    assert.deepEqual(sheet.reportSheet, before);
+    assert.equal(sheet.cells.get(3, 0), value);
+  });
+
+  it('maps report binding anchors before cell-shift mutation and rejects removal', () => {
+    const { workbook } = seedWorkbook();
+    const sheet = workbook.getSheet('s1');
+    sheet.reportSheet = reportDefinition(sheet.id, [{ row: 3, column: 1 }]);
+
+    StructuralTransform.apply(workbook, {
+      kind: 'cell-shift', sheetId: sheet.id,
+      sourceRange: { sheetId: sheet.id, startRow: 1, endRow: 1, startColumn: 1, endColumn: 1 },
+      operation: 'insert', axis: 'row',
+    });
+    assert.deepEqual(sheet.reportSheet?.bindings[0]?.cell, { row: 4, column: 1 });
+
+    sheet.reportSheet = reportDefinition(sheet.id, [{ row: 1, column: 1 }]);
+    sheet.cells.set(1, 1, { value: 'must remain' });
+    const before = structuredClone(sheet.reportSheet);
+    assert.throws(() => StructuralTransform.apply(workbook, {
+      kind: 'cell-shift', sheetId: sheet.id,
+      sourceRange: { sheetId: sheet.id, startRow: 1, endRow: 1, startColumn: 1, endColumn: 1 },
+      operation: 'delete', axis: 'row',
+    }), /removes report binding/);
+    assert.deepEqual(sheet.reportSheet, before);
+    assert.equal(sheet.cells.get(1, 1)?.value, 'must remain');
+  });
+
+  it('moves report bindings with source cells and rejects overwriting a destination binding', () => {
+    const { workbook } = seedWorkbook();
+    const sheet = workbook.getSheet('s1');
+    sheet.cells.set(0, 0, { value: 'source' });
+    sheet.reportSheet = reportDefinition(sheet.id, [{ row: 0, column: 0 }]);
+
+    StructuralTransform.apply(workbook, {
+      kind: 'move-range', sheetId: sheet.id,
+      sourceRange: { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 },
+      targetOrigin: { row: 2, column: 2 },
+    });
+    assert.deepEqual(sheet.reportSheet?.bindings[0]?.cell, { row: 2, column: 2 });
+
+    sheet.cells.set(3, 3, { value: 'another source' });
+    sheet.reportSheet = reportDefinition(sheet.id, [{ row: 4, column: 4 }]);
+    const before = structuredClone(sheet.reportSheet);
+    assert.throws(() => StructuralTransform.apply(workbook, {
+      kind: 'move-range', sheetId: sheet.id,
+      sourceRange: { sheetId: sheet.id, startRow: 3, endRow: 3, startColumn: 3, endColumn: 3 },
+      targetOrigin: { row: 4, column: 4 },
+    }), /report binding.*overwritten/);
+    assert.deepEqual(sheet.reportSheet, before);
+    assert.equal(sheet.cells.get(3, 3)?.value, 'another source');
   });
 
   it('rewrites persisted non-cell formula owners and their template anchors on axis edits', () => {

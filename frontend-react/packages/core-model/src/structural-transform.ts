@@ -4,6 +4,7 @@ import { mapAxisCoordinate as shiftIndex } from './axis-coordinate-transform';
 import type { WorkbookTableModel } from './data-model';
 import type { DataSourceManifest } from './data-source';
 import type { PrintDocumentSnapshot } from './workbook-state';
+import { mapReportSheetCoordinates } from './report-sheet-transform';
 import { WorkbookModel, WorksheetModel, cellKey, hasFormulaGroupMetadata } from './index';
 import {
   formatFormula,
@@ -307,6 +308,20 @@ function applyAxis(
   validateAxisMetadataPreservation(workbook, sheet, axis, at, count, direction);
   validateDataRegionAxisPreservation(workbook, sheet, axis, at, count, direction);
   if (count <= 0) return { kind: 'structural-transform', removedCells: [], clearInputRanges: [], populateInputRanges: [], rewrittenFormulaOwners: [] };
+  const reportSheetAfter = sheet.reportSheet
+    ? mapReportSheetCoordinates(
+      sheet.reportSheet,
+      (cell) => {
+        const position = axis === 'row' ? cell.row : cell.column;
+        const mapped = shiftIndex(position, at, count, direction);
+        return mapped === null
+          ? null
+          : axis === 'row' ? { ...cell, row: mapped } : { ...cell, column: mapped };
+      },
+      axis === 'row' ? (row) => shiftIndex(row, at, count, direction) : undefined,
+      `${direction === 1 ? 'insert' : 'delete'}-${axis}s`,
+    )
+    : undefined;
   const calculationRanges = structuralAxisInputRanges(sheet, axis, at, count, direction);
   const shift: StructuralShift = {
     axis,
@@ -366,6 +381,7 @@ function applyAxis(
   shiftBanded(sheet, axis, at, count, direction);
   shiftOutline(sheet, axis, at, count, direction);
   shiftPrintDocumentAxis(workbook.printDocuments.get(sheet.id), sheet.id, axis, at, count, direction);
+  if (reportSheetAfter) sheet.reportSheet = reportSheetAfter;
   const rewrittenFormulaOwners = applyFormulaRewritePlan(workbook, sheet.id, shift, undefined, formulaRewrite);
   return {
     kind: 'structural-transform',
@@ -451,6 +467,14 @@ function applyCellShift(
   const formulaRewrite = preflightFormulaRewrite(workbook, sheet, shift, referenceOwners, referenceShift);
   rejectFormulaGroupMetadataInRange(sheet, plan.band, 'cell shift');
   preflightCellShiftMetadata(workbook, sheet, plan);
+  const reportSheetAfter = sheet.reportSheet
+    ? mapReportSheetCoordinates(
+      sheet.reportSheet,
+      (cell) => mapCellShiftCoordinateForOwner(referenceShift, cell.row, cell.column),
+      undefined,
+      'cell-shift',
+    )
+    : undefined;
   const sourceCells = sheet.cells.extractRegion(
     plan.band.startRow,
     plan.band.endRow,
@@ -467,6 +491,7 @@ function applyCellShift(
     sheet.cells.set(destination.row, destination.column, entry.cell);
   }
   shiftCellBandMetadata(workbook, sheet, plan);
+  if (reportSheetAfter) sheet.reportSheet = reportSheetAfter;
   const rewrittenFormulaOwners = applyFormulaRewritePlan(workbook, sheet.id, shift, referenceShift, formulaRewrite, plan);
   return {
     kind: 'structural-transform',
@@ -636,6 +661,7 @@ function cloneStructuralMetadataSheet(sheet: WorksheetModel): WorksheetModel {
   staged.autoFilter = sheet.autoFilter ? structuredClone(sheet.autoFilter) : undefined;
   staged.bandedRule = sheet.bandedRule ? structuredClone(sheet.bandedRule) : undefined;
   staged.outline = sheet.outline ? structuredClone(sheet.outline) : undefined;
+  staged.reportSheet = sheet.reportSheet ? structuredClone(sheet.reportSheet) : undefined;
   staged.pane = structuredClone(sheet.pane);
   staged.defaultRowHeightPx = sheet.defaultRowHeightPx;
   staged.defaultColumnWidthPx = sheet.defaultColumnWidthPx;
@@ -658,6 +684,18 @@ function preflightCellShiftMetadata(workbook: WorkbookModel, sheet: WorksheetMod
   const printDocument = workbook.printDocuments.get(sheet.id);
   shiftCellBandMetadata(workbook, staged, plan, tables, stagedSheets, sources,
     printDocument ? structuredClone(printDocument) : undefined);
+  if (staged.reportSheet) {
+    staged.reportSheet = mapReportSheetCoordinates(
+      staged.reportSheet,
+      (cell) => mapCellShiftCoordinateForOwner(
+        { axis: plan.spec.axis, selection: plan.selection, direction: plan.direction },
+        cell.row,
+        cell.column,
+      ),
+      undefined,
+      'cell-shift',
+    );
+  }
 }
 
 function preflightAxisMetadata(
@@ -2087,6 +2125,21 @@ function applyMoveRange(
 
   const rowDelta = target.startRow - normalizedSource.startRow;
   const colDelta = target.startColumn - normalizedSource.startColumn;
+  const reportSheetAfter = sheet.reportSheet
+    ? mapReportSheetCoordinates(
+      sheet.reportSheet,
+      (cell) => {
+        if (insideCell(target, cell.row, cell.column) && !insideCell(normalizedSource, cell.row, cell.column)) {
+          throw new Error(`Cannot move range: report binding at ${cell.row}:${cell.column} would be overwritten`);
+        }
+        return insideCell(normalizedSource, cell.row, cell.column)
+          ? { row: cell.row + rowDelta, column: cell.column + colDelta }
+          : { ...cell };
+      },
+      undefined,
+      'move-range',
+    )
+    : undefined;
   const sheetOrder = workbook.sheetOrder.map((id) => ({ id, name: workbook.getSheet(id).name }));
   const cellsToMove = sheet.cells.getRegion(
     normalizedSource.startRow,
@@ -2285,6 +2338,7 @@ function applyMoveRange(
   sheet.hyperlinks.clear();
   for (const [key, hyperlink] of nextHyperlinks) sheet.hyperlinks.set(key, hyperlink);
   const rewrittenFormulaOwners = applyMovedFormulaRewritePlan(workbook, formulaRewrite);
+  if (reportSheetAfter) sheet.reportSheet = reportSheetAfter;
   return {
     kind: 'structural-transform',
     removedCells: overwritten,

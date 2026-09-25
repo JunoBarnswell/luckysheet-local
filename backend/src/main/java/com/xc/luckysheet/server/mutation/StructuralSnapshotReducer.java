@@ -54,9 +54,24 @@ final class StructuralSnapshotReducer {
             rejectFormulaGroupMetadataInRange(target, affectedBand, "axis shift");
         }
 
+        ObjectNode reportSheetAfter = mapReportSheetCoordinates(target, (row, column) -> {
+            int position = axis == FormulaReferenceTransformer.Axis.ROW ? row : column;
+            int mapped = shiftIndex(position, at, count, direction);
+            if (mapped < 0) return null;
+            return axis == FormulaReferenceTransformer.Axis.ROW ? new int[]{mapped, column} : new int[]{row, mapped};
+        }, axis == FormulaReferenceTransformer.Axis.ROW
+                ? row -> {
+                    int mapped = shiftIndex(row, at, count, direction);
+                    return mapped < 0 ? null : mapped;
+                }
+                : null,
+                (direction == FormulaReferenceTransformer.Direction.INSERT ? "insert-" : "delete-")
+                        + (axis == FormulaReferenceTransformer.Axis.ROW ? "rows" : "columns"));
+
         remapCells(target, axis, at, count, direction);
         setDimension(target, axis, direction == FormulaReferenceTransformer.Direction.INSERT ? limit + count : Math.max(1, limit - count));
         shiftAllMetadata(root, target, sheetId, axis, at, count, direction);
+        applyReportSheetPlan(target, reportSheetAfter);
         rewriteAxisFormulas(root, target, axis, at, count, direction);
         AutoFilterOwnershipValidator.resolveOwners(target, sheetId);
     }
@@ -78,6 +93,14 @@ final class StructuralSnapshotReducer {
         int delta = "insert".equals(operation) ? count : -count;
         validateCellShiftBounds(sheet, selection, expectedBand, axis, operation, count);
         rejectFormulaGroupMetadataInRange(sheet, expectedBand, "cell shift");
+        FormulaReferenceTransformer.Axis shiftAxis = "row".equals(axis)
+                ? FormulaReferenceTransformer.Axis.ROW : FormulaReferenceTransformer.Axis.COLUMN;
+        FormulaReferenceTransformer.Direction shiftDirection = "insert".equals(operation)
+                ? FormulaReferenceTransformer.Direction.INSERT : FormulaReferenceTransformer.Direction.DELETE;
+        ObjectNode reportSheetAfter = mapReportSheetCoordinates(sheet,
+                (row, column) -> FormulaReferenceTransformer.remapCellShiftCoordinate(row, column, selection, shiftAxis, shiftDirection),
+                null,
+                "cell-shift");
 
         List<CellEntry> sourceCells = cellsInRange(sheet, expectedBand);
         SnapshotMutationSupport.clearCells(sheet, expectedBand);
@@ -89,6 +112,7 @@ final class StructuralSnapshotReducer {
             SnapshotMutationSupport.putCell(sheet, new SnapshotMutationSupport.CellCoordinate(nextRow, nextColumn), cell);
         }
         shiftCellBandMetadata(root, sheet, selection, expectedBand, axis, operation, count);
+        applyReportSheetPlan(sheet, reportSheetAfter);
         rewriteCellShiftFormulas(root, sheet, selection, axis, operation);
         AutoFilterOwnershipValidator.resolveOwners(sheet, sheetId);
     }
@@ -120,6 +144,14 @@ final class StructuralSnapshotReducer {
         rejectFormulaGroupMetadataInRange(sheet, destination, "range.move destination");
         int rowDelta = destination.startRow() - selected.startRow();
         int columnDelta = destination.startColumn() - selected.startColumn();
+        ObjectNode reportSheetAfter = mapReportSheetCoordinates(sheet, (row, column) -> {
+            if (contains(destination, row, column) && !contains(selected, row, column)) {
+                throw ServiceException.unavailable("UNSUPPORTED_STRUCTURAL_REFERENCE: range.move overwrites report binding at " + row + ":" + column);
+            }
+            return contains(selected, row, column)
+                    ? new int[]{row + rowDelta, column + columnDelta}
+                    : new int[]{row, column};
+        }, null, "range.move");
 
         List<CellEntry> cells = cellsInRange(sheet, selected);
         SnapshotMutationSupport.clearCells(sheet, selected);
@@ -137,6 +169,7 @@ final class StructuralSnapshotReducer {
         }
 
         moveRangeMetadata(root, sheet, selected, destination, rowDelta, columnDelta);
+        applyReportSheetPlan(sheet, reportSheetAfter);
         rewriteMovedFormulas(root, sheet, selected, destination, rowDelta, columnDelta);
         invalidateFormulaCaches(root);
         AutoFilterOwnershipValidator.resolveOwners(sheet, sheetId);
@@ -528,8 +561,16 @@ final class StructuralSnapshotReducer {
         }
         rejectMovedFormulaGroups(sheet, selected, targetRowsBySource);
         validatePermutationMetadataExact(root, sheet, selected, metadataScope, mapping);
+        ObjectNode reportSheetAfter = mapReportSheetCoordinates(sheet,
+                (row, column) -> contains(metadataScope, row, column)
+                        ? new int[]{remapRow(row, selected, targetRowsBySource), column}
+                        : new int[]{row, column},
+                row -> row >= selected.startRow() && row <= selected.endRow()
+                        ? remapRow(row, selected, targetRowsBySource) : row,
+                "row-permutation");
         remapPermutedCells(sheet, selected, targetRowsBySource);
         remapPermutationMetadata(root, sheet, selected, metadataScope, mapping);
+        applyReportSheetPlan(sheet, reportSheetAfter);
         invalidateFormulaCaches(root);
         AutoFilterOwnershipValidator.resolveOwners(sheet, sheetId);
     }
@@ -600,6 +641,82 @@ final class StructuralSnapshotReducer {
     private static int shiftIndex(int value, int at, int count, FormulaReferenceTransformer.Direction direction) {
         return Math.toIntExact(StructuralAxisCoordinate.mapPoint(
                 value, at, count, direction == FormulaReferenceTransformer.Direction.INSERT));
+    }
+
+    private static ObjectNode mapReportSheetCoordinates(
+            ObjectNode sheet,
+            BiFunction<Integer, Integer, int[]> mapCell,
+            Function<Integer, Integer> mapRepeatedHeaderRow,
+            String operation
+    ) {
+        JsonNode rawDefinition = sheet.get("reportSheet");
+        if (rawDefinition == null || rawDefinition.isNull()) return null;
+        if (!rawDefinition.isObject()) throw ServiceException.validation("ReportSheet definition is invalid during " + operation);
+        ObjectNode definition = ((ObjectNode) rawDefinition).deepCopy();
+        boolean changed = false;
+        ArrayNode bindings = SnapshotMutationSupport.requiredArray(definition, "bindings");
+        for (int index = 0; index < bindings.size(); index++) {
+            ObjectNode binding = requireObject(bindings.get(index), "ReportSheet binding");
+            ObjectNode cell = SnapshotMutationSupport.requiredObject(binding, "cell");
+            int row = reportCoordinate(cell, "row", SnapshotMutationSupport.MAX_ROW, index);
+            int column = reportCoordinate(cell, "column", SnapshotMutationSupport.MAX_COLUMN, index);
+            int[] mapped = mapCell.apply(row, column);
+            if (mapped == null) {
+                throw ServiceException.unavailable("UNSUPPORTED_STRUCTURAL_REFERENCE: " + operation
+                        + " removes report binding " + index + " at " + row + ":" + column);
+            }
+            if (mapped.length != 2 || mapped[0] < 0 || mapped[0] > SnapshotMutationSupport.MAX_ROW
+                    || mapped[1] < 0 || mapped[1] > SnapshotMutationSupport.MAX_COLUMN) {
+                throw ServiceException.unavailable("UNSUPPORTED_STRUCTURAL_REFERENCE: " + operation
+                        + " moves report binding " + index + " outside worksheet bounds");
+            }
+            changed |= mapped[0] != row || mapped[1] != column;
+            cell.put("row", mapped[0]).put("column", mapped[1]);
+        }
+
+        ObjectNode pagination = SnapshotMutationSupport.requiredObject(definition, "pagination");
+        JsonNode rawRows = pagination.get("repeatHeaderRows");
+        if (rawRows != null) {
+            if (!rawRows.isArray()) throw ServiceException.validation("ReportSheet repeated header rows are invalid during " + operation);
+            ArrayNode mappedRows = JsonNodeFactory.instance.arrayNode();
+            boolean headerRowsChanged = false;
+            for (JsonNode rawRow : rawRows) {
+                if (!rawRow.isIntegralNumber() || !rawRow.canConvertToInt()
+                        || rawRow.intValue() < 0 || rawRow.intValue() > SnapshotMutationSupport.MAX_ROW) {
+                    throw ServiceException.validation("ReportSheet repeated header row is invalid during " + operation);
+                }
+                Integer mapped = mapRepeatedHeaderRow == null
+                        ? rawRow.intValue() : mapRepeatedHeaderRow.apply(rawRow.intValue());
+                if (mapped == null) {
+                    headerRowsChanged = true;
+                    continue;
+                }
+                if (mapped < 0 || mapped > SnapshotMutationSupport.MAX_ROW) {
+                    throw ServiceException.unavailable("UNSUPPORTED_STRUCTURAL_REFERENCE: " + operation
+                            + " moves a repeated header outside worksheet bounds");
+                }
+                mappedRows.add(mapped);
+                headerRowsChanged |= mapped != rawRow.intValue();
+            }
+            if (headerRowsChanged) {
+                pagination.set("repeatHeaderRows", mappedRows);
+                changed = true;
+            }
+        }
+        return changed ? definition : null;
+    }
+
+    private static int reportCoordinate(ObjectNode cell, String property, int maximum, int bindingIndex) {
+        JsonNode value = cell.get(property);
+        if (value == null || !value.isIntegralNumber() || !value.canConvertToInt()
+                || value.intValue() < 0 || value.intValue() > maximum) {
+            throw ServiceException.validation("ReportSheet binding " + bindingIndex + " " + property + " is invalid");
+        }
+        return value.intValue();
+    }
+
+    private static void applyReportSheetPlan(ObjectNode sheet, ObjectNode definition) {
+        if (definition != null) sheet.set("reportSheet", definition);
     }
 
     private static int integerKey(String value, int maximum, String label) {
