@@ -1344,13 +1344,50 @@ describe('exchange-excel-ooxml', () => {
     // Rebuild through the public package writer so this test exercises the
     // same ZIP limits and relationship reader used by production imports.
     const imported = await importOoxmlDocument({ fileName: 'opaque.xlsx', buffer: zipOpcPartsBuffer(generated.packageGraph.parts), options: { compatibilityTarget: 'B', preserveMacros: true } });
-    const exported = await exportOoxmlDocument({ snapshot: imported.snapshot, artifact: imported.artifact, fileName: 'opaque.xlsx', options: { compatibilityTarget: 'B' } });
+    const editedSnapshot = structuredClone(imported.snapshot);
+    editedSnapshot.sheets[0]!.cells['0']!['0']!.value = 2;
+    const exported = await exportOoxmlDocument({ snapshot: editedSnapshot, artifact: imported.artifact, fileName: 'opaque.xlsx', options: { compatibilityTarget: 'B' } });
     const restored = loadOpcPackageGraph(exported.buffer);
     assert.deepEqual([...restored.files['customXml/item1.bin']!], [0, 1, 2, 255]);
     assert.equal(strFromU8(restored.files['xl/charts/chart1.xml']!).includes('Keep'), true);
     assert.equal(strFromU8(restored.files['xl/worksheets/sheet1.xml']!).includes('rIdChart'), true);
     assert.equal(imported.report.issues.some((issue) => issue.feature === 'charts' && issue.preserved), true);
     assert.equal(exported.report.issues.some((issue) => issue.feature === 'charts' && issue.preserved), true);
+  });
+
+  it('keeps unknown worksheet nodes on the source-byte path and rejects package regeneration', async () => {
+    const workbook = new WorkbookModel('wb-unknown-worksheet-node', 'Unknown worksheet node');
+    workbook.getSheet(workbook.primarySheetId).cells.set(0, 0, { value: 1 });
+    const generated = loadOpcPackageGraph(exportSnapshotToOoxmlBuffer(workbook.snapshot()));
+    const worksheetPart = generated.packageGraph.sheetPartById[workbook.primarySheetId]!;
+    generated.packageGraph.parts[worksheetPart] = strToU8(
+      strFromU8(generated.packageGraph.parts[worksheetPart]!).replace('</worksheet>', '<futureSheetNode value="keep"/></worksheet>'),
+    );
+    const imported = await importOoxmlDocument({
+      fileName: 'unknown-worksheet-node.xlsx',
+      buffer: zipOpcPartsBuffer(generated.packageGraph.parts),
+      options: { compatibilityTarget: 'B', compatibilityMode: 'balanced' },
+    });
+
+    const unchanged = await exportOoxmlDocument({
+      snapshot: imported.snapshot,
+      artifact: imported.artifact,
+      fileName: 'unknown-worksheet-node.xlsx',
+      options: { compatibilityTarget: 'B' },
+    });
+    assert.match(strFromU8(loadOpcPackageGraph(unchanged.buffer).files[worksheetPart]!), /<futureSheetNode value="keep"\/>/);
+
+    const editedSnapshot = structuredClone(imported.snapshot);
+    editedSnapshot.name = 'Edited unknown worksheet node';
+    await assert.rejects(
+      () => exportOoxmlDocument({
+        snapshot: editedSnapshot,
+        artifact: imported.artifact,
+        fileName: 'unknown-worksheet-node.xlsx',
+        options: { compatibilityTarget: 'B' },
+      }),
+      (error: unknown) => error instanceof Error && error.message.includes('NATIVE_DOCUMENT_UNCHANGED_SAVE_REQUIRED'),
+    );
   });
 
   it('honors explicit OOXML export options before reusing untouched source bytes', async () => {

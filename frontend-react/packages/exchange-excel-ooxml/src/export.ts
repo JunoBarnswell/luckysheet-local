@@ -42,6 +42,17 @@ export async function exportOoxmlDocument(request: NativeDocumentExportRequest):
       artifact,
     };
   }
+  const sourceWorksheetDetections = sourcePackage ? detectWorksheetCapabilities(sourcePackage.parts, sourcePackage) : [];
+  const unsupportedWorksheetNode = sourceWorksheetDetections.find((detection) => detection.feature === 'unknown-worksheet-node');
+  if (unsupportedWorksheetNode && sourcePackage) {
+    throw new NativeDocumentError({
+      code: 'NATIVE_DOCUMENT_UNCHANGED_SAVE_REQUIRED',
+      message: 'The source worksheet contains an XML node without a canonical writer; regenerating the package would discard it.',
+      format: sourcePackage.format,
+      location: unsupportedWorksheetNode.location,
+      recovery: 'Keep the original package unchanged, or explicitly convert/remove the unsupported worksheet node before exporting.',
+    });
+  }
   const targetFormat = ooxmlTargetFormat(request.fileName, sourcePackage);
   if (sourcePackage && targetFormat && targetFormat.variant !== sourcePackage.format.variant && hasMacroParts(sourcePackage) && !macroVariant(targetFormat.variant)) {
     throw new NativeDocumentError({ code: 'NATIVE_DOCUMENT_UNSUPPORTED', message: `Save As ${targetFormat.variant} would discard the source macro project`, format: targetFormat, recovery: 'Choose a macro-enabled target or explicitly remove the macro project in a dedicated conversion workflow.' });
@@ -61,7 +72,6 @@ export async function exportOoxmlDocument(request: NativeDocumentExportRequest):
   const snapshotFeatures = [...snapshotFeatureSet];
   const packageFeatures = [...packageFeatureSet];
   const emittedWorksheetDetections = detectWorksheetCapabilities(emittedPackage.parts, emittedPackage);
-  const sourceWorksheetDetections = sourcePackage ? detectWorksheetCapabilities(sourcePackage.parts, sourcePackage) : [];
   const detectedFeatures = [...new Set([...packageFeatures, ...snapshotFeatures, ...emittedWorksheetDetections.map((entry) => entry.feature), ...sourceWorksheetDetections.map((entry) => entry.feature), ...preservedNativeChartDetections.map((entry) => entry.feature)])];
   const nativeStatus = nativePivotFeatureStatus(request.snapshot, emittedPackage.nativePivotGraph);
   const preservedFeatures = sourcePackage ? new Set(Object.keys(sourcePackage.opaqueParts).flatMap((name) => {
