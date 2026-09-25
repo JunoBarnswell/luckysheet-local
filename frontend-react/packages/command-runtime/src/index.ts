@@ -1313,7 +1313,7 @@ export class CommandRuntime {
       const effect = handler(item, {
         ...replayContext,
       }) ?? this.registry.getMutationMetadata(item.id).calculationContextEffect;
-      let notificationEffect = effect;
+      let notificationEffect: unknown = effect;
       if (item.structuralFormulaOwnerDeltas) {
         if (source === 'undo') {
           for (const delta of item.structuralFormulaOwnerDeltas) applyFormulaOwnerDelta(this.workbook, delta, 'undo');
