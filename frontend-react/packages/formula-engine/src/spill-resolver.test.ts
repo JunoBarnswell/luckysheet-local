@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { FormulaEngine } from './formula-engine';
 import { isFormulaError } from './values';
-import { isSpillChild, resolveSpill } from './spill-resolver';
+import { isSpillChild, resolveSpill, spillValueAt } from './spill-resolver';
 
 test('resolveSpill detects blockers and ok states', () => {
   const ok = resolveSpill({
@@ -94,6 +94,25 @@ test('FormulaEngine returns #SPILL! when spill area is blocked', () => {
   assert.ok(isFormulaError(result));
   if (!isFormulaError(result)) throw new Error('expected spill error');
   assert.equal(result.code, '#SPILL!');
+});
+
+test('blocked spill results never project matrix values into child cells', () => {
+  const spill = resolveSpill({
+    sheetId: 'Sheet1',
+    anchor: { row: 0, column: 0 },
+    values: [[1, 2], [3, 4]],
+    rowCount: 10,
+    columnCount: 10,
+    isOccupied: () => false,
+    blockedRanges: [{ startRow: 0, endRow: 0, startColumn: 1, endColumn: 1 }],
+  });
+
+  const anchor = spillValueAt(spill, 0, 0);
+  assert.ok(isFormulaError(anchor));
+  if (!isFormulaError(anchor)) throw new Error('expected #SPILL! at the formula anchor');
+  assert.equal(anchor.code, '#SPILL!');
+  assert.equal(spillValueAt(spill, 0, 1), undefined);
+  assert.equal(spillValueAt(spill, 1, 0), undefined);
 });
 
 test('calculation snapshots preserve spill geometry and exclude the spill formula own projection', async () => {

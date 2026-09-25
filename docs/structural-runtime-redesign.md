@@ -508,5 +508,6 @@ Confirmed additional operation paths: 13 in the follow-up audit (the previous 12
 5. **历史预览路径：** `hydratePreviewFormula` 原先只以 `sheet.cells.get(...)` 判占用，语义不同于正常运行时，且没有合并/Table/动态 Spill 统一边界；预览现复用主运行时创建的 Spill environment。
 6. **同批重算路径：** 多个受影响 Spill owner 按地址依次重算时，较早 owner 曾会被较晚 owner 的旧范围阻塞，即使后者在同一轮会缩小并释放该区域；现在仅尚未处理的受影响旧投影不参与冲突，新投影仍按稳定顺序互斥。
 7. **性能与协议路径：** 原几何检查在候选 Spill 的每个子格重复扫描 merges/tables/spills，成本随输出面积与障碍物数量相乘；现在范围障碍每个候选只做一次范围相交，普通 authored cell 仍用坐标查询，且快照校验/Worker 协议版本一同升级。
+8. **失败结果投影：** `spillValueAt` 对 `blocked` Spill 曾只将锚点变为 `#SPILL!`，仍向子格读取者返回被拒绝矩阵中的值；现在 blocked 状态只暴露锚点错误，子格不产生任何值。
 
-本轮修复把合并区、Table 区和成功 Spill 范围作为范围障碍传输/查询；Worker 快照同时恢复活动 Spill 投影，静态快照校验拒绝无公式锚点的投影。新增了范围阻塞、快照往返、自身投影重算、同批 owner 更新、工作簿重建和合并/Table 环境回归用例。按用户要求仅静态审查，未执行测试或构建；完整 StructuralPatch/owner-index 跨层迁移仍未完成。
+本轮修复把合并区、Table 区和成功 Spill 范围作为范围障碍传输/查询；Worker 快照同时恢复活动 Spill 投影，静态快照校验拒绝无公式锚点的投影；阻塞 Spill 不再向子格泄漏矩阵值。新增了范围阻塞、快照往返、自身投影重算、同批 owner 更新、失败子格不投影、工作簿重建和合并/Table 环境回归用例。按用户要求仅静态审查，未执行测试或构建；完整 StructuralPatch/owner-index 跨层迁移仍未完成。

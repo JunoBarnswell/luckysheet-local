@@ -134,8 +134,11 @@ export function spillValueAt(spill: ResolvedSpill | SpillRange, row: number, col
   if (row < spill.range.startRow || row > spill.range.endRow || column < spill.range.startColumn || column > spill.range.endColumn) {
     return undefined;
   }
-  if (spill.state === 'blocked' && row === spill.anchor.row && column === spill.anchor.column) {
-    return createFormulaError('#SPILL!', 'Spill range is not blank');
+  if (spill.state === 'blocked') {
+    if (row === spill.anchor.row && column === spill.anchor.column) {
+      return createFormulaError('#SPILL!', 'Spill range is not blank');
+    }
+    return undefined;
   }
   const raw = spill.values[relRow]?.[relColumn];
   return raw === undefined ? undefined : fromCoreValue(raw);
