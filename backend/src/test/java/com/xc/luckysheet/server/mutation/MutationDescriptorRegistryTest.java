@@ -1940,7 +1940,7 @@ class MutationDescriptorRegistryTest {
     void fillSeriesUsesOneCanonicalTargetBandAndRejectsStaleBeforeImages() throws Exception {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         JsonNode snapshot = mapper.readTree("""
-                {"sheets":[{"id":"sheet-1","name":"SortTableSheet","rowCount":6,"columnCount":3,
+                {"sheets":[{"id":"sheet-1","rowCount":6,"columnCount":3,
                   "cells":{"0":{"0":{"value":1}},"1":{"0":{"value":3}}},
                   "protectionRules":[]}]}
                 """);
@@ -2164,7 +2164,7 @@ class MutationDescriptorRegistryTest {
     void tableDataBodySortUsesCanonicalFormulaOrderWithoutMovingHeaderOrTableOwner() throws Exception {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         JsonNode snapshot = mapper.readTree("""
-                {"sheets":[{"id":"sheet-1","rowCount":6,"columnCount":3,
+                {"sheets":[{"id":"sheet-1","name":"SortTableSheet","rowCount":6,"columnCount":3,
                   "cells":{"0":{"0":{"value":"Calculated"},"1":{"value":"Row"}},"1":{"0":{"value":20},"1":{"value":"twenty"}},"2":{"0":{"value":5},"1":{"value":"five"}},"3":{"0":{"value":10},"1":{"value":"ten"}}},
                   "pane":{"kind":"none"},"defaultRowHeightPx":20,"defaultColumnWidthPx":64,
                   "autoFilter":null,"sheetTables":[{"id":"table-1","sheetId":"sheet-1","name":"SortTable","range":{"sheetId":"sheet-1","startRow":0,"endRow":3,"startColumn":0,"endColumn":1},"hasHeaderRow":true,"hasTotalRow":false,"showBandedRows":false,"showBandedColumns":false,"showFirstColumn":false,"showLastColumn":false,"showFilterButton":true,"autoExpand":"both","autoFilter":{"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":0,"endRow":3,"startColumn":0,"endColumn":1},"columns":{}},"columns":[{"id":"calculated","name":"Calculated"},{"id":"row","name":"Row"}]}],
