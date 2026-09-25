@@ -745,3 +745,16 @@ head `b0217386` 的两个远端 `canonical-build` 都报告同一组 TypeScript 
 ### CI 静态跟进 — Java drawing fixture 对象覆盖
 
 head `1d8508ea` 的两个后端 CI 已通过 test-compile，随后在 `sheetRenameRewritesAllPersistedFormulaOwnerCategories` 的既有 shape 公式断言失败。对照 fixture 逐行确认：为通过 `JsonNode` 的静态类型编译而将第二次 `source.putObject("drawingPayloads")` 改成 `ObjectNode.putObject`，会替换而非复用原子对象，丢掉 `formula-shape`；external drawing map 也有相同覆盖风险。现为每张 sheet 创建一次具名 `ObjectNode` 并向其追加 shape 与 chart，保持 fixture 的兄弟 owner。未本地运行测试；新 head CI 待确认。
+
+### 六轮自审复核 — 完整结构引用链（2026-09-25）
+
+以下六轮各自沿一条不同的真实源码链核实；相同 CI job 或同一根因没有重复计数。它们是总体整改的未闭合缺口，不代表仅写入审计文档就算修复。
+
+1. **Planner / ReferenceIndex 成本：** `command-runtime/src/index.ts` 的 `buildStructuralReferenceIndex` 在结构 mutation 前遍历所有 sheet cells 构造 `RangeIndex`；`core-model/src/structural-transform.ts` 的 `preflightFormulaRewrite` 又遍历所有 `definedNameModels`，而 `StructuralReferenceOwnerIndex` 目前不是跨公式、名称、CF/DV、表和绘图的统一持久 owner index。确认每次结构编辑仍有全量索引构建与名称扫描。方案：建立带稳定 owner identity 的 canonical `ReferenceIndex`，在 owner 注册/修改时增量维护，planner 只查命中的目标引用。
+2. **前端事务原子性：** `applyAxis` 先移动 cells 并逐类原位改写元数据，随后 `applyFormulaRewritePlan` 仍可因 missing cell、owner 类型变化等 `STRUCTURAL_PATCH_INVARIANT` 抛错；`CommandRuntime.applyMutation` 只在 `mutation.apply(context)` 成功返回后才登记 inverse，外层 rollback 因而不能撤销这个半完成 mutation。方案：所有 owner 变更先进入 side-effect-free plan，校验完整 before/after 与 inverse 后再原子提交；提交前失败不触碰 live model。
+3. **OT patch 契约断链：** protocol envelope 能带 server `structuralPatch`，但 `operation-types.ts` 的 `ClassifiedMutation` 不含 patch，`committedMutationToClassified` 只保留 id/params/ranges；`ot-rebase.ts` 对 `move-range`、`sort`、`table-resize`、`sheet-identity` 明确以缺 canonical patch 拒绝。方案：将版本化完整 StructuralPatch 纳入分类后的 immutable operation，并让 rebase、history、远端 replay 消费同一个 patch；不支持的 owner 继续在提交前 fail-close。
+4. **计算 / 投影引用所有权分裂：** 结构执行时 `CommandRuntime` 重建公式 cell `RangeIndex`，`ProjectionRuntime` 另有仅服务 chart 的 `chartSourceIndex`、独立 mutation allowlist 和全量 sheet/drawing 重扫。两个索引没有共同的 owner identity、patch 更新与查询接口，无法保证失效行为和结构 rewrite 所见 owners 同源。方案：投影订阅 canonical ReferenceIndex 的 owner deltas；从 chart 专属重扫中移除重复 owner 扫描，同时保留投影自己的 bounded materialized cache。
+5. **Java 批量提交重复 snapshot clone：** `WorkbookOperationService` 的 mutation loop 每轮将 `next` 交给 descriptor；`StructuralMutationDescriptor.applyWithPatch` 对每轮输入都执行 `snapshot.deepCopy()`。因此 N 个结构 mutation 在一个 operation 中重复复制整个 workbook N 次。方案：服务端事务只 clone 一份私有 working snapshot，reducer 对该事务副本顺序产出 patch；完整批次校验成功后再发布，失败时丢弃副本。
+6. **OOXML capability 拒绝过晚：** `StructuralTransform.apply` 的输入只有 `WorkbookModel` 与 formula owner index，不包含 native package capability；相反 `exchange-excel-ooxml/src/export.ts` 在重建导出时才检测 unknown worksheet/workbook nodes、extensions 与没有 canonical chart owner 的 parts 并拒绝。故编辑可以成功、到保存才被阻止。方案：将 native-part owner/capability preflight 纳入 canonical planner，不能安全映射的编辑在 live commit 前给出对象定位及 typed error；未知内容仍原样保留，不能为通过编辑而删除。
+
+**收敛实施顺序：** 先定义可逆、版本化的 canonical `StructuralPatch` 与 `ReferenceIndex` owner contract；以一个事务快照生成纯 planner 结果并先闭合轴编辑纵向链（本地提交/撤销、OT/replay、Java 提交/回放、计算/投影、OOXML capability preflight）；再迁移 cell shift、move/paste、permutation、sheet identity、table resize。每个阶段补成功与拒绝行为测试源码，但本任务按用户要求不运行本地测试、构建、lint 或浏览器；用 PR CI 验证。六项均仍属于开放的架构整改，不能把当前 PR 标为完成或合并。
