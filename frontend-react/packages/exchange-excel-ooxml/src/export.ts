@@ -43,14 +43,16 @@ export async function exportOoxmlDocument(request: NativeDocumentExportRequest):
     };
   }
   const sourceWorksheetDetections = sourcePackage ? detectWorksheetCapabilities(sourcePackage.parts, sourcePackage) : [];
-  const unsupportedWorksheetNode = sourceWorksheetDetections.find((detection) => detection.feature === 'unknown-worksheet-node');
-  if (unsupportedWorksheetNode && sourcePackage) {
+  const unsafeWorksheetFeature = sourceWorksheetDetections.find((detection) => [
+    'unknown-worksheet-node', 'unknown-extension', 'extended-validation', 'extended-conditional-format',
+  ].includes(detection.feature));
+  if (unsafeWorksheetFeature && sourcePackage) {
     throw new NativeDocumentError({
       code: 'NATIVE_DOCUMENT_UNCHANGED_SAVE_REQUIRED',
-      message: 'The source worksheet contains an XML node without a canonical writer; regenerating the package would discard it.',
+      message: 'The source worksheet contains an unsupported XML node or extension without a canonical reference owner; regenerating could discard it or leave references stale.',
       format: sourcePackage.format,
-      location: unsupportedWorksheetNode.location,
-      recovery: 'Keep the original package unchanged, or explicitly convert/remove the unsupported worksheet node before exporting.',
+      location: unsafeWorksheetFeature.location,
+      recovery: 'Keep the original package unchanged, or explicitly convert/remove the unsupported worksheet feature before exporting.',
     });
   }
   const targetFormat = ooxmlTargetFormat(request.fileName, sourcePackage);

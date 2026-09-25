@@ -1355,7 +1355,7 @@ describe('exchange-excel-ooxml', () => {
     assert.equal(exported.report.issues.some((issue) => issue.feature === 'charts' && issue.preserved), true);
   });
 
-  it('keeps unknown worksheet nodes on the source-byte path and rejects package regeneration', async () => {
+  it('keeps unsupported worksheet nodes and extensions on the source-byte path and rejects regeneration', async () => {
     const workbook = new WorkbookModel('wb-unknown-worksheet-node', 'Unknown worksheet node');
     workbook.getSheet(workbook.primarySheetId).cells.set(0, 0, { value: 1 });
     const generated = loadOpcPackageGraph(exportSnapshotToOoxmlBuffer(workbook.snapshot()));
@@ -1384,6 +1384,39 @@ describe('exchange-excel-ooxml', () => {
         snapshot: editedSnapshot,
         artifact: imported.artifact,
         fileName: 'unknown-worksheet-node.xlsx',
+        options: { compatibilityTarget: 'B' },
+      }),
+      (error: unknown) => error instanceof Error && error.message.includes('NATIVE_DOCUMENT_UNCHANGED_SAVE_REQUIRED'),
+    );
+
+    const extensionWorkbook = new WorkbookModel('wb-unknown-worksheet-extension', 'Unknown worksheet extension');
+    const extensionPackage = loadOpcPackageGraph(exportSnapshotToOoxmlBuffer(extensionWorkbook.snapshot()));
+    const extensionPart = extensionPackage.packageGraph.sheetPartById[extensionWorkbook.primarySheetId]!;
+    extensionPackage.packageGraph.parts[extensionPart] = strToU8(
+      strFromU8(extensionPackage.packageGraph.parts[extensionPart]!).replace(
+        '</worksheet>',
+        '<extLst><ext uri="urn:future:worksheet"><futureExtension ref="A1"/></ext></extLst></worksheet>',
+      ),
+    );
+    const extensionImport = await importOoxmlDocument({
+      fileName: 'unknown-worksheet-extension.xlsx',
+      buffer: zipOpcPartsBuffer(extensionPackage.packageGraph.parts),
+      options: { compatibilityTarget: 'B', compatibilityMode: 'balanced' },
+    });
+    const extensionUnchanged = await exportOoxmlDocument({
+      snapshot: extensionImport.snapshot,
+      artifact: extensionImport.artifact,
+      fileName: 'unknown-worksheet-extension.xlsx',
+      options: { compatibilityTarget: 'B' },
+    });
+    assert.match(strFromU8(loadOpcPackageGraph(extensionUnchanged.buffer).files[extensionPart]!), /futureExtension ref="A1"/);
+    const extensionEditedSnapshot = structuredClone(extensionImport.snapshot);
+    extensionEditedSnapshot.name = 'Edited unknown extension';
+    await assert.rejects(
+      () => exportOoxmlDocument({
+        snapshot: extensionEditedSnapshot,
+        artifact: extensionImport.artifact,
+        fileName: 'unknown-worksheet-extension.xlsx',
         options: { compatibilityTarget: 'B' },
       }),
       (error: unknown) => error instanceof Error && error.message.includes('NATIVE_DOCUMENT_UNCHANGED_SAVE_REQUIRED'),

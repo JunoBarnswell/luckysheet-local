@@ -47,6 +47,11 @@ class ReportSheetStructuralTransformTest {
         sheet.putObject("pane").put("kind", "none");
         sheet.putObject("cells");
         sheet.putArray("sheetTables");
+        ObjectNode review = sheet.putObject("review");
+        review.putObject("notesByCell");
+        review.putObject("notesById");
+        review.putObject("threadIdsByCell");
+        review.putObject("threadsById");
         ObjectNode report = sheet.putObject("reportSheet");
         ObjectNode binding = report.putArray("bindings").addObject();
         binding.putObject("cell").put("row", bindingRow).put("column", 2);
