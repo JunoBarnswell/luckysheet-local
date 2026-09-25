@@ -85,7 +85,7 @@ public class WorkbookOperationService {
         access.require(unitId, actor, WorkbookAclRole.VIEWER);
         OperationRow row = store.findOperation(operationId).orElseThrow(() -> ServiceException.notFound("Operation not committed"));
         if (!row.unitId().equals(unitId) || !row.actorSubject().equals(actor)) throw ServiceException.forbidden("Operation belongs to another subject");
-        return new CommitResult(readCommitted(row), false);
+        return new CommitResult(readCommittedHistoryRow(row), false);
     }
 
     public WorkbookSnapshotResponse readSnapshot(String unitId, String actor) {
@@ -121,7 +121,7 @@ public class WorkbookOperationService {
             if (!existing.actorSubject().equals(actor) || !existing.unitId().equals(routeUnitId)) {
                 throw ServiceException.forbidden("Operation belongs to another subject");
             }
-            CommittedOperationEnvelope committed = readCommitted(existing);
+            CommittedOperationEnvelope committed = readCommittedHistoryRow(existing);
             List<OperationMutation> originalMutations = committed.mutations().stream()
                     .map(mutation -> new OperationMutation(mutation.id(), mutation.sheetId(), mutation.params())).toList();
             // Server-owned timestamps/ranges are deliberately excluded from request identity.
@@ -224,7 +224,7 @@ public class WorkbookOperationService {
         if (operation.baseRevision() != row.revision()) {
             throw ServiceException.conflict("Undo requires the current workbook revision " + row.revision());
         }
-        CommittedOperationEnvelope target = readCommitted(targetRow);
+        CommittedOperationEnvelope target = readCommittedHistoryRow(targetRow);
         if (target.mutations().stream().anyMatch(mutation -> mutation.structuralPatch() != null)
                 && targetRow.revision() != row.revision()) {
             throw ServiceException.conflict("Structural undo requires the target operation to be the current workbook revision");
@@ -492,7 +492,7 @@ public class WorkbookOperationService {
     }
 
     private RevisionRecord revisionRecord(OperationRow row) {
-        CommittedOperationEnvelope operation = readCommitted(row);
+        CommittedOperationEnvelope operation = readCommittedHistoryRow(row);
         return new RevisionRecord(row.operationId(), row.revision(), row.committedAt(), operation);
     }
 
@@ -591,7 +591,7 @@ public class WorkbookOperationService {
                     || targetRow.revision() >= committed.revision()) {
                 throw new ServiceException("STORAGE_CORRUPT", 409, "Committed undo target identity or revision is invalid");
             }
-            undoTarget = readCommitted(targetRow);
+            undoTarget = readCommittedHistoryRow(targetRow);
             if (!undoTarget.operationId().equals(committed.intent().targetOperationId())) {
                 throw new ServiceException("STORAGE_CORRUPT", 409, "Committed undo target operation identity is inconsistent");
             }

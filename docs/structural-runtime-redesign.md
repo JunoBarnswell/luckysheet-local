@@ -935,3 +935,16 @@ head `1d8508ea` 的两个后端 CI 已通过 test-compile，随后在 `sheetRena
 6. 检查数据影响与反例：`currentSnapshot` 会被后续 commit 复用并增加新 revision，故不完整重建可能被继续固化；同时静态复核修复本身，发现并显式保留 `SYSTEM` restore 的服务伪主体与 envelope 操作者差异，避免误拒绝合法 restore 记录。
 
 根因已在 `WorkbookOperationService` 收敛到连续历史读取：current snapshot 重建、历史 revision 重建与 stale-base 冲突检查共用完整性校验，缺口、重复、错误边界及数据库行/envelope 身份不一致均以 `STORAGE_CORRUPT` fail-close；系统 restore 只接受其专用 `system:workbook-restore` 行身份。静态 diff 检查之外未运行测试、构建、lint 或 UI。本轮仅确认一个独立根因；不声称满足此前每轮至少 30 个问题的总体验收偏好，StructuralPatch v2、历史迁移及整体架构目标仍未完成。
+
+### 六轮补充复审 — 非顺序 operation lookup 的 envelope 身份（2026-09-26）
+
+在补入连续日志校验后，又对所有持久化 envelope 读取点做了六轮静态复核：
+
+1. 检查 `operationResult`，确认单条查询只验证调用者与数据库行归属，随后直接返回 envelope。
+2. 检查 commit 幂等重试，确认已存在 operation id 时直接用 envelope 比对请求，未校验 envelope 与 operation row 的 revision/sequence/session/actor 一致性。
+3. 检查 undo target 读取，确认只校验数据库行主体与 revision，原先仅比较 envelope 的 operation id；结构 undo 会进一步依赖该 patch 推导逆 patch。
+4. 检查 replay 中的 undo target，确认即便当前事件来自已验证的连续日志，目标 operation 仍是独立查找并使用，不能依赖当前行校验间接覆盖。
+5. 检查 `revisionRecord`，确认返回值同时包含数据库行 revision/time 与 envelope 内容；身份分叉可能对外暴露相互矛盾的 revision 记录。
+6. 对照 SYSTEM restore 的行主体约定，确认通用行/envelope 校验必须保留服务伪主体映射，并由数据库列与 envelope 内的 session 值彼此相等，而不能硬编码只接受新写入的 `system` session。
+
+确认的是一个根因：非顺序读取绕过了 operation-row/envelope 身份一致性边界。所有直接业务读取现统一经过 `readCommittedHistoryRow`，原始 JSON 反序列化只留在该校验器内部；SYSTEM restore 继续按其专用行主体验证。未运行测试、构建、lint 或 UI；该检查和前一轮的连续性校验均只做静态复核，不把两个根因虚增为 30 项，也不代表完整结构架构已完成。
