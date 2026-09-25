@@ -1066,3 +1066,16 @@ head `1d8508ea` 的两个后端 CI 已通过 test-compile，随后在 `sheetRena
 6. **提交入口与正反例**：`validateCommittedOperationEnvelope` 在历史和实时 committed envelope 入口调用同一 patch validator；测试源码现覆盖 workbook/sheet scope、anchor 缺省/存在、identity 漂移、重复 owner 和额外字段拒绝。
 
 已修复三条编译诊断对应的两个类型/作用域根因，以及一个 TS/Java optional wire 字段契约分叉；没有把相同的根因重复包装成更多问题。当前只做源码检查与 `git diff --check`，未在本地运行测试、构建、lint 或 UI。CI baseline `d3f0fc34` 的失败已确认；修复后的新 head 仍需远端 checks 验证，整体整改目标继续开放。
+
+### 六轮静态自审 — 跨工作表结构 owner 的投影失效（2026-09-26）
+
+六轮分别检查结构计划产出、mutation 目标身份、提交/远程回放、projection 失效策略、Canvas 快照捕获方式与 WorkbookSession 刷新顺序，确认一个真实根因：结构 patch 可改写其他工作表的公式 owner，但投影缓存原先只失效 mutation 自身工作表，且除 chart-text 外不消费 formula-owner delta。这里记录的是一个跨层失效缺陷，不按 owner 类型重复计数：
+
+1. **结构计划产出**：`planSheetTableRename` 遍历工作簿全部工作表的公式单元格和条件格式/验证规则，delta 的 owner sheet 可不同于 Sheet Table 所属 sheet。
+2. **mutation 身份**：rename mutation 的 `sheetId` 固定指向被改名表所在 sheet，不能代表所有公式 owner 的投影归属；结构变换与移动引用也可能产生跨表 owner。
+3. **提交及回放**：本地 `runtime`、服务端 committed patch 与 collaboration ACK/remote replay 都把 typed formula-owner deltas 放入 mutation 通知，信息在到达投影层前没有丢失。
+4. **失效策略**：`ProjectionRuntime` 原先按 mutation.sheetId 递增 revision，只对 chart-text delta 额外失效 owner drawing；formula-cell、formula-rule、shape-property、table-sheet-column owner 被忽略。
+5. **快照实物**：Canvas 快照深拷贝 drawing payload 与 Table Sheet 定义，并捕获 rule 集合/条件格式运行时；缓存 snapshot 身份不变会让 React 消费者继续持有旧投影。公式单元格值可能另由 calculation callback 触发更新，不能单独作为足以证明此缺陷的证据。
+6. **刷新顺序**：WorkbookSession 有 mutation 时调用 mutation 投影失效分支，而不执行“无 mutation 时”的全局公式投影失效；因此必须由结构 delta 精确标出额外 owner sheet，不能依赖无关的全局刷新。
+
+现已按 owner 地址失效公式单元格前后工作表和公式依赖图；按 owner sheet 失效 formula-rule、shape-property、chart-text 与 table-sheet-column 的对应投影域。data-view-field 和 cell-style-template 没有被扩大到所有 Canvas sheet cache：它们不在 per-sheet Canvas 快照中，贸然全量清缓存会扩大性能成本而没有快照证据；其非 Canvas 消费者仍须在后续 owner 审计中单独核实。新增跨表单元格、规则、图形及 Table Sheet 投影的回归测试源码；只做源码审查和 `git diff --check`，没有执行测试、构建、lint 或 UI。本次只修复该投影传播切片，整体架构整改及 PR 验收仍未完成。

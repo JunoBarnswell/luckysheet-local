@@ -138,14 +138,25 @@ export class ProjectionRuntime {
   invalidateProjectionMutations(mutations: readonly MutationInfo[]): void {
     for (const mutation of mutations) this.invalidateSheetProjection(mutation.sheetId, projectionDomainsForMutation(mutation));
     const chartIndexWasDirty = this.chartSourceIndexDirty;
-    const chartOwnerSheets = new Set<string>();
+    const drawingOwnerSheets = new Set<string>();
+    const formulaOwnerAddresses = new Map<string, { sheetId: string; row: number; column: number }>();
     const chartOwnersToRefresh = new Set(this.invalidateDependentChartProjections(mutations));
     const newChartOwnerIdentities = new Map<string, ChartSourceOwnerIdentity>();
     for (const mutation of mutations) {
       for (const delta of mutation.structuralFormulaOwnerDeltas ?? []) {
-        if (delta.kind === 'formula-object' && delta.ownerKind === 'chart-text') {
-          chartOwnerSheets.add(delta.sheetId);
+        if (delta.kind === 'formula-cell') {
+          for (const address of [delta.beforeAddress, delta.afterAddress]) {
+            formulaOwnerAddresses.set(`${address.sheetId}:${address.row}:${address.column}`, address);
+          }
+        } else if (delta.kind === 'formula-rule') {
+          this.invalidateSheetProjection(delta.sheetId, ['content', 'dataRules']);
+        } else if (delta.ownerKind === 'chart-text') {
+          drawingOwnerSheets.add(delta.sheetId);
           chartOwnersToRefresh.add(chartSourceOwnerKey(delta.sheetId, delta.payloadId));
+        } else if (delta.ownerKind === 'shape-property') {
+          drawingOwnerSheets.add(delta.sheetId);
+        } else if (delta.ownerKind === 'table-sheet-column') {
+          this.invalidateSheetProjection(delta.sheetId, ['content']);
         }
       }
       if (mutation.id === 'drawing.add' && isRecord(mutation.params)) {
@@ -174,7 +185,8 @@ export class ProjectionRuntime {
         }
       }
     }
-    for (const sheetId of chartOwnerSheets) this.invalidateSheetProjection(sheetId, ['drawings']);
+    this.invalidateFormulaResultProjections([...formulaOwnerAddresses.values()]);
+    for (const sheetId of drawingOwnerSheets) this.invalidateSheetProjection(sheetId, ['drawings']);
     const renamedSheetIds = new Set<string>();
     let workbookSheetIdentityChanged = false;
     for (const mutation of mutations) {
