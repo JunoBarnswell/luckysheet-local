@@ -98,7 +98,7 @@ final class StructuralSnapshotReducer {
         FormulaReferenceTransformer.Direction shiftDirection = "insert".equals(operation)
                 ? FormulaReferenceTransformer.Direction.INSERT : FormulaReferenceTransformer.Direction.DELETE;
         ObjectNode reportSheetAfter = mapReportSheetCoordinates(sheet,
-                (row, column) -> FormulaReferenceTransformer.remapCellShiftCoordinate(row, column, selection, shiftAxis, shiftDirection),
+                (row, column) -> FormulaReferenceTransformer.remapCellShiftCoordinate(row, column, formulaRange(selection), shiftAxis, shiftDirection),
                 null,
                 "cell-shift");
 
