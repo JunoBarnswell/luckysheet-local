@@ -3,7 +3,7 @@ import { describe, it } from 'node:test';
 import { CommandRuntime } from '@react-sheets/command-runtime';
 import { createPivotMemberKey, pivotMemberKey, WorkbookModel, type PivotResultTree } from '@react-sheets/core-model';
 import { registerDrawingFeature } from '../drawing';
-import { buildChartLayout, buildPivotChartData, resolveChartData, resolveChartDataFromSources, registerChartCommands, type ChartPayload } from './index';
+import { buildChartLayout, buildPivotChartData, chartSourceRanges, resolveChartData, resolveChartDataFromSources, resolveChartTitleText, registerChartCommands, type ChartPayload } from './index';
 
 function chartPair(sheetId: string, chartId: string, payload: ChartPayload) {
   return {
@@ -22,6 +22,29 @@ function chartPair(sheetId: string, chartId: string, payload: ChartPayload) {
 }
 
 describe('chart feature', () => {
+  it('indexes and resolves the linked title cell used by chart projection', () => {
+    const payload: ChartPayload = {
+      kind: 'chart', chartId: 'linked-title', chartType: 'line', subtype: 'line',
+      source: { kind: 'worksheet-ranges', ranges: [{ sheetId: 'owner', startRow: 0, endRow: 1, startColumn: 0, endColumn: 0 }] },
+      elements: { hiddenData: 'show', titleText: { linkedFormula: "='Source'!$B$1" } },
+    };
+    const owner = { ownerSheetId: 'owner', sheetOrder: [{ id: 'owner', name: 'Owner' }, { id: 'source', name: 'Source' }] };
+    const ranges = chartSourceRanges(payload, [], owner);
+    assert.ok(ranges.some((range) => range.sheetId === 'source'
+      && range.startRow === 0 && range.endRow === 0 && range.startColumn === 1 && range.endColumn === 1));
+    assert.equal(resolveChartTitleText(payload, owner, (range) => `${range.sheetId}!${range.startRow}:${range.startColumn}`), 'source!0:1');
+  });
+
+  it('renders a structurally invalidated linked title as #REF! instead of stale cached text', () => {
+    const payload: ChartPayload = {
+      kind: 'chart', chartId: 'deleted-title-source', chartType: 'line', subtype: 'line',
+      source: { kind: 'worksheet-ranges', ranges: [{ sheetId: 'owner', startRow: 0, endRow: 1, startColumn: 0, endColumn: 0 }] },
+      elements: { hiddenData: 'show', titleText: { linkedFormula: '=#REF!', text: 'stale cached title' } },
+    };
+    const owner = { ownerSheetId: 'owner', sheetOrder: [{ id: 'owner', name: 'Owner' }] };
+    assert.equal(resolveChartTitleText(payload, owner, () => assert.fail('invalid references have no cell dependency')), '#REF!');
+  });
+
   it('persists full chart payload through one canonical drawing aggregate', () => {
     const workbook = new WorkbookModel('chart-feature-test', 'Chart Feature');
     const runtime = new CommandRuntime(workbook);

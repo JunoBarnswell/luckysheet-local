@@ -711,3 +711,29 @@ head `b0217386` 的两个远端 `canonical-build` 都报告同一组 TypeScript 
 6. 类型修正只约束既有预计算结果，不改变 clone、公式映射、delta 生成或 live apply 顺序；已有 rename linked-chart-formula 回归用例覆盖该业务路径。
 
 已修复为显式联合类型记录及 flatMap 数组结果类型。此次 CI 的失败已确认是编译期真实错误；没有本地重跑测试或构建，修复后的远端 CI 状态待新 head 确认。
+
+### 六轮静态复核 — linked chart title projection 与公式失效
+
+源码追踪确认图表标题 `linkedFormula` 不能只作为 OOXML 字符串保存：
+
+1. **渲染消费：** Canvas 使用 `buildChartLayout`，而原 `baseLayout` 只读取 `elements.title`，不解析 `titleText.linkedFormula`；新增从公式单元格 projection 派生标题文本，不写回持久模型。
+2. **公式域：** Excel 的图表标题链接是单个字符串单元格引用；新增共享解析器只接受可解析的单 cell AST，其他表达式以 `UNSUPPORTED_FEATURE` fail-close。
+3. **依赖范围：** `chartSourceRanges` 原来只含数据系列范围；标题、legend、axis、data-table 文字公式的源 cell 现加入同一依赖范围计算，命令 affected ranges 与 active-sheet projection 因此包含跨表来源。
+4. **普通输入失效：** projection 图表范围索引由上述共享 range 函数重建，来源 cell mutation 会使图表 owner sheet projection 失效。
+5. **公式结果失效：** `onCalculationApplied` 原先将精确 changed addresses 降为 sheet-ID 集合，跨表公式依赖的图表 owner 不会失效；现在传递 cell 地址并按单 cell range 查图表依赖。
+6. **不支持文件边界：** 不能投影为单 cell 的 native title reference 不进入可编辑 canonical chart，而保留原始 chart part 并记录原因；其他尚无 Canvas renderer 的 chart-text formula 在画布上显示明确 unsupported 状态。
+
+已加入 snapshot 单 cell 引用拒绝路径及图表 source-range/title-value 用例源码。`git diff --check` 是本轮唯一执行的本地验证；未运行测试、构建或浏览器验收。此批仍复用 projection 中现有 chart range 索引；将其与 FormulaEngine `ReferenceIndex` 合一、以及跨层 `CanonicalStructuralPlanner/StructuralPatch` 仍未完成。
+
+### 六轮自审复核 — linked chart formula 的结构失效与 PR 阻断（2026-09-25）
+
+1. **CI 失败根因复核：** 两个最新 Java CI 都在同一测试源码的 `JsonNode.putObject` 编译失败，逐处核实两个父节点实际是 `ObjectNode`；改用父节点 `putObject` 创建对象，未弱化 JSON 类型或校验。
+2. **实际 mutation identity：** 顺着 `sheet.rows.insert` command 到 `rows.inserted` mutation 确认，ProjectionRuntime 收到的是 mutation ID，而非 UI command ID；原 chart-source-index 重建条件只认 `sheet.rows.*`，因此真实行/列/cell-shift/sort/move 变更不会重建索引。
+3. **触发后果：** 结构变换会改写 chart linkedFormula 或普通系列 RangeRef；失效流程只按 `mutation.affectedRanges` 求交会漏掉随结构移动的引用。仅重建索引仍不够：如源引用 `A10` 随第 5 行插入移到 `A11`，插入带与新地址不相交，跨表 owner 不会被命中。现对结构变更源 sheet 上新索引中的图表 owner 一并失效；并把结构 effect 的 `formula-object` owner delta 仅投递到 projection 队列，精确失效图表所在 sheet，不混入客户端 operation。
+4. **恢复路径：** 核对 `rows.deleted`/`columns.deleted` 的 inverse 会先执行对应插入 mutation，cell-shift 的 restore 使用独立 mutation ID；这些正向、逆向结构 mutation 都加入索引失效集合，避免 undo/replay 后再次遗留陈旧坐标。
+5. **sheet identity：** 源码实际重排 mutation 为 `sheet.reordered`，不是旧判断中的 `sheet.move`；按注册 ID 覆盖 add/remove/restore/rename/reordered/duplicated，索引 owner 集合及 sheet identity 变化都会重建。
+6. **投影域与旁路：** 结构 mutation 现归入完整 projection domain；图表自身、table 和 sheet-table mutation 仍分别触发既有重建入口。公式重算仍使用 exact changed cell addresses；owner delta 只沿内存 projection queue 传递，不改变 history/server operation envelope；本次不把这一 cache 索引包装成已统一的 FormulaEngine `ReferenceIndex`。
+
+本轮仅读取远端既有 CI 日志、源码与 mutation 注册链，并运行 `git diff --check`；没有在本地执行测试、构建、lint 或浏览器验证。Java fixture 编译修复和 projection index mutation-ID 修复均进入现有 #345 草稿 PR；结构 planner 与统一 ReferenceIndex 的总体整改仍未完成。
+
+**结构删除边界复核：** `mapAstStructuralReferences` 会将被删除的单元格引用明确序列化为 `=#REF!`，而不是继续保留一个可索引地址。因此 chart-text range helper 对该 AST 返回“无 cell dependency”，快照继续保留合法错误公式，Canvas 使用公式错误标记而不回退到陈旧缓存标题；其他非单 cell AST 仍拒绝。补充了 snapshot 与标题解析的回归用例源码，未在本地执行。

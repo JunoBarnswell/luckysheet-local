@@ -955,7 +955,11 @@ export function attachCoreListeners(runtime: SpreadsheetRuntime): void {
         assertNoSpillChildWrite(runtime.model, mutation);
       }
 
-      runtime.pendingPivotMutations.push(structuredClone(mutation));
+      const formulaOwnerDeltas = structuralEffect?.formulaOwnerDeltas ?? [];
+      const projectionMutation = formulaOwnerDeltas.length > 0
+        ? { ...mutation, structuralFormulaOwnerDeltas: [...formulaOwnerDeltas] }
+        : mutation;
+      runtime.pendingPivotMutations.push(structuredClone(projectionMutation));
       if (mutation.id === 'dataSource.add' || mutation.id === 'dataSource.update' || mutation.id === 'dataSource.remove'
         || mutation.id === 'dataRegion.add' || mutation.id === 'dataRegion.remove'
         || mutation.id === 'dataRegion.materialize.commit' || mutation.id === 'dataRegion.materialize.restore'

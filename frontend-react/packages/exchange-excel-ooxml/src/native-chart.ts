@@ -1,5 +1,5 @@
 import { strFromU8, strToU8 } from 'fflate';
-import { chartTextFormulaEntries, resolveWorksheetChartRanges } from '@react-sheets/core-model';
+import { chartTextFormulaEntries, chartTextFormulaRange, resolveWorksheetChartRanges } from '@react-sheets/core-model';
 import type {
   ChartDrawingPayload,
   ChartAxisModel,
@@ -533,7 +533,7 @@ export function projectNativeCharts(snapshot: WorkbookSnapshot, graph: NativeCha
     const bytes = files[definition.chartPart];
     if (!sheet || !bytes || sheet.drawings.some((drawing) => drawing.id === definition.drawingId || drawing.name === definition.drawingId)) continue;
     const payload = parseNativeChartPayload(strFromU8(bytes), definition, snapshot, sheet, pivotGraph);
-    if (!payload) { definition.editable = false; definition.reason = 'UNSUPPORTED_FEATURE: native chart formulas could not be projected into canonical ranges'; continue; }
+    if (!payload) { definition.editable = false; definition.reason ??= 'UNSUPPORTED_FEATURE: native chart formulas could not be projected into canonical ranges'; continue; }
     const anchor = nativeAnchor(definition, files, relationships);
     const drawingId = definition.drawingId || `native-chart-${definition.chartPart.replace(/[^A-Za-z0-9]/g, '-')}`;
     const payloadId = drawingId;
@@ -618,7 +618,24 @@ function parseNativeChartPayload(xml: string, definition: NativeChartDefinition,
   const pivotName = textContent(descendants(root, 'pivotSource')[0] ? descendants(descendants(root, 'pivotSource')[0]!, 'name')[0] : undefined).trim();
   const pivot = pivotGraph?.tables.find((candidate) => candidate.name === pivotName);
   const source: ChartDrawingPayload['source'] = pivot?.pivotId ? { kind: 'pivot', pivotId: pivot.pivotId } : { kind: 'worksheet-ranges', ranges: [firstRange] };
-  return { kind: 'chart', chartId: definition.drawingId, chartType, subtype: definition.subtype as ChartDrawingPayload['subtype'], source, series, ...(categoryRange && source.kind === 'worksheet-ranges' ? { categoryRange } : {}), elements: { ...(title ? { title } : {}), ...(titleText ? { titleText } : {}), legend: { visible: descendants(root, 'legend').length > 0, position: 'bottom' }, hiddenData: 'show' } };
+  const payload: ChartDrawingPayload = {
+    kind: 'chart', chartId: definition.drawingId, chartType,
+    subtype: definition.subtype as ChartDrawingPayload['subtype'], source, series,
+    ...(categoryRange && source.kind === 'worksheet-ranges' ? { categoryRange } : {}),
+    elements: {
+      ...(title ? { title } : {}), ...(titleText ? { titleText } : {}),
+      legend: { visible: descendants(root, 'legend').length > 0, position: 'bottom' }, hiddenData: 'show',
+    },
+  };
+  if (payload.elements.titleText?.linkedFormula !== undefined) {
+    try {
+      chartTextFormulaRange(payload, 'titleText.linkedFormula', sheet.id, snapshot.sheets.map(({ id, name }) => ({ id, name })));
+    } catch (error) {
+      definition.reason = error instanceof Error ? error.message : String(error);
+      return undefined;
+    }
+  }
+  return payload;
 }
 
 function hasLinkedChartTextFormula(owner: XmlNode | undefined): boolean {

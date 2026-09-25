@@ -4,6 +4,7 @@ import {
   pivotMemberKey,
   pivotScalarFromMemberKey,
   buildPivotTimelineTiles,
+  chartTextFormulaEntries,
 } from "@react-sheets/core-model";
 import type {
   ChartDrawingPayload,
@@ -37,7 +38,7 @@ import type {
 } from "@react-sheets/core-model";
 import { isDrawingConnectorPayload } from "@react-sheets/core-model";
 import type { CanvasSheetSnapshot } from "@react-sheets/spreadsheet-app";
-import { buildAnalysisViewProjection, buildChartLayout, resolveChartDataFromSources, resolveSparklineData } from "@react-sheets/spreadsheet-app";
+import { buildAnalysisViewProjection, buildChartLayout, resolveChartDataFromSources, resolveChartTitleText, resolveSparklineData } from "@react-sheets/spreadsheet-app";
 import type { ChartLayout, ResolvedChartData } from "@react-sheets/spreadsheet-app";
 import {
   DEFAULT_RENDER_THEME,
@@ -1925,8 +1926,26 @@ export function createCanvasFloatingDrawables(input: CanvasFloatingRendererInput
     if (!payload) continue;
     const bounds = drawing.transform;
     if (payload.kind === "chart") {
-      const data = getChartSeries(payload, getSheet, pivotResults, sheets, tables, analysisViews);
-      const layout = buildChartLayout(payload, data, bounds.width, bounds.height);
+      let data = getChartSeries(payload, getSheet, pivotResults, sheets, tables, analysisViews);
+      let renderPayload = payload;
+      try {
+        const unsupportedText = chartTextFormulaEntries(payload).find(({ field }) => field !== 'titleText.linkedFormula');
+        if (unsupportedText) throw new Error(`UNSUPPORTED_FEATURE: canvas chart text formula ${unsupportedText.field} has no renderer`);
+        const title = resolveChartTitleText(payload, {
+          ownerSheetId: sheet.id,
+          sheetOrder: sheets.map(({ id, name }) => ({ id, name })),
+        }, (range) => {
+          const source = getSheet(range.sheetId);
+          if (!source) throw new Error(`UNSUPPORTED_FEATURE: chart title source worksheet ${range.sheetId} is not projected`);
+          const cell = source.getCell(range.startRow, range.startColumn);
+          return cell?.displayValue ?? cell?.value ?? '';
+        });
+        if (title !== undefined) renderPayload = { ...payload, elements: { ...payload.elements, title } };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        data = { ...data, status: { kind: 'unsupported', code: 'UNSUPPORTED_FEATURE', message } };
+      }
+      const layout = buildChartLayout(renderPayload, data, bounds.width, bounds.height);
       if (layout.status.kind === 'loading') {
         drawables.push({ kind: 'chart', id: drawing.id, bounds, draw: (context, rect) => drawChartLoadingOnCanvas(context, rect, layout.status.message ?? 'Loading chart data…'), hitTest: () => ({ action: 'chart.select-element', data: { kind: 'chart-area' } }) });
         continue;
@@ -1939,7 +1958,7 @@ export function createCanvasFloatingDrawables(input: CanvasFloatingRendererInput
         kind: "chart",
         id: drawing.id,
         bounds,
-        draw: (context, rect) => drawChartLayoutOnCanvas({ context, payload, bounds: rect, layout }),
+        draw: (context, rect) => drawChartLayoutOnCanvas({ context, payload: renderPayload, bounds: rect, layout }),
         hitTest: (point) => chartHitTest(layout, point, payload.elements.dataTable?.visible === true),
       });
       continue;

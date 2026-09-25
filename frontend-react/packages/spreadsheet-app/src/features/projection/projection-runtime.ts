@@ -30,6 +30,13 @@ const PROJECTION_DOMAINS: readonly SheetProjectionDomain[] = [
   'content', 'dimensions', 'formulaResults', 'dataRules', 'drawings', 'review', 'structure',
 ];
 
+const STRUCTURAL_REFERENCE_MUTATIONS = new Set([
+  'rows.inserted', 'rows.deleted', 'columns.inserted', 'columns.deleted',
+  'cells.inserted', 'cells.deleted', 'cells.inserted.restore', 'cells.deleted.restore',
+  'rows.permuted', 'range.move',
+  'sheet.add', 'sheet.remove', 'sheet.restore', 'sheet.rename', 'sheet.reordered', 'sheet.duplicated',
+]);
+
 /** Keep the active projection and one recently used sheet; all other sheets stay lazy. */
 const MAX_SHEET_PROJECTION_CACHE = 2;
 
@@ -41,7 +48,7 @@ function projectionDomainsForMutation(mutation: MutationInfo): readonly SheetPro
   const id = mutation.id;
   if (id.startsWith('drawing.') || id.startsWith('shape.') || id.startsWith('chart.') || id.startsWith('image.') || id.startsWith('camera.') || id.startsWith('formControl.')) return ['drawings'];
   if (id.startsWith('comment.') || id.startsWith('note.') || id.startsWith('hyperlink.')) return ['review'];
-  if (id.startsWith('sheet.rows.') || id.startsWith('sheet.columns.') || id.startsWith('sheet.cellShift.') || id === 'sheet.add' || id === 'sheet.delete' || id === 'sheet.restore' || id === 'sheet.rename' || id === 'sheet.move') return PROJECTION_DOMAINS;
+  if (STRUCTURAL_REFERENCE_MUTATIONS.has(id) || id.startsWith('sheet.rows.') || id.startsWith('sheet.columns.') || id.startsWith('sheet.cellShift.')) return PROJECTION_DOMAINS;
   if (id.startsWith('sheet.row.') || id.startsWith('sheet.column.') || id.startsWith('sheet.dimension.') || id.startsWith('sheet.visibility.') || id.startsWith('sheet.freeze.')) return ['dimensions'];
   if (id.startsWith('filter.') || id.startsWith('sheetTable.') || id.startsWith('dataRegion.') || id.startsWith('dataSource.') || id.startsWith('validation.') || id.startsWith('conditionalFormat.') || id.startsWith('outline.')) return ['dataRules', 'content'];
   if (id.startsWith('pivot.')) return ['content', 'formulaResults', 'dataRules'];
@@ -89,18 +96,39 @@ export class ProjectionRuntime {
 
   invalidateProjectionMutations(mutations: readonly MutationInfo[]): void {
     for (const mutation of mutations) this.invalidateSheetProjection(mutation.sheetId, projectionDomainsForMutation(mutation));
+    const chartOwnerSheets = new Set<string>();
+    for (const mutation of mutations) {
+      for (const delta of mutation.structuralFormulaOwnerDeltas ?? []) {
+        if (delta.kind === 'formula-object' && delta.ownerKind === 'chart-text') chartOwnerSheets.add(delta.sheetId);
+      }
+    }
+    for (const sheetId of chartOwnerSheets) this.invalidateSheetProjection(sheetId, ['drawings']);
     if (mutations.some((mutation) => this.rebuildChartIndexForMutation(mutation))) this.chartSourceIndexDirty = true;
     this.invalidateDependentChartProjections(mutations);
   }
 
   invalidateDependentChartProjections(mutations: readonly MutationInfo[]): void {
+    const structurallyChangedSheets = new Set(
+      mutations.filter((mutation) => STRUCTURAL_REFERENCE_MUTATIONS.has(mutation.id)).map((mutation) => mutation.sheetId),
+    );
+    this.invalidateDependentChartProjectionsForRanges(
+      mutations.flatMap((mutation) => mutation.affectedRanges),
+      structurallyChangedSheets,
+    );
+  }
+
+  private invalidateDependentChartProjectionsForRanges(
+    ranges: readonly RangeRef[],
+    structurallyChangedSheets?: ReadonlySet<string>,
+  ): void {
     this.ensureChartSourceIndex();
     const owners = new Set<string>();
-    for (const mutation of mutations) {
-      for (const affectedRange of mutation.affectedRanges) {
-        for (const binding of this.chartSourceIndex.get(affectedRange.sheetId) ?? []) {
-          if (rangesIntersect(binding.range, affectedRange)) owners.add(binding.ownerId);
-        }
+    for (const sheetId of structurallyChangedSheets ?? []) {
+      for (const binding of this.chartSourceIndex.get(sheetId) ?? []) owners.add(binding.ownerId);
+    }
+    for (const affectedRange of ranges) {
+      for (const binding of this.chartSourceIndex.get(affectedRange.sheetId) ?? []) {
+        if (rangesIntersect(binding.range, affectedRange)) owners.add(binding.ownerId);
       }
     }
     for (const ownerId of owners) this.invalidateSheetProjection(ownerId, ['content', 'formulaResults', 'dataRules']);
@@ -113,12 +141,24 @@ export class ProjectionRuntime {
     }
   }
 
-  invalidateFormulaResultProjections(sheetIds?: ReadonlySet<string>): void {
-    if (!sheetIds) {
+  invalidateFormulaResultProjections(addresses?: readonly { sheetId: string; row: number; column: number }[]): void {
+    if (!addresses) {
       for (const sheet of this.runtime.model.getSheets()) this.invalidateSheetProjection(sheet.id, ['formulaResults']);
       return;
     }
-    for (const sheetId of sheetIds) this.invalidateSheetProjection(sheetId, ['formulaResults']);
+    if (addresses.length === 0) return;
+    const ranges: RangeRef[] = [];
+    for (const address of addresses) {
+      this.invalidateSheetProjection(address.sheetId, ['formulaResults']);
+      ranges.push({
+        sheetId: address.sheetId,
+        startRow: address.row,
+        endRow: address.row,
+        startColumn: address.column,
+        endColumn: address.column,
+      });
+    }
+    this.invalidateDependentChartProjectionsForRanges(ranges);
   }
 
   invalidateDataSourceProjection(sourceId: string): void {
@@ -161,6 +201,7 @@ export class ProjectionRuntime {
 
   getActiveProjectionSheetIds(activeSheet: WorksheetModel): ReadonlySet<string> {
     const ids = new Set<string>([activeSheet.id]);
+    const sheetOrder = this.runtime.model.getSheets().map(({ id, name }) => ({ id, name }));
     const addRange = (range: RangeRef | undefined): void => {
       if (range && this.runtime.model.sheets.has(range.sheetId)) ids.add(range.sheetId);
     };
@@ -176,7 +217,7 @@ export class ProjectionRuntime {
             const owner = this.runtime.model.getSheets().find((sheet) => sheet.pivots.some((pivot) => pivot.id === pivotId));
             if (owner) ids.add(owner.id);
           }
-          for (const range of chartSourceRanges(payload, [...this.runtime.model.dataModel.tables.values()])) addRange(range);
+          for (const range of chartSourceRanges(payload, [...this.runtime.model.dataModel.tables.values()], { ownerSheetId: activeSheet.id, sheetOrder })) addRange(range);
           break;
         case 'form-control':
           if ('inputRange' in payload) addRange(payload.inputRange);
@@ -229,10 +270,11 @@ export class ProjectionRuntime {
     this.chartSourceIndex.clear();
     this.pivotChartOwners.clear();
     const tables = [...this.runtime.model.dataModel.tables.values()];
+    const sheetOrder = this.runtime.model.getSheets().map(({ id, name }) => ({ id, name }));
     for (const owner of this.runtime.model.getSheets()) {
       for (const payload of owner.drawingPayloads.values()) {
         if (payload.kind !== 'chart') continue;
-        for (const range of chartSourceRanges(payload, tables)) {
+        for (const range of chartSourceRanges(payload, tables, { ownerSheetId: owner.id, sheetOrder })) {
           const bindings = this.chartSourceIndex.get(range.sheetId) ?? [];
           bindings.push({ ownerId: owner.id, range: structuredClone(range) });
           this.chartSourceIndex.set(range.sheetId, bindings);
@@ -248,13 +290,9 @@ export class ProjectionRuntime {
   }
 
   private rebuildChartIndexForMutation(mutation: MutationInfo): boolean {
-    return mutation.id.startsWith('drawing.')
+    return STRUCTURAL_REFERENCE_MUTATIONS.has(mutation.id)
+      || mutation.id.startsWith('drawing.')
       || mutation.id.startsWith('chart.')
-      || mutation.id === 'sheet.add'
-      || mutation.id === 'sheet.remove'
-      || mutation.id === 'sheet.restore'
-      || mutation.id === 'sheet.rename'
-      || mutation.id === 'sheet.duplicated'
       || mutation.id.startsWith('sheetTable.')
       || mutation.id === 'table.add'
       || mutation.id === 'table.remove';

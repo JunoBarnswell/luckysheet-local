@@ -1101,8 +1101,7 @@ export class WorkbookSession {
       this.refresh();
     };
     this.runtime.handlers.onCalculationApplied = (addresses) => {
-      const sheetIds = new Set(addresses.map((address) => address.sheetId));
-      this.projection.invalidateFormulaResultProjections(sheetIds);
+      this.projection.invalidateFormulaResultProjections(addresses);
       this.calculationProjectionInvalidated = true;
     };
     this.runtime.handlers.onPhaseChange = (phase) => {

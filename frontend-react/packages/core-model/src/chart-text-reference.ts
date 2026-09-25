@@ -1,4 +1,5 @@
-import type { ChartDrawingPayload, ChartTextFormulaField, ChartTextModel } from './domain';
+import { collectFormulaDependencies, parseFormula, type FormulaSheetIdentity } from '@react-sheets/formula-engine';
+import type { ChartDrawingPayload, ChartTextFormulaField, ChartTextModel, RangeRef } from './domain';
 
 const CHART_TEXT_FORMULA_FIELDS: readonly ChartTextFormulaField[] = [
   'titleText.linkedFormula',
@@ -44,6 +45,34 @@ export function chartTextFormulaEntries(
     entries.push({ field, formula });
   }
   return entries;
+}
+
+/** Resolve one chart-text link to its canonical single-cell source address. */
+export function chartTextFormulaRange(
+  payload: ChartDrawingPayload,
+  field: ChartTextFormulaField,
+  ownerSheetId: string,
+  sheetOrder: readonly FormulaSheetIdentity[],
+): RangeRef | undefined {
+  const formula = readChartTextFormula(payload, field);
+  if (formula === undefined) return undefined;
+  let dependencies: ReturnType<typeof collectFormulaDependencies>;
+  try {
+    const ast = parseFormula(formula);
+    if (ast.type === 'invalid-reference') return undefined;
+    if (ast.type !== 'cell-reference') {
+      throw new Error(`formula root ${ast.type} is not a single cell reference`);
+    }
+    dependencies = collectFormulaDependencies(ast, { sheetId: ownerSheetId, row: 0, column: 0 }, { sheetOrder });
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(`UNSUPPORTED_FEATURE: chart text formula ${field} on ${payload.chartId} is not a resolvable single-cell reference: ${reason}`);
+  }
+  if (dependencies.length !== 1 || dependencies[0]?.kind !== 'cell') {
+    throw new Error(`UNSUPPORTED_FEATURE: chart text formula ${field} on ${payload.chartId} must reference exactly one cell`);
+  }
+  const { sheetId, row, column } = dependencies[0].address;
+  return { sheetId, startRow: row, endRow: row, startColumn: column, endColumn: column };
 }
 
 export function readChartTextFormula(

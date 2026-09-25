@@ -100,6 +100,34 @@ test('canonical snapshots reject malformed chart linked formulas', () => {
   assert.throws(() => assertCanonicalWorkbookSnapshot(snapshot), /is not a non-empty formula/);
 });
 
+test('canonical chart text formulas must resolve to one cell owner', () => {
+  const snapshot = new WorkbookModel('unit-chart-formula-reference', 'Chart formula reference').snapshot();
+  const sheet = snapshot.sheets[0]!;
+  sheet.drawingPayloads['chart-1'] = {
+    kind: 'chart',
+    chartId: 'chart-1',
+    chartType: 'line',
+    subtype: 'line',
+    source: { kind: 'worksheet-ranges', ranges: [{ sheetId: sheet.id, startRow: 0, endRow: 1, startColumn: 0, endColumn: 0 }] },
+    elements: { hiddenData: 'show', titleText: { linkedFormula: '=A1&B1' } },
+  };
+  assert.throws(() => assertCanonicalWorkbookSnapshot(snapshot), /must be a resolvable single-cell reference/);
+});
+
+test('canonical chart text formulas preserve a structural #REF! result', () => {
+  const snapshot = new WorkbookModel('unit-chart-invalid-reference', 'Chart invalid reference').snapshot();
+  const sheet = snapshot.sheets[0]!;
+  sheet.drawingPayloads['chart-1'] = {
+    kind: 'chart',
+    chartId: 'chart-1',
+    chartType: 'line',
+    subtype: 'line',
+    source: { kind: 'worksheet-ranges', ranges: [{ sheetId: sheet.id, startRow: 0, endRow: 1, startColumn: 0, endColumn: 0 }] },
+    elements: { hiddenData: 'show', titleText: { linkedFormula: '=#REF!', text: 'stale cached title' } },
+  };
+  assert.doesNotThrow(() => assertCanonicalWorkbookSnapshot(snapshot));
+});
+
 test('canonical snapshots enforce worksheet AutoFilter identity and column bounds', () => {
   const workbook = new WorkbookModel('unit-auto-filter-contract', 'AutoFilter contract');
   const snapshot = workbook.snapshot();

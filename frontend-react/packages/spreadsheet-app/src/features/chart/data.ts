@@ -4,6 +4,8 @@ import {
   validateChartVector,
   formatPivotMember,
   pivotMemberKey,
+  chartTextFormulaEntries,
+  chartTextFormulaRange,
   type ChartDrawingPayload,
   type ChartSource,
   type ChartSubtype,
@@ -16,6 +18,7 @@ import {
   type WorkbookTableModel,
 } from '@react-sheets/core-model';
 import type { ChartPayload, ChartSeries } from './commands';
+import type { FormulaSheetIdentity } from '@react-sheets/formula-engine';
 
 export type ChartDataSourceKind = 'range' | 'pivot' | 'table' | 'report-range';
 
@@ -76,6 +79,11 @@ export interface StructuredChartSheet {
   getCell(row: number, column: number): { value?: PivotScalar } | undefined;
   hiddenRows: ReadonlySet<number> | readonly number[];
   hiddenColumns: ReadonlySet<number> | readonly number[];
+}
+
+export interface ChartFormulaOwnerContext {
+  readonly ownerSheetId: string;
+  readonly sheetOrder: readonly FormulaSheetIdentity[];
 }
 
 export interface StructuredChartSeries {
@@ -216,7 +224,11 @@ function containsHidden(collection: ReadonlySet<number> | readonly number[], val
  * and active-sheet projection planning from drifting apart as chart families
  * add specialised ranges (stock roles, error bars, and label sources).
  */
-export function chartSourceRanges(payload: ChartDrawingPayload, tables: readonly WorkbookTableModel[] = []): RangeRef[] {
+export function chartSourceRanges(
+  payload: ChartDrawingPayload,
+  tables: readonly WorkbookTableModel[] = [],
+  owner?: ChartFormulaOwnerContext,
+): RangeRef[] {
   const ranges: RangeRef[] = [];
   const seen = new Set<string>();
   const add = (range: RangeRef | undefined): void => {
@@ -250,7 +262,26 @@ export function chartSourceRanges(payload: ChartDrawingPayload, tables: readonly
     add(series.errorBars?.minusRange);
     add(series.dataLabels?.valuesFromCells);
   }
+  const textFormulas = chartTextFormulaEntries(payload);
+  if (textFormulas.length > 0) {
+    if (!owner) throw new Error(`STRUCTURAL_REFERENCE_OWNER_INVALID: chart ${payload.chartId} formula ranges require an owner worksheet`);
+    for (const { field } of textFormulas) {
+      add(chartTextFormulaRange(payload, field, owner.ownerSheetId, owner.sheetOrder));
+    }
+  }
   return ranges;
+}
+
+/** Resolve a chart title formula from the same worksheet value projection used by chart data. */
+export function resolveChartTitleText(
+  payload: ChartDrawingPayload,
+  owner: ChartFormulaOwnerContext,
+  readCellText: (range: RangeRef) => string,
+): string | undefined {
+  const hasLinkedFormula = payload.elements.titleText?.linkedFormula !== undefined;
+  const linkedRange = chartTextFormulaRange(payload, 'titleText.linkedFormula', owner.ownerSheetId, owner.sheetOrder);
+  if (hasLinkedFormula) return linkedRange ? readCellText(linkedRange) : '#REF!';
+  return payload.elements.titleText?.text ?? payload.elements.title;
 }
 
 function isMissing(value: PivotScalar | undefined): boolean {

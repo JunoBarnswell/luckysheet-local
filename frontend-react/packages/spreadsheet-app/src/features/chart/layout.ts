@@ -416,7 +416,10 @@ function trimNumber(value: number): string { return Number(value.toFixed(6)).toS
 function statusError(kind: ChartDataStatus['kind'], code: ChartDataStatus['code'], message: string): ChartDataStatus { return { kind, code, message }; }
 
 function baseLayout(payload: ChartDrawingPayload, data: ResolvedChartData, width: number, height: number, kind: ChartLayout['kind']): ChartLayout {
-  const title = payload.elements.title ? { text: payload.elements.title, x: 16, y: 12 } : undefined;
+  const titleText = payload.elements.titleText?.linkedFormula !== undefined
+    ? payload.elements.title
+    : payload.elements.titleText?.text ?? payload.elements.title;
+  const title = titleText ? { text: titleText, x: 16, y: 12 } : undefined;
   const legend = payload.elements.legend?.visible ? { visible: true, position: payload.elements.legend.position } : { visible: false, position: 'bottom' as const };
   const plot = { left: 52, top: title ? 40 : 22, width: Math.max(10, width - 70 - (legend.position === 'right' ? 100 : 0)), height: Math.max(10, height - (title ? 62 : 42) - (legend.position === 'bottom' ? 24 : 0)) };
   return { status: data.status, width, height, plot, title, legend, series: [], kind };
