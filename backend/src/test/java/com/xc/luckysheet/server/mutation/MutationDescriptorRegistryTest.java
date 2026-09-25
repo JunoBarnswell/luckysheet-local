@@ -1635,6 +1635,34 @@ class MutationDescriptorRegistryTest {
                 """.formatted(id, source));
     }
 
+    private ObjectNode workbookSourceRangePermutationSnapshot() throws Exception {
+        ObjectNode snapshot = (ObjectNode) mapper.readTree("""
+                {"dataModel":{"sources":[],"tables":[],"relationships":[],"views":[]},
+                 "sheets":[{"id":"sheet-1","name":"Data","rowCount":4,"columnCount":1,
+                   "cells":{"0":{"0":{"value":"first"}},"1":{"0":{"value":"second"}},"2":{"0":{"value":"third"}},"3":{"0":{"value":"fourth"}}},
+                   "pane":{"kind":"none"},"review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}},
+                   "merges":[],"conditionalFormats":[],"dataValidations":[],"pivots":[],"sparklines":[],"drawings":[],"drawingPayloads":{},"sheetTables":[],"spillRanges":[],"protectionRules":[]}]}
+                """);
+        ObjectNode dataModel = (ObjectNode) snapshot.path("dataModel");
+        ObjectNode table = ((ArrayNode) dataModel.path("tables")).addObject();
+        table.put("id", "workbook-table").put("name", "Source rows").put("sourceSheetId", "sheet-1");
+        table.putObject("sourceRange").put("sheetId", "sheet-1").put("startRow", 0).put("endRow", 2).put("startColumn", 0).put("endColumn", 0);
+        table.put("rowCount", 2).put("blockSize", 128).put("revision", 0);
+        table.putArray("fields").addObject().put("id", "value").put("name", "Value").put("ordinal", 0).put("type", "text");
+        table.putArray("blocks");
+
+        ObjectNode source = ((ArrayNode) dataModel.path("sources")).addObject();
+        source.put("schema", "DataSourceManifest").put("version", 1).put("id", "data-source").put("name", "Source rows");
+        source.put("kind", "chunked-table").put("sourceSheetId", "sheet-1");
+        source.putObject("sourceRange").put("sheetId", "sheet-1").put("startRow", 0).put("endRow", 2).put("startColumn", 0).put("endColumn", 0);
+        source.put("rowCount", 2).put("blockRowCount", 65_536).put("revision", 0);
+        source.putArray("fields").addObject().put("id", "value").put("name", "Value").put("ordinal", 0).put("type", "text");
+        source.putArray("blocks").addObject().put("id", "block-1").put("dataSourceId", "data-source")
+                .put("startRow", 0).put("rowCount", 2).put("storageKey", "block-1")
+                .put("checksum", "a".repeat(64)).put("byteLength", 1).put("encoding", "columnar-v1").put("revision", 0);
+        return snapshot;
+    }
+
     private ObjectNode crossSheetRowPermutationSnapshot(int sourceStartRow, int sourceEndRow) throws Exception {
         ObjectNode snapshot = (ObjectNode) mapper.readTree("""
                 {"definedNames":{},"definedNameModels":[],"sheets":[
@@ -2423,6 +2451,48 @@ class MutationDescriptorRegistryTest {
         assertEquals(2, sheet.path("conditionalFormats").get(0).path("ranges").size());
         assertEquals(1, sheet.path("conditionalFormats").get(0).path("ranges").get(0).path("startRow").asInt());
         assertEquals(3, sheet.path("conditionalFormats").get(0).path("ranges").get(1).path("startRow").asInt());
+    }
+
+    @Test
+    void rowPermutationRemapsWorkbookTableAndDataSourceRanges() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        ObjectNode snapshot = workbookSourceRangePermutationSnapshot();
+        OperationMutation raw = new OperationMutation("rows.permuted", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":0,"endRow":3,"startColumn":0,"endColumn":0},"sourceRows":[3,0,1,2]}
+                """));
+        OperationMutation permutation = withSortContext(raw, range(0, 3, 0, 0), "worksheet", null, false, 0);
+
+        JsonNode current = registry.prepare(snapshot, permutation, WorkbookAclRole.EDITOR).descriptor().apply(snapshot, permutation);
+
+        assertEquals(1, current.path("dataModel").path("tables").get(0).path("sourceRange").path("startRow").asInt());
+        assertEquals(3, current.path("dataModel").path("tables").get(0).path("sourceRange").path("endRow").asInt());
+        assertEquals(1, current.path("dataModel").path("sources").get(0).path("sourceRange").path("startRow").asInt());
+        assertEquals(3, current.path("dataModel").path("sources").get(0).path("sourceRange").path("endRow").asInt());
+        assertEquals("first", current.path("sheets").get(0).path("cells").path("1").path("0").path("value").asText());
+        assertEquals("third", current.path("sheets").get(0).path("cells").path("3").path("0").path("value").asText());
+    }
+
+    @Test
+    void rowPermutationRejectsSplitWorkbookTableAndDataSourceRangesBeforeChangingSnapshot() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        OperationMutation raw = new OperationMutation("rows.permuted", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":0,"endRow":3,"startColumn":0,"endColumn":0},"sourceRows":[2,0,3,1]}
+                """));
+        OperationMutation permutation = withSortContext(raw, range(0, 3, 0, 0), "worksheet", null, false, 0);
+
+        for (String ownerKind : List.of("workbook table", "data source")) {
+            ObjectNode snapshot = workbookSourceRangePermutationSnapshot();
+            ObjectNode dataModel = (ObjectNode) snapshot.path("dataModel");
+            if (ownerKind.equals("workbook table")) ((ArrayNode) dataModel.path("sources")).removeAll();
+            else ((ArrayNode) dataModel.path("tables")).removeAll();
+            JsonNode before = snapshot.deepCopy();
+
+            ServiceException error = assertThrows(ServiceException.class,
+                    () -> registry.prepare(snapshot, permutation, WorkbookAclRole.EDITOR).descriptor().apply(snapshot, permutation));
+
+            assertEquals("VALIDATION_ERROR", error.code());
+            assertEquals(before, snapshot);
+        }
     }
 
     @Test

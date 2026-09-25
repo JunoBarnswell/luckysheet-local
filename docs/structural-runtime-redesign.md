@@ -1200,3 +1200,16 @@ PR 上两个 `canonical-build` job 使用相同 head，前端依赖安装与前�
 **修复**：TypeScript 与 Java 的预检和写回现在均枚举 workbook 中所有 Pivot/Sparkline 源 owner；只映射与被排序范围相交的源区域，以保留其它 `RangeRef` 的对象身份；Sparkline anchor 只跟随其所在 sheet，Pivot anchor 只按 target sheet 映射。新增 TS/Java 成功与 split-range 拒绝回归测试源码。实现自审还确认若无相交判断，TypeScript 的精确映射器会克隆并重赋无关范围，可能引起无必要的下游刷新；此路径已收窄并用对象身份断言覆盖。进一步核对发现服务端 `SnapshotMutationSupport.array` 会把缺省集合物化为空数组，因此全表只读预检/枚举改用 `existingArray`，并用无关 sheet 的字段缺省断言防止快照被扩写。仅静态审查；未运行本地测试、构建、lint 或 UI；`git diff --check` 通过。全局 StructuralPatch/ReferenceIndex 整改仍未完成。
 
 **远端门禁反馈**：首个 head 的两个 `canonical-build` 均只报告新增 Java 用例的 `affectedColumnEnd` 夹具错误：sheet `columnCount=2`，测试却传入 0。按 `SheetRuleLifecycle.affectedColumnEnd` 的 `columnCount - 1` 下界改为 1；仅测试上下文修正，不改生产逻辑。第二个 head 随后显示负向用例只调用 `registry.prepare`，并未调用执行结构重映射的 descriptor `apply`；两条拒绝断言现都触发 `apply` 并继续检查原快照不变。以上均为测试夹具/触发路径修正，不改生产逻辑；本地仍未执行测试或构建。
+
+### 六轮静态自审 — 行置换遗漏工作簿级数据源范围（2026-09-26）
+
+六轮分别从模型契约、下游消费、TS 变换、Java 变换、操作重放与失败边界复核，确认一个跨端 owner 漏洞，涉及 workbook table 与 data-source 两种范围：
+
+1. **模型所有权**：`WorkbookTableModel.sourceRange` 被定义为 sheet-backed table 的 canonical source range；`DataSourceManifest.sourceRange` 必须与 `sourceSheetId` 配对，并以范围尺寸校验 `rowCount` 与字段宽度，不是可忽略的提示字段。
+2. **实际消费者**：OOXML native chart writer 对 `source.kind === 'table'` 通过 table id 读取 `WorkbookTableModel.sourceRange` 并据此生成分类/系列引用；表范围落后于行移动会导出错误行。
+3. **TS 结构路径对照**：轴变更与 cell-shift 会预检并更新 workbook-table/data-source 范围；`validatePermutationMetadata` 和 `applyRowPermutation` 原先没有枚举这两类 owner。置换一段连续数据行时，表/源若只覆盖其中一部分，应跟随那部分原始记录；若置换后不能表达为单矩形，应拒绝。
+4. **Java 结构路径对照**：`StructuralSnapshotReducer` 的轴与 cell-shift reducer 同样维护这两种全局范围；`validatePermutationMetadataExact` 与 `remapPermutationMetadata` 原先遗漏，导致 server 接受置换后仍保留旧地址。
+5. **同一操作路径**：`data.sort.rows` 将已校验顺序写成 `rows.permuted`；前端 mutation handler 和服务端 `permuteRows` 都执行上述转换。因此遗漏同时影响本地首次执行与持久化/重放，不是未调用的辅助函数差异。
+6. **触发与 fail-close**：置换范围精确映射器可将完整连续目标映射为一个范围，也会对拆分结果返回多个片段。两类 owner 原先既没有更新也没有 split 检查；新增成功路径校验范围与 cell 同步移动，拒绝路径校验在快照变化前 fail-close。
+
+**修复**：TS 预检暂存相交 table/data-source 的精确新范围，并在所有单元格预计算后应用；未变化及非相交范围不重赋。Java 在写入前验证范围可表示为单矩形，再于 reducer 写回；读取可选 `dataModel.sources` 使用 non-mutating 的 `existingDataModelArray`，不物化缺省数组。新增 TS/Java 成功与 split-range 拒绝回归用例。仅静态源码审查与 `git diff --check`；没有运行本地测试、构建、lint 或 UI。远端 PR CI 尚待新 head 结果；Canonical Structural Planner/ReferenceIndex、其它 owner 家族、OOXML opaque-owner 结构迁移及总目标仍未完成。

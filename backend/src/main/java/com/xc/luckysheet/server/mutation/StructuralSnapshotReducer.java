@@ -3505,6 +3505,22 @@ final class StructuralSnapshotReducer {
                 }
             }
         }
+        for (JsonNode rawTable : workbookTables(root)) {
+            ObjectNode table = requireObject(rawTable, "Workbook table");
+            JsonNode sourceRange = table.get("sourceRange");
+            if (sourceRange == null || sourceRange.isNull()) continue;
+            if (rangesIntersect(SnapshotMutationSupport.range(root, sourceRange), range)) {
+                writeSingleRange(sourceRange, range, targetRowsBySource, "workbook table source");
+            }
+        }
+        for (JsonNode rawSource : existingDataModelArray(root, "sources")) {
+            ObjectNode source = requireObject(rawSource, "Data source");
+            JsonNode sourceRange = source.get("sourceRange");
+            if (sourceRange == null || sourceRange.isNull()) continue;
+            if (rangesIntersect(SnapshotMutationSupport.range(root, sourceRange), range)) {
+                writeSingleRange(sourceRange, range, targetRowsBySource, "data source range");
+            }
+        }
         for (JsonNode merge : SnapshotMutationSupport.array(sheet, "merges")) {
             ObjectNode object = requireObject(merge, "Merge");
             writeSingleRange(object.get("range"), range, targetRowsBySource, "merge");
@@ -3850,6 +3866,22 @@ final class StructuralSnapshotReducer {
             ObjectNode owner = requireObject(rawOwner, "Worksheet");
             for (JsonNode raw : existingArray(owner, "pivots")) PivotMutationDescriptor.forEachWorksheetSourceRange(requireObject(raw, "Pivot"), source -> requireSingleRange(source, range, targetRowsBySource, "pivot source"));
         }
+        for (JsonNode rawTable : workbookTables(root)) {
+            ObjectNode table = requireObject(rawTable, "Workbook table");
+            JsonNode sourceRange = table.get("sourceRange");
+            if (sourceRange == null || sourceRange.isNull()) continue;
+            if (rangesIntersect(SnapshotMutationSupport.range(root, sourceRange), range)) {
+                requireSingleRange(sourceRange, range, targetRowsBySource, "workbook table source");
+            }
+        }
+        for (JsonNode rawSource : existingDataModelArray(root, "sources")) {
+            ObjectNode source = requireObject(rawSource, "Data source");
+            JsonNode sourceRange = source.get("sourceRange");
+            if (sourceRange == null || sourceRange.isNull()) continue;
+            if (rangesIntersect(SnapshotMutationSupport.range(root, sourceRange), range)) {
+                requireSingleRange(sourceRange, range, targetRowsBySource, "data source range");
+            }
+        }
         for (JsonNode raw : SnapshotMutationSupport.array(sheet, "merges")) requireSingleRange(requireObject(raw, "Merge").get("range"), range, targetRowsBySource, "merge");
         for (JsonNode raw : SnapshotMutationSupport.array(sheet, "protectionRules")) if (raw.has("range")) requireSingleRange(raw.get("range"), metadataScope, targetRowsBySource, "protection rule");
         JsonNode bandedRaw = sheet.get("bandedRule");
@@ -3897,6 +3929,13 @@ final class StructuralSnapshotReducer {
         if (value == null || value.isNull()) return JsonNodeFactory.instance.arrayNode();
         if (!value.isArray()) throw ServiceException.validation(property + " must be an array");
         return (ArrayNode) value;
+    }
+
+    private static ArrayNode existingDataModelArray(ObjectNode root, String property) {
+        JsonNode value = root.get("dataModel");
+        if (value == null || value.isNull()) return JsonNodeFactory.instance.arrayNode();
+        ObjectNode dataModel = requireObject(value, "dataModel");
+        return existingArray(dataModel, property);
     }
 
     private static void remapPermutationRuleFormulaOwners(ObjectNode sheet, String sheetId, RangeRef scope, int[] rowMap) {

@@ -1,6 +1,8 @@
 import type { CellAddress, CellData, CellStyleTemplate, ConditionalFormatRule, DataValidationRule, RangeRef, Row, WorkbookModel, WorksheetModel } from './index';
 import { cellKey, hasFormulaGroupMetadata } from './index';
 import type { DefinedNameModel, DrawingObject, DrawingPayload, SpillRange } from './domain';
+import type { WorkbookTableModel } from './data-model';
+import type { DataSourceManifest } from './data-source';
 import type {
   StructuralDefinedNameOwnerDelta,
   StructuralFormulaOwnerDelta,
@@ -443,6 +445,8 @@ interface RowPermutationOwnerChanges {
   readonly dataValidations: DataValidationRule[];
   readonly definedNames: Array<{ entry: DefinedNameModel; formula: string; anchor: DefinedNameModel['anchor'] }>;
   readonly templates: CellStyleTemplate[];
+  readonly workbookTableSourceRanges: Array<{ owner: WorkbookTableModel; sourceRange: RangeRef }>;
+  readonly dataSourceRanges: Array<{ owner: DataSourceManifest; sourceRange: RangeRef }>;
   readonly drawingPayloads: Array<{ owner: WorksheetModel; payloads: Map<string, DrawingPayload> }>;
   readonly reportSheet?: WorksheetModel['reportSheet'];
 }
@@ -531,6 +535,18 @@ export function validatePermutationMetadata(
     offsetPermutationFormulaFields(next.dataValidation!, rowDelta, `cell-style template ${template.id}`);
     return [next];
   });
+  const workbookTableSourceRanges = [...workbook.dataModel.tables.values()].flatMap((owner) => {
+    const sourceRange = owner.sourceRange;
+    if (!sourceRange || sourceRange.sheetId !== sheet.id || !rangesIntersect(sourceRange, range)) return [];
+    const mapped = remapSingleRange(`workbook table ${owner.id} source`, sourceRange, plan);
+    return sameRange(sourceRange, mapped) ? [] : [{ owner, sourceRange: mapped }];
+  });
+  const dataSourceRanges = [...workbook.dataModel.sources.values()].flatMap((owner) => {
+    const sourceRange = owner.sourceRange;
+    if (!sourceRange || sourceRange.sheetId !== sheet.id || !rangesIntersect(sourceRange, range)) return [];
+    const mapped = remapSingleRange(`data source ${owner.id} source`, sourceRange, plan);
+    return sameRange(sourceRange, mapped) ? [] : [{ owner, sourceRange: mapped }];
+  });
   const drawingPayloads = worksheetOwners.flatMap((owner) => {
     let mapped: Map<string, DrawingPayload> | undefined;
     for (const [payloadId, payload] of owner.drawingPayloads) {
@@ -551,7 +567,16 @@ export function validatePermutationMetadata(
       'row-permutation',
     )
     : undefined;
-  return { conditionalFormats, dataValidations, definedNames, templates, drawingPayloads, reportSheet };
+  return {
+    conditionalFormats,
+    dataValidations,
+    definedNames,
+    templates,
+    workbookTableSourceRanges,
+    dataSourceRanges,
+    drawingPayloads,
+    reportSheet,
+  };
 }
 
 export function applyRowPermutation(
@@ -607,6 +632,8 @@ export function applyRowPermutation(
       if (pivot.target.sheetId === sheet.id && inRange(range, pivot.target.anchor.row, pivot.target.anchor.column)) pivot.target.anchor.row = remapRow(pivot.target.anchor.row, plan);
     }
   }
+  for (const change of ownerChanges.workbookTableSourceRanges) change.owner.sourceRange = change.sourceRange;
+  for (const change of ownerChanges.dataSourceRanges) change.owner.sourceRange = change.sourceRange;
   sheet.spillRanges.splice(0, sheet.spillRanges.length, ...sheet.spillRanges.map((spill) => remapSpill(spill, plan)));
   sheet.conditionalFormats.splice(0, sheet.conditionalFormats.length, ...ownerChanges.conditionalFormats);
   sheet.dataValidations.splice(0, sheet.dataValidations.length, ...ownerChanges.dataValidations);

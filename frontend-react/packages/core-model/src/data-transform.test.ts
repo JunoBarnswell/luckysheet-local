@@ -209,6 +209,92 @@ describe('canonical row permutation metadata plan', () => {
     assert.deepEqual(workbook.snapshot(), beforePivotRejection);
   });
 
+  it('moves workbook table and data-source source ranges with permuted source rows', () => {
+    const workbook = new WorkbookModel('permutation-data-model-ranges', 'Permutation data model ranges');
+    const sheet = workbook.getSheet('sheet-1');
+    sheet.rowCount = 4;
+    sheet.columnCount = 1;
+    for (const [row, value] of ['first', 'second', 'third', 'fourth'].entries()) {
+      sheet.cells.set(row, 0, { value });
+    }
+    const sourceRange = range(sheet.id, 0, 2, 0, 0);
+    workbook.addTable({
+      id: 'workbook-table',
+      name: 'Source rows',
+      sourceSheetId: sheet.id,
+      sourceRange: { ...sourceRange },
+      rowCount: 2,
+      fields: [{ id: 'value', name: 'Value', ordinal: 0, type: 'text' }],
+      blockSize: 128,
+      blocks: [],
+      revision: 0,
+    });
+    workbook.addDataSource({
+      schema: 'DataSourceManifest',
+      version: 1,
+      id: 'data-source',
+      name: 'Source rows',
+      kind: 'chunked-table',
+      sourceSheetId: sheet.id,
+      sourceRange: { ...sourceRange },
+      rowCount: 2,
+      fields: [{ id: 'value', name: 'Value', ordinal: 0, type: 'text' }],
+      blockRowCount: 65_536,
+      blocks: [{
+        id: 'block-1', dataSourceId: 'data-source', startRow: 0, rowCount: 2,
+        storageKey: 'block-1', checksum: 'a'.repeat(64), byteLength: 1,
+        encoding: 'columnar-v1', revision: 0,
+      }],
+      revision: 0,
+    });
+
+    applyPermutation(workbook, range(sheet.id, 0, 3, 0, 0), [3, 0, 1, 2]);
+
+    assert.deepEqual(workbook.getTable('workbook-table').sourceRange, range(sheet.id, 1, 3, 0, 0));
+    assert.deepEqual(workbook.getDataSource('data-source').sourceRange, range(sheet.id, 1, 3, 0, 0));
+    assert.equal(sheet.cells.get(1, 0)?.value, 'first');
+    assert.equal(sheet.cells.get(3, 0)?.value, 'third');
+  });
+
+  it('rejects split workbook table and data-source source ranges before changing cells', () => {
+    const createWorkbook = (id: string): WorkbookModel => {
+      const workbook = new WorkbookModel(id, id);
+      const sheet = workbook.getSheet('sheet-1');
+      sheet.rowCount = 4;
+      sheet.columnCount = 1;
+      sheet.cells.set(0, 0, { value: 'first' });
+      sheet.cells.set(1, 0, { value: 'second' });
+      sheet.cells.set(2, 0, { value: 'third' });
+      const sourceRange = range(sheet.id, 0, 2, 0, 0);
+      workbook.addTable({
+        id: 'workbook-table', name: 'Source rows', sourceSheetId: sheet.id,
+        sourceRange: { ...sourceRange }, rowCount: 2, fields: [], blockSize: 128, blocks: [], revision: 0,
+      });
+      workbook.addDataSource({
+        schema: 'DataSourceManifest', version: 1, id: 'data-source', name: 'Source rows', kind: 'chunked-table',
+        sourceSheetId: sheet.id, sourceRange: { ...sourceRange }, rowCount: 2,
+        fields: [{ id: 'value', name: 'Value', ordinal: 0, type: 'text' }], blockRowCount: 65_536,
+        blocks: [{ id: 'block-1', dataSourceId: 'data-source', startRow: 0, rowCount: 2, storageKey: 'block-1', checksum: 'a'.repeat(64), byteLength: 1, encoding: 'columnar-v1', revision: 0 }],
+        revision: 0,
+      });
+      return workbook;
+    };
+
+    for (const ownerKind of ['workbook-table', 'data-source'] as const) {
+      const workbook = createWorkbook(`permutation-split-${ownerKind}`);
+      if (ownerKind === 'workbook-table') workbook.removeDataSource('data-source');
+      else workbook.removeTable('workbook-table');
+      const before = workbook.snapshot();
+      const sheet = workbook.getSheet('sheet-1');
+
+      assert.throws(
+        () => applyPermutation(workbook, range(sheet.id, 0, 3, 0, 0), [2, 0, 3, 1]),
+        /cannot exactly remap/,
+      );
+      assert.deepEqual(workbook.snapshot(), before);
+    }
+  });
+
   it('rejects a row permutation whose metadata scope overstates the canonical owner extent', () => {
     const workbook = new WorkbookModel('permutation-overstated-scope', 'Permutation overstated scope');
     const sheet = workbook.getSheet('sheet-1');
