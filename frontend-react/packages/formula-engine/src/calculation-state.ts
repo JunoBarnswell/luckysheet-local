@@ -137,17 +137,16 @@ function isFormulaCellInputSnapshot(value: unknown): value is FormulaCellInputSn
 }
 
 function isFormulaSpillSpaceSnapshot(value: unknown): value is FormulaSpillSpaceSnapshot {
-  return isRecord(value)
-    && typeof value.sheetId === 'string'
-    && value.sheetId.length > 0
-    && isNonNegativeInteger(value.rowCount)
+  if (!isRecord(value) || typeof value.sheetId !== 'string' || value.sheetId.length === 0) return false;
+  const sheetId = value.sheetId;
+  return isNonNegativeInteger(value.rowCount)
     && isNonNegativeInteger(value.columnCount)
     && Array.isArray(value.occupied)
-    && value.occupied.every((address) => isCellAddress(address) && address.sheetId === value.sheetId)
+    && value.occupied.every((address) => isCellAddress(address) && address.sheetId === sheetId)
     && Array.isArray(value.blockedRanges)
     && value.blockedRanges.every(isSpillBlockerRange)
     && Array.isArray(value.spills)
-    && value.spills.every((spill) => isResolvedSpillSnapshot(spill, value.sheetId));
+    && value.spills.every((spill) => isResolvedSpillSnapshot(spill, sheetId));
 }
 
 function isSpillBlockerRange(value: unknown): value is SpillBlockerRange {
