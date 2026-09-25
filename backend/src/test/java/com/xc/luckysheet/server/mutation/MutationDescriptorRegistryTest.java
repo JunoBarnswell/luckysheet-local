@@ -1701,7 +1701,7 @@ class MutationDescriptorRegistryTest {
                   {"name":"OtherRelative","formula":"=A2","scope":"workbook","anchor":{"sheetId":"sheet-2","row":1,"column":0}},
                   {"name":"LocalAnchor","formula":"=A2","scope":"workbook","anchor":{"sheetId":"sheet-1","row":3,"column":0}},
                   {"name":"SheetScopedReference","formula":"=Sheet1!A2","scope":"sheet","sheetId":"sheet-2","anchor":{"sheetId":"sheet-2","row":1,"column":0}}],"sheets":[
-                  {"id":"sheet-1","name":"Sheet1","rowCount":5,"columnCount":3,"cells":{"0":{"0":{"value":null,"formula":"=A2"}},"1":{"0":{"value":10}}},"pane":{"kind":"frozen","xSplit":0,"ySplit":1,"startRow":1,"startColumn":0},"defaultRowHeightPx":20,"defaultColumnWidthPx":64,"hiddenRows":[1],"rowHeightsPx":{"1":33},"merges":[],"conditionalFormats":[],"dataValidations":[],"pivots":[],"sparklines":[],"drawings":[],"drawingPayloads":{},"sheetTables":[],"review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}},"spillRanges":[],"protectionRules":[]},
+                  {"id":"sheet-1","name":"Sheet1","rowCount":5,"columnCount":3,"cells":{"0":{"0":{"value":null,"formula":"=A2"}},"1":{"0":{"value":10}}},"pane":{"kind":"frozen","state":"frozen","xSplit":0,"ySplit":1,"startRow":1,"startColumn":0},"defaultRowHeightPx":20,"defaultColumnWidthPx":64,"hiddenRows":[1],"rowHeightsPx":{"1":33},"merges":[],"conditionalFormats":[],"dataValidations":[],"pivots":[],"sparklines":[],"drawings":[],"drawingPayloads":{},"sheetTables":[],"review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}},"spillRanges":[],"protectionRules":[]},
                   {"id":"sheet-2","name":"Other","rowCount":5,"columnCount":3,"cells":{"0":{"0":{"value":null,"formula":"=Sheet1!A2"}}},"pane":{"kind":"none"},"defaultRowHeightPx":20,"defaultColumnWidthPx":64,"review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}}}
                 ]}
                 """);
@@ -1884,7 +1884,7 @@ class MutationDescriptorRegistryTest {
                 mapper.readTree("{\"sheetId\":\"sheet-1\",\"at\":0,\"count\":1}"));
 
         ServiceException error = assertThrows(ServiceException.class,
-                () -> descriptor.applyWithPatch(overflow, insertion));
+                () -> new StructuralMutationDescriptor("rows.inserted").applyWithPatch(overflow, insertion));
 
         assertEquals("VALIDATION_ERROR", error.code());
         assertEquals(overflowBefore, overflow);

@@ -1014,3 +1014,18 @@ head `1d8508ea` 的两个后端 CI 已通过 test-compile，随后在 `sheetRena
 推送后自动 CI 两个 job 均在前端 TypeScript 检查同样失败：用于故意构造无效快照的测试变量被窄化为 `Record<string, any>`，未在调用静态 validator/fromSnapshot 前恢复 `WorkbookSnapshot` 类型。已在这些负例调用点显式加边界 cast；依据 CI 日志静态修复，未本地运行编译或测试，等待新 head CI。
 
 已修复该切片：FormulaEngine 与 WorkbookModel 批量替换、TS/Java 快照 ingress 对重复 identity fail-close；sheet-scoped name key 在所有求值与引用索引处都对 name 大小写不敏感、对 sheetId 精确区分；`definedNames` 派生投影校验 canonical shape、唯一性和与 models 的一致性，Java mutation 对大小写变更执行同步清理/更新，TS/OOXML 投影保留 `__proto__` own key；TS/Java 校验对齐 ECMAScript trim 边界空白。新增 TS/Java 成功与拒绝路径测试源码，覆盖同名不同 scope 可并存、大小写不同的 sheet ID 独立求值、identity 冲突、缺失 worksheet、投影同步与 fail-close；按本轮要求未执行测试、构建、lint 或 UI。只做静态源码审查与 diff 检查。历史中若存在重复定义，无法从被静默覆盖后的公式行为推断原作者意图；不自动删除/合并任一项，严格 ingress 会 fail-close，需从用户确认的备份恢复后再迁移。StructuralPatch v2、历史迁移与完整整改仍未完成。
+
+### 六轮自审复核 — StructuralPatch 定义名称 owner 缺口与 CI 负例（2026-09-26，HEAD `489359a3`）
+
+本轮按用户要求进行了六轮独立边界复核；每轮均回到实际生产路径，不把同一结论重复计作多个不同缺陷：
+
+1. **协议入口**：`protocol.validateStructuralPatch` 只接受 v1 的精确字段集合和 `formulaOwnerDeltas`。`StructuralDefinedNameOwnerDelta` 虽已存在于 core-model，却不在共享提交合同内；名称公式/anchor 前后态无法由服务端提交协议表达。
+2. **服务端归约**：`StructuralSnapshotReducer` 的轴变换、单元格带移动、行置换会改写 `definedNameModels`，而 patch 构造器只返回公式 owner delta。快照结果因此含名称变化，patch 却无法描述这些变化；这是服务端提交、差异校验与逆变换的真实缺口。
+3. **协作传输**：`collaboration-session` 在重复 ACK 与新远端操作两条路径均只复制 `formulaOwnerDeltas`。客户端虽有 defined-name replay/precondition 支持，但服务端提交数据没有进入该路径，远端结果不能依赖同一份名称 owner 前后态。
+4. **Undo/Redo**：`WorkbookOperationService.inverseStructuralPatch` 仅反转公式 delta；本地 `command-runtime` 已有名称 owner delta 的历史处理。对于删除/位移导致 anchor 归并或公式变换的操作，两端撤销语义缺少统一的名称逆 patch。
+5. **历史重放**：`MutationDescriptorRegistry.applyCommittedMutations` 将存储 patch 与当前 reducer 结果精确比较；`WorkbookOperationService` 从 checkpoint 加连续 operation log 重放。因而提升 patch 版本不能保留旧 patch 的运行时兜底，也不能只改线上新写入；必须在迁移边界验证 revision-0 基线、连续日志、每个中间 checkpoint 与当前快照，再重写历史 patch。
+6. **outbox**：已应用的 repeatable Java migration 会直接改写 `operation_log.envelope_json` 和未发布 `coordination_outbox.payload_json`；发布器随后按持久化 row 原样发出。schema 升级必须在同一迁移边界同步重建未发布事件，且对缺失日志、checkpoint 不一致或无法确定 inverse target fail-close。
+
+**修复方案**：一次性提升为严格 StructuralPatch v2，增加身份明确的 defined-name owner before/after（公式与 anchor）并在 TypeScript/Java 校验、reducer、impact、collaboration、Undo/Redo 与 remote replay 中使用同一合同；历史迁移从已验证的 revision-0 checkpoint 按连续 revision 重放并派生 v2 patch，同时核验中间 checkpoints/current snapshot、改写 operation log 和 unpublished outbox。迁移遇到缺失连续性、不可验证快照或模糊 undo target 必须中止，不允许 v1 fallback。此架构纵切仍在实现中，不能将本轮两处夹具修复误报为该缺口已解决。
+
+本轮远程 CI 另确认两条测试源码问题：一条结构行变换 fixture 缺少 canonical pane 必需的 `state`；另一条越界插入负例误用 `rows.deleted` descriptor，因而并未执行所声称的插入。已分别补齐 `state: "frozen"` 并使用 `rows.inserted` descriptor。只基于 CI 失败输出与静态源码修复；未运行本地测试、构建、lint 或 UI。
