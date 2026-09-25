@@ -665,6 +665,23 @@ describe('exchange-excel-ooxml', () => {
     const controlExport = await exportOoxmlDocument({ snapshot: workbook.snapshot(), fileName: 'native-controls.xlsx', options: { compatibilityTarget: 'B' } });
     assert.equal(controlExport.report.issues.some((issue) => issue.feature === 'images' && issue.status === 'unsupported'), false);
 
+    const importedDocument = await importOoxmlDocument({
+      fileName: 'native-controls.xlsx',
+      buffer: zipOpcPartsBuffer(output.packageGraph.parts),
+      options: { compatibilityTarget: 'B', compatibilityMode: 'balanced' },
+    });
+    const editedControlSnapshot = structuredClone(importedDocument.snapshot);
+    editedControlSnapshot.name = 'Edited native controls';
+    const regeneratedControls = await exportOoxmlDocument({
+      snapshot: editedControlSnapshot,
+      artifact: importedDocument.artifact,
+      fileName: 'native-controls.xlsx',
+      options: { compatibilityTarget: 'B' },
+    });
+    const regeneratedWorksheet = strFromU8(loadOpcPackageGraph(regeneratedControls.buffer).files['xl/worksheets/sheet1.xml']!);
+    assert.match(regeneratedWorksheet, /slicerList/);
+    assert.match(regeneratedWorksheet, /timelineRefs/);
+
     const withoutControls = structuredClone(imported);
     const controlSheet = withoutControls.sheets[0]!;
     const controlDrawingIds = new Set(controlSheet.drawings.filter((drawing) => drawing.kind === 'slicer' || drawing.kind === 'timeline').map((drawing) => drawing.id));
@@ -1445,6 +1462,74 @@ describe('exchange-excel-ooxml', () => {
         snapshot: extensionEditedSnapshot,
         artifact: extensionImport.artifact,
         fileName: 'unknown-worksheet-extension.xlsx',
+        options: { compatibilityTarget: 'B' },
+      }),
+      (error: unknown) => error instanceof Error && error.message.includes('NATIVE_DOCUMENT_UNCHANGED_SAVE_REQUIRED'),
+    );
+  });
+
+  it('regenerates canonically owned sparkline extensions and rejects unowned children', async () => {
+    const workbook = new WorkbookModel('wb-owned-sparkline-extension', 'Owned sparkline extension');
+    const sheet = workbook.getSheet(workbook.primarySheetId);
+    sheet.cells.set(0, 0, { value: 1 });
+    sheet.cells.set(0, 1, { value: 2 });
+    sheet.sparklines.push({
+      id: 'spark-owned-extension',
+      sheetId: sheet.id,
+      anchor: { row: 0, column: 2 },
+      sourceRange: { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 1 },
+      type: 'line',
+      color: '#2563eb',
+    });
+    const generated = loadOpcPackageGraph(exportSnapshotToOoxmlBuffer(workbook.snapshot()));
+    const worksheetPart = generated.packageGraph.sheetPartById[sheet.id]!;
+    const imported = await importOoxmlDocument({
+      fileName: 'owned-sparkline-extension.xlsx',
+      buffer: zipOpcPartsBuffer(generated.packageGraph.parts),
+      options: { compatibilityTarget: 'B', compatibilityMode: 'balanced' },
+    });
+
+    const editedSnapshot = structuredClone(imported.snapshot);
+    editedSnapshot.name = 'Regenerated owned sparkline extension';
+    const regenerated = await exportOoxmlDocument({
+      snapshot: editedSnapshot,
+      artifact: imported.artifact,
+      fileName: 'owned-sparkline-extension.xlsx',
+      options: { compatibilityTarget: 'B' },
+    });
+    assert.match(strFromU8(loadOpcPackageGraph(regenerated.buffer).files[worksheetPart]!), /sparklineGroups/);
+
+    const removedSnapshot = structuredClone(imported.snapshot);
+    removedSnapshot.name = 'Removed owned sparkline extension';
+    removedSnapshot.sheets[0]!.sparklines = [];
+    removedSnapshot.sheets[0]!.sparklineGroups = [];
+    const removed = await exportOoxmlDocument({
+      snapshot: removedSnapshot,
+      artifact: imported.artifact,
+      fileName: 'owned-sparkline-extension.xlsx',
+      options: { compatibilityTarget: 'B' },
+    });
+    assert.doesNotMatch(strFromU8(loadOpcPackageGraph(removed.buffer).files[worksheetPart]!), /sparklineGroups/);
+
+    const unsupported = loadOpcPackageGraph(zipOpcPartsBuffer(generated.packageGraph.parts));
+    unsupported.packageGraph.parts[worksheetPart] = strToU8(
+      strFromU8(unsupported.packageGraph.parts[worksheetPart]!).replace(
+        '</x14:sparklineGroups>',
+        '<x14:futureSparklineBehavior/></x14:sparklineGroups>',
+      ),
+    );
+    const unsupportedImport = await importOoxmlDocument({
+      fileName: 'unowned-sparkline-extension.xlsx',
+      buffer: zipOpcPartsBuffer(unsupported.packageGraph.parts),
+      options: { compatibilityTarget: 'B', compatibilityMode: 'balanced' },
+    });
+    const unsupportedSnapshot = structuredClone(unsupportedImport.snapshot);
+    unsupportedSnapshot.name = 'Edited unowned sparkline extension';
+    await assert.rejects(
+      () => exportOoxmlDocument({
+        snapshot: unsupportedSnapshot,
+        artifact: unsupportedImport.artifact,
+        fileName: 'unowned-sparkline-extension.xlsx',
         options: { compatibilityTarget: 'B' },
       }),
       (error: unknown) => error instanceof Error && error.message.includes('NATIVE_DOCUMENT_UNCHANGED_SAVE_REQUIRED'),

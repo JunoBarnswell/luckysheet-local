@@ -61,6 +61,7 @@ import {
 import { mapNativePivotDefinition, readNativePivotGraph, serializeNativePivotCaches, synchronizeNativePivotPackage } from './native-pivot';
 import { projectNativeCharts, readNativeChartGraph, synchronizeNativePivotCharts } from './native-chart';
 import type { NativePivotControlDefinition, NativePivotGraph } from './types';
+import { isCanonicallyOwnedNativeControlExtension, isCanonicallyOwnedSparklineExtension } from './capability-manifest';
 import { builtInNumberFormat, builtInNumberFormatId, collectCustomNumberFormatIds, numberFormatCodeFromSpec } from './native-number-format';
 import { canonicalDateToSerial, isExcelDateFormat, parseDateSystem, serialToCanonicalDate } from './date-system';
 
@@ -387,6 +388,9 @@ export function exportSnapshotToOpcPackageGraph(
   }
   const sourceFiles = preserved?.parts ?? {};
   const workbookPart = preserved?.workbookPart ?? 'xl/workbook.xml';
+  const sourceWorksheetNames = preserved?.parts[workbookPart]
+    ? readWorkbookSheetNames(preserved.parts[workbookPart]!)
+    : new Set(snapshot.sheets.map((sheet) => sheet.name));
   const workbookRelationships = options.preserveMacros === false
     ? filterMacroRelationships(workbookPart, preserved?.relationships[workbookPart] ?? [], preserved)
     : preserved?.relationships[workbookPart] ?? [];
@@ -441,7 +445,7 @@ export function exportSnapshotToOpcPackageGraph(
       [...requiredHyperlinks, ...tableParts.required],
     );
     sheetRelationships[part] = relationships;
-    files.set(part, strToU8(buildWorksheetXml(sheet, part, relationships, originalRoot, files, styleIndexes, differentialStyleIndexes, snapshot.dimensionMetrics.maximumDigitWidthPx, options.includeCachedValues ?? true, options.dateSystem, nativeUpdate.displayCellsBySheetPart[part], nativeUpdate.graph.controls ?? [], snapshot.printDocuments?.find((document) => document.sheetId === sheet.id), new Map(snapshot.sheets.map((entry) => [entry.id, entry.name])), sheet.sparklines, sheet.sparklineGroups ?? [])));
+    files.set(part, strToU8(buildWorksheetXml(sheet, part, relationships, originalRoot, files, styleIndexes, differentialStyleIndexes, snapshot.dimensionMetrics.maximumDigitWidthPx, options.includeCachedValues ?? true, options.dateSystem, nativeUpdate.displayCellsBySheetPart[part], nativeUpdate.graph.controls ?? [], snapshot.printDocuments?.find((document) => document.sheetId === sheet.id), new Map(snapshot.sheets.map((entry) => [entry.id, entry.name])), sheet.sparklines, sheet.sparklineGroups ?? [], sourceWorksheetNames, preserved?.nativePivotGraph?.controls?.filter((control) => control.sheetPart === part) ?? [])));
   }
 
   const workbookRelationsSource = nativeUpdate.relationships[workbookPart] ?? workbookRelationships;
@@ -1737,6 +1741,8 @@ function buildWorksheetXml(
   sheetNames: ReadonlyMap<string, string> = new Map(),
   sparklines: SheetSnapshot['sparklines'] = [],
   sparklineGroups: NonNullable<SheetSnapshot['sparklineGroups']> = [],
+  sourceWorksheetNames: ReadonlySet<string> = new Set(sheetNames.values()),
+  sourceNativeControls: NativePivotControlDefinition[] = nativeControls,
 ): string {
   validateOoxmlExchangeBoundary(sheet);
   let xml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="${NS_MAIN}" xmlns:r="${NS_DOC_REL}">`;
@@ -1839,10 +1845,10 @@ function buildWorksheetXml(
       if (node) xml += serializeXml(node);
     }
     const extension = preservedNodes.get('extLst');
-    if (extension) xml += serializeWorksheetControlExtensions(extension, nativeControls.filter((control) => control.sheetPart === sourcePart), sparklines, sparklineGroups, sheetNames);
-    else if (nativeControls.some((control) => control.sheetPart === sourcePart && control.valid) || sparklines.length > 0) xml += serializeWorksheetControlExtensions(undefined, nativeControls.filter((control) => control.sheetPart === sourcePart), sparklines, sparklineGroups, sheetNames);
+    if (extension) xml += serializeWorksheetControlExtensions(extension, nativeControls.filter((control) => control.sheetPart === sourcePart), sparklines, sparklineGroups, sheetNames, sourceWorksheetNames, sourceNativeControls);
+    else if (nativeControls.some((control) => control.sheetPart === sourcePart && control.valid) || sparklines.length > 0) xml += serializeWorksheetControlExtensions(undefined, nativeControls.filter((control) => control.sheetPart === sourcePart), sparklines, sparklineGroups, sheetNames, sourceWorksheetNames, sourceNativeControls);
   } else if (nativeControls.some((control) => control.sheetPart === sourcePart && control.valid) || sparklines.length > 0) {
-    xml += serializeWorksheetControlExtensions(undefined, nativeControls.filter((control) => control.sheetPart === sourcePart), sparklines, sparklineGroups, sheetNames);
+    xml += serializeWorksheetControlExtensions(undefined, nativeControls.filter((control) => control.sheetPart === sourcePart), sparklines, sparklineGroups, sheetNames, sourceWorksheetNames, sourceNativeControls);
   }
   xml += '</worksheet>';
   return xml;
@@ -2073,15 +2079,14 @@ function outlineLevelAt(outline: OutlineModel | undefined, axis: 'row' | 'column
   return { level: Math.max(...matches.map((group) => group.level)), collapsed: matches.some((group) => group.collapsed) };
 }
 
-function serializeWorksheetControlExtensions(original: XmlNode | undefined, controls: NativePivotControlDefinition[], sparklines: SheetSnapshot['sparklines'] = [], sparklineGroups: NonNullable<SheetSnapshot['sparklineGroups']> = [], sheetNames: ReadonlyMap<string, string> = new Map()): string {
+function serializeWorksheetControlExtensions(original: XmlNode | undefined, controls: NativePivotControlDefinition[], sparklines: SheetSnapshot['sparklines'] = [], sparklineGroups: NonNullable<SheetSnapshot['sparklineGroups']> = [], sheetNames: ReadonlyMap<string, string> = new Map(), sourceWorksheetNames: ReadonlySet<string> = new Set(sheetNames.values()), sourceNativeControls: NativePivotControlDefinition[] = controls): string {
   const root = original ? structuredClone(original) : firstElement(parseXml('<extLst/>'), 'extLst');
-  if (!controls.some((control) => !control.valid)) {
-    root.children = root.children.flatMap((extension) => {
-      const hasNativeControl = descendants(extension, 'slicerList').length > 0 || descendants(extension, 'timelineRefs').length > 0;
-      const hasNativeSparklines = descendants(extension, 'sparklineGroups').length > 0;
-      return hasNativeControl || (hasNativeSparklines && sparklines.length > 0) ? [] : [extension];
-    });
-  }
+  root.children = root.children.flatMap((extension) => {
+    const hasOwnedNativeControl = isCanonicallyOwnedNativeControlExtension(extension, sourceNativeControls);
+    const hasOwnedSparklines = isCanonicallyOwnedSparklineExtension(extension, sourceWorksheetNames);
+    if (hasOwnedNativeControl || hasOwnedSparklines) return [];
+    return [extension];
+  });
   const slicers = controls.filter((control) => control.kind === 'slicer' && control.valid && control.relationshipId);
   const timelines = controls.filter((control) => control.kind === 'timeline' && control.valid && control.relationshipId);
   if (slicers.length) {
@@ -3020,6 +3025,11 @@ function readSheetPartMap(files: Record<string, Uint8Array>, relationships: Reco
     map[id] = relation ? resolveTarget(workbookPart, relation.target) : resolveTarget(workbookPart, `worksheets/sheet${index + 1}.xml`);
   });
   return map;
+}
+
+function readWorkbookSheetNames(workbookBytes: Uint8Array): ReadonlySet<string> {
+  const workbook = firstElement(parseXml(strFromU8(workbookBytes)), 'workbook');
+  return new Set(children(child(workbook, 'sheets'), 'sheet').flatMap((node) => node.attrs.name ? [node.attrs.name] : []));
 }
 
 function firstElement(root: XmlNode, name: string): XmlNode {
