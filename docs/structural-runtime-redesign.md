@@ -1011,4 +1011,6 @@ head `1d8508ea` 的两个后端 CI 已通过 test-compile，随后在 `sheetRena
 
 第十轮继续追查 `FormulaEngine` 的真实读写索引，确认其内部 `definedNameIdentity` 与 `findDefinedName` 仍将 worksheet ID 大小写折叠；仅修正 normalizer 并不能阻止后续 Map 覆盖或跨表误读。内部 key 与查找现改为精确 sheetId，新增两个大小写不同 worksheet 上同名 local name 的独立求值用例源码；未运行测试。
 
+推送后自动 CI 两个 job 均在前端 TypeScript 检查同样失败：用于故意构造无效快照的测试变量被窄化为 `Record<string, any>`，未在调用静态 validator/fromSnapshot 前恢复 `WorkbookSnapshot` 类型。已在这些负例调用点显式加边界 cast；依据 CI 日志静态修复，未本地运行编译或测试，等待新 head CI。
+
 已修复该切片：FormulaEngine 与 WorkbookModel 批量替换、TS/Java 快照 ingress 对重复 identity fail-close；sheet-scoped name key 在所有求值与引用索引处都对 name 大小写不敏感、对 sheetId 精确区分；`definedNames` 派生投影校验 canonical shape、唯一性和与 models 的一致性，Java mutation 对大小写变更执行同步清理/更新，TS/OOXML 投影保留 `__proto__` own key；TS/Java 校验对齐 ECMAScript trim 边界空白。新增 TS/Java 成功与拒绝路径测试源码，覆盖同名不同 scope 可并存、大小写不同的 sheet ID 独立求值、identity 冲突、缺失 worksheet、投影同步与 fail-close；按本轮要求未执行测试、构建、lint 或 UI。只做静态源码审查与 diff 检查。历史中若存在重复定义，无法从被静默覆盖后的公式行为推断原作者意图；不自动删除/合并任一项，严格 ingress 会 fail-close，需从用户确认的备份恢复后再迁移。StructuralPatch v2、历史迁移与完整整改仍未完成。

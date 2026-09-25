@@ -12,7 +12,7 @@ import {
   WorkbookModel,
   WorksheetModel,
 } from './index';
-import { assertCanonicalWorkbookSnapshot, migrateStoredWorkbookSnapshot } from './snapshot';
+import { assertCanonicalWorkbookSnapshot, migrateStoredWorkbookSnapshot, type WorkbookSnapshot } from './snapshot';
 
 test('canonical workbook snapshots reject malformed or unowned pane fields', () => {
   const panes = [
@@ -23,8 +23,8 @@ test('canonical workbook snapshots reject malformed or unowned pane fields', () 
   for (const pane of panes) {
     const candidate = structuredClone(new WorkbookModel('unit-pane-snapshot-validation', 'Pane snapshot').snapshot()) as unknown as Record<string, any>;
     candidate.sheets[0].pane = pane;
-    assert.throws(() => assertCanonicalWorkbookSnapshot(candidate), /Workbook snapshot pane/);
-    assert.throws(() => WorkbookModel.fromSnapshot(candidate), /Workbook snapshot pane/);
+    assert.throws(() => assertCanonicalWorkbookSnapshot(candidate as unknown as WorkbookSnapshot), /Workbook snapshot pane/);
+    assert.throws(() => WorkbookModel.fromSnapshot(candidate as unknown as WorkbookSnapshot), /Workbook snapshot pane/);
   }
 });
 
@@ -55,7 +55,7 @@ test('canonical snapshots and model replacement reject duplicate defined-name ow
   const legacyProjection = structuredClone(workbook.snapshot()) as unknown as Record<string, any>;
   delete legacyProjection.definedNameModels;
   legacyProjection.definedNames = { TaxRate: '0.1', taxrate: '0.2' };
-  assert.throws(() => assertCanonicalWorkbookSnapshot(legacyProjection), /definedNames projection contains duplicate identity/);
+  assert.throws(() => assertCanonicalWorkbookSnapshot(legacyProjection as unknown as WorkbookSnapshot), /definedNames projection contains duplicate identity/);
 
   const staleProjection = structuredClone(workbook.snapshot());
   staleProjection.definedNameModels = [];
