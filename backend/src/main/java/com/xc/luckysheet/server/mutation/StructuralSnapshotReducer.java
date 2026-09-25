@@ -139,7 +139,8 @@ final class StructuralSnapshotReducer {
                 if (Objects.equals(formula, beforeState.formula())
                         && Objects.equals(sourceFormula, beforeState.sourceFormula())
                         && Objects.equals(barcodeFormula, beforeState.barcodeFormula())) return;
-                if (hasFormulaGroupMetadata(cell)) {
+                if (hasFormulaGroupMetadata(cell)
+                        && !rewritesOnlyPreservedDataTableSource(cell, beforeState, formula, sourceFormula, barcodeFormula)) {
                     throw ServiceException.unavailable("UNSUPPORTED_STRUCTURAL_REFERENCE: formula group at "
                             + ownerSheetId + "!" + entry.row() + ":" + entry.column()
                             + " requires an explicit table-reference transform");
@@ -3381,6 +3382,22 @@ final class StructuralSnapshotReducer {
         return metadata.path("preservedOnly").asBoolean(false)
                 || !"normal".equals(metadata.path("kind").asText())
                 || (metadata.has("range") && !metadata.path("range").isNull());
+    }
+
+    private static boolean rewritesOnlyPreservedDataTableSource(
+            ObjectNode cell,
+            StructuralPatch.FormulaOwnerState before,
+            String formula,
+            String sourceFormula,
+            String barcodeFormula
+    ) {
+        JsonNode metadata = cell.get("formulaMetadata");
+        return metadata != null && metadata.isObject()
+                && "dataTable".equals(metadata.path("kind").asText())
+                && metadata.path("preservedOnly").asBoolean(false)
+                && before.formula() == null && formula == null
+                && before.sourceFormula() != null && !Objects.equals(sourceFormula, before.sourceFormula())
+                && Objects.equals(barcodeFormula, before.barcodeFormula());
     }
 
     private static void remapPermutedFormulaOwner(ObjectNode cell, int rowDelta, String sheetId, int row, int column) {

@@ -54,7 +54,7 @@ class MutationDescriptorRegistryTest {
                 {"sheets":[
                   {"id":"sheet-1","rowCount":20,"columnCount":10,
                    "cells":{"0":{"0":{"value":null,"formula":"=SUM(Sales[Amount])+Sales [Other]+ÅSales[Amount]+[Book.xlsx]Sales[Amount]+IF(A1=\\"Sales[Amount]\\",0,1)"},
-                     "1":{"value":null,"formulaMetadata":{"kind":"dataTable","preservedOnly":true,"sourceFormula":"=Sales[Amount]"}}}},
+                     "1":{"value":null,"formulaMetadata":{"kind":"dataTable","range":"B1:B2","preservedOnly":true,"sourceFormula":"=Sales[Amount]"}}}},
                    "sheetTables":[{"id":"sales-table","sheetId":"sheet-1","name":"Sales",
                      "range":{"sheetId":"sheet-1","startRow":0,"endRow":4,"startColumn":0,"endColumn":1},
                      "hasHeaderRow":true,"hasTotalRow":false,"showBandedRows":true,"showBandedColumns":false,
@@ -76,6 +76,8 @@ class MutationDescriptorRegistryTest {
                 application.snapshot().path("sheets").get(0).path("cells").path("0").path("0").path("formula").asText());
         assertEquals("=Orders[Amount]", application.snapshot().path("sheets").get(0)
                 .path("cells").path("0").path("1").path("formulaMetadata").path("sourceFormula").asText());
+        assertEquals("B1:B2", application.snapshot().path("sheets").get(0)
+                .path("cells").path("0").path("1").path("formulaMetadata").path("range").asText());
         assertEquals("=Orders[Amount]",
                 application.snapshot().path("sheets").get(1).path("cells").path("0").path("0").path("formula").asText());
         assertEquals(original, snapshot);
@@ -94,6 +96,19 @@ class MutationDescriptorRegistryTest {
                 () -> registry.require("sheetTable.update", false).applyWithPatch(malformed, rename));
         assertEquals("SERVICE_UNAVAILABLE", error.code());
         assertEquals(malformedOriginal, malformed);
+
+        ObjectNode grouped = snapshot.deepCopy();
+        ObjectNode groupedCells = (ObjectNode) grouped.path("sheets").get(0).path("cells");
+        ObjectNode groupedCell = groupedCells.putObject("2").putObject("0");
+        groupedCell.put("formula", "=Sales[Amount]");
+        groupedCell.putObject("formulaMetadata")
+                .put("kind", "shared").put("sharedIndex", 7).put("sharedMaster", true)
+                .put("range", "A3:A4").put("sourceFormula", "=Sales[Amount]");
+        JsonNode groupedOriginal = grouped.deepCopy();
+        ServiceException groupedError = assertThrows(ServiceException.class,
+                () -> registry.require("sheetTable.update", false).applyWithPatch(grouped, rename));
+        assertEquals("SERVICE_UNAVAILABLE", groupedError.code());
+        assertEquals(groupedOriginal, grouped);
     }
 
     @Test

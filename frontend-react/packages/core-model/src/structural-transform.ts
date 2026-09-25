@@ -2542,14 +2542,20 @@ export function planSheetTableRename(
       const sourceFormula = cell.formulaMetadata?.sourceFormula === undefined
         ? undefined
         : mapFormula(cell.formulaMetadata.sourceFormula);
-      const barcodeFormula = cell.presentation?.kind === 'barcode' && cell.presentation.source.kind === 'formula'
-        ? mapFormula(cell.presentation.source.formula)
+      const currentBarcodeFormula = cell.presentation?.kind === 'barcode' && cell.presentation.source.kind === 'formula'
+        ? cell.presentation.source.formula
         : undefined;
+      const barcodeFormula = currentBarcodeFormula === undefined ? undefined : mapFormula(currentBarcodeFormula);
       if (formula === cell.formula && sourceFormula === cell.formulaMetadata?.sourceFormula
-        && barcodeFormula === (cell.presentation?.kind === 'barcode' && cell.presentation.source.kind === 'formula'
-          ? cell.presentation.source.formula
-          : undefined)) return;
-      if (hasFormulaGroupMetadata(cell)) {
+        && barcodeFormula === currentBarcodeFormula) return;
+      const rewritesOnlyPreservedDataTableSource = cell.formulaMetadata?.kind === 'dataTable'
+        && cell.formulaMetadata.preservedOnly === true
+        && cell.formula === undefined
+        && sourceFormula !== undefined
+        && sourceFormula !== cell.formulaMetadata.sourceFormula
+        && formula === undefined
+        && barcodeFormula === currentBarcodeFormula;
+      if (hasFormulaGroupMetadata(cell) && !rewritesOnlyPreservedDataTableSource) {
         throw new Error(`UNSUPPORTED_STRUCTURAL_REFERENCE: formula group at ${owner.sheetId}!${owner.row}:${owner.column} requires an explicit table-reference transform`);
       }
       cellChanges.push({

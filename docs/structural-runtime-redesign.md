@@ -1092,3 +1092,16 @@ PR 上两个 `canonical-build` job 使用相同 head，前端依赖安装与前�
 6. **坐标数值边界**：anchor row/column 读取调用了不存在的 `integer(JsonNode, String)`，且不能把小数、负数、超出 Excel 上界值传给 `CellAddress` 构造器后变成非业务异常。现显式要求整数并按 row/column 上界 fail-close，新增小数和越界拒绝测试源码。
 
 已修复 migration slot 泛型及 StructuralSnapshotReducer 的对象/坐标解析，补充 patchless slot 与 anchor 拒绝路径测试源码。只依据远端 CI 日志和源码契约静态修复，未运行本地测试或构建；head `327f88c5` 的远端检查已失败，修复提交后的远端重验仍待完成，整体目标继续开放。
+
+### 六轮静态自审 — Sheet Table rename 与保留型 data-table 来源公式（2026-09-26，head `9ffd4051`）
+
+六轮围绕同一个 CI 失败点逐层核对，并把同根因的客户端/服务端门禁作为一个问题记录：
+
+1. **CI 与失败夹具**：后端编译通过，Java 测试中仅 Sheet Table rename 断言失败；输入是 `kind=dataTable`、`preservedOnly=true` 且只有 `sourceFormula` 的 owner，失败确由通用公式组门禁触发。
+2. **OOXML 数据语义**：导入器将 Excel data-table 公式保存为 preserved-only provenance，`sourceFormula` 与 `range` 分开；本操作只对可识别 structured reference 的 table token 改名，不改 data-table range 或计算语义。
+3. **owner 枚举**：复核 `forEachFormulaOwner` 后确认其包括 provenance-only `sourceFormula`，因此 owner 遗漏不是缺陷，不作无证据修复。
+4. **TypeScript 规划器**：确认 `planSheetTableRename` 已得到完整 owner delta，但 `hasFormulaGroupMetadata` 不区分明确的 dataTable source-only 重写与需要组操作的 shared/array，造成真实的本地拒绝。
+5. **Java reducer**：独立沿 `renameSheetTableReferences` 复核同一宽门禁；这也是当前 CI 失败的服务端拒绝点，提交 patch 的 before/after state 本身可表达 sourceFormula。
+6. **提交、撤销与失败边界**：客户端命令应用及 Java patch setter 保留 metadata 其余字段并支持 inverse；现有 Java 用例覆盖 undo/redo。shared/array 仍须拒绝，结构公式解析失败仍须原子拒绝，worksheet rename 的 preserved-only 拒绝也保持不变。
+
+现仅允许 `preservedOnly dataTable` 且没有可执行公式、仅其来源公式因 table token 改名的窄场景；`range`、bar-code owner 和其他公式字段均不得随之改变。新增 shared-formula 拒绝路径源码，并强化 dataTable range 保持断言。只运行 `git diff --check` 作静态补丁检查；没有运行本地测试、构建、lint 或 UI。修复后的远端 CI 尚待新 head 验证，Structural Editing & Reference Integrity 总体目标仍继续开放。

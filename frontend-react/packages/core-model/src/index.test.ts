@@ -728,7 +728,7 @@ test('Sheet Table rename plans complete cell and preserved-source formula owner 
     '0': { '2': { value: null, formula: '=SUM(Sales[Amount])' } },
     '1': { '2': {
       value: null,
-      formulaMetadata: { kind: 'dataTable' as const, preservedOnly: true, sourceFormula: '=Sales[Amount]', reason: 'Native OOXML formula' },
+      formulaMetadata: { kind: 'dataTable' as const, range: 'C2:D4', preservedOnly: true, sourceFormula: '=Sales[Amount]', reason: 'Native OOXML formula' },
     } },
   };
   sheet.cells.deferJSON(deferredCells);
@@ -739,12 +739,35 @@ test('Sheet Table rename plans complete cell and preserved-source formula owner 
   const cells = sheet.cells.toJSON();
   assert.equal(cells['0']?.['2']?.formula, '=SUM(Orders[Amount])');
   assert.equal(cells['1']?.['2']?.formulaMetadata?.sourceFormula, '=Orders[Amount]');
+  assert.equal(cells['1']?.['2']?.formulaMetadata?.range, 'C2:D4');
   assert.equal(sheet.cells.isHydrated, false);
   assert.equal(deferredCells['0']?.['2']?.formula, '=SUM(Sales[Amount])');
   assert.equal(deferredCells['1']?.['2']?.formulaMetadata?.sourceFormula, '=Sales[Amount]');
   assert.equal(effect.formulaOwnerDeltas?.length, 2);
   assert.equal(effect.formulaOwnerDeltas?.[0]?.kind, 'formula-cell');
   assert.equal(effect.formulaOwnerDeltas?.[1]?.kind, 'formula-cell');
+});
+
+test('Sheet Table rename still rejects shared formula groups without changing their owner', () => {
+  const workbook = new WorkbookModel('sheet-table-rename-shared-formula', 'Sheet Table rename shared formula');
+  const sheet = workbook.getSheet('sheet-1');
+  sheet.sheetTables.push({
+    id: 'sales-table', sheetId: sheet.id, name: 'Sales',
+    range: { sheetId: sheet.id, startRow: 0, endRow: 1, startColumn: 0, endColumn: 1 },
+    hasHeaderRow: true, hasTotalRow: false, showBandedRows: false, showBandedColumns: false,
+    showFirstColumn: false, showLastColumn: false, showFilterButton: true, autoExpand: 'none',
+    columns: [{ id: 'sales-amount', name: 'Amount' }],
+  });
+  const owner = {
+    value: null,
+    formula: '=Sales[Amount]',
+    formulaMetadata: { kind: 'shared' as const, sharedIndex: 7, sharedMaster: true, range: 'C1:C2', sourceFormula: '=Sales[Amount]' },
+  };
+  sheet.cells.set(0, 2, owner);
+
+  assert.throws(() => planSheetTableRename(workbook, 'sales-table', 'Orders'), /formula group/);
+  assert.equal(sheet.sheetTables[0]?.name, 'Sales');
+  assert.deepEqual(sheet.cells.get(0, 2), owner);
 });
 
 test('sheet rename fails closed on a preserved-only formula reference without changing the workbook', () => {
