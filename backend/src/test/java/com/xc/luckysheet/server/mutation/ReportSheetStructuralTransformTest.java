@@ -43,7 +43,7 @@ class ReportSheetStructuralTransformTest {
     private ObjectNode snapshotWithReportBinding(int bindingRow) {
         ObjectNode snapshot = mapper.createObjectNode();
         ObjectNode sheet = snapshot.putArray("sheets").addObject();
-        sheet.put("id", "sheet-1").put("rowCount", 20).put("columnCount", 10);
+        sheet.put("id", "sheet-1").put("name", "Report").put("kind", "report-sheet").put("rowCount", 20).put("columnCount", 10);
         sheet.putObject("pane").put("kind", "none");
         sheet.putObject("cells");
         sheet.putArray("sheetTables");

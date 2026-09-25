@@ -46,13 +46,19 @@ export async function exportOoxmlDocument(request: NativeDocumentExportRequest):
   const unsafeWorksheetFeature = sourceWorksheetDetections.find((detection) => [
     'unknown-worksheet-node', 'unknown-extension', 'extended-validation', 'extended-conditional-format',
   ].includes(detection.feature));
-  if (unsafeWorksheetFeature && sourcePackage) {
+  const preservedOnlyChart = sourcePackage?.nativeChartGraph?.charts.find((chart) => !chart.editable)?.chartPart;
+  const indexedChartParts = new Set(sourcePackage?.nativeChartGraph?.charts.map((chart) => chart.chartPart) ?? []);
+  const unindexedOpaqueChart = sourcePackage
+    ? Object.keys(sourcePackage.opaqueParts).find((part) => part.toLowerCase().includes('/charts/') && !indexedChartParts.has(part))
+    : undefined;
+  const chartWithoutCanonicalOwner = preservedOnlyChart ?? unindexedOpaqueChart;
+  if (sourcePackage && (unsafeWorksheetFeature || chartWithoutCanonicalOwner)) {
     throw new NativeDocumentError({
       code: 'NATIVE_DOCUMENT_UNCHANGED_SAVE_REQUIRED',
-      message: 'The source worksheet contains an unsupported XML node or extension without a canonical reference owner; regenerating could discard it or leave references stale.',
+      message: 'The source contains an unsupported worksheet feature or chart without a canonical reference owner; regenerating could discard it or leave references stale.',
       format: sourcePackage.format,
-      location: unsafeWorksheetFeature.location,
-      recovery: 'Keep the original package unchanged, or explicitly convert/remove the unsupported worksheet feature before exporting.',
+      location: unsafeWorksheetFeature?.location ?? chartWithoutCanonicalOwner,
+      recovery: 'Keep the original package unchanged, or explicitly convert/remove the unsupported feature before exporting.',
     });
   }
   const targetFormat = ooxmlTargetFormat(request.fileName, sourcePackage);

@@ -1327,7 +1327,7 @@ describe('exchange-excel-ooxml', () => {
     assert.equal(cells['2']?.numberFormat, 'm/d/yy');
   });
 
-  it('preserves opaque chart/binary parts and relationships across an editable export', async () => {
+  it('preserves opaque chart/binary parts and relationships on an unchanged export', async () => {
     const workbook = new WorkbookModel('wb-preserve', 'Preserve');
     workbook.getSheet(workbook.primarySheetId).cells.set(0, 0, { value: 1 });
     const generated = loadOpcPackageGraph(exportSnapshotToOoxmlBuffer(workbook.snapshot()));
@@ -1341,18 +1341,46 @@ describe('exchange-excel-ooxml', () => {
       target: '../drawings/drawing1.xml',
     }];
     generated.packageGraph.parts['xl/worksheets/sheet1.xml'] = strToU8(strFromU8(generated.packageGraph.parts['xl/worksheets/sheet1.xml']!).replace('</worksheet>', '<drawing r:id="rIdChart" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"/></worksheet>'));
-    // Rebuild through the public package writer so this test exercises the
-    // same ZIP limits and relationship reader used by production imports.
+    // Repackage through the public ZIP writer so production import sees these
+    // parts and their relationship graph.
     const imported = await importOoxmlDocument({ fileName: 'opaque.xlsx', buffer: zipOpcPartsBuffer(generated.packageGraph.parts), options: { compatibilityTarget: 'B', preserveMacros: true } });
-    const editedSnapshot = structuredClone(imported.snapshot);
-    editedSnapshot.sheets[0]!.cells['0']!['0']!.value = 2;
-    const exported = await exportOoxmlDocument({ snapshot: editedSnapshot, artifact: imported.artifact, fileName: 'opaque.xlsx', options: { compatibilityTarget: 'B' } });
+    const exported = await exportOoxmlDocument({ snapshot: imported.snapshot, artifact: imported.artifact, fileName: 'opaque.xlsx', options: { compatibilityTarget: 'B' } });
     const restored = loadOpcPackageGraph(exported.buffer);
     assert.deepEqual([...restored.files['customXml/item1.bin']!], [0, 1, 2, 255]);
     assert.equal(strFromU8(restored.files['xl/charts/chart1.xml']!).includes('Keep'), true);
     assert.equal(strFromU8(restored.files['xl/worksheets/sheet1.xml']!).includes('rIdChart'), true);
     assert.equal(imported.report.issues.some((issue) => issue.feature === 'charts' && issue.preserved), true);
     assert.equal(exported.report.issues.some((issue) => issue.feature === 'charts' && issue.preserved), true);
+
+    const editedSnapshot = structuredClone(imported.snapshot);
+    editedSnapshot.sheets[0]!.cells['0']!['0']!.value = 2;
+    await assert.rejects(
+      () => exportOoxmlDocument({ snapshot: editedSnapshot, artifact: imported.artifact, fileName: 'opaque.xlsx', options: { compatibilityTarget: 'B' } }),
+      (error: unknown) => error instanceof Error && error.message.includes('NATIVE_DOCUMENT_UNCHANGED_SAVE_REQUIRED'),
+    );
+  });
+
+  it('preserves unrelated opaque package parts through a regenerated export', async () => {
+    const workbook = new WorkbookModel('wb-opaque-part-writer', 'Opaque part writer');
+    workbook.getSheet(workbook.primarySheetId).cells.set(0, 0, { value: 1 });
+    const generated = loadOpcPackageGraph(exportSnapshotToOoxmlBuffer(workbook.snapshot()));
+    generated.packageGraph.parts['customXml/item1.bin'] = Uint8Array.from([0, 1, 2, 255]);
+    const imported = await importOoxmlDocument({
+      fileName: 'opaque-part-writer.xlsx',
+      buffer: zipOpcPartsBuffer(generated.packageGraph.parts),
+      options: { compatibilityTarget: 'B' },
+    });
+    const editedSnapshot = structuredClone(imported.snapshot);
+    editedSnapshot.sheets[0]!.cells['0']!['0']!.value = 2;
+    const exported = await exportOoxmlDocument({
+      snapshot: editedSnapshot,
+      artifact: imported.artifact,
+      fileName: 'opaque-part-writer.xlsx',
+      options: { compatibilityTarget: 'B' },
+    });
+    const restored = loadOpcPackageGraph(exported.buffer);
+    assert.deepEqual([...restored.files['customXml/item1.bin']!], [0, 1, 2, 255]);
+    assert.match(strFromU8(restored.files['xl/worksheets/sheet1.xml']!), /<v>2<\/v>/);
   });
 
   it('keeps unsupported worksheet nodes and extensions on the source-byte path and rejects regeneration', async () => {
