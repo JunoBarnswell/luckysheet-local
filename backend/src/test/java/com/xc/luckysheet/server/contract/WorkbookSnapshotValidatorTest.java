@@ -216,6 +216,59 @@ class WorkbookSnapshotValidatorTest {
     }
 
     @Test
+    void validatesDefinedNameOwnerIdentityAndWorksheetScope() {
+        ObjectNode valid = snapshot();
+        ArrayNode definitions = valid.putArray("definedNameModels");
+        definitions.addObject().put("name", "TaxRate").put("formula", "0.1").put("scope", "workbook");
+        definitions.addObject().put("name", "TaxRate").put("formula", "0.2").put("scope", "sheet").put("sheetId", "sheet-1");
+        valid.putObject("definedNames").put("TaxRate", "0.1");
+        assertEquals(valid, WorkbookSnapshotValidator.requireCanonical(valid, "book-1"));
+
+        ObjectNode duplicate = snapshot();
+        ArrayNode duplicateDefinitions = duplicate.putArray("definedNameModels");
+        duplicateDefinitions.addObject().put("name", "TaxRate").put("formula", "0.1").put("scope", "workbook");
+        duplicateDefinitions.addObject().put("name", "taxrate").put("formula", "0.2").put("scope", "workbook");
+        ServiceException error = assertThrows(ServiceException.class,
+                () -> WorkbookSnapshotValidator.requireCanonical(duplicate, "book-1"));
+        assertEquals("VALIDATION_ERROR", error.code());
+
+        ObjectNode duplicateLocal = snapshot();
+        ArrayNode duplicateLocalDefinitions = duplicateLocal.putArray("definedNameModels");
+        duplicateLocalDefinitions.addObject().put("name", "LocalRate").put("formula", "0.1").put("scope", "sheet").put("sheetId", "sheet-1");
+        duplicateLocalDefinitions.addObject().put("name", "localrate").put("formula", "0.2").put("scope", "sheet").put("sheetId", "sheet-1");
+        ServiceException duplicateLocalError = assertThrows(ServiceException.class,
+                () -> WorkbookSnapshotValidator.requireCanonical(duplicateLocal, "book-1"));
+        assertEquals("VALIDATION_ERROR", duplicateLocalError.code());
+
+        ObjectNode duplicateProjection = snapshot();
+        duplicateProjection.putObject("definedNames").put("TaxRate", "0.1").put("taxrate", "0.2");
+        ServiceException duplicateProjectionError = assertThrows(ServiceException.class,
+                () -> WorkbookSnapshotValidator.requireCanonical(duplicateProjection, "book-1"));
+        assertEquals("VALIDATION_ERROR", duplicateProjectionError.code());
+
+        ObjectNode staleProjection = snapshot();
+        staleProjection.putArray("definedNameModels").addObject().put("name", "TaxRate").put("formula", "0.1").put("scope", "workbook");
+        staleProjection.putObject("definedNames").put("TaxRate", "0.2");
+        ServiceException staleProjectionError = assertThrows(ServiceException.class,
+                () -> WorkbookSnapshotValidator.requireCanonical(staleProjection, "book-1"));
+        assertEquals("VALIDATION_ERROR", staleProjectionError.code());
+
+        ObjectNode whitespaceFormula = snapshot();
+        whitespaceFormula.putArray("definedNameModels").addObject()
+                .put("name", "TaxRate").put("formula", "\u00A00.1").put("scope", "workbook");
+        ServiceException whitespaceFormulaError = assertThrows(ServiceException.class,
+                () -> WorkbookSnapshotValidator.requireCanonical(whitespaceFormula, "book-1"));
+        assertEquals("VALIDATION_ERROR", whitespaceFormulaError.code());
+
+        ObjectNode missingSheet = snapshot();
+        missingSheet.putArray("definedNameModels").addObject()
+                .put("name", "LocalRate").put("formula", "0.1").put("scope", "sheet").put("sheetId", "missing-sheet");
+        ServiceException missingSheetError = assertThrows(ServiceException.class,
+                () -> WorkbookSnapshotValidator.requireCanonical(missingSheet, "book-1"));
+        assertEquals("VALIDATION_ERROR", missingSheetError.code());
+    }
+
+    @Test
     void rejectsAutoFilterColumnKeysWithNumericAliases() {
         ObjectNode snapshot = snapshot();
         ObjectNode filter = ((ObjectNode) snapshot.path("sheets").get(0)).putObject("autoFilter");

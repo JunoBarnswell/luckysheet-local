@@ -1694,11 +1694,9 @@ export class WorkbookModel {
    * `getDefinedName(name, sheetId)` by callers that have a sheet context.
    */
   get definedNames(): Readonly<Record<string, string>> {
-    const result: Record<string, string> = {};
-    for (const entry of this.definedNameModels) {
-      if (entry.scope === 'workbook') result[entry.name] = entry.formula;
-    }
-    return result;
+    return Object.fromEntries(this.definedNameModels
+      .filter((entry) => entry.scope === 'workbook')
+      .map((entry) => [entry.name, entry.formula]));
   }
 
   get definedNameModels(): readonly DefinedNameModel[] {
@@ -1926,7 +1924,9 @@ export class WorkbookModel {
     const next = new Map<string, DefinedNameModel>();
     for (const input of inputs) {
       const model = normalizeDefinedNameModel(input);
-      next.set(definedNameStoreKey(model.name, model.scope, model.sheetId), structuredClone(model));
+      const key = definedNameStoreKey(model.name, model.scope, model.sheetId);
+      if (next.has(key)) throw new Error(`Defined-name owner identity is duplicated: ${model.scope}:${model.sheetId ?? '*'}:${model.name}`);
+      next.set(key, structuredClone(model));
     }
     this.definedNamesByIdentity = next;
     this.definedNameModelsProjection = undefined;

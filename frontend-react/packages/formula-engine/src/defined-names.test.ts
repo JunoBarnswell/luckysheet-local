@@ -1,10 +1,37 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { FormulaEngine } from './formula-engine';
-import { normalizeDefinedNames, resolveDefinedNameSource } from './defined-names';
+import { normalizeDefinedNameModels, normalizeDefinedNames, resolveDefinedNameSource } from './defined-names';
 
 test('normalizeDefinedNames uppercases keys', () => {
   assert.deepEqual(normalizeDefinedNames({ TaxRate: '0.15' }), { TAXRATE: '0.15' });
+});
+
+test('normalizeDefinedNameModels rejects duplicate scoped identities without case-folding worksheet ids', () => {
+  assert.throws(() => normalizeDefinedNameModels([
+    { name: 'TaxRate', formula: '0.1', scope: 'workbook' },
+    { name: 'taxrate', formula: '0.2', scope: 'workbook' },
+  ]), /Defined-name owner identity is duplicated/);
+  assert.throws(() => normalizeDefinedNameModels([
+    { name: 'LocalRate', formula: '0.1', scope: 'sheet', sheetId: 'Sheet-A' },
+    { name: 'localrate', formula: '0.2', scope: 'sheet', sheetId: 'Sheet-A' },
+  ]), /Defined-name owner identity is duplicated/);
+
+  const names = normalizeDefinedNameModels([
+    { name: 'LocalRate', formula: '0.1', scope: 'sheet', sheetId: 'Sheet-A' },
+    { name: 'LocalRate', formula: '0.2', scope: 'sheet', sheetId: 'sheet-a' },
+  ]);
+  assert.equal(names.length, 2);
+
+  const engine = new FormulaEngine({
+    defaultSheetId: 'Sheet-A',
+    sheetOrder: [{ id: 'Sheet-A', name: 'Upper' }, { id: 'sheet-a', name: 'Lower' }],
+  });
+  engine.setDefinedNameModels(names);
+  engine.setFormula({ sheetId: 'Sheet-A', row: 0, column: 0 }, '=LocalRate');
+  engine.setFormula({ sheetId: 'sheet-a', row: 0, column: 0 }, '=LocalRate');
+  assert.equal(engine.getCellValue({ sheetId: 'Sheet-A', row: 0, column: 0 }), 0.1);
+  assert.equal(engine.getCellValue({ sheetId: 'sheet-a', row: 0, column: 0 }), 0.2);
 });
 
 test('resolveDefinedNameSource supports scalar, range, and formula values', () => {

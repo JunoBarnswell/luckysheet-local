@@ -77,6 +77,34 @@ class MutationDescriptorRegistryTest {
     }
 
     @Test
+    void definedNameMutationsKeepCaseInsensitiveProjectionSynchronized() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        ObjectNode snapshot = (ObjectNode) mapper.readTree("""
+                {"sheets":[{"id":"sheet-1"}],
+                 "definedNames":{"TaxRate":"0.1"},
+                 "definedNameModels":[{"name":"TaxRate","formula":"0.1","scope":"workbook"}]}
+                """);
+
+        JsonNode changed = registry.applyPublicMutations(snapshot, List.of(new OperationMutation(
+                "name.set", "sheet-1", mapper.readTree("""
+                        {"model":{"name":"taxrate","formula":"0.2","scope":"workbook"}}
+                        """))));
+
+        assertEquals(1, changed.path("definedNameModels").size());
+        assertEquals("taxrate", changed.path("definedNameModels").get(0).path("name").asText());
+        assertEquals(1, changed.path("definedNames").size());
+        assertEquals("0.2", changed.path("definedNames").path("taxrate").asText());
+
+        JsonNode removed = registry.applyPublicMutations(changed, List.of(new OperationMutation(
+                "name.remove", "sheet-1", mapper.readTree("""
+                        {"name":"TAXRATE","scope":"workbook"}
+                        """))));
+
+        assertEquals(0, removed.path("definedNameModels").size());
+        assertEquals(0, removed.path("definedNames").size());
+    }
+
+    @Test
     void structuralDescriptorKeepsPublicPurityAndMutatesOnlyOwnedSnapshots() throws Exception {
         StructuralMutationDescriptor descriptor = new StructuralMutationDescriptor("rows.inserted");
         ObjectNode snapshot = (ObjectNode) mapper.readTree("""

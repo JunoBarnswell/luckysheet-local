@@ -989,3 +989,26 @@ head `1d8508ea` 的两个后端 CI 已通过 test-compile，随后在 `sheetRena
 这些是同一 owner-transaction 缺口在六个真实消费者上的证据，不计作六个独立根因。修复边界必须是完整切片：由 canonical rename planner 生成全部受影响 owner 的 typed before/after delta；服务端提交、协作、Undo/Redo 与 OOXML 都消费该 delta；同时在显式迁移边界从校验通过的 checkpoint 和连续 operation log 重建旧 rename 的 owner delta，并事务更新历史 envelope 与未发布 outbox。当前 v1 精确契约无法承载完整 owner 集，也没有安全的纯字段升级方式；在该迁移与 v2 消费链闭合前，不提交单端公式改写或仅拒绝常见 rename 的局部补丁，以免客户端、服务端和历史快照产生新的语义分叉。
 
 本轮只完成静态自审和有界修复方案记录；未改运行时代码，未运行测试、构建、lint 或 UI，也未将该缺陷标记为已修复。后续实现需在同一 PR 中完成协议、迁移、所有 owner 家族及回归用例后再验收。
+
+### 六轮静态自审 — Defined Name owner identity（2026-09-26）
+
+另沿公式引擎归一化、模型存储、快照 ingress、服务端快照校验、服务端名称 mutation 与跨层 identity key 做六轮复核，确认一个独立根因：同一 scope/sheet/name 的重复定义被 Map/首项查找静默折叠，且不同层对 sheetId 大小写使用了不一致的 identity 规则。
+
+1. `normalizeDefinedNameModels` 通过 `Map.set` 处理同 key 定义，后项覆盖前项；公式依赖和求值因此取决于输入顺序。
+2. `WorkbookModel.replaceDefinedNames` 及 `fromSnapshot` 的逐项 `setDefinedName` 同样覆盖重复 canonical identity，没有拒绝边界。
+3. TS `assertCanonicalWorkbookSnapshot` 原先未检查 `definedNameModels` 的 key、scope、sheet 引用或唯一性；快照校验通过后模型初始化才折叠数据。
+4. Java `WorkbookSnapshotValidator` 原先只在 hyperlink target lookup 中读取定义名，没有验证 `definedNameModels` 本身，服务端可接受客户端随后无法无损加载的快照。
+5. Java `WorkbookStateMutationDescriptor.nameIndex` 首次命中即返回；遇到已有重复定义时 `name.set`/`name.remove` 只操作第一项，留下未显式报告的第二个 owner。
+6. FormulaEngine 原先对 sheetId 也做大写折叠，但 `WorkbookModel.definedNameStoreKey` 和 `ReferenceIndex` 使用精确 sheetId；两个不同且大小写不同的 worksheet ID 会被公式引擎误认为同一 owner。
+
+第六轮复核另确认 `definedNames` 派生映射入口会绕过上述检查：快照缺少 `definedNameModels` 时 `fromSnapshot` 仍会从映射逐项 upsert；两字段并存时也未验证映射与 workbook-scope models 一致。已同步修复 TS/Java 快照边界：映射-only 输入检查 canonical key/value 与大小写不敏感唯一性；models 并存时要求映射与 workbook-scope projection 精确一致。回归源码补足 sheet-scope 重复、失败替换保留原状态、映射重复与投影不一致。该映射仍是现有 snapshot 兼容边界，后续 clean-break 应在显式 snapshot migration 中移除 fallback；本次未擅自扩大为协议删除。
+
+第七轮跨语言边界复核发现 Java `String.trim()/isBlank()` 与 TS `String.trim()` 对 NBSP、BOM 等边界空白的定义不同，可能导致服务端接受前端 canonical ingress 会拒绝的 formula。Java 校验现显式匹配 ECMAScript trim 字符集合，补充 NBSP 拒绝用例源码；未运行测试。
+
+第八轮沿 `name.set/name.remove` 的写入链反查发现后端 projection 按原大小写精确增删，而 canonical identity 按大小写不敏感查找；仅修改名称大小写会留下旧 map key。mutation 现先清理同一大小写折叠 identity 再写入/删除派生映射，新增 set 后再以不同大小写 remove 的成功路径源码用例；未运行测试。
+
+第九轮核对 projection 构造器时确认合法名称 `__proto__` 会被普通对象的属性 setter 特殊处理，导致 TypeScript/OOXML 投影漏项并与 canonical models 不一致。两处现以 `Object.fromEntries` 创建 own data properties，并新增快照保留该名称的静态用例。
+
+第十轮继续追查 `FormulaEngine` 的真实读写索引，确认其内部 `definedNameIdentity` 与 `findDefinedName` 仍将 worksheet ID 大小写折叠；仅修正 normalizer 并不能阻止后续 Map 覆盖或跨表误读。内部 key 与查找现改为精确 sheetId，新增两个大小写不同 worksheet 上同名 local name 的独立求值用例源码；未运行测试。
+
+已修复该切片：FormulaEngine 与 WorkbookModel 批量替换、TS/Java 快照 ingress 对重复 identity fail-close；sheet-scoped name key 在所有求值与引用索引处都对 name 大小写不敏感、对 sheetId 精确区分；`definedNames` 派生投影校验 canonical shape、唯一性和与 models 的一致性，Java mutation 对大小写变更执行同步清理/更新，TS/OOXML 投影保留 `__proto__` own key；TS/Java 校验对齐 ECMAScript trim 边界空白。新增 TS/Java 成功与拒绝路径测试源码，覆盖同名不同 scope 可并存、大小写不同的 sheet ID 独立求值、identity 冲突、缺失 worksheet、投影同步与 fail-close；按本轮要求未执行测试、构建、lint 或 UI。只做静态源码审查与 diff 检查。历史中若存在重复定义，无法从被静默覆盖后的公式行为推断原作者意图；不自动删除/合并任一项，严格 ingress 会 fail-close，需从用户确认的备份恢复后再迁移。StructuralPatch v2、历史迁移与完整整改仍未完成。

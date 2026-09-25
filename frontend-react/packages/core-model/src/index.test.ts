@@ -28,6 +28,63 @@ test('canonical workbook snapshots reject malformed or unowned pane fields', () 
   }
 });
 
+test('canonical snapshots and model replacement reject duplicate defined-name owners', () => {
+  const workbook = new WorkbookModel('unit-defined-name-identity', 'Defined names');
+  const candidate = structuredClone(workbook.snapshot());
+  const duplicateOwners = [
+    [
+      { name: 'TaxRate', formula: '0.1', scope: 'workbook' as const },
+      { name: 'taxrate', formula: '0.2', scope: 'workbook' as const },
+    ],
+    [
+      { name: 'LocalRate', formula: '0.1', scope: 'sheet' as const, sheetId: 'sheet-1' },
+      { name: 'localrate', formula: '0.2', scope: 'sheet' as const, sheetId: 'sheet-1' },
+    ],
+  ];
+
+  workbook.setDefinedName({ name: 'Preserved', formula: '0.3', scope: 'workbook' });
+  for (const definitions of duplicateOwners) {
+    candidate.definedNameModels = definitions;
+    candidate.definedNames = {};
+    assert.throws(() => assertCanonicalWorkbookSnapshot(candidate), /duplicate defined-name identity/);
+    assert.throws(() => WorkbookModel.fromSnapshot(candidate), /duplicate defined-name identity/);
+    assert.throws(() => workbook.replaceDefinedNames(definitions), /Defined-name owner identity is duplicated/);
+    assert.equal(workbook.getDefinedNameExact('Preserved', 'workbook')?.formula, '0.3');
+  }
+
+  const legacyProjection = structuredClone(workbook.snapshot()) as unknown as Record<string, any>;
+  delete legacyProjection.definedNameModels;
+  legacyProjection.definedNames = { TaxRate: '0.1', taxrate: '0.2' };
+  assert.throws(() => assertCanonicalWorkbookSnapshot(legacyProjection), /definedNames projection contains duplicate identity/);
+
+  const staleProjection = structuredClone(workbook.snapshot());
+  staleProjection.definedNameModels = [];
+  staleProjection.definedNames = { Stale: '0.1' };
+  assert.throws(() => assertCanonicalWorkbookSnapshot(staleProjection), /does not match canonical definedNameModels/);
+
+  const whitespaceFormula = structuredClone(workbook.snapshot());
+  whitespaceFormula.definedNameModels = [{ name: 'TaxRate', formula: '\u00a00.1', scope: 'workbook' }];
+  whitespaceFormula.definedNames = {};
+  assert.throws(() => assertCanonicalWorkbookSnapshot(whitespaceFormula), /identity or formula is invalid/);
+
+  workbook.replaceDefinedNames([
+    { name: 'Shared', formula: '0.1', scope: 'workbook' },
+    { name: 'Shared', formula: '0.2', scope: 'sheet', sheetId: 'sheet-1' },
+  ]);
+  assert.equal(workbook.definedNameModels.length, 2);
+});
+
+test('defined-name projection preserves the legal __proto__ owner key', () => {
+  const workbook = new WorkbookModel('unit-defined-name-prototype-key', 'Defined names');
+  workbook.setDefinedName({ name: '__proto__', formula: '0.1', scope: 'workbook' });
+
+  const snapshot = workbook.snapshot();
+
+  assert.equal(Object.prototype.hasOwnProperty.call(snapshot.definedNames, '__proto__'), true);
+  assert.equal(snapshot.definedNames?.['__proto__'], '0.1');
+  assertCanonicalWorkbookSnapshot(snapshot);
+});
+
 test('v8 storage migration creates the single canonical v10 editing options contract', () => {
   const legacy = structuredClone(new WorkbookModel('unit-v8-editing', 'Legacy').snapshot()) as unknown as Record<string, unknown>;
   legacy.version = 8;

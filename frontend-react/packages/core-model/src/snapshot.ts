@@ -367,6 +367,7 @@ export function assertCanonicalWorkbookSnapshot(snapshot: WorkbookSnapshot): Wor
     }
   }
   assertCanonicalWorkbookHyperlinks(snapshot);
+  validateCanonicalDefinedNameModels(snapshot);
   const pivotIds = new Set<string>();
   const sheetTableIds = new Set<string>();
   const sheetTableNames = new Set<string>();
@@ -523,6 +524,75 @@ export function assertCanonicalWorkbookSnapshot(snapshot: WorkbookSnapshot): Wor
     templateIds.add(template.id);
   }
   return canonical;
+}
+
+function validateCanonicalDefinedNameModels(snapshot: WorkbookSnapshot): void {
+  const models: unknown = snapshot.definedNameModels;
+  if (models === undefined) {
+    validateDefinedNamesProjection(snapshot.definedNames);
+    return;
+  }
+  if (!Array.isArray(models)) throw new Error('Workbook snapshot definedNameModels must be an array');
+  const sheetIds = new Set(snapshot.sheets.map((sheet) => sheet.id));
+  const identities = new Set<string>();
+  for (const [index, value] of models.entries()) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`Workbook snapshot defined name ${index} is invalid`);
+    const model = value as Record<string, unknown>;
+    if (!hasOnlyKeys(model, ['name', 'formula', 'scope', 'sheetId', 'anchor', 'hidden', 'comment'])) {
+      throw new Error(`Workbook snapshot defined name ${index} has unsupported fields`);
+    }
+    if (typeof model.name !== 'string' || !model.name || model.name !== model.name.trim() || model.name.length > 255
+      || !/^[A-Za-z_\\][A-Za-z0-9_.]*$/.test(model.name)
+      || typeof model.formula !== 'string' || !model.formula || model.formula !== model.formula.trim() || model.formula.length > 32_767
+      || (model.scope !== 'workbook' && model.scope !== 'sheet')) {
+      throw new Error(`Workbook snapshot defined name ${index} identity or formula is invalid`);
+    }
+    if (model.scope === 'workbook') {
+      if (model.sheetId !== undefined) throw new Error(`Workbook-scoped defined name ${model.name} cannot specify sheetId`);
+    } else if (typeof model.sheetId !== 'string' || !model.sheetId || model.sheetId !== model.sheetId.trim() || !sheetIds.has(model.sheetId)) {
+      throw new Error(`Sheet-scoped defined name ${model.name} targets an invalid worksheet`);
+    }
+    if (model.hidden !== undefined && typeof model.hidden !== 'boolean') throw new Error(`Defined name ${model.name} hidden flag is invalid`);
+    if (model.comment !== undefined && typeof model.comment !== 'string') throw new Error(`Defined name ${model.name} comment is invalid`);
+    if (model.anchor !== undefined) {
+      if (!model.anchor || typeof model.anchor !== 'object' || Array.isArray(model.anchor)) throw new Error(`Defined name ${model.name} anchor is invalid`);
+      const anchor = model.anchor as Record<string, unknown>;
+      if (!hasOnlyKeys(anchor, ['sheetId', 'row', 'column']) || typeof anchor.sheetId !== 'string'
+        || !anchor.sheetId.trim() || anchor.sheetId !== anchor.sheetId.trim() || !sheetIds.has(anchor.sheetId)
+        || !Number.isSafeInteger(anchor.row) || Number(anchor.row) < 0 || Number(anchor.row) > 1_048_575
+        || !Number.isSafeInteger(anchor.column) || Number(anchor.column) < 0 || Number(anchor.column) > 16_383) {
+        throw new Error(`Defined name ${model.name} anchor is invalid`);
+      }
+    }
+    const identity = JSON.stringify([model.scope, model.scope === 'sheet' ? model.sheetId : null, model.name.toUpperCase()]);
+    if (identities.has(identity)) throw new Error(`Workbook snapshot contains duplicate defined-name identity: ${model.scope}:${String(model.sheetId ?? '*')}:${model.name}`);
+    identities.add(identity);
+  }
+  validateDefinedNamesProjection(snapshot.definedNames, models as Array<Record<string, unknown>>);
+}
+
+function validateDefinedNamesProjection(value: unknown, models?: readonly Record<string, unknown>[]): void {
+  if (value === undefined) return;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Workbook snapshot definedNames projection is invalid');
+  const projection = value as Record<string, unknown>;
+  const names = new Set<string>();
+  const entries = Object.entries(projection);
+  for (const [name, formula] of entries) {
+    if (!name || name !== name.trim() || name.length > 255 || !/^[A-Za-z_\\][A-Za-z0-9_.]*$/.test(name)
+      || typeof formula !== 'string' || !formula || formula !== formula.trim() || formula.length > 32_767) {
+      throw new Error('Workbook snapshot definedNames projection contains an invalid entry');
+    }
+    const identity = name.toUpperCase();
+    if (names.has(identity)) throw new Error(`Workbook snapshot definedNames projection contains duplicate identity: ${name}`);
+    names.add(identity);
+  }
+  if (!models) return;
+  const expected = new Map(models
+    .filter((model) => model.scope === 'workbook')
+    .map((model) => [model.name as string, model.formula as string] as const));
+  if (entries.length !== expected.size || entries.some(([name, formula]) => expected.get(name) !== formula)) {
+    throw new Error('Workbook snapshot definedNames projection does not match canonical definedNameModels');
+  }
 }
 
 export function assertCanonicalWorkbookHyperlinks(snapshot: WorkbookSnapshot): void {

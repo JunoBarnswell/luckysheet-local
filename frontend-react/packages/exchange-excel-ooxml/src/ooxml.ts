@@ -257,8 +257,9 @@ export function parseLoadedOoxml(loaded: LoadedOpcPackageGraph, options: ParseLo
   const sharedStrings = parseSharedStrings(files[sharedStringsPart], styles.themeColors);
   const sheets = descriptors.map((descriptor) => parseSheet(descriptor, files, loaded.packageGraph, sharedStrings, styles, options.canonicalReferenceDate, descriptors));
   const definedNameModels = parseDefinedNames(child(workbook, 'definedNames'), descriptors);
-  const definedNames: Record<string, string> = {};
-  for (const name of definedNameModels) if (name.scope === 'workbook') definedNames[name.name] = name.formula;
+  const definedNames: Record<string, string> = Object.fromEntries(definedNameModels
+    .filter((name) => name.scope === 'workbook')
+    .map((name) => [name.name, name.formula]));
   const unitId = `imported-${randomId()}`;
   const snapshot: WorkbookSnapshot = {
     schema: 'WorkbookSnapshot',

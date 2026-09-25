@@ -1996,14 +1996,14 @@ export class FormulaEngine {
 
   private findDefinedName(name: string, currentCell: CellAddress): FormulaDefinedName | undefined {
     const normalized = name.trim().toUpperCase();
-    const sheetKey = currentCell.sheetId.trim().toUpperCase();
+    const sheetKey = currentCell.sheetId.trim();
     return this.definedNamesByIdentity.get(`sheet:${sheetKey}:${normalized}`)
       ?? this.definedNamesByIdentity.get(`workbook:${normalized}`);
   }
 
   private definedNameIdentity(definition: FormulaDefinedName): string {
     return definition.scope === 'sheet'
-      ? `sheet:${definition.sheetId?.trim().toUpperCase()}:${definition.name.trim().toUpperCase()}`
+      ? `sheet:${definition.sheetId?.trim()}:${definition.name.trim().toUpperCase()}`
       : `workbook:${definition.name.trim().toUpperCase()}`;
   }
 

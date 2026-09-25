@@ -26,6 +26,9 @@ public final class WorkbookSnapshotValidator {
     private static final java.util.regex.Pattern HYPERLINK_EMAIL_ADDRESS = java.util.regex.Pattern.compile("^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$");
     private static final java.util.regex.Pattern HYPERLINK_SHEET_ADDRESS = java.util.regex.Pattern.compile("^([A-Za-z]+)([1-9][0-9]*)$");
     private static final java.util.regex.Pattern HYPERLINK_DEFINED_NAME = java.util.regex.Pattern.compile("^[A-Za-z_\\\\][A-Za-z0-9_.]*$");
+    private static final java.util.regex.Pattern DEFINED_NAME = java.util.regex.Pattern.compile("^[A-Za-z_\\\\][A-Za-z0-9_.]*$");
+    private static final java.util.Set<String> DEFINED_NAME_FIELDS = java.util.Set.of("name", "formula", "scope", "sheetId", "anchor", "hidden", "comment");
+    private static final java.util.Set<String> DEFINED_NAME_ANCHOR_FIELDS = java.util.Set.of("sheetId", "row", "column");
     private static final java.util.regex.Pattern SHEET_TABLE_NAME = java.util.regex.Pattern.compile("^[A-Za-z_][A-Za-z0-9_.]*$");
 
     private WorkbookSnapshotValidator() {
@@ -220,6 +223,8 @@ public final class WorkbookSnapshotValidator {
             }
             AutoFilterOwnershipValidator.resolveOwners((ObjectNode) sheet, sheetId);
         }
+        validateDefinedNameModels(snapshot, sheetIds);
+        validateDefinedNamesProjection(snapshot);
         for (JsonNode sheet : sheets) {
             ObjectNode sheetObject = (ObjectNode) sheet;
             ObjectNode payloads = (ObjectNode) sheetObject.path("drawingPayloads");
@@ -441,6 +446,124 @@ public final class WorkbookSnapshotValidator {
             while (names.hasNext()) if (name.equalsIgnoreCase(names.next())) return true;
         }
         return false;
+    }
+
+    private static void validateDefinedNameModels(JsonNode snapshot, java.util.Set<String> sheetIds) {
+        JsonNode models = snapshot.get("definedNameModels");
+        if (models == null) return;
+        if (!models.isArray()) throw ServiceException.validation("Workbook snapshot definedNameModels must be an array");
+        java.util.Set<String> identities = new java.util.HashSet<>();
+        for (int index = 0; index < models.size(); index++) {
+            JsonNode model = models.get(index);
+            requireCanonicalDefinedNameModel(model, sheetIds);
+            String scope = model.path("scope").asText();
+            String sheetId = "sheet".equals(scope) ? model.path("sheetId").asText() : "";
+            String identity = scope + Character.toString(0) + sheetId + Character.toString(0)
+                    + model.path("name").asText().toUpperCase(java.util.Locale.ROOT);
+            if (!identities.add(identity)) {
+                throw ServiceException.validation("Workbook snapshot contains duplicate defined-name identity: "
+                        + scope + ":" + (sheetId.isBlank() ? "*" : sheetId) + ":" + model.path("name").asText());
+            }
+        }
+    }
+
+    private static void validateDefinedNamesProjection(JsonNode snapshot) {
+        JsonNode projection = snapshot.get("definedNames");
+        if (projection == null) return;
+        if (!projection.isObject()) throw ServiceException.validation("Workbook snapshot definedNames projection is invalid");
+        java.util.Map<String, String> expected = null;
+        JsonNode models = snapshot.get("definedNameModels");
+        if (models != null) {
+            expected = new java.util.HashMap<>();
+            for (JsonNode model : models) {
+                if ("workbook".equals(model.path("scope").asText())) {
+                    expected.put(model.path("name").asText(), model.path("formula").asText());
+                }
+            }
+        }
+        java.util.Set<String> identities = new java.util.HashSet<>();
+        java.util.Iterator<java.util.Map.Entry<String, JsonNode>> fields = projection.fields();
+        while (fields.hasNext()) {
+            java.util.Map.Entry<String, JsonNode> field = fields.next();
+            String name = field.getKey();
+            JsonNode formula = field.getValue();
+            if (!isEcmaScriptTrimmed(name) || name.length() > 255 || !DEFINED_NAME.matcher(name).matches()
+                    || formula == null || !formula.isTextual() || !isEcmaScriptTrimmed(formula.asText())
+                    || formula.asText().length() > 32_767) {
+                throw ServiceException.validation("Workbook snapshot definedNames projection contains an invalid entry");
+            }
+            if (!identities.add(name.toUpperCase(java.util.Locale.ROOT))) {
+                throw ServiceException.validation("Workbook snapshot definedNames projection contains duplicate identity: " + name);
+            }
+            if (expected != null && !java.util.Objects.equals(expected.get(name), formula.asText())) {
+                throw ServiceException.validation("Workbook snapshot definedNames projection does not match canonical definedNameModels");
+            }
+        }
+        if (expected != null && projection.size() != expected.size()) {
+            throw ServiceException.validation("Workbook snapshot definedNames projection does not match canonical definedNameModels");
+        }
+    }
+
+    public static void requireCanonicalDefinedNameModel(JsonNode model, java.util.Set<String> sheetIds) {
+        if (model == null || !model.isObject() || !hasOnlyFields(model, DEFINED_NAME_FIELDS)) {
+            throw ServiceException.validation("Defined name model is not canonical");
+        }
+        JsonNode nameNode = model.get("name");
+        JsonNode formulaNode = model.get("formula");
+        JsonNode scopeNode = model.get("scope");
+        if (nameNode == null || !nameNode.isTextual() || !isEcmaScriptTrimmed(nameNode.asText())
+                || nameNode.asText().length() > 255
+                || !DEFINED_NAME.matcher(nameNode.asText()).matches()
+                || formulaNode == null || !formulaNode.isTextual() || !isEcmaScriptTrimmed(formulaNode.asText())
+                || formulaNode.asText().length() > 32_767
+                || scopeNode == null || !scopeNode.isTextual()) {
+            throw ServiceException.validation("Defined name identity or formula is invalid");
+        }
+        String scope = scopeNode.asText();
+        JsonNode sheetIdNode = model.get("sheetId");
+        if ("workbook".equals(scope)) {
+            if (sheetIdNode != null) throw ServiceException.validation("Workbook-scoped defined name cannot specify sheetId");
+        } else if ("sheet".equals(scope)) {
+            if (sheetIdNode == null || !sheetIdNode.isTextual() || !isEcmaScriptTrimmed(sheetIdNode.asText())
+                    || !sheetIds.contains(sheetIdNode.asText())) {
+                throw ServiceException.validation("Sheet-scoped defined name targets an invalid worksheet");
+            }
+        } else {
+            throw ServiceException.validation("Defined name scope is invalid");
+        }
+        JsonNode hidden = model.get("hidden");
+        if (hidden != null && !hidden.isBoolean()) throw ServiceException.validation("Defined name hidden flag is invalid");
+        JsonNode comment = model.get("comment");
+        if (comment != null && !comment.isTextual()) throw ServiceException.validation("Defined name comment is invalid");
+        JsonNode anchor = model.get("anchor");
+        if (anchor != null) {
+            if (!anchor.isObject() || !hasOnlyFields(anchor, DEFINED_NAME_ANCHOR_FIELDS)) {
+                throw ServiceException.validation("Defined name anchor is invalid");
+            }
+            JsonNode anchorSheetId = anchor.get("sheetId");
+            JsonNode row = anchor.get("row");
+            JsonNode column = anchor.get("column");
+            if (anchorSheetId == null || !anchorSheetId.isTextual() || !isEcmaScriptTrimmed(anchorSheetId.asText())
+                    || !sheetIds.contains(anchorSheetId.asText())
+                    || row == null || !row.isIntegralNumber() || !row.canConvertToInt() || row.intValue() < 0 || row.intValue() > MAX_ROW_INDEX
+                    || column == null || !column.isIntegralNumber() || !column.canConvertToInt() || column.intValue() < 0 || column.intValue() > MAX_COLUMN_INDEX) {
+                throw ServiceException.validation("Defined name anchor is outside worksheet bounds");
+            }
+        }
+    }
+
+    private static boolean isEcmaScriptTrimmed(String value) {
+        if (value.isEmpty()) return false;
+        return !isEcmaScriptTrimWhitespace(value.codePointAt(0))
+                && !isEcmaScriptTrimWhitespace(value.codePointBefore(value.length()));
+    }
+
+    private static boolean isEcmaScriptTrimWhitespace(int codePoint) {
+        return (codePoint >= 0x0009 && codePoint <= 0x000D)
+                || codePoint == 0x0020 || codePoint == 0x00A0 || codePoint == 0x1680
+                || (codePoint >= 0x2000 && codePoint <= 0x200A)
+                || codePoint == 0x2028 || codePoint == 0x2029 || codePoint == 0x202F
+                || codePoint == 0x205F || codePoint == 0x3000 || codePoint == 0xFEFF;
     }
 
     private static boolean hasOnlyFields(JsonNode object, java.util.Set<String> allowed) {
