@@ -1067,14 +1067,14 @@ class MutationDescriptorRegistryTest {
         ObjectNode beforeSparklineRejection = snapshot.deepCopy();
 
         ServiceException sparklineError = assertThrows(ServiceException.class,
-                () -> registry.prepare(snapshot, mutation, WorkbookAclRole.EDITOR));
+                () -> registry.prepare(snapshot, mutation, WorkbookAclRole.EDITOR).descriptor().apply(snapshot, mutation));
         assertEquals("VALIDATION_ERROR", sparklineError.code());
         assertEquals(beforeSparklineRejection, snapshot);
 
         ((ArrayNode) snapshot.path("sheets").get(1).path("sparklines")).remove(0);
         ObjectNode beforePivotRejection = snapshot.deepCopy();
         ServiceException pivotError = assertThrows(ServiceException.class,
-                () -> registry.prepare(snapshot, mutation, WorkbookAclRole.EDITOR));
+                () -> registry.prepare(snapshot, mutation, WorkbookAclRole.EDITOR).descriptor().apply(snapshot, mutation));
         assertEquals("VALIDATION_ERROR", pivotError.code());
         assertEquals(beforePivotRejection, snapshot);
     }
