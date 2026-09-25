@@ -698,3 +698,16 @@ Confirmed additional operation paths: 13 in the follow-up audit (the previous 12
 ### CI fixture follow-up — row-permutation worksheet identity
 
 head `4a4ba321` 的两条 Java CI 都在 row-permutation 用例中以 `name is required` 失败。下载并检查既有 CI Surefire 报告后，调用栈定位到 `captureRuleFormulaSnapshots` 对每张 sheet 读取 canonical `(id, name)`；`WorkbookSnapshotValidator` 也要求 worksheet name 非空。失败的两个测试快照漏了 `name`，并非生产运行时应接受缺失身份的情况。已补齐两个 fixture 的 worksheet name，保留 fail-close 行为；未在本地运行测试，需由新 PR head 的 CI 确认。
+
+### 六轮静态复核 — worksheet rename drawing payload 联合类型
+
+head `b0217386` 的两个远端 `canonical-build` 都报告同一组 TypeScript 错误：`sheet-identity-transform.ts` 的 shape/chart drawing 变更集合推断为 shape 专属类型，导致 chart 分支不兼容，并使后续 delta flatten/apply 中的 `change` 降为 `unknown`。六轮复核逐一确认：
+
+1. 两个 CI job 是同一个编译根因，不是两组独立问题。
+2. `DrawingPayload` 是 shape 与 chart 等绘图 payload 的判别联合；变更集合确实同时产生不同分支。
+3. shape 分支返回 `ShapeDrawingPayload`，chart 分支返回 `ChartDrawingPayload`，原先无上下文类型的嵌套 `flatMap` 被首个分支过度收窄。
+4. 非目标 payload 与无变化公式返回空数组；显式标注回调结果为 `DrawingPayloadChange[]` 保持 flatMap 的零到多契约。
+5. 收集公式 owner delta 与 apply 写回都依赖变更记录的共同字段；将 payload 字段定为完整 `DrawingPayload` 联合类型可为两处提供同一正确契约。
+6. 类型修正只约束既有预计算结果，不改变 clone、公式映射、delta 生成或 live apply 顺序；已有 rename linked-chart-formula 回归用例覆盖该业务路径。
+
+已修复为显式联合类型记录及 flatMap 数组结果类型。此次 CI 的失败已确认是编译期真实错误；没有本地重跑测试或构建，修复后的远端 CI 状态待新 head 确认。

@@ -659,30 +659,39 @@ export function planSheetIdentityTransform(workbook: WorkbookModel, input: Sheet
     }));
     const cellStyleTemplateChanges = targetName === sourceName ? [] : [...workbook.cellStyleTemplates.values()]
       .map((template) => rewriteCellStyleTemplateFormulas(template, sourceName, targetName));
-    const drawingPayloadChanges = targetName === sourceName ? [] : workbook.getSheets().flatMap((sheet) => [...sheet.drawingPayloads.entries()].flatMap(([payloadId, payload]) => {
-      if (payload.kind === 'shape' && payload.propertyFormula) {
-        const propertyFormula = mapFormulaReference(payload.propertyFormula, sourceName, targetName, `drawing:${payloadId}.propertyFormula`, sheet.id);
-        return propertyFormula === payload.propertyFormula ? [] : [{ sheetId: sheet.id, payloadId, payload: { ...structuredClone(payload), propertyFormula }, formulaOwnerDeltas: [] as StructuralFormulaObjectOwnerDelta[] }];
-      }
-      if (payload.kind !== 'chart') return [];
-      const next = structuredClone(payload);
-      const formulaOwnerDeltas: StructuralFormulaObjectOwnerDelta[] = [];
-      for (const { field, formula } of chartTextFormulaEntries(payload)) {
-        const afterFormula = mapFormulaReference(formula, sourceName, targetName, `drawing:${payloadId}.${field}`, sheet.id);
-        if (afterFormula === formula) continue;
-        writeChartTextFormula(next, field, afterFormula);
-        formulaOwnerDeltas.push({
-          kind: 'formula-object',
-          ownerKind: 'chart-text',
-          sheetId: sheet.id,
-          payloadId,
-          field,
-          beforeFormula: formula,
-          afterFormula,
-        });
-      }
-      return formulaOwnerDeltas.length === 0 ? [] : [{ sheetId: sheet.id, payloadId, payload: next, formulaOwnerDeltas }];
-    }));
+    type DrawingPayloadChange = {
+      sheetId: string;
+      payloadId: string;
+      payload: DrawingPayload;
+      formulaOwnerDeltas: StructuralFormulaObjectOwnerDelta[];
+    };
+    const drawingPayloadChanges: DrawingPayloadChange[] = targetName === sourceName
+      ? []
+      : workbook.getSheets().flatMap((sheet) =>
+        [...sheet.drawingPayloads.entries()].flatMap(([payloadId, payload]): DrawingPayloadChange[] => {
+          if (payload.kind === 'shape' && payload.propertyFormula) {
+            const propertyFormula = mapFormulaReference(payload.propertyFormula, sourceName, targetName, `drawing:${payloadId}.propertyFormula`, sheet.id);
+            return propertyFormula === payload.propertyFormula ? [] : [{ sheetId: sheet.id, payloadId, payload: { ...structuredClone(payload), propertyFormula }, formulaOwnerDeltas: [] }];
+          }
+          if (payload.kind !== 'chart') return [];
+          const next = structuredClone(payload);
+          const formulaOwnerDeltas: StructuralFormulaObjectOwnerDelta[] = [];
+          for (const { field, formula } of chartTextFormulaEntries(payload)) {
+            const afterFormula = mapFormulaReference(formula, sourceName, targetName, `drawing:${payloadId}.${field}`, sheet.id);
+            if (afterFormula === formula) continue;
+            writeChartTextFormula(next, field, afterFormula);
+            formulaOwnerDeltas.push({
+              kind: 'formula-object',
+              ownerKind: 'chart-text',
+              sheetId: sheet.id,
+              payloadId,
+              field,
+              beforeFormula: formula,
+              afterFormula,
+            });
+          }
+          return formulaOwnerDeltas.length === 0 ? [] : [{ sheetId: sheet.id, payloadId, payload: next, formulaOwnerDeltas }];
+        }));
     const drawingFormulaOwnerDeltas = drawingPayloadChanges.flatMap((change) => change.formulaOwnerDeltas);
     return {
       spec: { ...spec, targetName },
