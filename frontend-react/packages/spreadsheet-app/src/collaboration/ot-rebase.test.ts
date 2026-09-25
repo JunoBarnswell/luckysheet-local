@@ -74,6 +74,80 @@ test('fails closed when a committed mutation has no registered transform', () =>
   assert.throws(() => rebaseMutation(pending, committed), /committed extension\.structural\.change has no registered structural transform/);
 });
 
+test('classifies defined-name mutations and transforms anchored formula owners during structural rebase', () => {
+  const committed = classifyMutation('row.insert', { at: 5, count: 1 }, 'target-sheet', []);
+  const pending = classifyMutation('name.set', {
+    model: {
+      name: 'RelativeName',
+      scope: 'workbook',
+      formula: '=A10',
+      anchor: { sheetId: 'target-sheet', row: 9, column: 2 },
+    },
+  }, 'primary-sheet', []);
+
+  assert.equal(pending.kind, 'defined-name');
+  const { rebased } = rebaseMutation(pending, committed, {
+    sheetOrder: [
+      { id: 'primary-sheet', name: 'Primary' },
+      { id: 'target-sheet', name: 'Target' },
+    ],
+  });
+  const model = (rebased.params as { model: { formula: string; anchor: { sheetId: string; row: number; column: number } } }).model;
+  assert.equal(model.formula, '=A11');
+  assert.deepEqual(model.anchor, { sheetId: 'target-sheet', row: 10, column: 2 });
+});
+
+test('transforms qualified workbook-name references without inventing an owner sheet', () => {
+  const committed = classifyMutation('row.insert', { at: 5, count: 1 }, 'target-sheet', []);
+  const pending = classifyMutation('name.set', {
+    model: { name: 'QualifiedName', scope: 'workbook', formula: '=Target!A10' },
+  }, 'primary-sheet', []);
+
+  const { rebased } = rebaseMutation(pending, committed, {
+    sheetOrder: [
+      { id: 'primary-sheet', name: 'Primary' },
+      { id: 'target-sheet', name: 'Target' },
+    ],
+  });
+  assert.equal((rebased.params as { model: { formula: string } }).model.formula, '=Target!A11');
+});
+
+test('fails closed for unanchored workbook-name formulas with relative references', () => {
+  const committed = classifyMutation('row.insert', { at: 5, count: 1 }, 'target-sheet', []);
+  const pending = classifyMutation('name.set', {
+    model: { name: 'UnanchoredName', scope: 'workbook', formula: '=A10' },
+  }, 'primary-sheet', []);
+
+  assert.throws(() => rebaseMutation(pending, committed, {
+    sheetOrder: [{ id: 'target-sheet', name: 'Target' }],
+  }), /workbook-scoped defined name has an unqualified reference but no formula anchor/);
+});
+
+test('rejects rebasing an anchored defined name when its formula anchor is deleted', () => {
+  const committed = classifyMutation('row.delete', { at: 9, count: 1 }, 'target-sheet', []);
+  const pending = classifyMutation('name.set', {
+    model: {
+      name: 'DeletedAnchor',
+      scope: 'workbook',
+      formula: '=A10',
+      anchor: { sheetId: 'target-sheet', row: 9, column: 2 },
+    },
+  }, 'primary-sheet', []);
+
+  assert.throws(() => rebaseMutation(pending, committed, {
+    sheetOrder: [{ id: 'target-sheet', name: 'Target' }],
+  }), /coordinate 9 was deleted/);
+});
+
+test('rebases defined-name removals without coordinate changes', () => {
+  const committed = classifyMutation('row.insert', { at: 5, count: 1 }, 'target-sheet', []);
+  const pending = classifyMutation('name.remove', { name: 'Rate', scope: 'workbook' }, 'primary-sheet', []);
+  const { rebased } = rebaseMutation(pending, committed);
+
+  assert.equal(pending.kind, 'defined-name');
+  assert.deepEqual(rebased.params, { name: 'Rate', scope: 'workbook' });
+});
+
 test('classifies worksheet identity changes and fails closed without a canonical patch', () => {
   for (const mutationId of ['sheet.add', 'sheet.remove', 'sheet.rename', 'sheet.duplicated', 'sheet.restore', 'sheet.reordered']) {
     assert.equal(classifyMutation(mutationId, {}, 's1', []).kind, 'sheet-identity');

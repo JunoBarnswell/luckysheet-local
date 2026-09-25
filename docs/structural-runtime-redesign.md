@@ -1146,3 +1146,16 @@ PR 上两个 `canonical-build` job 使用相同 head，前端依赖安装与前�
 6. **协议与拒绝边界**：StructuralPatch v3、TS protocol 与 Java reducer 已支持全部五类公式对象 owner，因此无需变更 wire shape；既有 anchor 删除用例继续验证拒绝不写入快照。
 
 现已让 TS 两条应用路径对所有 staged 公式对象统一生成 delta，并让 Java axis/cell-shift/move patch 发出同一组 owner 变化。TS fixture 覆盖三类操作的 owner-kind 集；Java fixture 覆盖 13 个轴插入 owner delta、轴 patch inverse 以及 cell-shift/move 的完整对象 delta。只做静态源码审查和 `git diff --check`，未运行本地测试、构建、lint 或 UI。没有更改 patch 字段或版本；本修复不补齐 permutation、sheet identity、OOXML 或普通非公式 metadata patch，Canonical Planner/ReferenceIndex 与完整跨层链仍未完成。
+
+### 六轮静态自审 — 定义名称的协同结构重放（2026-09-26）
+
+六轮从不同边界核对同一个候选问题，只计为一个协同契约缺口：
+
+1. **模型契约**：`DefinedNameModel` 的相对公式 anchor 是 `anchor: CellAddress`，不是普通 `formulaAnchor` 字段；结构式计算按 `anchor`、sheet scope 的 A1 默认上下文解析。
+2. **生产 mutation 路径**：注册的领域 mutation ID 是 `name.set`/`name.remove`；`name.set` 的 inverse 会携带此前完整模型，因此已锚定公式确实能进入协同事件 payload。
+3. **分类边界**：协同 kind map 未列这两个已注册 mutation，generated capability 也没有提供可用的 collaboration kind，故它们一直落入 `unknown`。
+4. **失败行为**：`rebaseMutation` 对结构历史中的 pending `unknown` 立即抛 `STRUCTURAL_REBASE_CONFLICT`。这是可观察的 fail-close，不会静默损坏数据；真实影响是带定义名称的有效离线操作被拒绝重放。
+5. **坐标/公式所有权**：通用 `transformParams` 只读取 `formulaAnchor`，不会移动 `model.anchor`；同时会把 `model.formula` 错按 envelope 的主工作表解析。单纯注册 kind 会产生错误公式 owner 和过期 anchor。
+6. **缺省上下文与拒绝路径**：FormulaEngine 使用显式 name anchor，sheet-scope 默认 A1；无 anchor 的 workbook name 没有可推断的相对 owner。因此只变换有明确 owner 的公式；无 anchor 的 workbook 名称仅允许安全映射全限定引用，遇到相对引用即 fail-close；删除 anchor 的结构变更也必须拒绝。
+
+**修复**：将 `name.set`/`name.remove` 分类为 defined-name；名称 set 使用专用变换，按模型 anchor 或 sheet-scope owner 改写公式并映射 anchor，remove 保持坐标不变。新增成功与拒绝路径回归测试源码，覆盖 anchored 公式/anchor 同步移动、全限定 workbook 名称、无 anchor 的相对引用、anchor 删除及 name removal。仅静态审查；未运行测试、构建、lint 或 UI。此修复不声明其它非结构性名称冲突已解决，Canonical Structural Planner/ReferenceIndex 与完整跨层迁移继续开放。

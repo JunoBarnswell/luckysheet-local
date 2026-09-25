@@ -1,5 +1,6 @@
 import type { RangeRef } from '@react-sheets/core-model';
 import { formatFormula, mapAstStructuralReferences, parseFormula, ReferenceTransformDomain, MAX_COLUMN_INDEX, MAX_ROW_INDEX } from '@react-sheets/formula-engine';
+import type { FormulaAst } from '@react-sheets/formula-engine';
 import { cellAddress, parseAddress } from '../address';
 import type { ClassifiedMutation, CollaborationOperationKind } from './operation-types';
 
@@ -466,6 +467,10 @@ function transformKnownMutationCoordinates(
     pendingKind, originalParams, transformedParams, delta, ownerSheetId,
   );
   if (structuralParams !== transformedParams) return structuralParams;
+  if (mutationId === 'name.set') {
+    return transformDefinedNameSetCoordinates(originalParams, delta, context);
+  }
+  if (mutationId === 'name.remove') return transformedParams;
   if (mutationId === 'range.set') {
     return transformRangeSetCoordinates(originalParams, transformedParams, delta, ownerSheetId, context);
   }
@@ -495,6 +500,95 @@ function transformKnownMutationCoordinates(
     return transformPasteTargetCoordinates(originalParams, transformedParams, delta, ownerSheetId);
   }
   return transformedParams;
+}
+
+function hasUnqualifiedFormulaReference(node: FormulaAst): boolean {
+  switch (node.type) {
+    case 'cell-reference': return node.reference.sheetId === undefined;
+    case 'range-reference':
+      return node.start.reference.sheetId === undefined || node.end.reference.sheetId === undefined;
+    case 'whole-column-reference':
+    case 'whole-row-reference': return node.sheetId === undefined;
+    case 'spill-reference': return hasUnqualifiedFormulaReference(node.operand);
+    case 'reference-union': return node.references.some(hasUnqualifiedFormulaReference);
+    case 'reference-intersection':
+      return hasUnqualifiedFormulaReference(node.left) || hasUnqualifiedFormulaReference(node.right);
+    case 'unary-expression': return hasUnqualifiedFormulaReference(node.operand);
+    case 'binary-expression':
+      return hasUnqualifiedFormulaReference(node.left) || hasUnqualifiedFormulaReference(node.right);
+    case 'function-call': return node.arguments.some(hasUnqualifiedFormulaReference);
+    case 'number-literal':
+    case 'string-literal':
+    case 'boolean-literal':
+    case 'name-reference':
+    case 'table-reference':
+    case 'invalid-reference':
+    case 'sheet-range-reference':
+    case 'external-reference':
+      return false;
+  }
+}
+
+function transformDefinedNameSetCoordinates(
+  params: unknown,
+  delta: StructuralDelta,
+  context: StructuralRebaseContext,
+): unknown {
+  if (!isRecord(params) || !isRecord(params.model)) rebaseConflict('pending name.set has no defined-name model');
+  const model = params.model;
+  if (typeof model.formula !== 'string' || model.formula.trim() === '') {
+    rebaseConflict('pending name.set has no canonical formula');
+  }
+  const formulaValue = model.formula;
+  if (model.scope !== 'workbook' && model.scope !== 'sheet') {
+    rebaseConflict('pending name.set has an unknown defined-name scope');
+  }
+
+  let ownerSheetId: string | undefined;
+  const originalAnchor = model.anchor;
+  if (originalAnchor !== undefined) {
+    if (!isRecord(originalAnchor) || typeof originalAnchor.sheetId !== 'string' || originalAnchor.sheetId.trim() === ''
+      || !Number.isSafeInteger(originalAnchor.row) || !Number.isSafeInteger(originalAnchor.column)
+      || (originalAnchor.row as number) < 0 || (originalAnchor.row as number) > MAX_ROW_INDEX
+      || (originalAnchor.column as number) < 0 || (originalAnchor.column as number) > MAX_COLUMN_INDEX) {
+      rebaseConflict('pending name.set has an invalid formula anchor');
+    }
+    ownerSheetId = originalAnchor.sheetId;
+  } else if (model.scope === 'sheet') {
+    if (typeof model.sheetId !== 'string' || model.sheetId.trim() === '') {
+      rebaseConflict('pending sheet-scoped name.set has no worksheet identity');
+    }
+    ownerSheetId = model.sheetId;
+  }
+
+  let formulaOwnerSheetId = ownerSheetId;
+  if (formulaOwnerSheetId === undefined) {
+    try {
+      const source = formulaValue.trimStart().startsWith('=') ? formulaValue : `=${formulaValue}`;
+      if (hasUnqualifiedFormulaReference(parseFormula(source))) {
+        rebaseConflict('workbook-scoped defined name has an unqualified reference but no formula anchor');
+      }
+    } catch (error) {
+      if (error instanceof Error && error.message.startsWith('STRUCTURAL_REBASE_CONFLICT:')) throw error;
+      rebaseConflict(`pending defined-name formula cannot be parsed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    // The empty identity keeps explicitly qualified references transformable
+    // without assigning unresolved relative references to the primary sheet.
+    formulaOwnerSheetId = '';
+  }
+
+  const formula = transformFormulaValue(formulaValue, delta, formulaOwnerSheetId, context);
+  const anchor = originalAnchor === undefined
+    ? undefined
+    : shiftCellCoordinate(originalAnchor, ownerSheetId!, delta, 'pending name.set formula anchor');
+  return {
+    ...params,
+    model: {
+      ...model,
+      formula,
+      ...(anchor === undefined ? {} : { anchor }),
+    },
+  };
 }
 
 function isFormulaField(field: string, formula: string): boolean {
@@ -737,7 +831,9 @@ export function rebaseMutation(
 
   const paramsForTransform = isRecord(pending.params) ? { ...pending.params } : pending.params;
   if (pending.mutationId === 'range.paste' && isRecord(paramsForTransform)) delete paramsForTransform.clipboard;
-  const transformedParams = transformParams(paramsForTransform, delta, pending.sheetId, context);
+  const transformedParams = pending.mutationId === 'name.set'
+    ? paramsForTransform
+    : transformParams(paramsForTransform, delta, pending.sheetId, context);
   const mappedParams = transformKnownMutationCoordinates(pending.mutationId, pending.kind, pending.params, transformedParams, delta, pending.sheetId, context);
   const rebasedParams = pending.mutationId === 'range.paste'
     ? transformPasteSnapshots(pending.params, mappedParams, pending.sheetId, delta, context)

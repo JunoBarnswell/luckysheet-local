@@ -20,6 +20,7 @@ export type CollaborationOperationKind =
   | 'comment'
   | 'visibility'
   | 'pivot-config'
+  | 'defined-name'
   | 'unknown';
 
 export interface ClassifiedMutation {
@@ -94,6 +95,8 @@ const MUTATION_KIND_MAP: Readonly<Record<string, CollaborationOperationKind>> = 
   'columns.visibility': 'visibility',
   'find.replaced': 'cell-value',
   'pivot.layout.set': 'pivot-config',
+  'name.set': 'defined-name',
+  'name.remove': 'defined-name',
 };
 
 export function classifyMutation(mutationId: string, params: unknown, sheetId: string, affectedRanges: RangeRef[]): ClassifiedMutation {
