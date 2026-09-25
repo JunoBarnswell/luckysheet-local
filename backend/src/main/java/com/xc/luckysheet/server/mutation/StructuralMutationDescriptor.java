@@ -28,7 +28,10 @@ final class StructuralMutationDescriptor extends CanonicalJsonMutationDescriptor
         ObjectNode root = SnapshotMutationSupport.root(snapshot);
         ObjectNode params = SnapshotMutationSupport.params(mutation);
         return switch (id()) {
-            case "rows.inserted", "rows.deleted", "columns.inserted", "columns.deleted" -> List.of(SnapshotMutationSupport.wholeSheetRange(root, mutation.sheetId()));
+            case "rows.inserted", "rows.deleted" -> List.of(axisAffectedRange(
+                    root, mutation.sheetId(), params, FormulaReferenceTransformer.Axis.ROW, id().equals("rows.inserted")));
+            case "columns.inserted", "columns.deleted" -> List.of(axisAffectedRange(
+                    root, mutation.sheetId(), params, FormulaReferenceTransformer.Axis.COLUMN, id().equals("columns.inserted")));
             case "cells.inserted", "cells.deleted" -> List.of(cellAffectedBand(root, mutation.sheetId(), params));
             case "cells.inserted.restore", "cells.deleted.restore" -> List.of(restoreAffectedBand(root, mutation.sheetId(), params));
             case "rows.permuted" -> {
@@ -87,6 +90,33 @@ final class StructuralMutationDescriptor extends CanonicalJsonMutationDescriptor
         int count = integer(params.get("count"), "Structural count");
         if (count < 1) throw ServiceException.validation("Structural count must be positive");
         StructuralSnapshotReducer.applyAxis(root, sheetId, axis, at, count, direction);
+    }
+
+    private RangeRef axisAffectedRange(
+            ObjectNode root,
+            String sheetId,
+            ObjectNode params,
+            FormulaReferenceTransformer.Axis axis,
+            boolean insert
+    ) {
+        ObjectNode sheet = SnapshotMutationSupport.sheet(root, sheetId);
+        int at = integer(params.get("at"), "Structural at");
+        int count = integer(params.get("count"), "Structural count");
+        if (at < 0 || count < 1) throw ServiceException.validation("Structural axis range is invalid");
+
+        boolean rows = axis == FormulaReferenceTransformer.Axis.ROW;
+        int dimension = SnapshotMutationSupport.canonicalDimension(sheet, rows ? "rowCount" : "columnCount");
+        int orthogonalEnd = SnapshotMutationSupport.canonicalDimension(sheet, rows ? "columnCount" : "rowCount") - 1;
+        int maximumIndex = rows ? SnapshotMutationSupport.MAX_ROW : SnapshotMutationSupport.MAX_COLUMN;
+        long end = (long) at + count - 1;
+        boolean valid = insert
+                ? at <= dimension && (long) dimension + count <= (long) maximumIndex + 1
+                : at < dimension && count <= dimension - at;
+        if (!valid || end > maximumIndex) throw ServiceException.validation("Structural axis range exceeds worksheet bounds");
+
+        return rows
+                ? new RangeRef(sheetId, at, (int) end, 0, orthogonalEnd)
+                : new RangeRef(sheetId, 0, orthogonalEnd, at, (int) end);
     }
 
     private void restore(ObjectNode root, String sheetId, ObjectNode params) {

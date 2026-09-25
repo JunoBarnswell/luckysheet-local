@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.xc.luckysheet.server.contract.OperationMutation;
+import com.xc.luckysheet.server.contract.RangeRef;
 import com.xc.luckysheet.server.contract.WorkbookAclRole;
 import com.xc.luckysheet.server.service.ServiceException;
 import org.junit.jupiter.api.Test;
@@ -1292,6 +1293,31 @@ class MutationDescriptorRegistryTest {
         JsonNode pivot = current.path("sheets").get(0).path("pivots").get(0);
         assertEquals(2, pivot.path("source").path("range").path("endRow").asInt());
         assertEquals(5, pivot.path("target").path("anchor").path("row").asInt());
+    }
+
+    @Test
+    void axisProtectionUsesTheRequestedDimensionBandLikeTheClient() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        JsonNode snapshot = mapper.readTree("""
+                {"sheets":[{"id":"sheet-1","rowCount":100,"columnCount":26,"cells":{},"protectionRules":[
+                  {"id":"protected-column","scope":"range","sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":0,"endRow":99,"startColumn":3,"endColumn":3},"locked":true,"allow":{}}
+                ]}]}
+                """);
+
+        OperationMutation deleteOtherColumns = new OperationMutation("columns.deleted", "sheet-1", mapper.readTree(
+                "{\"sheetId\":\"sheet-1\",\"at\":1,\"count\":2}"));
+        var prepared = registry.prepare(snapshot, deleteOtherColumns, WorkbookAclRole.EDITOR);
+        assertEquals(new RangeRef("sheet-1", 0, 99, 1, 2), prepared.affectedRanges().getFirst());
+
+        OperationMutation deleteProtectedColumn = new OperationMutation("columns.deleted", "sheet-1", mapper.readTree(
+                "{\"sheetId\":\"sheet-1\",\"at\":3,\"count\":1}"));
+        ServiceException blocked = assertThrows(ServiceException.class,
+                () -> registry.prepare(snapshot, deleteProtectedColumn, WorkbookAclRole.EDITOR));
+        assertEquals("FORBIDDEN", blocked.code());
+
+        OperationMutation insertRows = new OperationMutation("rows.inserted", "sheet-1", mapper.readTree(
+                "{\"sheetId\":\"sheet-1\",\"at\":10,\"count\":2}"));
+        assertEquals(new RangeRef("sheet-1", 10, 11, 0, 25), registry.resolveRanges(snapshot, insertRows).getFirst());
     }
 
     @Test

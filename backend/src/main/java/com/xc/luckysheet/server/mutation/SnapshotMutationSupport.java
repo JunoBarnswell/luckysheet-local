@@ -234,7 +234,7 @@ final class SnapshotMutationSupport {
         return new RangeRef(sheetId, 0, canonicalDimension(sheet, "rowCount") - 1, column, column);
     }
 
-    private static int canonicalDimension(ObjectNode sheet, String field) {
+    static int canonicalDimension(ObjectNode sheet, String field) {
         JsonNode value = sheet.get(field);
         if (value == null || !value.isIntegralNumber() || !value.canConvertToInt() || value.intValue() < 1) {
             throw ServiceException.validation("Canonical worksheet " + field + " is required");

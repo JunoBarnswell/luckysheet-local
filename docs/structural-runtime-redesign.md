@@ -497,7 +497,7 @@ Confirmed additional operation paths: 13 in the follow-up audit (the previous 12
 
 收敛顺序据此固定为：先让结构请求经 typed owner index 进入 side-effect-free `CanonicalStructuralPlanner`，输出包含 cell、metadata、formula、projection、history/inverse 和协作影响的不可变 `StructuralPatch`；再由客户端 runtime、OT、Java commit 和 OOXML capability boundary 消费同一版本化 patch 语义。第一条纵向迁移应覆盖 whole-axis insert/delete（成功、拒绝、inverse、remote replay、server reducer、native save），完成后移除对应旧的 live-mutation 分支，而不是增加并行 wrapper。复杂度目标是 planning/commit 随 affected cells 与 affected owners `O(C+F+M_affected)`，避免每次全 workbook metadata clone `O(M)`；无法证明 opaque owner 不受影响时在计划阶段 fail-close。
 
-以上是源码级复杂度推导，不是 benchmark，也未运行本地测试/构建。PR head `3752dc28` 的两项远端 `canonical-build` 均成功；本次 What-If 修正尚待推送后的 CI。完整 StructuralPatch/owner-index 迁移仍未完成。
+以上是源码级复杂度推导，不是 benchmark，也未运行本地测试/构建。PR head `4034ae14` 的两项远端 `canonical-build` 均成功。完整 StructuralPatch/owner-index 迁移仍未完成。
 
 ### Spill 障碍快照与执行语义 — 六轮自审
 
@@ -514,3 +514,14 @@ Confirmed additional operation paths: 13 in the follow-up audit (the previous 12
 11. **What-If 投影路径：** Goal Seek/Scenario 的 `isSpillCell` 仍以状态无关的矩形包含判断拒绝 blocked Spill 的空闲子格；锚点继续受保护，但只有成功投影的子格现在会被当作 Spill cell。
 
 本轮修复把合并区、Table 区和成功 Spill 范围作为范围障碍传输/查询；Worker 快照同时恢复活动 Spill 投影，静态快照校验拒绝无公式锚点的投影；阻塞或越界 Spill 不再向子格泄漏矩阵值、显示部分数组或锁住障碍单元格，What-If 允许写入未投影的空闲子格。新增了范围阻塞、快照往返、自身投影重算、同批 owner 更新、失败子格不投影、越界拒绝、障碍恢复、What-If blocked-range、工作簿重建和合并/Table 环境回归用例。按用户要求仅静态审查，未执行测试或构建；完整 StructuralPatch/owner-index 跨层迁移仍未完成。
+
+### 六轮跨层自审 — 轴结构变更的保护范围
+
+1. **客户端命令入口：** 行/列插入删除命令以请求的 `at/count` 构造 axis band，列维度取当前 `rowCount`，行维度取当前 `columnCount`。
+2. **权限语义：** `features/permission/policy.test.ts` 已明确验证：删除被保护列应拒绝，而删除与其不相交的列应允许；这排除了“任一结构变更都按整张表授权”的当前客户端语义。
+3. **本地执行：** `WorkbookSession` 的 mutation guard 将命令给出的 `affectedRanges` 传入 `PermissionService.checkMutation`；因此客户端只按选中的轴 band 检查范围保护。
+4. **服务端范围：** `StructuralMutationDescriptor.affectedRanges` 对四种 rows/columns 插入删除 mutation 曾统一返回 `wholeSheetRange`，不读取 `at/count` 来界定受保护目标。
+5. **服务端授权：** `MutationDescriptorRegistry.prepare` 用该范围调用 `ProtectionResolver`；range-scope 的锁定规则只需与范围相交即可拒绝，所以位于未操作列/行上的锁会让服务端拒绝客户端已允许的操作。
+6. **失败边界：** 结构 mutation 的服务端 rebase policy 是 `EXACT_BASE`；全表范围并非并发重放保护所必需，却改变了保护判定语义并造成跨端结果不一致。
+
+**确认缺陷与修复：** 服务端现从结构 mutation 的 `axis/at/count` 生成与客户端相同的请求轴 band，并在权限判断前验证工作表 extent 与 Excel 坐标上界。Java 回归用例覆盖不相交的锁列可删除、相交锁列拒绝及行插入范围。该源码测试尚未执行；本地测试/构建仍按要求跳过。
