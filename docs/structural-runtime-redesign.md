@@ -1105,3 +1105,5 @@ PR 上两个 `canonical-build` job 使用相同 head，前端依赖安装与前�
 6. **提交、撤销与失败边界**：客户端命令应用及 Java patch setter 保留 metadata 其余字段并支持 inverse；现有 Java 用例覆盖 undo/redo。shared/array 仍须拒绝，结构公式解析失败仍须原子拒绝，worksheet rename 的 preserved-only 拒绝也保持不变。
 
 现仅允许 `preservedOnly dataTable` 且没有可执行公式、仅其来源公式因 table token 改名的窄场景；`range`、bar-code owner 和其他公式字段均不得随之改变。新增 shared-formula 拒绝路径源码，并强化 dataTable range 保持断言。只运行 `git diff --check` 作静态补丁检查；没有运行本地测试、构建、lint 或 UI。修复后的远端 CI 尚待新 head 验证，Structural Editing & Reference Integrity 总体目标仍继续开放。
+
+后续 head `d336b525` 的 CI 将该路径推进到 owner 变换后，暴露原 Java 测试快照缺少两张 worksheet 的 canonical `name`；调用栈落在 `StructuralSnapshotReducer.identity` 的必需字段校验。现只补齐 fixture 名称，没有放宽生产校验；新 head 的远端检查仍待确认。

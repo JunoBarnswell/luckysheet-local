@@ -52,7 +52,7 @@ class MutationDescriptorRegistryTest {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         ObjectNode snapshot = (ObjectNode) mapper.readTree("""
                 {"sheets":[
-                  {"id":"sheet-1","rowCount":20,"columnCount":10,
+                  {"id":"sheet-1","name":"Sheet 1","rowCount":20,"columnCount":10,
                    "cells":{"0":{"0":{"value":null,"formula":"=SUM(Sales[Amount])+Sales [Other]+ÅSales[Amount]+[Book.xlsx]Sales[Amount]+IF(A1=\\"Sales[Amount]\\",0,1)"},
                      "1":{"value":null,"formulaMetadata":{"kind":"dataTable","range":"B1:B2","preservedOnly":true,"sourceFormula":"=Sales[Amount]"}}}},
                    "sheetTables":[{"id":"sales-table","sheetId":"sheet-1","name":"Sales",
@@ -60,7 +60,7 @@ class MutationDescriptorRegistryTest {
                      "hasHeaderRow":true,"hasTotalRow":false,"showBandedRows":true,"showBandedColumns":false,
                      "showFirstColumn":false,"showLastColumn":false,"showFilterButton":true,"autoExpand":"none",
                      "columns":[{"id":"amount","name":"Amount"},{"id":"other","name":"Other"}]}]},
-                  {"id":"sheet-2","rowCount":20,"columnCount":10,
+                  {"id":"sheet-2","name":"Sheet 2","rowCount":20,"columnCount":10,
                    "cells":{"0":{"0":{"value":null,"formula":"=Sales[Amount]"}}},"sheetTables":[]}
                 ]}
                 """);
