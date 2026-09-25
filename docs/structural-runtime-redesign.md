@@ -909,3 +909,16 @@ head `1d8508ea` 的两个后端 CI 已通过 test-compile，随后在 `sheetRena
 6. 对照 Java `requireCanonicalPane` 的每个分支与既有 TS structural preflight，确认无意扩宽 split 的 native fractional units，唯一需要修改的是未被调用的本地 mutation ingress；成功/拒绝路径测试现覆盖相同入口及 history 原子性。
 
 此轮确认一个真实缺陷：前端 `freeze.set` schema 接受非规范 pane 并可将它写入本地模型/undo history，结构变换随后才拒绝；服务端已拒绝不构成本地路径的保护。现将完整 TS pane 判定集中在 core-model，结构变换与 feature mutation schema 共用同一规则。未把其他被六轮排除的候选计为问题。新增测试源码未执行；本轮仍只允许静态审查，整体 patch v2 / 历史迁移保持未完成。
+
+### 六轮静态复审 — pane schema exactness and TS snapshot ingress (2026-09-25)
+
+继续沿已修复的 pane 边界做六轮独立检查：
+
+1. 对照 `WorksheetPane` union，确认 pane 只允许 `kind/state/xSplit/ySplit/startRow/startColumn/activePane`，none 分支只允许 `kind`。
+2. 反查前端 mutation 判定，确认 exact-key 缺口会令 `referenceHint` 等未知 own field 仍被当作 canonical，并随 frozen/split spread 保留。
+3. 追到 Java `requireCanonicalPane`，确认服务端也只验证已知值，既不拒绝 frozen/split 的额外字段，也不拒绝 none 的未知字段。
+4. 追到 `assertCanonicalWorkbookSnapshot` 与公开 `WorkbookModel.fromSnapshot`，确认前者有第三份更弱规则，后者可被直接调用绕过 snapshot assertion；二者都未检查完整 pane contract。
+5. 核对正常 OOXML unknown-part 保留走原始包 capability/export 路径，不依赖在 canonical pane JSON 任意塞字段；exact-key 拒绝不会替代或删除 raw OOXML parts。
+6. 核对拒绝发生在 local mutation schema、TS snapshot hydration 及 Java snapshot/mutation 边界，测试源码分别覆盖有效本地 pane与损坏/未知 pane 拒绝。
+
+确认的根因是 pane canonical schema 在多个入口各自实现且未约束对象 key。现在 TS core-model 的单一 validator 拒绝未声明 key 与缺失的必需字段，结构变换、freeze mutation、`assertCanonicalWorkbookSnapshot` 及公开 `WorkbookModel.fromSnapshot` 共用它；Java 对 frozen/split 与 none 执行相同的 exact-key 校验。增加 TS/Java snapshot 与 mutation 拒绝用例源码，未运行测试或构建。该项不代表 StructuralPatch v2、ReferenceIndex 收敛、OOXML planner preflight 或整体目标已完成。

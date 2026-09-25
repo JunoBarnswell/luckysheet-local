@@ -1,6 +1,6 @@
 import type { CellHyperlink, DefinedNameModel, SheetSnapshot, RangeRef, CellStyleTemplate, UnitId, WorkbookModel, WorkbookTheme } from './index';
 import type { PrintDocumentSnapshot, QueryDefinitionSnapshot } from './workbook-state';
-import { WorkbookModel as WorkbookModelClass } from './index';
+import { WorkbookModel as WorkbookModelClass, worksheetPaneValidationError } from './index';
 import { MAX_DRAWING_SOURCE_CELLS } from './generated-workbook-limits';
 import { canonicalizePivotDefinition, pivotSourceIdentity } from './pivot';
 import { isAssetRef } from './asset';
@@ -374,16 +374,8 @@ export function assertCanonicalWorkbookSnapshot(snapshot: WorkbookSnapshot): Wor
     if (sheet.kind === 'gantt-sheet' && !sheet.ganttSheet) throw new Error('GanttSheet definition is required');
     if (sheet.kind === 'report-sheet' && !sheet.reportSheet) throw new Error('ReportSheet definition is required');
     validateReviewSnapshot(sheet.review, sheet.id);
-    const pane = sheet.pane;
-    if (pane.kind === 'frozen') {
-      if (!Number.isInteger(pane.xSplit) || !Number.isInteger(pane.ySplit) || pane.xSplit < 0 || pane.ySplit < 0) {
-        throw new Error('Frozen pane split counts must be non-negative integers');
-      }
-    } else if (pane.kind === 'split') {
-      if (!Number.isFinite(pane.xSplit) || !Number.isFinite(pane.ySplit) || pane.xSplit < 0 || pane.ySplit < 0) {
-        throw new Error('Split pane positions must be finite non-negative numbers');
-      }
-    }
+    const paneError = worksheetPaneValidationError(sheet.pane);
+    if (paneError !== undefined) throw new Error(`Workbook snapshot pane ${paneError} is invalid`);
     if (sheet.autoFilter) {
       if (sheet.autoFilter.sheetId !== sheet.id || sheet.autoFilter.range.sheetId !== sheet.id) {
         throw new Error('AutoFilter must target its worksheet');

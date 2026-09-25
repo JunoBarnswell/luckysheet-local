@@ -13,6 +13,8 @@ import com.xc.luckysheet.server.service.ServiceException;
 public final class WorkbookSnapshotValidator {
     private static final int MAX_ROW_INDEX = 1_048_575;
     private static final int MAX_COLUMN_INDEX = 16_383;
+    private static final java.util.Set<String> PANE_NONE_FIELDS = java.util.Set.of("kind");
+    private static final java.util.Set<String> PANE_FIELDS = java.util.Set.of("kind", "state", "xSplit", "ySplit", "startRow", "startColumn", "activePane");
     private static final java.util.Set<String> HYPERLINK_ENTRY_FIELDS = java.util.Set.of("row", "column", "hyperlink");
     private static final java.util.Set<String> HYPERLINK_FIELDS = java.util.Set.of("id", "target", "tooltip");
     private static final java.util.Set<String> HYPERLINK_URL_FIELDS = java.util.Set.of("kind", "url");
@@ -32,6 +34,7 @@ public final class WorkbookSnapshotValidator {
         if (pane == null || !pane.isObject()) throw ServiceException.validation("Workbook snapshot pane is invalid");
         String kind = pane.path("kind").asText();
         if ("none".equals(kind)) {
+            requirePaneFields(pane, PANE_NONE_FIELDS);
             if (pane.has("state") || pane.has("xSplit") || pane.has("ySplit")
                     || pane.has("startRow") || pane.has("startColumn") || pane.has("activePane")) {
                 throw ServiceException.validation("Workbook snapshot none pane contains split state");
@@ -41,6 +44,7 @@ public final class WorkbookSnapshotValidator {
         if (!("frozen".equals(kind) || "split".equals(kind))) {
             throw ServiceException.validation("Workbook snapshot pane kind is invalid");
         }
+        requirePaneFields(pane, PANE_FIELDS);
         String state = pane.path("state").asText();
         if (("frozen".equals(kind) && !("frozen".equals(state) || "frozenSplit".equals(state)))
                 || ("split".equals(kind) && !"split".equals(state))) {
@@ -60,6 +64,12 @@ public final class WorkbookSnapshotValidator {
                 || !java.util.Set.of("topLeft", "topRight", "bottomLeft", "bottomRight").contains(activePane.asText()))) {
             throw ServiceException.validation("Workbook snapshot pane activePane is invalid");
         }
+    }
+
+    private static void requirePaneFields(JsonNode pane, java.util.Set<String> allowedFields) {
+        pane.fieldNames().forEachRemaining(field -> {
+            if (!allowedFields.contains(field)) throw ServiceException.validation("Workbook snapshot pane field is not canonical: " + field);
+        });
     }
 
     private static void requirePaneCoordinate(JsonNode pane, String field, int maximum) {

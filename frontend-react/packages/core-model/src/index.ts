@@ -328,12 +328,23 @@ export function normalizeWorksheetPane(pane: WorksheetPane): WorksheetPane {
 export function worksheetPaneValidationError(value: unknown): string | undefined {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return 'kind';
   const pane = value as Record<string, unknown>;
+  const hasOwn = (field: string): boolean => Object.prototype.hasOwnProperty.call(pane, field);
+  if (!hasOwn('kind')) return 'kind';
   if (pane.kind === 'none') {
-    return ['state', 'xSplit', 'ySplit', 'startRow', 'startColumn', 'activePane'].some((field) => field in pane)
-      ? 'none-state'
-      : undefined;
+    const fields = Object.keys(pane);
+    if (fields.some((field) => field !== 'kind')) {
+      return fields.some((field) => ['state', 'xSplit', 'ySplit', 'startRow', 'startColumn', 'activePane'].includes(field))
+        ? 'none-state'
+        : 'unknown-field';
+    }
+    return undefined;
   }
   if (pane.kind !== 'frozen' && pane.kind !== 'split') return 'kind';
+  const allowedFields = ['kind', 'state', 'xSplit', 'ySplit', 'startRow', 'startColumn', 'activePane'];
+  if (Object.keys(pane).some((field) => !allowedFields.includes(field))) return 'unknown-field';
+  for (const field of ['state', 'xSplit', 'ySplit', 'startRow', 'startColumn']) {
+    if (!hasOwn(field)) return field;
+  }
   if (pane.kind === 'frozen' && pane.state !== 'frozen' && pane.state !== 'frozenSplit') return 'state';
   if (pane.kind === 'split' && pane.state !== 'split') return 'state';
   if (!Number.isSafeInteger(pane.startRow) || (pane.startRow as number) < 0 || (pane.startRow as number) > MAX_ROW_INDEX) return 'startRow';
@@ -345,7 +356,7 @@ export function worksheetPaneValidationError(value: unknown): string | undefined
     if (typeof pane.xSplit !== 'number' || !Number.isFinite(pane.xSplit) || pane.xSplit < 0) return 'xSplit';
     if (typeof pane.ySplit !== 'number' || !Number.isFinite(pane.ySplit) || pane.ySplit < 0) return 'ySplit';
   }
-  if (pane.activePane !== undefined
+  if (hasOwn('activePane') && pane.activePane !== undefined
     && !['topLeft', 'topRight', 'bottomLeft', 'bottomRight'].includes(pane.activePane as string)) return 'activePane';
   return undefined;
 }
@@ -2117,6 +2128,10 @@ export class WorkbookModel {
     if (snapshot.schema !== 'WorkbookSnapshot') throw new Error('Unsupported workbook snapshot schema');
     if (snapshot.version !== 10) throw new Error('Unsupported workbook snapshot version');
     if (snapshot.sheets.length === 0) throw new Error('Workbook snapshot must contain at least one sheet');
+    for (const sheet of snapshot.sheets) {
+      const paneError = worksheetPaneValidationError(sheet.pane);
+      if (paneError !== undefined) throw new Error(`Workbook snapshot pane ${paneError} is invalid`);
+    }
     const workbook = new WorkbookModel(snapshot.unitId, snapshot.name);
     workbook.dimensionMetrics = structuredClone(snapshot.dimensionMetrics);
     if (snapshot.theme) workbook.setTheme(snapshot.theme);

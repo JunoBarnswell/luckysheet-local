@@ -71,7 +71,9 @@ class WorkbookSnapshotValidatorTest {
                 "{\"kind\":\"frozen\",\"state\":\"frozen\",\"xSplit\":1,\"ySplit\":0,\"startRow\":0,\"startColumn\":16384}",
                 "{\"kind\":\"split\",\"state\":\"split\",\"xSplit\":-0.5,\"ySplit\":10,\"startRow\":0,\"startColumn\":0}",
                 "{\"kind\":\"split\",\"state\":\"split\",\"xSplit\":20,\"ySplit\":10,\"startRow\":1048576,\"startColumn\":0}",
-                "{\"kind\":\"split\",\"state\":\"split\",\"xSplit\":20,\"ySplit\":10,\"startRow\":0,\"startColumn\":0,\"activePane\":\"center\"}")) {
+                "{\"kind\":\"split\",\"state\":\"split\",\"xSplit\":20,\"ySplit\":10,\"startRow\":0,\"startColumn\":0,\"activePane\":\"center\"}",
+                "{\"kind\":\"frozen\",\"state\":\"frozen\",\"xSplit\":1,\"ySplit\":0,\"startRow\":0,\"startColumn\":1,\"referenceHint\":\"A1\"}",
+                "{\"kind\":\"none\",\"referenceHint\":\"A1\"}")) {
             ObjectNode candidate = snapshot();
             ((ObjectNode) candidate.path("sheets").get(0)).set("pane", mapper.readTree(pane));
 

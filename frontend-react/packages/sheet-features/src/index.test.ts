@@ -1297,7 +1297,9 @@ test('sheet.freeze.set enforces the canonical pane contract before recording loc
     { ...validPane, startRow: 1_048_576 },
     { ...validPane, state: 'split' },
     { ...validPane, activePane: 'center' },
+    { ...validPane, referenceHint: 'A1' },
     { kind: 'none', state: 'frozen' },
+    { kind: 'none', referenceHint: 'A1' },
   ]) {
     assert.throws(() => runtime.execute('sheet.freeze.set', { sheetId: sheet.id, pane }));
     assert.deepEqual(sheet.pane, paneBeforeReject);

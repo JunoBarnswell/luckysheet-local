@@ -14,6 +14,20 @@ import {
 } from './index';
 import { assertCanonicalWorkbookSnapshot, migrateStoredWorkbookSnapshot } from './snapshot';
 
+test('canonical workbook snapshots reject malformed or unowned pane fields', () => {
+  const panes = [
+    { kind: 'frozen', state: 'frozen', xSplit: 16_385, ySplit: 0, startRow: 0, startColumn: 0 },
+    { kind: 'frozen', state: 'frozen', xSplit: 0, ySplit: 0, startRow: 0, startColumn: 0, referenceHint: 'A1' },
+    { kind: 'none', referenceHint: 'A1' },
+  ];
+  for (const pane of panes) {
+    const candidate = structuredClone(new WorkbookModel('unit-pane-snapshot-validation', 'Pane snapshot').snapshot()) as unknown as Record<string, any>;
+    candidate.sheets[0].pane = pane;
+    assert.throws(() => assertCanonicalWorkbookSnapshot(candidate), /Workbook snapshot pane/);
+    assert.throws(() => WorkbookModel.fromSnapshot(candidate), /Workbook snapshot pane/);
+  }
+});
+
 test('v8 storage migration creates the single canonical v10 editing options contract', () => {
   const legacy = structuredClone(new WorkbookModel('unit-v8-editing', 'Legacy').snapshot()) as unknown as Record<string, unknown>;
   legacy.version = 8;
