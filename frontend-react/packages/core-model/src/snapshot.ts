@@ -11,6 +11,7 @@ import { chartSeriesSupportsErrorBars, chartSeriesSupportsTrendlines, isChartSub
 import type { ChartDrawingPayload } from './domain';
 import { isEmbeddedObjectDrawingPayload, isEquationDrawingPayload, isIconDrawingPayload, isModel3dDrawingPayload, isScreenshotDrawingPayload, isSignatureLineDrawingPayload, isSmartArtDrawingPayload, isWordArtDrawingPayload } from './domain';
 import { isCellPhoneticMetadata } from './phonetic';
+import { normalizeFontFamily } from './font-family';
 import type { ReviewStoreSnapshot } from './review-store';
 import { isAnalysisViewDefinition, type AnalysisViewDefinition } from './data-model';
 import { DEFAULT_WORKBOOK_CALCULATION_SETTINGS, isWorkbookCalculationSettings, type WorkbookCalculationSettings, type WorkbookCollationContext } from '@react-sheets/formula-engine';
@@ -376,6 +377,7 @@ export function assertCanonicalWorkbookSnapshot(snapshot: WorkbookSnapshot): Wor
         if ('note' in cell || 'comment' in cell) throw new Error(`Cell ${sheet.id} contains legacy review metadata`);
         if (cell.phonetic && !isCellPhoneticMetadata(cell.phonetic)) throw new Error(`Cell ${sheet.id} contains invalid phonetic metadata`);
         if (cell.presentation?.kind === 'image' && !isAssetRef(cell.presentation.asset)) throw new Error('Cell image asset is invalid');
+        if (cell.style?.fontFamily !== undefined) normalizeFontFamily(cell.style.fontFamily);
       }
     }
   }

@@ -303,3 +303,25 @@ Confirmed performance defect: on hydrated matrices, sparse range reads and struc
 6. **Semantic/regression check:** the existing source regression creates rows out of coordinate order, confirms prefix preservation, exercises insertion and deletion, and checks that the row index refreshes. No tests/builds were run, as required for this static-only pass.
 
 Confirmed performance issue: a warmed row index was ignored by `shiftRows`, forcing a full prefix scan. The fix reuses it only when already available; a cold shift retains the original O(R) scan rather than paying an O(R log R) cache build. This is a bounded warm-path optimization, not a claim that every structural row shift is sublinear. The same six checks rejected the unconditional candidate before it entered the patch.
+
+### Six-pass static review — atomic CellMatrix writes
+
+1. **Call-site ownership:** `WorksheetModel` constructs `CellMatrix` with an `onWrite` callback that grows the authoritative `SheetExtent`.
+2. **Failure ordering:** `CellMatrix.set` invoked that callback before normalizing `style.fontFamily`; `normalizeFontFamily` throws for whitespace-only or control-character names.
+3. **Observable reproduction by source path:** a write to a valid but out-of-current-extent coordinate first enlarged row/column counts, then threw on invalid font metadata. No cell was inserted, and the caller received failure without an extent rollback.
+4. **Derived-state consistency:** `count`/occupied bounds therefore still described an empty matrix while the worksheet extent had changed. The same ordering could notify other future write observers before rejecting the payload.
+5. **Mutation boundary:** font normalization is pure and does not depend on worksheet extent. Moving it before `onWrite` and row-map allocation makes rejected metadata side-effect free; valid writes still grow extent before storing the cell.
+6. **Regression-source balance:** added a rejection case proving no cell or extent change and a succeeding write at the same coordinates proving canonical font normalization and expected growth. Tests/builds remain unexecuted under the static-only instruction.
+
+Confirmed integrity defect: invalid cell metadata could throw after the worksheet extent had already grown. Validation now precedes extent notification and sparse row creation. No snapshot/schema migration. `git -c core.whitespace=cr-at-eol diff --check` is the only local validation for this follow-up.
+
+### Six-pass static review — deferred cell normalization failure boundary
+
+1. **Persisted-entry path:** `WorkbookModel.fromSnapshot` stores each sheet's cell object in `CellMatrix.deferJSON`; font normalization is deferred until a read or write hydrates that sheet.
+2. **Canonical gate:** `assertCanonicalWorkbookSnapshot` already inspects persisted cells for metadata invariants but did not reject font values that `CellMatrix.set` cannot normalize. It now checks that same field before accepting a snapshot.
+3. **Hydration ordering and peak memory:** `hydrate` previously cleared its only deferred source before calling `set` per cell. A bad font later in the input could throw after earlier cells had been installed, permanently losing the deferred source. It now prevalidates every font before clearing the source, then streams writes; it retains only changed font spellings rather than an O(N) temporary cell-entry array.
+4. **Mutation-triggered hydration:** an invalid new `set` payload previously called `hydrate` before validating its own font. It now rejects first, leaving an unrelated lazy sheet unmaterialized.
+5. **State/extent check:** only prevalidated cells reach the extent callback and sparse row allocation; the earlier extent-growth rejection case now checks both unchanged bounds and a successful subsequent write.
+6. **Regression-source balance:** added persisted-snapshot rejection and deferred-hydration preservation cases. The review rejected a full prepared-entry buffer because it would raise peak memory for large sheets. No local tests/builds were run; static diff check is the only local validation.
+
+Confirmed defect: invalid persisted font metadata could be accepted into deferred state and later make first access partially hydrate and discard its source. The canonical snapshot boundary rejects it; direct `CellMatrix` hydration retains deferred data if normalization fails. No persisted schema change.

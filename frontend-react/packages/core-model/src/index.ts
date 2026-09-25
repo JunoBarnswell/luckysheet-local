@@ -1034,7 +1034,15 @@ export class CellMatrix {
   }
 
   set(row: Row, column: Column, cell: CellData): void {
+    const fontFamily = cell.style?.fontFamily;
+    const normalizedCell = fontFamily === undefined
+      ? cell
+      : { ...cell, style: { ...cell.style, fontFamily: normalizeFontFamily(fontFamily) } };
     this.hydrate();
+    this.writeNormalizedCell(row, column, normalizedCell);
+  }
+
+  private writeNormalizedCell(row: Row, column: Column, cell: CellData): void {
     this.onWrite?.(row, column);
     let rowMap = this.rows.get(row);
     if (!rowMap) {
@@ -1042,12 +1050,8 @@ export class CellMatrix {
       this.rows.set(row, rowMap);
       this.sortedRowCoordinates = undefined;
     }
-    const fontFamily = cell.style?.fontFamily;
-    const normalizedCell = fontFamily === undefined
-      ? cell
-      : { ...cell, style: { ...cell.style, fontFamily: normalizeFontFamily(fontFamily) } };
     const existed = rowMap.has(column);
-    rowMap.set(column, normalizedCell);
+    rowMap.set(column, cell);
     if (!existed) {
       this.cellCount += 1;
       this.rowBounds.add(row);
@@ -1251,11 +1255,24 @@ export class CellMatrix {
   private hydrate(): void {
     const input = this.deferredJSON;
     if (input === undefined) return;
+    const normalizedFontFamilies = new Map<CellData, string>();
+    for (const [row, columns] of Object.entries(input)) {
+      for (const cell of Object.values(columns)) {
+        const fontFamily = cell.style?.fontFamily;
+        if (fontFamily === undefined) continue;
+        const normalized = normalizeFontFamily(fontFamily);
+        if (normalized !== fontFamily) normalizedFontFamilies.set(cell, normalized);
+      }
+    }
     this.deferredJSON = undefined;
     this.deferredBounds = undefined;
     for (const [row, columns] of Object.entries(input)) {
       for (const [column, cell] of Object.entries(columns)) {
-        this.set(Number(row), Number(column), { ...cell });
+        const fontFamily = cell.style?.fontFamily;
+        const normalizedCell = fontFamily === undefined
+          ? { ...cell }
+          : { ...cell, style: { ...cell.style, fontFamily: normalizedFontFamilies.get(cell) ?? fontFamily } };
+        this.writeNormalizedCell(Number(row), Number(column), normalizedCell);
       }
     }
   }

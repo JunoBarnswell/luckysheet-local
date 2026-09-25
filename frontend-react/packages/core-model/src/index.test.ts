@@ -10,6 +10,7 @@ import {
   pivotNumericValue,
   pivotTimelineInstant,
   WorkbookModel,
+  WorksheetModel,
 } from './index';
 import { assertCanonicalWorkbookSnapshot, migrateStoredWorkbookSnapshot } from './snapshot';
 
@@ -64,6 +65,12 @@ test('canonical snapshots enforce worksheet AutoFilter identity and column bound
   });
   sheet.autoFilter = { sheetId: sheet.id, range, columns: aliasedColumns };
   assert.throws(() => assertCanonicalWorkbookSnapshot(snapshot), /AutoFilter column identity is invalid/);
+});
+
+test('canonical snapshots reject persisted font metadata that cannot be normalized', () => {
+  const snapshot = new WorkbookModel('unit-invalid-font-snapshot', 'Invalid font snapshot').snapshot();
+  snapshot.sheets[0]!.cells['0'] = { '0': { value: 'invalid', style: { fontFamily: '  ' } } };
+  assert.throws(() => assertCanonicalWorkbookSnapshot(snapshot), /Font family must not be empty/);
 });
 
 test('CellMatrix keeps empty logical space sparse', () => {
@@ -140,6 +147,20 @@ test('CellMatrix enumerates non-calculation formula owners without hydrating def
   assert.equal(matrix.isHydrated, false);
 });
 
+test('CellMatrix keeps deferred cells intact when normalization fails during hydration', () => {
+  const matrix = new CellMatrix();
+  const deferred = {
+    '0': {
+      '0': { value: 'valid' },
+      '1': { value: 'invalid', style: { fontFamily: '  ' } },
+    },
+  };
+  matrix.deferJSON(deferred);
+  assert.throws(() => matrix.get(0, 0), /Font family must not be empty/);
+  assert.equal(matrix.isHydrated, false);
+  assert.deepEqual(matrix.toJSON(), deferred);
+});
+
 test('CellMatrix maintains sparse occupied bounds through overwrite, delete, and clear', () => {
   const matrix = new CellMatrix();
   matrix.set(100_000, 2, { value: 'tail-row' });
@@ -198,6 +219,25 @@ test('font families use one canonical trim/case contract while preserving unknow
   matrix.set(0, 1, { value: 'imported', style: { fontFamily: '  My Imported Font  ' } });
   assert.equal(matrix.get(0, 0)?.style?.fontFamily, 'Segoe UI');
   assert.equal(matrix.get(0, 1)?.style?.fontFamily, 'My Imported Font');
+});
+
+test('CellMatrix rejects invalid cell metadata before expanding worksheet extent', () => {
+  const deferred = new CellMatrix();
+  deferred.deferJSON({ '4': { '2': { value: 'existing' } } });
+  assert.throws(() => deferred.set(1_200, 40, { value: 'invalid', style: { fontFamily: '  ' } }), /must not be empty/);
+  assert.equal(deferred.isHydrated, false);
+  assert.equal(deferred.count(), 1);
+
+  const sheet = new WorksheetModel('atomic-cell-write', 'Atomic cell write');
+  assert.throws(() => sheet.cells.set(1_200, 40, { value: 'invalid', style: { fontFamily: '  ' } }), /must not be empty/);
+  assert.equal(sheet.cells.count(), 0);
+  assert.equal(sheet.rowCount, 1_000);
+  assert.equal(sheet.columnCount, 26);
+
+  sheet.cells.set(1_200, 40, { value: 'valid', style: { fontFamily: ' Arial ' } });
+  assert.equal(sheet.cells.get(1_200, 40)?.style?.fontFamily, 'Arial');
+  assert.equal(sheet.rowCount, 1_201);
+  assert.equal(sheet.columnCount, 41);
 });
 
 test('Pivot numeric value resolution preserves canonical scalar types', () => {
