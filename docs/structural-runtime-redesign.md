@@ -577,3 +577,14 @@ Confirmed additional operation paths: 13 in the follow-up audit (the previous 12
 6. **Undo/授权复核：** 服务端 undo 原来既不把 `range.move` 纳入 structural-patch mutation，也不能匹配其反向 source/destination；因此不会取回/校验目标 patch。现验证逆源范围等于前向目标几何、逆 targetOrigin 等于原 source 起点，只有精确逆操作才可复用 inverse patch；patch 应用对 reducer 已恢复的状态保持幂等。
 
 本轮静态改动覆盖 move 的 cell 与 CF/DV formula owner patch、protocol 接受范围、Java patch 派生及服务端 structural undo 匹配。Formula names、table/drawing/template 等其他 persisted formula owners、permutation、fill/paste、table resize 与 OOXML 尚未进入同一 owner-delta/impact 契约；整体整改仍未完成。按用户要求未运行测试、构建或 UI 验收。
+
+### 六轮静态复审 — 删除锚点的拒绝错误优先级（2026-09-25）
+
+1. **CI 结果复核：** 两个 `canonical-build` 独立运行均有相同的 2 个断言失败，均为锚点删除预期 `VALIDATION_ERROR`、实际先收到 `SERVICE_UNAVAILABLE`；不是编译失败。
+2. **轴变更用例：** `structuralAxisRewriteCoversPersistedFormulaOwnersAndRejectsRemovedTemplateAnchors` 删除模板 formula anchor 所在行；模板公式逆变换失败先于锚点检查，遮住了 owner 坐标的确定性拒绝。
+3. **调用顺序：** `applyAxis` 原先先搬移 cells/metadata，再进入公式 owner 改写，模板 anchor 只在 `rewritePersistedFormulaOwners` 内后验映射；现于结构写入前预检名称和模板 anchors。
+4. **单元格位移用例：** `cellInsertAndRowPermutationHaveDeterministicInverseFriendlySnapshots` 删除定义名称 anchor 所在单元格；同样由名称公式不可逆错误抢先，现先用相同 cell-shift coordinate mapper 判定 anchor 删除并返回 `VALIDATION_ERROR`。
+5. **边界对齐：** axis preflight 复用 `shiftIndex` 与 `definedNameAnchorCoordinate` 的工作表边界语义；cell-shift preflight 复用 `remapCellShiftCoordinate`，模板与名称 owner 使用相同变换方向/范围。
+6. **失败原子性：** 预检在 Java 深拷贝候选快照上运行；静态复核还发现 `SnapshotMutationSupport.array` 会为缺失的可选模板字段创建空数组，故预检改为只读可选字段、仅验证其存在时的形状，避免成功结构编辑凭空改写快照结构。
+
+本轮仅按远端 CI 失败及源码路径做静态修复，未在本地运行测试或构建；需由 PR 后续门禁确认。此前远端失败的两个断言均仍待新 head 验证。

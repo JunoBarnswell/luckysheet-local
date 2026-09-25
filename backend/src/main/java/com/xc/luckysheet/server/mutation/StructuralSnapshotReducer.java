@@ -174,6 +174,7 @@ final class StructuralSnapshotReducer {
         validateSheetTableColumnPreservation(root, target, axis, at, direction);
         if (direction == FormulaReferenceTransformer.Direction.DELETE) validateDeletePreservation(root, target, axis, at, count);
         validateAxisDataRegionPreservation(root, target, axis, at, count, direction);
+        preflightAxisFormulaAnchors(root, sheetId, axis, at, count, direction);
         if (at < limit) {
             int rowCount = dimension(target, FormulaReferenceTransformer.Axis.ROW);
             int columnCount = dimension(target, FormulaReferenceTransformer.Axis.COLUMN);
@@ -229,6 +230,7 @@ final class StructuralSnapshotReducer {
                 ? FormulaReferenceTransformer.Axis.ROW : FormulaReferenceTransformer.Axis.COLUMN;
         FormulaReferenceTransformer.Direction shiftDirection = "insert".equals(operation)
                 ? FormulaReferenceTransformer.Direction.INSERT : FormulaReferenceTransformer.Direction.DELETE;
+        preflightCellShiftFormulaAnchors(root, sheetId, selection, shiftAxis, shiftDirection);
         ObjectNode reportSheetAfter = mapReportSheetCoordinates(sheet,
                 (row, column) -> FormulaReferenceTransformer.remapCellShiftCoordinate(row, column, formulaRange(selection), shiftAxis, shiftDirection),
                 null,
@@ -2185,6 +2187,67 @@ final class StructuralSnapshotReducer {
         if (raw == null || raw.isNull()) return null;
         ObjectNode anchor = requireObject(raw, "Defined-name anchor");
         return sheetId.equals(SnapshotMutationSupport.text(anchor, "sheetId")) ? anchor : null;
+    }
+
+    private static void preflightAxisFormulaAnchors(
+            ObjectNode root,
+            String targetSheetId,
+            FormulaReferenceTransformer.Axis axis,
+            int at,
+            int count,
+            FormulaReferenceTransformer.Direction direction
+    ) {
+        String coordinateKey = axis == FormulaReferenceTransformer.Axis.ROW ? "row" : "column";
+        int maximum = axis == FormulaReferenceTransformer.Axis.ROW ? SnapshotMutationSupport.MAX_ROW : SnapshotMutationSupport.MAX_COLUMN;
+        for (JsonNode raw : SnapshotMutationSupport.array(root, "definedNameModels")) {
+            ObjectNode name = requireObject(raw, "Defined name");
+            if (!name.path("formula").isTextual()) continue;
+            ObjectNode anchor = definedNameAnchorOnSheet(name, targetSheetId);
+            if (anchor == null) continue;
+            int position = definedNameAnchorCoordinate(anchor, coordinateKey, maximum);
+            int mapped = shiftIndex(position, at, count, direction, axis);
+            if (mapped < 0 || mapped > maximum) {
+                throw ServiceException.validation("Structural mutation removes defined-name anchor: " + name.path("name").asText());
+            }
+        }
+        preflightTemplateFormulaAnchors(root, anchor -> shiftTemplateFormulaAnchor(anchor, targetSheetId, axis, at, count, direction));
+    }
+
+    private static void preflightCellShiftFormulaAnchors(
+            ObjectNode root,
+            String targetSheetId,
+            RangeRef selection,
+            FormulaReferenceTransformer.Axis axis,
+            FormulaReferenceTransformer.Direction direction
+    ) {
+        FormulaReferenceTransformer.Range selected = formulaRange(selection);
+        for (JsonNode raw : SnapshotMutationSupport.array(root, "definedNameModels")) {
+            ObjectNode name = requireObject(raw, "Defined name");
+            if (!name.path("formula").isTextual()) continue;
+            ObjectNode anchor = definedNameAnchorOnSheet(name, targetSheetId);
+            if (anchor == null) continue;
+            int row = definedNameAnchorCoordinate(anchor, "row", SnapshotMutationSupport.MAX_ROW);
+            int column = definedNameAnchorCoordinate(anchor, "column", SnapshotMutationSupport.MAX_COLUMN);
+            if (FormulaReferenceTransformer.remapCellShiftCoordinate(row, column, selected, axis, direction) == null) {
+                throw ServiceException.validation("Cell shift removes defined-name anchor: " + name.path("name").asText());
+            }
+        }
+        preflightTemplateFormulaAnchors(root, anchor -> shiftTemplateFormulaAnchor(anchor, targetSheetId, selected, axis, direction));
+    }
+
+    private static void preflightTemplateFormulaAnchors(ObjectNode root, Function<ObjectNode, ObjectNode> mapper) {
+        JsonNode rawTemplates = root.get("cellStyleTemplates");
+        if (rawTemplates == null || rawTemplates.isNull()) return;
+        if (!rawTemplates.isArray()) throw ServiceException.validation("cellStyleTemplates must be an array");
+        for (JsonNode rawTemplate : rawTemplates) {
+            ObjectNode template = requireObject(rawTemplate, "Cell style template");
+            JsonNode rawValidation = template.get("dataValidation");
+            if (rawValidation == null || rawValidation.isNull()) continue;
+            ObjectNode validation = requireObject(rawValidation, "Cell style template validation");
+            JsonNode rawAnchor = validation.get("formulaAnchor");
+            if (rawAnchor == null) continue;
+            mapper.apply(requireObject(rawAnchor, "Cell style template formulaAnchor"));
+        }
     }
 
     private static int definedNameAnchorCoordinate(ObjectNode anchor, String key, int maximum) {
