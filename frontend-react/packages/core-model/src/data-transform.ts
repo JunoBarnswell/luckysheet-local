@@ -289,7 +289,7 @@ function drawingPayloadIntersectsPermutation(payload: DrawingPayload, plan: RowP
   const intersects = (range: RangeRef | undefined): boolean => Boolean(range && rangesIntersect(range, plan.range));
   if (payload.kind === 'camera' || payload.kind === 'screenshot') return intersects(payload.sourceRange);
   if (payload.kind === 'form-control') {
-    return Boolean(payload.cellLink && payload.cellLink.sheetId === plan.range.sheetId
+    return Boolean('cellLink' in payload && payload.cellLink && payload.cellLink.sheetId === plan.range.sheetId
       && inRange(plan.range, payload.cellLink.row, payload.cellLink.column))
       || ('inputRange' in payload && intersects(payload.inputRange));
   }
@@ -347,7 +347,8 @@ function remapDrawingPayload(payload: DrawingPayload, payloadId: string, plan: R
       }
     }
   } else if (next.kind === 'form-control') {
-    if (next.cellLink?.sheetId === plan.range.sheetId && inRange(plan.range, next.cellLink.row, next.cellLink.column)) {
+    if ('cellLink' in next && next.cellLink?.sheetId === plan.range.sheetId
+      && inRange(plan.range, next.cellLink.row, next.cellLink.column)) {
       const row = remapRow(next.cellLink.row, plan);
       if (row !== next.cellLink.row) {
         next.cellLink.row = row;
