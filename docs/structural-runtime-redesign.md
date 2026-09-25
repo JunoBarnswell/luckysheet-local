@@ -829,3 +829,16 @@ head `1d8508ea` 的两个后端 CI 已通过 test-compile，随后在 `sheetRena
 6. 即使 patch 已改模型，mutation listener 原先只拿到 handler effect；若 handler 未返回名称 delta，FormulaEngine 可能只能退回全量名称同步。undo/redo/remote 现向 listener 传递对应方向的精确 delta；source-level 回归覆盖同名/异名远端写、undo/redo 和 stale-state 拒绝。
 
 协同协议层仍未闭合：server-owned `StructuralPatch` v1 仍只承载 formula owner deltas，未携带上述名称 delta。不能把旧 v1 patch 静默解释为 v2 空名称列表；需先设计操作日志/Outbox 的显式迁移或 canonical patch 版本边界，再贯通 Java、协议校验与协作 ACK/replay。本轮新增测试源码但未执行任何本地测试、构建、lint 或浏览器验收；只做静态源码检查与 `git diff --check`。
+
+### Six-pass static audit — StructuralPatch persistence and version boundary (2026-09-25, HEAD `21c67dda`)
+
+本轮沿 protocol → Java reducer → collaboration replay → persisted history 对照当前源码，六轮分别确认：
+
+1. TypeScript `StructuralPatch` 固定为 version 1，精确 contract 只有 `mutationId` 与 `formulaOwnerDeltas`；validator 会拒绝未知字段，不能在该版本悄悄附加 defined-name state。
+2. Java `StructuralPatch` 同样把 version 固定为 1，构造器要求公式 delta 列表；`inverse()` 仅反转公式 owner。服务器/客户端版本不一致会在反序列化或协议校验处失败。
+3. Java axis、cell-shift、move 与 row-permutation reducers 会直接改写 `definedNameModels` 的 formula/anchor（例如 `StructuralSnapshotReducer` 的轴变换、`rewriteCellShiftFormulas`、`moveDefinedNameAnchors` 和 `remapPermutationDefinedNames`），但返回 patch 不保留 name before/after 状态；server commit 因此无法向客户端交付该 owner 的精确 delta。
+4. collaboration ACK/replay 只把 `structuralPatch.formulaOwnerDeltas` 映射到 `MutationInfo.structuralFormulaOwnerDeltas`；即使后端补出名称 delta，当前入口仍会丢弃它。
+5. committed envelope 被序列化到 `operation_log.envelope_json`，并可能进入 `coordination_outbox.payload_json`；重放与结构 undo 会再次读取已提交 envelope/target patch。仅改 DTO 而不迁移这些记录会使已有操作在新版读取或 undo 时失败。
+6. 当前 `CanonicalRowsPermutedMigration` 已证明持久层有显式 envelope rewrite 边界，但它对 operation log 与未发布 outbox 分别处理；已发布协同事件、checkpoint 与旧 patch 的可逆语义也必须纳入版本切换，而不是把历史缺失 owner delta 填成空数组。
+
+收敛方案：先定一个带完整 owner coverage 的 canonical patch v2 和 fail-close 规则；实现 Java/TypeScript 同构验证及 owner delta 后，再在显式版本迁移边界重放连续的 revision-0 checkpoint + operation log，重新导出可证明的 owner before/after，并校验各现存 checkpoint。迁移必须同事务更新 operation log 与待发布 outbox；若 operation 缺失、checkpoint 不匹配、opaque owner 无法判定或历史 patch 不能重建，迁移应中止并报告 workbook/revision，而不能制造空 delta。上线边界还需保证已发布旧事件不会与 v2 客户端混读。当前源码尚未实现该迁移，本节是经验证的阻断条件与实施约束，不宣称修复完成。
