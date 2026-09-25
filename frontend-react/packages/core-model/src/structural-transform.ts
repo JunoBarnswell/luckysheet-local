@@ -7,7 +7,7 @@ import type { PrintDocumentSnapshot } from './workbook-state';
 import { mapReportSheetCoordinates } from './report-sheet-transform';
 import { chartTextFormulaEntries, readChartTextFormula, writeChartTextFormula } from './chart-text-reference';
 import { structuralRuleFormulaFields, type StructuralFormulaRule, type StructuralFormulaRuleField } from './structural-formula-owner';
-import { WorkbookModel, WorksheetModel, cellKey, hasFormulaGroupMetadata, type WorksheetPane } from './index';
+import { WorkbookModel, WorksheetModel, cellKey, hasFormulaGroupMetadata, worksheetPaneValidationError, type WorksheetPane } from './index';
 import {
   formatFormula,
   MAX_COLUMN_INDEX,
@@ -1461,30 +1461,8 @@ function shiftFreeze(sheet: WorksheetModel, axis: 'row' | 'column', at: number, 
 }
 
 function assertStructuralPane(pane: WorksheetPane): void {
-  const value = pane as unknown as Record<string, unknown>;
-  const invalid = (field: string): never => {
-    throw new Error(`UNSUPPORTED_STRUCTURAL_REFERENCE: pane ${field} is invalid`);
-  };
-  if (value.kind === 'none') {
-    if (['state', 'xSplit', 'ySplit', 'startRow', 'startColumn', 'activePane'].some((field) => field in value)) invalid('none-state');
-    return;
-  }
-  if (value.kind !== 'frozen' && value.kind !== 'split') invalid('kind');
-  if (value.kind === 'frozen' && value.state !== 'frozen' && value.state !== 'frozenSplit') invalid('state');
-  if (value.kind === 'split' && value.state !== 'split') invalid('state');
-  const startRow = value.startRow;
-  const startColumn = value.startColumn;
-  if (!Number.isSafeInteger(startRow) || (startRow as number) < 0 || (startRow as number) > MAX_ROW_INDEX) invalid('startRow');
-  if (!Number.isSafeInteger(startColumn) || (startColumn as number) < 0 || (startColumn as number) > MAX_COLUMN_INDEX) invalid('startColumn');
-  if (value.kind === 'frozen') {
-    if (!Number.isSafeInteger(value.xSplit) || (value.xSplit as number) < 0 || (value.xSplit as number) > MAX_COLUMN_INDEX + 1) invalid('xSplit');
-    if (!Number.isSafeInteger(value.ySplit) || (value.ySplit as number) < 0 || (value.ySplit as number) > MAX_ROW_INDEX + 1) invalid('ySplit');
-  } else {
-    if (typeof value.xSplit !== 'number' || !Number.isFinite(value.xSplit) || value.xSplit < 0) invalid('xSplit');
-    if (typeof value.ySplit !== 'number' || !Number.isFinite(value.ySplit) || value.ySplit < 0) invalid('ySplit');
-  }
-  if (value.activePane !== undefined
-    && !['topLeft', 'topRight', 'bottomLeft', 'bottomRight'].includes(value.activePane as string)) invalid('activePane');
+  const invalidField = worksheetPaneValidationError(pane);
+  if (invalidField !== undefined) throw new Error(`UNSUPPORTED_STRUCTURAL_REFERENCE: pane ${invalidField} is invalid`);
 }
 
 function shiftHiddenAndSizes(sheet: WorksheetModel, axis: 'row' | 'column', at: number, count: number, direction: 1 | -1): void {

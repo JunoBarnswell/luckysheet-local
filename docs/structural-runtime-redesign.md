@@ -895,4 +895,17 @@ head `1d8508ea` 的两个后端 CI 已通过 test-compile，随后在 `sheetRena
 
 这些证据确认了 pane contract 缺口、删除区间映射错误及位移后缺少边界验证，不把同一字段的多个坏值虚增成 30 个独立问题。`freeze.set` 曾接受超出 Excel 地址空间的视口坐标、冻结计数小数及非法 `activePane`；canonical snapshot validator 只检查 kind/state；结构 reducer 再用 `asInt(0)` 把缺失或非整数坐标静默变为 0。该缺口会在结构编辑后制造与前端 `WorksheetPane` 不同的状态。
 
-现在 `WorkbookSnapshotValidator.requireCanonicalPane` 统一校验 frozen/split 必需字段、冻结计数整数域、Excel 地址上限、split 数值和 `activePane` 枚举，并拒绝 `kind: none` 携带冻结专属状态；mutation ingress、快照入口及结构 reducer 共用此校验，reducer 不再提供 0 默认值。复核还发现并修复第二个真实语义错误：删除区间若穿过 frozen split 或 viewport start，旧算法减去完整 count 会把边界映射到删除区间之前；TS/Java 现在均将区间内边界钳到删除起点，并在映射后检查坐标上限。新增 validator、mutation 及客户端 pane boundary 成功/拒绝路径测试源码；按本任务要求未运行测试、构建、lint 或 UI。本节记录两个独立缺陷，且六轮审查不等于声称本轮满足每轮 30 项的总体审计目标。总体结构 patch v2、历史迁移与其余 owner families 仍未完成。
+现在 `WorkbookSnapshotValidator.requireCanonicalPane` 统一校验服务端 freeze mutation ingress、快照入口及 Java 结构 reducer；reducer 不再提供 0 默认值。复核还发现并修复第二个真实语义错误：删除区间若穿过 frozen split 或 viewport start，旧算法减去完整 count 会把边界映射到删除区间之前；TS/Java 现在均将区间内边界钳到删除起点，并在映射后检查坐标上限。新增 validator、mutation 及客户端 pane boundary 成功/拒绝路径测试源码；按本任务要求未运行测试、构建、lint 或 UI。本节记录两个独立缺陷，且六轮审查不等于声称本轮满足每轮 30 项的总体审计目标。总体结构 patch v2、历史迁移与其余 owner families 仍未完成。
+
+### Six-pass follow-up — local freeze mutation ingress (2026-09-25)
+
+在上节完成后追加六轮交叉自审，并据此修正文档中的边界描述：
+
+1. 对照 `WorksheetPane` 类型和 core-model 结构前置校验，确认它们使用同一行列上限，但检查入口不同。
+2. 沿 `sheet.freeze.set` command → `CommandRuntime.assertMutation` → mutation schema → handler，确认本地命令确实经过 schema preflight，不是服务端验证的重复路径。
+3. 检查旧 `isWorksheetPane` 的 frozen 分支，确认其把任意非负 finite number（包括小数）当作合法冻结计数。
+4. 检查 start 坐标，确认旧入口只要求非负整数、不限制 Excel 最大行列索引。
+5. 检查 kind/state 与 activePane，确认旧入口未验证二者与 `WorksheetPane` 分支契约一致，`kind: none` 也会接受附加冻结字段。
+6. 对照 Java `requireCanonicalPane` 的每个分支与既有 TS structural preflight，确认无意扩宽 split 的 native fractional units，唯一需要修改的是未被调用的本地 mutation ingress；成功/拒绝路径测试现覆盖相同入口及 history 原子性。
+
+此轮确认一个真实缺陷：前端 `freeze.set` schema 接受非规范 pane 并可将它写入本地模型/undo history，结构变换随后才拒绝；服务端已拒绝不构成本地路径的保护。现将完整 TS pane 判定集中在 core-model，结构变换与 feature mutation schema 共用同一规则。未把其他被六轮排除的候选计为问题。新增测试源码未执行；本轮仍只允许静态审查，整体 patch v2 / 历史迁移保持未完成。

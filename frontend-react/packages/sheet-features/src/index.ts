@@ -25,6 +25,7 @@ import {
   MAX_SHEET_COLUMN_COUNT,
   MAX_SHEET_ROW_COUNT,
   StructuralTransform,
+  isCanonicalWorksheetPane,
   normalizeDefinedNameModel,
   normalizeFontFamily,
   planBorderChange,
@@ -456,15 +457,6 @@ function commitCellEntry(
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
-}
-
-function isWorksheetPane(value: unknown): value is WorksheetPane {
-  if (!isRecord(value) || !['none', 'frozen', 'split'].includes(String(value.kind))) return false;
-  if (value.kind === 'none') return true;
-  return typeof value.xSplit === 'number' && Number.isFinite(value.xSplit) && value.xSplit >= 0
-    && typeof value.ySplit === 'number' && Number.isFinite(value.ySplit) && value.ySplit >= 0
-    && Number.isSafeInteger(value.startRow) && Number(value.startRow) >= 0
-    && Number.isSafeInteger(value.startColumn) && Number(value.startColumn) >= 0;
 }
 
 function isColumnVisibilityMutation(value: unknown): value is ColumnsVisibilityParams {
@@ -2036,12 +2028,12 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
   runtime.registry.registerMutation<SetFreezeParams>({
     id: 'freeze.set',
     handler: (item, context) => {
-      if (!isRecord(item.params) || typeof item.params.sheetId !== 'string' || !isWorksheetPane(item.params.pane)) throw new Error('Invalid freeze.set mutation payload');
+      if (!isRecord(item.params) || typeof item.params.sheetId !== 'string' || !isCanonicalWorksheetPane(item.params.pane)) throw new Error('Invalid freeze.set mutation payload');
       const params = item.params as SetFreezeParams;
       context.workbook.getSheet(params.sheetId).pane = { ...params.pane };
     },
     metadata: {
-      schema: { name: 'SetPane', validate: (value: unknown) => isRecord(value) && typeof value.sheetId === 'string' && isWorksheetPane(value.pane) },
+      schema: { name: 'SetPane', validate: (value: unknown) => isRecord(value) && typeof value.sheetId === 'string' && isCanonicalWorksheetPane(value.pane) },
       permission: { capability: 'sheet.view.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: () => [], mode: 'exact' },
       inverseIds: ['freeze.set'],

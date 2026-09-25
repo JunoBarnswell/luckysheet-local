@@ -58,7 +58,7 @@ import {
 } from './workbook-state';
 import { normalizeFontFamily } from './font-family';
 import { DEFAULT_SHEET_COLUMN_COUNT, DEFAULT_SHEET_ROW_COUNT, SheetExtent } from './sheet-extent';
-import { DEFAULT_WORKBOOK_CALCULATION_SETTINGS, DEFAULT_WORKBOOK_COLLATION, normalizeWorkbookCalculationSettings, normalizeWorkbookCollation, type WorkbookCalculationSettings, type WorkbookCollationContext } from '@react-sheets/formula-engine';
+import { DEFAULT_WORKBOOK_CALCULATION_SETTINGS, DEFAULT_WORKBOOK_COLLATION, MAX_COLUMN_INDEX, MAX_ROW_INDEX, normalizeWorkbookCalculationSettings, normalizeWorkbookCollation, type WorkbookCalculationSettings, type WorkbookCollationContext } from '@react-sheets/formula-engine';
 import { planSheetIdentityTransform, SheetIdentityTransformInvariantError } from './sheet-identity-transform';
 import type { StructuralTransformResult } from './structural-transform';
 import { ReviewStore } from './review-store';
@@ -323,6 +323,35 @@ export function normalizeWorksheetPane(pane: WorksheetPane): WorksheetPane {
   return pane.kind === 'frozen'
     ? { ...pane, activePane, state: pane.state }
     : { ...pane, activePane, state: 'split' };
+}
+
+export function worksheetPaneValidationError(value: unknown): string | undefined {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return 'kind';
+  const pane = value as Record<string, unknown>;
+  if (pane.kind === 'none') {
+    return ['state', 'xSplit', 'ySplit', 'startRow', 'startColumn', 'activePane'].some((field) => field in pane)
+      ? 'none-state'
+      : undefined;
+  }
+  if (pane.kind !== 'frozen' && pane.kind !== 'split') return 'kind';
+  if (pane.kind === 'frozen' && pane.state !== 'frozen' && pane.state !== 'frozenSplit') return 'state';
+  if (pane.kind === 'split' && pane.state !== 'split') return 'state';
+  if (!Number.isSafeInteger(pane.startRow) || (pane.startRow as number) < 0 || (pane.startRow as number) > MAX_ROW_INDEX) return 'startRow';
+  if (!Number.isSafeInteger(pane.startColumn) || (pane.startColumn as number) < 0 || (pane.startColumn as number) > MAX_COLUMN_INDEX) return 'startColumn';
+  if (pane.kind === 'frozen') {
+    if (!Number.isSafeInteger(pane.xSplit) || (pane.xSplit as number) < 0 || (pane.xSplit as number) > MAX_COLUMN_INDEX + 1) return 'xSplit';
+    if (!Number.isSafeInteger(pane.ySplit) || (pane.ySplit as number) < 0 || (pane.ySplit as number) > MAX_ROW_INDEX + 1) return 'ySplit';
+  } else {
+    if (typeof pane.xSplit !== 'number' || !Number.isFinite(pane.xSplit) || pane.xSplit < 0) return 'xSplit';
+    if (typeof pane.ySplit !== 'number' || !Number.isFinite(pane.ySplit) || pane.ySplit < 0) return 'ySplit';
+  }
+  if (pane.activePane !== undefined
+    && !['topLeft', 'topRight', 'bottomLeft', 'bottomRight'].includes(pane.activePane as string)) return 'activePane';
+  return undefined;
+}
+
+export function isCanonicalWorksheetPane(value: unknown): value is WorksheetPane {
+  return worksheetPaneValidationError(value) === undefined;
 }
 
 export type {

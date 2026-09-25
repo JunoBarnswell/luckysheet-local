@@ -1281,6 +1281,30 @@ test('sheet commands: row insert/delete use StructuralTransform and preserve und
   assert.equal(sheet.cells.get(2, 0)?.value, 42);
 });
 
+test('sheet.freeze.set enforces the canonical pane contract before recording local history', () => {
+  const workbook = new WorkbookModel('unit-freeze-pane-contract', 'Freeze Pane Contract');
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  const validPane = { kind: 'frozen', state: 'frozen', xSplit: 1, ySplit: 0, startRow: 0, startColumn: 1 } as const;
+
+  runtime.execute('sheet.freeze.set', { sheetId: sheet.id, pane: validPane });
+  assert.deepEqual(sheet.pane, validPane);
+  const paneBeforeReject = structuredClone(sheet.pane);
+  const historyBeforeReject = runtime.getUndoEntries().length;
+  for (const pane of [
+    { ...validPane, xSplit: 1.5 },
+    { ...validPane, startRow: 1_048_576 },
+    { ...validPane, state: 'split' },
+    { ...validPane, activePane: 'center' },
+    { kind: 'none', state: 'frozen' },
+  ]) {
+    assert.throws(() => runtime.execute('sheet.freeze.set', { sheetId: sheet.id, pane }));
+    assert.deepEqual(sheet.pane, paneBeforeReject);
+    assert.equal(runtime.getUndoEntries().length, historyBeforeReject);
+  }
+});
+
 test('sheet.rows.delete undo restores a surviving formula owner changed to #REF!', () => {
   const workbook = new WorkbookModel('unit-structural-formula-undo', 'Structural Formula Undo');
   const runtime = new CommandRuntime(workbook);
