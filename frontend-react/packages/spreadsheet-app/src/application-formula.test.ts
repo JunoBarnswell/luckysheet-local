@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { createPasteSpecialSpec } from '@react-sheets/sheet-features';
+import { hydrateRuntime } from './runtime';
 import { WorkbookSession } from './workbook-session';
 
 function cellValue(app: WorkbookSession, row: number, column: number): string {
@@ -51,6 +52,41 @@ describe('WorkbookSession formula integration', () => {
     });
     await app.waitForFormulaCalculation();
     assert.equal(cellValue(app, 0, 1), '15');
+  });
+
+  it('loads cached values from preserved-only formula cells before evaluating dependent formulas', async () => {
+    const app = new WorkbookSession();
+    const runtime = app['runtime'];
+    const sheetId = app.getActiveSheetId();
+    const sheet = runtime.model.getSheet(sheetId);
+    sheet.cells.set(0, 0, {
+      value: 11,
+      formula: '=INDIRECT("A1")',
+      formulaMetadata: { kind: 'normal', preservedOnly: true, reason: 'Formula is preserved without local recalculation' },
+    });
+    sheet.cells.set(0, 1, { value: null, formula: '=A1+1' });
+
+    hydrateRuntime(runtime, { snapshot: runtime.model.snapshot(), revision: 0 });
+    await app.waitForFormulaCalculation();
+
+    assert.equal(cellValue(app, 0, 1), '12');
+  });
+
+  it('hydrates preserved-only formula caches when the workbook first gains a calculable formula', async () => {
+    const app = new WorkbookSession();
+    const runtime = app['runtime'];
+    const sheetId = app.getActiveSheetId();
+    runtime.model.getSheet(sheetId).cells.set(0, 0, {
+      value: 11,
+      formula: '=INDIRECT("A1")',
+      formulaMetadata: { kind: 'normal', preservedOnly: true, reason: 'Formula is preserved without local recalculation' },
+    });
+
+    hydrateRuntime(runtime, { snapshot: runtime.model.snapshot(), revision: 0 });
+    app.runCommand('sheet.cell.set', { sheetId, row: 0, column: 1, value: { formula: '=A1+1' } });
+    await app.waitForFormulaCalculation();
+
+    assert.equal(cellValue(app, 0, 1), '12');
   });
 
   it('synchronizes row permutations incrementally without rebuilding the formula engine', async () => {

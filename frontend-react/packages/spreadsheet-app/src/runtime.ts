@@ -480,11 +480,8 @@ function synchronizeCellMutation(engine: FormulaEngine, workbook: WorkbookModel,
     const ordinaryValues: CalculationInputUpdate[] = [];
     for (const sheet of workbook.getSheets()) {
       sheet.cells.forEach((cell, row, column) => {
-        if (cell.formula !== undefined || cell.value == null) return;
-        ordinaryValues.push({
-          address: { sheetId: sheet.id, row, column },
-          input: { kind: 'value', value: cell.value as never },
-        });
+        const update = calculationInputUpdate(sheet.id, row, column, cell);
+        if (update.input?.kind === 'value') ordinaryValues.push(update);
       });
     }
     roots.push(...engine.synchronizeInputs(ordinaryValues));
@@ -563,11 +560,8 @@ function synchronizeStructuralMutation(
     const ordinaryValues: CalculationInputUpdate[] = [];
     for (const sheet of workbook.getSheets()) {
       sheet.cells.forEach((cell, row, column) => {
-        if (cell.formula !== undefined || cell.value == null) return;
-        ordinaryValues.push({
-          address: { sheetId: sheet.id, row, column },
-          input: { kind: 'value', value: cell.value as never },
-        });
+        const update = calculationInputUpdate(sheet.id, row, column, cell);
+        if (update.input?.kind === 'value') ordinaryValues.push(update);
       });
     }
     roots.push(...engine.synchronizeInputs(ordinaryValues));
@@ -612,8 +606,8 @@ function loadFormulaInputs(engine: FormulaEngine, workbook: WorkbookModel): numb
   if (formulaCount > 0) {
     for (const sheet of workbook.getSheets()) {
       sheet.cells.forEach((cell, row, column) => {
-        if (cell.formula !== undefined || cell.value == null) return;
-        engine.setValue({ sheetId: sheet.id, row, column }, cell.value as never);
+        const update = calculationInputUpdate(sheet.id, row, column, cell);
+        if (update.input?.kind === 'value') engine.setValue(update.address, update.input.value);
       });
     }
   }

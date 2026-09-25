@@ -417,3 +417,14 @@ Confirmed additional operation paths: 12 (nine review mutation IDs, direct inter
 Compared the generated remote `rebasePolicy: range` mutation contracts against both `mutationCapability()` and the app classifier. `cell.editor.set` was the only remaining range-policy mutation without a collaboration kind; its producer and reducer both use `RangeRef[]`, which the canonical range mapper already transforms. It now classifies as `cell-style`; the source regression case checks an insertion before the edited rectangle. Exact-policy remote operations remain outside this mapping and fail closed where no structural contract exists.
 
 Confirmed additional operation paths: 13 in the follow-up audit (the previous 12 plus `cell.editor.set`). The cumulative static audit records 26 operation-specific paths and one fixture-contract mismatch, not 26 unrelated root causes. No local tests/builds were run.
+
+### 六轮自审 — preserved-only 公式缓存值
+
+1. **导入边界：** OOXML 导入保留不可计算公式单元格的缓存 `value`，并同时保留 `formulaMetadata.preservedOnly`；该值是合法的计算输入，不是公式引擎应重新计算的结果。
+2. **输入分类：** `calculationInputUpdate` 已把 preserved-only 公式映射为值输入，说明运行时契约明确要求公式引擎可读取其缓存值。
+3. **初次装载：** `loadFormulaInputs` 将这类公式登记为结构引用 owner，但紧接着的普通值扫描按 `formula !== undefined` 排除了同一单元格；依赖它的可计算公式因此读不到缓存值。
+4. **延迟建图路径：** 值-only 工作簿首次新增可计算公式时，`synchronizeCellMutation` 会补载其他值，但原过滤条件同样跳过 preserved-only 公式单元格，复现同一根因。
+5. **消费者确认：** `FormulaEngine.synchronizeInputs` 对 `kind: 'value'` 调用 `loadValue`，并保留后续公式重算根；缺失发生在输入收集，不是 evaluator 的单元格读取或重算调度。
+6. **改动边界复核：** 初次 `loadFormulaInputs`、首次出现公式的 `synchronizeCellMutation`、对应的结构变更同步，共三个值收集路径都改为复用 `calculationInputUpdate` 的 canonical 分类，仅追加值输入；普通空单元格仍不复制，公式输入仍由公式路径装载。新增两条回归用例分别覆盖首次 hydration 与首次公式创建。
+
+六轮交叉审查确认的是一个真实根因、两个受影响入口，不把重复表现计作独立缺陷。只做静态检查；本轮未运行测试、构建或浏览器验收。
