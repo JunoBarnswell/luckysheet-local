@@ -1,5 +1,6 @@
 import type { RangeRef } from '@react-sheets/core-model';
 import { formatFormula, mapAstStructuralReferences, parseFormula, ReferenceTransformDomain, MAX_COLUMN_INDEX, MAX_ROW_INDEX } from '@react-sheets/formula-engine';
+import { cellAddress, parseAddress } from '../address';
 import type { ClassifiedMutation, CollaborationOperationKind } from './operation-types';
 
 export interface StructuralDelta {
@@ -76,33 +77,22 @@ function isRange(value: Record<string, unknown>): value is Record<string, unknow
     && Number.isSafeInteger(value.startColumn) && Number.isSafeInteger(value.endColumn);
 }
 
-const ADDRESS_FIELDS = new Set(['address', 'anchor', 'cellAddress', 'formulaAnchor', 'from', 'origin', 'source', 'target', 'to']);
-const ADDRESS_RANGE_FIELDS = new Set(['sourceOrigin', 'targetOrigin']);
 const UNSUPPORTED_STRUCTURAL_KINDS = new Set<CollaborationOperationKind>([
-  'move-range', 'sort', 'table-resize', 'sheet-identity',
+  'move-range', 'sort', 'table-resize', 'sheet-identity', 'pivot-config',
 ]);
 
 function transformParams(
   value: unknown,
   delta: StructuralDelta,
   ownerSheetId: string,
-  pendingKind: CollaborationOperationKind,
   context: StructuralRebaseContext,
   field = '',
-  root = false,
 ): unknown {
   if (typeof value === 'string' && isFormulaField(field, value) && value.trim() !== '') {
     return transformFormulaValue(value, delta, ownerSheetId, context);
   }
   if (Array.isArray(value)) {
-    if ((field === 'rowIndices' && deltaAxis(delta) === 'row')
-      || (field === 'columnIndices' && deltaAxis(delta) === 'column')) {
-      return value.map((entry) => {
-        if (typeof entry !== 'number') rebaseConflict(`${field} contains a non-numeric coordinate`);
-        return shiftPoint(entry, delta);
-      });
-    }
-    return value.map((entry) => transformParams(entry, delta, ownerSheetId, pendingKind, context, field));
+    return value.map((entry) => transformParams(entry, delta, ownerSheetId, context, field));
   }
   if (!isRecord(value)) return value;
 
@@ -112,36 +102,383 @@ function transformParams(
     : sheetId;
   if (isRange(value)) return shiftRange(value, delta);
 
-  const isAddress = ADDRESS_FIELDS.has(field) || ADDRESS_RANGE_FIELDS.has(field) || root;
-  const pendingStructural = isStructuralKind(pendingKind, deltaAxis(delta));
   const next: Record<string, unknown> = {};
   for (const [key, entry] of Object.entries(value)) {
-    if (root && pendingStructural && key === (deltaAxis(delta) === 'row' ? 'row' : 'column')) {
-      next[key] = entry;
-      continue;
-    }
-    if (sheetId === delta.sheetId && isAddress && key === (deltaAxis(delta) === 'row' ? 'row' : 'column')
-      && typeof entry === 'number') {
-      next[key] = shiftPoint(entry, delta);
-      continue;
-    }
-    if (key === 'at' && root && sheetId === delta.sheetId && isStructuralKind(pendingKind, deltaAxis(delta))) {
-      next[key] = entry;
-      continue;
-    }
     if (typeof entry === 'string' && (isFormulaField(key, entry) || isRuleFormulaField(key, entry, value))) {
       next[key] = transformFormulaValue(entry, delta, formulaOwnerSheetId, context);
     } else {
-      next[key] = transformParams(entry, delta, sheetId, pendingKind, context, key);
+      next[key] = transformParams(entry, delta, sheetId, context, key);
     }
   }
+  return next;
+}
 
-  if (root && sheetId === delta.sheetId && isStructuralKind(pendingKind, deltaAxis(delta))) {
-    const atKey = typeof value.at === 'number' ? 'at' : deltaAxis(delta) === 'row' ? 'row' : 'column';
-    const at = value[atKey];
-    if (typeof at === 'number') next[atKey] = shiftPoint(at, delta);
+function assertStructuralEditDoesNotIntersectRange(range: RangeRef, delta: StructuralDelta, label: string): void {
+  if (range.sheetId !== delta.sheetId || deltaOperation(delta) !== 'delete') return;
+  const start = deltaAxis(delta) === 'row' ? range.startRow : range.startColumn;
+  const end = deltaAxis(delta) === 'row' ? range.endRow : range.endColumn;
+  const deletedEnd = delta.at + delta.count - 1;
+  if (start <= deletedEnd && end >= delta.at) {
+    rebaseConflict(`committed deletion intersects pending ${label}`);
+  }
+}
+
+function shiftCellCoordinate(value: unknown, sheetId: string, delta: StructuralDelta, label: string): Record<string, unknown> {
+  if (!isRecord(value)) rebaseConflict(`${label} is not a coordinate record`);
+  const ownerSheetId = typeof value.sheetId === 'string' ? value.sheetId : sheetId;
+  if (ownerSheetId !== delta.sheetId) return value;
+  const key = deltaAxis(delta) === 'row' ? 'row' : 'column';
+  const coordinate = value[key];
+  if (typeof coordinate !== 'number') rebaseConflict(`${label} has no ${key} coordinate`);
+  return { ...value, [key]: shiftPoint(coordinate, delta) };
+}
+
+function transformCellFormulaOwners(
+  value: unknown,
+  ownerSheetId: string,
+  delta: StructuralDelta,
+  context: StructuralRebaseContext,
+  label: string,
+): Record<string, unknown> {
+  if (!isRecord(value)) rebaseConflict(`${label} is not a cell snapshot`);
+  const next = { ...value };
+  if (value.formula !== undefined) {
+    if (typeof value.formula !== 'string') rebaseConflict(`${label} formula is invalid`);
+    next.formula = transformFormulaValue(value.formula, delta, ownerSheetId, context);
+  }
+  if (value.formulaMetadata !== undefined) {
+    if (!isRecord(value.formulaMetadata)) rebaseConflict(`${label} formula metadata is invalid`);
+    if (value.formulaMetadata.kind !== 'normal' || value.formulaMetadata.range !== undefined
+      || value.formulaMetadata.preservedOnly === true) {
+      rebaseConflict(`${label} contains formula-group metadata without a canonical rebase transform`);
+    }
+    if (value.formulaMetadata.sourceFormula !== undefined) {
+      if (typeof value.formulaMetadata.sourceFormula !== 'string') rebaseConflict(`${label} source formula is invalid`);
+      next.formulaMetadata = {
+        ...value.formulaMetadata,
+        sourceFormula: transformFormulaValue(value.formulaMetadata.sourceFormula, delta, ownerSheetId, context),
+      };
+    }
+  }
+  if (isRecord(value.presentation) && value.presentation.kind === 'barcode'
+    && isRecord(value.presentation.source) && value.presentation.source.kind === 'formula') {
+    const formula = value.presentation.source.formula;
+    if (typeof formula !== 'string') rebaseConflict(`${label} barcode formula is invalid`);
+    next.presentation = {
+      ...value.presentation,
+      source: { ...value.presentation.source, formula: transformFormulaValue(formula, delta, ownerSheetId, context) },
+    };
   }
   return next;
+}
+
+function transformCellMutationFormulaOwners(
+  mutationId: string,
+  originalParams: unknown,
+  transformedParams: unknown,
+  delta: StructuralDelta,
+  ownerSheetId: string,
+  context: StructuralRebaseContext,
+): unknown {
+  if (!isRecord(originalParams) || !isRecord(transformedParams)) {
+    rebaseConflict(`pending ${mutationId} parameters are invalid`);
+  }
+  const field = mutationId === 'cell.set' ? 'value' : 'previous';
+  const sheetId = typeof originalParams.sheetId === 'string' ? originalParams.sheetId : ownerSheetId;
+  const next = shiftCellCoordinate(transformedParams, sheetId, delta, `pending ${mutationId} address`);
+  if (originalParams[field] !== undefined) {
+    next[field] = transformCellFormulaOwners(originalParams[field], sheetId, delta, context, `pending ${mutationId} cell`);
+  }
+  if (mutationId === 'cell.set' && originalParams.writeAuthority !== undefined) {
+    const originalAuthority = originalParams.writeAuthority;
+    const transformedAuthority = transformedParams.writeAuthority;
+    if (!isRecord(originalAuthority) || !isRecord(transformedAuthority)
+      || !isRecord(originalAuthority.target) || !isRecord(transformedAuthority.target)
+      || !isRecord(originalAuthority.candidate)) {
+      rebaseConflict('pending cell.set write authority is invalid');
+    }
+    const writeAuthority = { ...transformedAuthority };
+    writeAuthority.target = shiftCellCoordinate(
+      transformedAuthority.target,
+      sheetId,
+      delta,
+      'pending cell.set write authority target',
+    );
+    writeAuthority.candidate = transformCellFormulaOwners(
+      originalAuthority.candidate,
+      sheetId,
+      delta,
+      context,
+      'pending cell.set write authority candidate',
+    );
+    next.writeAuthority = writeAuthority;
+  }
+  return next;
+}
+
+function transformRangeSetCoordinates(
+  originalParams: unknown,
+  transformedParams: unknown,
+  delta: StructuralDelta,
+  ownerSheetId: string,
+  context: StructuralRebaseContext,
+): unknown {
+  if (!isRecord(originalParams) || !isRecord(transformedParams) || !Array.isArray(originalParams.values)) {
+    rebaseConflict('pending range.set parameters are invalid');
+  }
+  const sheetId = typeof originalParams.sheetId === 'string' ? originalParams.sheetId : ownerSheetId;
+  if (sheetId !== delta.sheetId) return transformedParams;
+  const row = originalParams.startRow;
+  const column = originalParams.startColumn;
+  if (typeof row !== 'number' || typeof column !== 'number') rebaseConflict('pending range.set origin is invalid');
+  const originCoordinate = deltaAxis(delta) === 'row' ? row : column;
+  const rowCount = originalParams.values.length;
+  const columnCount = originalParams.values.reduce((max, values) => {
+    if (!Array.isArray(values)) rebaseConflict('pending range.set contains an invalid value row');
+    return Math.max(max, values.length);
+  }, 0);
+  const extent = deltaAxis(delta) === 'row' ? rowCount : columnCount;
+  if (extent > 0) {
+    const end = originCoordinate + extent - 1;
+    if (!Number.isSafeInteger(end)) rebaseConflict('pending range.set exceeds the safe integer range');
+    if (deltaOperation(delta) === 'delete' && originCoordinate <= delta.at + delta.count - 1 && end >= delta.at) {
+      rebaseConflict('committed deletion intersects pending range.set writes');
+    }
+    if (deltaOperation(delta) === 'insert' && delta.at > originCoordinate && delta.at <= end) {
+      rebaseConflict('committed insertion splits pending range.set writes');
+    }
+  }
+  const originKey = deltaAxis(delta) === 'row' ? 'startRow' : 'startColumn';
+  const values = originalParams.values.map((rowValues) => {
+    if (!Array.isArray(rowValues)) rebaseConflict('pending range.set contains an invalid value row');
+    return rowValues.map((cell) => cell === undefined || cell === null
+      ? cell
+      : transformCellFormulaOwners(cell, sheetId, delta, context, 'pending range.set cell'));
+  });
+  return { ...transformedParams, [originKey]: shiftPoint(originCoordinate, delta), values };
+}
+
+function transformFillCoordinates(
+  mutationId: string,
+  originalParams: unknown,
+  transformedParams: unknown,
+  delta: StructuralDelta,
+  ownerSheetId: string,
+  context: StructuralRebaseContext,
+): unknown {
+  if (!isRecord(originalParams) || !isRecord(transformedParams)
+    || !Array.isArray(transformedParams.writes)
+    || !Array.isArray(originalParams.writes)
+    || !isRange(originalParams.sourceRange) || !isRange(originalParams.targetRange)) {
+    rebaseConflict(`pending ${mutationId} parameters are invalid`);
+  }
+  assertStructuralEditDoesNotIntersectRange(originalParams.sourceRange, delta, `${mutationId} source range`);
+  assertStructuralEditDoesNotIntersectRange(originalParams.targetRange, delta, `${mutationId} target range`);
+  const sheetId = typeof originalParams.sheetId === 'string' ? originalParams.sheetId : ownerSheetId;
+  const writes = transformedParams.writes.map((write, index) => {
+    const shifted = shiftCellCoordinate(write, sheetId, delta, `${mutationId} write`);
+    const source = originalParams.writes[index];
+    if (!isRecord(source)) rebaseConflict(`pending ${mutationId} write is invalid`);
+    for (const key of ['before', 'after'] as const) {
+      if (source[key] !== undefined) shifted[key] = transformCellFormulaOwners(source[key], sheetId, delta, context, `${mutationId} ${key} cell`);
+    }
+    return shifted;
+  });
+  return { ...transformedParams, writes };
+}
+
+function transformFindReplacementCoordinates(
+  originalParams: unknown,
+  transformedParams: unknown,
+  delta: StructuralDelta,
+  ownerSheetId: string,
+  context: StructuralRebaseContext,
+): unknown {
+  if (!isRecord(originalParams) || !isRecord(transformedParams) || !Array.isArray(transformedParams.patches)) {
+    rebaseConflict('pending find.replaced parameters are invalid');
+  }
+  if (!Array.isArray(originalParams.patches)) rebaseConflict('pending find.replaced source patches are invalid');
+  const patches = transformedParams.patches.map((patch, index) => {
+    if (!isRecord(patch) || !isRecord(patch.match)) rebaseConflict('pending find.replaced patch has no match address');
+    const sourcePatch = originalParams.patches[index];
+    if (!isRecord(sourcePatch) || !isRecord(sourcePatch.match) || typeof sourcePatch.match.sheetId !== 'string') {
+      rebaseConflict('pending find.replaced source patch has no worksheet identity');
+    }
+    const match = shiftCellCoordinate(patch.match, ownerSheetId, delta, 'pending find.replaced match');
+    if (match.sheetId === delta.sheetId) {
+      if (typeof match.row !== 'number' || typeof match.column !== 'number' || typeof match.target !== 'string') {
+        rebaseConflict('pending find.replaced match identity is invalid');
+      }
+      match.key = `${match.sheetId}!${match.row}:${match.column}:${match.target}:${typeof match.sourceId === 'string' ? match.sourceId : ''}`;
+    }
+    const nextPatch: Record<string, unknown> = { ...patch, match };
+    for (const key of ['previous', 'next'] as const) {
+      if (sourcePatch[key] !== undefined) {
+        nextPatch[key] = transformCellFormulaOwners(sourcePatch[key], sourcePatch.match.sheetId, delta, context, `pending find.replaced ${key} cell`);
+      }
+    }
+    return nextPatch;
+  });
+  return { ...transformedParams, patches };
+}
+
+function transformCommentAddCoordinates(originalParams: unknown, transformedParams: unknown, delta: StructuralDelta, ownerSheetId: string): unknown {
+  if (!isRecord(originalParams) || !isRecord(transformedParams) || !isRecord(originalParams.thread) || !isRecord(transformedParams.thread)) {
+    rebaseConflict('pending comment.add parameters are invalid');
+  }
+  const sheetId = typeof originalParams.sheetId === 'string' ? originalParams.sheetId : ownerSheetId;
+  const envelope = shiftCellCoordinate(transformedParams, sheetId, delta, 'pending comment.add address');
+  const thread = shiftCellCoordinate(transformedParams.thread, sheetId, delta, 'pending comment.add thread');
+  return { ...envelope, thread };
+}
+
+function transformCommentUpdateCoordinates(originalParams: unknown, transformedParams: unknown, delta: StructuralDelta, ownerSheetId: string): unknown {
+  if (!isRecord(originalParams) || !isRecord(transformedParams)) rebaseConflict('pending comment.update parameters are invalid');
+  const sheetId = typeof originalParams.sheetId === 'string' ? originalParams.sheetId : ownerSheetId;
+  return shiftCellCoordinate(transformedParams, sheetId, delta, 'pending comment.update address');
+}
+
+function transformReviewCellCoordinates(
+  mutationId: string,
+  originalParams: unknown,
+  transformedParams: unknown,
+  delta: StructuralDelta,
+  ownerSheetId: string,
+): unknown {
+  if (!isRecord(originalParams) || !isRecord(transformedParams)) {
+    rebaseConflict(`pending ${mutationId} parameters are invalid`);
+  }
+  const sheetId = typeof originalParams.sheetId === 'string' ? originalParams.sheetId : ownerSheetId;
+  const next = shiftCellCoordinate(transformedParams, sheetId, delta, `pending ${mutationId} address`);
+  if (mutationId === 'hyperlink.set' && originalParams.hyperlink !== undefined) {
+    next.hyperlink = transformHyperlinkReference(originalParams.hyperlink, delta, 'pending hyperlink.set');
+  }
+  return next;
+}
+
+function transformVisibilityCoordinates(
+  mutationId: string,
+  originalParams: unknown,
+  transformedParams: unknown,
+  delta: StructuralDelta,
+  ownerSheetId: string,
+): unknown {
+  if (!isRecord(originalParams) || !isRecord(transformedParams)
+    || !Array.isArray(originalParams.states) || !Array.isArray(transformedParams.states)
+    || originalParams.states.length !== transformedParams.states.length) {
+    rebaseConflict(`pending ${mutationId} states are invalid`);
+  }
+  const sheetId = typeof originalParams.sheetId === 'string' ? originalParams.sheetId : ownerSheetId;
+  const axis = mutationId === 'rows.visibility' ? 'row' : 'column';
+  if (sheetId !== delta.sheetId || axis !== deltaAxis(delta)) return transformedParams;
+  const states = transformedParams.states.map((state, index) => {
+    const originalState = originalParams.states[index];
+    if (!isRecord(state) || !isRecord(originalState) || typeof originalState[axis] !== 'number') {
+      rebaseConflict(`pending ${mutationId} contains an invalid ${axis} state`);
+    }
+    return { ...state, [axis]: shiftPoint(originalState[axis] as number, delta) };
+  });
+  return { ...transformedParams, states };
+}
+
+function transformPasteTargetCoordinates(originalParams: unknown, transformedParams: unknown, delta: StructuralDelta, ownerSheetId: string): unknown {
+  if (!isRecord(originalParams) || !isRecord(transformedParams) || !isRecord(originalParams.targetOrigin)) {
+    rebaseConflict('pending range.paste parameters are invalid');
+  }
+  const sheetId = typeof originalParams.sheetId === 'string' ? originalParams.sheetId : ownerSheetId;
+  if (originalParams.sourceExtent !== undefined || originalParams.clipboard !== undefined) {
+    if (!isRecord(originalParams.sourceExtent) || !isRecord(originalParams.spec)
+      || typeof originalParams.spec.transpose !== 'boolean') {
+      rebaseConflict('pending range.paste has no canonical target extent');
+    }
+    const sourceRows = originalParams.sourceExtent.rows;
+    const sourceColumns = originalParams.sourceExtent.columns;
+    const rowCount = originalParams.spec.transpose ? sourceColumns : sourceRows;
+    const columnCount = originalParams.spec.transpose ? sourceRows : sourceColumns;
+    const row = originalParams.targetOrigin.row;
+    const column = originalParams.targetOrigin.column;
+    if (typeof sourceRows !== 'number' || typeof sourceColumns !== 'number'
+      || typeof rowCount !== 'number' || typeof columnCount !== 'number'
+      || typeof row !== 'number' || typeof column !== 'number'
+      || ![sourceRows, sourceColumns, rowCount, columnCount, row, column].every(Number.isSafeInteger)
+      || rowCount <= 0 || columnCount <= 0) {
+      rebaseConflict('pending range.paste target extent is invalid');
+    }
+    const targetRange: RangeRef = {
+      sheetId,
+      startRow: row,
+      endRow: row + rowCount - 1,
+      startColumn: column,
+      endColumn: column + columnCount - 1,
+    };
+    if (targetRange.endRow > MAX_ROW_INDEX || targetRange.endColumn > MAX_COLUMN_INDEX) {
+      rebaseConflict('pending range.paste target exceeds worksheet bounds');
+    }
+    assertStructuralEditDoesNotIntersectRange(targetRange, delta, 'range.paste target');
+  }
+  const targetOrigin = shiftCellCoordinate(transformedParams.targetOrigin, sheetId, delta, 'pending range.paste target');
+  return { ...transformedParams, targetOrigin };
+}
+
+function transformPendingStructuralCoordinates(
+  pendingKind: CollaborationOperationKind,
+  originalParams: unknown,
+  transformedParams: unknown,
+  delta: StructuralDelta,
+  ownerSheetId: string,
+): unknown {
+  if (!STRUCTURAL_KINDS.has(pendingKind) || !isStructuralKind(pendingKind, deltaAxis(delta))) return transformedParams;
+  if (!isRecord(originalParams) || !isRecord(transformedParams)) rebaseConflict('pending structural mutation parameters are invalid');
+  const sheetId = typeof originalParams.sheetId === 'string' ? originalParams.sheetId : ownerSheetId;
+  if (sheetId !== delta.sheetId) return transformedParams;
+  const coordinateKey = typeof originalParams.at === 'number' ? 'at' : deltaAxis(delta) === 'row' ? 'row' : 'column';
+  const coordinate = originalParams[coordinateKey];
+  if (typeof coordinate !== 'number') rebaseConflict('pending structural mutation index is invalid');
+  return { ...transformedParams, [coordinateKey]: shiftPoint(coordinate, delta) };
+}
+
+function transformKnownMutationCoordinates(
+  mutationId: string,
+  pendingKind: CollaborationOperationKind,
+  originalParams: unknown,
+  transformedParams: unknown,
+  delta: StructuralDelta,
+  ownerSheetId: string,
+  context: StructuralRebaseContext,
+): unknown {
+  const structuralParams = transformPendingStructuralCoordinates(
+    pendingKind, originalParams, transformedParams, delta, ownerSheetId,
+  );
+  if (structuralParams !== transformedParams) return structuralParams;
+  if (mutationId === 'range.set') {
+    return transformRangeSetCoordinates(originalParams, transformedParams, delta, ownerSheetId, context);
+  }
+  if (mutationId === 'fill.applied' || mutationId === 'fill.restored') {
+    return transformFillCoordinates(mutationId, originalParams, transformedParams, delta, ownerSheetId, context);
+  }
+  if (mutationId === 'find.replaced') {
+    return transformFindReplacementCoordinates(originalParams, transformedParams, delta, ownerSheetId, context);
+  }
+  if (mutationId === 'cell.set' || mutationId === 'cell.restore') {
+    return transformCellMutationFormulaOwners(mutationId, originalParams, transformedParams, delta, ownerSheetId, context);
+  }
+  if (mutationId === 'comment.add') {
+    return transformCommentAddCoordinates(originalParams, transformedParams, delta, ownerSheetId);
+  }
+  if (mutationId === 'comment.update') {
+    return transformCommentUpdateCoordinates(originalParams, transformedParams, delta, ownerSheetId);
+  }
+  if (mutationId === 'note.set' || mutationId === 'note.remove' || mutationId === 'note.visibility'
+    || mutationId === 'hyperlink.set' || mutationId === 'hyperlink.remove') {
+    return transformReviewCellCoordinates(mutationId, originalParams, transformedParams, delta, ownerSheetId);
+  }
+  if (mutationId === 'rows.visibility' || mutationId === 'columns.visibility') {
+    return transformVisibilityCoordinates(mutationId, originalParams, transformedParams, delta, ownerSheetId);
+  }
+  if (mutationId === 'range.paste') {
+    return transformPasteTargetCoordinates(originalParams, transformedParams, delta, ownerSheetId);
+  }
+  return transformedParams;
 }
 
 function isFormulaField(field: string, formula: string): boolean {
@@ -202,11 +539,62 @@ function shiftSnapshotAddress(value: unknown, sheetId: string, delta: Structural
   value[coordinateKey] = shiftPoint(coordinate, delta);
 }
 
-function shiftPasteSnapshot(value: unknown, sheetId: string, delta: StructuralDelta): unknown {
-  if (!isRecord(value)) rebaseConflict('pending range.paste has an invalid snapshot');
-  const snapshot = value;
-  if (!Array.isArray(snapshot.cells)) rebaseConflict('pending range.paste snapshot cells are invalid');
-  for (const cell of snapshot.cells) shiftSnapshotAddress(cell, sheetId, delta);
+function transformHyperlinkReference(value: unknown, delta: StructuralDelta, label: string): unknown {
+  if (!isRecord(value) || !isRecord(value.target)) rebaseConflict(`${label} contains an invalid hyperlink`);
+  const target = value.target;
+  if (target.kind !== 'sheet' || target.sheetId !== delta.sheetId) return value;
+  let row: number;
+  let column: number;
+  if (typeof target.address === 'string' && target.row === undefined && target.column === undefined) {
+    const parsed = parseAddress(target.address);
+    if (!parsed) rebaseConflict(`${label} contains an invalid worksheet hyperlink address`);
+    row = parsed.row;
+    column = parsed.column;
+  } else if (target.address === undefined && typeof target.row === 'number' && typeof target.column === 'number') {
+    row = target.row;
+    column = target.column;
+  } else {
+    rebaseConflict(`${label} contains a non-canonical worksheet hyperlink target`);
+  }
+  if (deltaAxis(delta) === 'row') row = shiftPoint(row, delta);
+  else column = shiftPoint(column, delta);
+  const nextTarget = target.address === undefined
+    ? { ...target, row, column }
+    : { ...target, address: cellAddress(row, column) };
+  return { ...value, target: nextTarget };
+}
+
+function shiftPasteSnapshot(
+  originalValue: unknown,
+  transformedValue: unknown,
+  sheetId: string,
+  delta: StructuralDelta,
+  context: StructuralRebaseContext,
+): unknown {
+  if (!isRecord(originalValue) || !isRecord(transformedValue)) rebaseConflict('pending range.paste has an invalid snapshot');
+  const originalSnapshot = originalValue;
+  const snapshot = transformedValue;
+  const originalCells = originalSnapshot.cells;
+  const cells = snapshot.cells;
+  if (!Array.isArray(originalCells) || !Array.isArray(cells) || originalCells.length !== cells.length) {
+    rebaseConflict('pending range.paste snapshot cells are invalid');
+  }
+  for (let index = 0; index < cells.length; index += 1) {
+    const originalCell = originalCells[index];
+    const cell = cells[index];
+    if (!isRecord(originalCell) || !isRecord(cell)) rebaseConflict('pending range.paste snapshot cell is invalid');
+    shiftSnapshotAddress(cell, sheetId, delta);
+    if (originalCell.value !== undefined) {
+      const formulaOwnerSheetId = typeof originalCell.sheetId === 'string' ? originalCell.sheetId : sheetId;
+      cell.value = transformCellFormulaOwners(
+        originalCell.value,
+        formulaOwnerSheetId,
+        delta,
+        context,
+        'pending range.paste snapshot cell value',
+      );
+    }
+  }
   for (const field of ['notes', 'hyperlinks'] as const) {
     const entries = snapshot[field];
     if (entries === undefined) continue;
@@ -214,6 +602,9 @@ function shiftPasteSnapshot(value: unknown, sheetId: string, delta: StructuralDe
     for (const entry of entries) {
       if (!isRecord(entry)) rebaseConflict(`pending range.paste snapshot ${field} entry is invalid`);
       entry.key = shiftSnapshotCellKey(entry.key, sheetId, delta);
+      if (field === 'hyperlinks' && entry.value !== undefined) {
+        entry.value = transformHyperlinkReference(entry.value, delta, 'paste snapshot');
+      }
     }
   }
   if (snapshot.commentCells !== undefined) {
@@ -223,6 +614,17 @@ function shiftPasteSnapshot(value: unknown, sheetId: string, delta: StructuralDe
   if (snapshot.comments !== undefined) {
     if (!Array.isArray(snapshot.comments)) rebaseConflict('pending range.paste snapshot comments are invalid');
     for (const comment of snapshot.comments) shiftSnapshotAddress(comment, sheetId, delta);
+  }
+  for (const field of ['validations', 'conditionalFormats'] as const) {
+    const rules = snapshot[field];
+    if (rules === undefined) continue;
+    if (!Array.isArray(rules)) rebaseConflict(`pending range.paste snapshot ${field} are invalid`);
+    for (const rule of rules) {
+      if (!isRecord(rule)) rebaseConflict(`pending range.paste snapshot ${field} rule is invalid`);
+      if (rule.formulaAnchor !== undefined) {
+        rule.formulaAnchor = shiftCellCoordinate(rule.formulaAnchor, sheetId, delta, `pending range.paste ${field} formula anchor`);
+      }
+    }
   }
   if (snapshot.columnWidths !== undefined) {
     if (!Array.isArray(snapshot.columnWidths)) rebaseConflict('pending range.paste snapshot columnWidths are invalid');
@@ -236,17 +638,20 @@ function shiftPasteSnapshot(value: unknown, sheetId: string, delta: StructuralDe
   return snapshot;
 }
 
-function transformPasteSnapshots(params: unknown, transformedParams: unknown, ownerSheetId: string, delta: StructuralDelta): unknown {
+function transformPasteSnapshots(
+  params: unknown,
+  transformedParams: unknown,
+  ownerSheetId: string,
+  delta: StructuralDelta,
+  context: StructuralRebaseContext,
+): unknown {
   if (!isRecord(params) || !isRecord(transformedParams)) rebaseConflict('pending range.paste parameters are invalid');
-  if (!Object.prototype.hasOwnProperty.call(params, 'snapshot')) return transformedParams;
   const result = transformedParams;
-  result.snapshot = shiftPasteSnapshot(result.snapshot, ownerSheetId, delta);
-  if (Object.prototype.hasOwnProperty.call(params, 'sourceSnapshot')) {
-    const sourceRange = params.sourceRange;
-    if (!isRecord(sourceRange) || typeof sourceRange.sheetId !== 'string') {
-      rebaseConflict('pending cross-sheet range.paste source range is invalid');
-    }
-    result.sourceSnapshot = shiftPasteSnapshot(result.sourceSnapshot, sourceRange.sheetId, delta);
+  if (Object.prototype.hasOwnProperty.call(params, 'snapshot')) {
+    result.snapshot = shiftPasteSnapshot(params.snapshot, result.snapshot, ownerSheetId, delta, context);
+  }
+  if (Object.prototype.hasOwnProperty.call(params, 'clipboard')) {
+    result.clipboard = structuredClone(params.clipboard);
   }
   return result;
 }
@@ -314,10 +719,13 @@ export function rebaseMutation(
     return shiftRange(range, delta);
   });
 
-  const transformedParams = transformParams(pending.params, delta, pending.sheetId, pending.kind, context, '', true);
+  const paramsForTransform = isRecord(pending.params) ? { ...pending.params } : pending.params;
+  if (pending.mutationId === 'range.paste' && isRecord(paramsForTransform)) delete paramsForTransform.clipboard;
+  const transformedParams = transformParams(paramsForTransform, delta, pending.sheetId, context);
+  const mappedParams = transformKnownMutationCoordinates(pending.mutationId, pending.kind, pending.params, transformedParams, delta, pending.sheetId, context);
   const rebasedParams = pending.mutationId === 'range.paste'
-    ? transformPasteSnapshots(pending.params, transformedParams, pending.sheetId, delta)
-    : transformedParams;
+    ? transformPasteSnapshots(pending.params, mappedParams, pending.sheetId, delta, context)
+    : mappedParams;
 
   return {
     rebased: { ...pending, affectedRanges: rebasedRanges, params: rebasedParams },

@@ -18,6 +18,7 @@ export type CollaborationOperationKind =
   | 'sheet-identity'
   | 'drawing'
   | 'comment'
+  | 'visibility'
   | 'pivot-config'
   | 'unknown';
 
@@ -55,6 +56,7 @@ const MUTATION_KIND_MAP: Readonly<Record<string, CollaborationOperationKind>> = 
   'cells.inserted.restore': 'move-range',
   'cells.deleted.restore': 'move-range',
   'style.set': 'cell-style',
+  'cell.editor.set': 'cell-style',
   'row.insert': 'insert-rows',
   'row.delete': 'delete-rows',
   'column.insert': 'insert-columns',
@@ -64,8 +66,6 @@ const MUTATION_KIND_MAP: Readonly<Record<string, CollaborationOperationKind>> = 
   'columns.inserted': 'insert-columns',
   'columns.deleted': 'delete-columns',
   'range.move': 'move-range',
-  'dataRegion.materialize.commit': 'cell-value',
-  'dataRegion.materialize.restore': 'cell-value',
   'sort.apply': 'sort',
   'merge.set': 'merge',
   'table.resize': 'table-resize',
@@ -78,6 +78,17 @@ const MUTATION_KIND_MAP: Readonly<Record<string, CollaborationOperationKind>> = 
   'drawing.update': 'drawing',
   'comment.add': 'comment',
   'comment.update': 'comment',
+  'comment.reply': 'comment',
+  'comment.reply.remove': 'comment',
+  'comment.resolve': 'comment',
+  'comment.remove': 'comment',
+  'note.set': 'comment',
+  'note.remove': 'comment',
+  'note.visibility': 'comment',
+  'hyperlink.set': 'comment',
+  'hyperlink.remove': 'comment',
+  'rows.visibility': 'visibility',
+  'columns.visibility': 'visibility',
   'find.replaced': 'cell-value',
   'pivot.layout.set': 'pivot-config',
 };
