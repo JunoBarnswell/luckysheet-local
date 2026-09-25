@@ -452,3 +452,5 @@ Confirmed additional operation paths: 13 in the follow-up audit (the previous 12
 补充六轮复审确认第二个可复现的类型契约差异（删除区间坐标哨兵与无坐标联合分支不一致），并在同一结果域内修复。生产消费者现有 kind 检查保持安全；静态检查之外未执行测试或构建。
 
 推送后远端编译门禁进一步暴露点映射 `Long` 装箱后的一个真实编译错误：公式转换器仍使用不能应用于 `Long` 的直接 `(int)` 强转。现改为仅在 `MAPPED` 分支执行 `Math.toIntExact`；本地仍不运行构建或测试，等待新提交的远端门禁确认。
+
+随后远端门禁通过编译但发现共享向量测试未将 JSON 的 `out-of-bounds` 规范化为 Java 枚举 `OUT_OF_BOUNDS`，造成一个测试错误。点与区间向量解析现都先将连字符转换为下划线；等待包含此修复的新门禁结果。

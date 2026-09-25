@@ -70,7 +70,7 @@ class ReferenceTransformDomainTest {
                         maximum(vector));
                 Long expectedPosition = expected.has("position") ? expected.path("position").asLong() : null;
                 assertEquals(new ReferenceTransformDomain.PointMapping(
-                                ReferenceTransformDomain.PointKind.valueOf(expected.path("kind").asText().toUpperCase(Locale.ROOT)),
+                                ReferenceTransformDomain.PointKind.valueOf(expected.path("kind").asText().replace('-', '_').toUpperCase(Locale.ROOT)),
                                 expectedPosition),
                         actual, vector.path("id").asText());
             }
@@ -87,7 +87,7 @@ class ReferenceTransformDomainTest {
                         "insert".equals(vector.path("operation").asText()),
                         maximum(vector));
                 assertEquals(new ReferenceTransformDomain.IntervalMapping(
-                                ReferenceTransformDomain.IntervalKind.valueOf(expected.path("kind").asText().toUpperCase(Locale.ROOT)),
+                                ReferenceTransformDomain.IntervalKind.valueOf(expected.path("kind").asText().replace('-', '_').toUpperCase(Locale.ROOT)),
                                 expectedStart,
                                 expectedEnd),
                         actual, vector.path("id").asText());
