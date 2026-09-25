@@ -1172,3 +1172,16 @@ PR 上两个 `canonical-build` job 使用相同 head，前端依赖安装与前�
 6. **回归锁定**：新增 `SUM(Target!A10:A20)` 跨行插入的期望输出源码，要求左右端点随引用目标一起移动且只保留一处 qualifier；未执行测试。
 
 现改为仅在 range 两端都没有 qualifier 时判定为 owner-relative。`git diff --check` 通过；未运行本地测试、构建、lint 或 UI。该复核修复的是上一提交引入的一处合法输入拒绝，不新增第二个独立架构根因。
+
+### 六轮静态自审 — 原生文件 untouched-save 快照身份（2026-09-26）
+
+1. **影响路径**：OOXML、文本、ODS、SSJSON、SJS、BIFF 与 XLSB 均可在快路径返回 artifact 的原始 `sourceBytes`；这条路径的唯一快照判据是 `sourceSnapshotHash`。
+2. **摘要强度**：旧 `nativeSnapshotHash` 是 FNV-1a 32 位值，输出空间只有 2^32；不同快照必然存在碰撞，且该算法不具抗碰撞性，不能充当“快照完全未变”的证明。
+3. **实际后果**：一旦不同快照碰撞，导出会绕过格式写入器并返回旧字节，当前快照编辑因此静默丢失；源字节自身 SHA-256 checksum 不能证明快照身份。
+4. **边界区分**：对 `unitId` 与 print-document `unitId` 的规范化是既有跨会话等价规则，保留不变；缺陷是归一化结果被 32 位摘要压缩，而不是这些字段被忽略。
+5. **所有权范围**：OOXML 与其它 codec 的快路径复用同一摘要 helper，必须一次升级公共 artifact 契约并将调用者改为异步验证，不能只补 OOXML 单一路径。
+6. **持久化迁移**：旧 artifact 可能在 session-memory record 中出现；迁移不得把旧 FNV 值“升格”为 SHA-256。v1->v2 显式迁移校验 artifact 后移除旧快路径身份，保留原字节与 package graph；新 artifact 只接受 SHA-256 身份。
+
+**修复方案**：快路径改用 Web Crypto SHA-256，codec revision 和 native-document record 升至 v2；仅在 `LocalNativeDocumentStore.load` 的显式迁移边界识别 v1，成功校验后清除旧快路径身份并原子写入 v2，非法旧 artifact 保持拒绝且不改存储。新增 hash 变更与迁移成功/拒绝路径测试源码。静态执行 `git diff --check`；未运行本地测试、构建、lint 或 UI。旧 artifact 在完成一次正常导出之前不会走原字节捷径；若其内容不能安全重写，既有 fail-close 规则仍会拒绝，不声称本次已完成 OOXML opaque-owner 的结构变换。
+
+附加边界检查还发现存储读取用 truthiness 把损坏的 falsy record 当成“无记录”；现在只有 key 缺失（`undefined`）返回空，损坏值 fail-close，回归源码同时覆盖无效 v1 hash 与 falsy record 且确认失败不写入。

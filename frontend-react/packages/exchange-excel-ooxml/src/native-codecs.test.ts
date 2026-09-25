@@ -4,6 +4,7 @@ import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate';
 import { WorkbookModel } from '@react-sheets/core-model';
 import { nativeDocumentCodecRegistry, odsCodec, sjsCodec, writeCfbPackage } from './index';
 import { NativeDocumentError } from './native-document-error';
+import { nativeSnapshotHash } from './native-document-artifact';
 import { consumeNativeDocumentWorkerTask } from './worker-entry';
 import { createNativeDocumentImportRequest } from './worker-protocol';
 
@@ -233,6 +234,14 @@ describe('native document codec registry', () => {
     imported.snapshot.sheets[0]!.cells['1']!['1']!.value = 43;
     const edited = await nativeDocumentCodecRegistry.export({ snapshot: imported.snapshot, artifact: imported.artifact, fileName: 'source.xlsx', options, execution: 'inline-test' });
     assert.notDeepEqual([...bytesOf(edited.buffer)], [...bytesOf(source.buffer)]);
+  });
+
+  it('uses a SHA-256 snapshot identity and changes it with canonical cell content', async () => {
+    const workbook = sourceSnapshot('Snapshot identity');
+    const original = await nativeSnapshotHash(workbook);
+    assert.match(original, /^sha256-[a-f0-9]{64}$/);
+    workbook.sheets[0]!.cells['1']!['1']!.value = 43;
+    assert.notEqual(await nativeSnapshotHash(workbook), original);
   });
 
 

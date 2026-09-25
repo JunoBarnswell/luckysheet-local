@@ -111,6 +111,46 @@ describe('page-session memory persistence', () => {
     assert.equal((await persistence.nativeDocuments.load(snapshot.unitId))?.checksum, artifact.checksum);
   });
 
+  it('migrates v1 native artifacts without promoting their weak snapshot identity', async () => {
+    const persistence = new WorkspacePersistence();
+    const snapshot = new WorkbookModel('wb-artifact-v1', 'Artifact v1').snapshot();
+    const sourceBytes = exportSnapshotToOoxmlBuffer(snapshot);
+    const artifact = await createNativeDocumentArtifact({
+      fileName: 'artifact-v1.xlsx', buffer: sourceBytes, dateSystem: '1900',
+      nativeGraph: { kind: 'opc', package: loadOpcPackageGraph(sourceBytes).packageGraph satisfies OpcPackageGraph },
+      detectedFeatures: ['worksheet'],
+    });
+    const legacy = { ...artifact, codecRevision: 1, sourceSnapshotHash: 'fnv1a-deadbeef' };
+    await persistence.coordinator.transaction((transaction) => {
+      transaction.set('nativeDocuments', snapshot.unitId, {
+        schema: 'NativeDocumentRecord', version: 1, unitId: snapshot.unitId, artifact: legacy, updatedAt: '2026-09-26T00:00:00.000Z',
+      });
+    });
+
+    const migrated = await persistence.nativeDocuments.load(snapshot.unitId);
+    assert.equal(migrated?.codecRevision, 2);
+    assert.equal(migrated?.sourceSnapshotHash, undefined);
+    const record = await persistence.coordinator.read((transaction) => transaction.get<{ version: number }>('nativeDocuments', snapshot.unitId));
+    assert.equal(record?.version, 2);
+
+    const invalidUnitId = `${snapshot.unitId}-invalid`;
+    await persistence.coordinator.transaction((transaction) => {
+      transaction.set('nativeDocuments', invalidUnitId, {
+        schema: 'NativeDocumentRecord', version: 1, unitId: invalidUnitId,
+        artifact: { ...legacy, sourceSnapshotHash: 'fnv1a-invalid' }, updatedAt: '2026-09-26T00:00:00.000Z',
+      });
+    });
+    await assert.rejects(persistence.nativeDocuments.load(invalidUnitId));
+    const rejected = await persistence.coordinator.read((transaction) => transaction.get<{ version: number }>('nativeDocuments', invalidUnitId));
+    assert.equal(rejected?.version, 1);
+
+    const invalidFalsyUnitId = `${snapshot.unitId}-invalid-falsy`;
+    await persistence.coordinator.transaction((transaction) => transaction.set('nativeDocuments', invalidFalsyUnitId, false));
+    await assert.rejects(persistence.nativeDocuments.load(invalidFalsyUnitId));
+    const rejectedFalsy = await persistence.coordinator.read((transaction) => transaction.get<unknown>('nativeDocuments', invalidFalsyUnitId));
+    assert.equal(rejectedFalsy, false);
+  });
+
   it('commits operation journal and rejects a stale storage revision', async () => {
     const persistence = new WorkspacePersistence();
     const snapshot = new WorkbookModel('wb-operation', 'Operation').snapshot();

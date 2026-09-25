@@ -26,7 +26,7 @@ export async function exportOoxmlDocument(request: NativeDocumentExportRequest):
   if (artifact
     && sourcePackage
     && artifact.fileName === request.fileName
-    && artifact.sourceSnapshotHash === nativeSnapshotHash(request.snapshot)
+    && artifact.sourceSnapshotHash === await nativeSnapshotHash(request.snapshot)
     && artifact.compatibility.exportLevel === request.options.compatibilityTarget
     && artifact.compatibility.dateSystem === (request.options.dateSystem ?? sourcePackage.dateSystem)
     && request.options.includeCachedValues !== false
