@@ -2967,6 +2967,199 @@ final class StructuralSnapshotReducer {
             }
         }
         for (JsonNode rule : SnapshotMutationSupport.array(sheet, "protectionRules")) if (rule.has("range")) writeSingleRange(rule.get("range"), metadataScope, rowMap, "protection rule");
+        JsonNode bandedRaw = sheet.get("bandedRule");
+        if (bandedRaw != null && !bandedRaw.isNull()) {
+            ObjectNode banded = requireObject(bandedRaw, "Banded rule");
+            writeSingleRange(banded.get("range"), range, rowMap, "banded rule");
+        }
+        remapPermutationDrawingPayloads(root, range, rowMap);
+    }
+
+    private static void validatePermutationDrawingPayloads(ObjectNode root, RangeRef range, int[] rowMap) {
+        for (JsonNode rawSheet : SnapshotMutationSupport.sheets(root)) {
+            ObjectNode owner = requireObject(rawSheet, "Sheet");
+            JsonNode rawPayloads = owner.get("drawingPayloads");
+            if (rawPayloads == null || rawPayloads.isNull()) continue;
+            if (!rawPayloads.isObject()) throw ServiceException.validation("drawingPayloads must be an object");
+            var fields = rawPayloads.fields();
+            while (fields.hasNext()) {
+                var entry = fields.next();
+                ObjectNode source = requireObject(entry.getValue(), "Drawing payload");
+                if (!drawingPayloadIntersectsPermutation(root, source, range)) continue;
+                ObjectNode payload = source.deepCopy();
+                remapPermutationDrawingPayload(payload, entry.getKey(), range, rowMap);
+            }
+        }
+    }
+
+    private static boolean drawingPayloadIntersectsPermutation(ObjectNode root, ObjectNode payload, RangeRef range) {
+        String kind = payload.path("kind").asText();
+        if ("camera".equals(kind) || "screenshot".equals(kind)) {
+            return permutationRangeIntersects(root, requireObject(payload.get("sourceRange"), kind + " source range"), range);
+        }
+        if ("form-control".equals(kind)) {
+            JsonNode rawLink = payload.get("cellLink");
+            if (rawLink != null && !rawLink.isNull()) {
+                ObjectNode link = requireObject(rawLink, "Form-control cell link");
+                String targetSheetId = SnapshotMutationSupport.text(link, "sheetId");
+                JsonNode rowNode = link.get("row");
+                JsonNode columnNode = link.get("column");
+                if (rowNode == null || !rowNode.canConvertToInt() || columnNode == null || !columnNode.canConvertToInt()) {
+                    throw ServiceException.validation("Form-control cell link is invalid");
+                }
+                int row = rowNode.asInt(-1);
+                int column = columnNode.asInt(-1);
+                if (row < 0 || row > SnapshotMutationSupport.MAX_ROW || column < 0 || column > SnapshotMutationSupport.MAX_COLUMN) {
+                    throw ServiceException.validation("Form-control cell link is outside worksheet bounds");
+                }
+                if (range.sheetId().equals(targetSheetId) && contains(range, row, column)) {
+                    return true;
+                }
+            }
+            JsonNode inputRange = payload.get("inputRange");
+            return inputRange != null && !inputRange.isNull()
+                    && permutationRangeIntersects(root, requireObject(inputRange, "Form-control input range"), range);
+        }
+        if (!"chart".equals(kind)) return false;
+
+        ObjectNode source = requireObject(payload.get("source"), "Chart source");
+        String sourceKind = source.path("kind").asText();
+        if ("worksheet-ranges".equals(sourceKind)) {
+            JsonNode ranges = source.get("ranges");
+            if (ranges == null || !ranges.isArray() || ranges.isEmpty()) throw ServiceException.validation("Chart worksheet source ranges are invalid");
+            for (JsonNode rawRange : ranges) if (permutationRangeIntersects(root, requireObject(rawRange, "Chart worksheet source range"), range)) return true;
+        } else if ("report-range".equals(sourceKind)
+                && permutationRangeIntersects(root, requireObject(source.get("range"), "Chart report source range"), range)) {
+            return true;
+        } else if (!Set.of("report-range", "pivot", "table").contains(sourceKind)) {
+            throw ServiceException.validation("Chart source kind is invalid: " + sourceKind);
+        }
+        JsonNode categoryRange = payload.get("categoryRange");
+        if (categoryRange != null && !categoryRange.isNull()
+                && permutationRangeIntersects(root, requireObject(categoryRange, "Chart category range"), range)) return true;
+        JsonNode seriesRaw = payload.get("series");
+        if (seriesRaw == null || seriesRaw.isNull()) return false;
+        if (!seriesRaw.isArray()) throw ServiceException.validation("Chart series collection is invalid");
+        for (JsonNode rawSeries : seriesRaw) {
+            ObjectNode series = requireObject(rawSeries, "Chart series");
+            for (String field : List.of("range", "xRange", "yRange", "sizeRange", "categoryRange")) {
+                JsonNode value = series.get(field);
+                if (value != null && !value.isNull()
+                        && permutationRangeIntersects(root, requireObject(value, "Chart series " + field), range)) return true;
+            }
+            for (String parent : List.of("stockRoles", "dataLabels", "errorBars")) {
+                JsonNode nestedRaw = series.get(parent);
+                if (nestedRaw == null || nestedRaw.isNull()) continue;
+                ObjectNode nested = requireObject(nestedRaw, "Chart " + parent);
+                List<String> fields = switch (parent) {
+                    case "stockRoles" -> List.of("open", "high", "low", "close", "volume");
+                    case "dataLabels" -> List.of("valuesFromCells");
+                    default -> List.of("plusRange", "minusRange");
+                };
+                for (String field : fields) {
+                    JsonNode value = nested.get(field);
+                    if (value != null && !value.isNull()
+                            && permutationRangeIntersects(root, requireObject(value, "Chart " + parent + " range"), range)) return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private static boolean permutationRangeIntersects(ObjectNode root, ObjectNode candidate, RangeRef range) {
+        return rangesIntersect(SnapshotMutationSupport.range(root, candidate), range);
+    }
+
+    private static void remapPermutationDrawingPayloads(ObjectNode root, RangeRef range, int[] rowMap) {
+        for (JsonNode rawSheet : SnapshotMutationSupport.sheets(root)) {
+            ObjectNode owner = requireObject(rawSheet, "Sheet");
+            JsonNode rawPayloads = owner.get("drawingPayloads");
+            if (rawPayloads == null || rawPayloads.isNull()) continue;
+            if (!rawPayloads.isObject()) throw ServiceException.validation("drawingPayloads must be an object");
+            var fields = rawPayloads.fields();
+            while (fields.hasNext()) {
+                var entry = fields.next();
+                remapPermutationDrawingPayload(requireObject(entry.getValue(), "Drawing payload"), entry.getKey(), range, rowMap);
+            }
+        }
+    }
+
+    private static void remapPermutationDrawingPayload(ObjectNode payload, String payloadId, RangeRef range, int[] rowMap) {
+        String kind = payload.path("kind").asText();
+        if ("camera".equals(kind) || "screenshot".equals(kind)) {
+            writeSingleRange(requireObject(payload.get("sourceRange"), kind + " source range"), range, rowMap, kind + " source range");
+            return;
+        }
+        if ("form-control".equals(kind)) {
+            JsonNode rawLink = payload.get("cellLink");
+            if (rawLink != null && !rawLink.isNull()) {
+                ObjectNode link = requireObject(rawLink, "Form-control cell link");
+                String targetSheetId = SnapshotMutationSupport.text(link, "sheetId");
+                JsonNode rowNode = link.get("row");
+                JsonNode columnNode = link.get("column");
+                if (rowNode == null || !rowNode.canConvertToInt() || columnNode == null || !columnNode.canConvertToInt()) {
+                    throw ServiceException.validation("Form-control cell link is invalid");
+                }
+                int row = rowNode.asInt(-1);
+                int column = columnNode.asInt(-1);
+                if (row < 0 || row > SnapshotMutationSupport.MAX_ROW || column < 0 || column > SnapshotMutationSupport.MAX_COLUMN) {
+                    throw ServiceException.validation("Form-control cell link is outside worksheet bounds");
+                }
+                if (range.sheetId().equals(targetSheetId) && contains(range, row, column)) link.put("row", remapRow(row, range, rowMap));
+            }
+            JsonNode inputRange = payload.get("inputRange");
+            if (inputRange != null && !inputRange.isNull()) {
+                writeSingleRange(requireObject(inputRange, "Form-control input range"), range, rowMap, "form-control input range");
+            }
+            return;
+        }
+        if (!"chart".equals(kind)) return;
+
+        ObjectNode source = requireObject(payload.get("source"), "Chart source");
+        String sourceKind = source.path("kind").asText();
+        if ("worksheet-ranges".equals(sourceKind)) {
+            JsonNode ranges = source.get("ranges");
+            if (ranges == null || !ranges.isArray() || ranges.isEmpty()) throw ServiceException.validation("Chart worksheet source ranges are invalid");
+            for (JsonNode rawRange : ranges) writeSingleRange(requireObject(rawRange, "Chart worksheet source range"), range, rowMap, "chart " + payloadId + " source range");
+        } else if ("report-range".equals(sourceKind)) {
+            writeSingleRange(requireObject(source.get("range"), "Chart report source range"), range, rowMap, "chart " + payloadId + " report range");
+        } else if (!Set.of("pivot", "table").contains(sourceKind)) {
+            throw ServiceException.validation("Chart source kind is invalid: " + sourceKind);
+        }
+        JsonNode categoryRange = payload.get("categoryRange");
+        if (categoryRange != null && !categoryRange.isNull()) writeSingleRange(requireObject(categoryRange, "Chart category range"), range, rowMap, "chart category range");
+        JsonNode seriesRaw = payload.get("series");
+        if (seriesRaw != null && !seriesRaw.isNull() && !seriesRaw.isArray()) throw ServiceException.validation("Chart series collection is invalid");
+        if (seriesRaw == null || seriesRaw.isNull()) return;
+        for (JsonNode rawSeries : seriesRaw) {
+            ObjectNode series = requireObject(rawSeries, "Chart series");
+            for (String field : List.of("range", "xRange", "yRange", "sizeRange", "categoryRange")) {
+                JsonNode value = series.get(field);
+                if (value != null && !value.isNull()) writeSingleRange(requireObject(value, "Chart series " + field), range, rowMap, "chart series " + field);
+            }
+            JsonNode stockRolesRaw = series.get("stockRoles");
+            if (stockRolesRaw != null && !stockRolesRaw.isNull()) {
+                ObjectNode stockRoles = requireObject(stockRolesRaw, "Chart stock roles");
+                for (String field : List.of("open", "high", "low", "close", "volume")) {
+                    JsonNode value = stockRoles.get(field);
+                    if (value != null && !value.isNull()) writeSingleRange(requireObject(value, "Chart stock-role range"), range, rowMap, "chart stock-role range");
+                }
+            }
+            JsonNode labelsRaw = series.get("dataLabels");
+            if (labelsRaw != null && !labelsRaw.isNull()) {
+                ObjectNode labels = requireObject(labelsRaw, "Chart data labels");
+                JsonNode values = labels.get("valuesFromCells");
+                if (values != null && !values.isNull()) writeSingleRange(requireObject(values, "Chart data-label range"), range, rowMap, "chart data-label range");
+            }
+            JsonNode errorBarsRaw = series.get("errorBars");
+            if (errorBarsRaw != null && !errorBarsRaw.isNull()) {
+                ObjectNode errorBars = requireObject(errorBarsRaw, "Chart error bars");
+                for (String field : List.of("plusRange", "minusRange")) {
+                    JsonNode value = errorBars.get(field);
+                    if (value != null && !value.isNull()) writeSingleRange(requireObject(value, "Chart error-bar range"), range, rowMap, "chart error-bar range");
+                }
+            }
+        }
     }
 
     private static void remapCellOwner(ObjectNode owner, RangeRef range, int[] rowMap) {
@@ -3095,6 +3288,11 @@ final class StructuralSnapshotReducer {
         for (JsonNode raw : SnapshotMutationSupport.array(sheet, "pivots")) PivotMutationDescriptor.forEachWorksheetSourceRange(requireObject(raw, "Pivot"), source -> requireSingleRange(source, range, rowMap, "pivot source"));
         for (JsonNode raw : SnapshotMutationSupport.array(sheet, "merges")) requireSingleRange(requireObject(raw, "Merge").get("range"), range, rowMap, "merge");
         for (JsonNode raw : SnapshotMutationSupport.array(sheet, "protectionRules")) if (raw.has("range")) requireSingleRange(raw.get("range"), metadataScope, rowMap, "protection rule");
+        JsonNode bandedRaw = sheet.get("bandedRule");
+        if (bandedRaw != null && !bandedRaw.isNull()) {
+            ObjectNode banded = requireObject(bandedRaw, "Banded rule");
+            requireSingleRange(banded.get("range"), range, rowMap, "banded rule");
+        }
         JsonNode outline = sheet.get("outline");
         if (outline != null && !outline.isNull()) {
             if (!outline.isObject() || !outline.path("groups").isArray()) throw ServiceException.validation("Worksheet outline groups must be an array");
@@ -3112,6 +3310,7 @@ final class StructuralSnapshotReducer {
                 }
             }
         }
+        validatePermutationDrawingPayloads(root, range, rowMap);
         validatePermutationFormulaOwners(root, sheet, range.sheetId(), metadataScope, rowMap);
     }
 
@@ -3171,10 +3370,11 @@ final class StructuralSnapshotReducer {
                 if (rowDelta != 0) {
                     String identity = property + " " + rule.path("id").asText("<unknown>");
                     rewriteRuleFormulas(rule, formula -> offsetPermutationFormula(formula, rowDelta, identity));
+                    if (explicitAnchor) ((ObjectNode) rawAnchor).put("row", targetRow);
                 }
                 if (!explicitAnchor && changesRows) {
                     ObjectNode mappedAnchor = JsonNodeFactory.instance.objectNode();
-                    mappedAnchor.put("sheetId", sheetId).put("row", row).put("column", column);
+                    mappedAnchor.put("sheetId", sheetId).put("row", targetRow).put("column", column);
                     rule.set("formulaAnchor", mappedAnchor);
                 }
             }

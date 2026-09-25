@@ -763,6 +763,46 @@ class MutationDescriptorRegistryTest {
     }
 
     @Test
+    void rowPermutationKeepsRuleAnchorsReportBindingsBandedRangesAndDrawingSourcesCanonical() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        JsonNode snapshot = mapper.readTree("""
+                {"definedNameModels":[],"cellStyleTemplates":[],"sheets":[
+                  {"id":"sheet-1","name":"Data","rowCount":4,"columnCount":1,"cells":{},"merges":[],
+                   "conditionalFormats":[
+                     {"id":"cf-implicit","sheetId":"sheet-1","ranges":[{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":2,"endColumn":2}],"type":"highlight","operator":"formula","value1":"=A1>0"},
+                     {"id":"cf-explicit","sheetId":"sheet-1","ranges":[{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":3,"endColumn":3}],"formulaAnchor":{"sheetId":"sheet-1","row":0,"column":3},"type":"highlight","operator":"formula","value1":"=A1>0"}],
+                   "dataValidations":[],"pivots":[],"sparklines":[],"drawings":[],"drawingPayloads":{},"sheetTables":[],
+                   "spillRanges":[],"protectionRules":[],"bandedRule":{"range":{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0},"firstColor":"#ffffff","secondColor":"#eeeeee"},
+                   "reportSheet":{"templateSheetId":"sheet-1","bindings":[{"cell":{"row":0,"column":5},"expression":"field-id","kind":"field"}],"pagination":{"enabled":true,"repeatHeaderRows":[0]},"renderMode":"preview","layout":{"orientation":"portrait","marginTopPx":24,"marginRightPx":24,"marginBottomPx":24,"marginLeftPx":24},"dataEntry":[]}},
+                  {"id":"sheet-2","name":"Drawing owner","rowCount":4,"columnCount":1,"cells":{},"drawingPayloads":{"camera-1":{"kind":"camera","sourceRange":{"sheetId":"sheet-1","startRow":0,"endRow":1,"startColumn":0,"endColumn":0},"refreshPolicy":"live"}}}
+                ]}
+                """);
+        ObjectNode selected = range(0, 2, 0, 0);
+        OperationMutation raw = new OperationMutation("rows.permuted", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":0,"endRow":2,"startColumn":0,"endColumn":0},"sourceRows":[2,0,1]}
+                """));
+
+        OperationMutation overstated = withSortContext(raw, selected, "worksheet", null, false, 6);
+        ServiceException extentError = assertThrows(ServiceException.class,
+                () -> registry.prepare(snapshot, overstated, WorkbookAclRole.OWNER));
+        assertEquals("VALIDATION_ERROR", extentError.code());
+
+        OperationMutation mutation = withSortContext(raw, selected, "worksheet", null, false, 5);
+        var prepared = registry.prepare(snapshot, mutation, WorkbookAclRole.OWNER);
+        JsonNode updated = prepared.descriptor().apply(snapshot, mutation);
+        JsonNode dataSheet = updated.path("sheets").get(0);
+        assertEquals(1, dataSheet.path("conditionalFormats").get(0).path("formulaAnchor").path("row").asInt());
+        assertEquals("=A2>0", dataSheet.path("conditionalFormats").get(0).path("value1").asText());
+        assertEquals(1, dataSheet.path("conditionalFormats").get(1).path("formulaAnchor").path("row").asInt());
+        assertEquals("=A2>0", dataSheet.path("conditionalFormats").get(1).path("value1").asText());
+        assertEquals(1, dataSheet.path("bandedRule").path("range").path("startRow").asInt());
+        assertEquals(1, dataSheet.path("reportSheet").path("bindings").get(0).path("cell").path("row").asInt());
+        assertEquals(5, dataSheet.path("reportSheet").path("bindings").get(0).path("cell").path("column").asInt());
+        assertEquals(1, updated.path("sheets").get(1).path("drawingPayloads").path("camera-1").path("sourceRange").path("startRow").asInt());
+        assertEquals(2, updated.path("sheets").get(1).path("drawingPayloads").path("camera-1").path("sourceRange").path("endRow").asInt());
+    }
+
+    @Test
     void sheetMetadataMutationsUseCanonicalCollectionsRatherThanClientRanges() throws Exception {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         var snapshot = mapper.readTree("""

@@ -30,11 +30,55 @@ describe('canonical row permutation metadata plan', () => {
     sheet.rowCount = 4;
     sheet.columnCount = 2;
     sheet.reportSheet = reportDefinition(sheet.id);
+    sheet.reportSheet!.bindings[0]!.cell.column = 5;
 
     applyPermutation(workbook, range(sheet.id, 0, 1, 0, 0), [1, 0]);
 
-    assert.deepEqual(sheet.reportSheet?.bindings[0]?.cell, { row: 1, column: 0 });
+    assert.deepEqual(sheet.reportSheet?.bindings[0]?.cell, { row: 1, column: 5 });
+    assert.equal(rowPermutationAffectedColumnEnd(workbook, range(sheet.id, 0, 1, 0, 0)), 5);
     assert.deepEqual(sheet.reportSheet?.pagination.repeatHeaderRows, [1, 0]);
+  });
+
+  it('remaps banding and cross-sheet drawing references with a row permutation', () => {
+    const workbook = new WorkbookModel('permutation-drawing-references', 'Permutation drawing references');
+    const sheet = workbook.getSheet('sheet-1');
+    const drawingOwner = workbook.addSheet('sheet-2', 'Drawing owner', 4, 2);
+    sheet.rowCount = 4;
+    sheet.columnCount = 1;
+    sheet.bandedRule = {
+      range: range(sheet.id, 0, 0, 0, 0),
+      firstColor: '#ffffff',
+      secondColor: '#eeeeee',
+    };
+    drawingOwner.drawingPayloads.set('camera-1', {
+      kind: 'camera',
+      sourceRange: range(sheet.id, 0, 1, 0, 0),
+      refreshPolicy: 'live',
+    });
+
+    applyPermutation(workbook, range(sheet.id, 0, 2, 0, 0), [2, 0, 1]);
+
+    assert.deepEqual(sheet.bandedRule?.range, range(sheet.id, 1, 1, 0, 0));
+    assert.deepEqual((drawingOwner.drawingPayloads.get('camera-1') as { sourceRange: RangeRef }).sourceRange,
+      range(sheet.id, 1, 2, 0, 0));
+  });
+
+  it('rejects a row permutation whose metadata scope overstates the canonical owner extent', () => {
+    const workbook = new WorkbookModel('permutation-overstated-scope', 'Permutation overstated scope');
+    const sheet = workbook.getSheet('sheet-1');
+    sheet.rowCount = 4;
+    sheet.columnCount = 2;
+    sheet.cells.set(0, 0, { value: 'first' });
+    sheet.cells.set(1, 0, { value: 'second' });
+    const selected = range(sheet.id, 0, 1, 0, 0);
+    const before = sheet.cells.toJSON();
+    const canonicalEnd = rowPermutationAffectedColumnEnd(workbook, selected);
+
+    assert.throws(
+      () => applyRowPermutation(workbook, createRowPermutationPlan(selected, [1, 0], canonicalEnd + 1)),
+      /does not match its canonical owners/,
+    );
+    assert.deepEqual(sheet.cells.toJSON(), before);
   });
 
   it('rebases moved formula owners, provenance formulas, and barcode formulas', () => {

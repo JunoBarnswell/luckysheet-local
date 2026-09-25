@@ -40,8 +40,8 @@ final class StructuralMutationDescriptor extends CanonicalJsonMutationDescriptor
                 RangeRef selected = ownRange(root, mutation.sheetId(), params);
                 int declaredEndColumn = integer(params.get("affectedColumnEnd"), "Rows permutation affected column end");
                 int canonicalEndColumn = SheetRuleLifecycle.affectedColumnEnd(root, SnapshotMutationSupport.sheet(root, mutation.sheetId()), selected.endColumn(), selected.startRow(), selected.endRow());
-                if (declaredEndColumn < canonicalEndColumn || declaredEndColumn > SnapshotMutationSupport.MAX_COLUMN) {
-                    throw ServiceException.validation("Rows permutation affected column extent does not cover current worksheet metadata");
+                if (declaredEndColumn != canonicalEndColumn || declaredEndColumn > SnapshotMutationSupport.MAX_COLUMN) {
+                    throw ServiceException.validation("Rows permutation affected column extent does not match current worksheet metadata");
                 }
                 yield List.of(new RangeRef(selected.sheetId(), selected.startRow(), selected.endRow(), 0, declaredEndColumn));
             }
@@ -76,8 +76,8 @@ final class StructuralMutationDescriptor extends CanonicalJsonMutationDescriptor
                 RangeRef selected = ownRange(root, mutation.sheetId(), params);
                 int declaredEndColumn = integer(params.get("affectedColumnEnd"), "Rows permutation affected column end");
                 int canonicalEndColumn = SheetRuleLifecycle.affectedColumnEnd(root, SnapshotMutationSupport.sheet(root, mutation.sheetId()), selected.endColumn(), selected.startRow(), selected.endRow());
-                if (declaredEndColumn < canonicalEndColumn || declaredEndColumn > SnapshotMutationSupport.MAX_COLUMN) {
-                    throw ServiceException.validation("Rows permutation affected column extent does not cover current worksheet metadata");
+                if (declaredEndColumn != canonicalEndColumn || declaredEndColumn > SnapshotMutationSupport.MAX_COLUMN) {
+                    throw ServiceException.validation("Rows permutation affected column extent does not match current worksheet metadata");
                 }
                 StructuralSnapshotReducer.permuteRows(root, mutation.sheetId(), selected, declaredEndColumn, params.get("sourceRows"));
             }

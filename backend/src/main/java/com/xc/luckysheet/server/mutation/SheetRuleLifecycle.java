@@ -126,6 +126,27 @@ final class SheetRuleLifecycle {
                 }
             }
         }
+        JsonNode reportSheet = sheet.get("reportSheet");
+        if (reportSheet != null && !reportSheet.isNull()) {
+            if (!reportSheet.isObject()) throw ServiceException.validation("ReportSheet definition must be an object");
+            JsonNode bindings = reportSheet.get("bindings");
+            if (bindings == null || !bindings.isArray()) throw ServiceException.validation("ReportSheet bindings must be an array");
+            for (JsonNode binding : bindings) {
+                if (!binding.isObject()) throw ServiceException.validation("ReportSheet binding must be an object");
+                JsonNode cell = binding.get("cell");
+                if (cell == null || !cell.isObject()
+                        || !cell.path("row").canConvertToInt() || !cell.path("column").canConvertToInt()) {
+                    throw ServiceException.validation("ReportSheet binding cell is invalid");
+                }
+                int row = cell.path("row").asInt(-1);
+                int column = cell.path("column").asInt(-1);
+                if (row < 0 || row > SnapshotMutationSupport.MAX_ROW
+                        || column < 0 || column > SnapshotMutationSupport.MAX_COLUMN) {
+                    throw ServiceException.validation("ReportSheet binding cell is outside worksheet bounds");
+                }
+                if (row >= startRow && row <= endRow) end = Math.max(end, column);
+            }
+        }
         return end;
     }
 

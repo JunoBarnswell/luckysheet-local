@@ -1,6 +1,6 @@
 import type { CellAddress, CellData, CellStyleTemplate, ConditionalFormatRule, DataValidationRule, RangeRef, Row, WorkbookModel, WorksheetModel } from './index';
 import { cellKey, hasFormulaGroupMetadata } from './index';
-import type { DefinedNameModel, DrawingObject, SpillRange } from './domain';
+import type { DefinedNameModel, DrawingObject, DrawingPayload, SpillRange } from './domain';
 import { sheetRuleRegistry, type RuleTransform } from './rule-lifecycle';
 import { mapReportSheetCoordinates } from './report-sheet-transform';
 import { formatFormula, MAX_COLUMN_INDEX, MAX_ROW_INDEX, offsetAst, parseFormula } from '@react-sheets/formula-engine';
@@ -196,6 +196,14 @@ export function rowPermutationAffectedColumnEnd(workbook: WorkbookModel, range: 
   for (const rule of [...sheet.conditionalFormats, ...sheet.dataValidations]) includeAnchor(rule.formulaAnchor);
   for (const name of workbook.definedNameModels) includeAnchor(name.anchor);
   for (const template of workbook.cellStyleTemplates.values()) includeAnchor(template.dataValidation?.formulaAnchor);
+  for (const binding of sheet.reportSheet?.bindings ?? []) {
+    const { row, column } = binding.cell;
+    if (!Number.isSafeInteger(row) || row < 0 || row > MAX_ROW_INDEX
+      || !Number.isSafeInteger(column) || column < 0 || column > MAX_COLUMN_INDEX) {
+      throw new Error('Row permutation report binding is outside worksheet bounds');
+    }
+    if (row >= range.startRow && row <= range.endRow) end = Math.max(end, column);
+  }
   return end;
 }
 
@@ -265,11 +273,99 @@ function remapRuleForPermutation<T extends ConditionalFormatRule | DataValidatio
   return next;
 }
 
+function sameRange(left: RangeRef, right: RangeRef): boolean {
+  return left.sheetId === right.sheetId
+    && left.startRow === right.startRow && left.endRow === right.endRow
+    && left.startColumn === right.startColumn && left.endColumn === right.endColumn;
+}
+
+function remapPayloadRange(range: RangeRef, owner: string, plan: RowPermutationPlan): RangeRef {
+  if (range.sheetId !== plan.range.sheetId || !rangesIntersect(range, plan.range)) return range;
+  const mapped = remapSingleRange(owner, range, plan);
+  return sameRange(range, mapped) ? range : mapped;
+}
+
+function drawingPayloadIntersectsPermutation(payload: DrawingPayload, plan: RowPermutationPlan): boolean {
+  const intersects = (range: RangeRef | undefined): boolean => Boolean(range && rangesIntersect(range, plan.range));
+  if (payload.kind === 'camera' || payload.kind === 'screenshot') return intersects(payload.sourceRange);
+  if (payload.kind === 'form-control') {
+    return Boolean(payload.cellLink && payload.cellLink.sheetId === plan.range.sheetId
+      && inRange(plan.range, payload.cellLink.row, payload.cellLink.column))
+      || ('inputRange' in payload && intersects(payload.inputRange));
+  }
+  if (payload.kind !== 'chart') return false;
+  if ((payload.source.kind === 'worksheet-ranges' && payload.source.ranges.some(intersects))
+    || (payload.source.kind === 'report-range' && intersects(payload.source.range))
+    || intersects(payload.categoryRange)) return true;
+  for (const series of payload.series ?? []) {
+    if ([series.range, series.xRange, series.yRange, series.sizeRange, series.categoryRange,
+      series.stockRoles?.open, series.stockRoles?.high, series.stockRoles?.low, series.stockRoles?.close,
+      series.stockRoles?.volume, series.dataLabels?.valuesFromCells,
+      series.errorBars?.plusRange, series.errorBars?.minusRange].some(intersects)) return true;
+  }
+  return false;
+}
+
+function remapDrawingPayload(payload: DrawingPayload, payloadId: string, plan: RowPermutationPlan): DrawingPayload {
+  if (!drawingPayloadIntersectsPermutation(payload, plan)) return payload;
+  const next = structuredClone(payload);
+  let changed = false;
+  const mapRange = (range: RangeRef, owner: string): RangeRef => {
+    const mapped = remapPayloadRange(range, owner, plan);
+    changed ||= mapped !== range;
+    return mapped;
+  };
+
+  if (next.kind === 'camera' || next.kind === 'screenshot') {
+    next.sourceRange = mapRange(next.sourceRange, `${next.kind} source ${payloadId}`);
+  } else if (next.kind === 'chart') {
+    if (next.source.kind === 'worksheet-ranges') {
+      next.source.ranges = next.source.ranges.map((range, index) => mapRange(range, `chart ${payloadId} source ${index}`));
+    } else if (next.source.kind === 'report-range') {
+      next.source.range = mapRange(next.source.range, `chart ${payloadId} report source`);
+    }
+    if (next.categoryRange) next.categoryRange = mapRange(next.categoryRange, `chart ${payloadId} category`);
+    for (const [seriesIndex, series] of (next.series ?? []).entries()) {
+      for (const field of ['range', 'xRange', 'yRange', 'sizeRange', 'categoryRange'] as const) {
+        const range = series[field];
+        if (range) series[field] = mapRange(range, `chart ${payloadId} series ${seriesIndex} ${field}`);
+      }
+      if (series.stockRoles) {
+        for (const field of ['open', 'high', 'low', 'close', 'volume'] as const) {
+          const range = series.stockRoles[field];
+          if (range) series.stockRoles[field] = mapRange(range, `chart ${payloadId} series ${seriesIndex} stock ${field}`);
+        }
+      }
+      if (series.dataLabels?.valuesFromCells) {
+        series.dataLabels.valuesFromCells = mapRange(series.dataLabels.valuesFromCells, `chart ${payloadId} series ${seriesIndex} data labels`);
+      }
+      if (series.errorBars?.plusRange) {
+        series.errorBars.plusRange = mapRange(series.errorBars.plusRange, `chart ${payloadId} series ${seriesIndex} error-bar plus`);
+      }
+      if (series.errorBars?.minusRange) {
+        series.errorBars.minusRange = mapRange(series.errorBars.minusRange, `chart ${payloadId} series ${seriesIndex} error-bar minus`);
+      }
+    }
+  } else if (next.kind === 'form-control') {
+    if (next.cellLink?.sheetId === plan.range.sheetId && inRange(plan.range, next.cellLink.row, next.cellLink.column)) {
+      const row = remapRow(next.cellLink.row, plan);
+      if (row !== next.cellLink.row) {
+        next.cellLink.row = row;
+        changed = true;
+      }
+    }
+    if ('inputRange' in next) next.inputRange = mapRange(next.inputRange, `form-control ${payloadId} input`);
+  }
+
+  return changed ? next : payload;
+}
+
 interface RowPermutationOwnerChanges {
   readonly conditionalFormats: ConditionalFormatRule[];
   readonly dataValidations: DataValidationRule[];
   readonly definedNames: Array<{ entry: DefinedNameModel; formula: string; anchor: DefinedNameModel['anchor'] }>;
   readonly templates: CellStyleTemplate[];
+  readonly drawingPayloads: Array<{ owner: WorksheetModel; payloads: Map<string, DrawingPayload> }>;
   readonly reportSheet?: WorksheetModel['reportSheet'];
 }
 
@@ -280,8 +376,8 @@ export function validatePermutationMetadata(workbook: WorkbookModel, plan: RowPe
   if (range.endRow >= sheet.rowCount || range.endColumn >= sheet.columnCount) throw new Error('Row permutation range is outside worksheet bounds');
   if (plan.metadataScope.sheetId !== range.sheetId || plan.metadataScope.startColumn !== 0 || plan.metadataScope.startRow !== range.startRow
     || plan.metadataScope.endRow !== range.endRow || plan.metadataScope.endColumn > MAX_COLUMN_INDEX
-    || plan.metadataScope.endColumn < rowPermutationAffectedColumnEnd(workbook, range)) {
-    throw new Error('Row permutation metadata scope does not cover its canonical owners');
+    || plan.metadataScope.endColumn !== rowPermutationAffectedColumnEnd(workbook, range)) {
+    throw new Error('Row permutation metadata scope does not match its canonical owners');
   }
   const changesRows = plan.sourceRows.some((sourceRow, targetOffset) => sourceRow !== range.startRow + targetOffset);
   if (changesRows) {
@@ -347,6 +443,16 @@ export function validatePermutationMetadata(workbook: WorkbookModel, plan: RowPe
     offsetPermutationFormulaFields(next.dataValidation!, rowDelta, `cell-style template ${template.id}`);
     return [next];
   });
+  const drawingPayloads = workbook.getSheets().flatMap((owner) => {
+    let mapped: Map<string, DrawingPayload> | undefined;
+    for (const [payloadId, payload] of owner.drawingPayloads) {
+      const next = remapDrawingPayload(payload, payloadId, plan);
+      if (next === payload) continue;
+      mapped ??= new Map(owner.drawingPayloads);
+      mapped.set(payloadId, next);
+    }
+    return mapped ? [{ owner, payloads: mapped }] : [];
+  });
   const reportSheet = sheet.reportSheet
     ? mapReportSheetCoordinates(
       sheet.reportSheet,
@@ -357,7 +463,7 @@ export function validatePermutationMetadata(workbook: WorkbookModel, plan: RowPe
       'row-permutation',
     )
     : undefined;
-  return { conditionalFormats, dataValidations, definedNames, templates, reportSheet };
+  return { conditionalFormats, dataValidations, definedNames, templates, drawingPayloads, reportSheet };
 }
 
 export function applyRowPermutation(workbook: WorkbookModel, plan: RowPermutationPlan): void {
@@ -403,6 +509,10 @@ export function applyRowPermutation(workbook: WorkbookModel, plan: RowPermutatio
     change.entry.anchor = change.anchor;
   }
   for (const template of ownerChanges.templates) workbook.cellStyleTemplates.set(template.id, template);
+  for (const update of ownerChanges.drawingPayloads) {
+    update.owner.drawingPayloads.clear();
+    for (const [payloadId, payload] of update.payloads) update.owner.drawingPayloads.set(payloadId, payload);
+  }
   if (ownerChanges.reportSheet) sheet.reportSheet = ownerChanges.reportSheet;
 }
 

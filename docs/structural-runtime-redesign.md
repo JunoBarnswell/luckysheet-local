@@ -588,3 +588,14 @@ Confirmed additional operation paths: 13 in the follow-up audit (the previous 12
 6. **失败原子性：** 预检在 Java 深拷贝候选快照上运行；静态复核还发现 `SnapshotMutationSupport.array` 会为缺失的可选模板字段创建空数组，故预检改为只读可选字段、仅验证其存在时的形状，避免成功结构编辑凭空改写快照结构。
 
 本轮仅按远端 CI 失败及源码路径做静态修复，未在本地运行测试或构建；需由 PR 后续门禁确认。此前远端失败的两个断言均仍待新 head 验证。
+
+### 六轮静态复审 — rows.permuted 引用与影响范围闭环（2026-09-25）
+
+1. **显式公式锚点：** 对照 TypeScript `remapRuleForPermutation` 与 Java `remapPermutationRuleFormulaOwners`，确认后端偏移 CF/DV 公式时没有把显式 `formulaAnchor.row` 写到置换后的行；现与公式偏移共用同一目标行。
+2. **隐式公式锚点：** 对照已有“range fragments reorder”前端契约，确认后端物化隐式锚点时写入旧行；现写入映射行，并保留无行变化时的原坐标语义。
+3. **BandedRule：** 前端在排序前校验并重映射 `bandedRule.range`，后端原先既不拒绝碎片化结果，也不写回；现添加预检与精确范围写回。
+4. **ReportSheet：** 绑定单元格按行跟随置换，但列可能在当前 materialized grid 之外；旧 canonical `affectedColumnEnd` 未计入绑定列，导致回调因范围不足而原地保留。现前后端都纳入所选行内的绑定列，绑定先映射后应用。
+5. **绘图引用：** 排序原先漏掉跨工作表拥有的 camera/screenshot/chart/form-control payload 引用。现对工作簿全部 drawing payload owner 做同一行映射；区间不能精确表示为单一区间时在写入前 fail-close。仅复制受影响 payload，避免对无关的大型对象做深拷贝。
+6. **影响范围篡改：** 服务端和客户端原先只要求 `affectedColumnEnd` 覆盖下界，允许提交者多报列并扩大行元数据迁移范围；现服务端要求与独立 canonical extent 精确相等，客户端在应用前也校验 metadata scope 精确匹配。
+
+已补充前端与 Java 回归用例，覆盖显式/隐式规则锚点、远网格 ReportSheet 绑定、banded range、跨工作表 camera source 及 over-reported extent。按要求未执行本地测试、构建或 UI 验收；`git diff --check` 通过，仍需 PR CI 验证。本轮没有统一 rows.permuted 与 axis/cell-shift/move 的服务端公式 owner patch 协议，其他结构入口和 OOXML 仍需后续静态审查；本目标未完成。
