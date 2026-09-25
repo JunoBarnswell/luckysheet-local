@@ -23,6 +23,7 @@ interface IndexedReference {
   readonly sourceId: string;
   readonly owner?: CellAddress;
   readonly definedNameOwner?: DefinedNameReferenceOwnerIdentity;
+  readonly formulaRuleOwner?: FormulaRuleReferenceOwnerIdentity;
   readonly sheetId: string;
   readonly axis: Axis;
   readonly start: number;
@@ -50,11 +51,13 @@ interface AxisTrees {
 interface OwnerReferences {
   readonly address?: CellAddress;
   readonly definedNameOwner?: DefinedNameReferenceOwnerIdentity;
+  readonly formulaRuleOwner?: FormulaRuleReferenceOwnerIdentity;
   readonly sourceId: string;
   readonly postings: readonly IndexedReference[];
   readonly position?: IndexedReference;
   readonly anchorPosition?: IndexedReference;
   readonly failure?: DefinedNameReferenceFailureReason;
+  readonly formulaRuleFailure?: FormulaRuleReferenceFailureReason;
 }
 
 export interface IndexedReferenceOwnerSource {
@@ -84,6 +87,20 @@ export interface DefinedNameReferenceIndexUpdate {
   readonly failure?: DefinedNameReferenceFailureReason;
 }
 
+export interface FormulaRuleReferenceOwnerIdentity {
+  readonly sheetId: string;
+  readonly ruleKind: 'conditional-format' | 'data-validation';
+  readonly ruleId: string;
+  readonly field: string;
+}
+
+export type FormulaRuleReferenceFailureReason = DefinedNameReferenceFailureReason | 'invalid-owner' | 'invalid-range';
+
+export interface FormulaRuleReferenceFailure {
+  readonly owner: FormulaRuleReferenceOwnerIdentity;
+  readonly reason: FormulaRuleReferenceFailureReason;
+}
+
 /**
  * Incremental spatial index for formula-reference owners. Calculation and
  * structural-only sources have separate identities; point queries expose only
@@ -95,6 +112,7 @@ export class ReferenceIndex {
   private readonly ownerPositions = new Map<string, IntervalNode>();
   private readonly definedNameAnchors = new Map<string, Map<Axis, AxisTrees>>();
   private readonly definedNameFailures = new Map<string, DefinedNameReferenceFailure>();
+  private readonly formulaRuleFailures = new Map<string, FormulaRuleReferenceFailure>();
 
   constructor(private sheetOrder: readonly FormulaSheetIdentity[] = []) {}
 
@@ -308,6 +326,88 @@ export class ReferenceIndex {
     }
   }
 
+  setFormulaRule(
+    ownerInput: FormulaRuleReferenceOwnerIdentity,
+    references: readonly FormulaReferenceNode[],
+    context: CellAddress,
+    initialFailure?: FormulaRuleReferenceFailureReason,
+  ): void {
+    const owner = normalizeFormulaRuleOwner(ownerInput);
+    assertCellAddress(context);
+    const storageKey = `${formulaRuleOwnerKey(owner)}\u0000formula-rule`;
+    const postings: IndexedReference[] = [];
+    let failure = initialFailure;
+    let sequence = 0;
+
+    if (!failure) {
+      for (const reference of references) {
+        let geometries: ReferenceGeometry[];
+        try {
+          geometries = referenceGeometries(reference, context, this.sheetOrder);
+        } catch (error) {
+          if (!(error instanceof FormulaReferenceError)) throw error;
+          failure = error.message.includes('requires a worksheet context') ? 'unresolved-context' : 'invalid-reference';
+          postings.length = 0;
+          break;
+        }
+        for (const geometry of geometries) {
+          for (const axis of ['row', 'column'] as const) {
+            postings.push({
+              id: `${storageKey}\u0000${sequence++}`,
+              ownerKey: formulaRuleOwnerKey(owner),
+              sourceId: 'structural:formula-rule',
+              formulaRuleOwner: owner,
+              sheetId: geometry.sheetId,
+              axis,
+              start: axis === 'row' ? geometry.startRow : geometry.startColumn,
+              end: axis === 'row' ? geometry.endRow : geometry.endColumn,
+              crossStart: axis === 'row' ? geometry.startColumn : geometry.startRow,
+              crossEnd: axis === 'row' ? geometry.endColumn : geometry.endRow,
+              structural: axis === 'row' ? geometry.rowStructural : geometry.columnStructural,
+              point: false,
+            });
+          }
+        }
+      }
+    }
+
+    const previous = this.owners.get(storageKey);
+    if (previous) this.removeOwnerEntry(storageKey, previous);
+    const inserted: IndexedReference[] = [];
+    try {
+      for (const posting of postings) {
+        this.insert(posting);
+        inserted.push(posting);
+      }
+      this.owners.set(storageKey, {
+        formulaRuleOwner: owner,
+        sourceId: 'structural:formula-rule',
+        postings,
+        ...(failure ? { formulaRuleFailure: failure } : {}),
+      });
+      if (failure) this.formulaRuleFailures.set(storageKey, { owner, reason: failure });
+      else this.formulaRuleFailures.delete(storageKey);
+    } catch (error) {
+      for (const posting of inserted.reverse()) this.erase(posting);
+      if (previous) this.restoreOwnerEntry(storageKey, previous);
+      throw error;
+    }
+  }
+
+  removeFormulaRule(ownerInput: FormulaRuleReferenceOwnerIdentity): boolean {
+    const owner = normalizeFormulaRuleOwner(ownerInput);
+    const storageKey = `${formulaRuleOwnerKey(owner)}\u0000formula-rule`;
+    const entry = this.owners.get(storageKey);
+    if (!entry) return false;
+    this.removeOwnerEntry(storageKey, entry);
+    return true;
+  }
+
+  hasFormulaRule(ownerInput: FormulaRuleReferenceOwnerIdentity): boolean {
+    const owner = normalizeFormulaRuleOwner(ownerInput);
+    return this.owners.has(`${formulaRuleOwnerKey(owner)}\u0000formula-rule`);
+  }
+
   removeDefinedName(ownerInput: DefinedNameReferenceOwnerIdentity): boolean {
     const owner = normalizeDefinedNameOwner(ownerInput);
     const storageKey = `${definedNameOwnerKey(owner)}\u0000defined-name`;
@@ -356,6 +456,32 @@ export class ReferenceIndex {
     const matches: IndexedReference[] = [];
     queryEndAtLeast(this.getTrees(sheetId, axis, false)?.byEnd, at, matches);
     return uniqueDefinedNameOwners(matches.filter((posting) => posting.structural && posting.definedNameOwner));
+  }
+
+  getStructuralFormulaRuleDependents(sheetId: string, axis: Axis, at: number): readonly FormulaRuleReferenceOwnerIdentity[] {
+    if (!sheetId.trim() || !Number.isSafeInteger(at) || at < 0) {
+      throw new FormulaReferenceError('Structural formula-rule query bounds are invalid');
+    }
+    const matches: IndexedReference[] = [];
+    queryEndAtLeast(this.getTrees(sheetId, axis, false)?.byEnd, at, matches);
+    return uniqueFormulaRuleOwners(matches.filter((posting) => posting.structural && posting.formulaRuleOwner));
+  }
+
+  getRangeFormulaRuleDependents(
+    sheetId: string,
+    range: { readonly startRow: number; readonly endRow: number; readonly startColumn: number; readonly endColumn: number },
+  ): readonly FormulaRuleReferenceOwnerIdentity[] {
+    assertReferenceRange(sheetId, range);
+    const matches: IndexedReference[] = [];
+    queryOverlap(this.getTrees(sheetId, 'row', false)?.byStart, range.startRow, range.endRow, matches);
+    return uniqueFormulaRuleOwners(matches.filter((posting) => posting.formulaRuleOwner
+      && posting.crossStart <= range.endColumn && posting.crossEnd >= range.startColumn));
+  }
+
+  getFormulaRuleReferenceFailures(): readonly FormulaRuleReferenceFailure[] {
+    return [...this.formulaRuleFailures.values()]
+      .map((entry) => ({ owner: { ...entry.owner }, reason: entry.reason }))
+      .sort((left, right) => compareFormulaRuleOwners(left.owner, right.owner));
   }
 
   getRangeDefinedNameDependents(
@@ -447,6 +573,7 @@ export class ReferenceIndex {
     this.ownerPositions.clear();
     this.definedNameAnchors.clear();
     this.definedNameFailures.clear();
+    this.formulaRuleFailures.clear();
   }
 
   private removeOwnerEntry(storageKey: string, entry: OwnerReferences): void {
@@ -478,6 +605,7 @@ export class ReferenceIndex {
     }
     this.owners.delete(storageKey);
     this.definedNameFailures.delete(storageKey);
+    this.formulaRuleFailures.delete(storageKey);
   }
 
   private restoreOwnerEntry(storageKey: string, entry: OwnerReferences): void {
@@ -487,6 +615,9 @@ export class ReferenceIndex {
     this.owners.set(storageKey, entry);
     if (entry.definedNameOwner && entry.failure) {
       this.definedNameFailures.set(storageKey, { owner: entry.definedNameOwner, reason: entry.failure });
+    }
+    if (entry.formulaRuleOwner && entry.formulaRuleFailure) {
+      this.formulaRuleFailures.set(storageKey, { owner: entry.formulaRuleOwner, reason: entry.formulaRuleFailure });
     }
   }
 
@@ -629,8 +760,23 @@ function normalizeDefinedNameOwner(owner: DefinedNameReferenceOwnerIdentity): De
   return { scope: owner.scope, name, ...(owner.sheetId ? { sheetId: owner.sheetId.trim() } : {}) };
 }
 
+function normalizeFormulaRuleOwner(owner: FormulaRuleReferenceOwnerIdentity): FormulaRuleReferenceOwnerIdentity {
+  const sheetId = owner.sheetId.trim();
+  const ruleId = owner.ruleId;
+  const field = owner.field.trim();
+  if (!sheetId || !ruleId.trim() || !field
+    || (owner.ruleKind !== 'conditional-format' && owner.ruleKind !== 'data-validation')) {
+    throw new FormulaReferenceError('Formula-rule reference owner identity is invalid');
+  }
+  return { sheetId, ruleKind: owner.ruleKind, ruleId, field };
+}
+
 function definedNameOwnerKey(owner: DefinedNameReferenceOwnerIdentity): string {
   return `defined-name:${JSON.stringify([owner.scope, owner.scope === 'sheet' ? owner.sheetId : null, owner.name.trim().toUpperCase()])}`;
+}
+
+function formulaRuleOwnerKey(owner: FormulaRuleReferenceOwnerIdentity): string {
+  return `formula-rule:${JSON.stringify([owner.sheetId, owner.ruleKind, owner.ruleId, owner.field])}`;
 }
 
 function compareDefinedNameOwners(left: DefinedNameReferenceOwnerIdentity, right: DefinedNameReferenceOwnerIdentity): number {
@@ -646,6 +792,21 @@ function uniqueDefinedNameOwners(postings: readonly IndexedReference[]): Defined
     if (owner) owners.set(definedNameOwnerKey(owner), owner);
   }
   return [...owners.values()].map((owner) => ({ ...owner })).sort(compareDefinedNameOwners);
+}
+
+function compareFormulaRuleOwners(left: FormulaRuleReferenceOwnerIdentity, right: FormulaRuleReferenceOwnerIdentity): number {
+  const leftKey = formulaRuleOwnerKey(left);
+  const rightKey = formulaRuleOwnerKey(right);
+  return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0;
+}
+
+function uniqueFormulaRuleOwners(postings: readonly IndexedReference[]): FormulaRuleReferenceOwnerIdentity[] {
+  const owners = new Map<string, FormulaRuleReferenceOwnerIdentity>();
+  for (const posting of postings) {
+    const owner = posting.formulaRuleOwner;
+    if (owner) owners.set(formulaRuleOwnerKey(owner), owner);
+  }
+  return [...owners.values()].map((owner) => ({ ...owner })).sort(compareFormulaRuleOwners);
 }
 
 function assertReferenceRange(

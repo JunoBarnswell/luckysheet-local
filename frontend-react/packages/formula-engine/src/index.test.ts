@@ -4,6 +4,7 @@ import {
   FormulaEngine,
   RangeIndex,
   collectFormulaDependencies,
+  collectFormulaReferenceNodes,
   mapAstMovedReferences,
   mapAstStructuralReferences,
   formatFormula,
@@ -104,6 +105,31 @@ test('structural-only formula sources coexist with calculation owners and retain
   engine.setStructuralFormulaReference(owner, 'structural:barcode', '=A1');
   assert.deepEqual(engine.dependencies.getInvalidFormulaOwners(), []);
   assert.deepEqual(engine.dependencies.getStructuralDependents('Sheet1', 'row', 0), [owner]);
+});
+
+test('formula-rule reference owners are indexed spatially and remove their recorded failures', () => {
+  const index = new RangeIndex([{ id: 'Sheet1', name: 'Sheet1' }]);
+  const context = address('Sheet1', 0, 0);
+  const owner = { sheetId: 'Sheet1', ruleKind: 'data-validation' as const, ruleId: 'dv-1', field: 'formula1' };
+  index.setFormulaRuleReference(owner, collectFormulaReferenceNodes(parseFormula('=A6')), context);
+
+  assert.deepEqual(index.getStructuralFormulaRuleDependents('Sheet1', 'row', 5), [owner]);
+  assert.deepEqual(index.getRangeFormulaRuleDependents('Sheet1', {
+    startRow: 5, endRow: 5, startColumn: 0, endColumn: 0,
+  }), [owner]);
+  assert.deepEqual(index.getFormulaRuleReferenceFailures(), []);
+
+  const invalidOwner = { ...owner, ruleId: 'dv-invalid' };
+  index.setFormulaRuleReference(invalidOwner, [], context, 'invalid-formula');
+  assert.deepEqual(index.getFormulaRuleReferenceFailures(), [{ owner: invalidOwner, reason: 'invalid-formula' }]);
+  assert.equal(index.removeFormulaRuleReference(invalidOwner), true);
+  assert.deepEqual(index.getFormulaRuleReferenceFailures(), []);
+  assert.equal(index.removeFormulaRuleReference(owner), true);
+  assert.deepEqual(index.getStructuralFormulaRuleDependents('Sheet1', 'row', 5), []);
+
+  const opaqueIdOwner = { ...owner, ruleId: ' dv-padded ' };
+  index.setFormulaRuleReference(opaqueIdOwner, collectFormulaReferenceNodes(parseFormula('=A6')), context);
+  assert.deepEqual(index.getStructuralFormulaRuleDependents('Sheet1', 'row', 5), [opaqueIdOwner]);
 });
 
 test('reference index preserves exact canonical worksheet IDs', () => {

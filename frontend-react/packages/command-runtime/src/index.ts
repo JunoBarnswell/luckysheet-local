@@ -1,5 +1,5 @@
-import { WorkbookModel, isWorkbookCalculationContextEffect, readChartTextFormula, writeChartTextFormula, type CellData, type ConditionalFormatRule, type DataValidationRule, type ProtectionAction, type RangeRef, type StructuralDefinedNameOwnerDelta, type StructuralFormulaOwnerDelta, type StructuralFormulaOwnerState, type StructuralReferenceOwnerIndex, type WorkbookCalculationContextEffect, type WorksheetModel } from '@react-sheets/core-model';
-import { collectFormulaDependencies, collectFormulaReferenceNodes, formatFormula, mapAstStructuralReferences, parseFormula, RangeIndex, ReferenceTransformDomain, MAX_COLUMN_INDEX, MAX_ROW_INDEX } from '@react-sheets/formula-engine';
+import { WorkbookModel, isWorkbookCalculationContextEffect, readChartTextFormula, structuralRuleFormulaFields, writeChartTextFormula, type CellData, type ConditionalFormatRule, type DataValidationRule, type ProtectionAction, type RangeRef, type StructuralDefinedNameOwnerDelta, type StructuralFormulaOwnerDelta, type StructuralFormulaOwnerState, type StructuralFormulaRule, type StructuralReferenceOwnerIndex, type WorkbookCalculationContextEffect, type WorksheetModel } from '@react-sheets/core-model';
+import { collectFormulaDependencies, collectFormulaReferenceNodes, formatFormula, mapAstStructuralReferences, parseFormula, RangeIndex, ReferenceTransformDomain, MAX_COLUMN_INDEX, MAX_ROW_INDEX, type FormulaRuleReferenceFailureReason, type FormulaRuleReferenceOwnerIdentity } from '@react-sheets/formula-engine';
 
 export interface MutationInfo<P = unknown> {
   id: string;
@@ -632,7 +632,114 @@ function buildStructuralReferenceIndex(workbook: WorkbookModel): StructuralRefer
     }
     index.setDefinedNameReference(owner, references, context, entry.anchor);
   }
+  indexStructuralFormulaRules(workbook, index);
   return index;
+}
+
+function indexStructuralFormulaRules(
+  workbook: WorkbookModel,
+  index: StructuralReferenceOwnerIndex,
+  previous?: Map<string, StructuralFormulaRuleReferenceIndexState>,
+): void {
+  const sheetOrder = workbook.sheetOrder.map((id) => ({ id, name: workbook.getSheet(id).name }));
+  const entries: Array<{
+    owner: FormulaRuleReferenceOwnerIdentity;
+    formula: string;
+    context: { sheetId: string; row: number; column: number };
+    failure?: FormulaRuleReferenceFailureReason;
+    signature: string;
+  }> = [];
+  for (const sheet of workbook.getSheets()) {
+    for (const [ruleKind, rules] of [
+      ['conditional-format', sheet.conditionalFormats],
+      ['data-validation', sheet.dataValidations],
+    ] as const) {
+      const idCounts = new Map<string, number>();
+      for (const rule of rules) {
+        if (typeof rule.id === 'string') idCounts.set(rule.id, (idCounts.get(rule.id) ?? 0) + 1);
+      }
+      for (const [ruleIndex, rawRule] of rules.entries()) {
+        const rule = rawRule as StructuralFormulaRule;
+        const formulas = structuralRuleFormulaFields(rule);
+        if (formulas.size === 0) continue;
+        const ranges = Array.isArray(rule.ranges) ? rule.ranges : [];
+        const ruleId = typeof rule.id === 'string' ? rule.id : '';
+        const validIdentity = rule.sheetId === sheet.id
+          && ruleId.trim().length > 0
+          && !ruleId.includes('\u0000')
+          && idCounts.get(ruleId) === 1;
+        const validRanges = ranges.length > 0 && ranges.every((range) => typeof range === 'object' && range !== null
+          && range.sheetId === sheet.id
+          && Number.isSafeInteger(range.startRow) && range.startRow >= 0 && range.startRow <= MAX_ROW_INDEX
+          && Number.isSafeInteger(range.endRow) && range.endRow >= range.startRow && range.endRow <= MAX_ROW_INDEX
+          && Number.isSafeInteger(range.startColumn) && range.startColumn >= 0 && range.startColumn <= MAX_COLUMN_INDEX
+          && Number.isSafeInteger(range.endColumn) && range.endColumn >= range.startColumn && range.endColumn <= MAX_COLUMN_INDEX);
+        const firstRange = ranges[0] && typeof ranges[0] === 'object' ? ranges[0] : undefined;
+        const context = rule.formulaAnchor ?? (firstRange ? {
+          sheetId: firstRange.sheetId,
+          row: firstRange.startRow,
+          column: firstRange.startColumn,
+        } : undefined);
+        const validContext = context !== undefined
+          && sheetOrder.some((identity) => identity.id === context.sheetId)
+          && Number.isSafeInteger(context.row) && context.row >= 0 && context.row <= MAX_ROW_INDEX
+          && Number.isSafeInteger(context.column) && context.column >= 0 && context.column <= MAX_COLUMN_INDEX;
+        const failure: FormulaRuleReferenceFailureReason | undefined = !validIdentity
+          ? 'invalid-owner'
+          : !validRanges
+            ? 'invalid-range'
+            : !validContext
+              ? 'unresolved-context'
+              : undefined;
+        const safeContext = validContext ? context! : { sheetId: sheet.id, row: 0, column: 0 };
+        for (const [field, formula] of formulas) {
+          const owner = {
+            sheetId: sheet.id,
+            ruleKind,
+            ruleId: ruleId.trim() && !ruleId.includes('\u0000') ? ruleId : `\u0000invalid-rule-${ruleIndex}`,
+            field,
+          };
+          const signature = JSON.stringify([
+            owner,
+            formula,
+            failure ?? null,
+            rule.formulaAnchor ?? null,
+            ranges,
+            sheetOrder.map(({ id, name }) => [id, name]),
+          ]);
+          entries.push({ owner, formula, context: safeContext, ...(failure ? { failure } : {}), signature });
+        }
+      }
+    }
+  }
+
+  const current = new Map<string, StructuralFormulaRuleReferenceIndexState>();
+  for (const entry of entries) {
+    const key = formulaRuleReferenceIndexKey(entry.owner);
+    current.set(key, { owner: entry.owner, signature: entry.signature });
+    if (previous?.get(key)?.signature === entry.signature && index.hasFormulaRuleReference(entry.owner)) continue;
+    let references: ReturnType<typeof collectFormulaReferenceNodes> = [];
+    let failure = entry.failure;
+    if (!failure) {
+      try {
+        const normalized = entry.formula.trimStart().startsWith('=') ? entry.formula : `=${entry.formula}`;
+        references = collectFormulaReferenceNodes(parseFormula(normalized));
+      } catch {
+        failure = 'invalid-formula';
+      }
+    }
+    index.setFormulaRuleReference(entry.owner, references, entry.context, failure);
+  }
+  if (!previous) return;
+  for (const [key, entry] of previous) {
+    if (!current.has(key)) index.removeFormulaRuleReference(entry.owner);
+  }
+  previous.clear();
+  for (const [key, entry] of current) previous.set(key, entry);
+}
+
+function formulaRuleReferenceIndexKey(owner: FormulaRuleReferenceOwnerIdentity): string {
+  return JSON.stringify([owner.sheetId, owner.ruleKind, owner.ruleId, owner.field]);
 }
 
 interface TransformValueResult {
@@ -894,6 +1001,11 @@ export type CommandListener = (commandId: string, params: unknown, result: Comma
 export type CommandAbortListener = (commandId: string, params: unknown, operationId: string) => void;
 export type HistoryReplayListener = (source: 'undo' | 'redo', entry: HistoryEntry) => void;
 
+interface StructuralFormulaRuleReferenceIndexState {
+  readonly owner: FormulaRuleReferenceOwnerIdentity;
+  readonly signature: string;
+}
+
 export class CommandRuntime {
   private readonly undoStack: HistoryEntry[] = [];
   private readonly redoStack: HistoryEntry[] = [];
@@ -907,6 +1019,7 @@ export class CommandRuntime {
   private mutationGuard?: MutationGuard;
   private revisionProvider?: () => number;
   private structuralReferenceOwnersProvider?: (workbook: WorkbookModel) => StructuralReferenceOwnerIndex;
+  private readonly structuralFormulaRuleReferenceIndex = new Map<string, StructuralFormulaRuleReferenceIndexState>();
   private currentRevision = 0;
   private readonly invalidHistory: HistoryEntry[] = [];
 
@@ -937,10 +1050,17 @@ export class CommandRuntime {
     provider: ((workbook: WorkbookModel) => StructuralReferenceOwnerIndex) | undefined,
   ): void {
     this.structuralReferenceOwnersProvider = provider;
+    this.structuralFormulaRuleReferenceIndex.clear();
   }
 
   private resolveStructuralReferenceOwners(): StructuralReferenceOwnerIndex {
-    return this.structuralReferenceOwnersProvider?.(this.workbook) ?? buildStructuralReferenceIndex(this.workbook);
+    const provided = this.structuralReferenceOwnersProvider?.(this.workbook);
+    if (!provided) {
+      this.structuralFormulaRuleReferenceIndex.clear();
+      return buildStructuralReferenceIndex(this.workbook);
+    }
+    indexStructuralFormulaRules(this.workbook, provided, this.structuralFormulaRuleReferenceIndex);
+    return provided;
   }
 
   setRevision(revision: number): void {

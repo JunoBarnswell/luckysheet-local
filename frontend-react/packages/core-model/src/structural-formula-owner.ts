@@ -6,6 +6,7 @@ export type StructuralFormulaRule = {
   id: string;
   sheetId: string;
   ranges: RangeRef[];
+  formulaAnchor?: { sheetId: string; row: number; column: number };
   type?: string;
   operator?: string;
   value1?: string | number;

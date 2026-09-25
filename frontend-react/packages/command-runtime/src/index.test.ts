@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { CALCULATION_CONTEXT_EFFECTS, WorkbookModel, type StructuralDefinedNameOwnerDelta, type StructuralFormulaOwnerDelta } from '@react-sheets/core-model';
+import { FormulaEngine } from '@react-sheets/formula-engine';
 import { CommandRegistry, CommandRuntime, type MutationInfo } from './index';
 
 const cellRange = (params: { row: number; column: number; sheetId?: string }) => [{
@@ -38,6 +39,42 @@ const cellRestoreMetadata = {
   affectedRanges: { resolve: cellRange },
   inversePolicy: { allowedMutationIds: ['cell.set'], minCount: 1 },
 } as const;
+
+test('CommandRuntime keeps formula-rule owners synchronized with a provided FormulaEngine index', () => {
+  const workbook = new WorkbookModel('unit-rule-owner-index', 'Rule Owner Index');
+  const sheet = workbook.getSheet('sheet-1');
+  sheet.conditionalFormats.push({
+    id: 'cf-indexed', sheetId: sheet.id,
+    ranges: [{ sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }],
+    type: 'highlight', operator: 'formula', value1: '=A6',
+  });
+  const engine = new FormulaEngine({ defaultSheetId: sheet.id, sheetOrder: [{ id: sheet.id, name: sheet.name }] });
+  const runtime = new CommandRuntime(workbook);
+  runtime.setStructuralReferenceOwnersProvider(() => engine.dependencies);
+  let rowFiveOwners: readonly unknown[] = [];
+  let rowSixOwners: readonly unknown[] = [];
+  runtime.registry.registerCommand({
+    id: 'formula-rule.index.inspect',
+    execute: (_params, context) => {
+      rowFiveOwners = context.structuralReferenceOwners.getStructuralFormulaRuleDependents(sheet.id, 'row', 5);
+      rowSixOwners = context.structuralReferenceOwners.getStructuralFormulaRuleDependents(sheet.id, 'row', 6);
+      return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
+    },
+  });
+
+  runtime.execute('formula-rule.index.inspect', {});
+  assert.equal(rowFiveOwners.length, 1);
+  assert.equal(rowSixOwners.length, 0);
+
+  sheet.conditionalFormats[0]!.value1 = '=A7';
+  runtime.execute('formula-rule.index.inspect', {});
+  assert.equal(rowFiveOwners.length, 0);
+  assert.equal(rowSixOwners.length, 1);
+
+  engine.dependencies.clear();
+  runtime.execute('formula-rule.index.inspect', {});
+  assert.equal(rowSixOwners.length, 1);
+});
 
 test('CommandRuntime executes a registered command and tracks history', () => {
   const workbook = new WorkbookModel('unit-1', 'Runtime');

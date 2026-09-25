@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { collectFormulaDependencies, collectFormulaReferenceNodes, parseFormula, RangeIndex } from '@react-sheets/formula-engine';
-import { CellMatrix, planSheetIdentityTransform, StructuralTransform as CoreStructuralTransform, WorkbookModel, type StructuralTransformParams } from './index';
+import { collectFormulaDependencies, collectFormulaReferenceNodes, MAX_COLUMN_INDEX, MAX_ROW_INDEX, parseFormula, RangeIndex } from '@react-sheets/formula-engine';
+import { CellMatrix, planSheetIdentityTransform, structuralRuleFormulaFields, StructuralTransform as CoreStructuralTransform, WorkbookModel, type StructuralFormulaRule, type StructuralTransformParams } from './index';
 import type { ReportSheetDefinition } from './data-model';
 
 const StructuralTransform = {
@@ -28,6 +28,60 @@ const StructuralTransform = {
         index.setDefinedNameReference(owner, collectFormulaReferenceNodes(parseFormula(formula)), context, entry.anchor);
       } catch {
         index.setDefinedNameReference(owner, [], context, entry.anchor, 'invalid-formula');
+      }
+    }
+    for (const sheet of workbook.getSheets()) {
+      for (const [ruleKind, rules] of [
+        ['conditional-format', sheet.conditionalFormats],
+        ['data-validation', sheet.dataValidations],
+      ] as const) {
+        const idCounts = new Map<string, number>();
+        for (const rule of rules) if (typeof rule.id === 'string') idCounts.set(rule.id, (idCounts.get(rule.id) ?? 0) + 1);
+        for (const [ruleIndex, rawRule] of rules.entries()) {
+          const rule = rawRule as StructuralFormulaRule;
+          const ranges = Array.isArray(rule.ranges) ? rule.ranges : [];
+          const ruleId = typeof rule.id === 'string' ? rule.id : '';
+          const validIdentity = rule.sheetId === sheet.id
+            && ruleId.trim().length > 0
+            && !ruleId.includes('\u0000')
+            && idCounts.get(ruleId) === 1;
+          const validRanges = ranges.length > 0 && ranges.every((range) => typeof range === 'object' && range !== null
+            && range.sheetId === sheet.id
+            && Number.isSafeInteger(range.startRow) && range.startRow >= 0 && range.startRow <= MAX_ROW_INDEX
+            && Number.isSafeInteger(range.endRow) && range.endRow >= range.startRow && range.endRow <= MAX_ROW_INDEX
+            && Number.isSafeInteger(range.startColumn) && range.startColumn >= 0 && range.startColumn <= MAX_COLUMN_INDEX
+            && Number.isSafeInteger(range.endColumn) && range.endColumn >= range.startColumn && range.endColumn <= MAX_COLUMN_INDEX);
+          const firstRange = ranges[0] && typeof ranges[0] === 'object' ? ranges[0] : undefined;
+          const context = rule.formulaAnchor ?? (firstRange ? {
+            sheetId: firstRange.sheetId,
+            row: firstRange.startRow,
+            column: firstRange.startColumn,
+          } : { sheetId: sheet.id, row: 0, column: 0 });
+          for (const [field, formula] of structuralRuleFormulaFields(rule)) {
+            const owner = {
+              sheetId: sheet.id,
+              ruleKind,
+              ruleId: ruleId.trim() && !ruleId.includes('\u0000') ? ruleId : `\u0000invalid-rule-${ruleIndex}`,
+              field,
+            };
+            let failure: 'invalid-formula' | 'unresolved-context' | 'invalid-reference' | 'invalid-owner' | 'invalid-range' | undefined;
+            if (!validIdentity) failure = 'invalid-owner';
+            else if (!validRanges) failure = 'invalid-range';
+            else if (!workbook.sheetOrder.includes(context.sheetId)
+              || !Number.isSafeInteger(context.row) || context.row < 0 || context.row > MAX_ROW_INDEX
+              || !Number.isSafeInteger(context.column) || context.column < 0 || context.column > MAX_COLUMN_INDEX) {
+              failure = 'unresolved-context';
+            }
+            try {
+              if (failure) throw new Error('Formula-rule owner cannot be indexed');
+              const normalized = formula.trimStart().startsWith('=') ? formula : `=${formula}`;
+              index.setFormulaRuleReference(owner, collectFormulaReferenceNodes(parseFormula(normalized)), context);
+            } catch {
+              failure ??= 'invalid-formula';
+              index.setFormulaRuleReference(owner, [], { sheetId: sheet.id, row: 0, column: 0 }, failure);
+            }
+          }
+        }
       }
     }
     return CoreStructuralTransform.apply(workbook, params, index);
@@ -119,6 +173,86 @@ describe('structural operations', () => {
       () => StructuralTransform.apply(workbook, { kind: 'insert-rows', sheetId, at: 0, count: 1 }),
       /does not have a stable worksheet context/,
     );
+    assert.deepEqual(workbook.snapshot(), before);
+  });
+
+  it('rewrites conditional-format and validation formula owners through the structural reference index', () => {
+    const workbook = new WorkbookModel('unit-rule-formula-structure', 'Rule Formula Structure');
+    const sheet = workbook.getSheet('sheet-1');
+    const range = { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 };
+    sheet.conditionalFormats.push({
+      id: 'cf-1', sheetId: sheet.id, ranges: [structuredClone(range)],
+      type: 'highlight', operator: 'formula', value1: '=A6',
+    });
+    sheet.dataValidations.push({
+      id: 'dv-1', sheetId: sheet.id, ranges: [structuredClone(range)],
+      type: 'custom', formula1: '=A6',
+    });
+
+    const result = StructuralTransform.apply(workbook, { kind: 'insert-rows', sheetId: sheet.id, at: 5, count: 1 });
+
+    assert.equal(sheet.conditionalFormats[0]?.value1, '=A7');
+    assert.equal(sheet.dataValidations[0]?.formula1, '=A7');
+    assert.deepEqual(result.formulaOwnerDeltas?.filter((delta) => delta.kind === 'formula-rule').map((delta) =>
+      delta.kind === 'formula-rule' ? [delta.ruleKind, delta.ruleId, delta.field, delta.beforeFormula, delta.afterFormula] : []), [
+      ['conditional-format', 'cf-1', 'value1', '=A6', '=A7'],
+      ['data-validation', 'dv-1', 'formula1', '=A6', '=A7'],
+    ]);
+  });
+
+  it('cell-shift rewrites rule formulas referencing cells moved beyond the selected range', () => {
+    const workbook = new WorkbookModel('unit-rule-formula-cell-shift', 'Rule Formula Cell Shift');
+    const sheet = workbook.getSheet('sheet-1');
+    sheet.dataValidations.push({
+      id: 'dv-cell-shift', sheetId: sheet.id,
+      ranges: [{ sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }],
+      type: 'custom', formula1: '=A10',
+    });
+
+    const result = StructuralTransform.apply(workbook, {
+      kind: 'cell-shift', sheetId: sheet.id,
+      sourceRange: { sheetId: sheet.id, startRow: 1, endRow: 1, startColumn: 0, endColumn: 0 },
+      operation: 'insert', axis: 'row',
+    });
+
+    assert.equal(sheet.dataValidations[0]?.formula1, '=A11');
+    assert.equal(result.formulaOwnerDeltas?.some((delta) => delta.kind === 'formula-rule'
+      && delta.ruleId === 'dv-cell-shift' && delta.beforeFormula === '=A10' && delta.afterFormula === '=A11'), true);
+  });
+
+  it('rejects an unparseable rule formula before changing worksheet coordinates', () => {
+    const workbook = new WorkbookModel('unit-invalid-rule-formula', 'Invalid Rule Formula');
+    const sheet = workbook.getSheet('sheet-1');
+    sheet.dataValidations.push({
+      id: 'dv-invalid', sheetId: sheet.id,
+      ranges: [{ sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }],
+      type: 'custom', formula1: '=A1+',
+    });
+    const before = workbook.snapshot();
+
+    assert.throws(
+      () => StructuralTransform.apply(workbook, { kind: 'insert-rows', sheetId: sheet.id, at: 0, count: 1 }),
+      /UNSUPPORTED_STRUCTURAL_REFERENCE: data-validation .*contains a formula that cannot be parsed/,
+    );
+    assert.deepEqual(workbook.snapshot(), before);
+  });
+
+  it('rejects a formula rule without applies-to ranges before moving cells', () => {
+    const workbook = new WorkbookModel('unit-empty-rule-range', 'Empty Rule Range');
+    const sheet = workbook.getSheet('sheet-1');
+    sheet.cells.set(0, 0, { value: 'source' });
+    sheet.dataValidations.push({
+      id: 'dv-empty-range', sheetId: sheet.id, ranges: [],
+      formulaAnchor: { sheetId: sheet.id, row: 0, column: 0 },
+      type: 'custom', formula1: '=A1',
+    });
+    const before = workbook.snapshot();
+
+    assert.throws(() => StructuralTransform.apply(workbook, {
+      kind: 'move-range', sheetId: sheet.id,
+      sourceRange: { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 },
+      targetOrigin: { row: 2, column: 2 },
+    }), /UNSUPPORTED_STRUCTURAL_REFERENCE: data-validation .*invalid or empty applies-to range/);
     assert.deepEqual(workbook.snapshot(), before);
   });
 
@@ -779,7 +913,7 @@ describe('structural operations', () => {
       id: 'link-1', target: { kind: 'sheet', sheetId: sheet.id, address: 'A1' },
     });
 
-    StructuralTransform.apply(workbook, {
+    const result = StructuralTransform.apply(workbook, {
       kind: 'move-range', sheetId: sheet.id,
       sourceRange: { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 },
       targetOrigin: { row: 2, column: 2 },
@@ -787,8 +921,42 @@ describe('structural operations', () => {
 
     assert.equal(other.conditionalFormats[0]?.value1, '=Sheet1!C3');
     assert.equal(other.dataValidations[0]?.formula1, '=Sheet1!C3');
+    assert.deepEqual(result.formulaOwnerDeltas?.filter((delta) => delta.kind === 'formula-rule').map((delta) =>
+      delta.kind === 'formula-rule' ? [delta.ruleId, delta.beforeFormula, delta.afterFormula] : []), [
+      ['cf-1', '=Sheet1!A1', '=Sheet1!C3'],
+      ['dv-1', '=Sheet1!A1', '=Sheet1!C3'],
+    ]);
     const target = other.hyperlinks.get('0:0')?.target;
     assert.equal(target?.kind === 'sheet' ? target.address : undefined, 'C3');
+  });
+
+  it('indexes moved rule formulas and records their applies-to range transition', () => {
+    const workbook = new WorkbookModel('unit-move-indexed-rule', 'Move Indexed Rule');
+    const sheet = workbook.getSheet('sheet-1');
+    sheet.conditionalFormats.push({
+      id: 'cf-source', sheetId: sheet.id,
+      ranges: [{ sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }],
+      type: 'highlight', operator: 'formula', value1: '=A1',
+    });
+
+    const result = StructuralTransform.apply(workbook, {
+      kind: 'move-range', sheetId: sheet.id,
+      sourceRange: { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 },
+      targetOrigin: { row: 2, column: 2 },
+    });
+
+    assert.equal(sheet.conditionalFormats[0]?.value1, '=C3');
+    assert.deepEqual(result.formulaOwnerDeltas?.find((delta) => delta.kind === 'formula-rule' && delta.ruleId === 'cf-source'), {
+      kind: 'formula-rule',
+      sheetId: sheet.id,
+      ruleKind: 'conditional-format',
+      ruleId: 'cf-source',
+      field: 'value1',
+      beforeFormula: '=A1',
+      afterFormula: '=C3',
+      beforeRanges: [{ sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }],
+      afterRanges: [{ sheetId: sheet.id, startRow: 2, endRow: 2, startColumn: 2, endColumn: 2 }],
+    });
   });
 
   it('rejects moving over destination-anchored hyperlinks without mutating either range', () => {

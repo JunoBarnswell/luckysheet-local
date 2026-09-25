@@ -7,6 +7,9 @@ import {
   type DefinedNameReferenceFailureReason,
   type DefinedNameReferenceIndexUpdate,
   type DefinedNameReferenceOwnerIdentity,
+  type FormulaRuleReferenceFailure,
+  type FormulaRuleReferenceFailureReason,
+  type FormulaRuleReferenceOwnerIdentity,
   type IndexedReferenceOwnerSource,
 } from './reference-index';
 import type { FormulaSheetIdentity } from './sheet-reference';
@@ -111,6 +114,42 @@ export class RangeIndex {
     failure?: DefinedNameReferenceFailureReason,
   ): void {
     this.referenceIndex.setDefinedName(owner, references, context, anchor, failure);
+  }
+
+  setFormulaRuleReference(
+    owner: FormulaRuleReferenceOwnerIdentity,
+    references: readonly FormulaReferenceNode[],
+    context: CellAddress,
+    failure?: FormulaRuleReferenceFailureReason,
+  ): void {
+    this.referenceIndex.setFormulaRule(owner, references, context, failure);
+  }
+
+  removeFormulaRuleReference(owner: FormulaRuleReferenceOwnerIdentity): boolean {
+    return this.referenceIndex.removeFormulaRule(owner);
+  }
+
+  hasFormulaRuleReference(owner: FormulaRuleReferenceOwnerIdentity): boolean {
+    return this.referenceIndex.hasFormulaRule(owner);
+  }
+
+  getStructuralFormulaRuleDependents(
+    sheetId: string,
+    axis: 'row' | 'column',
+    at: number,
+  ): readonly FormulaRuleReferenceOwnerIdentity[] {
+    return this.referenceIndex.getStructuralFormulaRuleDependents(sheetId, axis, at);
+  }
+
+  getRangeFormulaRuleDependents(
+    sheetId: string,
+    range: { readonly startRow: number; readonly endRow: number; readonly startColumn: number; readonly endColumn: number },
+  ): readonly FormulaRuleReferenceOwnerIdentity[] {
+    return this.referenceIndex.getRangeFormulaRuleDependents(sheetId, range);
+  }
+
+  getFormulaRuleReferenceFailures(): readonly FormulaRuleReferenceFailure[] {
+    return this.referenceIndex.getFormulaRuleReferenceFailures();
   }
 
   removeDefinedNameReference(owner: DefinedNameReferenceOwnerIdentity): boolean {
