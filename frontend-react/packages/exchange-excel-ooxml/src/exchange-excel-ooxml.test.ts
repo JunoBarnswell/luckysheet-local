@@ -678,9 +678,13 @@ describe('exchange-excel-ooxml', () => {
       fileName: 'native-controls.xlsx',
       options: { compatibilityTarget: 'B' },
     });
-    const regeneratedWorksheet = strFromU8(loadOpcPackageGraph(regeneratedControls.buffer).files['xl/worksheets/sheet1.xml']!);
+    const regeneratedPackage = loadOpcPackageGraph(regeneratedControls.buffer);
+    const regeneratedWorksheet = strFromU8(regeneratedPackage.files['xl/worksheets/sheet1.xml']!);
+    const regeneratedWorkbook = strFromU8(regeneratedPackage.files['xl/workbook.xml']!);
     assert.match(regeneratedWorksheet, /slicerList/);
     assert.match(regeneratedWorksheet, /timelineRefs/);
+    assert.match(regeneratedWorkbook, /slicerCaches/);
+    assert.match(regeneratedWorkbook, /timelineCacheRefs/);
 
     const withoutControls = structuredClone(imported);
     const controlSheet = withoutControls.sheets[0]!;
@@ -1462,6 +1466,38 @@ describe('exchange-excel-ooxml', () => {
         snapshot: extensionEditedSnapshot,
         artifact: extensionImport.artifact,
         fileName: 'unknown-worksheet-extension.xlsx',
+        options: { compatibilityTarget: 'B' },
+      }),
+      (error: unknown) => error instanceof Error && error.message.includes('NATIVE_DOCUMENT_UNCHANGED_SAVE_REQUIRED'),
+    );
+
+    const workbookExtensionPackage = loadOpcPackageGraph(exportSnapshotToOoxmlBuffer(extensionWorkbook.snapshot()));
+    const workbookPart = workbookExtensionPackage.packageGraph.workbookPart;
+    workbookExtensionPackage.packageGraph.parts[workbookPart] = strToU8(
+      strFromU8(workbookExtensionPackage.packageGraph.parts[workbookPart]!).replace(
+        '</workbook>',
+        '<extLst><ext uri="urn:future:workbook"><futureWorkbookExtension ref="Sheet1!A1"/></ext></extLst></workbook>',
+      ),
+    );
+    const workbookExtensionImport = await importOoxmlDocument({
+      fileName: 'unknown-workbook-extension.xlsx',
+      buffer: zipOpcPartsBuffer(workbookExtensionPackage.packageGraph.parts),
+      options: { compatibilityTarget: 'B', compatibilityMode: 'balanced' },
+    });
+    const workbookExtensionUnchanged = await exportOoxmlDocument({
+      snapshot: workbookExtensionImport.snapshot,
+      artifact: workbookExtensionImport.artifact,
+      fileName: 'unknown-workbook-extension.xlsx',
+      options: { compatibilityTarget: 'B' },
+    });
+    assert.match(strFromU8(loadOpcPackageGraph(workbookExtensionUnchanged.buffer).files[workbookPart]!), /futureWorkbookExtension/);
+    const editedWorkbookSnapshot = structuredClone(workbookExtensionImport.snapshot);
+    editedWorkbookSnapshot.name = 'Edited unknown workbook extension';
+    await assert.rejects(
+      () => exportOoxmlDocument({
+        snapshot: editedWorkbookSnapshot,
+        artifact: workbookExtensionImport.artifact,
+        fileName: 'unknown-workbook-extension.xlsx',
         options: { compatibilityTarget: 'B' },
       }),
       (error: unknown) => error instanceof Error && error.message.includes('NATIVE_DOCUMENT_UNCHANGED_SAVE_REQUIRED'),

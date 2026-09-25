@@ -61,7 +61,7 @@ import {
 import { mapNativePivotDefinition, readNativePivotGraph, serializeNativePivotCaches, synchronizeNativePivotPackage } from './native-pivot';
 import { projectNativeCharts, readNativeChartGraph, synchronizeNativePivotCharts } from './native-chart';
 import type { NativePivotControlDefinition, NativePivotGraph } from './types';
-import { isCanonicallyOwnedNativeControlExtension, isCanonicallyOwnedSparklineExtension } from './capability-manifest';
+import { isCanonicallyOwnedNativeControlExtension, isCanonicallyOwnedSparklineExtension, isCanonicallyOwnedWorkbookControlExtension } from './capability-manifest';
 import { builtInNumberFormat, builtInNumberFormatId, collectCustomNumberFormatIds, numberFormatCodeFromSpec } from './native-number-format';
 import { canonicalDateToSerial, isExcelDateFormat, parseDateSystem, serialToCanonicalDate } from './date-system';
 
@@ -2136,14 +2136,9 @@ function serializeWorksheetControlExtensions(original: XmlNode | undefined, cont
   return serializeXml(root);
 }
 
-function serializeWorkbookControlExtensions(original: XmlNode | undefined, controls: NativePivotControlDefinition[], relationships: NativeRelationship[]): string {
+function serializeWorkbookControlExtensions(original: XmlNode | undefined, controls: NativePivotControlDefinition[], relationships: NativeRelationship[], sourceControls: NativePivotControlDefinition[] = controls): string {
   const root = original ? structuredClone(original) : firstElement(parseXml('<extLst/>'), 'extLst');
-  if (!controls.some((control) => !control.valid)) {
-    root.children = root.children.flatMap((extension) => {
-      const hasNativeControl = descendants(extension, 'slicerCaches').length > 0 || descendants(extension, 'timelineCacheRefs').length > 0;
-      return hasNativeControl ? [] : [extension];
-    });
-  }
+  root.children = root.children.flatMap((extension) => isCanonicallyOwnedWorkbookControlExtension(extension, sourceControls) ? [] : [extension]);
   const slicerCaches = [...new Map(controls.filter((control) => control.kind === 'slicer' && control.valid && control.cacheRelationshipId).map((control) => [control.cachePart, control])).values()];
   const timelines = [...new Map(controls.filter((control) => control.kind === 'timeline' && control.valid && control.cacheRelationshipId).map((control) => [control.cachePart, control])).values()];
   if (slicerCaches.length) {
@@ -2209,7 +2204,7 @@ function buildWorkbookXml(snapshot: WorkbookSnapshot, workbookPart: string, rela
     for (const node of originalRoot.children) {
       const name = localName(node.name);
       if (name === 'bookViews' || name === 'calcPr' || name === 'fileVersion' || name === 'fileSharing' || name === 'workbookProtection') xml += serializeXml(node);
-      else if (name === 'extLst') { hasExtensionList = true; xml += serializeWorkbookControlExtensions(node, nativePivotGraph?.controls ?? [], relationships); }
+      else if (name === 'extLst') { hasExtensionList = true; xml += serializeWorkbookControlExtensions(node, nativePivotGraph?.controls ?? [], relationships, preserved?.nativePivotGraph?.controls ?? nativePivotGraph?.controls ?? []); }
     }
     if (!hasExtensionList && nativePivotGraph?.controls?.some((control) => control.valid)) xml += serializeWorkbookControlExtensions(undefined, nativePivotGraph.controls, relationships);
   } else if (nativePivotGraph?.controls?.some((control) => control.valid)) {

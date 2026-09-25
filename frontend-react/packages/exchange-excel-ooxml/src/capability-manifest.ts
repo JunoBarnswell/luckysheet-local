@@ -101,6 +101,8 @@ const STRUCTURAL_NODES = new Set(['sheetPr', 'dimension', 'sheetViews', 'sheetFo
 const SPARKLINE_GROUPS_EXTENSION_URI = '{05C60535-1F16-4FD2-B633-F4F36F0B64E0}';
 const SLICER_LIST_EXTENSION_URI = '{A8765BA9-456A-4DAB-B4F3-ACF838C121DE}';
 const TIMELINE_REFS_EXTENSION_URI = '{7E03D99C-DC04-49D9-9315-930204A7B6E9}';
+const SLICER_CACHE_EXTENSION_URI = '{BBE1A952-AA13-448E-AADC-164F8A28A991}';
+const TIMELINE_CACHE_EXTENSION_URI = '{D0CA8CA8-9F24-4464-BF8E-62219DCF47F9}';
 const SPARKLINE_GROUP_ATTRIBUTES = new Set([
   'type', 'lineWeight', 'dateAxis', 'markers', 'high', 'low', 'first', 'last', 'negative',
   'displayXAxis', 'rightToLeft', 'displayHidden', 'displayEmptyCellsAs', 'manualMin', 'manualMax',
@@ -150,6 +152,22 @@ export function detectWorksheetCapabilities(files: Record<string, Uint8Array>, p
   const sharedStringsPart = sharedStringsRelation ? resolvePart(pkg.workbookPart, sharedStringsRelation.target) : 'xl/sharedStrings.xml';
   const sharedStrings = files[sharedStringsPart];
   if (sharedStrings && /<(?:\w+:)?r(?:\s|>)/.test(strFromU8(sharedStrings))) detections.push({ feature: 'rich-text', location: sharedStringsPart });
+  return deduplicateDetections(detections);
+}
+
+export function detectWorkbookCapabilities(files: Record<string, Uint8Array>, pkg: OpcPackageGraph): CompatibilityFeatureDetection[] {
+  const bytes = files[pkg.workbookPart];
+  if (!bytes) return [];
+  const workbook = descendants(parseXml(strFromU8(bytes)), 'workbook')[0];
+  if (!workbook) return [];
+  const detections: CompatibilityFeatureDetection[] = [];
+  for (const extensionList of children(workbook, 'extLst')) {
+    for (const extension of children(extensionList, 'ext')) {
+      if (!isCanonicallyOwnedWorkbookControlExtension(extension, pkg.nativePivotGraph?.controls ?? [])) {
+        detections.push({ feature: 'unknown-extension', location: `${pkg.workbookPart}#${extension.attrs.uri ?? 'ext'}`, reason: 'Workbook extension is retained from the source package but has no canonical structural owner' });
+      }
+    }
+  }
   return deduplicateDetections(detections);
 }
 
@@ -209,7 +227,24 @@ export function isCanonicallyOwnedNativeControlExtension(extension: XmlNode, sou
   const control = uri === SLICER_LIST_EXTENSION_URI ? { kind: 'slicer' as const, container: 'slicerList', item: 'slicer' }
     : uri === TIMELINE_REFS_EXTENSION_URI ? { kind: 'timeline' as const, container: 'timelineRefs', item: 'timelineRef' }
       : undefined;
-  if (!control || !hasOnlyAttributes(extension, new Set(['uri'])) || !hasOnlyWhitespace(extension.text) || extension.children.length !== 1) return false;
+  return control ? isCanonicallyOwnedControlReferenceExtension(extension, sourceControls, control, 'relationshipId') : false;
+}
+
+export function isCanonicallyOwnedWorkbookControlExtension(extension: XmlNode, sourceControls: readonly NativePivotControlDefinition[]): boolean {
+  const uri = extension.attrs.uri?.toUpperCase();
+  const control = uri === SLICER_CACHE_EXTENSION_URI ? { kind: 'slicer' as const, container: 'slicerCaches', item: 'slicerCache' }
+    : uri === TIMELINE_CACHE_EXTENSION_URI ? { kind: 'timeline' as const, container: 'timelineCacheRefs', item: 'timelineCacheRef' }
+      : undefined;
+  return control ? isCanonicallyOwnedControlReferenceExtension(extension, sourceControls, control, 'cacheRelationshipId') : false;
+}
+
+function isCanonicallyOwnedControlReferenceExtension(
+  extension: XmlNode,
+  sourceControls: readonly NativePivotControlDefinition[],
+  control: { kind: NativePivotControlDefinition['kind']; container: string; item: string },
+  relationshipKey: 'relationshipId' | 'cacheRelationshipId',
+): boolean {
+  if (!hasOnlyAttributes(extension, new Set(['uri'])) || !hasOnlyWhitespace(extension.text) || extension.children.length !== 1) return false;
   const container = extension.children[0]!;
   if (localName(container.name) !== control.container || !hasOnlyAttributes(container, new Set()) || !hasOnlyWhitespace(container.text)) return false;
   const references = container.children;
@@ -220,7 +255,7 @@ export function isCanonicallyOwnedNativeControlExtension(extension: XmlNode, sou
   if (new Set(referenceIds).size !== referenceIds.length) return false;
   const ownedControls = sourceControls.filter((entry) => entry.kind === control.kind);
   return !ownedControls.some((entry) => !entry.valid)
-    && referenceIds.every((id) => ownedControls.some((entry) => entry.relationshipId === id));
+    && referenceIds.every((id) => ownedControls.some((entry) => entry[relationshipKey] === id));
 }
 
 function isSparklineColor(value: string): boolean {
