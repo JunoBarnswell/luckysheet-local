@@ -9,7 +9,7 @@
 - **已确认的产品取舍**：2026-09-26 用户选择“统一由 Java 服务规划，可要求服务在线”。结构操作不再承诺无服务的浏览器离线执行；连接失败时拒绝提交并保留编辑草稿。此授权只改变结构规划归属，不自动扩展为全部普通输入或图表样式都必须远程。
 - 建档 60 个操作，操作数不等于缺陷数。下表是追踪清单，**不是 60 项审查完成/通过的声明**。同根因的行列、图表类型、入口变体不重复算 bug。
 - 审计底稿形成时只做静态阅读。后续仅有下列明示的定向回归证据；上一已提交 head 的 CI 成功不能作为当前工作树验收。
-- 当前续审已完成 core-model 57 项、Java structural facts 10 项、chart layout 9 项定向测试；前端项目级 `tsc` 因工作区缺少已声明的 `@types/react` 失败（3243 条连带诊断，修改文件未出现在诊断中）。本轮尚未做浏览器、完整门禁、性能或 Excel 验收。
+- 当前续审已完成 core-model 59 项、Java structural facts 10 项、chart layout 9 项定向测试；前端项目级 `tsc` 因工作区缺少已声明的 `@types/react` 失败（3243 条连带诊断，修改文件未出现在诊断中）。本轮尚未做浏览器、完整门禁、性能或 Excel 验收。
 - Java `StructuralStateChanges` 目前只提供事实载体和历史迁移捕获/回放，**尚未接入在线结构意图规划和提交**。当前客户端先做 TS 结构变换，Java 再执行 reducer，远端客户端仍按 intent 重放；唯一 Java planner 尚未达成。
 
 ## 审查单位与证据要求
@@ -144,6 +144,8 @@
 
 22. **C10 簇状横条系列几何重叠**：`layout.ts` 的 bar 分支读取系列 offset 只计算 x 坐标（横向条形的数值轴），没有把系列 offset 用在 y 和 height，因此同一类别的系列矩形重合。现让 y 使用系列 slot offset、height 使用每个系列的 band；Canvas 绘制和 hit-test 共用这组矩形。
 23. **C11 正值对数轴默认最小值为零**：`axisBounds` 对非百分比轴统一从 0 起算，之后 logarithmic 检查又拒绝 `minimum <= 0`。即使数据全为正，未手填最小值的对数轴也会被判无效。本轮对数轴默认采用最小正数据值，并只在最大值为自动值时扩展；显式边界仍按有效域校验。
+24. **B5 worksheet identity 覆盖与标签歧义**：`WorkbookModel.fromSnapshot` 对重复 `sheet.id` 连续执行 `Map.set`，后一个 Sheet 覆盖前一个，而 `sheetOrder` 保留重复 ID；`getSheetByName` 按不区分大小写查找，重复标签会令公式/命令落到第一个匹配项。现在在 canonical snapshot、model hydration、创建、恢复、重命名和复制之前校验唯一 ID 与 case-insensitive name；冲突拒绝路径不改变模型。
+25. **B6 其他 workbook Map owner 重复时静默覆盖**：`fromSnapshot` 对 table、relationship、view 直接 `Map.set`，query definition 和 print document setter 也按 id/sheetId 覆盖已有 owner；style template 的直接 hydration 同样可能覆盖。现在 canonical 与直接 hydration 共用 Map owner identity 预检，涵盖 data source、table、relationship、view、query、style template 和每 Sheet 唯一打印文档；来源 Map 原有 `addDataSource` 拒绝语义保持一致。
 
 能力缺口单列，不冒充 silent corruption：跨 Sheet cut/paste 在 `editing/index.ts:1461` 明确 UNSUPPORTED；带外部引用的 Sheet 删除在 `sheet-identity-transform.ts:856` 明确拒绝。要达到目标 Excel 语义，仍须在 Java authority 中建立可逆跨表 move/delete-reference facts；不能只删除这些 guard。
 
@@ -167,7 +169,16 @@
 5. **坐标轴边界**：全正值 log 数据默认从最小正数开始；最大值仅在未显式指定时自动扩展。非正数据与用户设置的冲突边界仍被判为无效。
 6. **服务端权威**：Java 事实 DTO 的冲突预检和精确回放有测试，但在线 `WorkbookOperationService` 仍调用结构 reducer，前端仍按 intent 执行本地/远端结构变换；Java 唯一规划权尚未实现，本项保持未通过。
 
-本轮定向证据：core-model 57/57、Java structural facts 10/10、chart layout 9/9。项目级 TypeScript 检查未通过，因为已安装依赖缺少根 package 声明的 `@types/react`，产生 3243 条连锁类型诊断；修改文件不在诊断路径内，但因此不能记作 typecheck 通过。
+本轮定向证据：core-model 59/59、Java structural facts 10/10、chart layout 9/9。项目级 TypeScript 检查未通过，因为已安装依赖缺少根 package 声明的 `@types/react`，产生 3243 条连锁类型诊断；修改文件不在诊断路径内，但因此不能记作 typecheck 通过。
+
+## 本轮第二组六轮身份边界复核
+
+1. **Map identity**：重复 Sheet ID、table/relationship/view id、query/style id 和 print sheet owner 原先会覆盖旧 owner；所有 Map 写入前统一拒绝。
+2. **名称解析**：Sheet 查找使用 `toLowerCase()`；重复名称验证使用相同折叠规则，不改变既有 lookup 语义。
+3. **加载入口**：canonical validator 与直接 `WorkbookModel.fromSnapshot` 调用同一 identity contracts，防止内部 snapshot/hydration 旁路。
+4. **编辑入口**：Sheet create/restore/rename/duplicate 都预检 ID/name；冲突发生在引用重写或 Sheet 插入之前。
+5. **回归/原子性**：重复 Sheet/map owner identity 及大小写重名均由 59 项 core-model suite 覆盖；拒绝分支保留现有工作簿状态。
+6. **协议/迁移**：未改 snapshot 版本或序列化字段；Java 在线规划权仍未实现，identity guard 不能替代用户选择的服务端结构 planner。
 
 ## 有界统一实施方案
 

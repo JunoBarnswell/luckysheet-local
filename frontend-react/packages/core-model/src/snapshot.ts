@@ -341,10 +341,12 @@ export function assertCanonicalWorkbookSnapshot(snapshot: WorkbookSnapshot): Wor
   if (snapshot.version !== WORKBOOK_SNAPSHOT_SCHEMA_REVISION) {
     throw new Error(`Unsupported workbook snapshot version: ${String(snapshot.version)}`);
   }
+  assertCanonicalWorksheetIdentities(snapshot.sheets);
   if (!snapshot.dataModel || !Array.isArray(snapshot.dataModel.sources) || !Array.isArray(snapshot.dataModel.tables)
     || !Array.isArray(snapshot.dataModel.relationships) || !Array.isArray(snapshot.dataModel.views)) {
     throw new Error('Workbook snapshot dataModel is invalid');
   }
+  assertCanonicalWorkbookOwnerIdentities(snapshot);
   validateAnalysisViews(snapshot.dataModel.views, snapshot.dataModel.tables);
   if (!isWorkbookEditingOptions(snapshot.editingOptions)) throw new Error('Workbook snapshot editingOptions are invalid');
   if (!snapshot.dimensionMetrics || !snapshot.dimensionMetrics.normalFontFamily.trim()
@@ -574,6 +576,60 @@ export function assertCanonicalDefinedNameModels(snapshot: {
     identities.add(identity);
   }
   validateDefinedNamesProjection(snapshot.definedNames, models as Array<Record<string, unknown>>);
+}
+
+/** Worksheet ids and names are lookup keys; duplicate keys would silently select or overwrite another sheet. */
+export function assertCanonicalWorksheetIdentities(sheets: readonly { readonly id: string; readonly name: string }[]): void {
+  const ids = new Set<string>();
+  const names = new Set<string>();
+  for (const [index, sheet] of sheets.entries()) {
+    if (!sheet || typeof sheet.id !== 'string' || !sheet.id || sheet.id !== sheet.id.trim()
+      || typeof sheet.name !== 'string' || !sheet.name.trim()) {
+      throw new Error(`Workbook snapshot worksheet ${index} identity is invalid`);
+    }
+    if (ids.has(sheet.id)) throw new Error(`Workbook snapshot contains duplicate worksheet identity: ${sheet.id}`);
+    ids.add(sheet.id);
+    const name = sheet.name.toLowerCase();
+    if (names.has(name)) throw new Error(`Workbook snapshot contains duplicate worksheet name: ${sheet.name}`);
+    names.add(name);
+  }
+}
+
+/** Map-backed workbook owners must never be silently replaced during snapshot hydration. */
+export function assertCanonicalWorkbookOwnerIdentities(snapshot: {
+  readonly dataModel: {
+    readonly sources: readonly { readonly id: string }[];
+    readonly tables: readonly { readonly id: string }[];
+    readonly relationships: readonly { readonly id: string }[];
+    readonly views: readonly { readonly id: string }[];
+  };
+  readonly printDocuments?: readonly { readonly sheetId: string }[];
+  readonly queryDefinitions?: readonly { readonly id: string }[];
+  readonly cellStyleTemplates?: readonly { readonly id: string }[];
+}): void {
+  assertUniqueSnapshotIds(snapshot.dataModel.sources, 'data source');
+  assertUniqueSnapshotIds(snapshot.dataModel.tables, 'workbook table');
+  assertUniqueSnapshotIds(snapshot.dataModel.relationships, 'data relationship');
+  assertUniqueSnapshotIds(snapshot.dataModel.views, 'data view');
+  assertUniqueSnapshotIds(snapshot.queryDefinitions ?? [], 'query definition');
+  assertUniqueSnapshotIds(snapshot.cellStyleTemplates ?? [], 'cell style template');
+  const printSheets = new Set<string>();
+  for (const document of snapshot.printDocuments ?? []) {
+    if (!document || typeof document.sheetId !== 'string' || !document.sheetId.trim() || printSheets.has(document.sheetId)) {
+      throw new Error(`Workbook snapshot contains a duplicate or invalid print document owner: ${document?.sheetId ?? '<unknown>'}`);
+    }
+    printSheets.add(document.sheetId);
+  }
+}
+
+function assertUniqueSnapshotIds(items: readonly { readonly id: string }[], owner: string): void {
+  const identities = new Set<string>();
+  for (const [index, item] of items.entries()) {
+    if (!item || typeof item.id !== 'string' || !item.id.trim() || item.id !== item.id.trim() || identities.has(item.id)) {
+      throw new Error(`Workbook snapshot ${owner} identity is invalid or duplicated at ${index}: ${item?.id ?? '<unknown>'}`);
+    }
+    identities.add(item.id);
+  }
 }
 
 function validateDefinedNamesProjection(value: unknown, models?: readonly Record<string, unknown>[]): void {

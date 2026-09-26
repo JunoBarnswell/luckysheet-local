@@ -29,6 +29,46 @@ test('canonical workbook snapshots reject malformed or unowned pane fields', () 
   }
 });
 
+test('worksheet identity collisions are rejected before loading, creating, renaming, or duplicating sheets', () => {
+  const workbook = new WorkbookModel('unit-sheet-identities', 'Sheet identities');
+  const duplicateId = structuredClone(workbook.snapshot());
+  duplicateId.sheets.push({ ...structuredClone(duplicateId.sheets[0]!), name: 'Second' });
+  assert.throws(() => assertCanonicalWorkbookSnapshot(duplicateId), /duplicate worksheet identity/);
+  assert.throws(() => WorkbookModel.fromSnapshot(duplicateId), /duplicate worksheet identity/);
+
+  const duplicateName = structuredClone(workbook.snapshot());
+  duplicateName.sheets.push({ ...structuredClone(duplicateName.sheets[0]!), id: 'sheet-2', name: 'sHeEt1' });
+  assert.throws(() => assertCanonicalWorkbookSnapshot(duplicateName), /duplicate worksheet name/);
+  assert.throws(() => WorkbookModel.fromSnapshot(duplicateName), /duplicate worksheet name/);
+
+  const other = workbook.addSheet('sheet-2', 'Budget');
+  assert.throws(() => workbook.addSheet('sheet-3', 'budget'), /duplicate worksheet name/);
+  assert.throws(() => workbook.renameSheet(workbook.primarySheetId, 'BUDGET'), /Sheet name already exists/);
+  assert.throws(() => workbook.duplicateSheet(other.id, 'sheet-3', 'bUdGeT'), /Sheet name already exists/);
+  assert.equal(workbook.getSheet(workbook.primarySheetId).name, 'Sheet1');
+  assert.equal(workbook.sheetOrder.length, 2);
+});
+
+test('snapshot hydration rejects duplicate map-backed workbook owner identities', () => {
+  const workbook = new WorkbookModel('unit-owner-identities', 'Owner identities');
+  const duplicateOwners: Array<[string, (snapshot: Record<string, any>) => void]> = [
+    ['workbook table', (snapshot) => { snapshot.dataModel.tables = [{ id: 'table-1' }, { id: 'table-1' }]; }],
+    ['data source', (snapshot) => { snapshot.dataModel.sources = [{ id: 'source-1' }, { id: 'source-1' }]; }],
+    ['data relationship', (snapshot) => { snapshot.dataModel.relationships = [{ id: 'relationship-1' }, { id: 'relationship-1' }]; }],
+    ['data view', (snapshot) => { snapshot.dataModel.views = [{ id: 'view-1' }, { id: 'view-1' }]; }],
+    ['query definition', (snapshot) => { snapshot.queryDefinitions = [{ id: 'query-1' }, { id: 'query-1' }]; }],
+    ['cell style template', (snapshot) => { snapshot.cellStyleTemplates = [{ id: 'template-1' }, { id: 'template-1' }]; }],
+    ['print document owner', (snapshot) => { snapshot.printDocuments = [{ sheetId: 'sheet-1' }, { sheetId: 'sheet-1' }]; }],
+  ];
+
+  for (const [owner, duplicate] of duplicateOwners) {
+    const candidate = structuredClone(workbook.snapshot()) as unknown as Record<string, any>;
+    duplicate(candidate);
+    assert.throws(() => assertCanonicalWorkbookSnapshot(candidate as unknown as WorkbookSnapshot), new RegExp(owner));
+    assert.throws(() => WorkbookModel.fromSnapshot(candidate as unknown as WorkbookSnapshot), new RegExp(owner));
+  }
+});
+
 test('canonical snapshots and model replacement reject duplicate defined-name owners', () => {
   const workbook = new WorkbookModel('unit-defined-name-identity', 'Defined names');
   const candidate = structuredClone(workbook.snapshot());

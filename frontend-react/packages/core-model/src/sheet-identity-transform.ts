@@ -696,6 +696,8 @@ export function planSheetIdentityTransform(workbook: WorkbookModel, input: Sheet
   if (spec.kind === 'rename') {
     const targetName = spec.targetName?.trim();
     if (!targetName) throw new SheetIdentityTransformError('Sheet rename requires a non-empty targetName');
+    const nameOwner = workbook.getSheetByName(targetName);
+    if (nameOwner && nameOwner.id !== source.id) throw new SheetIdentityTransformError(`Sheet name already exists: ${targetName}`);
     const sourceName = source.name;
     const formulaChangePlan = targetName === sourceName
       ? { changes: [], requiresCalculationContextRebuild: false }
@@ -827,6 +829,7 @@ export function planSheetIdentityTransform(workbook: WorkbookModel, input: Sheet
     const targetName = spec.targetName?.trim();
     if (!targetSheetId || !targetName) throw new SheetIdentityTransformError('Sheet duplicate requires targetSheetId and targetName');
     if (workbook.sheets.has(targetSheetId)) throw new SheetIdentityTransformError(`Duplicate sheet identity already exists: ${targetSheetId}`);
+    if (workbook.getSheetByName(targetName)) throw new SheetIdentityTransformError(`Sheet name already exists: ${targetName}`);
     return {
       spec: { ...spec, targetSheetId, targetName },
       invalidations: [],

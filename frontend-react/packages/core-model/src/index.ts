@@ -29,7 +29,7 @@ import type {
 } from './domain';
 import { DEFAULT_WORKSHEET_SNAP_SETTINGS, isFormulaError, normalizeDefinedNameModel } from './domain';
 import type { FormulaErrorCode } from './domain';
-import { assertCanonicalDefinedNameModels, type WorkbookDimensionMetrics, type WorkbookSnapshot } from './snapshot';
+import { assertCanonicalDefinedNameModels, assertCanonicalWorksheetIdentities, assertCanonicalWorkbookOwnerIdentities, type WorkbookDimensionMetrics, type WorkbookSnapshot } from './snapshot';
 import { isCellEditorConfig, type CellEditorConfig } from './cell-editor';
 import { DEFAULT_WORKBOOK_EDITING_OPTIONS, normalizeWorkbookEditingOptions, type WorkbookEditingOptions } from './editing-options';
 export { ASSET_REF_SCHEMA, assertAssetRef, isAssetRef, isSupportedAssetMime, type AssetRef } from './asset';
@@ -2115,6 +2115,7 @@ export class WorkbookModel {
 
   addSheet(id: SheetId, name: string, rowCount: number = DEFAULT_SHEET_ROW_COUNT, columnCount: number = DEFAULT_SHEET_COLUMN_COUNT): WorksheetModel {
     if (this.sheets.has(id)) throw new Error(`Sheet already exists: ${id}`);
+    assertCanonicalWorksheetIdentities([...this.getSheets(), { id, name }]);
     const sheet = new WorksheetModel(id, name, rowCount, columnCount);
     this.sheets.set(id, sheet);
     this.sheetOrder.push(id);
@@ -2194,7 +2195,7 @@ export class WorkbookModel {
   restoreSheetSnapshot(snapshot: SheetSnapshot, index = this.sheetOrder.length): void {
     if (this.sheets.has(snapshot.id)) throw new Error(`Sheet already exists: ${snapshot.id}`);
     if (!Number.isSafeInteger(index)) throw new Error(`Invalid sheet restore index: ${index}`);
-    if (this.getSheetByName(snapshot.name)) throw new Error(`Sheet name already exists: ${snapshot.name}`);
+    assertCanonicalWorksheetIdentities([...this.getSheets(), snapshot]);
     const sheet = WorksheetModel.fromSnapshot(structuredClone(snapshot));
     const lifecycleNames = snapshot.lifecycleDefinedNames ?? [];
     for (const entry of lifecycleNames) {
@@ -2247,6 +2248,8 @@ export class WorkbookModel {
     if (snapshot.schema !== 'WorkbookSnapshot') throw new Error('Unsupported workbook snapshot schema');
     if (snapshot.version !== 10) throw new Error('Unsupported workbook snapshot version');
     if (snapshot.sheets.length === 0) throw new Error('Workbook snapshot must contain at least one sheet');
+    assertCanonicalWorksheetIdentities(snapshot.sheets);
+    assertCanonicalWorkbookOwnerIdentities(snapshot);
     for (const sheet of snapshot.sheets) {
       const paneError = worksheetPaneValidationError(sheet.pane);
       if (paneError !== undefined) throw new Error(`Workbook snapshot pane ${paneError} is invalid`);
