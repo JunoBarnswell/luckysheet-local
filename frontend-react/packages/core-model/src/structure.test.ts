@@ -680,7 +680,7 @@ describe('structural operations', () => {
     assert.equal(sheet.cells.get(2, 1)?.formulaMetadata?.sourceFormula, '=_XLFN.SUM(A2:A2)');
   });
 
-  it('rewrites OOXML formula provenance for moved formulas and external formula owners', () => {
+  it('preserves moved formula provenance and rewrites external formula owners', () => {
     const workbook = new WorkbookModel('unit-move-formula-provenance', 'Move Formula Provenance');
     const sheet = workbook.getSheet('sheet-1');
     sheet.cells.set(0, 0, { value: 7 });
@@ -702,8 +702,8 @@ describe('structural operations', () => {
       targetOrigin: { row: 2, column: 2 },
     });
 
-    assert.equal(sheet.cells.get(2, 3)?.formula, '=SUM(C3:C3)');
-    assert.equal(sheet.cells.get(2, 3)?.formulaMetadata?.sourceFormula, '=_XLFN.SUM(C3:C3)');
+    assert.equal(sheet.cells.get(2, 3)?.formula, '=SUM(A1:A1)');
+    assert.equal(sheet.cells.get(2, 3)?.formulaMetadata?.sourceFormula, '=_xlfn.SUM(A1:A1)');
     assert.equal(sheet.cells.get(4, 3)?.formula, '=SUM(C3:C3)');
     assert.equal(sheet.cells.get(4, 3)?.formulaMetadata?.sourceFormula, '=_XLFN.SUM(C3:C3)');
   });
@@ -990,11 +990,11 @@ describe('structural operations', () => {
     }
   });
 
-  it('move-range clears stale destinations, offsets formulas, and rewrites external references', () => {
+  it('move-range clears stale destinations, preserves moved formulas, and rewrites external references', () => {
     const workbook = new WorkbookModel('unit-move-range', 'Move Range');
     const sheet = workbook.getSheet('sheet-1');
     sheet.cells.set(0, 0, { value: 7 });
-    sheet.cells.set(0, 1, { value: null, formula: '=A1' });
+    sheet.cells.set(0, 1, { value: null, formula: '=A1', formulaValue: 7 });
     sheet.cells.set(2, 3, { value: 'stale' });
     sheet.cells.set(0, 3, { value: null, formula: '=A1' });
     sheet.sheetTables.push({
@@ -1021,7 +1021,8 @@ describe('structural operations', () => {
     });
 
     assert.equal(sheet.cells.get(2, 2)?.value, 7);
-    assert.equal(sheet.cells.get(2, 3)?.formula, '=C3');
+    assert.equal(sheet.cells.get(2, 3)?.formula, '=A1');
+    assert.equal(sheet.cells.get(2, 3)?.formulaValue, undefined);
     assert.equal(sheet.cells.get(0, 0), undefined);
     assert.equal(sheet.cells.get(0, 3)?.formula, '=C3');
     const chart = sheet.drawingPayloads.get('chart-move');

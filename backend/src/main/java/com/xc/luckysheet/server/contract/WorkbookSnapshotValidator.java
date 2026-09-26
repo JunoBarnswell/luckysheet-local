@@ -5,6 +5,8 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.xc.luckysheet.server.service.ServiceException;
 
+import java.util.Locale;
+
 /**
  * Server-side wire validator for the canonical WorkbookSnapshot. The browser
  * has a richer type model, but persistence must reject malformed snapshots
@@ -147,9 +149,15 @@ public final class WorkbookSnapshotValidator {
         java.util.Map<String, String> pivotSourceKeys = new java.util.HashMap<>();
         for (JsonNode sheet : sheets) {
             if (!sheet.isObject()) throw ServiceException.validation("Workbook snapshot sheet is invalid");
-            String sheetId = sheet.path("id").asText().trim();
-            String sheetName = sheet.path("name").asText().trim();
-            if (sheetId.isBlank() || sheetName.isBlank() || !sheetIds.add(sheetId)) {
+            JsonNode rawSheetId = sheet.get("id");
+            JsonNode rawSheetName = sheet.get("name");
+            if (rawSheetId == null || !rawSheetId.isTextual() || rawSheetName == null || !rawSheetName.isTextual()) {
+                throw ServiceException.validation("Workbook snapshot sheet identity must use text values");
+            }
+            String rawSheetIdText = rawSheetId.asText();
+            String sheetId = rawSheetIdText.trim();
+            String sheetName = rawSheetName.asText();
+            if (sheetId.isBlank() || !sheetId.equals(rawSheetIdText) || sheetName.isBlank() || !sheetIds.add(sheetId)) {
                 throw ServiceException.validation("Workbook snapshot sheet identity is invalid");
             }
             String sheetKind = sheet.path("kind").asText();
@@ -223,6 +231,7 @@ public final class WorkbookSnapshotValidator {
             }
             AutoFilterOwnershipValidator.resolveOwners((ObjectNode) sheet, sheetId);
         }
+        requireCanonicalWorksheetNames(sheets);
         validateDefinedNameModels(snapshot, sheetIds);
         validateDefinedNamesProjection(snapshot);
         for (JsonNode sheet : sheets) {
@@ -276,6 +285,47 @@ public final class WorkbookSnapshotValidator {
             }
         }
         return snapshot;
+    }
+
+    /** Rejects a new worksheet name that would make case-insensitive lookup ambiguous. */
+    public static void requireWorksheetNameAvailable(JsonNode sheets, String candidateName, String excludedSheetId) {
+        if (sheets == null || !sheets.isArray()) throw ServiceException.validation("Workbook snapshot worksheets are invalid");
+        requireCanonicalWorksheetNames(sheets);
+        requireCanonicalWorksheetName(candidateName);
+        String candidateIdentity = worksheetNameIdentity(candidateName);
+        for (JsonNode sheet : sheets) {
+            if (excludedSheetId != null && excludedSheetId.equals(sheet.path("id").asText())) continue;
+            if (candidateIdentity.equals(worksheetNameIdentity(sheet.path("name").asText()))) {
+                throw ServiceException.conflict("Sheet name already exists: " + candidateName);
+            }
+        }
+    }
+
+    public static void requireCanonicalWorksheetNames(JsonNode sheets) {
+        if (sheets == null || !sheets.isArray()) throw ServiceException.validation("Workbook snapshot worksheets are invalid");
+        java.util.Set<String> names = new java.util.HashSet<>();
+        for (JsonNode sheet : sheets) {
+            JsonNode rawName = sheet.get("name");
+            if (rawName == null || !rawName.isTextual()) throw ServiceException.validation("Workbook snapshot worksheet name must be text");
+            String name = rawName.asText();
+            requireCanonicalWorksheetName(name);
+            if (!names.add(worksheetNameIdentity(name))) {
+                throw ServiceException.validation("Workbook snapshot contains duplicate worksheet name: " + name.trim());
+            }
+        }
+    }
+
+    private static void requireCanonicalWorksheetName(String name) {
+        if (name == null || name.isBlank() || name.length() > 31
+                || name.indexOf('/') >= 0 || name.indexOf('\\') >= 0 || name.indexOf('?') >= 0
+                || name.indexOf('*') >= 0 || name.indexOf(':') >= 0 || name.indexOf('[') >= 0 || name.indexOf(']') >= 0
+                || name.startsWith("'") || name.endsWith("'") || "history".equalsIgnoreCase(name)) {
+            throw ServiceException.validation("Worksheet name is invalid under Excel naming rules");
+        }
+    }
+
+    private static String worksheetNameIdentity(String name) {
+        return name.toLowerCase(Locale.ROOT);
     }
 
     private static void validateCellBounds(JsonNode sheet) {

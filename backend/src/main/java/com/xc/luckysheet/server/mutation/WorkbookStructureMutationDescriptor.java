@@ -8,6 +8,7 @@ import com.xc.luckysheet.server.contract.OperationMutation;
 import com.xc.luckysheet.server.contract.RangeRef;
 import com.xc.luckysheet.server.contract.StructuralPatch;
 import com.xc.luckysheet.server.contract.WorkbookAclRole;
+import com.xc.luckysheet.server.contract.WorkbookSnapshotValidator;
 import com.xc.luckysheet.server.service.ServiceException;
 
 import java.net.URI;
@@ -76,6 +77,7 @@ final class WorkbookStructureMutationDescriptor extends CanonicalJsonMutationDes
         int rows = params.has("rowCount") ? dimension(params.get("rowCount"), "rowCount") : 1000;
         int columns = params.has("columnCount") ? dimension(params.get("columnCount"), "columnCount") : 26;
         ArrayNode sheets = SnapshotMutationSupport.sheets(root);
+        WorkbookSnapshotValidator.requireWorksheetNameAvailable(sheets, name, null);
         ObjectNode sheet = JsonNodeFactory.instance.objectNode();
         sheet.put("kind", "worksheet");
         sheet.put("id", id);
@@ -120,6 +122,7 @@ final class WorkbookStructureMutationDescriptor extends CanonicalJsonMutationDes
         if (!mutationSheetId.equals(sheetId) || name.isBlank()) throw ServiceException.validation("sheet.rename identity is invalid");
         ObjectNode sheet = SnapshotMutationSupport.sheet(root, sheetId);
         String previousName = sheet.path("name").asText();
+        WorkbookSnapshotValidator.requireWorksheetNameAvailable(SnapshotMutationSupport.sheets(root), name, sheetId);
         StructuralPatch patch = previousName.equals(name)
                 ? new StructuralPatch(StructuralPatch.VERSION, "sheet.rename", List.of(), List.of(), List.of())
                 : StructuralSnapshotReducer.renameSheetReferences(root, sheetId, previousName, name);
@@ -134,6 +137,7 @@ final class WorkbookStructureMutationDescriptor extends CanonicalJsonMutationDes
         if (newName.isBlank() || findSheetIndex(root, newId) >= 0) throw ServiceException.conflict("Duplicate sheet identity is invalid");
         int sourceIndex = findSheetIndex(root, sourceSheetId);
         if (sourceIndex < 0) throw ServiceException.notFound("Sheet not found: " + sourceSheetId);
+        WorkbookSnapshotValidator.requireWorksheetNameAvailable(SnapshotMutationSupport.sheets(root), newName, null);
         ObjectNode source = (ObjectNode) SnapshotMutationSupport.sheets(root).get(sourceIndex);
         String sourceName = source.path("name").asText();
         ObjectNode copy = source.deepCopy();
@@ -151,6 +155,7 @@ final class WorkbookStructureMutationDescriptor extends CanonicalJsonMutationDes
         String id = sheet.path("id").asText().trim();
         if (id.isBlank() || findSheetIndex(root, id) >= 0) throw ServiceException.conflict("Restored sheet identity is invalid");
         requireSheetShape(sheet);
+        WorkbookSnapshotValidator.requireWorksheetNameAvailable(SnapshotMutationSupport.sheets(root), sheet.path("name").asText(), null);
         int index = params.path("index").isInt() ? params.path("index").intValue() : SnapshotMutationSupport.sheets(root).size();
         int bounded = Math.max(0, Math.min(index, SnapshotMutationSupport.sheets(root).size()));
         SnapshotMutationSupport.sheets(root).insert(bounded, sheet);
@@ -294,7 +299,8 @@ final class WorkbookStructureMutationDescriptor extends CanonicalJsonMutationDes
     }
 
     private void requireSheetShape(ObjectNode sheet) {
-        if (sheet.path("name").asText().isBlank() || !sheet.path("cells").isObject()
+        if (!sheet.path("id").isTextual() || !sheet.path("id").asText().equals(sheet.path("id").asText().trim())
+                || !sheet.path("name").isTextual() || sheet.path("name").asText().isBlank() || !sheet.path("cells").isObject()
                 || !sheet.path("merges").isArray() || !sheet.path("pivots").isArray() || !sheet.path("sparklines").isArray()
                 || !sheet.path("drawings").isArray() || !sheet.path("drawingPayloads").isObject()) {
             throw ServiceException.validation("Restored sheet is not canonical");

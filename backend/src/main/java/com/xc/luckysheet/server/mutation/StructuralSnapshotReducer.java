@@ -20,6 +20,7 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.function.BiFunction;
 import java.util.function.Function;
+import java.util.function.Predicate;
 
 /**
  * Canonical structural reducer for a workbook JSON snapshot.
@@ -935,7 +936,6 @@ final class StructuralSnapshotReducer {
         applyReportSheetPlan(sheet, reportSheetAfter);
         StructuralPatch formulaPatch = rewriteMovedFormulas(
                 root, sheet, selected, destination, rowDelta, columnDelta, ruleFormulaSnapshots);
-        invalidateFormulaCaches(root);
         AutoFilterOwnershipValidator.resolveOwners(sheet, sheetId);
         return new StructuralPatch(StructuralPatch.VERSION, formulaPatch.mutationId(),
                 formulaPatch.formulaOwnerDeltas(), formulaPatch.definedNameOwnerDeltas(), rangeOwnerDeltas);
@@ -1252,7 +1252,11 @@ final class StructuralSnapshotReducer {
                     "range.move",
                     formulaOwnerDeltas,
                     entry -> movedFormulaOwnerBeforeAddress(
-                            ownerIdentity.id(), entry, targetIdentity.id(), source, destination, rowDelta, columnDelta));
+                            ownerIdentity.id(), entry, targetIdentity.id(), source, destination, rowDelta, columnDelta),
+                    false,
+                    true,
+                    entry -> !ownerIdentity.id().equals(targetIdentity.id())
+                            || !contains(destination, entry.row(), entry.column()));
             movedFormulaDeltas.addAll(formulaOwnerDeltas);
             for (String property : List.of("conditionalFormats", "dataValidations")) {
                 for (JsonNode rawRule : SnapshotMutationSupport.array(owner, property)) {
@@ -2997,6 +3001,20 @@ final class StructuralSnapshotReducer {
             boolean allowFormulaGroups,
             boolean invalidateUnchangedFormulaCaches
     ) {
+        rewriteCellFormulaOwners(sheet, mapper, operation, formulaOwnerDeltas, beforeAddressResolver,
+                allowFormulaGroups, invalidateUnchangedFormulaCaches, entry -> true);
+    }
+
+    private static void rewriteCellFormulaOwners(
+            ObjectNode sheet,
+            Function<String, String> mapper,
+            String operation,
+            List<StructuralPatch.FormulaOwnerDelta> formulaOwnerDeltas,
+            Function<CellEntry, StructuralPatch.CellAddress> beforeAddressResolver,
+            boolean allowFormulaGroups,
+            boolean invalidateUnchangedFormulaCaches,
+            Predicate<CellEntry> shouldRewriteFormula
+    ) {
         String sheetId = sheet.path("id").asText();
         forEachCell(sheet, entry -> {
             ObjectNode cell = entry.cell();
@@ -3012,9 +3030,10 @@ final class StructuralSnapshotReducer {
                     && rawBarcodeSource.path("formula").isTextual()
                     ? rawBarcodeSource.path("formula").asText() : null;
             StructuralPatch.FormulaOwnerState before = new StructuralPatch.FormulaOwnerState(original, sourceFormula, barcodeFormula);
-            String rewritten = original == null ? null : mapper.apply(original);
-            String rewrittenSourceFormula = sourceFormula == null ? null : mapper.apply(sourceFormula);
-            String rewrittenBarcodeFormula = barcodeFormula == null ? null : mapper.apply(barcodeFormula);
+            boolean rewriteOwner = shouldRewriteFormula.test(entry);
+            String rewritten = original == null || !rewriteOwner ? original : mapper.apply(original);
+            String rewrittenSourceFormula = sourceFormula == null || !rewriteOwner ? sourceFormula : mapper.apply(sourceFormula);
+            String rewrittenBarcodeFormula = barcodeFormula == null || !rewriteOwner ? barcodeFormula : mapper.apply(barcodeFormula);
             boolean formulaChanged = original != null && !original.equals(rewritten);
             boolean sourceFormulaChanged = sourceFormula != null && !sourceFormula.equals(rewrittenSourceFormula);
             boolean barcodeFormulaChanged = barcodeFormula != null && !barcodeFormula.equals(rewrittenBarcodeFormula);

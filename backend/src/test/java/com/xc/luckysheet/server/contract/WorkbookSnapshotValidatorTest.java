@@ -63,6 +63,43 @@ class WorkbookSnapshotValidatorTest {
     }
 
     @Test
+    void rejectsWorksheetNamesThatDifferOnlyByCase() {
+        ObjectNode snapshot = snapshot();
+        ObjectNode duplicate = ((ObjectNode) snapshot.path("sheets").get(0)).deepCopy();
+        duplicate.put("id", "sheet-2").put("name", "sHEET1");
+        ((ArrayNode) snapshot.path("sheets")).add(duplicate);
+
+        ServiceException error = assertThrows(ServiceException.class,
+                () -> WorkbookSnapshotValidator.requireCanonical(snapshot, "book-1"));
+
+        assertEquals("VALIDATION_ERROR", error.code());
+    }
+
+    @Test
+    void rejectsNonTextWorksheetIdentityAndNonExcelSheetNames() {
+        ObjectNode numericId = snapshot();
+        ((ObjectNode) numericId.path("sheets").get(0)).put("id", 1);
+        ObjectNode paddedId = snapshot();
+        ((ObjectNode) paddedId.path("sheets").get(0)).put("id", " sheet-1 ");
+        ObjectNode numericName = snapshot();
+        ((ObjectNode) numericName.path("sheets").get(0)).put("name", 1);
+        for (ObjectNode invalid : java.util.List.of(numericId, paddedId, numericName)) {
+            ServiceException error = assertThrows(ServiceException.class,
+                    () -> WorkbookSnapshotValidator.requireCanonical(invalid, "book-1"));
+            assertEquals("VALIDATION_ERROR", error.code());
+        }
+
+        for (String name : java.util.List.of("Bad/Name", "Bad\\Name", "Bad?Name", "Bad*Name", "Bad:Name",
+                "Bad[Name]", "'Quoted", "Quoted'", "History", "a".repeat(32))) {
+            ObjectNode invalid = snapshot();
+            ((ObjectNode) invalid.path("sheets").get(0)).put("name", name);
+            ServiceException error = assertThrows(ServiceException.class,
+                    () -> WorkbookSnapshotValidator.requireCanonical(invalid, "book-1"), name);
+            assertEquals("VALIDATION_ERROR", error.code(), name);
+        }
+    }
+
+    @Test
     void rejectsPaneCoordinatesAndFrozenSplitsOutsideTheirCanonicalDomains() throws Exception {
         for (String pane : java.util.List.of(
                 "{\"kind\":\"none\",\"activePane\":\"center\"}",

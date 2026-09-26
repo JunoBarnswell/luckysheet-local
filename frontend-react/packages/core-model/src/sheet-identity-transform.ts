@@ -21,6 +21,7 @@ import type {
   HyperlinkTarget,
 } from './domain';
 import { chartTextFormulaEntries, writeChartTextFormula } from './chart-text-reference';
+import { assertCanonicalWorksheetName } from './worksheet-name';
 import type { PivotModel, PivotSource } from './pivot';
 import type { StructuralFormulaObjectOwnerDelta, StructuralTransformResult } from './structural-transform';
 
@@ -695,7 +696,7 @@ export function planSheetIdentityTransform(workbook: WorkbookModel, input: Sheet
   if (source.name !== spec.sourceName) throw new SheetIdentityTransformError(`Sheet identity changed before ${spec.kind}: ${spec.sourceSheetId}`);
   if (spec.kind === 'rename') {
     const targetName = spec.targetName?.trim();
-    if (!targetName) throw new SheetIdentityTransformError('Sheet rename requires a non-empty targetName');
+    assertCanonicalWorksheetName(targetName);
     const nameOwner = workbook.getSheetByName(targetName);
     if (nameOwner && nameOwner.id !== source.id) throw new SheetIdentityTransformError(`Sheet name already exists: ${targetName}`);
     const sourceName = source.name;
@@ -828,6 +829,7 @@ export function planSheetIdentityTransform(workbook: WorkbookModel, input: Sheet
     const targetSheetId = spec.targetSheetId?.trim();
     const targetName = spec.targetName?.trim();
     if (!targetSheetId || !targetName) throw new SheetIdentityTransformError('Sheet duplicate requires targetSheetId and targetName');
+    assertCanonicalWorksheetName(targetName);
     if (workbook.sheets.has(targetSheetId)) throw new SheetIdentityTransformError(`Duplicate sheet identity already exists: ${targetSheetId}`);
     if (workbook.getSheetByName(targetName)) throw new SheetIdentityTransformError(`Sheet name already exists: ${targetName}`);
     return {

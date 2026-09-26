@@ -45,6 +45,14 @@ test('worksheet identity collisions are rejected before loading, creating, renam
   assert.throws(() => workbook.addSheet('sheet-3', 'budget'), /duplicate worksheet name/);
   assert.throws(() => workbook.renameSheet(workbook.primarySheetId, 'BUDGET'), /Sheet name already exists/);
   assert.throws(() => workbook.duplicateSheet(other.id, 'sheet-3', 'bUdGeT'), /Sheet name already exists/);
+  for (const invalidName of ['Bad/Name', 'Bad\\Name', 'Bad?Name', 'Bad*Name', 'Bad:Name', 'Bad[Name]', "'Quoted", "Quoted'", 'History', 'a'.repeat(32)]) {
+    assert.throws(() => workbook.addSheet(`invalid-${invalidName}`, invalidName), /Excel naming rules/);
+    assert.throws(() => workbook.renameSheet(other.id, invalidName), /Excel naming rules/);
+    assert.throws(() => workbook.duplicateSheet(other.id, `invalid-copy-${invalidName}`, invalidName), /Excel naming rules/);
+  }
+  const maxLengthWorkbook = new WorkbookModel('unit-sheet-name-limit', 'Sheet name limit');
+  assert.equal(maxLengthWorkbook.addSheet('sheet-2', 'a'.repeat(31)).name, 'a'.repeat(31));
+  assert.equal(maxLengthWorkbook.addSheet('sheet-3', "O'Brien").name, "O'Brien");
   assert.equal(workbook.getSheet(workbook.primarySheetId).name, 'Sheet1');
   assert.equal(workbook.sheetOrder.length, 2);
 });

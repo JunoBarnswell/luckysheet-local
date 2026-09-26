@@ -16,6 +16,7 @@ import { normalizeFontFamily } from './font-family';
 import type { ReviewStoreSnapshot } from './review-store';
 import { isAnalysisViewDefinition, type AnalysisViewDefinition } from './data-model';
 import { DEFAULT_WORKBOOK_CALCULATION_SETTINGS, isWorkbookCalculationSettings, type WorkbookCalculationSettings, type WorkbookCollationContext } from '@react-sheets/formula-engine';
+import { assertCanonicalWorksheetName } from './worksheet-name';
 
 const HYPERLINK_EMAIL_ADDRESS = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const HYPERLINK_SHEET_ADDRESS = /^([A-Za-z]+)([1-9][0-9]*)$/;
@@ -584,9 +585,10 @@ export function assertCanonicalWorksheetIdentities(sheets: readonly { readonly i
   const names = new Set<string>();
   for (const [index, sheet] of sheets.entries()) {
     if (!sheet || typeof sheet.id !== 'string' || !sheet.id || sheet.id !== sheet.id.trim()
-      || typeof sheet.name !== 'string' || !sheet.name.trim()) {
+      || typeof sheet.name !== 'string') {
       throw new Error(`Workbook snapshot worksheet ${index} identity is invalid`);
     }
+    assertCanonicalWorksheetName(sheet.name);
     if (ids.has(sheet.id)) throw new Error(`Workbook snapshot contains duplicate worksheet identity: ${sheet.id}`);
     ids.add(sheet.id);
     const name = sheet.name.toLowerCase();

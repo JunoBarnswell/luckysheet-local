@@ -2533,7 +2533,7 @@ class MutationDescriptorRegistryTest {
         JsonNode snapshot = mapper.readTree("""
                 {"dataModel":{"sources":[],"tables":[],"relationships":[],"views":[]},"definedNames":{},"definedNameModels":[],"printDocuments":[],
                  "sheets":[{"id":"sheet-1","name":"Sheet1","rowCount":6,"columnCount":6,
-                   "cells":{"0":{"0":{"value":7},"1":{"formula":"=A1","formulaMetadata":{"kind":"normal","sourceFormula":"=A1"},"presentation":{"kind":"barcode","symbology":"qr","source":{"kind":"formula","formula":"=A1"},"parameters":{"symbology":"qr"},"options":{"foreground":"#000000","background":"#ffffff","showText":false,"labelPosition":"none","quietZone":0}}},"4":{"formula":"=A1","formulaMetadata":{"kind":"normal","sourceFormula":"=A1"},"presentation":{"kind":"barcode","symbology":"qr","source":{"kind":"formula","formula":"=A1"},"parameters":{"symbology":"qr"},"options":{"foreground":"#000000","background":"#ffffff","showText":false,"labelPosition":"none","quietZone":0}}},"5":{"value":null,"formulaMetadata":{"kind":"normal","sourceFormula":"=A1"},"presentation":{"kind":"barcode","symbology":"qr","source":{"kind":"formula","formula":"=A1"},"parameters":{"symbology":"qr"},"options":{"foreground":"#000000","background":"#ffffff","showText":false,"labelPosition":"none","quietZone":0}}}},"2":{"3":{"value":"stale"}}},
+                   "cells":{"0":{"0":{"value":7},"1":{"formula":"=A1","formulaValue":99,"formulaMetadata":{"kind":"normal","sourceFormula":"=A1"},"presentation":{"kind":"barcode","symbology":"qr","source":{"kind":"formula","formula":"=A1"},"parameters":{"symbology":"qr"},"options":{"foreground":"#000000","background":"#ffffff","showText":false,"labelPosition":"none","quietZone":0}}},"4":{"formula":"=A1","formulaMetadata":{"kind":"normal","sourceFormula":"=A1"},"presentation":{"kind":"barcode","symbology":"qr","source":{"kind":"formula","formula":"=A1"},"parameters":{"symbology":"qr"},"options":{"foreground":"#000000","background":"#ffffff","showText":false,"labelPosition":"none","quietZone":0}}},"5":{"value":null,"formulaMetadata":{"kind":"normal","sourceFormula":"=A1"},"presentation":{"kind":"barcode","symbology":"qr","source":{"kind":"formula","formula":"=A1"},"parameters":{"symbology":"qr"},"options":{"foreground":"#000000","background":"#ffffff","showText":false,"labelPosition":"none","quietZone":0}}}},"2":{"3":{"value":"stale"}}},
                    "pane":{"kind":"none"},"defaultRowHeightPx":20,"defaultColumnWidthPx":64,
                    "review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}},
                    "merges":[],"hiddenRows":[],"hiddenColumns":[],"rowHeightsPx":{},"columnWidthsPx":{},
@@ -2549,9 +2549,10 @@ class MutationDescriptorRegistryTest {
         JsonNode moved = registry.applyPublicMutations(snapshot, List.of(move));
         JsonNode sheet = moved.path("sheets").get(0);
         assertEquals(7, sheet.path("cells").path("2").path("2").path("value").asInt());
-        assertEquals("=C3", sheet.path("cells").path("2").path("3").path("formula").asText());
-        assertEquals("=C3", sheet.path("cells").path("2").path("3").path("formulaMetadata").path("sourceFormula").asText());
-        assertEquals("=C3", sheet.path("cells").path("2").path("3").path("presentation").path("source").path("formula").asText());
+        assertEquals("=A1", sheet.path("cells").path("2").path("3").path("formula").asText());
+        assertEquals("=A1", sheet.path("cells").path("2").path("3").path("formulaMetadata").path("sourceFormula").asText());
+        assertEquals("=A1", sheet.path("cells").path("2").path("3").path("presentation").path("source").path("formula").asText());
+        assertTrue(sheet.path("cells").path("2").path("3").path("formulaValue").isMissingNode());
         assertEquals("=C3", sheet.path("cells").path("0").path("4").path("formula").asText());
         assertEquals("=C3", sheet.path("cells").path("0").path("4").path("formulaMetadata").path("sourceFormula").asText());
         assertEquals("=C3", sheet.path("cells").path("0").path("4").path("presentation").path("source").path("formula").asText());
@@ -3179,6 +3180,43 @@ class MutationDescriptorRegistryTest {
         assertEquals("Source", snapshot.path("sheets").get(1).path("name").asText());
         assertEquals(7, snapshot.path("sheets").get(0).path("drawingPayloads").path("chart")
                 .path("elements").path("titleText").path("linkedFormula").asInt());
+    }
+
+    @Test
+    void sheetLifecycleMutationsRejectCaseInsensitiveNameCollisions() throws Exception {
+        ObjectNode snapshot = mapper.createObjectNode();
+        ArrayNode sheets = snapshot.putArray("sheets");
+        sheets.addObject().put("id", "sheet-1").put("name", "Sheet1").putObject("cells");
+        sheets.addObject().put("id", "sheet-2").put("name", "Sheet2").putObject("cells");
+        JsonNode before = snapshot.deepCopy();
+
+        OperationMutation rename = new OperationMutation("sheet.rename", "sheet-1",
+                mapper.readTree("{\"sheetId\":\"sheet-1\",\"name\":\"sHEET2\"}"));
+        OperationMutation add = new OperationMutation("sheet.add", "sheet-3",
+                mapper.readTree("{\"id\":\"sheet-3\",\"name\":\"SHEET2\"}"));
+        OperationMutation duplicate = new OperationMutation("sheet.duplicated", "sheet-1",
+                mapper.readTree("{\"sourceSheetId\":\"sheet-1\",\"newId\":\"sheet-3\",\"newName\":\"sheet2\"}"));
+        ObjectNode restoredSheet = mapper.createObjectNode().put("id", "sheet-3").put("name", "SHEET2")
+                .put("rowCount", 1).put("columnCount", 1);
+        restoredSheet.putObject("cells");
+        restoredSheet.putArray("merges").addObject();
+        restoredSheet.putArray("pivots");
+        restoredSheet.putArray("sparklines");
+        restoredSheet.putArray("drawings");
+        restoredSheet.putObject("drawingPayloads");
+        OperationMutation restore = new OperationMutation("sheet.restore", "sheet-3",
+                mapper.createObjectNode().set("sheet", restoredSheet));
+
+        for (OperationMutation mutation : List.of(rename, add, duplicate, restore)) {
+            assertThrows(ServiceException.class,
+                    () -> new WorkbookStructureMutationDescriptor(mutation.id()).applyWithPatch(snapshot, mutation), mutation.id());
+            assertEquals(before, snapshot, mutation.id());
+        }
+
+        OperationMutation caseOnlyRename = new OperationMutation("sheet.rename", "sheet-1",
+                mapper.readTree("{\"sheetId\":\"sheet-1\",\"name\":\"sHEET1\"}"));
+        JsonNode renamed = new WorkbookStructureMutationDescriptor("sheet.rename").applyWithPatch(snapshot, caseOnlyRename).snapshot();
+        assertEquals("sHEET1", renamed.path("sheets").get(0).path("name").asText());
     }
 
     @Test

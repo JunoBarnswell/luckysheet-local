@@ -167,6 +167,7 @@ public class WorkbookOperationService {
             if (isStructuralPatchMutation(mutation.id()) && committedPatch == null) {
                 throw ServiceException.unavailable("STRUCTURAL_PATCH_UNAVAILABLE: structural mutation did not produce server-owned reference facts");
             }
+            WorkbookSnapshotValidator.requireCanonicalWorksheetNames(candidate.path("sheets"));
             List<RangeRef> committedRanges = registry.committedRanges(protectionPreimage, prepared, actorRole, committedPatch);
             List<RangeRef> structuralImpactRanges = registry.structuralImpactRanges(committedPatch);
             if (ownedSnapshotCommit) {
@@ -594,6 +595,7 @@ public class WorkbookOperationService {
         for (OperationRow operation : contiguousOperationRowsBetween(row.unitId(), row.snapshotRevision(), row.revision())) {
             snapshot = applyCommittedEnvelope(snapshot, readCommittedHistoryRow(operation));
         }
+        WorkbookSnapshotValidator.requireCanonicalWorksheetNames(snapshot.path("sheets"));
         return snapshot;
     }
 
@@ -611,6 +613,7 @@ public class WorkbookOperationService {
             }
             snapshot = applyCommittedEnvelope(snapshot, committed);
         }
+        WorkbookSnapshotValidator.requireCanonicalWorksheetNames(snapshot.path("sheets"));
         return snapshot;
     }
 
