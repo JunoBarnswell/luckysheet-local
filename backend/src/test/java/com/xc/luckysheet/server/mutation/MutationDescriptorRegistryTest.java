@@ -126,7 +126,7 @@ class MutationDescriptorRegistryTest {
     void ownedStructuralPatchReusesCandidateAndRejectsConflictsWithoutChangingBaseSnapshot() throws Exception {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         ObjectNode baseSnapshot = (ObjectNode) mapper.readTree("""
-                {"sheets":[{"id":"sheet-1","cells":{"0":{"0":{"formula":"=A1"},"1":{"formula":"=B1"}}}]}
+                {"sheets":[{"id":"sheet-1","cells":{"0":{"0":{"formula":"=A1"},"1":{"formula":"=B1"}}}}]}
                 """);
         JsonNode original = baseSnapshot.deepCopy();
         StructuralPatch.CellAddress firstAddress = new StructuralPatch.CellAddress("sheet-1", 0, 0);
