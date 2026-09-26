@@ -190,16 +190,6 @@ final class StructuralSnapshotReducer {
         return indexed;
     }
 
-    private static ObjectNode rangeNode(RangeRef range) {
-        ObjectNode node = JsonNodeFactory.instance.objectNode();
-        node.put("sheetId", range.sheetId());
-        node.put("startRow", range.startRow());
-        node.put("endRow", range.endRow());
-        node.put("startColumn", range.startColumn());
-        node.put("endColumn", range.endColumn());
-        return node;
-    }
-
     static List<StructuralPatch.DefinedNameOwnerDelta> definedNameOwnerDeltas(JsonNode beforeModels, JsonNode afterModels) {
         Map<DefinedNameOwnerKey, StructuralPatch.DefinedNameState> beforeStates = definedNameStates(beforeModels);
         Map<DefinedNameOwnerKey, StructuralPatch.DefinedNameState> afterStates = definedNameStates(afterModels);
@@ -759,6 +749,7 @@ final class StructuralSnapshotReducer {
                 "cell-shift");
 
         List<RuleFormulaSnapshot> ruleFormulaSnapshots = captureRuleFormulaSnapshots(root);
+        Map<StructuralPatch.RangeOwnerKey, RangeOwnerSnapshot> rangeOwnersBefore = captureRangeOwnerSnapshots(root, sheetId);
 
         List<CellEntry> sourceCells = cellsInRange(sheet, expectedBand);
         SnapshotMutationSupport.clearCells(sheet, expectedBand);
@@ -770,9 +761,11 @@ final class StructuralSnapshotReducer {
             SnapshotMutationSupport.putCell(sheet, new SnapshotMutationSupport.CellCoordinate(nextRow, nextColumn), cell);
         }
         shiftCellBandMetadata(root, sheet, selection, expectedBand, axis, operation, count);
+        List<StructuralPatch.RangeOwnerDelta> rangeOwnerDeltas = rangeOwnerDeltas(
+                rangeOwnersBefore, captureRangeOwnerSnapshots(root, sheetId));
         applyReportSheetPlan(sheet, reportSheetAfter);
         StructuralPatch structuralPatch = rewriteCellShiftFormulas(
-                root, sheet, mutationId, selection, axis, operation, ruleFormulaSnapshots);
+                root, sheet, mutationId, selection, axis, operation, ruleFormulaSnapshots, rangeOwnerDeltas);
         AutoFilterOwnershipValidator.resolveOwners(sheet, sheetId);
         return structuralPatch;
     }
@@ -2991,7 +2984,8 @@ final class StructuralSnapshotReducer {
             RangeRef selection,
             String axis,
             String operation,
-            List<RuleFormulaSnapshot> ruleFormulaSnapshots
+            List<RuleFormulaSnapshot> ruleFormulaSnapshots,
+            List<StructuralPatch.RangeOwnerDelta> rangeOwnerDeltas
     ) {
         FormulaReferenceTransformer.SheetIdentity target = identity(targetSheet);
         List<FormulaReferenceTransformer.SheetIdentity> sheetOrder = worksheetOrder(root);
