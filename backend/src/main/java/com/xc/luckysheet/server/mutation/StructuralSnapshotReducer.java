@@ -749,7 +749,6 @@ final class StructuralSnapshotReducer {
                 "cell-shift");
 
         List<RuleFormulaSnapshot> ruleFormulaSnapshots = captureRuleFormulaSnapshots(root);
-        Map<StructuralPatch.RangeOwnerKey, RangeOwnerSnapshot> rangeOwnersBefore = captureRangeOwnerSnapshots(root, sheetId);
 
         List<CellEntry> sourceCells = cellsInRange(sheet, expectedBand);
         SnapshotMutationSupport.clearCells(sheet, expectedBand);
@@ -761,11 +760,11 @@ final class StructuralSnapshotReducer {
             SnapshotMutationSupport.putCell(sheet, new SnapshotMutationSupport.CellCoordinate(nextRow, nextColumn), cell);
         }
         shiftCellBandMetadata(root, sheet, selection, expectedBand, axis, operation, count);
-        List<StructuralPatch.RangeOwnerDelta> rangeOwnerDeltas = rangeOwnerDeltas(
-                rangeOwnersBefore, captureRangeOwnerSnapshots(root, sheetId));
         applyReportSheetPlan(sheet, reportSheetAfter);
+        // The preflight rejects every supported range owner intersecting the moved band;
+        // cell-band metadata does not write those owners, so the canonical fact set is empty.
         StructuralPatch structuralPatch = rewriteCellShiftFormulas(
-                root, sheet, mutationId, selection, axis, operation, ruleFormulaSnapshots, rangeOwnerDeltas);
+                root, sheet, mutationId, selection, axis, operation, ruleFormulaSnapshots, List.of());
         AutoFilterOwnershipValidator.resolveOwners(sheet, sheetId);
         return structuralPatch;
     }

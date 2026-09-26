@@ -263,6 +263,17 @@ function validateAxisMetadataPreservation(
       throw new Error(`UNSUPPORTED_FEATURE: inserting a worksheet column inside Sheet Table ${table.id} requires a table-column structural patch`);
     }
   }
+  if (direction === 1) {
+    for (const table of workbook.dataModel.tables.values()) {
+      const range = table.sourceRange;
+      if (range?.sheetId !== sheet.id) continue;
+      const start = axis === 'row' ? range.startRow : range.startColumn;
+      const end = axis === 'row' ? range.endRow : range.endColumn;
+      if (at > start && at <= end) {
+        throw new Error(`UNSUPPORTED_FEATURE: structural edit intersects workbook table ${table.id} and requires a table transaction`);
+      }
+    }
+  }
   if (direction === 1) return;
   const deleted = (position: number): boolean => position >= at && position < at + count;
   for (const sparkline of sheet.sparklines) {

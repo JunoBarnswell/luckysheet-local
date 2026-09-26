@@ -12,6 +12,7 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class ReportSheetStructuralTransformTest {
     private final ObjectMapper mapper = new ObjectMapper();
@@ -125,6 +126,7 @@ class ReportSheetStructuralTransformTest {
 
         assertEquals("cells.deleted", patch.mutationId());
         assertFalse(patch.formulaOwnerDeltas().isEmpty());
+        assertTrue(patch.rangeOwnerDeltas().isEmpty());
         var delta = patch.formulaOwnerDeltas().get(0);
         assertEquals(new StructuralPatch.CellAddress("sheet-1", 0, 1), delta.beforeAddress());
         assertEquals(new StructuralPatch.CellAddress("sheet-1", 0, 1), delta.afterAddress());

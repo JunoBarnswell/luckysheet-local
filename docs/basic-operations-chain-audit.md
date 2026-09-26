@@ -286,3 +286,11 @@
 6. **远端与 wire 边界**：remote source 继续 forward 应用服务端 owner delta；client operation 明确只投递 mutation id/sheetId/params，不把本地 history facts 当成客户端权威协议字段。新增/扩充 deferred-cell history regression 检查 forward facts、redo owner 值、通知形状及无 hydration。
 
 六轮复核都落在同一个 undo/redo 根因上，不拆成多个 bug。源码审查和 `git diff --check` 通过；当前 PR 的 build/boundary CI 通过，但 deferred-cell 前端单测尚未由该 workflow 覆盖，需在最终前端实测门禁运行。
+
+## Workbook Table 轴插入一致性复核（2026-09-26）
+
+对照证据：Java `validateAxisDataRegionPreservation` 拒绝在 workbook-table `sourceRange` 内部插入行或列（`at > start && at <= end`），因为仅扩展范围而不变更 backing blocks 会破坏记录映射；前端 `planAxisRangeOwners` 却会扩展 `sourceRange` 并保留旧 blocks/rowCount/fields，随后服务端拒绝同一 intent，造成本地 optimistic 状态与权威提交结果不一致。
+
+前端现于写入前执行相同的轴/边界拒绝，新增行、列两条拒绝路径并验证完整 snapshot 不变；范围起点之前整体移动及范围尾后插入仍按既有语义保留。另修正 cell-shift 对必然为空的 range-owner facts 做两遍全 owner 快照扫描：intersection preflight 已证明这些 owner 不变，patch 显式携带空 facts。
+
+六轮自审：1) 对齐 Java 的闭区间边界；2) 分别覆盖行和列；3) 插入表首行/首列仍走整体平移而不误拒；4) 删除已有范围行为未改；5) 拒绝发生在 cell、extent 和 owner 写入前；6) 回归断言核对整个 snapshot 原样，且不把单测源码当作已执行证据。确认并修复 **1 个功能根因**及 **1 个独立的多余全量 owner 遍历成本**；本轮仍未达到 30 个问题，也未完成 Java-only planner。当前 PR head `3a5e19d2` 的两项远端 `canonical-build` 通过；本次工作区尚未提交改动未由 CI 验证，本地 tests/build 未运行。

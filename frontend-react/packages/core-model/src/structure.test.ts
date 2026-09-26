@@ -938,6 +938,26 @@ describe('structural operations', () => {
     assert.equal(tableOwner.sourceRange, unchangedRange);
   });
 
+  it('rejects row and column insertion inside a workbook table before changing workbook state', () => {
+    for (const axis of ['row', 'column'] as const) {
+      const workbook = new WorkbookModel(`unit-workbook-table-insert-${axis}`, 'Workbook Table Insert');
+      const sheet = workbook.getSheet('sheet-1');
+      workbook.addTable({
+        id: 'table-1', name: 'Sales', sourceSheetId: sheet.id,
+        sourceRange: { sheetId: sheet.id, startRow: 1, endRow: 4, startColumn: 1, endColumn: 3 },
+        rowCount: 3, fields: [], blockSize: 128, blocks: [], revision: 0,
+      });
+      sheet.cells.set(6, 5, { value: 'tail' });
+      const before = workbook.snapshot();
+
+      assert.throws(() => StructuralTransform.apply(workbook, {
+        kind: axis === 'row' ? 'insert-rows' : 'insert-columns', sheetId: sheet.id, at: 2, count: 1,
+      }), /UNSUPPORTED_FEATURE: structural edit intersects workbook table table-1 and requires a table transaction/);
+
+      assert.deepEqual(workbook.snapshot(), before);
+    }
+  });
+
   it('rejects ambiguous range-owner identities before an axis transform writes any state', () => {
     for (const ownerKind of ['data-region', 'workbook-table', 'data-source'] as const) {
       const workbook = new WorkbookModel(`unit-range-identity-${ownerKind}`, 'Range identity');
