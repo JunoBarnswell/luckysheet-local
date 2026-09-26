@@ -1527,3 +1527,16 @@ Six non-overlapping static review passes confirmed two independent performance r
 - PR CI `36257660448` 在 `435406f2` 的 frontend typecheck 中发现 live sparse apply 仍通过最后的 `else` 访问 owner union 的 `sheetId`；其 `workbook-table | data-source` 联合成员不是可判别的单一字面量成员。
 - 将 `sheet-table` 改为显式 `else if` 分支，并保留未知 owner 的 fail-close 分支。此为上一批稀疏回放实现的编译修正，不计为新增业务问题。
 - 本地未运行 typecheck/build；修正待 PR CI 复核。静态 diff 检查通过。
+
+### 2026-09-27 six-pass review — partial committed owner-patch mismatch
+
+六个互相校验的路径确认一个 ACK fail-close 缺口：
+
+1. **本地事实来源**：`CommandRuntime` 从 mutation effect 把公式、定义名称与范围 owner delta 写入 undo entry，提交前状态已经由 TS 命令变更。
+2. **服务端事实来源**：commit 响应携带 Java reducer 派生的各类 owner delta；ACK 必须用它们确认同一 mutation 的结构结果。
+3. **既有拒绝条件**：旧逻辑仅在本地非空且服务端对应整类 delta 数为 0 时抛 `STRUCTURAL_PATCH_MISMATCH`；部分遗漏则走 history invalidation 分支。
+4. **预检覆盖**：`preflightCommittedStructuralPatches` 逐条验证响应中实际存在的 delta，但无法从这些条目推断遗漏的 local owner；因此部分 patch 不会在预检处被拒绝。
+5. **提交时序**：runtime 只有 `applyCommittedStructuralPatches` 返回后才确认 recovery journal、推进 revision、ACK 队列并 checkpoint。部分 mismatch 继续返回会把本地与服务端不同的状态标成已提交。
+6. **失败恢复语义**：全量遗漏路径已经要求保持未 ACK 并 reload；部分遗漏风险相同，不应只把 undo entry 标 invalid 后继续使用可能分叉的模型。
+
+修复为任意公式/名称/范围 delta 数组不一致均在 ACK 前 fail-close，移除“标 invalid 后仍接受”的路径；新增“本地两个定义名称、服务端只回一个 delta”的部分遗漏拒绝回归源码。已有完全匹配与整类全遗漏用例分别覆盖成功/拒绝边界。本机按要求未运行测试、typecheck 或构建；`git diff --check` 通过。该项确认 **1 个独立事务完整性问题**，不能与调用链各环节重复计数，也不替代唯一 Java planner 的完整实现。

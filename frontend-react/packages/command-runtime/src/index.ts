@@ -1406,18 +1406,8 @@ export class CommandRuntime {
       const formulaMismatch = JSON.stringify(ordered(local)) !== JSON.stringify(ordered(authoritative));
       const definedNameMismatch = JSON.stringify(orderedNames(localNames)) !== JSON.stringify(orderedNames(authoritativeNames));
       const rangeMismatch = JSON.stringify(orderedRanges(localRanges)) !== JSON.stringify(orderedRanges(authoritativeRanges));
-      if ((formulaMismatch && local.length > 0 && authoritative.length === 0)
-        || (definedNameMismatch && localNames.length > 0 && authoritativeNames.length === 0)
-        || (rangeMismatch && localRanges.length > 0 && authoritativeRanges.length === 0)) {
-        throw new Error('STRUCTURAL_PATCH_MISMATCH: server omitted locally changed owners; operation remains unacknowledged and the workbook must be reloaded');
-      }
       if (formulaMismatch || definedNameMismatch || rangeMismatch) {
-        const stack = this.undoStack.includes(entry) ? this.undoStack : this.redoStack;
-        const index = stack.indexOf(entry);
-        if (index >= 0) stack.splice(index, 1);
-        entry.status = 'invalid';
-        entry.invalidReason = 'Server-derived structural owners differ from the local history patch';
-        this.invalidHistory.push(entry);
+        throw new Error('STRUCTURAL_PATCH_MISMATCH: server-derived owner facts differ from local history; operation remains unacknowledged and the workbook must be reloaded');
       }
     }
 

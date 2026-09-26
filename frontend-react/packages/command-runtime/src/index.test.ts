@@ -631,10 +631,73 @@ test('CommandRuntime rejects an empty authoritative ACK patch when local history
     structuralFormulaOwnerDeltas: [],
     structuralDefinedNameOwnerDeltas: [],
     structuralRangeOwnerDeltas: [],
-  }], 1), /STRUCTURAL_PATCH_MISMATCH: server omitted locally changed owners/);
+  }], 1), /STRUCTURAL_PATCH_MISMATCH: server-derived owner facts differ from local history/);
   assert.equal(runtime.getHistoryDepth().undo, 1);
   assert.equal(runtime.getInvalidHistoryEntries().length, 0);
   assert.equal(workbook.getDefinedNameExact('Rate', 'workbook')?.formula, '=A2');
+});
+
+test('CommandRuntime rejects partial authoritative owner ACK mismatches without invalidating local history', () => {
+  const workbook = new WorkbookModel('unit-partial-authoritative-patch', 'Partial authoritative patch');
+  const sheetId = workbook.primarySheetId;
+  const ownerRanges = [{ sheetId, startRow: 0, endRow: 1, startColumn: 0, endColumn: 1 }];
+  const beforeRate = { name: 'Rate', formula: '=A1', scope: 'workbook' as const, anchor: { sheetId, row: 0, column: 0 } };
+  const afterRate = { ...beforeRate, formula: '=A2', anchor: { sheetId, row: 1, column: 0 } };
+  const beforeTax = { name: 'Tax', formula: '=B1', scope: 'workbook' as const, anchor: { sheetId, row: 0, column: 1 } };
+  const afterTax = { ...beforeTax, formula: '=B2', anchor: { sheetId, row: 1, column: 1 } };
+  workbook.setDefinedName(beforeRate);
+  workbook.setDefinedName(beforeTax);
+  const rateDelta: StructuralDefinedNameOwnerDelta = { owner: { name: 'Rate', scope: 'workbook' }, before: beforeRate, after: afterRate };
+  const taxDelta: StructuralDefinedNameOwnerDelta = { owner: { name: 'Tax', scope: 'workbook' }, before: beforeTax, after: afterTax };
+  const runtime = new CommandRuntime(workbook);
+  const metadata = (name: string, allowedMutationIds: string[]) => ({
+    schema: { name, validate: (value: unknown) => !!value && typeof value === 'object' },
+    permission: { capability: 'test.defined-name.write' },
+    affectedRanges: { resolve: () => ownerRanges, mode: 'exact' as const },
+    inversePolicy: { allowedMutationIds, minCount: 1 },
+  });
+  runtime.registry.registerMutation({
+    id: 'test.partial.defined-name.transform',
+    handler: () => undefined,
+    metadata: metadata('PartialDefinedNameTransform', ['test.partial.defined-name.restore']),
+  });
+  runtime.registry.registerMutation({
+    id: 'test.partial.defined-name.restore',
+    handler: () => undefined,
+    metadata: metadata('PartialDefinedNameRestore', ['test.partial.defined-name.transform']),
+  });
+  runtime.registry.registerCommand({
+    id: 'test.partial.defined-name.apply',
+    execute: (_params, context) => {
+      context.applyMutation({
+        id: 'test.partial.defined-name.transform',
+        unitId: workbook.unitId,
+        sheetId,
+        params: {},
+        affectedRanges: ownerRanges,
+        inverse: [{ id: 'test.partial.defined-name.restore', unitId: workbook.unitId, sheetId, params: {}, affectedRanges: ownerRanges }],
+        apply: () => {
+          workbook.setDefinedName(afterRate);
+          workbook.setDefinedName(afterTax);
+          return { definedNameOwnerDeltas: [rateDelta, taxDelta] };
+        },
+      });
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges: ownerRanges };
+    },
+  });
+
+  const operation = runtime.execute('test.partial.defined-name.apply', {});
+  assert.throws(() => runtime.applyCommittedStructuralPatches(operation.operationId, [{
+    id: 'test.partial.defined-name.transform', unitId: workbook.unitId, sheetId, params: {},
+    affectedRanges: ownerRanges,
+    structuralFormulaOwnerDeltas: [],
+    structuralDefinedNameOwnerDeltas: [rateDelta],
+    structuralRangeOwnerDeltas: [],
+  }], 1), /STRUCTURAL_PATCH_MISMATCH: server-derived owner facts differ from local history/);
+  assert.equal(runtime.getHistoryDepth().undo, 1);
+  assert.equal(runtime.getInvalidHistoryEntries().length, 0);
+  assert.equal(workbook.getDefinedNameExact('Rate', 'workbook')?.formula, '=A2');
+  assert.equal(workbook.getDefinedNameExact('Tax', 'workbook')?.formula, '=B2');
 });
 
 test('CommandRuntime rejects remote structural owner facts before mutating the live workbook', () => {
