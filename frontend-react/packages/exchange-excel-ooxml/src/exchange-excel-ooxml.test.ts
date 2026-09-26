@@ -6,11 +6,46 @@ import { importOoxmlDocument } from './import';
 import { scanFormulaPreserveIssues, scanSnapshotFeatures } from './feature-scan';
 import { exportSnapshotToOoxmlBuffer } from './archive';
 import { loadOpcPackageGraph, parseLoadedOoxml, zipOpcPartsBuffer } from './archive';
+import { readNativeChartGraph } from './native-chart';
 import { mapNativePivotDefinition, readNativePivotGraph } from './native-pivot';
 import type { NativePivotCacheDefinition, NativePivotTableDefinition } from './types';
 import { strFromU8, strToU8 } from 'fflate';
 
 describe('exchange-excel-ooxml', () => {
+  it('preserves supported pie subtypes and fails closed on unmodeled native splits and rotations', () => {
+    const chartFrom = (plotChart: string) => readNativeChartGraph({
+      files: {
+        'xl/drawings/drawing1.xml': strToU8('<xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><xdr:twoCellAnchor><xdr:graphicFrame><xdr:nvGraphicFramePr><xdr:cNvPr name="pie-chart"/></xdr:nvGraphicFramePr><a:graphic><a:graphicData><c:chart r:id="rIdChart"/></a:graphicData></a:graphic></xdr:graphicFrame></xdr:twoCellAnchor></xdr:wsDr>'),
+        'xl/charts/chart1.xml': strToU8(`<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart"><c:chart><c:plotArea>${plotChart}</c:plotArea></c:chart></c:chartSpace>`),
+      },
+      relationships: {
+        'xl/worksheets/sheet1.xml': [{ id: 'rIdDrawing', type: 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing', target: '../drawings/drawing1.xml' }],
+        'xl/drawings/drawing1.xml': [{ id: 'rIdChart', type: 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart', target: '../charts/chart1.xml' }],
+      },
+      sheetPartById: { 'sheet-1': 'xl/worksheets/sheet1.xml' },
+    })!.charts[0]!;
+
+    const pieOfPie = chartFrom('<c:ofPieChart><c:ofPieType val="pie"/><c:splitType val="auto"/><c:secondPieSize val="75"/></c:ofPieChart>');
+    assert.equal(pieOfPie.family, 'pie');
+    assert.equal(pieOfPie.subtype, 'pie-of-pie');
+    assert.equal(pieOfPie.editable, true);
+    const barOfPie = chartFrom('<c:ofPieChart><c:ofPieType val="bar"/><c:splitType val="auto"/><c:secondPieSize val="75"/></c:ofPieChart>');
+    assert.equal(barOfPie.subtype, 'bar-of-pie');
+    assert.equal(barOfPie.editable, true);
+    const threeDimensional = chartFrom('<c:pie3DChart/>');
+    assert.equal(threeDimensional.subtype, 'three-dimensional');
+    assert.equal(threeDimensional.editable, true);
+    const custom3dView = chartFrom('<c:view3D><c:rotX val="15"/></c:view3D><c:pie3DChart/>');
+    assert.equal(custom3dView.editable, false);
+    assert.match(custom3dView.reason ?? '', /3-D pie view settings/);
+    const customSplit = chartFrom('<c:ofPieChart><c:ofPieType val="pie"/><c:splitType val="pos"/></c:ofPieChart>');
+    assert.equal(customSplit.editable, false);
+    assert.match(customSplit.reason ?? '', /custom pie split type/);
+    const rotatedPie = chartFrom('<c:pieChart><c:firstSliceAng val="90"/></c:pieChart>');
+    assert.equal(rotatedPie.editable, false);
+    assert.match(rotatedPie.reason ?? '', /pie rotation/);
+  });
+
   it('preserves native Pivot error cache items as typed error members', () => {
     const main = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';
     const graph = readNativePivotGraph({

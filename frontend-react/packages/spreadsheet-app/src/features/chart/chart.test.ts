@@ -586,6 +586,40 @@ describe('chart feature', () => {
     assert.ok(noLabelsLayout.pieSlices!.every((slice) => slice.dataLabelText === undefined), 'explicitly disabling every label field produces no label');
   });
 
+  it('builds Excel-style pie-of-pie and bar-of-pie partitions and 3-D pie geometry', () => {
+    const workbook = new WorkbookModel('pie-split-layouts', 'Pie split layouts');
+    const sheet = workbook.getSheet('sheet-1');
+    [['Category', 'Value'], ['Core', 100], ['Alpha', 1], ['Beta', 2], ['Gamma', 3], ['Delta', 4]]
+      .forEach((row, rowIndex) => row.forEach((value, columnIndex) => sheet.cells.set(rowIndex, columnIndex, { value })));
+    const source = { kind: 'worksheet-ranges' as const, ranges: [{ sheetId: sheet.id, startRow: 0, endRow: 5, startColumn: 0, endColumn: 1 }] };
+    const payload = (subtype: ChartPayload['subtype']): ChartPayload => ({
+      kind: 'chart', chartId: `pie-${subtype}`, chartType: 'pie', subtype, source,
+      elements: { hiddenData: 'show', legend: { visible: false, position: 'bottom' } },
+    });
+
+    const pieOfPiePayload = payload('pie-of-pie');
+    const pieOfPie = buildChartLayout(pieOfPiePayload, resolveChartData(workbook, pieOfPiePayload), 480, 260);
+    assert.equal(pieOfPie.status.kind, 'ready');
+    assert.deepEqual(pieOfPie.pieSlices!.filter((slice) => slice.plotPart === 'secondary').map((slice) => slice.pointIndex), [1, 2, 3]);
+    assert.equal(pieOfPie.pieSlices!.filter((slice) => slice.aggregate).length, 1);
+    assert.equal(pieOfPie.pieSlices!.find((slice) => slice.aggregate)?.value, 6);
+    assert.equal(pieOfPie.pieConnectors!.length, 2);
+
+    const barOfPiePayload = payload('bar-of-pie');
+    const barOfPie = buildChartLayout(barOfPiePayload, resolveChartData(workbook, barOfPiePayload), 480, 260);
+    assert.equal(barOfPie.status.kind, 'ready');
+    assert.deepEqual(barOfPie.pieSecondaryBars!.map((segment) => segment.pointIndex), [1, 2, 3]);
+    assert.ok(barOfPie.pieSecondaryBars!.every((segment) => segment.height > 0));
+    assert.equal(barOfPie.pieConnectors!.length, 2);
+
+    const threeDimensionalPayload = payload('three-dimensional');
+    const threeDimensional = buildChartLayout(threeDimensionalPayload, resolveChartData(workbook, threeDimensionalPayload), 480, 260);
+    assert.equal(threeDimensional.status.kind, 'ready');
+    assert.ok(threeDimensional.pieDepth! > 0);
+    assert.equal(threeDimensional.pieVerticalScale, 0.72);
+    assert.ok(threeDimensional.pieSlices!.every((slice) => Number.isFinite(slice.centerX) && Number.isFinite(slice.centerY)));
+  });
+
   it('switches row-oriented worksheet matrices without converting categories into X coordinates', () => {
     const workbook = new WorkbookModel('chart-row-orientation', 'Row Orientation');
     const sheet = workbook.getSheet('sheet-1');

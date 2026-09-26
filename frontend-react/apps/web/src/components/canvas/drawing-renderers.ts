@@ -902,15 +902,24 @@ function drawChartMarker(context: CanvasRenderingContext2D, x: number, y: number
 function drawChartLegend(context: CanvasRenderingContext2D, layout: ChartLayout): void {
   if (!layout.legend.visible) return;
   const position = layout.legend.position;
-  const entries = layout.series.filter((series) => series.visible);
+  const entries = layout.kind === 'pie'
+    ? [
+      ...(layout.pieSlices ?? []).filter((slice) => !slice.aggregate && slice.plotPart === 'main'
+        && slice.seriesIndex === layout.series.findIndex((series) => series.visible))
+        .map((slice) => ({ label: slice.label, color: slice.color, pointIndex: slice.pointIndex })),
+      ...(layout.pieSlices ?? []).filter((slice) => !slice.aggregate && slice.plotPart === 'secondary')
+        .map((slice) => ({ label: slice.label, color: slice.color, pointIndex: slice.pointIndex })),
+      ...(layout.pieSecondaryBars ?? []).map((segment) => ({ label: segment.label, color: segment.color, pointIndex: segment.pointIndex })),
+    ].sort((left, right) => left.pointIndex - right.pointIndex)
+    : layout.series.filter((series) => series.visible).map((series) => ({ label: series.name, color: series.color }));
   let x = position === 'left' ? 8 : position === 'right' ? layout.width - 92 : 16;
   let y = position === 'top' || position === 'top-right' ? 22 : layout.height - 16;
   if (position === 'top-right') { x = layout.width - 112; y = 22; }
-  for (const [index, series] of entries.entries()) {
-    context.fillStyle = series.color;
+  for (const [index, entry] of entries.entries()) {
+    context.fillStyle = entry.color;
     context.fillRect(x, y - 5, 10, 10);
-    drawChartText(context, series.name, x + 14, y, { color: '#475569', size: 10 });
-    x += Math.max(54, context.measureText(series.name).width + 32);
+    drawChartText(context, entry.label, x + 14, y, { color: '#475569', size: 10 });
+    x += Math.max(54, context.measureText(entry.label).width + 32);
     if ((position === 'left' || position === 'right') && y + 18 < layout.height - 4) y += 18;
     else if (x > layout.width - 36 && index < entries.length - 1) { x = 16; y += 16; }
   }
@@ -1152,25 +1161,76 @@ function drawChartDataLabels(context: CanvasRenderingContext2D, payload: ChartDr
 function drawChartSpecial(context: CanvasRenderingContext2D, payload: ChartDrawingPayload, layout: ChartLayout): void {
   const { plot } = layout;
   if (layout.kind === 'pie') {
-    const centerX = plot.left + plot.width / 2;
-    const centerY = plot.top + plot.height / 2;
+    const depth = layout.pieDepth ?? 0;
+    const verticalScale = layout.pieVerticalScale ?? 1;
+    for (const connector of layout.pieConnectors ?? []) {
+      context.strokeStyle = '#64748b';
+      context.lineWidth = 1;
+      context.beginPath();
+      context.moveTo(connector.startX, connector.startY);
+      context.lineTo(connector.endX, connector.endY);
+      context.stroke();
+    }
+    if (depth > 0) {
+      const turn = Math.PI * 2;
+      for (const slice of layout.pieSlices ?? []) {
+        const mid = (slice.startAngle + slice.endAngle) / 2;
+        const centerX = slice.centerX + Math.cos(mid) * slice.explosion;
+        const centerY = slice.centerY + Math.sin(mid) * slice.explosion * verticalScale;
+        context.fillStyle = chartPieSideColor(slice.color);
+        const firstCycle = Math.floor(slice.startAngle / turn) - 1;
+        const lastCycle = Math.ceil(slice.endAngle / turn) + 1;
+        for (let cycle = firstCycle; cycle <= lastCycle; cycle += 1) {
+          const start = Math.max(slice.startAngle, cycle * turn);
+          const end = Math.min(slice.endAngle, cycle * turn + Math.PI);
+          if (end <= start) continue;
+          const steps = Math.max(1, Math.ceil((end - start) / (Math.PI / 24)));
+          context.beginPath();
+          for (let step = 0; step <= steps; step += 1) {
+            const angle = start + (end - start) * step / steps;
+            const x = centerX + Math.cos(angle) * slice.outerRadius;
+            const y = centerY + Math.sin(angle) * slice.outerRadius * verticalScale;
+            if (step === 0) context.moveTo(x, y);
+            else context.lineTo(x, y);
+          }
+          for (let step = steps; step >= 0; step -= 1) {
+            const angle = start + (end - start) * step / steps;
+            context.lineTo(centerX + Math.cos(angle) * slice.outerRadius, centerY + Math.sin(angle) * slice.outerRadius * verticalScale + depth);
+          }
+          context.closePath();
+          context.fill();
+        }
+      }
+    }
     for (const slice of layout.pieSlices ?? []) {
       const mid = (slice.startAngle + slice.endAngle) / 2;
       const offsetX = Math.cos(mid) * slice.explosion;
-      const offsetY = Math.sin(mid) * slice.explosion;
+      const offsetY = Math.sin(mid) * slice.explosion * verticalScale;
+      const centerX = slice.centerX + offsetX;
+      const centerY = slice.centerY + offsetY;
       context.save();
-      context.translate(offsetX, offsetY);
       context.fillStyle = slice.color;
       context.beginPath();
-      context.moveTo(centerX + Math.cos(slice.startAngle) * slice.innerRadius, centerY + Math.sin(slice.startAngle) * slice.innerRadius);
-      context.arc(centerX, centerY, slice.outerRadius, slice.startAngle, slice.endAngle);
-      if (slice.innerRadius > 0) context.arc(centerX, centerY, slice.innerRadius, slice.endAngle, slice.startAngle, true);
-      else context.lineTo(centerX, centerY);
+      if (slice.innerRadius > 0) {
+        context.moveTo(centerX + Math.cos(slice.startAngle) * slice.innerRadius, centerY + Math.sin(slice.startAngle) * slice.innerRadius * verticalScale);
+        context.ellipse(centerX, centerY, slice.outerRadius, slice.outerRadius * verticalScale, 0, slice.startAngle, slice.endAngle);
+        context.ellipse(centerX, centerY, slice.innerRadius, slice.innerRadius * verticalScale, 0, slice.endAngle, slice.startAngle, true);
+      } else {
+        context.moveTo(centerX, centerY);
+        context.ellipse(centerX, centerY, slice.outerRadius, slice.outerRadius * verticalScale, 0, slice.startAngle, slice.endAngle);
+      }
       context.closePath();
       context.fill();
       context.restore();
       if (slice.dataLabelText && slice.dataLabelX !== undefined && slice.dataLabelY !== undefined) {
         drawChartText(context, slice.dataLabelText, slice.dataLabelX, slice.dataLabelY, { color: '#334155', size: 9, align: 'center' });
+      }
+    }
+    for (const segment of layout.pieSecondaryBars ?? []) {
+      context.fillStyle = segment.color;
+      context.fillRect(segment.x, segment.y, segment.width, segment.height);
+      if (segment.dataLabelText && segment.height >= 16) {
+        drawChartText(context, segment.dataLabelText, segment.x + segment.width / 2, segment.y + segment.height / 2, { color: '#fff', size: 8, align: 'center' });
       }
     }
     return;
@@ -1460,6 +1520,40 @@ function fitChartDataTableText(context: CanvasRenderingContext2D, text: string, 
   return `${text.slice(0, end)}${ellipsis}`;
 }
 
+function chartPieSideColor(color: string): string {
+  const match = /^#([\da-f]{6})$/i.exec(color);
+  if (!match) return '#334155';
+  const value = Number.parseInt(match[1]!, 16);
+  const red = Math.round(((value >> 16) & 255) * 0.68);
+  const green = Math.round(((value >> 8) & 255) * 0.68);
+  const blue = Math.round((value & 255) * 0.68);
+  return `#${[red, green, blue].map((channel) => channel.toString(16).padStart(2, '0')).join('')}`;
+}
+
+function chartPieSliceContainsPoint(
+  slice: NonNullable<ChartLayout['pieSlices']>[number],
+  point: { x: number; y: number },
+  verticalScale: number,
+  depth: number,
+): boolean {
+  const midpoint = (slice.startAngle + slice.endAngle) / 2;
+  const centerX = slice.centerX + Math.cos(midpoint) * slice.explosion;
+  const centerY = slice.centerY + Math.sin(midpoint) * slice.explosion * verticalScale;
+  const dx = point.x - centerX;
+  const sampleCount = depth > 0 ? 8 : 0;
+  for (let sample = 0; sample <= sampleCount; sample += 1) {
+    const offset = sampleCount > 0 ? depth * sample / sampleCount : 0;
+    const dy = (point.y - centerY - offset) / verticalScale;
+    const radius = Math.hypot(dx, dy);
+    let angle = Math.atan2(dy, dx);
+    while (angle < slice.startAngle) angle += Math.PI * 2;
+    while (angle >= slice.startAngle + Math.PI * 2) angle -= Math.PI * 2;
+    if (sample > 0 && Math.sin(angle) < 0) continue;
+    if (angle >= slice.startAngle && angle <= slice.endAngle && radius >= slice.innerRadius && radius <= slice.outerRadius) return true;
+  }
+  return false;
+}
+
 function chartDataTableValueText(value: PivotScalar | undefined): string {
   return value === undefined || value === null || value === '' ? '' : formatPivotMember(value);
 }
@@ -1541,24 +1635,30 @@ function chartHitTest(layout: ChartLayout, point: { x: number; y: number }): { a
     return { action: 'chart.select-element', data: { kind: 'data-table' } };
   }
   if (layout.kind === 'pie') {
-    const centerX = layout.plot.left + layout.plot.width / 2;
-    const centerY = layout.plot.top + layout.plot.height / 2;
-    for (const slice of layout.pieSlices ?? []) {
+    const bars = layout.pieSecondaryBars ?? [];
+    for (let index = bars.length - 1; index >= 0; index -= 1) {
+      const segment = bars[index]!;
+      if (point.x < segment.x || point.x > segment.x + segment.width || point.y < segment.y || point.y > segment.y + segment.height) continue;
+      const series = layout.series[segment.seriesIndex];
+      if (series?.visible) return chartPointSelection(series, segment.pointIndex);
+    }
+    const verticalScale = layout.pieVerticalScale ?? 1;
+    const depth = layout.pieDepth ?? 0;
+    const slices = layout.pieSlices ?? [];
+    for (let index = slices.length - 1; index >= 0; index -= 1) {
+      const slice = slices[index]!;
+      const series = layout.series[slice.seriesIndex];
+      if (!series?.visible) continue;
       const labelBounds = slice.dataLabelBounds;
       if (labelBounds && point.x >= labelBounds.left && point.x <= labelBounds.right && point.y >= labelBounds.top && point.y <= labelBounds.bottom) {
-        const series = layout.series[slice.seriesIndex];
-        if (series?.visible) return chartPointSelection(series, slice.pointIndex);
+        return slice.aggregate
+          ? { action: 'chart.select-element', data: { kind: 'series', seriesId: series.id } }
+          : chartPointSelection(series, slice.pointIndex);
       }
-      const mid = (slice.startAngle + slice.endAngle) / 2;
-      const sliceCenterX = centerX + Math.cos(mid) * slice.explosion;
-      const sliceCenterY = centerY + Math.sin(mid) * slice.explosion;
-      const radius = Math.hypot(point.x - sliceCenterX, point.y - sliceCenterY);
-      const angle = Math.atan2(point.y - sliceCenterY, point.x - sliceCenterX);
-      let normalized = angle;
-      while (normalized < slice.startAngle) normalized += Math.PI * 2;
-      if (normalized >= slice.startAngle && normalized <= slice.endAngle && radius >= slice.innerRadius && radius <= slice.outerRadius) {
-        const series = layout.series[slice.seriesIndex];
-        if (series?.visible) return chartPointSelection(series, slice.pointIndex);
+      if (chartPieSliceContainsPoint(slice, point, verticalScale, depth)) {
+        return slice.aggregate
+          ? { action: 'chart.select-element', data: { kind: 'series', seriesId: series.id } }
+          : chartPointSelection(series, slice.pointIndex);
       }
     }
   }

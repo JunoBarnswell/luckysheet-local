@@ -325,6 +325,61 @@ test('pie data labels render and remain selectable outside their slice geometry'
   });
 });
 
+test('pie split targets and 3-D pie faces use the chart geometry for rendering and selection', () => {
+  const values: Array<Array<string | number>> = [
+    ['Category', 'Value'], ['Core', 100], ['Alpha', 1], ['Beta', 2], ['Gamma', 3], ['Delta', 4],
+  ];
+  const source = {
+    ...sourceSnapshot(),
+    getCell: (row: number, column: number) => {
+      const value = values[row]?.[column];
+      return value === undefined ? undefined : { address: `${row}:${column}`, value: String(value) };
+    },
+  } satisfies CanvasSheetSnapshot;
+  const makeChart = (chartId: string, subtype: 'bar-of-pie' | 'three-dimensional') => {
+    const payload: ChartDrawingPayload = {
+      kind: 'chart', chartId, chartType: 'pie', subtype,
+      source: { kind: 'worksheet-ranges', ranges: [{ sheetId: source.id, startRow: 0, endRow: 5, startColumn: 0, endColumn: 1 }] },
+      elements: { hiddenData: 'show', legend: { visible: false, position: 'bottom' } },
+    };
+    const drawing: DrawingObject = {
+      id: `${chartId}-drawing`, sheetId: source.id, kind: 'chart', payloadId: chartId,
+      anchor: { kind: 'absolute' }, transform: { x: 0, y: 0, width: 480, height: 260, rotation: 0 }, zIndex: 0,
+    };
+    const data = resolveChartDataFromSources(payload, (sheetId) => sheetId === source.id ? source : undefined);
+    const layout = buildChartLayout(payload, data, drawing.transform.width, drawing.transform.height);
+    const [drawable] = createCanvasFloatingDrawables({
+      drawings: [drawing], drawingPayloads: new Map([[chartId, payload]]), allSheets: [source], sheet: source,
+      pivotResults: {}, sparklines: [], skeleton: {} as SheetSkeleton, imageCache: new Map(), requestRender: () => undefined, tables: [],
+    });
+    return { layout, drawable, drawing };
+  };
+
+  const splitChart = makeChart('bar-of-pie-hit', 'bar-of-pie');
+  const segment = splitChart.layout.pieSecondaryBars![0]!;
+  const splitSelection = splitChart.drawable?.hitTest?.({ x: segment.x + segment.width / 2, y: segment.y + segment.height / 2 });
+  assert.equal((splitSelection?.data as { pointIndex: number } | undefined)?.pointIndex, segment.pointIndex);
+  const aggregate = splitChart.layout.pieSlices!.find((slice) => slice.aggregate)!;
+  const aggregateAngle = (aggregate.startAngle + aggregate.endAngle) / 2;
+  const aggregateSelection = splitChart.drawable?.hitTest?.({
+    x: aggregate.centerX + Math.cos(aggregateAngle) * aggregate.outerRadius * 0.6,
+    y: aggregate.centerY + Math.sin(aggregateAngle) * aggregate.outerRadius * 0.6,
+  });
+  assert.equal((aggregateSelection?.data as { kind: string } | undefined)?.kind, 'series');
+
+  const threeDimensional = makeChart('pie-3d-hit', 'three-dimensional');
+  const slice = threeDimensional.layout.pieSlices![0]!;
+  const angle = (slice.startAngle + slice.endAngle) / 2;
+  const radius = (slice.innerRadius + slice.outerRadius) / 2;
+  assert.equal((threeDimensional.drawable?.hitTest?.({
+    x: slice.centerX + Math.cos(angle) * radius,
+    y: slice.centerY + Math.sin(angle) * radius * threeDimensional.layout.pieVerticalScale!,
+  })?.data as { pointIndex: number } | undefined)?.pointIndex, slice.pointIndex);
+  const { context, calls } = mockCanvasContext();
+  threeDimensional.drawable!.draw(context, threeDimensional.drawing.transform);
+  assert.ok(calls.includes('ellipse'));
+});
+
 test('same-group sparkline bounds scan large series without argument spreading', () => {
   const pointCount = 130_000;
   const group: SparklineGroup = {

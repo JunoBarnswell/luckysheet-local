@@ -1694,3 +1694,16 @@ CI 随后暴露 Java 侧另一个阻断该拒绝路径的解析缺陷：3D 预�
 修复：改为对系列值、X 值、堆叠起止值做单遍摘要；类别索引直接由边界摘要表示。摘要保留 `sourceCount` 与有限值计数，维持空轴回退、非有限堆叠值、百分比/对数轴及空类别的既有分支语义。六项静态自审分别核对：有限数筛选、百分比最值、对数轴正数/非正数校验、主次轴空值回退、堆叠起止范围、空/非空类别索引边界。
 
 此项只移除轴界限路径的 O(N) 临时数组与重复扫描；图表布局点/柱和最终绘制仍按数据点 O(N)，本次没有声称完成降采样、百万行绘图能力或实测性能。未运行本地测试或构建，需由 PR CI 与后续大数据实测确认行为和收益。按单一根因计 **1 项性能问题**。
+
+### 2026-09-27 six-view chart review — pie subtype layout and interaction
+
+以 `main@a2a6140a` 和 `codex/structural-reference-integrity@64b037bb` 的源码为审查基线，按实际交互链核对：resolved categories/series → chart layout → Canvas draw → hit test → chart selection → OOXML import/export。发现并修复 **4 个互不重复的图表问题**：
+
+1. `pie-of-pie` / `bar-of-pie` 已出现在 subtype model 和 OOXML writer，但 Canvas layout 仍只生成普通单饼。现在按 Excel `auto` 规则稳定选出最多三个最小正值（并确保主图至少保留一项），为主饼生成合计“其他”扇区、第二饼或垂直堆积条，以及连接线；辅助图扇区/条段仍携带来源 point index，合计扇区选择回到来源 series，不制造虚构 point。
+2. `three-dimensional` 与 `exploded-three-dimensional-pie` 过去复用圆形 2D geometry。现在共享 slice center/radius、椭圆纵横比和挤出深度生成 Canvas 顶面/前侧面，命中检测使用相同椭圆投影与深度范围；常见自动拆分仅保留固定上限 3 项的选择扫描，避免高分类数时为确定 Excel auto split 全量排序及额外复制。
+3. 饼图 legend 过去按 series 渲染，单系列饼图因此没有分类图例。现在从来源 point index 生成分类项，并在 pie-of-pie / bar-of-pie 中按来源顺序合并主图和辅助图分类。
+4. OOXML import identity 曾把 `ofPieChart` 归为普通 `pie`，也把 `pie3DChart` 归为普通 pie subtype，导致 exporter 已写出的类型在重新导入后丢失。现在识别 bar/pie-of-pie 与 3-D subtype；当前模型无法精确表示的自定义 split、secondary size、首扇区旋转、slice explosion 或 3-D view 会作为 preserved native chart 保留并标 `UNSUPPORTED_FEATURE`，不再作为可编辑的普通饼图展示。
+
+六个静态复核视角：① resolved data 的类别和值与源 point index；② OOXML `ofPieChart` 的 auto split 与 secondary chart 类型；③ layout 中 split value、聚合总值、扇区角度/坐标与 Excel 表达是否闭合；④ Canvas 顶/侧面、连接线、条段与图例绘制；⑤ point/aggregate/bar hit 是否返回真实 selection owner；⑥ 高分类数排序/临时分配、缺值/零值、单一正值以及 doughnut/普通 pie 的既有分支。Microsoft 文档规定 Pie-of-Pie/Bar-of-Pie 将较小扇区拆入辅助饼或堆积条，默认自动分拆三个最小值：[Office 图表类型说明](https://support.microsoft.com/en-us/excel/available-chart-types-in-office)；OOXML `ofPieChart` 只显示一个系列并以 `splitType` 表示拆分：[Open XML `OfPieChart`](https://learn.microsoft.com/en-us/dotnet/api/documentformat.openxml.drawing.charts.ofpiechart?view=openxml-3.0.1)。
+
+新增 layout、Canvas hit/render 与 OOXML chart identity 回归源码，但本轮按用户要求不运行测试、构建或浏览器验收；当前只有静态契约与 diff 审查证据。其余 3D 柱/条、线/面积、气泡、曲面 subtype 以及 Exploded Pie/Doughnut 的 OOXML writer 编码仍未实现专用互操作，本次不将饼图覆盖扩大宣称为完整 Excel 图表对齐。桌面 Excel 互操作和性能实测保留为后续验收项。

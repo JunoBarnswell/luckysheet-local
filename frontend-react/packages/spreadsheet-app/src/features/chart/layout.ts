@@ -71,6 +71,10 @@ export interface ChartAxisLayout {
 export interface ChartPieSliceLayout {
   seriesIndex: number;
   pointIndex: number;
+  centerX: number;
+  centerY: number;
+  plotPart: 'main' | 'secondary';
+  aggregate?: boolean;
   value: number;
   startAngle: number;
   endAngle: number;
@@ -83,6 +87,26 @@ export interface ChartPieSliceLayout {
   dataLabelX?: number;
   dataLabelY?: number;
   dataLabelBounds?: { left: number; top: number; right: number; bottom: number };
+}
+
+export interface ChartPieBarSegmentLayout {
+  seriesIndex: number;
+  pointIndex: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  value: number;
+  color: string;
+  label: string;
+  dataLabelText?: string;
+}
+
+export interface ChartPieConnectorLayout {
+  startX: number;
+  startY: number;
+  endX: number;
+  endY: number;
 }
 
 export type ChartHistogramBinLayout = {
@@ -161,6 +185,10 @@ export interface ChartLayout {
   specialSeriesIndex?: number;
   kind: 'cartesian' | 'pie' | 'treemap' | 'sunburst' | 'histogram' | 'box-whisker' | 'waterfall' | 'funnel' | 'stock' | 'surface' | 'radar' | 'map';
   pieSlices?: ChartPieSliceLayout[];
+  pieSecondaryBars?: ChartPieBarSegmentLayout[];
+  pieConnectors?: ChartPieConnectorLayout[];
+  pieDepth?: number;
+  pieVerticalScale?: number;
   histogramBins?: ChartHistogramBinLayout[];
   paretoPoints?: Array<{ x: number; y: number }>;
   boxes?: ChartBoxLayout[];
@@ -933,11 +961,34 @@ function createSeriesLayouts(payload: ChartDrawingPayload, data: ResolvedChartDa
   return result;
 }
 
-function pieSlices(payload: ChartDrawingPayload, data: ResolvedChartData, plot: ChartLayout['plot']): ChartPieSliceLayout[] {
+interface PieValueLayout {
+  pointIndex: number;
+  value: number;
+  label: string;
+  color: string;
+  aggregate?: boolean;
+}
+
+interface PieLayoutResult {
+  slices: ChartPieSliceLayout[];
+  secondaryBars: ChartPieBarSegmentLayout[];
+  connectors: ChartPieConnectorLayout[];
+  depth: number;
+  verticalScale: number;
+}
+
+function pieLayouts(payload: ChartDrawingPayload, data: ResolvedChartData, plot: ChartLayout['plot']): PieLayoutResult {
   const slices: ChartPieSliceLayout[] = [];
+  const secondaryBars: ChartPieBarSegmentLayout[] = [];
+  const connectors: ChartPieConnectorLayout[] = [];
   const visibleSeriesIndexes = data.series.flatMap((series, seriesIndex) => seriesModelFor(payload, series, seriesIndex)?.visible === false ? [] : [seriesIndex]);
   const ringCount = payload.chartType === 'doughnut' ? Math.max(1, visibleSeriesIndexes.length) : 1;
-  const maxRadius = Math.min(plot.width, plot.height) * 0.43;
+  const subtype = payload.subtype;
+  const splitMode = subtype === 'pie-of-pie' || subtype === 'bar-of-pie' ? subtype : undefined;
+  const threeDimensional = payload.chartType === 'pie' && (subtype === 'three-dimensional' || subtype === 'exploded-three-dimensional-pie');
+  const verticalScale = threeDimensional ? 0.72 : 1;
+  const maxRadius = Math.min(plot.width, plot.height) * (threeDimensional ? 0.38 : 0.43);
+  const depth = threeDimensional ? Math.max(3, Math.min(14, maxRadius * 0.18)) : 0;
   const hole = payload.chartType === 'doughnut' ? 0.55 : 0;
   for (let ringIndex = 0; ringIndex < ringCount; ringIndex += 1) {
     const seriesIndex = visibleSeriesIndexes[ringIndex];
@@ -950,47 +1001,136 @@ function pieSlices(payload: ChartDrawingPayload, data: ResolvedChartData, plot: 
     });
     const total = values.reduce<number>((sum, value) => sum + (value ?? 0), 0);
     if (total <= 0) continue;
+    const specialPie = splitMode !== undefined && ringIndex === 0;
     const ringWidth = maxRadius * (1 - hole) / ringCount;
-    let angle = -Math.PI / 2 + ((payload.subtype === 'exploded-pie' || payload.subtype === 'exploded-three-dimensional-pie' || payload.subtype === 'exploded-doughnut') ? Math.PI / 18 : 0);
-    const labels = seriesModelFor(payload, series, seriesIndex)?.dataLabels ?? payload.elements.dataLabels;
-    for (let pointIndex = 0; pointIndex < values.length; pointIndex += 1) {
-      const value = values[pointIndex] ?? 0;
-      if (value <= 0) continue;
-      const sweep = value / total * Math.PI * 2;
-      const innerRadius = payload.chartType === 'doughnut' ? maxRadius * hole + ringWidth * ringIndex : 0;
-      const outerRadius = payload.chartType === 'doughnut' ? maxRadius * hole + ringWidth * (ringIndex + 1) : maxRadius;
-      const explosion = payload.subtype?.includes('exploded') ? Math.min(12, maxRadius * 0.08) : 0;
-      const label = String(data.categories[pointIndex] ?? pointIndex + 1);
-      const slice: ChartPieSliceLayout = { seriesIndex, pointIndex, value, startAngle: angle, endAngle: angle + sweep, innerRadius, outerRadius, explosion, color: DEFAULT_COLORS[pointIndex % DEFAULT_COLORS.length]!, label };
-      if (labels?.visible) {
-        const parts: string[] = [];
-        if (labels.showSeriesName) parts.push(series.name);
-        if (labels.showCategoryName) parts.push(label);
-        if (labels.showValue !== false) parts.push(String(value));
-        if (labels.showPercentage) parts.push(`${Math.round(value / total * 10000) / 100}%`);
-        if (parts.length) {
-          const text = parts.join(labels.separator ?? ', ');
-          const midpoint = angle + sweep / 2;
-          const offsetRadius = labels.position === 'outside-end' ? outerRadius + 12
-            : labels.position === 'inside-base' ? innerRadius + (outerRadius - innerRadius) * 0.35
-              : labels.position === 'center' ? (innerRadius + outerRadius) / 2
-                : innerRadius + (outerRadius - innerRadius) * 0.72;
-          const centerX = plot.left + plot.width / 2 + Math.cos(midpoint) * explosion;
-          const centerY = plot.top + plot.height / 2 + Math.sin(midpoint) * explosion;
-          const dataLabelX = centerX + Math.cos(midpoint) * offsetRadius;
-          const dataLabelY = centerY + Math.sin(midpoint) * offsetRadius;
-          const halfWidth = Math.max(8, text.length * 3.2);
-          slice.dataLabelText = text;
-          slice.dataLabelX = dataLabelX;
-          slice.dataLabelY = dataLabelY;
-          slice.dataLabelBounds = { left: dataLabelX - halfWidth, top: dataLabelY - 7, right: dataLabelX + halfWidth, bottom: dataLabelY + 7 };
+    const centerY = plot.top + plot.height / 2;
+    const smallestPositive: Array<{ pointIndex: number; value: number }> = [];
+    let positiveCount = 0;
+    if (specialPie) {
+      for (let pointIndex = 0; pointIndex < values.length; pointIndex += 1) {
+        const value = values[pointIndex];
+        if (value === null || value <= 0) continue;
+        positiveCount += 1;
+        let insertion = smallestPositive.findIndex((candidate) => value < candidate.value || (value === candidate.value && pointIndex < candidate.pointIndex));
+        if (insertion < 0) insertion = smallestPositive.length;
+        if (insertion < 3) {
+          smallestPositive.splice(insertion, 0, { pointIndex, value });
+          if (smallestPositive.length > 3) smallestPositive.pop();
         }
       }
-      slices.push(slice);
-      angle += sweep;
+    }
+    const splitPoints = smallestPositive.slice(0, Math.min(3, Math.max(0, positiveCount - 1)))
+      .sort((left, right) => left.pointIndex - right.pointIndex);
+    const centerX = specialPie && splitPoints.length > 0 ? plot.left + plot.width * 0.235 : plot.left + plot.width / 2;
+    const mainRadius = specialPie && splitPoints.length > 0 ? Math.min(maxRadius, plot.width * 0.235) : maxRadius;
+    const splitIndexes = new Set(splitPoints.map((point) => point.pointIndex));
+    const splitTotal = splitPoints.reduce((sum, point) => sum + point.value, 0);
+    const mainValues: PieValueLayout[] = [];
+    let mainSweepBeforeAggregate = 0;
+    for (let pointIndex = 0; pointIndex < values.length; pointIndex += 1) {
+      const value = values[pointIndex];
+      if (value === null || value <= 0 || splitIndexes.has(pointIndex)) continue;
+      mainValues.push({ pointIndex, value, label: String(data.categories[pointIndex] ?? pointIndex + 1), color: DEFAULT_COLORS[pointIndex % DEFAULT_COLORS.length]! });
+      mainSweepBeforeAggregate += value / total * Math.PI * 2;
+    }
+    if (splitPoints.length > 0) mainValues.push({
+      pointIndex: -1,
+      value: splitTotal,
+      label: '其他',
+      color: DEFAULT_COLORS[splitPoints[0]!.pointIndex % DEFAULT_COLORS.length]!,
+      aggregate: true,
+    });
+    const splitSweep = splitTotal / total * Math.PI * 2;
+    const exploded = subtype?.includes('exploded') === true;
+    let angle = specialPie && splitPoints.length > 0
+      ? -mainSweepBeforeAggregate - splitSweep / 2
+      : -Math.PI / 2 + (exploded ? Math.PI / 18 : 0);
+    const labels = seriesModelFor(payload, series, seriesIndex)?.dataLabels ?? payload.elements.dataLabels;
+    const addPieGroup = (group: readonly PieValueLayout[], groupTotal: number, plotPart: 'main' | 'secondary', groupCenterX: number, groupRadius: number): void => {
+      for (const item of group) {
+        const sweep = item.value / groupTotal * Math.PI * 2;
+        const innerRadius = payload.chartType === 'doughnut' ? maxRadius * hole + ringWidth * ringIndex : 0;
+        const outerRadius = specialPie && plotPart === 'main' ? mainRadius
+          : specialPie && plotPart === 'secondary' ? mainRadius * 0.75
+            : payload.chartType === 'doughnut' ? maxRadius * hole + ringWidth * (ringIndex + 1) : groupRadius;
+        const explosion = exploded ? Math.min(12, outerRadius * 0.08) : 0;
+        const slice: ChartPieSliceLayout = {
+          seriesIndex, pointIndex: item.pointIndex, centerX: groupCenterX, centerY, plotPart,
+          ...(item.aggregate ? { aggregate: true } : {}), value: item.value, startAngle: angle, endAngle: angle + sweep,
+          innerRadius, outerRadius, explosion, color: item.color, label: item.label,
+        };
+        if (labels?.visible) {
+          const parts: string[] = [];
+          if (labels.showSeriesName) parts.push(series.name);
+          if (labels.showCategoryName) parts.push(item.label);
+          if (labels.showValue !== false) parts.push(String(item.value));
+          if (labels.showPercentage) parts.push(`${Math.round(item.value / groupTotal * 10000) / 100}%`);
+          if (parts.length) {
+            const text = parts.join(labels.separator ?? ', ');
+            const midpoint = angle + sweep / 2;
+            const offsetRadius = labels.position === 'outside-end' ? outerRadius + 12
+              : labels.position === 'inside-base' ? innerRadius + (outerRadius - innerRadius) * 0.35
+                : labels.position === 'center' ? (innerRadius + outerRadius) / 2
+                  : innerRadius + (outerRadius - innerRadius) * 0.72;
+            const sliceCenterX = groupCenterX + Math.cos(midpoint) * explosion;
+            const sliceCenterY = centerY + Math.sin(midpoint) * explosion * verticalScale;
+            const dataLabelX = sliceCenterX + Math.cos(midpoint) * offsetRadius;
+            const dataLabelY = sliceCenterY + Math.sin(midpoint) * offsetRadius * verticalScale;
+            const halfWidth = Math.max(8, text.length * 3.2);
+            slice.dataLabelText = text;
+            slice.dataLabelX = dataLabelX;
+            slice.dataLabelY = dataLabelY;
+            slice.dataLabelBounds = { left: dataLabelX - halfWidth, top: dataLabelY - 7, right: dataLabelX + halfWidth, bottom: dataLabelY + 7 };
+          }
+        }
+        slices.push(slice);
+        angle += sweep;
+      }
+    };
+    addPieGroup(mainValues, total, 'main', centerX, maxRadius);
+    if (specialPie && splitPoints.length > 0) {
+      const secondaryValues: PieValueLayout[] = splitPoints.map(({ pointIndex, value }) => ({
+        pointIndex, value, label: String(data.categories[pointIndex] ?? pointIndex + 1), color: DEFAULT_COLORS[pointIndex % DEFAULT_COLORS.length]!,
+      }));
+      if (splitMode === 'pie-of-pie') {
+        const secondaryCenterX = plot.left + plot.width * 0.81;
+        const secondaryRadius = mainRadius * 0.75;
+        angle = -Math.PI / 2;
+        addPieGroup(secondaryValues, splitTotal, 'secondary', secondaryCenterX, secondaryRadius);
+      } else {
+        const width = Math.min(plot.width * 0.16, 42);
+        const height = Math.min(plot.height * 0.72, mainRadius * 1.5);
+        const x = plot.left + plot.width * 0.79;
+        let y = centerY - height / 2;
+        for (const item of secondaryValues) {
+          const segmentHeight = height * item.value / splitTotal;
+          const text = labels?.visible
+            ? [labels.showSeriesName ? series.name : '', labels.showCategoryName ? item.label : '', labels.showValue !== false ? String(item.value) : '', labels.showPercentage ? `${Math.round(item.value / splitTotal * 10000) / 100}%` : ''].filter(Boolean).join(labels.separator ?? ', ')
+            : '';
+          secondaryBars.push({ seriesIndex, pointIndex: item.pointIndex, x, y, width, height: segmentHeight, value: item.value, color: item.color, label: item.label, ...(text ? { dataLabelText: text } : {}) });
+          y += segmentHeight;
+        }
+      }
+      const aggregate = slices.find((slice) => slice.seriesIndex === seriesIndex && slice.plotPart === 'main' && slice.aggregate);
+      if (aggregate) {
+        const secondaryRadius = splitMode === 'pie-of-pie' ? mainRadius * 0.75 : 0;
+        const secondaryLeft = splitMode === 'pie-of-pie'
+          ? plot.left + plot.width * 0.81 - secondaryRadius
+          : plot.left + plot.width * 0.79;
+        const secondaryTop = splitMode === 'pie-of-pie'
+          ? centerY - secondaryRadius * 0.7
+          : centerY - Math.min(plot.height * 0.72, mainRadius * 1.5) / 2;
+        const secondaryBottom = splitMode === 'pie-of-pie'
+          ? centerY + secondaryRadius * 0.7
+          : centerY + Math.min(plot.height * 0.72, mainRadius * 1.5) / 2;
+        connectors.push(
+          { startX: aggregate.centerX + Math.cos(aggregate.startAngle) * aggregate.outerRadius, startY: aggregate.centerY + Math.sin(aggregate.startAngle) * aggregate.outerRadius * verticalScale, endX: secondaryLeft, endY: secondaryTop },
+          { startX: aggregate.centerX + Math.cos(aggregate.endAngle) * aggregate.outerRadius, startY: aggregate.centerY + Math.sin(aggregate.endAngle) * aggregate.outerRadius * verticalScale, endX: secondaryLeft, endY: secondaryBottom },
+        );
+      }
     }
   }
-  return slices;
+  return { slices, secondaryBars, connectors, depth, verticalScale };
 }
 
 function boxLayouts(payload: ChartDrawingPayload, data: ResolvedChartData, colors: string[]): ChartBoxLayout[] {
@@ -1266,7 +1406,12 @@ export function buildChartLayout(payload: ChartDrawingPayload, data: ResolvedCha
       layout.status = statusError('invalid', 'INVALID_CHART_SOURCE', 'Pie and doughnut charts require non-negative values');
       return layout;
     }
-    layout.pieSlices = pieSlices(payload, data, layout.plot);
+    const pie = pieLayouts(payload, data, layout.plot);
+    layout.pieSlices = pie.slices;
+    layout.pieSecondaryBars = pie.secondaryBars;
+    layout.pieConnectors = pie.connectors;
+    layout.pieDepth = pie.depth;
+    layout.pieVerticalScale = pie.verticalScale;
     if (layout.pieSlices.length === 0) {
       layout.status = statusError('invalid', 'INVALID_CHART_SOURCE', 'Pie and doughnut charts require at least one positive value');
     }

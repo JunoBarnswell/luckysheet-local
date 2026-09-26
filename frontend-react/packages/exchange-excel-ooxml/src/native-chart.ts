@@ -506,7 +506,24 @@ function chartIdentity(xml: string): { family: string; subtype: string; xlChartT
                               : name === 'waterfallChart' ? 'waterfall'
                                 : name === 'funnelChart' ? 'funnel'
                                   : name === 'mapChart' ? 'map'
-                                    : name === 'ofPieChart' ? 'pie' : 'unknown';
+                                  : name === 'ofPieChart' ? 'pie' : 'unknown';
+  let piePresentationIssue: string | undefined;
+  if (name === 'ofPieChart') {
+    const pieType = nodeValue(node, 'ofPieType');
+    const splitType = nodeValue(node, 'splitType');
+    const secondPieSize = nodeValue(node, 'secondPieSize');
+    if (pieType !== undefined && pieType !== 'pie' && pieType !== 'bar') piePresentationIssue = `UNSUPPORTED_FEATURE: pie-of-pie chart type ${pieType} is not supported`;
+    else if (splitType !== undefined && splitType !== 'auto') piePresentationIssue = `UNSUPPORTED_FEATURE: custom pie split type ${splitType} is not supported`;
+    else if (secondPieSize !== undefined && secondPieSize !== '75') piePresentationIssue = `UNSUPPORTED_FEATURE: secondary pie size ${secondPieSize} is not supported`;
+  } else if (family === 'pie' || family === 'doughnut') {
+    const firstSliceAngle = Number(nodeValue(node, 'firstSliceAng') ?? 0);
+    const hasExplosion = descendants(node, 'explosion').some((entry) => Number(entry.attrs.val ?? 0) !== 0);
+    const view3d = descendants(child(root, 'chart'), 'view3D')[0];
+    const hasExplicit3dView = name === 'pie3DChart' && view3d !== undefined;
+    if (!Number.isFinite(firstSliceAngle) || firstSliceAngle !== 0) piePresentationIssue = `UNSUPPORTED_FEATURE: pie rotation ${String(firstSliceAngle)} is not supported`;
+    else if (hasExplosion) piePresentationIssue = 'UNSUPPORTED_FEATURE: pie explosion settings are not supported';
+    else if (hasExplicit3dView) piePresentationIssue = 'UNSUPPORTED_FEATURE: explicit 3-D pie view settings are not supported';
+  }
   const grouping = nodeValue(node, 'grouping');
   const subtype = family === 'column' || family === 'bar' ? nodeValue(node, 'shape') === 'cone' ? grouping === 'percentStacked' ? 'cone-percent-stacked' : grouping === 'stacked' ? 'cone-stacked' : 'cone' : nodeValue(node, 'shape') === 'cylinder' ? grouping === 'percentStacked' ? 'cylinder-percent-stacked' : grouping === 'stacked' ? 'cylinder-stacked' : 'cylinder' : nodeValue(node, 'shape') === 'pyramid' ? grouping === 'percentStacked' ? 'pyramid-percent-stacked' : grouping === 'stacked' ? 'pyramid-stacked' : 'pyramid' : name === 'bar3DChart' ? grouping === 'percentStacked' ? 'three-dimensional-percent-stacked' : grouping === 'stacked' ? 'three-dimensional-stacked' : 'three-dimensional' : grouping === 'percentStacked' ? 'percent-stacked' : grouping === 'stacked' ? 'stacked' : 'clustered'
     : family === 'line' ? grouping === 'percentStacked' ? 'percent-stacked-markers' : grouping === 'stacked' ? descendants(node, 'marker').length ? 'stacked-markers' : 'stacked' : descendants(node, 'marker').length ? 'line-markers' : 'line'
@@ -517,9 +534,11 @@ function chartIdentity(xml: string): { family: string; subtype: string; xlChartT
               : family === 'stock' ? descendants(node, 'vol')[0] ? descendants(node, 'open')[0] ? 'stock-volume-open-high-low-close' : 'stock-volume-high-low-close' : descendants(node, 'open')[0] ? 'stock-open-high-low-close' : 'stock-high-low-close'
                 : family === 'surface' ? nodeValue(node, 'wireframe') === '1' ? 'surface-wireframe' : 'surface-three-dimensional'
                   : family === 'radar' ? nodeValue(node, 'radarStyle') === 'filled' ? 'radar-filled' : nodeValue(node, 'radarStyle') === 'marker' ? 'radar-markers' : 'radar'
-                    : family === 'map' ? 'filled-map' : family;
-  const editable = family !== 'unknown' && family !== 'map';
-  return editable ? { family, subtype, editable: true } : { family, subtype, editable: false, reason: `UNSUPPORTED_FEATURE: ${family} native chart is preserved without canonical editor ownership` };
+                    : family === 'map' ? 'filled-map'
+                      : family === 'pie' ? name === 'pie3DChart' ? 'three-dimensional' : name === 'ofPieChart' ? nodeValue(node, 'ofPieType') === 'bar' ? 'bar-of-pie' : 'pie-of-pie' : 'pie'
+                        : family;
+  const editable = family !== 'unknown' && family !== 'map' && piePresentationIssue === undefined;
+  return editable ? { family, subtype, editable: true } : { family, subtype, editable: false, reason: piePresentationIssue ?? `UNSUPPORTED_FEATURE: ${family} native chart is preserved without canonical editor ownership` };
 }
 
 function nodeValue(node: XmlNode, name: string): string | undefined { return descendants(node, name)[0]?.attrs.val; }
