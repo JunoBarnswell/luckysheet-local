@@ -1673,3 +1673,16 @@ Six non-overlapping static review passes confirmed two independent performance r
 CI 随后暴露 Java 侧另一个阻断该拒绝路径的解析缺陷：3D 预扫描把 `A1:'Budget A1'!B2` 中的单元格端点 `A1` 当作工作表名，先抛出无关的 `3D reference boundary is unresolved`。现有结构扫描在判断 `Sheet1:Sheet2!A1` 前先排除可解析为 cell-address 且紧邻 `:` 的 token；真实 3D 检查保留，范围由对应 owner transformer 精确拒绝。单元格带移动的共享向量同时断言其独立的 typed reason；另补充目标落在真实 3D sheet span 内的拒绝向量，确保不会因区分 `A1:` 而放宽 3D 保护。此为同一部分限定范围解析根因的 Java 前置扫描表现，不另计一次。
 
 本轮仅静态审查、diff 与共享 JSON 结构校验；新增 TypeScript/Java 测试未运行。唯一 Java planner、完整稀疏 patch、全部 metadata owner、真实浏览器/OOXML/Excel 与性能验收仍未完成。
+
+### 2026-09-27 six-view review — rows.permuted anchored defined-name patch
+
+六个独立源码视角确认一个排序 patch owner 遗漏：
+
+1. **TypeScript producer**：`applyRowPermutation` 会映射被排序范围内的 anchored defined name，并返回包含公式与 anchor before/after 的 `definedNameOwnerDeltas`。
+2. **Java state writer**：`remapPermutationDefinedNames` 同样改写 `definedNameModels` 的公式、anchor，并同步 workbook `definedNames` 投影。
+3. **Java patch capture**：`permuteRows` 原先只捕获公式和 range owner，构造 `StructuralPatch` 时把 defined-name delta 写成空数组；patch 与已变更 snapshot 因而不一致。
+4. **ACK consumer**：frontend `CommandRuntime.applyCommittedStructuralPatches` 将本地 history 与服务端 formula/name/range delta 做精确比对；排序产生 anchored name delta 时，空服务端数组会令操作在 ACK 前 fail-close。
+5. **Patch replay**：现有 Java `applyStructuralOwnerPatch` 会校验 defined-name formula、anchor 和 workbook 投影的前置状态；缺失 delta 就无法从 server facts 重放该 owner。
+6. **Inverse**：`StructuralPatch.inverse` 只能反转 patch 中已有的 defined-name owner；原空数组不会记录 anchor/formula 的逆向事实。
+
+修复：Java 排序 metadata mapper 在写入每个实际移动的 anchored name 时直接生成同一 typed before/after delta，并把这些 delta 一并放入 `rows.permuted` patch；不再为此深拷贝并二次扫描整个 name 数组。回归源码覆盖服务端 patch 内容、从操作前 snapshot 应用后与 reducer 结果一致、inverse 恢复 name model 与投影，以及 tampered owner 在 replay 前置校验失败且输入 snapshot 保持不变。按单一根因计 **1 项**。本轮未运行本地 Java 测试、构建、TypeScript 测试或浏览器验收；完成静态 diff 检查后由 PR CI 实测。其他 owner 家族、完整 patch-only replay、OOXML、Excel 和大数据性能验收仍未完成。

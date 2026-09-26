@@ -1409,14 +1409,16 @@ final class StructuralSnapshotReducer {
         List<StructuralPatch.FormulaOwnerDelta> formulaOwnerDeltas = new ArrayList<>();
         List<RuleFormulaSnapshot> ruleFormulaSnapshots = captureRuleFormulaSnapshots(root);
         remapPermutedCells(sheet, selected, targetRowsBySource, formulaOwnerDeltas);
-        remapPermutationMetadata(root, sheet, selected, metadataScope, targetRowsBySource);
+        List<StructuralPatch.DefinedNameOwnerDelta> definedNameOwnerDeltas = remapPermutationMetadata(
+                root, sheet, selected, metadataScope, targetRowsBySource);
         appendRuleFormulaDeltas(root, ruleFormulaSnapshots, formulaOwnerDeltas);
         applyReportSheetPlan(sheet, reportSheetAfter);
         invalidateFormulaCaches(root);
         AutoFilterOwnershipValidator.resolveOwners(sheet, sheetId);
         List<StructuralPatch.RangeOwnerDelta> rangeOwnerDeltas = rangeOwnerDeltas(
                 rangeOwnersBefore, captureRangeOwnerSnapshots(root, sheetId));
-        return new StructuralPatch(StructuralPatch.VERSION, "rows.permuted", formulaOwnerDeltas, List.of(), rangeOwnerDeltas);
+        return new StructuralPatch(StructuralPatch.VERSION, "rows.permuted", formulaOwnerDeltas,
+                definedNameOwnerDeltas, rangeOwnerDeltas);
     }
 
     private static void validateAxisBounds(int limit, int maximum, int at, int count, FormulaReferenceTransformer.Direction direction) {
@@ -3832,7 +3834,8 @@ final class StructuralSnapshotReducer {
         }
     }
 
-    private static void remapPermutationMetadata(ObjectNode root, ObjectNode sheet, RangeRef range, RangeRef metadataScope, int[] targetRowsBySource) {
+    private static List<StructuralPatch.DefinedNameOwnerDelta> remapPermutationMetadata(
+            ObjectNode root, ObjectNode sheet, RangeRef range, RangeRef metadataScope, int[] targetRowsBySource) {
         SnapshotMutationSupport.remapReviewCoordinates(sheet, coordinate -> contains(range, coordinate.row(), coordinate.column())
                 ? new SnapshotMutationSupport.CellCoordinate(remapRow(coordinate.row(), range, targetRowsBySource), coordinate.column())
                 : coordinate);
@@ -3873,7 +3876,8 @@ final class StructuralSnapshotReducer {
         }
         JsonNode namesProjectionRaw = root.get("definedNames");
         ObjectNode namesProjection = namesProjectionRaw != null && namesProjectionRaw.isObject() ? (ObjectNode) namesProjectionRaw : null;
-        remapPermutationDefinedNames(existingArray(root, "definedNameModels"), namesProjection, range.sheetId(), metadataScope, targetRowsBySource);
+        List<StructuralPatch.DefinedNameOwnerDelta> definedNameOwnerDeltas = remapPermutationDefinedNames(
+                existingArray(root, "definedNameModels"), namesProjection, range.sheetId(), metadataScope, targetRowsBySource);
         remapPermutationCellStyleTemplates(existingArray(root, "cellStyleTemplates"), range.sheetId(), metadataScope, targetRowsBySource);
         JsonNode filter = sheet.get("autoFilter");
         if (filter != null && filter.isObject()) writeSingleRange(filter.get("range"), range, targetRowsBySource, "auto filter");
@@ -3939,6 +3943,7 @@ final class StructuralSnapshotReducer {
             writeSingleRange(banded.get("range"), range, targetRowsBySource, "banded rule");
         }
         remapPermutationDrawingPayloads(root, range, targetRowsBySource);
+        return definedNameOwnerDeltas;
     }
 
     private static void validatePermutationDrawingPayloads(ObjectNode root, RangeRef range, int[] targetRowsBySource) {
@@ -4409,7 +4414,9 @@ final class StructuralSnapshotReducer {
                 && listSource.path("formula").isTextual();
     }
 
-    private static void remapPermutationDefinedNames(ArrayNode models, ObjectNode projection, String sheetId, RangeRef scope, int[] rowMap) {
+    private static List<StructuralPatch.DefinedNameOwnerDelta> remapPermutationDefinedNames(
+            ArrayNode models, ObjectNode projection, String sheetId, RangeRef scope, int[] rowMap) {
+        List<StructuralPatch.DefinedNameOwnerDelta> deltas = new ArrayList<>();
         for (JsonNode raw : models) {
             ObjectNode name = requireObject(raw, "Defined name");
             JsonNode rawAnchor = name.get("anchor");
@@ -4434,8 +4441,10 @@ final class StructuralSnapshotReducer {
             if (formula == null || !formula.isTextual()) throw ServiceException.validation("Defined-name formula must be text");
             String nameText = SnapshotMutationSupport.text(name, "name");
             String mappedFormula = offsetPermutationFormula(formula.asText(), rowDelta, "defined name " + nameText);
+            StructuralPatch.DefinedNameState before = definedNameState(name);
             name.put("formula", mappedFormula);
             anchor.put("row", targetRow);
+            StructuralPatch.DefinedNameState after = definedNameState(name);
             if (projection != null && "workbook".equals(name.path("scope").asText())) {
                 JsonNode projectedFormula = projection.get(nameText);
                 if (projectedFormula != null) {
@@ -4443,7 +4452,12 @@ final class StructuralSnapshotReducer {
                     projection.put(nameText, mappedFormula);
                 }
             }
+            deltas.add(new StructuralPatch.DefinedNameOwnerDelta(
+                    new StructuralPatch.DefinedNameOwnerIdentity(before.scope(), before.name(), before.sheetId()),
+                    before,
+                    after));
         }
+        return List.copyOf(deltas);
     }
 
     private static void remapPermutationCellStyleTemplates(ArrayNode templates, String sheetId, RangeRef scope, int[] rowMap) {
