@@ -19,7 +19,6 @@ import java.util.Collection;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
@@ -38,12 +37,6 @@ import java.util.function.Function;
  */
 @Component
 public class MutationDescriptorRegistry {
-    private record FormulaOwnerMergeKey(String kind, String sheetId, Integer row, Integer column,
-            String ruleKind, String ruleId, String field, String ownerKind, String ownerId,
-            String fieldId, String viewId, String templateId) { }
-
-    private record DefinedNameMergeKey(String scope, String normalizedName, String sheetId) { }
-
     public record StructuralPatchMigrationReplay(JsonNode snapshot, List<Optional<StructuralPatch>> structuralPatches) {
         public StructuralPatchMigrationReplay {
             if (snapshot == null || snapshot.isNull() || structuralPatches == null) {
@@ -343,11 +336,11 @@ public class MutationDescriptorRegistry {
         if (inverse == null) return generated;
         List<StructuralPatch.FormulaOwnerDelta> deltas = mergeOwnerDeltas(
                 generated.formulaOwnerDeltas(), inverse.formulaOwnerDeltas(),
-                MutationDescriptorRegistry::formulaOwnerMergeKey,
+                StructuralPatch::formulaOwnerKey,
                 "STRUCTURAL_PATCH_CONFLICT: inverse and reducer patches disagree for one formula owner");
         List<StructuralPatch.DefinedNameOwnerDelta> definedNameDeltas = mergeOwnerDeltas(
                 generated.definedNameOwnerDeltas(), inverse.definedNameOwnerDeltas(),
-                MutationDescriptorRegistry::definedNameMergeKey,
+                StructuralPatch::definedNameOwnerKey,
                 "STRUCTURAL_PATCH_CONFLICT: inverse and reducer patches disagree for one defined-name owner");
         return new StructuralPatch(StructuralPatch.VERSION, mutationId, deltas, definedNameDeltas);
     }
@@ -382,37 +375,6 @@ public class MutationDescriptorRegistry {
             if (inverseByOwner.remove(ownerKey.apply(candidate)) != null) merged.add(candidate);
         }
         return merged;
-    }
-
-    private static DefinedNameMergeKey definedNameMergeKey(StructuralPatch.DefinedNameOwnerDelta delta) {
-        StructuralPatch.DefinedNameOwnerIdentity owner = delta.owner();
-        return new DefinedNameMergeKey(owner.scope(), owner.name().toUpperCase(Locale.ROOT), owner.sheetId());
-    }
-
-    private static FormulaOwnerMergeKey formulaOwnerMergeKey(StructuralPatch.FormulaOwnerDelta delta) {
-        return switch (delta.kind()) {
-            case "formula-cell" -> {
-                StructuralPatch.CellAddress address = delta.afterAddress();
-                yield new FormulaOwnerMergeKey(delta.kind(), address.sheetId(), address.row(), address.column(),
-                        null, null, null, null, null, null, null, null);
-            }
-            case "formula-rule" -> new FormulaOwnerMergeKey(delta.kind(), delta.sheetId(), null, null,
-                    delta.ruleKind(), delta.ruleId(), delta.field(), null, null, null, null, null);
-            case "formula-object" -> switch (delta.ownerKind()) {
-                case "chart-text" -> new FormulaOwnerMergeKey(delta.kind(), delta.sheetId(), null, null,
-                        null, null, delta.field(), delta.ownerKind(), delta.ownerId(), null, null, null);
-                case "shape-property" -> new FormulaOwnerMergeKey(delta.kind(), delta.sheetId(), null, null,
-                        null, null, null, delta.ownerKind(), delta.ownerId(), null, null, null);
-                case "table-sheet-column" -> new FormulaOwnerMergeKey(delta.kind(), delta.sheetId(), null, null,
-                        null, null, null, delta.ownerKind(), null, delta.fieldId(), null, null);
-                case "data-view-field" -> new FormulaOwnerMergeKey(delta.kind(), null, null, null,
-                        null, null, null, delta.ownerKind(), null, delta.fieldId(), delta.viewId(), null);
-                case "cell-style-template" -> new FormulaOwnerMergeKey(delta.kind(), null, null, null,
-                        null, null, delta.field(), delta.ownerKind(), null, null, null, delta.templateId());
-                default -> throw new IllegalArgumentException("Unsupported structural formula-object owner identity");
-            };
-            default -> throw new IllegalArgumentException("Unsupported structural formula owner identity");
-        };
     }
 
     public JsonNode applyStructuralPatch(JsonNode snapshot, StructuralPatch patch) {

@@ -19,10 +19,10 @@ public record StructuralPatch(
 ) {
     public static final int VERSION = 3;
 
-    private record FormulaOwnerKey(String kind, String sheetId, Integer row, Integer column,
+    public record FormulaOwnerKey(String kind, String sheetId, Integer row, Integer column,
             String ruleKind, String ruleId, String field, String ownerKind, String ownerId,
             String fieldId, String viewId, String templateId) { }
-    private record DefinedNameOwnerKey(String scope, String normalizedName, String sheetId) { }
+    public record DefinedNameOwnerKey(String scope, String normalizedName, String sheetId) { }
 
     @JsonCreator
     public StructuralPatch {
@@ -34,23 +34,37 @@ public record StructuralPatch(
         definedNameOwnerDeltas = List.copyOf(definedNameOwnerDeltas);
         Set<FormulaOwnerKey> ownerKeys = new HashSet<>();
         for (FormulaOwnerDelta delta : formulaOwnerDeltas) {
-            FormulaOwnerKey key = "formula-cell".equals(delta.kind())
-                    ? new FormulaOwnerKey(delta.kind(), delta.afterAddress().sheetId(), delta.afterAddress().row(),
-                            delta.afterAddress().column(), null, null, null, null, null, null, null, null)
-                    : "formula-rule".equals(delta.kind())
-                            ? new FormulaOwnerKey(delta.kind(), delta.sheetId(), null, null,
-                                    delta.ruleKind(), delta.ruleId(), delta.field(), null, null, null, null, null)
-                            : new FormulaOwnerKey(delta.kind(), delta.sheetId(), null, null,
-                                    null, null, delta.field(), delta.ownerKind(), delta.ownerId(),
-                                    delta.fieldId(), delta.viewId(), delta.templateId());
+            FormulaOwnerKey key = formulaOwnerKey(delta);
             if (!ownerKeys.add(key)) throw new IllegalArgumentException("StructuralPatch contains duplicate formula owner deltas");
         }
         Set<DefinedNameOwnerKey> definedNameKeys = new HashSet<>();
         for (DefinedNameOwnerDelta delta : definedNameOwnerDeltas) {
-            DefinedNameOwnerIdentity owner = delta.owner();
-            DefinedNameOwnerKey key = new DefinedNameOwnerKey(owner.scope(), owner.name().toUpperCase(Locale.ROOT), owner.sheetId());
+            DefinedNameOwnerKey key = definedNameOwnerKey(delta);
             if (!definedNameKeys.add(key)) throw new IllegalArgumentException("StructuralPatch contains duplicate defined-name owner deltas");
         }
+    }
+
+    public static FormulaOwnerKey formulaOwnerKey(FormulaOwnerDelta delta) {
+        if (delta == null) throw new IllegalArgumentException("StructuralPatch formula owner delta is required");
+        return switch (delta.kind()) {
+            case "formula-cell" -> {
+                CellAddress address = delta.afterAddress();
+                yield new FormulaOwnerKey(delta.kind(), address.sheetId(), address.row(), address.column(),
+                        null, null, null, null, null, null, null, null);
+            }
+            case "formula-rule" -> new FormulaOwnerKey(delta.kind(), delta.sheetId(), null, null,
+                    delta.ruleKind(), delta.ruleId(), delta.field(), null, null, null, null, null);
+            case "formula-object" -> new FormulaOwnerKey(delta.kind(), delta.sheetId(), null, null,
+                    null, null, delta.field(), delta.ownerKind(), delta.ownerId(),
+                    delta.fieldId(), delta.viewId(), delta.templateId());
+            default -> throw new IllegalArgumentException("Unsupported StructuralPatch formula owner kind");
+        };
+    }
+
+    public static DefinedNameOwnerKey definedNameOwnerKey(DefinedNameOwnerDelta delta) {
+        if (delta == null) throw new IllegalArgumentException("StructuralPatch defined-name owner delta is required");
+        DefinedNameOwnerIdentity owner = delta.owner();
+        return new DefinedNameOwnerKey(owner.scope(), owner.name().toUpperCase(Locale.ROOT), owner.sheetId());
     }
 
     public StructuralPatch(int version, String mutationId, List<FormulaOwnerDelta> formulaOwnerDeltas) {

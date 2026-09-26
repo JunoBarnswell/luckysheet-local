@@ -1,11 +1,14 @@
 package com.xc.luckysheet.server.mutation;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.xc.luckysheet.server.contract.RangeRef;
 import com.xc.luckysheet.server.contract.StructuralPatch;
 import com.xc.luckysheet.server.service.ServiceException;
 import org.junit.jupiter.api.Test;
 
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -78,6 +81,17 @@ class StructuralPatchMergeTest {
                 patch("rows.inserted", List.of(), List.of(inverseDelta))));
 
         assertEquals("CONFLICT", error.code());
+    }
+
+    @Test
+    void canonicalIdentityHelpersDoNotChangeStructuralPatchWireShape() {
+        ObjectMapper mapper = new ObjectMapper();
+        StructuralPatch patch = patch("rows.inserted", List.of(), List.of());
+
+        Set<String> fields = new HashSet<>();
+        mapper.valueToTree(patch).fieldNames().forEachRemaining(fields::add);
+
+        assertEquals(Set.of("version", "mutationId", "formulaOwnerDeltas", "definedNameOwnerDeltas"), fields);
     }
 
     private static StructuralPatch patch(String mutationId, List<StructuralPatch.FormulaOwnerDelta> formulas,

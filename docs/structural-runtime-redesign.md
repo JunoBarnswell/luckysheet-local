@@ -1363,15 +1363,15 @@ PR 上两个 `canonical-build` job 使用相同 head，前端依赖安装与前�
 
 本轮沿 undo/redo 服务链静态跟进 `WorkbookOperationService.commitInternal → MutationDescriptorRegistry.mergeStructuralPatches`。当 reducer 与 undo inverse 都有 owner facts 时，旧实现对每个 inverse formula/name owner 用 stream 从头扫描已生成列表；两边各有 `F`、`I` 个 owner 时，身份比较上界为 `O(F×I)`。Formula-owner deltas 可能随大范围公式引用变换增长，因此这是可由代码路径直接确认的 CPU 放大点，不是基准测试推断。
 
-将 owner 合并改为类型化身份 key 的索引查找，期望比较成本为 `O(F+I)`；临时索引建在两侧较小的列表上，为 `O(min(F,I))`，任一侧为空则不建索引。输出仍按原生成 delta 顺序，再接 inverse-only owners 的原始顺序；同一 owner 的完全相同事实去重，冲突仍以 `CONFLICT` fail-close。formula-cell 按 after address、formula-rule 按 sheet/kind/id/field、五类 formula-object 按各自稳定 ID 组合、defined-name 按 scope + `Locale.ROOT` 大小写折叠 + sheet ID 建 key；这些规则对照 `StructuralPatch` 的重复 owner 校验和旧比较器逐项核对。无 wire/schema/history 变更。
+将 owner 合并改为类型化身份 key 的索引查找，期望比较成本为 `O(F+I)`；临时索引建在两侧较小的列表上，为 `O(min(F,I))`，任一侧为空则不建索引。输出仍按原生成 delta 顺序，再接 inverse-only owners 的原始顺序；同一 owner 的完全相同事实去重，冲突仍以 `CONFLICT` fail-close。formula-cell 按 after address、formula-rule 按 sheet/kind/id/field、五类 formula-object 按各自稳定 ID 组合、defined-name 按 scope + `Locale.ROOT` 大小写折叠 + sheet ID 建 key。随后一次架构自审发现 identity 曾在 patch 构造验证和 merge 两处重复定义；现在由 `StructuralPatch.formulaOwnerKey/definedNameOwnerKey` 单点产生，重复校验与合并共同消费，新增 owner 不再需要维护第二套身份 comparator。仅 Java 内部 API 增加 identity helper 类型/方法，不改 wire/schema/history。
 
 六轮静态自审：
 
 1. **根因与调用量**：检查 commit、committed replay、migration replay 三个调用点；只有 generated 与 inverse 同时非空才执行交叉匹配，线性扫描被替换为散列表查找。
 2. **公式 cell 身份**：核对旧 comparator 与 `StructuralPatch` uniqueness key 都以 after address 标识同一目标 owner；保留同地址不同事实的冲突拒绝。
-3. **规则与对象身份**：逐项比对 formula-rule 及 chart-text、shape-property、table-sheet-column、data-view-field、cell-style-template key 字段；新增回归源码覆盖全部类别和同图表不同字段。
+3. **规则与对象身份**：逐项比对 formula-rule 及 chart-text、shape-property、table-sheet-column、data-view-field、cell-style-template key 字段；身份只在 `StructuralPatch.formulaOwnerKey` 定义，patch 构造器去重和 registry 合并共同调用；新增回归源码覆盖全部类别和同图表不同字段。
 4. **defined-name 身份**：scope 与 sheet scope 必须区分；名称仅允许 ASCII 标识符，`Locale.ROOT` 大小写归一与原 `equalsIgnoreCase` 语义一致；同名不同大小写但事实不一致仍拒绝。
 5. **输出契约**：较小侧建索引时仍先校验所有交集，再按 inverse 输入顺序追加未匹配项；不从 HashMap 迭代生成 wire 列表，避免 nondeterministic ordering。
-6. **分配与边界**：空侧走无索引路径，非空时索引空间随较小输入线性增长；成功合并与公式冲突、大小写名称冲突的测试源码已新增。未运行测试/build，仅执行静态审查和 `git diff --check`，不能据此宣称 wall-clock 加速。
+6. **分配与边界**：空侧走无索引路径，非空时索引空间随较小输入线性增长；成功合并、公式冲突、大小写名称冲突及 StructuralPatch wire field 集合不变的测试源码已新增。未运行测试/build，仅执行静态审查和 `git diff --check`，不能据此宣称 wall-clock 加速。
 
 本轮只确认并修复这一项二次复杂度根因，不把 owner 类型、key 字段或测试断言拆成多个 bug。大型 structural patch 的实测 CPU/heap 仍待最终验收；完整 Java planner、客户端 intent-first、精确历史 patch、协作与 OOXML 消费仍未完成。
