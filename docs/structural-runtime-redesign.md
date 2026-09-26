@@ -31,6 +31,29 @@ This redesign covers axis and cell insert/delete, move/copy/cut/paste, fill, dra
 
 This PR slice fixes statically confirmed server regressions and connects row permutation to exact incremental formula-input synchronization. No local build or test was run in this slice; repository CI remains the external verification source.
 
+## 2026-09-26 continuation — local-only structural gate
+
+### Confirmed issue and scoped repair
+
+`WorkbookSession` previously rejected mutations only when `localOnly` was false and `remoteConnected` was false. That condition therefore allowed local-only workbooks to execute address-changing structural mutations through the TypeScript reducers, despite the user's decision that Java owns structural planning and may be required online. The continuation adds generated contract sets for 27 planner-sensitive mutation IDs and 32 corresponding command IDs. The command gate rejects before context resolution/reducer execution, `canExecute` reports those commands unavailable offline, and the central mutation guard provides a second check for compound/history paths. The changes are committed to PR #345 as `21e43340` and `72d516e3`; test-only session fixtures explicitly model transport-ready state and do not claim to exercise Java planning.
+
+### End-to-end authority gap remains open
+
+The source chain is still: `WorkbookSession.runCommand` → `CommandRuntime.execute` applies the TypeScript mutation → runtime mutation/command listeners capture its `MutationInfo` → `CollaborationSession.enqueueLocalMutations` creates an envelope containing mutation IDs and params → `WorkbookApiClient.commitOperation` sends it → `WorkbookOperationService.commitInternal` runs Java reducers and stores the committed operation. The committed structural patch currently carries formula/defined-name owner deltas, not complete cell and metadata after-facts. Own-client acknowledgement therefore reconciles those deltas against the already-mutated TS model; another client replays the committed intent through its TS reducer. Server persistence is authoritative, but structural planning and replay are not Java-only.
+
+The required next slice is not another availability check: it must establish an intent-first transaction boundary and complete, reversible cell/metadata/reference facts produced by Java, then make local apply, undo/redo, remote replay, persistence, and OOXML consume those facts without independently rerunning structural transforms. Until that contract is implemented, the user-approved single-Java-planner objective remains incomplete.
+
+### Six static review lenses and evidence
+
+1. **Contract coverage**: generator checks uniqueness and canonical permission ownership; a Java regression requires every classified mutation to resolve to a registered reducer. Static source comparison found all 27 IDs in the Java registry ID set.
+2. **Command ordering**: planner commands are rejected before parameter-context resolution; the mutation guard remains before each mutation's `apply` for callers or compound commands outside the explicit command list.
+3. **History**: undo/redo invoke mutation-guard preflight; offline structural history therefore rejects before replay. Successful remote committed replay is intentionally exempt from the local service-availability gate.
+4. **Atomic rejection**: command runtime rolls back already-applied mutations if a later step fails; the new simple rejection regression checks unchanged model snapshot and history depth. Those new regressions were not run locally.
+5. **UI state and test scope**: all 32 direct command IDs return unavailable from `canExecute` while offline; the test fixture only toggles runtime transport flags and is explicitly not a live service test. A direct `runtime.commands.execute('sheet.add')` test call was included in the fixture audit.
+6. **Architecture and acceptance**: the online path still executes a TS reducer first, as the end-to-end trace above demonstrates. Contract generation and `git diff --check` passed; both PR `canonical-build` checks passed on head `72d516e3`. The app/browser remains gated by the previously observed `/api/auth/config` 500, and native Excel round-trip/performance acceptance remain outstanding.
+
+This pass confirms one local-only structural-editing root cause; the 27/32 contract coverage counts are not defect counts and do not satisfy the requested 30-distinct-issue batch. No same-root symptoms were double-counted.
+
 ## Incremental worksheet rename calculation path
 
 The rename plan returns the exact formula-cell owners whose cell formula, preserved formula provenance, or barcode formula changed. Runtime updates the FormulaEngine's sheet-name identity table in place, then routes those owners through the same incremental input/index synchronization used by structural transforms. If a cell formula owner or defined-name formula already refers to the proposed new sheet name, rename retains the full context rebuild: that previously unresolved reference can become valid even though its formula text is unchanged. Worksheet add/remove/reorder retain their existing rebuild boundary because their address-space or 3D-reference semantics differ.
