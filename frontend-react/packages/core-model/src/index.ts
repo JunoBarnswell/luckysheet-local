@@ -212,6 +212,14 @@ export interface CellData {
   };
 }
 
+/** Apply the canonical model normalization shared by CellMatrix writes and structural preflight. */
+export function normalizeCellDataForStorage(cell: CellData): CellData {
+  const fontFamily = cell.style?.fontFamily;
+  return fontFamily === undefined
+    ? cell
+    : { ...cell, style: { ...cell.style, fontFamily: normalizeFontFamily(fontFamily) } };
+}
+
 export type { CellPhoneticMetadata, PhoneticAlignment, PhoneticRun, PhoneticType } from './phonetic';
 export { isCellPhoneticMetadata } from './phonetic';
 
@@ -1130,11 +1138,7 @@ export class CellMatrix {
   }
 
   set(row: Row, column: Column, cell: CellData): void {
-    const fontFamily = cell.style?.fontFamily;
-    const normalizedCell = fontFamily === undefined
-      ? cell
-      : { ...cell, style: { ...cell.style, fontFamily: normalizeFontFamily(fontFamily) } };
-    this.writeNormalizedCell(row, column, normalizedCell);
+    this.writeNormalizedCell(row, column, normalizeCellDataForStorage(cell));
   }
 
   private writeNormalizedCell(row: Row, column: Column, cell: CellData): void {

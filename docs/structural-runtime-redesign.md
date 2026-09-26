@@ -1429,3 +1429,11 @@ PR 上两个 `canonical-build` job 使用相同 head，前端依赖安装与前�
 此外，`applyRemote` 已先完整校验 committed envelope，再走不重复校验的内部 patch 应用路径，避免大型 patch 被全量做两遍协议验证。以上按独立根因计 **6 项修复**；不把正常/恢复两个入口、公式/name 两类 delta 或各个队列查询逐一拆数凑成 30。完整 intent-first planner、非空 ACK patch 的 affected-owner-only 预检、owner-complete history/OT/Java/OOXML 仍未完成，本目标继续 active，PR 继续 draft。
 
 新增 ACK success/rejection 与 queue isolation/batch persistence 测试源码；按当前静态阶段要求，未运行本地 tests/build/lint/typecheck/browser。仅允许 `git diff --check` 静态检查；无 schema 或数据迁移。最终仍需 PR CI、真实浏览器协同、原生 Excel 文件往返及 CPU/heap 基准，不能用源码复杂度推导替代实测。
+
+### Follow-up — 非空 ACK owner patch 稀疏预检（2026-09-26）
+
+继续上一节未解决的性能项：非空 server-owned patch 原先为了批量失败原子性复制整个 workbook，再在副本上应用 owner deltas；其额外时间和峰值内存随工作簿总模型规模增长，而不是仅随 patch 规模增长。现改为公式 cell/rule/object 与 defined-name 的稀疏状态 overlay，按 owner identity 顺序模拟 before/after；不再调用 `snapshot()` / `fromSnapshot()`。预检和实际 formula-cell 写入共用同一状态转换，CellMatrix 与预检也共用 canonical cell-storage normalizer；defined name 在写入前使用同一规范化校验。规则 owner 的定位暂仍按所属规则数组扫描，因此这项变更只去掉 workbook 级复制，不宣称每条 lookup 都是 O(1) 或整体已达 affected-only。
+
+六轮静态复核：1) 预检不再随无关 sheets/cells 的 workbook snapshot 扩张；2) overlay 顺序与实际 item/delta 顺序一致，重复 owner 使用同一 staged state；3) formula、provenance、barcode、formulaValue 清理及字体规范化与真实 CellMatrix 写入共用准备路径；4) rule owner 仍要求唯一 identity 与精确 after-ranges；5) formula-object precondition 必须先读到 before/after 中一个有效字符串，避免写入时 owner 消失；6) defined-name anchor/identity 经规范化后再进入 overlay，且拒绝路径在 live 写入前完成。确认并修复 **1 个独立根因**：非空 ACK patch 的全 workbook 预检副本。没有把 cell/rule/object 或多入口拆成问题数；30 个问题的规模目标不据此虚报。
+
+新增源码回归覆盖：成功的多 owner patch 不得调用 `snapshot()`；第二个 owner precondition 失败时首个 owner 不得变化；owner 状态合法但 cell storage normalization 失败时也不得部分写入。按静态优先指令未执行本地测试/build/lint/typecheck/browser；`git diff --check` 通过。尚无该新 head 的 CI 结果、浏览器协同实测、原生 Excel 往返或 CPU/heap benchmark。无 schema/data/protocol migration；失败仍 fail-close，回滚方式为整体 revert 本 follow-up。

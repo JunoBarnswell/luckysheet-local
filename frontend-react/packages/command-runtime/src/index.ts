@@ -1,4 +1,4 @@
-import { WorkbookModel, isWorkbookCalculationContextEffect, readChartTextFormula, structuralRuleFormulaFields, writeChartTextFormula, type CellData, type ConditionalFormatRule, type DataValidationRule, type ProtectionAction, type RangeRef, type StructuralDefinedNameOwnerDelta, type StructuralFormulaOwnerDelta, type StructuralFormulaOwnerState, type StructuralFormulaRule, type StructuralReferenceOwnerIndex, type WorkbookCalculationContextEffect, type WorksheetModel } from '@react-sheets/core-model';
+import { WorkbookModel, isWorkbookCalculationContextEffect, normalizeCellDataForStorage, normalizeDefinedNameModel, readChartTextFormula, structuralRuleFormulaFields, writeChartTextFormula, type CellData, type ConditionalFormatRule, type DataValidationRule, type ProtectionAction, type RangeRef, type StructuralDefinedNameOwnerDelta, type StructuralFormulaOwnerDelta, type StructuralFormulaOwnerState, type StructuralFormulaRule, type StructuralReferenceOwnerIndex, type WorkbookCalculationContextEffect, type WorksheetModel } from '@react-sheets/core-model';
 import { collectFormulaDependencies, collectFormulaReferenceNodes, formatFormula, mapAstStructuralReferences, parseFormula, RangeIndex, ReferenceTransformDomain, MAX_COLUMN_INDEX, MAX_ROW_INDEX, type FormulaRuleReferenceFailureReason, type FormulaRuleReferenceOwnerIdentity } from '@react-sheets/formula-engine';
 
 export interface MutationInfo<P = unknown> {
@@ -1330,11 +1330,7 @@ export class CommandRuntime {
       }
     }
 
-    const preview = WorkbookModel.fromSnapshot(this.workbook.snapshot());
-    for (const item of patched) {
-      for (const delta of item.structuralFormulaOwnerDeltas ?? []) applyFormulaOwnerDelta(preview, delta, 'forward');
-      for (const delta of item.structuralDefinedNameOwnerDeltas ?? []) applyDefinedNameOwnerDelta(preview, delta, 'forward');
-    }
+    preflightCommittedStructuralPatches(this.workbook, patched);
 
     for (const item of patched) {
       const formulaDeltas = item.structuralFormulaOwnerDeltas ?? [];
@@ -1613,6 +1609,151 @@ function sameFormulaOwnerState(left: StructuralFormulaOwnerState, right: Structu
     && left.barcodeFormula === right.barcodeFormula;
 }
 
+function prepareFormulaCellOwnerUpdate(
+  cell: CellData,
+  delta: Extract<StructuralFormulaOwnerDelta, { kind: 'formula-cell' }>,
+  direction: 'undo' | 'forward',
+): CellData | undefined {
+  const expected = direction === 'undo' ? delta.after : delta.before;
+  const target = direction === 'undo' ? delta.before : delta.after;
+  const current = formulaOwnerState(cell);
+  if (sameFormulaOwnerState(current, target)) {
+    if (target.formula === null || cell.formulaValue === undefined) return undefined;
+    const next = { ...cell };
+    delete next.formulaValue;
+    return normalizeCellDataForStorage(next);
+  }
+  const { sheetId, row, column } = direction === 'undo' ? delta.beforeAddress : delta.afterAddress;
+  if (!sameFormulaOwnerState(current, expected)) {
+    throw new Error(`STRUCTURAL_PATCH_PRECONDITION: formula owner ${sheetId}!${row}:${column} changed since the structural operation`);
+  }
+
+  const next: CellData = { ...cell };
+  if (target.formula === null) delete next.formula;
+  else next.formula = target.formula;
+  if (target.formula !== null) delete next.formulaValue;
+  if (target.sourceFormula === null) {
+    if (next.formulaMetadata) {
+      const metadata = { ...next.formulaMetadata };
+      delete metadata.sourceFormula;
+      next.formulaMetadata = metadata;
+    }
+  } else {
+    if (!next.formulaMetadata) {
+      throw new Error(`STRUCTURAL_PATCH_INVARIANT: formula provenance owner ${sheetId}!${row}:${column} changed type`);
+    }
+    next.formulaMetadata = { ...next.formulaMetadata, sourceFormula: target.sourceFormula };
+  }
+  if (target.barcodeFormula !== null) {
+    if (next.presentation?.kind !== 'barcode' || next.presentation.source.kind !== 'formula') {
+      throw new Error(`STRUCTURAL_PATCH_INVARIANT: barcode formula owner ${sheetId}!${row}:${column} changed type`);
+    }
+    next.presentation = { ...next.presentation, source: { ...next.presentation.source, formula: target.barcodeFormula } };
+  } else if (current.barcodeFormula !== null && expected.barcodeFormula !== null) {
+    throw new Error(`STRUCTURAL_PATCH_INVARIANT: barcode formula owner ${sheetId}!${row}:${column} cannot be removed by a reference delta`);
+  }
+  return normalizeCellDataForStorage(next);
+}
+
+type FormulaPatchState =
+  | { readonly kind: 'formula-cell'; readonly cell: CellData }
+  | { readonly kind: 'formula-rule'; readonly formula: string | undefined; readonly ranges: readonly RangeRef[] }
+  | { readonly kind: 'formula-object'; readonly formula: string | undefined };
+
+function formulaOwnerPatchKey(delta: StructuralFormulaOwnerDelta): string {
+  if (delta.kind === 'formula-cell') {
+    const { sheetId, row, column } = delta.afterAddress;
+    return JSON.stringify(['formula-cell', sheetId, row, column]);
+  }
+  if (delta.kind === 'formula-rule') return JSON.stringify(['formula-rule', delta.sheetId, delta.ruleKind, delta.ruleId, delta.field]);
+  switch (delta.ownerKind) {
+    case 'chart-text': return JSON.stringify([delta.kind, delta.ownerKind, delta.sheetId, delta.payloadId, delta.field]);
+    case 'shape-property': return JSON.stringify([delta.kind, delta.ownerKind, delta.sheetId, delta.payloadId]);
+    case 'table-sheet-column': return JSON.stringify([delta.kind, delta.ownerKind, delta.sheetId, delta.fieldId]);
+    case 'data-view-field': return JSON.stringify([delta.kind, delta.ownerKind, delta.viewId, delta.fieldId]);
+    case 'cell-style-template': return JSON.stringify([delta.kind, delta.ownerKind, delta.templateId, delta.field]);
+  }
+}
+
+function readFormulaRulePatchState(workbook: WorkbookModel, delta: Extract<StructuralFormulaOwnerDelta, { kind: 'formula-rule' }>): FormulaPatchState {
+  const sheet = workbook.getSheet(delta.sheetId);
+  const rules = delta.ruleKind === 'conditional-format' ? sheet.conditionalFormats : sheet.dataValidations;
+  const matches = rules.filter((rule) => rule.id === delta.ruleId && rule.sheetId === delta.sheetId);
+  if (matches.length !== 1) {
+    throw new Error(`STRUCTURAL_PATCH_PRECONDITION: expected one ${delta.ruleKind} rule ${delta.sheetId}:${delta.ruleId}, found ${matches.length}`);
+  }
+  const rule = matches[0]!;
+  const conditionalFormat = delta.ruleKind === 'conditional-format' ? rule as ConditionalFormatRule : undefined;
+  const dataValidation = delta.ruleKind === 'data-validation' ? rule as DataValidationRule : undefined;
+  const formula = delta.field === 'value1' ? conditionalFormat?.value1
+    : delta.field === 'value2' ? conditionalFormat?.value2
+      : delta.field === 'formula1' ? dataValidation?.formula1
+        : delta.field === 'formula2' ? dataValidation?.formula2
+          : dataValidation?.listSource?.kind === 'formula' ? dataValidation.listSource.formula : undefined;
+  return { kind: 'formula-rule', formula, ranges: rule.ranges };
+}
+
+function readFormulaPatchState(workbook: WorkbookModel, delta: StructuralFormulaOwnerDelta): FormulaPatchState {
+  if (delta.kind === 'formula-rule') return readFormulaRulePatchState(workbook, delta);
+  if (delta.kind === 'formula-object') return { kind: 'formula-object', formula: readFormulaObjectOwner(workbook, delta) };
+  const { sheetId, row, column } = delta.afterAddress;
+  const cell = workbook.getSheet(sheetId).cells.getWithoutHydration(row, column);
+  if (!cell) throw new Error(`STRUCTURAL_PATCH_PRECONDITION: formula owner ${sheetId}!${row}:${column} is missing after inverse`);
+  return { kind: 'formula-cell', cell };
+}
+
+function preflightCommittedStructuralPatches(workbook: WorkbookModel, items: readonly MutationInfo[]): void {
+  const formulaStates = new Map<string, FormulaPatchState>();
+  const definedNameStates = new Map<string, ReturnType<WorkbookModel['getDefinedNameExact']>>();
+  for (const item of items) {
+    for (const delta of item.structuralFormulaOwnerDeltas ?? []) {
+      const key = formulaOwnerPatchKey(delta);
+      const state = formulaStates.get(key) ?? readFormulaPatchState(workbook, delta);
+      if (delta.kind === 'formula-cell') {
+        if (state.kind !== 'formula-cell') throw new Error('STRUCTURAL_PATCH_INVARIANT: formula-cell owner key collision');
+        const nextCell = prepareFormulaCellOwnerUpdate(state.cell, delta, 'forward');
+        formulaStates.set(key, { kind: 'formula-cell', cell: nextCell ?? state.cell });
+        continue;
+      }
+      if (delta.kind === 'formula-rule') {
+        if (state.kind !== 'formula-rule') throw new Error('STRUCTURAL_PATCH_INVARIANT: formula-rule owner key collision');
+        if (JSON.stringify(state.ranges) !== JSON.stringify(delta.afterRanges)) {
+          throw new Error(`STRUCTURAL_PATCH_PRECONDITION: ${delta.ruleKind} rule ${delta.sheetId}:${delta.ruleId}.${delta.field} changed since the structural operation`);
+        }
+        if (state.formula !== delta.afterFormula && state.formula !== delta.beforeFormula) {
+          throw new Error(`STRUCTURAL_PATCH_PRECONDITION: ${delta.ruleKind} rule ${delta.sheetId}:${delta.ruleId}.${delta.field} changed since the structural operation`);
+        }
+        formulaStates.set(key, { kind: 'formula-rule', formula: delta.afterFormula, ranges: delta.afterRanges });
+        continue;
+      }
+      if (state.kind !== 'formula-object') throw new Error('STRUCTURAL_PATCH_INVARIANT: formula-object owner key collision');
+      if (state.formula !== delta.afterFormula && state.formula !== delta.beforeFormula) {
+        const ownerIdentity = delta.ownerKind === 'data-view-field'
+          ? `${delta.viewId}:${delta.fieldId}`
+          : delta.ownerKind === 'cell-style-template'
+            ? `${delta.templateId}.${delta.field}`
+            : delta.ownerKind === 'table-sheet-column'
+              ? `${delta.sheetId}:${delta.fieldId}`
+              : `${delta.sheetId}:${delta.payloadId}`;
+        throw new Error(`STRUCTURAL_PATCH_PRECONDITION: ${delta.ownerKind} formula owner ${ownerIdentity} changed since the structural operation`);
+      }
+      formulaStates.set(key, { kind: 'formula-object', formula: delta.afterFormula });
+    }
+    for (const delta of item.structuralDefinedNameOwnerDeltas ?? []) {
+      const key = JSON.stringify([
+        delta.owner.scope,
+        delta.owner.name.trim().toUpperCase(),
+        delta.owner.sheetId ?? null,
+      ]);
+      const current = definedNameStates.has(key)
+        ? definedNameStates.get(key)
+        : workbook.getDefinedNameExact(delta.owner.name, delta.owner.scope, delta.owner.sheetId);
+      const next = prepareDefinedNameOwnerUpdate(current, delta, 'forward');
+      definedNameStates.set(key, next ? normalizeDefinedNameModel(next) : current);
+    }
+  }
+}
+
 function definedNameStateMatches(
   current: ReturnType<WorkbookModel['getDefinedNameExact']>,
   owner: StructuralDefinedNameOwnerDelta['owner'],
@@ -1636,23 +1777,32 @@ function definedNameStateMatches(
       && currentAnchor.column === targetAnchor.column;
 }
 
+function prepareDefinedNameOwnerUpdate(
+  current: ReturnType<WorkbookModel['getDefinedNameExact']>,
+  delta: StructuralDefinedNameOwnerDelta,
+  direction: 'undo' | 'forward',
+): ReturnType<WorkbookModel['getDefinedNameExact']> | undefined {
+  const expected = direction === 'undo' ? delta.after : delta.before;
+  const target = direction === 'undo' ? delta.before : delta.after;
+  if (definedNameStateMatches(current, delta.owner, target)) return undefined;
+  if (!definedNameStateMatches(current, delta.owner, expected)) {
+    throw new Error(`STRUCTURAL_PATCH_PRECONDITION: defined-name owner ${delta.owner.scope}:${delta.owner.sheetId ?? '*'}:${delta.owner.name} changed since the structural operation`);
+  }
+  return {
+    ...current!,
+    formula: target.formula,
+    anchor: target.anchor ? structuredClone(target.anchor) : undefined,
+  };
+}
+
 function applyDefinedNameOwnerDelta(
   workbook: WorkbookModel,
   delta: StructuralDefinedNameOwnerDelta,
   direction: 'undo' | 'forward',
 ): void {
   const current = workbook.getDefinedNameExact(delta.owner.name, delta.owner.scope, delta.owner.sheetId);
-  const expected = direction === 'undo' ? delta.after : delta.before;
-  const target = direction === 'undo' ? delta.before : delta.after;
-  if (definedNameStateMatches(current, delta.owner, target)) return;
-  if (!definedNameStateMatches(current, delta.owner, expected)) {
-    throw new Error(`STRUCTURAL_PATCH_PRECONDITION: defined-name owner ${delta.owner.scope}:${delta.owner.sheetId ?? '*'}:${delta.owner.name} changed since the structural operation`);
-  }
-  workbook.setDefinedName({
-    ...current!,
-    formula: target.formula,
-    anchor: target.anchor ? structuredClone(target.anchor) : undefined,
-  });
+  const next = prepareDefinedNameOwnerUpdate(current, delta, direction);
+  if (next) workbook.setDefinedName(next);
 }
 
 function readFormulaObjectOwner(workbook: WorkbookModel, delta: Extract<StructuralFormulaOwnerDelta, { kind: 'formula-object' }>): string | undefined {
@@ -1792,50 +1942,12 @@ function applyFormulaOwnerDelta(
     return;
   }
   const address = direction === 'undo' ? delta.beforeAddress : delta.afterAddress;
-  const expected = direction === 'undo' ? delta.after : delta.before;
-  const target = direction === 'undo' ? delta.before : delta.after;
   const { sheetId, row, column } = address;
   const sheet = workbook.getSheet(sheetId);
   const cell = sheet.cells.getWithoutHydration(row, column);
   if (!cell) throw new Error(`STRUCTURAL_PATCH_PRECONDITION: formula owner ${sheetId}!${row}:${column} is missing after inverse`);
-  const current = formulaOwnerState(cell);
-  if (sameFormulaOwnerState(current, target)) {
-    if (target.formula !== null && cell.formulaValue !== undefined) {
-      const next = { ...cell };
-      delete next.formulaValue;
-      if (!sheet.cells.replaceCellWithoutHydration(row, column, next)) {
-        throw new Error(`STRUCTURAL_PATCH_PRECONDITION: formula owner ${sheetId}!${row}:${column} is missing after inverse`);
-      }
-    }
-    return;
-  }
-  if (!sameFormulaOwnerState(current, expected)) {
-    throw new Error(`STRUCTURAL_PATCH_PRECONDITION: formula owner ${sheetId}!${row}:${column} changed since the structural operation`);
-  }
-  const next: CellData = { ...cell };
-  if (target.formula === null) delete next.formula;
-  else next.formula = target.formula;
-  if (target.formula !== null) delete next.formulaValue;
-  if (target.sourceFormula === null) {
-    if (next.formulaMetadata) {
-      const metadata = { ...next.formulaMetadata };
-      delete metadata.sourceFormula;
-      next.formulaMetadata = metadata;
-    }
-  } else {
-    if (!next.formulaMetadata) {
-      throw new Error(`STRUCTURAL_PATCH_INVARIANT: formula provenance owner ${sheetId}!${row}:${column} changed type`);
-    }
-    next.formulaMetadata = { ...next.formulaMetadata, sourceFormula: target.sourceFormula };
-  }
-  if (target.barcodeFormula !== null) {
-    if (next.presentation?.kind !== 'barcode' || next.presentation.source.kind !== 'formula') {
-      throw new Error(`STRUCTURAL_PATCH_INVARIANT: barcode formula owner ${sheetId}!${row}:${column} changed type`);
-    }
-    next.presentation = { ...next.presentation, source: { ...next.presentation.source, formula: target.barcodeFormula } };
-  } else if (current.barcodeFormula !== null && expected.barcodeFormula !== null) {
-    throw new Error(`STRUCTURAL_PATCH_INVARIANT: barcode formula owner ${sheetId}!${row}:${column} cannot be removed by a reference delta`);
-  }
+  const next = prepareFormulaCellOwnerUpdate(cell, delta, direction);
+  if (!next) return;
   if (!sheet.cells.replaceCellWithoutHydration(row, column, next)) {
     throw new Error(`STRUCTURAL_PATCH_PRECONDITION: formula owner ${sheetId}!${row}:${column} is missing after inverse`);
   }

@@ -415,6 +415,82 @@ test('CommandRuntime skips full workbook snapshot for empty committed structural
   workbook.snapshot = originalSnapshot;
 });
 
+test('CommandRuntime preflights committed owner patches without cloning the workbook', () => {
+  const workbook = new WorkbookModel('unit-sparse-structural-patch', 'Sparse structural patch');
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, { value: null, formula: '=A1' });
+  sheet.cells.set(1, 0, { value: null, formula: '=A2' });
+  const runtime = new CommandRuntime(workbook);
+  const delta = (row: number, before: string, after: string): StructuralFormulaOwnerDelta => ({
+    kind: 'formula-cell',
+    beforeAddress: { sheetId: sheet.id, row, column: 0 },
+    afterAddress: { sheetId: sheet.id, row, column: 0 },
+    before: { formula: before, sourceFormula: null, barcodeFormula: null },
+    after: { formula: after, sourceFormula: null, barcodeFormula: null },
+  });
+  const originalSnapshot = workbook.snapshot.bind(workbook);
+  workbook.snapshot = () => { throw new Error('owner patch preflight must not snapshot the workbook'); };
+
+  runtime.applyCommittedStructuralPatches('sparse-patch', [{
+    id: 'rows.inserted',
+    unitId: workbook.unitId,
+    sheetId: sheet.id,
+    params: { sheetId: sheet.id, at: 0, count: 1 },
+    affectedRanges: [],
+    structuralFormulaOwnerDeltas: [delta(0, '=A1', '=B1'), delta(1, '=A2', '=B2')],
+  }], 1);
+  workbook.snapshot = originalSnapshot;
+  assert.equal(sheet.cells.get(0, 0)?.formula, '=B1');
+  assert.equal(sheet.cells.get(1, 0)?.formula, '=B2');
+
+  const rejectedWorkbook = new WorkbookModel('unit-sparse-structural-patch-rejected', 'Rejected sparse patch');
+  const rejectedSheet = rejectedWorkbook.getSheet(rejectedWorkbook.primarySheetId);
+  rejectedSheet.cells.set(0, 0, { value: null, formula: '=A1' });
+  rejectedSheet.cells.set(1, 0, { value: null, formula: '=Wrong' });
+  const rejectedRuntime = new CommandRuntime(rejectedWorkbook);
+  const before = rejectedWorkbook.snapshot();
+  const rejectedDelta = (row: number, expected: string, target: string): StructuralFormulaOwnerDelta => ({
+    kind: 'formula-cell',
+    beforeAddress: { sheetId: rejectedSheet.id, row, column: 0 },
+    afterAddress: { sheetId: rejectedSheet.id, row, column: 0 },
+    before: { formula: expected, sourceFormula: null, barcodeFormula: null },
+    after: { formula: target, sourceFormula: null, barcodeFormula: null },
+  });
+  assert.throws(() => rejectedRuntime.applyCommittedStructuralPatches('rejected-patch', [{
+    id: 'rows.inserted',
+    unitId: rejectedWorkbook.unitId,
+    sheetId: rejectedSheet.id,
+    params: { sheetId: rejectedSheet.id, at: 0, count: 1 },
+    affectedRanges: [],
+    structuralFormulaOwnerDeltas: [rejectedDelta(0, '=A1', '=B1'), rejectedDelta(1, '=A2', '=B2')],
+  }], 1), /STRUCTURAL_PATCH_PRECONDITION/);
+  assert.deepEqual(rejectedWorkbook.snapshot(), before);
+
+  const normalizationWorkbook = new WorkbookModel('unit-sparse-structural-normalization', 'Invalid formula cell style');
+  const normalizationSheet = normalizationWorkbook.getSheet(normalizationWorkbook.primarySheetId);
+  normalizationSheet.cells.set(0, 0, { value: null, formula: '=A1' });
+  normalizationSheet.cells.set(1, 0, { value: null, formula: '=A2' });
+  normalizationSheet.cells.getWithoutHydration(1, 0)!.style = { fontFamily: '' };
+  const normalizationRuntime = new CommandRuntime(normalizationWorkbook);
+  const normalizationBefore = normalizationWorkbook.snapshot();
+  const normalizationDelta = (row: number, formula: string): StructuralFormulaOwnerDelta => ({
+    kind: 'formula-cell',
+    beforeAddress: { sheetId: normalizationSheet.id, row, column: 0 },
+    afterAddress: { sheetId: normalizationSheet.id, row, column: 0 },
+    before: { formula, sourceFormula: null, barcodeFormula: null },
+    after: { formula: `${formula}*2`, sourceFormula: null, barcodeFormula: null },
+  });
+  assert.throws(() => normalizationRuntime.applyCommittedStructuralPatches('normalization-rejected-patch', [{
+    id: 'rows.inserted',
+    unitId: normalizationWorkbook.unitId,
+    sheetId: normalizationSheet.id,
+    params: { sheetId: normalizationSheet.id, at: 0, count: 1 },
+    affectedRanges: [],
+    structuralFormulaOwnerDeltas: [normalizationDelta(0, '=A1'), normalizationDelta(1, '=A2')],
+  }], 1), /Font family must not be empty/);
+  assert.deepEqual(normalizationWorkbook.snapshot(), normalizationBefore);
+});
+
 test('CommandRuntime emits declared calculation-context effects for command, undo, and redo', () => {
   const workbook = new WorkbookModel('unit-calculation-context', 'Before');
   const runtime = new CommandRuntime(workbook);
