@@ -131,6 +131,8 @@ export interface Mutation<P = unknown> extends MutationInfo<P> {
 export interface CommandContext {
   readonly workbook: WorkbookModel;
   readonly operationId: string;
+  /** Present only while replaying an existing mutation through history/collaboration. */
+  readonly mutationSource?: MutationSource;
   /** Indexed structural-reference owners from the canonical formula runtime. */
   readonly structuralReferenceOwners: StructuralReferenceOwnerIndex;
   /** Optional canonical worksheet-value authority supplied by the host runtime. */
@@ -1391,20 +1393,45 @@ export class CommandRuntime {
 
     const entry = [...this.undoStack, ...this.redoStack].find((candidate) => candidate.operationId === operationId);
     if (entry) {
-      const local = entry.inversePlan.flatMap((mutation) => mutation.structuralFormulaOwnerDeltas ?? []);
-      const authoritative = patched.flatMap((item) => item.structuralFormulaOwnerDeltas ?? []);
+      const local = entry.inversePlan.filter((mutation) => mutation.id !== 'sheet.rename')
+        .flatMap((mutation) => mutation.structuralFormulaOwnerDeltas ?? []);
+      const authoritative = patched.filter((item) => item.id !== 'sheet.rename')
+        .flatMap((item) => item.structuralFormulaOwnerDeltas ?? []);
       const ordered = (deltas: readonly StructuralFormulaOwnerDelta[]) => deltas.map((delta) => JSON.stringify(delta)).sort();
-      const localNames = entry.inversePlan.flatMap((mutation) => mutation.structuralDefinedNameOwnerDeltas ?? []);
-      const authoritativeNames = patched.flatMap((item) => item.structuralDefinedNameOwnerDeltas ?? []);
+      const localNames = entry.inversePlan.filter((mutation) => mutation.id !== 'sheet.rename')
+        .flatMap((mutation) => mutation.structuralDefinedNameOwnerDeltas ?? []);
+      const authoritativeNames = patched.filter((item) => item.id !== 'sheet.rename')
+        .flatMap((item) => item.structuralDefinedNameOwnerDeltas ?? []);
       const orderedNames = (deltas: readonly StructuralDefinedNameOwnerDelta[]) => deltas.map((delta) => JSON.stringify(delta)).sort();
-      const localRanges = entry.inversePlan.flatMap((mutation) => mutation.structuralRangeOwnerDeltas ?? []);
-      const authoritativeRanges = patched.flatMap((item) => item.structuralRangeOwnerDeltas ?? []);
+      const localRanges = entry.inversePlan.filter((mutation) => mutation.id !== 'sheet.rename')
+        .flatMap((mutation) => mutation.structuralRangeOwnerDeltas ?? []);
+      const authoritativeRanges = patched.filter((item) => item.id !== 'sheet.rename')
+        .flatMap((item) => item.structuralRangeOwnerDeltas ?? []);
       const orderedRanges = (deltas: readonly StructuralRangeOwnerDelta[]) => deltas.map((delta) => JSON.stringify(delta)).sort();
       const formulaMismatch = JSON.stringify(ordered(local)) !== JSON.stringify(ordered(authoritative));
       const definedNameMismatch = JSON.stringify(orderedNames(localNames)) !== JSON.stringify(orderedNames(authoritativeNames));
       const rangeMismatch = JSON.stringify(orderedRanges(localRanges)) !== JSON.stringify(orderedRanges(authoritativeRanges));
       if (formulaMismatch || definedNameMismatch || rangeMismatch) {
         throw new Error('STRUCTURAL_PATCH_MISMATCH: server-derived owner facts differ from local history; operation remains unacknowledged and the workbook must be reloaded');
+      }
+
+      const forwardRenames = entry.forwardMutations.filter((mutation) => mutation.id === 'sheet.rename');
+      const inverseRenames = entry.inversePlan.filter((mutation) => mutation.id === 'sheet.rename');
+      const committedRenames = items.filter((item) => item.id === 'sheet.rename');
+      if (forwardRenames.length !== committedRenames.length || inverseRenames.length !== committedRenames.length) {
+        throw new Error('STRUCTURAL_PATCH_MISMATCH: worksheet-rename history does not match the committed operation');
+      }
+      for (let index = 0; index < committedRenames.length; index += 1) {
+        const committed = committedRenames[index]!;
+        const forward = forwardRenames[index]!;
+        const inverse = inverseRenames[inverseRenames.length - index - 1]!;
+        if (!committed.structuralFormulaOwnerDeltas
+          || !committed.structuralDefinedNameOwnerDeltas
+          || !committed.structuralRangeOwnerDeltas
+          || forward.sheetId !== committed.sheetId
+          || inverse.sheetId !== committed.sheetId) {
+          throw new Error('STRUCTURAL_PATCH_MISMATCH: worksheet rename is missing complete server owner facts');
+        }
       }
     }
 
@@ -1432,6 +1459,34 @@ export class CommandRuntime {
         rangeOwnerDeltas: rangeDeltas,
       };
       for (const listener of this.mutationListeners) listener(item, 'remote', effect);
+    }
+
+    if (entry) {
+      const forwardRenames = entry.forwardMutations.filter((mutation) => mutation.id === 'sheet.rename');
+      const inverseRenames = entry.inversePlan.filter((mutation) => mutation.id === 'sheet.rename');
+      const committedRenames = items.filter((item) => item.id === 'sheet.rename');
+      for (let index = 0; index < committedRenames.length; index += 1) {
+        const committed = committedRenames[index]!;
+        const forward = forwardRenames[index]!;
+        const inverse = inverseRenames[inverseRenames.length - index - 1]!;
+        const formulaDeltas = committed.structuralFormulaOwnerDeltas ?? [];
+        const definedNameDeltas = committed.structuralDefinedNameOwnerDeltas ?? [];
+        const rangeDeltas = committed.structuralRangeOwnerDeltas ?? [];
+        const impactRanges = committed.structuralImpactRanges
+          ?? [...formulaOwnerDeltasRanges(formulaDeltas), ...rangeOwnerDeltasRanges(rangeDeltas)];
+        for (const mutation of [forward, inverse]) {
+          mutation.structuralFormulaOwnerDeltas = structuredClone(formulaDeltas);
+          mutation.structuralDefinedNameOwnerDeltas = structuredClone(definedNameDeltas);
+          mutation.structuralRangeOwnerDeltas = structuredClone(rangeDeltas);
+          mutation.structuralImpactRanges = structuredClone(impactRanges);
+          mutation.affectedRanges = structuredClone(committed.affectedRanges);
+        }
+        const mergedRanges = new Map<string, RangeRef>();
+        for (const range of [...entry.affectedRanges, ...committed.affectedRanges, ...impactRanges]) {
+          mergedRanges.set(JSON.stringify([range.sheetId, range.startRow, range.endRow, range.startColumn, range.endColumn]), structuredClone(range));
+        }
+        entry.affectedRanges.splice(0, entry.affectedRanges.length, ...mergedRanges.values());
+      }
     }
 
     this.setRevision(Math.max(this.currentRevision, revision));
@@ -1512,6 +1567,7 @@ export class CommandRuntime {
       const replayContext: CommandContext = {
         workbook: this.workbook,
         operationId: createOperationId(),
+        mutationSource: source,
         get structuralReferenceOwners() { return commandRuntime.resolveStructuralReferenceOwners(); },
         resolveCellValue: (sheet, row, column) => this.cellValueResolver?.(sheet, row, column),
         applyMutation: () => {

@@ -1083,6 +1083,9 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
     handler: (item, context) => {
       if (!isRenameSheetMutation(item.params)) throw new Error('Invalid sheet.rename mutation payload');
       const params = item.params;
+      if (context.mutationSource === 'remote' || context.mutationSource === 'undo' || context.mutationSource === 'redo') {
+        return context.workbook.renameSheetIdentity(params.sheetId, params.name);
+      }
       return context.workbook.renameSheet(params.sheetId, params.name);
     },
     metadata: {

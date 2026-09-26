@@ -396,6 +396,98 @@ test('CommandRuntime records and guards defined-name owner patches in history', 
   assert.equal(workbook.getDefinedNameExact('Rate', 'workbook')?.formula, '=A3');
 });
 
+test('CommandRuntime adopts committed sheet-rename owner facts for undo history', () => {
+  const workbook = new WorkbookModel('unit-sheet-rename-owner-history', 'Sheet Rename Owner History');
+  const source = workbook.getSheet(workbook.primarySheetId);
+  source.name = 'Source';
+  const owner = workbook.addSheet('owner', 'Owner');
+  const beforeFormula = "='Source'!A1";
+  const afterFormula = "='Renamed'!A1";
+  owner.cells.set(0, 0, { formula: beforeFormula });
+  const runtime = new CommandRuntime(workbook);
+  const metadata = {
+    schema: {
+      name: 'RenameSheet',
+      validate: (value: unknown) => !!value && typeof value === 'object'
+        && typeof (value as { sheetId?: unknown }).sheetId === 'string'
+        && typeof (value as { name?: unknown }).name === 'string',
+    },
+    permission: { capability: 'test.sheet.structure.write' },
+    affectedRanges: { resolve: () => [], mode: 'exact' as const },
+    inversePolicy: { allowedMutationIds: ['sheet.rename'], minCount: 1 },
+  };
+  runtime.registry.registerMutation({
+    id: 'sheet.rename',
+    handler: (item, context) => {
+      const params = item.params as { sheetId: string; name: string };
+      if (context.mutationSource === 'remote' || context.mutationSource === 'undo' || context.mutationSource === 'redo') {
+        return context.workbook.renameSheetIdentity(params.sheetId, params.name);
+      }
+      return context.workbook.renameSheet(params.sheetId, params.name);
+    },
+    metadata,
+  });
+  runtime.registry.registerCommand({
+    id: 'sheet.rename',
+    execute: (params: { sheetId: string; name: string }, context) => {
+      const previousName = context.workbook.getSheet(params.sheetId).name;
+      context.applyMutation({
+        id: 'sheet.rename',
+        unitId: workbook.unitId,
+        sheetId: params.sheetId,
+        params,
+        affectedRanges: [],
+        inverse: [{ id: 'sheet.rename', unitId: workbook.unitId, sheetId: params.sheetId,
+          params: { sheetId: params.sheetId, name: previousName }, affectedRanges: [] }],
+        apply: () => context.workbook.renameSheet(params.sheetId, params.name),
+      });
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges: [] };
+    },
+  });
+
+  const operation = runtime.execute('sheet.rename', { sheetId: source.id, name: 'Renamed' });
+  const formulaRange = { sheetId: owner.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 };
+  const delta: StructuralFormulaOwnerDelta = {
+    kind: 'formula-cell',
+    beforeAddress: { sheetId: owner.id, row: 0, column: 0 },
+    afterAddress: { sheetId: owner.id, row: 0, column: 0 },
+    before: { formula: beforeFormula, sourceFormula: null, barcodeFormula: null },
+    after: { formula: afterFormula, sourceFormula: null, barcodeFormula: null },
+  };
+  runtime.applyCommittedStructuralPatches(operation.operationId, [{
+    id: 'sheet.rename',
+    unitId: workbook.unitId,
+    sheetId: source.id,
+    params: { sheetId: source.id, name: 'Renamed' },
+    affectedRanges: [],
+    structuralFormulaOwnerDeltas: [delta],
+    structuralDefinedNameOwnerDeltas: [],
+    structuralRangeOwnerDeltas: [],
+    structuralImpactRanges: [formulaRange],
+  }], 1);
+
+  assert.deepEqual(runtime.getUndoEntries()[0]?.inversePlan[0]?.structuralFormulaOwnerDeltas, [delta]);
+  assert.deepEqual(runtime.getUndoEntries()[0]?.affectedRanges, [formulaRange]);
+  assert.equal(runtime.undo(), true);
+  assert.equal(workbook.getSheet(owner.id).cells.getWithoutHydration(0, 0)?.formula, beforeFormula);
+
+  const remoteWorkbook = WorkbookModel.fromSnapshot(workbook.snapshot());
+  const remoteRuntime = new CommandRuntime(remoteWorkbook, runtime.registry);
+  remoteRuntime.applyRemoteMutations([{
+    id: 'sheet.rename',
+    unitId: workbook.unitId,
+    sheetId: source.id,
+    params: { sheetId: source.id, name: 'Renamed' },
+    affectedRanges: [],
+    structuralFormulaOwnerDeltas: [delta],
+    structuralDefinedNameOwnerDeltas: [],
+    structuralRangeOwnerDeltas: [],
+    structuralImpactRanges: [formulaRange],
+  }]);
+  assert.equal(remoteWorkbook.getSheet(source.id).name, 'Renamed');
+  assert.equal(remoteWorkbook.getSheet(owner.id).cells.getWithoutHydration(0, 0)?.formula, afterFormula);
+});
+
 test('CommandRuntime replays exact structural range-owner facts through undo and redo', () => {
   const workbook = new WorkbookModel('unit-range-owner-history', 'Range Owner History');
   const sheet = workbook.getSheet(workbook.primarySheetId);

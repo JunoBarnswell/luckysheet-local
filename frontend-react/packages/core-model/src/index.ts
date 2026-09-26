@@ -2180,6 +2180,27 @@ export class WorkbookModel {
     return effect;
   }
 
+  /** Apply only the identity field when history replay will apply server-owned reference deltas. */
+  renameSheetIdentity(sheetId: SheetId, name: string): StructuralTransformResult | undefined {
+    const sheet = this.getSheet(sheetId);
+    const targetName = name.trim();
+    if (!targetName) throw new SheetIdentityTransformInvariantError('Sheet rename requires a non-empty targetName');
+    assertCanonicalWorksheetIdentities(this.getSheets().map((candidate) => ({
+      id: candidate.id,
+      name: candidate.id === sheetId ? targetName : candidate.name,
+    })));
+    if (sheet.name === targetName) return undefined;
+    sheet.name = targetName;
+    return {
+      kind: 'structural-transform',
+      removedCells: [],
+      clearInputRanges: [],
+      populateInputRanges: [],
+      rewrittenFormulaOwners: [],
+      calculationContextEffect: CALCULATION_CONTEXT_EFFECTS.rebuild,
+    };
+  }
+
   getSheetSnapshot(sheetId: SheetId): SheetSnapshot {
     const sheet = this.getSheet(sheetId).snapshot();
     sheet.lifecycleDefinedNames = structuredClone(this.definedNameModels.filter((entry) => entry.scope === 'sheet' && entry.sheetId === sheetId));
