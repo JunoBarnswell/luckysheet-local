@@ -158,24 +158,26 @@ class ReportSheetStructuralTransformTest {
         RangeRef affectedBand = new RangeRef("sheet-1", 4, 19, 0, 0);
         ObjectNode insertedSnapshot = snapshotWithReportBinding(10);
         ((ObjectNode) insertedSnapshot.path("sheets").get(0).path("cells"))
-                .putObject("6").putObject("0").put("formula", "=A1").put("value", "inserted");
+                .putObject("6").putObject("0").put("formula", "=A5").put("value", "inserted");
 
         var insertedPatch = StructuralSnapshotReducer.shiftCells(insertedSnapshot, "sheet-1", "cells.inserted",
                 selection, "insert", "row", affectedBand);
         JsonNode insertedCells = insertedSnapshot.path("sheets").get(0).path("cells");
         assertFalse(insertedCells.path("6").has("0"));
         assertEquals("inserted", insertedCells.path("7").path("0").path("value").asText());
+        assertEquals("=A6", insertedCells.path("7").path("0").path("formula").asText());
         assertEquals(new StructuralPatch.CellAddress("sheet-1", 6, 0), insertedPatch.formulaOwnerDeltas().get(0).beforeAddress());
         assertEquals(new StructuralPatch.CellAddress("sheet-1", 7, 0), insertedPatch.formulaOwnerDeltas().get(0).afterAddress());
 
         ObjectNode deletedSnapshot = snapshotWithReportBinding(10);
         ((ObjectNode) deletedSnapshot.path("sheets").get(0).path("cells"))
-                .putObject("6").putObject("0").put("formula", "=A1").put("value", "deleted");
+                .putObject("6").putObject("0").put("formula", "=A6").put("value", "deleted");
         var deletedPatch = StructuralSnapshotReducer.shiftCells(deletedSnapshot, "sheet-1", "cells.deleted",
                 selection, "delete", "row", affectedBand);
         JsonNode deletedCells = deletedSnapshot.path("sheets").get(0).path("cells");
         assertFalse(deletedCells.path("6").has("0"));
         assertEquals("deleted", deletedCells.path("5").path("0").path("value").asText());
+        assertEquals("=A5", deletedCells.path("5").path("0").path("formula").asText());
         assertEquals(new StructuralPatch.CellAddress("sheet-1", 6, 0), deletedPatch.formulaOwnerDeltas().get(0).beforeAddress());
         assertEquals(new StructuralPatch.CellAddress("sheet-1", 5, 0), deletedPatch.formulaOwnerDeltas().get(0).afterAddress());
     }
