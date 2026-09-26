@@ -1506,3 +1506,24 @@ Six non-overlapping static review passes confirmed two independent performance r
 - `0c331076` 的 PR CI `36257401587` 未通过 frontend compile。日志指出 sparse committed-patch preflight 调用 range-owner reader 时没有传 Sheet Table 索引；inverse delta 通过条件 spread 构造 union，TS 无法将 `sheetId` 与 `ownerKind` 关联。
 - 修复为 sparse preflight 与 live apply 共用每受影响工作表一次构建的 Sheet Table identity index；inverse 为 Sheet Table 单独构造窄化分支，其余范围 owner 保持原类型。
 - 本地仍未运行测试/build/typecheck；待新 head 的自动 CI 复核这些源码修正。该编译修正不计作新增业务问题，也不改变本轮三个结构/性能根因的计数。
+
+### 2026-09-27 static audit — Java readiness gate is not Java planning
+
+以已核对的 PR head `435406f2` 继续沿端到端提交链静态追踪：
+
+1. **命令入口**：`WorkbookSession.runCommand` 先检查 `requiresServerStructuralPlannerCommand`，但通过后仍同步调用 `runtime.commands.execute`。
+2. **mutation guard**：`assertServerStructuralPlannerReady` 仅证明 `!localOnly && remoteConnected`；随后做权限验证，没有向 Java 请求 plan 或取得 revision-bound patch。
+3. **执行者**：Sheet Features/Editing 的本地 `mutation.apply` 仍调用 `StructuralTransform.apply`，在客户端 live Workbook 上变换 cells 和引用 owner。
+4. **出站顺序**：`attachCoreListeners` 的 `onMutation` 在 mutation handler 成功后采集原 mutation params；`onCommand` 完成后才将 batch 交给 collaboration transport。
+5. **服务端职责**：transport 再调用 commit API；`WorkbookOperationService` 在服务端重新 prepare/apply 相同操作并派生 StructuralPatch。Java 当前是提交端 reducer/校验者，不是客户端改动前的唯一 planner。
+6. **回传能力**：StructuralPatch v5 仅有 formula/name/range-owner deltas；ACK consumer 也只消费这些 owner facts。cell relocation 与其余 metadata 由 remote mutation handlers 再次执行 TS reducer 得出，因此不能删除客户端第二套结构算法。
+
+这是 **1 个架构根因**：服务端在线 gate 被误当成服务端权威规划，实际上仍是 TS 先变更、Java 后重算并回传部分引用事实。不能只删本地 transform 或将该 gate 改为 async：当前 patch 没有 cells/metadata 的完整可逆写集，客户端也没有 server-first 原子提交边界。实现必须先选定 revision-bound 的 intent→Java plan/commit→complete patch→TS apply 合约，再按单一 mutation vertical slice 同时贯通 server、ACK、remote replay、undo/redo、calc/projection 与 persistence；每个操作最终迁移后才能移除旧 TS planner。该静态追踪不把六个调用环节拆成六个问题，也不表示架构已修复。
+
+本轮累计通过源码确认的独立业务/架构根因仍远低于用户要求的 30；本次仅补充权威链路证据与边界，不虚报完成。未运行本地测试/build/浏览器/Excel；该审计没有代码行为变化。下一步继续以 operation→server transaction→complete reversible patch 为整体边界，不以单独“强制在线”或仅增加 client guard 作为收敛。
+
+### CI correction — explicit Sheet Table owner narrowing
+
+- PR CI `36257660448` 在 `435406f2` 的 frontend typecheck 中发现 live sparse apply 仍通过最后的 `else` 访问 owner union 的 `sheetId`；其 `workbook-table | data-source` 联合成员不是可判别的单一字面量成员。
+- 将 `sheet-table` 改为显式 `else if` 分支，并保留未知 owner 的 fail-close 分支。此为上一批稀疏回放实现的编译修正，不计为新增业务问题。
+- 本地未运行 typecheck/build；修正待 PR CI 复核。静态 diff 检查通过。

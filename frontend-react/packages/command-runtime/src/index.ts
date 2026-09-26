@@ -2173,10 +2173,12 @@ function applyStructuralRangeOwnerDeltas(
       const source = workbook.dataModel.sources.get(delta.ownerId);
       if (!source || source.id !== delta.ownerId) throw new Error(`STRUCTURAL_PATCH_PRECONDITION: data-source owner ${delta.ownerId} is missing`);
       sourceWrites.push({ owner: source, range: { ...next.range } });
-    } else {
+    } else if (delta.ownerKind === 'sheet-table') {
       const table = sheetTablesByIdentity.get(JSON.stringify([delta.sheetId, delta.ownerId]));
       if (!table) throw new Error(`STRUCTURAL_PATCH_PRECONDITION: Sheet Table owner ${delta.sheetId}:${delta.ownerId} must resolve exactly once`);
       sheetTableWrites.push({ owner: table, range: { ...next.range } });
+    } else {
+      throw new Error('STRUCTURAL_PATCH_INVARIANT: unsupported range owner');
     }
   }
   const preparedRegionsBySheet = new Map<string, { readonly sheet: WorksheetModel; readonly regions: WorksheetModel['dataRegions'][number][] }>();
