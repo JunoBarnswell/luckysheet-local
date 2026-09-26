@@ -63,7 +63,7 @@ class ReferenceTransformDomainTest {
             assertNotNull(vectorsStream, "shared structural transform vectors must be on the test classpath");
             JsonNode vectors = new ObjectMapper().readTree(vectorsStream);
             assertEquals("ReferenceTransformVectors", vectors.path("schema").asText());
-            assertEquals(4, vectors.path("version").asInt());
+            assertEquals(5, vectors.path("version").asInt());
 
             for (JsonNode vector : vectors.path("points")) {
                 JsonNode expected = vector.path("expected");
@@ -232,14 +232,57 @@ class ReferenceTransformDomainTest {
                         .filter(sheet -> sheet.id().equals(vector.path("ownerSheetId").asText())).findFirst().orElseThrow();
                 FormulaReferenceTransformer.SheetIdentity target = sheetOrder.stream()
                         .filter(sheet -> sheet.id().equals(vector.path("targetSheetId").asText())).findFirst().orElseThrow();
-                String actual = FormulaReferenceTransformer.remapAxis(
-                        vector.path("formula").asText(), owner, target,
-                        FormulaReferenceTransformer.Axis.valueOf(vector.path("axis").asText().toUpperCase(Locale.ROOT)),
-                        vector.path("at").asInt(), vector.path("count").asInt(),
-                        FormulaReferenceTransformer.Direction.valueOf(vector.path("operation").asText().toUpperCase(Locale.ROOT)),
-                        sheetOrder);
-                assertEquals(vector.path("expected").asText(), actual, vector.path("id").asText());
+                if (vector.hasNonNull("expectedError")) {
+                    ServiceException error = assertThrows(ServiceException.class, () -> FormulaReferenceTransformer.remapAxis(
+                            vector.path("formula").asText(), owner, target,
+                            FormulaReferenceTransformer.Axis.valueOf(vector.path("axis").asText().toUpperCase(Locale.ROOT)),
+                            vector.path("at").asInt(), vector.path("count").asInt(),
+                            FormulaReferenceTransformer.Direction.valueOf(vector.path("operation").asText().toUpperCase(Locale.ROOT)),
+                            sheetOrder), vector.path("id").asText());
+                    assertTrue(error.getMessage().contains(vector.path("expectedError").asText()), vector.path("id").asText());
+                } else {
+                    assertEquals(vector.path("expected").asText(), FormulaReferenceTransformer.remapAxis(
+                            vector.path("formula").asText(), owner, target,
+                            FormulaReferenceTransformer.Axis.valueOf(vector.path("axis").asText().toUpperCase(Locale.ROOT)),
+                            vector.path("at").asInt(), vector.path("count").asInt(),
+                            FormulaReferenceTransformer.Direction.valueOf(vector.path("operation").asText().toUpperCase(Locale.ROOT)),
+                            sheetOrder), vector.path("id").asText());
+                }
             }
         }
     }
+
+    @Test
+    void matchesTheSharedTypeScriptAndJavaFormulaCellShiftVectors() throws IOException {
+        try (InputStream vectorsStream = getClass().getResourceAsStream("/reference-transform-vectors.json")) {
+            assertNotNull(vectorsStream);
+            JsonNode vectors = new ObjectMapper().readTree(vectorsStream);
+            List<FormulaReferenceTransformer.SheetIdentity> sheetOrder = formulaSheetOrder(vectors.path("formulaSheetOrder"));
+            assertTrue(vectors.path("formulaCellShifts").isArray() && !vectors.path("formulaCellShifts").isEmpty());
+            for (JsonNode vector : vectors.path("formulaCellShifts")) {
+                FormulaReferenceTransformer.SheetIdentity owner = formulaSheet(vectors.path("formulaSheetOrder"), vector.path("ownerSheetId").asText());
+                FormulaReferenceTransformer.SheetIdentity target = formulaSheet(vectors.path("formulaSheetOrder"), vector.path("targetSheetId").asText());
+                JsonNode selection = vector.path("selection");
+                FormulaReferenceTransformer.Range range = new FormulaReferenceTransformer.Range(
+                        selection.path("startRow").asInt(), selection.path("endRow").asInt(),
+                        selection.path("startColumn").asInt(), selection.path("endColumn").asInt());
+                FormulaReferenceTransformer.Axis axis = FormulaReferenceTransformer.Axis.valueOf(
+                        vector.path("axis").asText().toUpperCase(Locale.ROOT));
+                FormulaReferenceTransformer.Direction direction = FormulaReferenceTransformer.Direction.valueOf(
+                        vector.path("operation").asText().toUpperCase(Locale.ROOT));
+                if (vector.hasNonNull("expectedError")) {
+                    ServiceException error = assertThrows(ServiceException.class,
+                            () -> FormulaReferenceTransformer.remapCellShift(
+                                    vector.path("formula").asText(), owner, target, range, axis, direction, sheetOrder),
+                            vector.path("id").asText());
+                    assertTrue(error.getMessage().contains(vector.path("expectedError").asText()), vector.path("id").asText());
+                } else {
+                    assertEquals(vector.path("expected").asText(), FormulaReferenceTransformer.remapCellShift(
+                            vector.path("formula").asText(), owner, target, range, axis, direction, sheetOrder),
+                            vector.path("id").asText());
+                }
+            }
+        }
+    }
+
 }

@@ -332,7 +332,13 @@ function rangeTargetsSheet(
   if (start.sheetId !== undefined && end.sheetId !== undefined && !sameSheet(start.sheetId, end.sheetId)) {
     throw new Error('UNSUPPORTED_STRUCTURAL_REFERENCE: range endpoints target different worksheets');
   }
-  return referenceTargetsSheet(start.sheetId ?? end.sheetId, context);
+  const startTargets = referenceTargetsSheet(start.sheetId, context);
+  const endTargets = referenceTargetsSheet(end.sheetId, context);
+  if (!startTargets && !endTargets) return false;
+  if (startTargets !== endTargets) {
+    throw new Error('UNSUPPORTED_STRUCTURAL_REFERENCE: structural transform cannot rewrite a partially qualified range');
+  }
+  return true;
 }
 
 function transformStructuralRange(

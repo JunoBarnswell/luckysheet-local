@@ -1656,3 +1656,18 @@ Six non-overlapping static review passes confirmed two independent performance r
 修复：TS 对 range 两端分别按 owner/sheet identity 求目标归属；两端均非目标则保持原引用，只有一端为目标则在任何写入前以同一 typed unsupported reason 拒绝，两端均为目标才继续执行几何连续性检查与平移。新增共享 Move formula vectors 同时供 TypeScript AST 与 Java transformer 使用。确认 **1 个真实跨语言一致性问题**；没有把 AST 节点、公式用例或拒绝阶段拆成多个缺陷计数。
 
 本轮只做静态源码推演和 diff/向量结构检查，未运行新增 TS/Java 测试、构建、浏览器或 Excel。完整唯一 planner、全部 metadata owner patch 与性能验收仍未完成。
+
+### 2026-09-27 six-view static review — partially qualified structural formula ranges
+
+沿插删轴与单元格带移动公式链核对同一范围归属问题：
+
+1. **TS 范围归属入口**：`rangeTargetsSheet` 将 `start.sheetId ?? end.sheetId` 当作整段范围所属表，未分别解析两个端点。
+2. **Java 规范行为**：`remapAxisRange` 与 `remapCellShiftRange` 分别用 owner sheet 解析未限定端点；只有两端归属一致时才改写，一端命中而另一端未命中即 fail-close。
+3. **最小触发条件**：公式 owner 为 `Local`，公式 `=A1:'Budget A1'!B2`，结构目标为 `Budget A1`。起点解析到 `Local`，终点属于 `Budget A1`。
+4. **插删轴可观察差异**：在 `Budget A1` 的第 1 行前插行，旧 TS 会把范围两端都按目标表移动，生成 `=A2:'Budget A1'!B3`；Java 拒绝部分限定范围。
+5. **单元格带移动同源**：cell-shift 分支复用相同的 `rangeTargetsSheet`，也会错误地为未限定起点套用终点的表身份；Java 的对应 reducer 同样拒绝。
+6. **合法/不相关边界**：当公式 owner 本身就是 `Budget A1`，未限定端点也归属目标表，两端映射有效；未限定范围由其他 worksheet 拥有时，目标 `Budget A1` 不应改写它。
+
+修复：TS 分别解析范围端点归属；双端均非目标保持不变，双端均目标继续变换，单端命中则以 Java 相同 typed reason 拒绝。共享向量（version 5）覆盖 axis 与 cell-shift 的拒绝、合法映射和非目标保持。按单一根因计 **1 项**，没有将两个调用分支或多个向量重复计数。
+
+本轮仅静态审查、diff 与共享 JSON 结构校验；新增 TypeScript/Java 测试未运行。唯一 Java planner、完整稀疏 patch、全部 metadata owner、真实浏览器/OOXML/Excel 与性能验收仍未完成。
