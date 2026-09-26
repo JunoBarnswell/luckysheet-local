@@ -1483,3 +1483,20 @@ Static source tracing confirms `CommandRuntime.applyRemoteMutations` performs de
 The app supplies `FormulaEngine.dependencies` to `StructuralReferenceOwnerIndex`, but every resolution still calls `indexStructuralFormulaRules`, which enumerates every conditional-format/data-validation formula and range across every worksheet before returning the index. The detached history runtime has no persistent provider and calls `buildStructuralReferenceIndex`, which walks all occupied cells/formulas, names, and rules. The current index contract also omits chart, pivot, sparkline, drawing, filter, table, and spill owner geometry, which structural code still scans separately. `ReferenceTransformDomain` point/interval behavior already shares cross-language vectors; move/permutation and owner-family semantics remain outside that proof.
 
 Six non-overlapping static review passes confirmed two independent performance roots (full detached remote replay and full CF/DV rule enumeration) plus the incomplete typed owner index. No local tests/build/browser or performance benchmark ran. At audit time, both `canonical-build` checks for PR #345 head `291f4b09` were green; Java-only planning, sparse authoritative facts, facts-only remote/history replay, browser, native Excel, and large-workbook performance acceptance remain open.
+
+### 2026-09-27 continuation — Sheet Table range-owner facts
+
+本轮继续同一 Structural Editing & Reference Integrity 目标，基线为当前 `codex/structural-reference-integrity` 工作区，修复仍进入 draft PR #345。
+
+六个相互独立的静态复核视角：
+
+1. **生产者覆盖**：轴插删/变换、`range.move`、`sheetTable.update` 都会改变 Sheet Table 几何；此前 range-owner 合约只认识 data-region/workbook-table/data-source，导致表格范围未进入统一 patch、history、ACK 与 replay。现将 Sheet Table `(sheetId, tableId)` 加入 TS/Java owner facts，并由本地 update、轴变换与移动规划共同产生。
+2. **几何语义**：Table 行数可以合法变化（例如总计行开关），旧的固定尺寸校验会拒绝 `sheetTable.update` 的扩缩。v5 仅允许 Sheet Table 的 before/after 尺寸变化，仍校验范围边界、同一 `sheetId` 与非空 identity；workbook-table、data-source、data-region 的现有固定尺寸规则未放宽。
+3. **本地事务与历史**：runtime 先解析唯一 owner 并预检全部 facts，再批量写入；Sheet Table range fact 随 undo/redo 保留，测试源码覆盖远端重放及 owner 漂移拒绝。按每张受影响 Sheet 单次建立 ID 索引，避免对每个 delta 重复扫描同一张 Sheet 的全部表。
+4. **Java 权威 reducer**：reducer 按 `(sheetId, tableId)` 捕获/唯一解析 Sheet Table，验证所有 before/after 状态后统一写范围；服务端 `sheetTable.update` 的公式重命名 patch 与几何 patch 合并。新增成功/漂移拒绝回归源码，拒绝用例经公开 detached-copy 入口确认 base snapshot 不变。
+5. **协议与持久化边界**：StructuralPatch 升为 v5；v4 历史在 repeatable migration 中先按旧字段和旧 impact 规则校验，再从 operation replay 推导 v5 Sheet Table facts 并改写 operation log/outbox。v4 比较会剔除新增 Sheet Table facts，旧 impact 也按 v4 owner 集合计算；不增加 runtime v4 fallback。
+6. **性能与交付证据**：TS range-owner 消费从每个 Sheet Table delta 两次线性扫描改为每个受影响工作表一次索引加 delta 数线性预检/写入。静态源码显示扫描量从 `O(delta × tables)` 降为 `O(tables + delta)`；没有基准数据，不能声称实测提速。
+
+本轮确认并修复 **3 个独立问题**：Sheet Table 几何事实缺席统一引用链；range-owner 固定尺寸规则误拒合法表格扩缩；TS replay 对多表 patch 重复全表扫描。按用户提出的“至少 30 个独立问题”标准，本轮没有达到 30，未拆分 owner 类型、入口或断言凑数；目标仍需继续完整链路审查。
+
+新增 TS/Java/协议/迁移回归源码，**未运行**测试、build、lint、typecheck、浏览器或 Excel。仅执行 `git diff --check`，退出码 0（Git 另提示若下次写回，部分 LF 文件将按配置转换 CRLF）。v5 repeatable migration 会改写已持久化 operation/outbox envelope；没有自动反向迁移，降级旧程序前必须恢复 migration 前数据库备份，不能只回退应用二进制。PR 保持 draft；浏览器、真实 Excel 往返及大数据 CPU/heap 测量仍未验收。

@@ -28,6 +28,7 @@ import {
   mutationCapability,
   requiresServerStructuralPlanner,
   SERVER_STRUCTURAL_PLANNER_MUTATIONS,
+  STRUCTURAL_PATCH_MUTATIONS,
   requiresServerStructuralPlannerCommand,
   SERVER_STRUCTURAL_PLANNER_COMMANDS,
   type ContractErrorCode,
@@ -43,6 +44,7 @@ export {
   mutationCapability,
   requiresServerStructuralPlanner,
   SERVER_STRUCTURAL_PLANNER_MUTATIONS,
+  STRUCTURAL_PATCH_MUTATIONS,
   requiresServerStructuralPlannerCommand,
   SERVER_STRUCTURAL_PLANNER_COMMANDS,
 } from './generated-contract';
@@ -89,12 +91,14 @@ export interface OperationIntent {
 
 /** Server-derived reference-owner effects for one committed structural mutation. */
 export interface StructuralPatch {
-  version: 4;
+  version: 5;
   mutationId: string;
   formulaOwnerDeltas: StructuralFormulaOwnerDelta[];
   definedNameOwnerDeltas: StructuralDefinedNameOwnerDelta[];
   rangeOwnerDeltas: StructuralRangeOwnerDelta[];
 }
+
+const structuralPatchMutationIds: ReadonlySet<string> = new Set(STRUCTURAL_PATCH_MUTATIONS);
 
 export interface OperationEnvelope {
   clientSessionId: string;
@@ -1013,11 +1017,11 @@ export function validateDataSourceMutationParams(
 export function validateStructuralPatch(value: unknown, mutationId: string): StructuralPatch {
   const patch = requireRecord(value, 'Committed structural patch');
   validateExactKeys(patch, ['version', 'mutationId', 'formulaOwnerDeltas', 'definedNameOwnerDeltas', 'rangeOwnerDeltas'], 'Committed structural patch');
-  if (patch.version !== 4 || patch.mutationId !== mutationId || !Array.isArray(patch.formulaOwnerDeltas)
+  if (patch.version !== 5 || patch.mutationId !== mutationId || !Array.isArray(patch.formulaOwnerDeltas)
     || !Array.isArray(patch.definedNameOwnerDeltas) || !Array.isArray(patch.rangeOwnerDeltas)) {
     throw new Error('Committed structural patch header is invalid');
   }
-  if (!['rows.inserted', 'rows.deleted', 'columns.inserted', 'columns.deleted', 'cells.inserted', 'cells.deleted', 'cells.inserted.restore', 'cells.deleted.restore', 'rows.permuted', 'range.move', 'sheetTable.update'].includes(mutationId)) {
+  if (!structuralPatchMutationIds.has(mutationId)) {
     throw new Error('Committed structural patch mutation id is invalid');
   }
   const address = (rawAddress: unknown, label: string) => {
@@ -1261,6 +1265,19 @@ export function validateStructuralPatch(value: unknown, mutationId: string): Str
       }
       return { ownerKind: 'data-region', sheetId: delta.sheetId, regionId: delta.regionId, before, after };
     }
+    if (delta.ownerKind === 'sheet-table') {
+      validateExactKeys(delta, ['ownerKind', 'sheetId', 'ownerId', 'before', 'after'], label);
+      if (!isNonEmptyString(delta.sheetId) || !isNonEmptyString(delta.ownerId)) {
+        throw new Error(`${label} Sheet Table identity is invalid`);
+      }
+      const before = range(delta.before, `${label}.before`);
+      const after = range(delta.after, `${label}.after`);
+      if (before.sheetId !== delta.sheetId || after.sheetId !== delta.sheetId
+        || JSON.stringify(before) === JSON.stringify(after)) {
+        throw new Error(`${label} Sheet Table geometry is unchanged or does not match its identity`);
+      }
+      return { ownerKind: 'sheet-table', sheetId: delta.sheetId, ownerId: delta.ownerId, before, after };
+    }
     if (delta.ownerKind !== 'workbook-table' && delta.ownerKind !== 'data-source') {
       throw new Error(`${label} range-owner kind is unsupported`);
     }
@@ -1280,11 +1297,13 @@ export function validateStructuralPatch(value: unknown, mutationId: string): Str
   for (const delta of rangeOwnerDeltas) {
     const key = delta.ownerKind === 'data-region'
       ? JSON.stringify([delta.ownerKind, delta.sheetId, delta.regionId])
+      : delta.ownerKind === 'sheet-table'
+        ? JSON.stringify([delta.ownerKind, delta.sheetId, delta.ownerId])
       : JSON.stringify([delta.ownerKind, delta.ownerId]);
     if (rangeOwnerKeys.has(key)) throw new Error('Committed structural patch contains duplicate range-owner deltas');
     rangeOwnerKeys.add(key);
   }
-  return { version: 4, mutationId, formulaOwnerDeltas, definedNameOwnerDeltas, rangeOwnerDeltas };
+  return { version: 5, mutationId, formulaOwnerDeltas, definedNameOwnerDeltas, rangeOwnerDeltas };
 }
 
 /** Validate the shared dashboard state before it enters a recovery journal. */
@@ -2784,6 +2803,9 @@ function validateCommittedOperationEnvelope(value: unknown): CommittedOperationE
     const structuralPatch = mutation.structuralPatch === undefined
       ? undefined
       : validateStructuralPatch(mutation.structuralPatch, operation.mutations[index]!.id);
+    if (structuralPatchMutationIds.has(operation.mutations[index]!.id) && structuralPatch === undefined) {
+      throw new Error(`committed mutation[${index}] requires a server-derived StructuralPatch`);
+    }
     const structuralImpactRanges = mutation.structuralImpactRanges;
     if (structuralImpactRanges !== undefined
       && (!Array.isArray(structuralImpactRanges) || !structuralImpactRanges.every(isRangeRef))) {

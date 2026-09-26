@@ -72,7 +72,9 @@ final class SheetDataMutationDescriptor extends CanonicalJsonMutationDescriptor 
         ObjectNode params = SnapshotMutationSupport.params(mutation);
         StructuralPatch patch = StructuralSnapshotReducer.renameSheetTableReferences(
                 snapshot, updated, mutation.sheetId(), SnapshotMutationSupport.text(params, "id"));
-        JsonNode transformed = patch == null ? updated : StructuralSnapshotReducer.applyStructuralOwnerPatch(updated, patch);
+        boolean hasOwnerChanges = patch != null && (!patch.formulaOwnerDeltas().isEmpty()
+                || !patch.definedNameOwnerDeltas().isEmpty() || !patch.rangeOwnerDeltas().isEmpty());
+        JsonNode transformed = hasOwnerChanges ? StructuralSnapshotReducer.applyStructuralOwnerPatch(updated, patch) : updated;
         return new MutationApplication(transformed, patch);
     }
 

@@ -9,6 +9,7 @@ import com.xc.luckysheet.server.contract.CheckpointResponse;
 import com.xc.luckysheet.server.contract.CursorPage;
 import com.xc.luckysheet.server.contract.CommittedOperationEnvelope;
 import com.xc.luckysheet.server.contract.CommittedOperationMutation;
+import com.xc.luckysheet.server.contract.GeneratedWorkbookContract;
 import com.xc.luckysheet.server.contract.OperationEnvelope;
 import com.xc.luckysheet.server.contract.OperationIntent;
 import com.xc.luckysheet.server.contract.OperationMutation;
@@ -163,6 +164,9 @@ public class WorkbookOperationService {
             StructuralPatch inversePatch = inverseStructuralPatch(mutation, undoTarget);
             if (inversePatch != null) candidate = registry.applyStructuralPatchOnOwnedSnapshot(candidate, inversePatch);
             StructuralPatch committedPatch = MutationDescriptorRegistry.mergeStructuralPatches(mutation.id(), application.structuralPatch(), inversePatch);
+            if (isStructuralPatchMutation(mutation.id()) && committedPatch == null) {
+                throw ServiceException.unavailable("STRUCTURAL_PATCH_UNAVAILABLE: structural mutation did not produce server-owned reference facts");
+            }
             List<RangeRef> committedRanges = registry.committedRanges(protectionPreimage, prepared, actorRole, committedPatch);
             List<RangeRef> structuralImpactRanges = registry.structuralImpactRanges(committedPatch);
             if (ownedSnapshotCommit) {
@@ -239,31 +243,79 @@ public class WorkbookOperationService {
                 && targetRow.revision() != row.revision()) {
             throw ServiceException.conflict("Structural undo requires the target operation to be the current workbook revision");
         }
-        validateStructuralUndoMutations(operation, target);
+        JsonNode structuralUndoPreimage = target.mutations().stream()
+                .anyMatch(mutation -> "sheetTable.update".equals(mutation.id()))
+                ? snapshotAtRevision(row, targetRow.revision() - 1)
+                : null;
+        validateStructuralUndoMutations(operation, target, structuralUndoPreimage);
         return target;
     }
 
-    private static void validateStructuralUndoMutations(OperationEnvelope operation, CommittedOperationEnvelope target) {
+    static void validateStructuralUndoMutations(
+            OperationEnvelope operation,
+            CommittedOperationEnvelope target,
+            JsonNode structuralUndoPreimage
+    ) {
+        boolean[] matchedInverseMutations = new boolean[operation.mutations().size()];
         for (CommittedOperationMutation original : target.mutations()) {
             if (!isStructuralPatchMutation(original.id())) continue;
-            List<OperationMutation> matches = operation.mutations().stream()
-                    .filter(inverse -> original.sheetId().equals(inverse.sheetId())
-                            && isInverseStructuralMutation(original, inverse))
-                    .toList();
+            if (original.structuralPatch() == null) {
+                throw ServiceException.conflict("STRUCTURAL_PATCH_UNAVAILABLE: structural undo target has no server-derived patch");
+            }
+            List<Integer> matches = new ArrayList<>();
+            for (int index = 0; index < operation.mutations().size(); index++) {
+                OperationMutation inverse = operation.mutations().get(index);
+                if (matchedInverseMutations[index] || !original.sheetId().equals(inverse.sheetId())
+                        || !isInverseStructuralMutation(original, inverse)) continue;
+                if ("sheetTable.update".equals(original.id())) {
+                    String tableId = original.params().path("id").asText("");
+                    JsonNode previousTable = findSheetTable(structuralUndoPreimage, original.sheetId(), tableId);
+                    if (tableId.isBlank() || previousTable == null || !previousTable.equals(inverse.params())) continue;
+                }
+                matches.add(index);
+            }
             if (matches.size() != 1) {
                 throw ServiceException.conflict("Structural undo must contain exactly one matching inverse mutation");
             }
-            if (original.structuralPatch() == null) {
-                throw ServiceException.conflict("STRUCTURAL_PATCH_UNAVAILABLE: structural undo target has no server-derived patch");
+            matchedInverseMutations[matches.get(0)] = true;
+        }
+        for (int index = 0; index < operation.mutations().size(); index++) {
+            if (isStructuralPatchMutation(operation.mutations().get(index).id()) && !matchedInverseMutations[index]) {
+                throw ServiceException.conflict("Structural undo contains an unmatched structural mutation");
+            }
+        }
+        boolean targetContainsNonStructuralMutations = target.mutations().stream()
+                .anyMatch(mutation -> !isStructuralPatchMutation(mutation.id()));
+        if (!targetContainsNonStructuralMutations) {
+            for (int index = 0; index < operation.mutations().size(); index++) {
+                if (!matchedInverseMutations[index]) {
+                    throw ServiceException.conflict("Structural undo contains a mutation outside its target operation");
+                }
             }
         }
     }
 
     private static boolean isStructuralPatchMutation(String mutationId) {
-        return switch (mutationId) {
-            case "rows.inserted", "rows.deleted", "columns.inserted", "columns.deleted", "cells.inserted", "cells.deleted", "rows.permuted", "range.move" -> true;
-            default -> false;
-        };
+        return GeneratedWorkbookContract.STRUCTURAL_PATCH_MUTATIONS.contains(mutationId);
+    }
+
+    private static JsonNode findSheetTable(JsonNode snapshot, String sheetId, String tableId) {
+        if (snapshot == null || tableId.isBlank()) return null;
+        JsonNode match = null;
+        int matches = 0;
+        JsonNode sheets = snapshot.path("sheets");
+        if (!sheets.isArray()) return null;
+        for (JsonNode sheet : sheets) {
+            if (!sheetId.equals(sheet.path("id").asText())) continue;
+            JsonNode tables = sheet.path("sheetTables");
+            if (!tables.isArray()) continue;
+            for (JsonNode table : tables) {
+                if (!tableId.equals(table.path("id").asText())) continue;
+                match = table;
+                matches++;
+            }
+        }
+        return matches == 1 ? match : null;
     }
 
     public static StructuralPatch inverseStructuralPatch(OperationMutation inverse, CommittedOperationEnvelope target) {
@@ -298,13 +350,28 @@ public class WorkbookOperationService {
         if ("rows.permuted".equals(originalId) && "rows.permuted".equals(inverseId)) {
             return sameRowPermutationInverse(original.params(), inverse.params());
         }
-        boolean matchingCellShift = ("cells.inserted".equals(originalId) && "cells.inserted.restore".equals(inverseId))
-                || ("cells.deleted".equals(originalId) && "cells.deleted.restore".equals(inverseId));
-        if (!matchingCellShift) return false;
-        JsonNode spec = inverse.params().path("spec");
-        return original.params().path("operation").asText().equals(spec.path("operation").asText())
-                && original.params().path("axis").asText().equals(spec.path("axis").asText())
-                && original.params().path("range").equals(spec.path("range"));
+        if ("sheetTable.update".equals(originalId) && "sheetTable.update".equals(inverseId)) {
+            String tableId = original.params().path("id").asText("");
+            return !tableId.isBlank() && tableId.equals(inverse.params().path("id").asText());
+        }
+        boolean originalCellShiftRestore = originalId.endsWith(".restore");
+        boolean inverseCellShiftRestore = inverseId.endsWith(".restore");
+        if (originalCellShiftRestore == inverseCellShiftRestore) return false;
+        JsonNode originalSpec = originalCellShiftRestore ? original.params().path("spec") : original.params();
+        JsonNode inverseSpec = inverseCellShiftRestore ? inverse.params().path("spec") : inverse.params();
+        String originalOperation = cellShiftOperation(originalId, originalSpec);
+        String inverseOperation = cellShiftOperation(inverseId, inverseSpec);
+        return originalOperation != null && originalOperation.equals(inverseOperation)
+                && originalSpec.path("operation").asText().equals(inverseSpec.path("operation").asText())
+                && originalSpec.path("axis").asText().equals(inverseSpec.path("axis").asText())
+                && originalSpec.path("range").equals(inverseSpec.path("range"));
+    }
+
+    private static String cellShiftOperation(String mutationId, JsonNode spec) {
+        String expected = mutationId.startsWith("cells.inserted") ? "insert"
+                : mutationId.startsWith("cells.deleted") ? "delete" : null;
+        String actual = spec.path("operation").asText("");
+        return expected != null && expected.equals(actual) ? actual : null;
     }
 
     static boolean sameRowPermutationInverse(JsonNode original, JsonNode inverse) {

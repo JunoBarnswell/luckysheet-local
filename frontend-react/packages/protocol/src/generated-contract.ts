@@ -33,6 +33,19 @@ export const SERVER_STRUCTURAL_PLANNER_MUTATIONS = [
   "ganttSheet.update",
   "reportSheet.update",
 ] as const;
+export const STRUCTURAL_PATCH_MUTATIONS = [
+  "rows.inserted",
+  "rows.deleted",
+  "columns.inserted",
+  "columns.deleted",
+  "cells.inserted",
+  "cells.deleted",
+  "cells.inserted.restore",
+  "cells.deleted.restore",
+  "rows.permuted",
+  "range.move",
+  "sheetTable.update",
+] as const;
 const serverStructuralPlannerMutationIds: ReadonlySet<string> = new Set(SERVER_STRUCTURAL_PLANNER_MUTATIONS);
 export function requiresServerStructuralPlanner(mutationId: string): boolean {
   return serverStructuralPlannerMutationIds.has(mutationId);

@@ -40,6 +40,19 @@ public final class GeneratedWorkbookContract {
         "ganttSheet.update",
         "reportSheet.update"
     );
+    public static final Set<String> STRUCTURAL_PATCH_MUTATIONS = Set.of(
+        "rows.inserted",
+        "rows.deleted",
+        "columns.inserted",
+        "columns.deleted",
+        "cells.inserted",
+        "cells.deleted",
+        "cells.inserted.restore",
+        "cells.deleted.restore",
+        "rows.permuted",
+        "range.move",
+        "sheetTable.update"
+    );
     public static final Map<String, MutationCapability> MUTATIONS = Map.ofEntries(
         Map.entry("cell.set", new MutationCapability("remote", true, "CellSet", "editor", "range", true, "edit-cell", true, "declared", "range")),
         Map.entry("workbook.editing.options.set", new MutationCapability("remote", true, "WorkbookEditingOptions", "editor", "exact", true, "none", false, "none", "workbook")),

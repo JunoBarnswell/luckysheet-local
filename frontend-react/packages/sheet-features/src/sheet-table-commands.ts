@@ -1,4 +1,4 @@
-import { CALCULATION_CONTEXT_EFFECTS, clearFormulaProvenance, planSheetTableRename, type AutoFilterModel, type RangeRef, type SheetTableModel } from '@react-sheets/core-model';
+import { CALCULATION_CONTEXT_EFFECTS, clearFormulaProvenance, planSheetTableRename, type AutoFilterModel, type RangeRef, type SheetTableModel, type StructuralRangeOwnerDelta } from '@react-sheets/core-model';
 import type { CommandRuntime } from '@react-sheets/command-runtime';
 import {
   planTotalRowToggle,
@@ -41,6 +41,33 @@ function isSheetTableRemove(value: unknown): value is { sheetId: string; tableId
 
 function tableRange(value: SheetTableModel): RangeRef[] {
   return [structuredClone(value.range)];
+}
+
+function sheetTableRangeDelta(previous: SheetTableModel, next: SheetTableModel): StructuralRangeOwnerDelta[] {
+  const before = previous.range;
+  const after = next.range;
+  if (before.sheetId === after.sheetId && before.startRow === after.startRow && before.endRow === after.endRow
+    && before.startColumn === after.startColumn && before.endColumn === after.endColumn) return [];
+  return [{ ownerKind: 'sheet-table', sheetId: previous.sheetId, ownerId: previous.id,
+    before: structuredClone(before), after: structuredClone(after) }];
+}
+
+function sheetTableUpdateEffect(effect: unknown, deltas: readonly StructuralRangeOwnerDelta[]): unknown {
+  if (deltas.length === 0) return effect;
+  const structuralEffect = effect && typeof effect === 'object' ? effect as Record<string, unknown> : {};
+  const existingDeltas = Array.isArray(structuralEffect.rangeOwnerDeltas)
+    ? structuralEffect.rangeOwnerDeltas as StructuralRangeOwnerDelta[]
+    : [];
+  return {
+    ...structuralEffect,
+    kind: 'structural-transform',
+    removedCells: Array.isArray(structuralEffect.removedCells) ? structuralEffect.removedCells : [],
+    clearInputRanges: Array.isArray(structuralEffect.clearInputRanges) ? structuralEffect.clearInputRanges : [],
+    populateInputRanges: Array.isArray(structuralEffect.populateInputRanges) ? structuralEffect.populateInputRanges : [],
+    rewrittenFormulaOwners: Array.isArray(structuralEffect.rewrittenFormulaOwners) ? structuralEffect.rewrittenFormulaOwners : [],
+    rangeOwnerDeltas: [...existingDeltas, ...deltas],
+    calculationContextEffect: CALCULATION_CONTEXT_EFFECTS.syncTables,
+  };
 }
 
 interface TableAutoFilterParams {
@@ -134,7 +161,11 @@ export function registerSheetTableCommands(runtime: CommandRuntime): void {
         && entry.range.startColumn <= table.range.endColumn && entry.range.endColumn >= table.range.startColumn)) {
         throw new Error('Sheet Tables cannot overlap');
       }
+      const rangeOwnerDeltas = sheetTableRangeDelta(sheet.sheetTables[index]!, table);
       sheet.sheetTables[index] = structuredClone(table);
+      return sheetTableUpdateEffect({
+        kind: 'structural-transform', removedCells: [], clearInputRanges: [], populateInputRanges: [], rewrittenFormulaOwners: [],
+      }, rangeOwnerDeltas);
     },
     metadata: {
       schema: { name: 'SheetTableModel', validate: isSheetTable },
@@ -185,6 +216,7 @@ export function registerSheetTableCommands(runtime: CommandRuntime): void {
         && entry.range.startColumn <= next.range.endColumn && entry.range.endColumn >= next.range.startColumn);
       if (overlaps) throw new Error('Sheet Tables cannot overlap');
       const affectedRanges = [structuredClone(next.range)];
+      const rangeOwnerDeltas = sheetTableRangeDelta(previous, next);
       const tableRename = previous.name === next.name
         ? undefined
         : planSheetTableRename(context.workbook, previous.id, next.name);
@@ -198,7 +230,7 @@ export function registerSheetTableCommands(runtime: CommandRuntime): void {
         apply: () => {
           const effect = tableRename?.apply();
           sheet.sheetTables[index] = structuredClone(next);
-          return effect;
+          return sheetTableUpdateEffect(effect, rangeOwnerDeltas);
         },
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };

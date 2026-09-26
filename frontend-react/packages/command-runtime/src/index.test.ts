@@ -580,6 +580,103 @@ test('CommandRuntime skips full workbook snapshot for empty committed structural
   workbook.snapshot = originalSnapshot;
 });
 
+test('CommandRuntime rejects an empty authoritative ACK patch when local history changed owners', () => {
+  const workbook = new WorkbookModel('unit-empty-authoritative-patch', 'Empty authoritative patch');
+  const sheetId = workbook.primarySheetId;
+  const before = { name: 'Rate', formula: '=A1', scope: 'workbook' as const, anchor: { sheetId, row: 0, column: 0 } };
+  const after = { ...before, formula: '=A2', anchor: { sheetId, row: 1, column: 0 } };
+  workbook.setDefinedName(before);
+  const delta: StructuralDefinedNameOwnerDelta = { owner: { name: 'Rate', scope: 'workbook' }, before, after };
+  const ownerRanges = [{ sheetId, startRow: 0, endRow: 1, startColumn: 0, endColumn: 0 }];
+  const runtime = new CommandRuntime(workbook);
+  const metadata = (name: string, allowedMutationIds: string[]) => ({
+    schema: { name, validate: (value: unknown) => !!value && typeof value === 'object' },
+    permission: { capability: 'test.defined-name.write' },
+    affectedRanges: { resolve: () => ownerRanges, mode: 'exact' as const },
+    inversePolicy: { allowedMutationIds, minCount: 1 },
+  });
+  runtime.registry.registerMutation({
+    id: 'test.defined-name.transform',
+    handler: (item, context) => context.workbook.setDefinedName(item.params as typeof after),
+    metadata: metadata('DefinedNameTransform', ['test.defined-name.restore']),
+  });
+  runtime.registry.registerMutation({
+    id: 'test.defined-name.restore',
+    handler: () => undefined,
+    metadata: metadata('DefinedNameRestore', ['test.defined-name.transform']),
+  });
+  runtime.registry.registerCommand({
+    id: 'test.defined-name.apply',
+    execute: (_params, context) => {
+      context.applyMutation({
+        id: 'test.defined-name.transform',
+        unitId: workbook.unitId,
+        sheetId,
+        params: after,
+        affectedRanges: ownerRanges,
+        inverse: [{ id: 'test.defined-name.restore', unitId: workbook.unitId, sheetId, params: {}, affectedRanges: ownerRanges }],
+        apply: () => {
+          workbook.setDefinedName(after);
+          return { definedNameOwnerDeltas: [delta] };
+        },
+      });
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges: ownerRanges };
+    },
+  });
+
+  const operation = runtime.execute('test.defined-name.apply', {});
+  assert.throws(() => runtime.applyCommittedStructuralPatches(operation.operationId, [{
+    id: 'test.defined-name.transform', unitId: workbook.unitId, sheetId, params: after,
+    affectedRanges: ownerRanges,
+    structuralFormulaOwnerDeltas: [],
+    structuralDefinedNameOwnerDeltas: [],
+    structuralRangeOwnerDeltas: [],
+  }], 1), /STRUCTURAL_PATCH_MISMATCH: server omitted locally changed owners/);
+  assert.equal(runtime.getHistoryDepth().undo, 1);
+  assert.equal(runtime.getInvalidHistoryEntries().length, 0);
+  assert.equal(workbook.getDefinedNameExact('Rate', 'workbook')?.formula, '=A2');
+});
+
+test('CommandRuntime rejects remote structural owner facts before mutating the live workbook', () => {
+  const workbook = new WorkbookModel('unit-remote-owner-patch-mismatch', 'Remote owner patch mismatch');
+  const sheetId = workbook.primarySheetId;
+  const sheet = workbook.getSheet(sheetId);
+  sheet.cells.set(0, 0, { value: null, formula: '=A1' });
+  const delta: StructuralFormulaOwnerDelta = {
+    kind: 'formula-cell',
+    beforeAddress: { sheetId, row: 0, column: 0 },
+    afterAddress: { sheetId, row: 0, column: 0 },
+    before: { formula: '=A1', sourceFormula: null, barcodeFormula: null },
+    after: { formula: '=B1', sourceFormula: null, barcodeFormula: null },
+  };
+  const metadata = (name: string, allowedMutationIds: string[]) => ({
+    schema: { name, validate: (value: unknown) => !!value && typeof value === 'object' },
+    permission: { capability: 'test.structural.write' },
+    affectedRanges: { resolve: () => [], mode: 'exact' as const },
+    inversePolicy: { allowedMutationIds, minCount: 1 },
+  });
+  const runtime = new CommandRuntime(workbook);
+  runtime.registry.registerMutation({
+    id: 'test.remote.structural',
+    handler: (item, context) => {
+      context.workbook.getSheet(item.sheetId).cells.set(0, 0, { value: null, formula: '=B1' });
+      return { formulaOwnerDeltas: [delta] };
+    },
+    metadata: metadata('RemoteStructural', ['test.remote.structural.restore']),
+  });
+  runtime.registry.registerMutation({
+    id: 'test.remote.structural.restore',
+    handler: () => undefined,
+    metadata: metadata('RemoteStructuralRestore', ['test.remote.structural']),
+  });
+
+  assert.throws(() => runtime.applyRemoteMutations([{
+    id: 'test.remote.structural', unitId: workbook.unitId, sheetId, params: {}, affectedRanges: [],
+    structuralFormulaOwnerDeltas: [], structuralDefinedNameOwnerDeltas: [], structuralRangeOwnerDeltas: [],
+  }]), /STRUCTURAL_PATCH_MISMATCH: remote formula owner facts/);
+  assert.equal(sheet.cells.get(0, 0)?.formula, '=A1');
+});
+
 test('CommandRuntime preflights committed owner patches without cloning the workbook', () => {
   const workbook = new WorkbookModel('unit-sparse-structural-patch', 'Sparse structural patch');
   const sheet = workbook.getSheet(workbook.primarySheetId);

@@ -485,6 +485,18 @@ function planAxisRangeOwners(
       ownerKind: 'data-source', ownerId: id, before: Object.freeze({ ...source.sourceRange }), after,
     }));
   }
+  const sheetTableIds = new Set<string>();
+  for (const table of sheet.sheetTables) {
+    if (!table.id || sheetTableIds.has(table.id) || table.sheetId !== sheet.id || table.range.sheetId !== sheet.id) {
+      throw new Error(`STRUCTURAL_PATCH_INVARIANT: Sheet Table ${table.id} has an invalid owner identity`);
+    }
+    sheetTableIds.add(table.id);
+    const after = mapRange(table.range, `Sheet Table ${table.id}`);
+    if (after) changes.push(Object.freeze({
+      ownerKind: 'sheet-table', sheetId: sheet.id, ownerId: table.id,
+      before: Object.freeze({ ...table.range }), after,
+    }));
+  }
   return Object.freeze(changes);
 }
 
@@ -504,6 +516,13 @@ function applyAxisRangeOwnerDeltas(workbook: WorkbookModel, targetSheetId: strin
         const source = workbook.dataModel.sources.get(change.ownerId);
         if (!source) throw new Error(`STRUCTURAL_PATCH_INVARIANT: data source ${change.ownerId} is missing during axis commit`);
         source.sourceRange = { ...change.after };
+        break;
+      }
+      case 'sheet-table': {
+        const sheet = workbook.getSheet(change.sheetId);
+        const matches = sheet.sheetTables.filter((table) => table.id === change.ownerId && table.sheetId === change.sheetId);
+        if (matches.length !== 1) throw new Error(`STRUCTURAL_PATCH_INVARIANT: Sheet Table ${change.sheetId}:${change.ownerId} must resolve exactly once during axis commit`);
+        matches[0]!.range = { ...change.after };
         break;
       }
     }
@@ -780,6 +799,68 @@ function rangeContains(outer: RangeRef, inner: RangeRef): boolean {
     && inner.endRow <= outer.endRow
     && inner.startColumn >= outer.startColumn
     && inner.endColumn <= outer.endColumn;
+}
+
+function planMovedRangeOwnerDeltas(
+  workbook: WorkbookModel,
+  sheet: WorksheetModel,
+  source: RangeRef,
+  target: RangeRef,
+): readonly StructuralRangeOwnerDelta[] {
+  const rowDelta = target.startRow - source.startRow;
+  const columnDelta = target.startColumn - source.startColumn;
+  const moved = (range: RangeRef): Readonly<RangeRef> | undefined => rangeContains(source, range)
+    ? Object.freeze({ ...range, startRow: range.startRow + rowDelta, endRow: range.endRow + rowDelta,
+      startColumn: range.startColumn + columnDelta, endColumn: range.endColumn + columnDelta })
+    : undefined;
+  const changes: StructuralRangeOwnerDelta[] = [];
+  const regionIds = new Set<string>();
+  for (const region of sheet.dataRegions) {
+    if (!region.id || regionIds.has(region.id) || region.range.sheetId !== sheet.id) {
+      throw new Error(`STRUCTURAL_PATCH_INVARIANT: data region ${region.id} has an invalid owner identity during move planning`);
+    }
+    regionIds.add(region.id);
+    const afterRange = moved(region.range);
+    if (!afterRange) continue;
+    const afterHeaderRow = region.headerRow + rowDelta;
+    if (afterHeaderRow < afterRange.startRow || afterHeaderRow > afterRange.endRow) {
+      throw new Error(`STRUCTURAL_PATCH_INVARIANT: moved data region ${region.id} has an invalid header row`);
+    }
+    changes.push(Object.freeze({
+      ownerKind: 'data-region', sheetId: sheet.id, regionId: region.id,
+      before: Object.freeze({ range: Object.freeze({ ...region.range }), headerRow: region.headerRow }),
+      after: Object.freeze({ range: afterRange, headerRow: afterHeaderRow }),
+    }));
+  }
+  for (const [id, table] of workbook.dataModel.tables) {
+    if (table.sourceRange?.sheetId !== sheet.id) continue;
+    if (id !== table.id) throw new Error(`STRUCTURAL_PATCH_INVARIANT: workbook table ${id} has an invalid owner identity during move planning`);
+    const after = moved(table.sourceRange);
+    if (after) changes.push(Object.freeze({
+      ownerKind: 'workbook-table', ownerId: id, before: Object.freeze({ ...table.sourceRange }), after,
+    }));
+  }
+  for (const [id, sourceManifest] of workbook.dataModel.sources) {
+    if (sourceManifest.sourceRange?.sheetId !== sheet.id) continue;
+    if (id !== sourceManifest.id) throw new Error(`STRUCTURAL_PATCH_INVARIANT: data source ${id} has an invalid owner identity during move planning`);
+    const after = moved(sourceManifest.sourceRange);
+    if (after) changes.push(Object.freeze({
+      ownerKind: 'data-source', ownerId: id, before: Object.freeze({ ...sourceManifest.sourceRange }), after,
+    }));
+  }
+  const sheetTableIds = new Set<string>();
+  for (const table of sheet.sheetTables) {
+    if (!table.id || sheetTableIds.has(table.id) || table.sheetId !== sheet.id || table.range.sheetId !== sheet.id) {
+      throw new Error(`STRUCTURAL_PATCH_INVARIANT: Sheet Table ${table.id} has an invalid owner identity during move planning`);
+    }
+    sheetTableIds.add(table.id);
+    const after = moved(table.range);
+    if (after) changes.push(Object.freeze({
+      ownerKind: 'sheet-table', sheetId: sheet.id, ownerId: table.id,
+      before: Object.freeze({ ...table.range }), after,
+    }));
+  }
+  return Object.freeze(changes);
 }
 
 function shiftCellRangeReference(range: RangeRef, sheet: WorksheetModel, plan: CellShiftPlan): boolean {
@@ -2919,6 +3000,7 @@ function applyMoveRange(
   rejectFormulaGroupMetadataInRange(sheet, target, 'move-range destination');
   validateMoveMetadataPreservation(workbook, sheet, normalizedSource, target);
   validateDataRegionMovePreservation(sheet, normalizedSource, target);
+  const rangeOwnerDeltas = planMovedRangeOwnerDeltas(workbook, sheet, normalizedSource, target);
 
   const rowDelta = target.startRow - normalizedSource.startRow;
   const colDelta = target.startColumn - normalizedSource.startColumn;
@@ -3179,6 +3261,7 @@ function applyMoveRange(
     rewrittenFormulaOwners: formulaRewriteResult.owners,
     formulaOwnerDeltas: [...movedFormulaDeltas, ...formulaRewriteResult.deltas, ...formulaRewriteResult.formulaRuleDeltas],
     definedNameOwnerDeltas: formulaRewriteResult.definedNameDeltas,
+    rangeOwnerDeltas,
   };
 }
 

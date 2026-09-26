@@ -22,6 +22,7 @@ const permissionEntries = Object.entries(permissionSource.mutations);
 const commandEntries = Object.entries(permissionSource.commands);
 const commandPrefixEntries = permissionSource.commandPrefixes;
 const serverStructuralPlannerMutations = source.serverStructuralPlannerMutations;
+const structuralPatchMutations = source.structuralPatchMutations;
 const serverStructuralPlannerCommands = source.serverStructuralPlannerCommands;
 if (!Array.isArray(serverStructuralPlannerMutations)
   || new Set(serverStructuralPlannerMutations).size !== serverStructuralPlannerMutations.length) {
@@ -30,6 +31,15 @@ if (!Array.isArray(serverStructuralPlannerMutations)
 for (const id of serverStructuralPlannerMutations) {
   if (typeof id !== 'string' || !permissionSource.mutations[id]) {
     throw new Error(`Server structural planner mutation ${String(id)} is missing a canonical mutation permission policy`);
+  }
+}
+if (!Array.isArray(structuralPatchMutations)
+  || new Set(structuralPatchMutations).size !== structuralPatchMutations.length) {
+  throw new Error('structuralPatchMutations must be a unique array of mutation ids');
+}
+for (const id of structuralPatchMutations) {
+  if (typeof id !== 'string' || !serverStructuralPlannerMutations.includes(id) || !permissionSource.mutations[id]) {
+    throw new Error(`Structural patch mutation ${String(id)} must have a server planner and canonical mutation permission policy`);
   }
 }
 if (!Array.isArray(serverStructuralPlannerCommands)
@@ -88,7 +98,13 @@ const tsMutationPermissions = permissionEntries.map(([id, policy]) =>
 const javaServerStructuralPlannerMutations = serverStructuralPlannerMutations
   .map((id) => `        ${JSON.stringify(id)}`)
   .join(',\n');
+const javaStructuralPatchMutations = structuralPatchMutations
+  .map((id) => `        ${JSON.stringify(id)}`)
+  .join(',\n');
 const tsServerStructuralPlannerMutations = serverStructuralPlannerMutations
+  .map((id) => `  ${JSON.stringify(id)},`)
+  .join('\n');
+const tsStructuralPatchMutations = structuralPatchMutations
   .map((id) => `  ${JSON.stringify(id)},`)
   .join('\n');
 const tsServerStructuralPlannerCommands = serverStructuralPlannerCommands
@@ -110,6 +126,9 @@ public final class GeneratedWorkbookContract {
     public static final Set<String> ERROR_CODES = Set.of(${errors});
     public static final Set<String> SERVER_STRUCTURAL_PLANNER_MUTATIONS = Set.of(
 ${javaServerStructuralPlannerMutations}
+    );
+    public static final Set<String> STRUCTURAL_PATCH_MUTATIONS = Set.of(
+${javaStructuralPatchMutations}
     );
     public static final Map<String, MutationCapability> MUTATIONS = Map.ofEntries(
 ${javaMutations}
@@ -152,6 +171,9 @@ export const MAX_WORKBOOK_NAME_LENGTH = ${source.workbook.maxNameLength} as cons
 export const CONTRACT_ERROR_CODES = [${errors}] as const;
 export const SERVER_STRUCTURAL_PLANNER_MUTATIONS = [
 ${tsServerStructuralPlannerMutations}
+] as const;
+export const STRUCTURAL_PATCH_MUTATIONS = [
+${tsStructuralPatchMutations}
 ] as const;
 const serverStructuralPlannerMutationIds: ReadonlySet<string> = new Set(SERVER_STRUCTURAL_PLANNER_MUTATIONS);
 export function requiresServerStructuralPlanner(mutationId: string): boolean {

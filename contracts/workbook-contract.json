@@ -50,6 +50,19 @@
     "ganttSheet.update",
     "reportSheet.update"
   ],
+  "structuralPatchMutations": [
+    "rows.inserted",
+    "rows.deleted",
+    "columns.inserted",
+    "columns.deleted",
+    "cells.inserted",
+    "cells.deleted",
+    "cells.inserted.restore",
+    "cells.deleted.restore",
+    "rows.permuted",
+    "range.move",
+    "sheetTable.update"
+  ],
   "serverStructuralPlannerCommands": [
     "sheet.rows.insert",
     "sheet.rows.delete",

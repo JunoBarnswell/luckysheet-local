@@ -80,12 +80,14 @@ class StructuralPatchMergeTest {
                 range("sheet-1", 1, 3, 0, 1), 1);
         StructuralPatch.RangeOwnerDelta source = StructuralPatch.RangeOwnerDelta.range(
                 "data-source", "source-1", range("sheet-1", 4, 6, 0, 1), range("sheet-1", 5, 7, 0, 1));
+        StructuralPatch.RangeOwnerDelta sheetTable = StructuralPatch.RangeOwnerDelta.sheetTable("sheet-1", "sheet-table-1",
+                range("sheet-1", 8, 10, 0, 1), range("sheet-1", 9, 11, 0, 1));
 
         StructuralPatch merged = MutationDescriptorRegistry.mergeStructuralPatches("rows.inserted",
                 patch("rows.inserted", List.of(), List.of(), List.of(table, region)),
-                patch("rows.inserted", List.of(), List.of(), List.of(table, region, source)));
+                patch("rows.inserted", List.of(), List.of(), List.of(table, region, source, sheetTable)));
 
-        assertEquals(List.of(table, region, source), merged.rangeOwnerDeltas());
+        assertEquals(List.of(table, region, source, sheetTable), merged.rangeOwnerDeltas());
     }
 
     @Test
@@ -117,12 +119,15 @@ class StructuralPatchMergeTest {
     @Test
     void structuralPatchSerializesRangeOwnerDeltasAsAnExactTopLevelField() {
         ObjectMapper mapper = new ObjectMapper();
-        StructuralPatch patch = patch("rows.inserted", List.of(), List.of());
+        StructuralPatch.RangeOwnerDelta sheetTable = StructuralPatch.RangeOwnerDelta.sheetTable("sheet-1", "sheet-table-1",
+                range("sheet-1", 0, 2, 0, 1), range("sheet-1", 1, 3, 0, 1));
+        StructuralPatch patch = patch("rows.inserted", List.of(), List.of(), List.of(sheetTable));
 
         Set<String> fields = new HashSet<>();
         mapper.valueToTree(patch).fieldNames().forEachRemaining(fields::add);
 
         assertEquals(Set.of("version", "mutationId", "formulaOwnerDeltas", "definedNameOwnerDeltas", "rangeOwnerDeltas"), fields);
+        assertEquals("sheet-1", mapper.valueToTree(patch).path("rangeOwnerDeltas").get(0).path("sheetId").asText());
     }
 
     private static StructuralPatch patch(String mutationId, List<StructuralPatch.FormulaOwnerDelta> formulas,

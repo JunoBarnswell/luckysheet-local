@@ -14,4 +14,11 @@ export type StructuralRangeOwnerDelta =
     readonly ownerId: string;
     readonly before: Readonly<RangeRef>;
     readonly after: Readonly<RangeRef>;
+  }
+  | {
+    readonly ownerKind: 'sheet-table';
+    readonly sheetId: SheetId;
+    readonly ownerId: string;
+    readonly before: Readonly<RangeRef>;
+    readonly after: Readonly<RangeRef>;
   };

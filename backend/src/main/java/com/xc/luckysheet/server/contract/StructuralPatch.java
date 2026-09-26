@@ -21,7 +21,7 @@ public record StructuralPatch(
         @JsonProperty("definedNameOwnerDeltas") List<DefinedNameOwnerDelta> definedNameOwnerDeltas,
         @JsonProperty("rangeOwnerDeltas") List<RangeOwnerDelta> rangeOwnerDeltas
 ) {
-    public static final int VERSION = 4;
+    public static final int VERSION = 5;
 
     public record FormulaOwnerKey(String kind, String sheetId, Integer row, Integer column,
             String ruleKind, String ruleId, String field, String ownerKind, String ownerId,
@@ -118,6 +118,13 @@ public record StructuralPatch(
                         || before.equals(after)) {
                     throw new IllegalArgumentException("StructuralPatch data-region range-owner delta is invalid");
                 }
+            } else if ("sheet-table".equals(ownerKind)) {
+                if (sheetId == null || sheetId.isBlank() || regionId != null || ownerId == null || ownerId.isBlank()
+                        || !validRange(before) || !validRange(after)
+                        || !sheetId.equals(range(before).sheetId()) || !sheetId.equals(range(after).sheetId())
+                        || before.equals(after)) {
+                    throw new IllegalArgumentException("StructuralPatch Sheet Table range-owner delta is invalid");
+                }
             } else if (List.of("workbook-table", "data-source").contains(ownerKind)) {
                 if (sheetId != null || regionId != null || ownerId == null || ownerId.isBlank()
                         || !validRange(before) || !validRange(after)
@@ -146,6 +153,10 @@ public record StructuralPatch(
                 throw new IllegalArgumentException("Unsupported StructuralPatch range owner kind");
             }
             return new RangeOwnerDelta(ownerKind, null, null, ownerId, rangeNode(before), rangeNode(after));
+        }
+
+        public static RangeOwnerDelta sheetTable(String sheetId, String ownerId, RangeRef before, RangeRef after) {
+            return new RangeOwnerDelta("sheet-table", sheetId, null, ownerId, rangeNode(before), rangeNode(after));
         }
 
         public RangeRef beforeRange() { return "data-region".equals(ownerKind) ? regionRange(before) : range(before); }

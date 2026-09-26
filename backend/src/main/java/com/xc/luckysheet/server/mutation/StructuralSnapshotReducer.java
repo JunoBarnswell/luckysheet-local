@@ -102,11 +102,13 @@ final class StructuralSnapshotReducer {
         Set<String> targetRegionSheets = new java.util.HashSet<>();
         Set<String> targetTableIds = new java.util.HashSet<>();
         Set<String> targetSourceIds = new java.util.HashSet<>();
+        Map<String, Set<String>> targetSheetTableIds = new HashMap<>();
         for (StructuralPatch.RangeOwnerDelta delta : deltas) {
             switch (delta.ownerKind()) {
                 case "data-region" -> targetRegionSheets.add(delta.sheetId());
                 case "workbook-table" -> targetTableIds.add(delta.ownerId());
                 case "data-source" -> targetSourceIds.add(delta.ownerId());
+                case "sheet-table" -> targetSheetTableIds.computeIfAbsent(delta.sheetId(), ignored -> new java.util.HashSet<>()).add(delta.ownerId());
                 default -> throw ServiceException.conflict("STRUCTURAL_PATCH_INVARIANT: unsupported range-owner kind");
             }
         }
@@ -126,6 +128,21 @@ final class StructuralSnapshotReducer {
         Map<String, ObjectNode> tablesById = indexedRangeOwners(workbookTables(root), targetTableIds, "Workbook table");
         Map<String, ObjectNode> sourcesById = indexedRangeOwners(
                 SnapshotMutationSupport.dataModelArray(root, "sources"), targetSourceIds, "Data source");
+        Map<String, Map<String, ObjectNode>> sheetTablesBySheet = new HashMap<>();
+        for (Map.Entry<String, Set<String>> entry : targetSheetTableIds.entrySet()) {
+            Map<String, ObjectNode> tablesById = new HashMap<>();
+            for (JsonNode raw : SnapshotMutationSupport.array(SnapshotMutationSupport.sheet(root, entry.getKey()), "sheetTables")) {
+                ObjectNode table = requireObject(raw, "Sheet Table");
+                String tableId = SnapshotMutationSupport.text(table, "id");
+                if (!entry.getValue().contains(tableId)) continue;
+                if (!entry.getKey().equals(table.path("sheetId").asText())
+                        || tablesById.putIfAbsent(tableId, table) != null) {
+                    throw ServiceException.conflict("STRUCTURAL_PATCH_PRECONDITION: Sheet Table identity is duplicated or belongs to another worksheet: "
+                            + entry.getKey() + ":" + tableId);
+                }
+            }
+            sheetTablesBySheet.put(entry.getKey(), tablesById);
+        }
 
         List<StructuralPatch.RangeOwnerDelta> changes = new ArrayList<>();
         for (StructuralPatch.RangeOwnerDelta delta : deltas) {
@@ -136,6 +153,10 @@ final class StructuralSnapshotReducer {
                 if (owner == null) throw ServiceException.conflict("STRUCTURAL_PATCH_PRECONDITION: data-region owner is missing: " + delta.sheetId() + ":" + delta.regionId());
                 currentRange = SnapshotMutationSupport.range(root, owner.get("range"));
                 currentHeader = integer(owner.get("headerRow"), "Data region header row", SnapshotMutationSupport.MAX_ROW);
+            } else if ("sheet-table".equals(delta.ownerKind())) {
+                ObjectNode owner = sheetTablesBySheet.get(delta.sheetId()).get(delta.ownerId());
+                if (owner == null) throw ServiceException.conflict("STRUCTURAL_PATCH_PRECONDITION: Sheet Table owner is missing: " + delta.sheetId() + ":" + delta.ownerId());
+                currentRange = SnapshotMutationSupport.range(root, owner.get("range"));
             } else {
                 ObjectNode owner = ("workbook-table".equals(delta.ownerKind()) ? tablesById : sourcesById).get(delta.ownerId());
                 if (owner == null || !delta.ownerId().equals(owner.path("id").asText())) {
@@ -163,6 +184,7 @@ final class StructuralSnapshotReducer {
                 case "data-region" -> regionChanges.computeIfAbsent(delta.sheetId(), ignored -> new HashMap<>()).put(delta.regionId(), delta);
                 case "workbook-table" -> tablesById.get(delta.ownerId()).set("sourceRange", rangeNode(delta.afterRange()));
                 case "data-source" -> sourcesById.get(delta.ownerId()).set("sourceRange", rangeNode(delta.afterRange()));
+                case "sheet-table" -> sheetTablesBySheet.get(delta.sheetId()).get(delta.ownerId()).set("range", rangeNode(delta.afterRange()));
                 default -> throw ServiceException.conflict("STRUCTURAL_PATCH_INVARIANT: unsupported range-owner kind");
             }
         }
@@ -220,7 +242,13 @@ final class StructuralSnapshotReducer {
         JsonNode newTable = findSheetTable(after, sheetId, tableId);
         String oldName = SnapshotMutationSupport.text(requireObject(oldTable, "Sheet Table"), "name");
         String newName = SnapshotMutationSupport.text(requireObject(newTable, "Sheet Table"), "name");
-        if (oldName.equalsIgnoreCase(newName)) return null;
+        RangeRef beforeRange = SnapshotMutationSupport.range(before, oldTable.get("range"));
+        RangeRef afterRange = SnapshotMutationSupport.range(after, newTable.get("range"));
+        List<StructuralPatch.RangeOwnerDelta> rangeDeltas = beforeRange.equals(afterRange) ? List.of()
+                : List.of(StructuralPatch.RangeOwnerDelta.sheetTable(sheetId, tableId, beforeRange, afterRange));
+        if (oldName.equalsIgnoreCase(newName)) {
+            return new StructuralPatch(StructuralPatch.VERSION, "sheetTable.update", List.of(), List.of(), rangeDeltas);
+        }
 
         Function<String, String> mapFormula = formula -> FormulaReferenceTransformer.renameTableReferences(formula, oldName, newName);
         List<StructuralPatch.FormulaOwnerDelta> formulaDeltas = new ArrayList<>();
@@ -280,8 +308,10 @@ final class StructuralSnapshotReducer {
             }
         }
         List<StructuralPatch.DefinedNameOwnerDelta> nameDeltas = definedNameOwnerDeltas(rawModels, transformedModels);
-        if (formulaDeltas.isEmpty() && nameDeltas.isEmpty()) return null;
-        return new StructuralPatch(StructuralPatch.VERSION, "sheetTable.update", formulaDeltas, nameDeltas, List.of());
+        if (formulaDeltas.isEmpty() && nameDeltas.isEmpty() && rangeDeltas.isEmpty()) {
+            return new StructuralPatch(StructuralPatch.VERSION, "sheetTable.update", List.of(), List.of(), List.of());
+        }
+        return new StructuralPatch(StructuralPatch.VERSION, "sheetTable.update", formulaDeltas, nameDeltas, rangeDeltas);
     }
 
     private static JsonNode findSheetTable(ObjectNode root, String sheetId, String tableId) {
@@ -3128,6 +3158,17 @@ final class StructuralSnapshotReducer {
             putRangeOwnerSnapshot(snapshots, new StructuralPatch.RangeOwnerKey("data-source", null, ownerId, null),
                     new RangeOwnerSnapshot("data-source", null, null, ownerId, range, null));
         }
+        for (JsonNode raw : SnapshotMutationSupport.array(target, "sheetTables")) {
+            ObjectNode table = requireObject(raw, "Sheet Table");
+            String ownerId = SnapshotMutationSupport.text(table, "id");
+            JsonNode rawRange = table.get("range");
+            RangeRef range = SnapshotMutationSupport.range(root, rawRange);
+            if (!targetSheetId.equals(table.path("sheetId").asText()) || !targetSheetId.equals(range.sheetId())) {
+                throw ServiceException.conflict("STRUCTURAL_PATCH_INVARIANT: Sheet Table owner geometry does not match worksheet: " + ownerId);
+            }
+            putRangeOwnerSnapshot(snapshots, new StructuralPatch.RangeOwnerKey("sheet-table", targetSheetId, ownerId, null),
+                    new RangeOwnerSnapshot("sheet-table", targetSheetId, null, ownerId, range, null));
+        }
         return snapshots;
     }
 
@@ -3157,6 +3198,9 @@ final class StructuralSnapshotReducer {
                 deltas.add(StructuralPatch.RangeOwnerDelta.dataRegion(
                         beforeState.sheetId(), beforeState.regionId(), beforeState.range(), beforeState.headerRow(),
                         afterState.range(), afterState.headerRow()));
+            } else if ("sheet-table".equals(beforeState.ownerKind())) {
+                deltas.add(StructuralPatch.RangeOwnerDelta.sheetTable(
+                        beforeState.sheetId(), beforeState.ownerId(), beforeState.range(), afterState.range()));
             } else {
                 deltas.add(StructuralPatch.RangeOwnerDelta.range(
                         beforeState.ownerKind(), beforeState.ownerId(), beforeState.range(), afterState.range()));

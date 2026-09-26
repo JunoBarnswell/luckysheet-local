@@ -43,6 +43,35 @@ class MutationDescriptorRegistryTest {
     }
 
     @Test
+    void structuralPatchMutationIdsAreGeneratedFromTheCanonicalWorkbookContract() {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+
+        for (String mutationId : GeneratedWorkbookContract.STRUCTURAL_PATCH_MUTATIONS) {
+            assertTrue(GeneratedWorkbookContract.requiresServerStructuralPlanner(mutationId));
+            assertEquals(mutationId, registry.require(mutationId, false).id());
+        }
+        assertTrue(GeneratedWorkbookContract.STRUCTURAL_PATCH_MUTATIONS.contains("cells.inserted.restore"));
+        assertTrue(GeneratedWorkbookContract.STRUCTURAL_PATCH_MUTATIONS.contains("sheetTable.update"));
+    }
+
+    @Test
+    void tableUpdateReferenceTransformEmitsAnExplicitEmptyPatchWhenNoOwnerFormulaChanges() throws Exception {
+        JsonNode before = mapper.readTree("""
+                {"sheets":[{"id":"sheet-1","name":"Sheet1","sheetTables":[
+                  {"id":"table-1","name":"Sales","range":{"sheetId":"sheet-1","startRow":0,"endRow":2,"startColumn":0,"endColumn":1}}
+                ]}]}
+                """);
+
+        StructuralPatch patch = StructuralSnapshotReducer.renameSheetTableReferences(
+                before, before.deepCopy(), "sheet-1", "table-1");
+
+        assertEquals("sheetTable.update", patch.mutationId());
+        assertTrue(patch.formulaOwnerDeltas().isEmpty());
+        assertTrue(patch.definedNameOwnerDeltas().isEmpty());
+        assertTrue(patch.rangeOwnerDeltas().isEmpty());
+    }
+
+    @Test
     void ownedCommitSelectionKeepsCellProtectionPreimageDetached() throws Exception {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         JsonNode snapshot = mapper.readTree("""
@@ -103,11 +132,15 @@ class MutationDescriptorRegistryTest {
         JsonNode original = snapshot.deepCopy();
         ObjectNode params = ((ObjectNode) snapshot.path("sheets").get(0).path("sheetTables").get(0)).deepCopy();
         params.put("name", "Orders");
+        ((ObjectNode) params.path("range")).put("startRow", 1).put("endRow", 6);
         OperationMutation rename = new OperationMutation("sheetTable.update", "sheet-1", params);
 
         MutationApplication application = registry.require("sheetTable.update", false).applyWithPatch(snapshot, rename);
 
         assertEquals(3, application.structuralPatch().formulaOwnerDeltas().size());
+        assertEquals(1, application.structuralPatch().rangeOwnerDeltas().size());
+        assertEquals("sheet-table", application.structuralPatch().rangeOwnerDeltas().get(0).ownerKind());
+        assertEquals(new RangeRef("sheet-1", 1, 6, 0, 1), application.structuralPatch().rangeOwnerDeltas().get(0).afterRange());
         assertEquals("=SUM(Orders[Amount])+Orders [Other]+ÅSales[Amount]+[Book.xlsx]Sales[Amount]+IF(A1=\"Sales[Amount]\",0,1)",
                 application.snapshot().path("sheets").get(0).path("cells").path("0").path("0").path("formula").asText());
         assertEquals("=Orders[Amount]", application.snapshot().path("sheets").get(0)
@@ -119,6 +152,8 @@ class MutationDescriptorRegistryTest {
         assertEquals(original, snapshot);
         assertEquals(application.snapshot(), registry.applyPublicMutations(snapshot, List.of(rename)));
         JsonNode undone = registry.applyStructuralPatch(application.snapshot(), application.structuralPatch().inverse("sheetTable.update"));
+        assertEquals(new RangeRef("sheet-1", 0, 4, 0, 1), SnapshotMutationSupport.range(undone,
+                undone.path("sheets").get(0).path("sheetTables").get(0).path("range")));
         assertEquals("=Sales[Amount]", undone.path("sheets").get(0)
                 .path("cells").path("0").path("1").path("formulaMetadata").path("sourceFormula").asText());
         JsonNode redone = registry.applyStructuralPatch(undone, application.structuralPatch());
@@ -156,6 +191,34 @@ class MutationDescriptorRegistryTest {
                 () -> registry.require("sheetTable.update", false).applyWithPatch(missingRuleRanges, rename));
         assertEquals("VALIDATION_ERROR", missingRangesError.code());
         assertEquals(missingRuleRangesOriginal, missingRuleRanges);
+    }
+
+    @Test
+    void sheetTableRangePatchAppliesAndRejectsDriftWithoutChangingTheBaseSnapshot() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        ObjectNode snapshot = (ObjectNode) mapper.readTree("""
+                {"sheets":[{"id":"sheet-1","sheetTables":[{"id":"table-1","sheetId":"sheet-1",
+                  "range":{"sheetId":"sheet-1","startRow":0,"endRow":3,"startColumn":0,"endColumn":1}}]}]}
+                """);
+        RangeRef before = new RangeRef("sheet-1", 0, 3, 0, 1);
+        RangeRef after = new RangeRef("sheet-1", 1, 5, 0, 1);
+        StructuralPatch patch = new StructuralPatch(StructuralPatch.VERSION, "sheetTable.update", List.of(), List.of(),
+                List.of(StructuralPatch.RangeOwnerDelta.sheetTable("sheet-1", "table-1", before, after)));
+
+        JsonNode applied = registry.applyStructuralPatch(snapshot, patch);
+        assertEquals(after, SnapshotMutationSupport.range(applied, applied.path("sheets").get(0)
+                .path("sheetTables").get(0).path("range")));
+        assertEquals(before, SnapshotMutationSupport.range(snapshot, snapshot.path("sheets").get(0)
+                .path("sheetTables").get(0).path("range")));
+
+        ObjectNode divergent = snapshot.deepCopy();
+        ((ObjectNode) divergent.path("sheets").get(0).path("sheetTables").get(0).path("range"))
+                .put("startRow", 8).put("endRow", 11);
+        JsonNode divergentBefore = divergent.deepCopy();
+        ServiceException error = assertThrows(ServiceException.class, () -> registry.applyStructuralPatch(divergent, patch));
+        assertEquals("CONFLICT", error.code());
+        assertTrue(error.getMessage().contains("STRUCTURAL_PATCH_PRECONDITION"));
+        assertEquals(divergentBefore, divergent);
     }
 
     @Test
@@ -1746,6 +1809,16 @@ class MutationDescriptorRegistryTest {
         return snapshot;
     }
 
+    private void addSheetTable(ObjectNode sheet, String tableId, RangeRef range) {
+        ObjectNode table = ((ArrayNode) sheet.path("sheetTables")).addObject();
+        table.put("id", tableId).put("sheetId", sheet.path("id").asText()).put("name", "LocalTable");
+        table.set("range", mapper.valueToTree(range));
+        table.put("hasHeaderRow", true).put("hasTotalRow", false).put("showBandedRows", true)
+                .put("showBandedColumns", false).put("showFirstColumn", false).put("showLastColumn", false)
+                .put("showFilterButton", true).put("autoExpand", "none");
+        table.putArray("columns").addObject().put("id", "column-1").put("name", "Value");
+    }
+
     private ObjectNode crossSheetRowPermutationSnapshot(int sourceStartRow, int sourceEndRow) throws Exception {
         ObjectNode snapshot = (ObjectNode) mapper.readTree("""
                 {"definedNames":{},"definedNameModels":[],"sheets":[
@@ -2688,6 +2761,7 @@ class MutationDescriptorRegistryTest {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         ObjectNode snapshot = workbookSourceRangePermutationSnapshot();
         ObjectNode targetSheet = (ObjectNode) snapshot.path("sheets").get(0);
+        addSheetTable(targetSheet, "sheet-table-1", new RangeRef("sheet-1", 0, 2, 0, 0));
         ObjectNode region = targetSheet.putArray("dataRegions").addObject()
                 .put("id", "region-1").put("sourceId", "data-source").put("headerRow", 0).put("revision", 0);
         region.set("range", range(0, 2, 0, 0));
@@ -2696,11 +2770,12 @@ class MutationDescriptorRegistryTest {
         MutationApplication application = registry.require(insert.id(), false).applyWithPatch(snapshot, insert);
 
         StructuralPatch patch = application.structuralPatch();
-        assertEquals(List.of("data-region", "workbook-table", "data-source"),
+        assertEquals(List.of("data-region", "workbook-table", "data-source", "sheet-table"),
                 patch.rangeOwnerDeltas().stream().map(StructuralPatch.RangeOwnerDelta::ownerKind).toList());
         assertEquals(new RangeRef("sheet-1", 1, 3, 0, 0), patch.rangeOwnerDeltas().get(0).afterRange());
         assertEquals(new RangeRef("sheet-1", 1, 3, 0, 0), patch.rangeOwnerDeltas().get(1).afterRange());
         assertEquals(new RangeRef("sheet-1", 1, 3, 0, 0), patch.rangeOwnerDeltas().get(2).afterRange());
+        assertEquals(new RangeRef("sheet-1", 1, 3, 0, 0), patch.rangeOwnerDeltas().get(3).afterRange());
 
         JsonNode undoneOwners = registry.applyStructuralPatch(application.snapshot(), patch.inverse("rows.deleted"));
         assertEquals(snapshot.path("sheets").get(0).path("dataRegions"), undoneOwners.path("sheets").get(0).path("dataRegions"));
@@ -2757,6 +2832,7 @@ class MutationDescriptorRegistryTest {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         ObjectNode snapshot = workbookSourceRangePermutationSnapshot();
         ObjectNode targetSheet = (ObjectNode) snapshot.path("sheets").get(0);
+        addSheetTable(targetSheet, "sheet-table-1", new RangeRef("sheet-1", 0, 2, 0, 0));
         ObjectNode region = targetSheet.putArray("dataRegions").addObject()
                 .put("id", "region-1").put("sourceId", "data-source").put("headerRow", 0).put("revision", 0);
         region.set("range", range(0, 2, 0, 0));
@@ -2767,10 +2843,11 @@ class MutationDescriptorRegistryTest {
         MutationApplication application = registry.require(move.id(), false).applyWithPatch(snapshot, move);
 
         StructuralPatch patch = application.structuralPatch();
-        assertEquals(List.of("data-region", "workbook-table", "data-source"),
+        assertEquals(List.of("data-region", "workbook-table", "data-source", "sheet-table"),
                 patch.rangeOwnerDeltas().stream().map(StructuralPatch.RangeOwnerDelta::ownerKind).toList());
         assertEquals(new RangeRef("sheet-1", 4, 6, 0, 0), patch.rangeOwnerDeltas().get(0).afterRange());
         assertEquals(4, patch.rangeOwnerDeltas().get(0).afterHeaderRow());
+        assertEquals(new RangeRef("sheet-1", 4, 6, 0, 0), patch.rangeOwnerDeltas().get(3).afterRange());
 
         JsonNode undoneOwners = registry.applyStructuralPatch(application.snapshot(), patch.inverse("range.move"));
         assertEquals(snapshot.path("sheets").get(0).path("dataRegions"), undoneOwners.path("sheets").get(0).path("dataRegions"));

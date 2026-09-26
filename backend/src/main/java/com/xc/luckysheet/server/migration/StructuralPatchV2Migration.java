@@ -29,7 +29,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.HexFormat;
 
-/** Fail-closed replay boundary upgrading verified history and snapshots to structural patch v4. */
+/** Fail-closed replay boundary upgrading verified history and snapshots to structural patch v5. */
 public abstract class StructuralPatchV2Migration extends BaseJavaMigration {
     private final ObjectMapper mapper = new ObjectMapper().registerModule(new JavaTimeModule());
 
@@ -633,7 +633,8 @@ public abstract class StructuralPatchV2Migration extends BaseJavaMigration {
             int oldVersion = oldPatch.path("version").asInt(-1);
             List<RangeRef> expectedStoredImpact = switch (oldVersion) {
                 case 1, 2, 3 -> legacyStructuralImpactRanges(patch, registry);
-                case 4 -> expectedImpact;
+                case 4 -> preSheetTableStructuralImpactRanges(patch, registry);
+                case 5 -> expectedImpact;
                 default -> throw failure("STRUCTURAL_PATCH_VERSION_UNSUPPORTED", unitId,
                         "stored patch version is unsupported at revision " + revision);
             };
@@ -685,8 +686,24 @@ public abstract class StructuralPatchV2Migration extends BaseJavaMigration {
                 if (!fields.equals(Set.of("version", "mutationId", "formulaOwnerDeltas", "definedNameOwnerDeltas", "rangeOwnerDeltas"))) {
                     throw failure("STRUCTURAL_PATCH_V4_FIELDS", unitId, "stored v4 patch has a non-canonical field set at revision " + revision);
                 }
+                ObjectNode expectedV4Patch = expectedOldPatch.deepCopy();
+                expectedV4Patch.put("version", 4);
+                ArrayNode priorRangeOwners = mapper.createArrayNode();
+                for (JsonNode delta : expectedOldPatch.path("rangeOwnerDeltas")) {
+                    if (!"sheet-table".equals(delta.path("ownerKind").asText())) priorRangeOwners.add(delta.deepCopy());
+                }
+                expectedV4Patch.set("rangeOwnerDeltas", priorRangeOwners);
+                if (!oldPatch.equals(expectedV4Patch)) {
+                    throw failure("STRUCTURAL_PATCH_V4_MISMATCH", unitId, "stored v4 owner facts differ from the pre-v5 replay at revision " + revision);
+                }
+            } else if (oldVersion == 5) {
+                Set<String> fields = new HashSet<>();
+                oldPatch.fieldNames().forEachRemaining(fields::add);
+                if (!fields.equals(Set.of("version", "mutationId", "formulaOwnerDeltas", "definedNameOwnerDeltas", "rangeOwnerDeltas"))) {
+                    throw failure("STRUCTURAL_PATCH_V5_FIELDS", unitId, "stored v5 patch has a non-canonical field set at revision " + revision);
+                }
                 if (!oldPatch.equals(expectedOldPatch)) {
-                    throw failure("STRUCTURAL_PATCH_V4_MISMATCH", unitId, "stored v4 owner facts differ from replay at revision " + revision);
+                    throw failure("STRUCTURAL_PATCH_V5_MISMATCH", unitId, "stored v5 owner facts differ from replay at revision " + revision);
                 }
             }
             rawMutation.set("structuralPatch", mapper.valueToTree(patch));
@@ -698,6 +715,15 @@ public abstract class StructuralPatchV2Migration extends BaseJavaMigration {
         StructuralPatch formulaOwnersOnly = new StructuralPatch(
                 StructuralPatch.VERSION, patch.mutationId(), patch.formulaOwnerDeltas(), List.of(), List.of());
         return registry.structuralImpactRanges(formulaOwnersOnly);
+    }
+
+    private List<RangeRef> preSheetTableStructuralImpactRanges(StructuralPatch patch, MutationDescriptorRegistry registry) {
+        List<StructuralPatch.RangeOwnerDelta> priorRangeOwners = patch.rangeOwnerDeltas().stream()
+                .filter(delta -> !"sheet-table".equals(delta.ownerKind()))
+                .toList();
+        StructuralPatch preV5 = new StructuralPatch(StructuralPatch.VERSION, patch.mutationId(),
+                patch.formulaOwnerDeltas(), patch.definedNameOwnerDeltas(), priorRangeOwners);
+        return registry.structuralImpactRanges(preV5);
     }
 
     private void migratePendingOutbox(Connection connection) throws Exception {

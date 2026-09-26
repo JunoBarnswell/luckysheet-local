@@ -997,6 +997,13 @@ describe('structural operations', () => {
     sheet.cells.set(0, 1, { value: null, formula: '=A1' });
     sheet.cells.set(2, 3, { value: 'stale' });
     sheet.cells.set(0, 3, { value: null, formula: '=A1' });
+    sheet.sheetTables.push({
+      id: 'move-table', sheetId: sheet.id, name: 'MoveTable',
+      range: { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 1 },
+      hasHeaderRow: true, hasTotalRow: false, showBandedRows: true, showBandedColumns: false,
+      showFirstColumn: false, showLastColumn: false, showFilterButton: true, autoExpand: 'none',
+      columns: [{ id: 'move-a', name: 'A' }, { id: 'move-b', name: 'B' }],
+    });
     sheet.drawingPayloads.set('chart-move', {
       kind: 'chart',
       chartId: 'chart-move',
@@ -1022,6 +1029,11 @@ describe('structural operations', () => {
     if (chart?.kind !== 'chart') throw new Error('Expected chart payload after move');
     assert.equal(chart.elements.titleText?.linkedFormula, '=C3');
     assert.equal(result.formulaOwnerDeltas?.some((delta) => delta.kind === 'formula-object'), true);
+    assert.deepEqual(result.rangeOwnerDeltas, [{
+      ownerKind: 'sheet-table', sheetId: sheet.id, ownerId: 'move-table',
+      before: { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 1 },
+      after: { sheetId: sheet.id, startRow: 2, endRow: 2, startColumn: 2, endColumn: 3 },
+    }]);
   });
 
   it('rewrites rule formulas and hyperlink addresses on other worksheets when a referenced range moves', () => {
@@ -1178,6 +1190,13 @@ describe('structural operations', () => {
       headerRow: 5,
       revision: 0,
     });
+    sheet.sheetTables.push({
+      id: 'structure-sheet-table', sheetId: sheet.id, name: 'StructureTable',
+      range: { sheetId: sheet.id, startRow: 15, endRow: 17, startColumn: 2, endColumn: 3 },
+      hasHeaderRow: true, hasTotalRow: false, showBandedRows: true, showBandedColumns: false,
+      showFirstColumn: false, showLastColumn: false, showFilterButton: true, autoExpand: 'none',
+      columns: [{ id: 'column-code', name: 'Code' }, { id: 'column-value', name: 'Value' }],
+    });
     sheet.cells.set(6, 2, { value: 999, style: { bold: true } });
 
     const sourceOwner = workbook.dataModel.sources.get(sourceId);
@@ -1196,6 +1215,11 @@ describe('structural operations', () => {
         ownerKind: 'data-source', ownerId: sourceId,
         before: { sheetId: sheet.id, startRow: 5, endRow: 7, startColumn: 2, endColumn: 3 },
         after: { sheetId: sheet.id, startRow: 7, endRow: 9, startColumn: 2, endColumn: 3 },
+      },
+      {
+        ownerKind: 'sheet-table', sheetId: sheet.id, ownerId: 'structure-sheet-table',
+        before: { sheetId: sheet.id, startRow: 15, endRow: 17, startColumn: 2, endColumn: 3 },
+        after: { sheetId: sheet.id, startRow: 17, endRow: 19, startColumn: 2, endColumn: 3 },
       },
     ]);
     assert.equal(workbook.dataModel.sources.get(sourceId), sourceOwner);
@@ -1217,6 +1241,9 @@ describe('structural operations', () => {
     assert.equal(sheet.dataRegions[0]?.headerRow, 7);
     assert.deepEqual(workbook.getDataSource(sourceId).sourceRange, {
       sheetId: sheet.id, startRow: 7, endRow: 9, startColumn: 2, endColumn: 3,
+    });
+    assert.deepEqual(sheet.sheetTables[0]?.range, {
+      sheetId: sheet.id, startRow: 17, endRow: 19, startColumn: 2, endColumn: 3,
     });
     assert.equal(sheet.cells.get(8, 2)?.value, 999);
     assert.deepEqual(sheet.usedRange, {

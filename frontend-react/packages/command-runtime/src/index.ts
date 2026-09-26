@@ -229,6 +229,12 @@ function sameRangeDimensions(left: RangeRef, right: RangeRef): boolean {
 
 function isValidStructuralRangeOwnerDelta(value: unknown): value is StructuralRangeOwnerDelta {
   if (!isRecord(value)) return false;
+  if (value.ownerKind === 'sheet-table') {
+    return typeof value.sheetId === 'string' && !!value.sheetId
+      && typeof value.ownerId === 'string' && !!value.ownerId
+      && isValidStructuralRangeRef(value.before) && isValidStructuralRangeRef(value.after)
+      && value.before.sheetId === value.sheetId && value.after.sheetId === value.sheetId;
+  }
   if (value.ownerKind === 'data-region') {
     if (typeof value.sheetId !== 'string' || !value.sheetId
       || typeof value.regionId !== 'string' || !value.regionId
@@ -1376,9 +1382,9 @@ export class CommandRuntime {
 
   applyCommittedStructuralPatches(operationId: string, items: readonly MutationInfo[], revision: number): void {
     if (!Number.isSafeInteger(revision) || revision < 1) throw new Error('Committed revision must be a positive safe integer');
-    const patched = items.filter((item) => (item.structuralFormulaOwnerDeltas?.length ?? 0) > 0
-      || (item.structuralDefinedNameOwnerDeltas?.length ?? 0) > 0
-      || (item.structuralRangeOwnerDeltas?.length ?? 0) > 0);
+    const patched = items.filter((item) => item.structuralFormulaOwnerDeltas !== undefined
+      || item.structuralDefinedNameOwnerDeltas !== undefined
+      || item.structuralRangeOwnerDeltas !== undefined);
     if (patched.length === 0) {
       this.setRevision(Math.max(this.currentRevision, revision));
       return;
@@ -1397,9 +1403,15 @@ export class CommandRuntime {
       const localRanges = entry.inversePlan.flatMap((mutation) => mutation.structuralRangeOwnerDeltas ?? []);
       const authoritativeRanges = patched.flatMap((item) => item.structuralRangeOwnerDeltas ?? []);
       const orderedRanges = (deltas: readonly StructuralRangeOwnerDelta[]) => deltas.map((delta) => JSON.stringify(delta)).sort();
-      if (JSON.stringify(ordered(local)) !== JSON.stringify(ordered(authoritative))
-        || JSON.stringify(orderedNames(localNames)) !== JSON.stringify(orderedNames(authoritativeNames))
-        || JSON.stringify(orderedRanges(localRanges)) !== JSON.stringify(orderedRanges(authoritativeRanges))) {
+      const formulaMismatch = JSON.stringify(ordered(local)) !== JSON.stringify(ordered(authoritative));
+      const definedNameMismatch = JSON.stringify(orderedNames(localNames)) !== JSON.stringify(orderedNames(authoritativeNames));
+      const rangeMismatch = JSON.stringify(orderedRanges(localRanges)) !== JSON.stringify(orderedRanges(authoritativeRanges));
+      if ((formulaMismatch && local.length > 0 && authoritative.length === 0)
+        || (definedNameMismatch && localNames.length > 0 && authoritativeNames.length === 0)
+        || (rangeMismatch && localRanges.length > 0 && authoritativeRanges.length === 0)) {
+        throw new Error('STRUCTURAL_PATCH_MISMATCH: server omitted locally changed owners; operation remains unacknowledged and the workbook must be reloaded');
+      }
+      if (formulaMismatch || definedNameMismatch || rangeMismatch) {
         const stack = this.undoStack.includes(entry) ? this.undoStack : this.redoStack;
         const index = stack.indexOf(entry);
         if (index >= 0) stack.splice(index, 1);
@@ -1521,6 +1533,7 @@ export class CommandRuntime {
       const effect = handler(item, {
         ...replayContext,
       }) ?? this.registry.getMutationMetadata(item.id).calculationContextEffect;
+      if (source === 'remote') assertRemoteStructuralOwnerFacts(item, effect);
       let notificationEffect: unknown = effect;
       const replaysOwnerFacts = source === 'undo' || source === 'redo' || source === 'remote';
       const formulaOwnerDeltas = replaysOwnerFacts ? item.structuralFormulaOwnerDeltas ?? [] : [];
@@ -1565,6 +1578,24 @@ export class CommandRuntime {
     const preview = new CommandRuntime(WorkbookModel.fromSnapshot(this.workbook.snapshot()), this.registry);
     preview.setStructuralReferenceOwnersProvider((workbook) => buildStructuralReferenceIndex(workbook));
     preview.applyHistory(items, source);
+  }
+}
+
+function assertRemoteStructuralOwnerFacts(item: MutationInfo, effect: unknown): void {
+  if (!isRecord(effect)) return;
+  const ownerFamilies = [
+    ['formulaOwnerDeltas', 'structuralFormulaOwnerDeltas', 'formula'],
+    ['definedNameOwnerDeltas', 'structuralDefinedNameOwnerDeltas', 'defined-name'],
+    ['rangeOwnerDeltas', 'structuralRangeOwnerDeltas', 'range'],
+  ] as const;
+  for (const [effectField, mutationField, label] of ownerFamilies) {
+    const local = effect[effectField];
+    const authoritative = item[mutationField];
+    if (!Array.isArray(local) || authoritative === undefined) continue;
+    const ordered = (deltas: readonly unknown[]) => deltas.map((delta) => JSON.stringify(delta) ?? '').sort();
+    if (JSON.stringify(ordered(local)) !== JSON.stringify(ordered(authoritative))) {
+      throw new Error(`STRUCTURAL_PATCH_MISMATCH: remote ${label} owner facts differ from the locally derived mutation effect`);
+    }
   }
 }
 
@@ -1941,6 +1972,8 @@ type StructuralRangeOwnerState =
 function structuralRangeOwnerKey(delta: StructuralRangeOwnerDelta): string {
   return delta.ownerKind === 'data-region'
     ? JSON.stringify([delta.ownerKind, delta.sheetId, delta.regionId])
+    : delta.ownerKind === 'sheet-table'
+      ? JSON.stringify([delta.ownerKind, delta.sheetId, delta.ownerId])
     : JSON.stringify([delta.ownerKind, delta.ownerId]);
 }
 
@@ -1981,10 +2014,48 @@ function indexStructuralDataRegions(
   return indexed;
 }
 
+function indexStructuralSheetTables(
+  workbook: WorkbookModel,
+  deltas: readonly StructuralRangeOwnerDelta[],
+): Map<string, WorksheetModel['sheetTables'][number]> {
+  const targetIdsBySheet = new Map<string, Set<string>>();
+  for (const delta of deltas) {
+    if (delta.ownerKind !== 'sheet-table') continue;
+    let targetIds = targetIdsBySheet.get(delta.sheetId);
+    if (!targetIds) {
+      targetIds = new Set();
+      targetIdsBySheet.set(delta.sheetId, targetIds);
+    }
+    targetIds.add(delta.ownerId);
+  }
+
+  const indexed = new Map<string, WorksheetModel['sheetTables'][number]>();
+  for (const [sheetId, targetIds] of targetIdsBySheet) {
+    const byId = new Map<string, WorksheetModel['sheetTables'][number]>();
+    for (const table of workbook.getSheet(sheetId).sheetTables) {
+      if (!targetIds.has(table.id)) continue;
+      if (table.sheetId !== sheetId || table.range.sheetId !== sheetId || !isValidStructuralRangeRef(table.range)
+        || byId.has(table.id)) {
+        throw new Error(`STRUCTURAL_PATCH_PRECONDITION: Sheet Table identity or geometry is invalid: ${sheetId}:${table.id}`);
+      }
+      byId.set(table.id, table);
+    }
+    for (const ownerId of targetIds) {
+      const table = byId.get(ownerId);
+      if (!table) {
+        throw new Error(`STRUCTURAL_PATCH_PRECONDITION: Sheet Table owner ${sheetId}:${ownerId} must resolve exactly once`);
+      }
+      indexed.set(JSON.stringify([sheetId, ownerId]), table);
+    }
+  }
+  return indexed;
+}
+
 function readStructuralRangeOwnerState(
   workbook: WorkbookModel,
   delta: StructuralRangeOwnerDelta,
   dataRegionsByIdentity: ReadonlyMap<string, WorksheetModel['dataRegions'][number]>,
+  sheetTablesByIdentity: ReadonlyMap<string, WorksheetModel['sheetTables'][number]>,
 ): StructuralRangeOwnerState {
   if (delta.ownerKind === 'data-region') {
     const match = dataRegionsByIdentity.get(dataRegionOwnerIdentity(delta.sheetId, delta.regionId));
@@ -2001,6 +2072,11 @@ function readStructuralRangeOwnerState(
       throw new Error(`STRUCTURAL_PATCH_PRECONDITION: workbook-table owner ${delta.ownerId} is missing`);
     }
     return { kind: 'range', range: { ...table.sourceRange } };
+  }
+  if (delta.ownerKind === 'sheet-table') {
+    const table = sheetTablesByIdentity.get(JSON.stringify([delta.sheetId, delta.ownerId]));
+    if (!table) throw new Error(`STRUCTURAL_PATCH_PRECONDITION: Sheet Table owner ${delta.sheetId}:${delta.ownerId} must resolve exactly once`);
+    return { kind: 'range', range: { ...table.range } };
   }
   const source = workbook.dataModel.sources.get(delta.ownerId);
   if (!source || source.id !== delta.ownerId || !source.sourceRange
@@ -2055,12 +2131,13 @@ function applyStructuralRangeOwnerDeltas(
     seenOwners.add(key);
   }
   const dataRegionsByIdentity = indexStructuralDataRegions(workbook, deltas);
+  const sheetTablesByIdentity = indexStructuralSheetTables(workbook, deltas);
   const initialStates = new Map<string, StructuralRangeOwnerState>();
   const currentStates = new Map<string, StructuralRangeOwnerState>();
   const ownerDeltas = new Map<string, StructuralRangeOwnerDelta>();
   for (const delta of deltas) {
     const key = structuralRangeOwnerKey(delta);
-    const current = readStructuralRangeOwnerState(workbook, delta, dataRegionsByIdentity);
+    const current = readStructuralRangeOwnerState(workbook, delta, dataRegionsByIdentity, sheetTablesByIdentity);
     initialStates.set(key, current);
     const next = prepareStructuralRangeOwnerUpdate(current, delta, direction);
     currentStates.set(key, next ?? current);
@@ -2070,6 +2147,7 @@ function applyStructuralRangeOwnerDeltas(
   const changedRegionsBySheet = new Map<string, Map<string, Extract<StructuralRangeOwnerDelta, { ownerKind: 'data-region' }>['after']>>();
   const tableWrites: Array<{ readonly owner: WorkbookTableModel; readonly range: RangeRef }> = [];
   const sourceWrites: Array<{ readonly owner: DataSourceManifest; readonly range: RangeRef }> = [];
+  const sheetTableWrites: Array<{ readonly owner: WorksheetModel['sheetTables'][number]; readonly range: RangeRef }> = [];
   for (const [key, next] of currentStates) {
     const current = initialStates.get(key)!;
     if (sameStructuralRangeOwnerState(current, next)) continue;
@@ -2089,10 +2167,14 @@ function applyStructuralRangeOwnerDeltas(
       const table = workbook.dataModel.tables.get(delta.ownerId);
       if (!table || table.id !== delta.ownerId) throw new Error(`STRUCTURAL_PATCH_PRECONDITION: workbook-table owner ${delta.ownerId} is missing`);
       tableWrites.push({ owner: table, range: { ...next.range } });
-    } else {
+    } else if (delta.ownerKind === 'data-source') {
       const source = workbook.dataModel.sources.get(delta.ownerId);
       if (!source || source.id !== delta.ownerId) throw new Error(`STRUCTURAL_PATCH_PRECONDITION: data-source owner ${delta.ownerId} is missing`);
       sourceWrites.push({ owner: source, range: { ...next.range } });
+    } else {
+      const table = sheetTablesByIdentity.get(JSON.stringify([delta.sheetId, delta.ownerId]));
+      if (!table) throw new Error(`STRUCTURAL_PATCH_PRECONDITION: Sheet Table owner ${delta.sheetId}:${delta.ownerId} must resolve exactly once`);
+      sheetTableWrites.push({ owner: table, range: { ...next.range } });
     }
   }
   const preparedRegionsBySheet = new Map<string, { readonly sheet: WorksheetModel; readonly regions: WorksheetModel['dataRegions'][number][] }>();
@@ -2107,6 +2189,7 @@ function applyStructuralRangeOwnerDeltas(
   for (const { sheet, regions } of preparedRegionsBySheet.values()) sheet.replaceDataRegions(regions);
   for (const { owner, range } of tableWrites) owner.sourceRange = range;
   for (const { owner, range } of sourceWrites) owner.sourceRange = range;
+  for (const { owner, range } of sheetTableWrites) owner.range = range;
 }
 
 function inverseStructuralRangeOwnerDelta(delta: StructuralRangeOwnerDelta): StructuralRangeOwnerDelta {
@@ -2118,6 +2201,7 @@ function inverseStructuralRangeOwnerDelta(delta: StructuralRangeOwnerDelta): Str
   }
   return {
     ownerKind: delta.ownerKind, ownerId: delta.ownerId,
+    ...(delta.ownerKind === 'sheet-table' ? { sheetId: delta.sheetId } : {}),
     before: structuredClone(delta.after), after: structuredClone(delta.before),
   };
 }
