@@ -140,7 +140,7 @@
 ### B：基础操作追加证据
 
 18. **B1 格式化隐式空白区域造成体积膨胀**：`sheet-features/src/index.ts:1818` 对选择矩形的每个地址生成 before 和 cell.restore；`style.set:1748` 为每个空白地址创建 `{value:null}` 再写样式。整列/整表格式操作的时间、history 和存储都与矩形面积相关，而不只是 occupied cells。不能简单跳过空白（会丢失 Excel 格式语义），应将范围/行列格式纳入 canonical style owner，统一 cell resolution、render、undo、server 与 OOXML。
-19. **B2 Table 重命名 command/replay 不同语义**：`sheet-table-commands.ts:175` 的 command 执行 `planSheetTableRename(...).apply()`，但 `sheetTable.update` mutation handler（124）只替换 table model。CommandRuntime 把公式 delta 附到 inverse，undo 可还原引用；redo forward 无相应公式 facts，handler 也不重新改引用。最小链为 `Table1→Table2 → undo → redo`，表名和公式可能分离。解决点是完整事实 replay，不是在 redo handler 再补一套 rename。
+19. **B2 formula-owner redo 丢失（本轮已修复）**：`CommandRuntime` 之前只把 mutation effect 的 formula-owner deltas 写进 inverse，forward history 没保存；history replay 只在 undo/remote 应用公式 delta，redo 对 `sheetTable.update` 等只重放 metadata reducer，表名变回新值但结构化公式仍是旧值。现在 forward mutation 同样保存 delta，redo 按 precondition 应用 forward owner facts，并通过 structural-transform effect 同步公式索引和投影；已有 deferred-cell regression 现在明确断言 forward facts、redo 结果与通知 effect。本地测试未运行，等待当前 PR CI。
 
 20. **B3 Sheet 删除撤销快照遍历整个 Workbook**：`getSheetSnapshot` 从 `WorkbookModel.snapshot()` 生成所有工作表的完整快照后才选中目标 Sheet。成本与全簿所有单元格数和对象数相关；多 Sheet、大数据文件仅撤销删除一个 Sheet 就复制无关数据。本轮改为目标 `WorksheetModel.snapshot()`，并让恢复直接用 `WorksheetModel.fromSnapshot()`，保留延迟单元格 hydration。
 21. **B4 Sheet 恢复依赖临时 Workbook 且可能部分提交**：旧恢复路径把当前 Workbook 其余工作表移除后用 `WorkbookModel.fromSnapshot()` 解析单 Sheet，跨 Sheet anchor 的名称因此无法通过所有权校验；之后逐个调用 `setDefinedName`，重复名字可能覆盖。打印文档也在工作表插入之后才写入。现先构造 Sheet、组合校验名称 identity/anchor、校验打印文档所有者并标准化，再一次性更新名称并插入；拒绝测试确认失败时 Workbook 快照不变。
@@ -271,3 +271,14 @@
 - [Office2016 ChartDrawing](https://learn.microsoft.com/en-us/dotnet/api/documentformat.openxml.office2016.drawing.chartdrawing?view=openxml-3.0.1)：ChartEx vocabulary 依据；具体 codec 实现仍需逐项 schema 核对与真实文件验收。
 
 性能设计和代码根因是本仓库的工程分析，不声称微软内部采用了本仓库的实现。
+
+## Formula owner undo/redo 六轮静态复核
+
+1. **事实采集**：command apply 的返回 effect 是原始公式 owner before/after facts；现在同一份 deep-cloned facts 同时进入 forward mutation 与 inverse mutation，不再只留给 undo。
+2. **撤销方向**：undo 仍以原始 delta 做 before/after precondition 与反向应用；通知 effect 显式交换地址、公式状态和 rule ranges。
+3. **重做方向**：redo 在 mutation handler 后按 forward delta 应用，已是目标状态时幂等，owner 已被其他操作改动时保留 typed precondition failure。
+4. **所有者类型**：cell、formula-rule、formula-object 三类 inverse 都有对应分支；重写 cell owner address 去重，避免同一 owner 因 reducer effect 与保存事实重复 reindex。
+5. **计算/投影通知**：replay effect 带结构变换 shape；既有 runtime synchronization 消费 changed formula owners、defined names 和表定义，recalc roots 与 projection listeners 不只看到 metadata 替换。
+6. **远端与 wire 边界**：remote source 继续 forward 应用服务端 owner delta；client operation 明确只投递 mutation id/sheetId/params，不把本地 history facts 当成客户端权威协议字段。新增/扩充 deferred-cell history regression 检查 forward facts、redo owner 值、通知形状及无 hydration。
+
+六轮复核都落在同一个 undo/redo 根因上，不拆成多个 bug。当前源码证据与 diff whitespace 检查通过；该回归及完整前端门禁留给当前 PR CI，未在本机执行。

@@ -1159,6 +1159,9 @@ export class CommandRuntime {
           sheetId: mutation.sheetId,
           params: mutation.params,
           affectedRanges: mutation.affectedRanges,
+          ...(formulaOwnerDeltas.length > 0
+            ? { structuralFormulaOwnerDeltas: structuredClone(formulaOwnerDeltas) }
+            : {}),
           ...(structuralImpactRanges.length > 0
             ? { structuralImpactRanges }
             : {}),
@@ -1443,20 +1446,28 @@ export class CommandRuntime {
         ...replayContext,
       }) ?? this.registry.getMutationMetadata(item.id).calculationContextEffect;
       let notificationEffect: unknown = effect;
-      if (item.structuralFormulaOwnerDeltas) {
-        if (source === 'undo') {
-          for (const delta of item.structuralFormulaOwnerDeltas) applyFormulaOwnerDelta(this.workbook, delta, 'undo');
-        } else if (source === 'remote') {
-          for (const delta of item.structuralFormulaOwnerDeltas) applyFormulaOwnerDelta(this.workbook, delta, 'forward');
-        }
+      const replaysOwnerFacts = source === 'undo' || source === 'redo' || source === 'remote';
+      const formulaOwnerDeltas = replaysOwnerFacts ? item.structuralFormulaOwnerDeltas ?? [] : [];
+      if (formulaOwnerDeltas.length > 0) {
+        const direction = source === 'undo' ? 'undo' : 'forward';
+        for (const delta of formulaOwnerDeltas) applyFormulaOwnerDelta(this.workbook, delta, direction);
       }
+      let notificationFormulaOwnerDeltas = formulaOwnerDeltas;
+      if (source === 'undo') notificationFormulaOwnerDeltas = formulaOwnerDeltas.map(inverseFormulaOwnerDelta);
+      let notificationDefinedNameOwnerDeltas: readonly StructuralDefinedNameOwnerDelta[] = [];
       if (item.structuralDefinedNameOwnerDeltas && (source === 'undo' || source === 'redo' || source === 'remote')) {
         const direction = source === 'undo' ? 'undo' : 'forward';
         for (const delta of item.structuralDefinedNameOwnerDeltas) applyDefinedNameOwnerDelta(this.workbook, delta, direction);
-        const notificationDeltas = source === 'undo'
+        notificationDefinedNameOwnerDeltas = source === 'undo'
           ? item.structuralDefinedNameOwnerDeltas.map(inverseDefinedNameOwnerDelta)
           : item.structuralDefinedNameOwnerDeltas;
-        notificationEffect = definedNamePatchReplayEffect(effect, notificationDeltas);
+      }
+      if (notificationFormulaOwnerDeltas.length > 0 || notificationDefinedNameOwnerDeltas.length > 0) {
+        notificationEffect = structuralOwnerPatchReplayEffect(
+          effect,
+          notificationFormulaOwnerDeltas,
+          notificationDefinedNameOwnerDeltas,
+        );
       }
       for (const listener of this.mutationListeners) {
         listener(item, source, notificationEffect);
@@ -1501,20 +1512,67 @@ function inverseDefinedNameOwnerDelta(delta: StructuralDefinedNameOwnerDelta): S
   };
 }
 
-function definedNamePatchReplayEffect(
+function inverseFormulaOwnerDelta(delta: StructuralFormulaOwnerDelta): StructuralFormulaOwnerDelta {
+  if (delta.kind === 'formula-cell') {
+    return {
+      ...delta,
+      beforeAddress: structuredClone(delta.afterAddress),
+      afterAddress: structuredClone(delta.beforeAddress),
+      before: structuredClone(delta.after),
+      after: structuredClone(delta.before),
+    };
+  }
+  if (delta.kind === 'formula-rule') {
+    return {
+      ...delta,
+      beforeFormula: delta.afterFormula,
+      afterFormula: delta.beforeFormula,
+      beforeRanges: structuredClone(delta.afterRanges),
+      afterRanges: structuredClone(delta.beforeRanges),
+    };
+  }
+  return { ...delta, beforeFormula: delta.afterFormula, afterFormula: delta.beforeFormula };
+}
+
+function structuralOwnerPatchReplayEffect(
   effect: unknown,
-  deltas: readonly StructuralDefinedNameOwnerDelta[],
+  formulaDeltas: readonly StructuralFormulaOwnerDelta[],
+  definedNameDeltas: readonly StructuralDefinedNameOwnerDelta[],
 ): unknown {
-  if (isWorkbookCalculationContextEffect(effect)) return effect;
-  const existing = isRecord(effect) ? effect : {};
+  const calculationContextEffect = isWorkbookCalculationContextEffect(effect)
+    ? effect
+    : isRecord(effect) && isWorkbookCalculationContextEffect(effect.calculationContextEffect)
+      ? effect.calculationContextEffect
+      : undefined;
+  const existing = isRecord(effect) && !isWorkbookCalculationContextEffect(effect) ? effect : {};
+  const existingFormulaDeltas = Array.isArray(existing.formulaOwnerDeltas)
+    ? existing.formulaOwnerDeltas as StructuralFormulaOwnerDelta[]
+    : [];
+  const replayFormulaDeltas = formulaDeltas.length > 0 ? formulaDeltas : existingFormulaDeltas;
+  const existingDefinedNameDeltas = Array.isArray(existing.definedNameOwnerDeltas)
+    ? existing.definedNameOwnerDeltas as StructuralDefinedNameOwnerDelta[]
+    : [];
+  const replayDefinedNameDeltas = definedNameDeltas.length > 0 ? definedNameDeltas : existingDefinedNameDeltas;
+  const rewrittenFormulaOwners = [
+    ...(Array.isArray(existing.rewrittenFormulaOwners) ? existing.rewrittenFormulaOwners : []),
+    ...replayFormulaDeltas.flatMap((delta) => delta.kind === 'formula-cell' ? [structuredClone(delta.afterAddress)] : []),
+  ];
+  const uniqueRewrittenFormulaOwners = new Map<string, unknown>();
+  for (const owner of rewrittenFormulaOwners) {
+    const key = JSON.stringify(owner);
+    if (key === undefined) throw new Error('STRUCTURAL_PATCH_INVARIANT: formula owner address is not serializable');
+    uniqueRewrittenFormulaOwners.set(key, owner);
+  }
   return {
     ...existing,
     kind: 'structural-transform' as const,
     removedCells: Array.isArray(existing.removedCells) ? existing.removedCells : [],
     clearInputRanges: Array.isArray(existing.clearInputRanges) ? existing.clearInputRanges : [],
     populateInputRanges: Array.isArray(existing.populateInputRanges) ? existing.populateInputRanges : [],
-    rewrittenFormulaOwners: Array.isArray(existing.rewrittenFormulaOwners) ? existing.rewrittenFormulaOwners : [],
-    definedNameOwnerDeltas: structuredClone(deltas),
+    rewrittenFormulaOwners: [...uniqueRewrittenFormulaOwners.values()],
+    ...(replayFormulaDeltas.length > 0 ? { formulaOwnerDeltas: structuredClone(replayFormulaDeltas) } : {}),
+    ...(replayDefinedNameDeltas.length > 0 ? { definedNameOwnerDeltas: structuredClone(replayDefinedNameDeltas) } : {}),
+    ...(calculationContextEffect ? { calculationContextEffect } : {}),
   };
 }
 

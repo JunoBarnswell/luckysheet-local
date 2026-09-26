@@ -263,13 +263,19 @@ test('CommandRuntime replays formula owner history without hydrating deferred ce
     },
   });
 
+  let redoEffect: unknown;
+  runtime.onMutation((_mutation, source, effect) => {
+    if (source === 'redo') redoEffect = effect;
+  });
   runtime.execute('formula.owner.rename', {});
+  assert.equal(runtime.getUndoEntries()[0]?.forwardMutations[0]?.structuralFormulaOwnerDeltas?.length, 1);
   assert.equal(sheet.cells.isHydrated, false);
   assert.equal(runtime.undo(), true);
   assert.equal(sheet.cells.toJSON()['0']?.['0']?.formula, '=Sales[Amount]');
   assert.equal(sheet.cells.isHydrated, false);
   assert.equal(runtime.redo(), true);
   assert.equal(sheet.cells.toJSON()['0']?.['0']?.formula, '=Orders[Amount]');
+  assert.equal((redoEffect as { kind?: string } | undefined)?.kind, 'structural-transform');
   assert.equal(sheet.cells.isHydrated, false);
   const changedOwner = sheet.cells.getFormulaOwnerWithoutHydration(0, 0)!;
   sheet.cells.replaceFormulaOwnerWithoutHydration(0, 0, { ...changedOwner, formula: '=Broken[Amount]' });
