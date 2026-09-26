@@ -405,7 +405,7 @@ test('chart data table renders source categories and values and hit-tests only i
     },
   } satisfies CanvasSheetSnapshot;
   const payload: ChartDrawingPayload = {
-    kind: 'chart', chartId: 'chart-data-table', chartType: 'column', subtype: 'column',
+    kind: 'chart', chartId: 'chart-data-table', chartType: 'column', subtype: 'clustered',
     source: { kind: 'worksheet-ranges', ranges: [{ sheetId: source.id, startRow: 0, endRow: 2, startColumn: 0, endColumn: 2 }] },
     elements: { hiddenData: 'show', legend: { visible: false, position: 'bottom' }, dataTable: { visible: true, showLegendKeys: true } },
   };
