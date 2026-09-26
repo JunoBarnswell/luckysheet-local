@@ -23,7 +23,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class StructuralPatchV2MigrationTest {
     private final ObjectMapper mapper = new ObjectMapper();
 
-    private static final class TestMigration extends StructuralPatchV2Migration { }
+    private static final class V4__TestMigration extends StructuralPatchV2Migration { }
 
     @Test
     void upgradesLegacyPatchVersionsWithoutComparingNewRangeImpactsToOldImpactLists() throws Exception {
@@ -32,7 +32,7 @@ class StructuralPatchV2MigrationTest {
             StructuralPatch currentPatch = currentRangePatch();
             ObjectNode rawEnvelope = rawEnvelope(version, currentPatch, List.of());
 
-            new TestMigration().rewriteMutationPatches(rawEnvelope, operation(),
+            new V4__TestMigration().rewriteMutationPatches(rawEnvelope, operation(),
                     List.of(Optional.of(currentPatch)), registry, "unit-1", 1);
 
             ObjectNode migratedMutation = (ObjectNode) rawEnvelope.path("mutations").get(0);
@@ -50,12 +50,12 @@ class StructuralPatchV2MigrationTest {
 
         ObjectNode tamperedLegacyEnvelope = rawEnvelope(3, currentPatch, currentImpact);
         IllegalStateException mismatch = assertThrows(IllegalStateException.class,
-                () -> new TestMigration().rewriteMutationPatches(tamperedLegacyEnvelope, operation(),
+                () -> new V4__TestMigration().rewriteMutationPatches(tamperedLegacyEnvelope, operation(),
                         List.of(Optional.of(currentPatch)), registry, "unit-1", 1));
         assertTrue(mismatch.getMessage().contains("STRUCTURAL_IMPACT_MISMATCH"));
 
         ObjectNode currentEnvelope = rawEnvelope(4, currentPatch, currentImpact);
-        new TestMigration().rewriteMutationPatches(currentEnvelope, operation(),
+        new V4__TestMigration().rewriteMutationPatches(currentEnvelope, operation(),
                 List.of(Optional.of(currentPatch)), registry, "unit-1", 1);
         assertEquals(mapper.valueToTree(currentPatch), currentEnvelope.path("mutations").get(0).get("structuralPatch"));
     }
