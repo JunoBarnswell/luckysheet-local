@@ -170,6 +170,7 @@ export type MutationRegistryIssueCode =
   | 'invalid-inverse'
   | 'invalid-params'
   | 'invalid-affected-ranges'
+  | 'invalid-structural-range-owner-deltas'
   | 'inverse-not-allowed'
   | 'invalid-inverse-policy';
 
@@ -2109,7 +2110,16 @@ function applyStructuralRangeOwnerDeltas(
 }
 
 function inverseStructuralRangeOwnerDelta(delta: StructuralRangeOwnerDelta): StructuralRangeOwnerDelta {
-  return { ...delta, before: structuredClone(delta.after), after: structuredClone(delta.before) };
+  if (delta.ownerKind === 'data-region') {
+    return {
+      ownerKind: 'data-region', sheetId: delta.sheetId, regionId: delta.regionId,
+      before: structuredClone(delta.after), after: structuredClone(delta.before),
+    };
+  }
+  return {
+    ownerKind: delta.ownerKind, ownerId: delta.ownerId,
+    before: structuredClone(delta.after), after: structuredClone(delta.before),
+  };
 }
 
 function readFormulaObjectOwner(workbook: WorkbookModel, delta: Extract<StructuralFormulaOwnerDelta, { kind: 'formula-object' }>): string | undefined {

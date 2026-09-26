@@ -492,6 +492,7 @@ test('CommandRuntime replays exact structural range-owner facts through undo and
 test('CommandRuntime applies workbook-table and data-source range deltas atomically', () => {
   const workbook = new WorkbookModel('unit-range-owner-models', 'Range Owner Models');
   const sheetId = workbook.primarySheetId;
+  const sheet = workbook.getSheet(sheetId);
   const beforeRange = { sheetId, startRow: 1, endRow: 3, startColumn: 0, endColumn: 2 };
   const afterRange = { ...beforeRange, startRow: 2, endRow: 4 };
   workbook.addTable({
