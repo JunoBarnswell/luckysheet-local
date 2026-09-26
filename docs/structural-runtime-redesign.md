@@ -1707,3 +1707,18 @@ CI 随后暴露 Java 侧另一个阻断该拒绝路径的解析缺陷：3D 预�
 六个静态复核视角：① resolved data 的类别和值与源 point index；② OOXML `ofPieChart` 的 auto split 与 secondary chart 类型；③ layout 中 split value、聚合总值、扇区角度/坐标与 Excel 表达是否闭合；④ Canvas 顶/侧面、连接线、条段与图例绘制；⑤ point/aggregate/bar hit 是否返回真实 selection owner；⑥ 高分类数排序/临时分配、缺值/零值、单一正值以及 doughnut/普通 pie 的既有分支。Microsoft 文档规定 Pie-of-Pie/Bar-of-Pie 将较小扇区拆入辅助饼或堆积条，默认自动分拆三个最小值：[Office 图表类型说明](https://support.microsoft.com/en-us/excel/available-chart-types-in-office)；OOXML `ofPieChart` 只显示一个系列并以 `splitType` 表示拆分：[Open XML `OfPieChart`](https://learn.microsoft.com/en-us/dotnet/api/documentformat.openxml.drawing.charts.ofpiechart?view=openxml-3.0.1)。
 
 新增 layout、Canvas hit/render 与 OOXML chart identity 回归源码，但本轮按用户要求不运行测试、构建或浏览器验收；当前只有静态契约与 diff 审查证据。其余 3D 柱/条、线/面积、气泡、曲面 subtype 以及 Exploded Pie/Doughnut 的 OOXML writer 编码仍未实现专用互操作，本次不将饼图覆盖扩大宣称为完整 Excel 图表对齐。桌面 Excel 互操作和性能实测保留为后续验收项。
+
+### 2026-09-27 six-view static review — structural metadata patch coverage
+
+本轮基线为 `codex/structural-reference-integrity@8a4b031d`，工作区干净，PR #345 仍为指向 `main` 的 draft。静态核实一个 owner-completeness 根因；受影响字段/所有者类别是证据范围，不将它们重复计作 30 个独立缺陷：
+
+1. **客户端写入面**：`StructuralTransform` 的 axis、cell-shift、move-range 路径会直接重映射 chart 的 worksheet/report/category/series/role/error-bar/data-label 引用、pivot worksheet source、sparkline source、camera/screenshot source、form-control link/input、filter/sort、merge/spill/protection、drawing anchors、review/hyperlink、print 和 report-sheet 坐标。
+2. **Java 写入面**：`StructuralSnapshotReducer.shiftAllMetadata`、`shiftCellBandMetadata`、`moveRangeMetadata` 及 row-permutation reducer 有对应的独立 metadata 写入器；这证明这些不是仅 UI 派生值，而是已落入服务端 canonical snapshot 的持久字段。
+3. **事实采集面**：Java `captureRangeOwnerSnapshots` 以及 TS `StructuralRangeOwnerDelta` 目前只建模 `data-region`、`workbook-table`、`data-source`、`sheet-table`。其它上述持久字段虽被两侧写入，却没有进入可逆 owner patch。
+4. **协议与校验面**：`StructuralPatch` / frontend `validateStructuralPatch` 固定版本 5，并只接受上述四类范围 owner；范围影响提取和 ACK 的精确对比只能覆盖 patch 中实际存在的事实，因此无法检测未表达的嵌套引用发生 TS/Java 分歧。
+5. **历史/回放面**：Java `StructuralPatchV2Migration` 能从校验过的 checkpoint 连续重放并重写 operation log/outbox；但现有 v5 分支会严格比较旧 patch 与当前派生 patch。新增 owner 事实必须显式升到新协议版本并迁移历史，不能在 v5 上静默扩展或让 runtime 接受双格式。
+6. **性能/身份面**：一次性深拷贝整个 payload/worksheet 来补 patch 会放大高 owner 数工作簿的临时内存；按数组下标标识 chart/pivot 子引用又会使后续重排后历史 patch 指向不稳定对象。实现需使用 owner-kind 专属稳定身份，在 mapper 修改点收集受影响 before/after，不能以全量 JSON diff 或猜字段名代替。
+
+**修复方案**：在同一 PR 中完成 StructuralPatch v6 的 typed metadata/reference owner facts；逐 owner-kind 定义稳定 key 与精确状态（含缺失/存在），首批覆盖 axis insert/delete、cell shift、move-range 和 row permutation 会实际改动的 chart/pivot/sparkline/drawing、filter/layout、anchor 与其它持久坐标所有者。Java 各 mapper 在首次写入前记录 owner before-state、完成映射后生成 after-state；同一 patch 驱动 Java replay/inverse、TS ACK/history/remote application 和影响范围。chart series、pivot source 等没有稳定子 owner ID 的 canonical 输入必须在结构写入前 fail-close，或在显式迁移中赋予持久 ID，不能退回数组位置猜测。v6 migration 必须校验 checkpoint checksum 与连续 revision，重放旧 intent、核验 v5 owner facts，再原子重写 operation log、pending outbox 与 canonical checkpoints；任一历史无法重放就返回 workbook/revision 并停止，不伪造 owner facts。
+
+本轮没有把同一缺失 patch 根因按图表字段、owner 类型或 mutation 数量凑成 30 项；因此**尚未达到用户要求的每轮至少 30 个真实问题**，不能宣称该批审查或整改完成。六个视角已确认的是一个跨层架构缺口，而不是六个不同缺陷。当前仅完成源码静态核查与方案收敛，未运行测试、构建、浏览器或 Excel；下一步实施 v6 owner-complete patch/migration，再做静态自审和最终实测。
