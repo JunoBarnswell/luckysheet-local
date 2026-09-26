@@ -3,7 +3,7 @@ import { describe, it } from 'node:test';
 import { CommandRuntime } from '@react-sheets/command-runtime';
 import { createPivotMemberKey, pivotMemberKey, WorkbookModel, type PivotResultTree } from '@react-sheets/core-model';
 import { registerDrawingFeature } from '../drawing';
-import { buildChartLayout, buildPivotChartData, chartSourceRanges, resolveChartData, resolveChartDataFromSources, resolveChartTitleText, registerChartCommands, type ChartPayload } from './index';
+import { buildChartLayout, buildPivotChartData, chartSourceRanges, resolveChartData, resolveChartDataFromSources, resolveChartTitleText, registerChartCommands, type ChartPayload, type ResolvedChartData } from './index';
 
 function chartPair(sheetId: string, chartId: string, payload: ChartPayload) {
   return {
@@ -349,6 +349,30 @@ describe('chart feature', () => {
     assert.equal(bars[2]!.geometry.height, 1, 'zero-value bars retain the renderer minimum hit target height');
     assert.equal(bars[2]!.geometry.width, bars[0]!.geometry.width);
     assert.equal(bars[3]!.connector!.y, bars[3]!.geometry.y, 'a total bar connects from the preceding cumulative total, not the zero baseline');
+  });
+
+  it('builds a chart above the engine argument-expansion limit without spreading point arrays', () => {
+    const pointCount = 130_000;
+    const categories = Array.from({ length: pointCount }, (_value, index) => index);
+    const values = Array.from({ length: pointCount }, (_value, index) => index % 31);
+    const series = { id: 'large-series', name: 'Large series', values, axis: 'primary' as const };
+    const data: ResolvedChartData = {
+      categories,
+      series: [series],
+      source: 'range',
+      binding: { source: 'range', orientation: 'columns', categories, series: [series], hierarchyLevels: [], nonContiguous: false },
+      status: { kind: 'ready' },
+    };
+    const payload: ChartPayload = {
+      kind: 'chart', chartId: 'large-line', chartType: 'line', subtype: 'line',
+      source: { kind: 'worksheet-ranges', ranges: [{ sheetId: 'large-sheet', startRow: 0, endRow: pointCount, startColumn: 0, endColumn: 1 }] },
+      elements: { hiddenData: 'show' },
+    };
+
+    const layout = buildChartLayout(payload, data, 480, 260);
+
+    assert.equal(layout.status.kind, 'ready');
+    assert.equal(layout.series[0]!.points.length, pointCount);
   });
 
   it('projects box-whisker inner points and mean-marker options into chart facts', () => {

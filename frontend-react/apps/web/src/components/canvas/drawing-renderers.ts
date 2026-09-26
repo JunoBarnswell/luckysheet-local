@@ -1250,9 +1250,13 @@ function drawChartSpecial(context: CanvasRenderingContext2D, payload: ChartDrawi
   if (layout.kind === 'stock') {
     const points = layout.stockPoints ?? [];
     const volume = layout.stockVolume;
-    const values = points.flatMap((point) => [point.high, point.low, point.close, point.open ?? point.close]);
-    const minimum = Math.min(...values, 0);
-    const maximum = Math.max(...values, 1);
+    let minimum = 0;
+    let maximum = 1;
+    for (const point of points) {
+      const open = point.open ?? point.close;
+      minimum = Math.min(minimum, point.high, point.low, point.close, open);
+      maximum = Math.max(maximum, point.high, point.low, point.close, open);
+    }
     const span = Math.max(1, maximum - minimum);
     const slot = plot.width / Math.max(1, points.length);
     const priceHeight = volume?.priceHeight ?? plot.height;
@@ -1517,9 +1521,13 @@ function chartHitTest(layout: ChartLayout, point: { x: number; y: number }, data
   if (layout.kind === 'stock') {
     const points = layout.stockPoints ?? [];
     const volume = layout.stockVolume;
-    const values = points.flatMap((entry) => [entry.high, entry.low, entry.close, entry.open ?? entry.close]);
-    const minimum = Math.min(...values, 0);
-    const maximum = Math.max(...values, 1);
+    let minimum = 0;
+    let maximum = 1;
+    for (const entry of points) {
+      const open = entry.open ?? entry.close;
+      minimum = Math.min(minimum, entry.high, entry.low, entry.close, open);
+      maximum = Math.max(maximum, entry.high, entry.low, entry.close, open);
+    }
     const span = Math.max(1, maximum - minimum);
     const slot = layout.plot.width / Math.max(1, points.length);
     for (const entry of points) {
@@ -1656,9 +1664,13 @@ function drawCanonicalSparklineOnCanvas(options: {
   };
   const { x, y, width, height } = rect;
   if (values.every((value) => value === null)) return;
-  const numbers = values.filter((value): value is number => value !== null);
-  const max = options.maximum ?? Math.max(...numbers, 0);
-  const min = options.minimum ?? Math.min(...numbers, 0);
+  let max = options.maximum ?? 1;
+  let min = options.minimum ?? 0;
+  for (const value of values) {
+    if (value === null) continue;
+    if (options.maximum === undefined) max = Math.max(max, value);
+    if (options.minimum === undefined) min = Math.min(min, value);
+  }
   const span = Math.max(1, max - min);
   context.save();
   context.translate(x, y);
@@ -1667,10 +1679,12 @@ function drawCanonicalSparklineOnCanvas(options: {
     context.lineWidth = sparkline.lineWeight ?? 1.5;
     const connect = sparkline.emptyCells === 'connect';
     let started = false;
+    let previousValue: number | undefined;
     values.forEach((value, index) => {
       if (value === null && !connect) { started = false; return; }
-      const previous = value === null ? values.slice(0, index).reverse().find((candidate): candidate is number => candidate !== null) : value;
+      const previous = value === null ? previousValue : value;
       if (previous === undefined) return;
+      if (value !== null) previousValue = value;
       const px = (index / Math.max(1, values.length - 1)) * width;
       const py = height - ((previous - min) / span) * height;
       if (!started) { context.beginPath(); context.moveTo(px, py); started = true; }
@@ -2088,13 +2102,27 @@ export function createCanvasFloatingDrawables(input: CanvasFloatingRendererInput
   }
   const sparklineGroups = sheet.sparklineGroups ?? [];
   const groupBounds = new Map<string, { min: number; max: number }>();
+  const sparklinesById = new Map<string, SparklineModel>();
+  for (const sparkline of sparklines) sparklinesById.set(sparkline.id, sparkline);
   for (const group of sparklineGroups) {
-    const values = group.sparklineIds.flatMap((id) => {
-      const member = sparklines.find((entry) => entry.id === id);
-      if (!member) return [];
-      try { return resolveSparklineData(member, (sheetId) => getSheet(sheetId), group).values.filter((value): value is number => value !== null); } catch { return []; }
-    });
-    if (values.length) groupBounds.set(group.id, { min: Math.min(0, ...values), max: Math.max(0, ...values) });
+    let minimum = 0;
+    let maximum = 0;
+    let hasValue = false;
+    for (const id of group.sparklineIds) {
+      const member = sparklinesById.get(id);
+      if (!member) continue;
+      try {
+        for (const value of resolveSparklineData(member, (sheetId) => getSheet(sheetId), group).values) {
+          if (value === null) continue;
+          minimum = Math.min(minimum, value);
+          maximum = Math.max(maximum, value);
+          hasValue = true;
+        }
+      } catch {
+        continue;
+      }
+    }
+    if (hasValue) groupBounds.set(group.id, { min: minimum, max: maximum });
   }
   for (const sparkline of sparklines) {
     const rect = skeleton.getCellRect(sparkline.anchor.row, sparkline.anchor.column);

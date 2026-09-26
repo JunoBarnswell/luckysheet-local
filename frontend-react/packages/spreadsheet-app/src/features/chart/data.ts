@@ -635,8 +635,8 @@ export function resolveStructuredChartBindings(payload: ChartDrawingPayload, tab
         if (values.length !== 1) throw new Error('INVALID_CHART_SOURCE: none aggregate received multiple values');
         return values[0]!;
       case 'count': return values.length;
-      case 'min': return Math.min(...values);
-      case 'max': return Math.max(...values);
+      case 'min': return values.reduce((minimum, value) => Math.min(minimum, value), values[0]!);
+      case 'max': return values.reduce((maximum, value) => Math.max(maximum, value), values[0]!);
       case 'average': return values.reduce((sum, value) => sum + value, 0) / values.length;
       case 'sum': return values.reduce((sum, value) => sum + value, 0);
       default: throw new Error(`INVALID_CHART_SOURCE: unsupported aggregate ${String(mode)}`);

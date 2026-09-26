@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import type { RangeRef } from '@react-sheets/core-model';
+import type { RangeRef, SparklineGroup, SparklineModel } from '@react-sheets/core-model';
 import { buildChartLayout, resolveChartDataFromSources, type CanvasSheetSnapshot } from '@react-sheets/spreadsheet-app';
 import { connectorEndpointHitTest, createCanvasFloatingDrawables, drawCanonicalConnectorOnCanvas, resolveCameraSourceGeometry } from './drawing-renderers';
 import type { ChartDrawingPayload, ConnectorDrawingPayload, DrawingObject, DrawingPayload } from '@react-sheets/core-model';
@@ -283,6 +283,62 @@ test('pie data labels render and remain selectable outside their slice geometry'
     action: 'chart.select-element',
     data: { kind: 'point', seriesId: layout.series[0]!.id, pointIndex: 0, category: layout.series[0]!.points[0]!.category },
   });
+});
+
+test('same-group sparkline bounds scan large series without argument spreading', () => {
+  const pointCount = 130_000;
+  const group: SparklineGroup = {
+    id: 'large-sparkline-group', sheetId: 'sheet-1', type: 'line', sparklineIds: ['large-sparkline'],
+    verticalAxis: { mode: 'same-group' },
+  };
+  const sparkline: SparklineModel = {
+    id: 'large-sparkline', sheetId: 'sheet-1', anchor: { row: 0, column: 0 },
+    sourceRange: { sheetId: 'sheet-1', startRow: 0, endRow: pointCount - 1, startColumn: 0, endColumn: 0 },
+    type: 'line', color: '#2563eb', groupId: group.id,
+  };
+  const source = {
+    ...sourceSnapshot(),
+    rowCount: pointCount,
+    sparklineGroups: [group],
+    getCell: (row: number, column: number) => row >= 0 && row < pointCount
+      ? { address: `${row}:${column}`, value: String(row % 31), rawValue: row % 31 }
+      : undefined,
+  } satisfies CanvasSheetSnapshot;
+  const drawables = createCanvasFloatingDrawables({
+    drawings: [], drawingPayloads: new Map(), allSheets: [source], sheet: source,
+    pivotResults: {}, sparklines: [sparkline], skeleton: { getCellRect: () => undefined } as unknown as SheetSkeleton,
+    imageCache: new Map(), requestRender: () => undefined, tables: [],
+  });
+
+  assert.equal(drawables.length, 0, 'the geometry fixture omits a cell rectangle after shared range bounds are resolved');
+});
+
+test('connected sparkline gaps reuse the previous value without rescanning earlier cells', () => {
+  const source = {
+    ...sourceSnapshot(),
+    getCell: (row: number, column: number) => row === 1 ? undefined : {
+      address: `${row}:${column}`, value: row === 0 ? '2' : '8', rawValue: row === 0 ? 2 : 8,
+    },
+  } satisfies CanvasSheetSnapshot;
+  const sparkline: SparklineModel = {
+    id: 'connected-gap', sheetId: source.id, anchor: { row: 0, column: 0 },
+    sourceRange: { sheetId: source.id, startRow: 0, endRow: 2, startColumn: 0, endColumn: 0 },
+    type: 'line', color: '#2563eb', emptyCells: 'connect',
+  };
+  const drawables = createCanvasFloatingDrawables({
+    drawings: [], drawingPayloads: new Map(), allSheets: [source], sheet: source,
+    pivotResults: {}, sparklines: [sparkline], skeleton: { getCellRect: () => ({ x: 10, y: 20, width: 30, height: 12 }) } as unknown as SheetSkeleton,
+    imageCache: new Map(), requestRender: () => undefined, tables: [],
+  });
+  const { context, calls } = mockCanvasContext();
+  drawables[0]!.draw(context, { x: 10, y: 20, width: 30, height: 12 });
+
+  const start = calls.find((call) => call.startsWith('moveTo:0,'));
+  const connectedGap = calls.find((call) => call.startsWith('lineTo:15,'));
+  const finalPoint = calls.find((call) => call.startsWith('lineTo:30,'));
+  assert.ok(start && connectedGap && finalPoint, 'the line includes the first point, missing slot, and final point');
+  assert.equal(connectedGap.split(',')[1], start.split(',')[1], 'the missing point connects at the last observed value');
+  assert.notEqual(finalPoint.split(',')[1], connectedGap.split(',')[1]);
 });
 
 test('Pivot controls expose semantic child hit zones instead of a generic shape hit', () => {

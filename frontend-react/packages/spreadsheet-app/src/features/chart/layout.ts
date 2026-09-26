@@ -349,9 +349,13 @@ function axisValuesForSeries(payload: ChartDrawingPayload, data: ResolvedChartDa
     if (series.axis !== axis || seriesModelFor(payload, series, seriesIndex)?.visible === false) continue;
     const placement = placements.get(seriesIndex);
     if (placement) {
-      values.push(...placement.starts, ...placement.ends);
+      for (const value of placement.starts) values.push(value);
+      for (const value of placement.ends) values.push(value);
     } else {
-      values.push(...numberValues(series.values));
+      for (const value of series.values) {
+        const numeric = chartNumericValue(value);
+        if (numeric !== undefined) values.push(numeric);
+      }
     }
   }
   return values;
@@ -769,9 +773,17 @@ function mapLayouts(payload: ChartDrawingPayload, data: ResolvedChartData, plot:
     const categoryIndex = categoryIndexes[featureIndex] ?? -1;
     return categoryIndex < 0 ? null : chartNumericValue(firstSeries?.values[categoryIndex]);
   });
-  const finite = values.filter((value): value is number => value !== null && Number.isFinite(value));
-  const minimum = finite.length ? Math.min(...finite) : 0;
-  const maximum = finite.length ? Math.max(...finite) : 1;
+  let minimum = Infinity;
+  let maximum = -Infinity;
+  for (const value of values) {
+    if (value === null || value === undefined || !Number.isFinite(value)) continue;
+    minimum = Math.min(minimum, value);
+    maximum = Math.max(maximum, value);
+  }
+  if (minimum === Infinity) {
+    minimum = 0;
+    maximum = 1;
+  }
   const features = resource.features.map((feature, index) => ({
     id: feature.id,
     label: feature.label,
@@ -932,7 +944,8 @@ export function buildChartLayout(payload: ChartDrawingPayload, data: ResolvedCha
       layout.stockPoints = stockLayouts(data, specialSeriesIndex);
       const stockSubtype = layout.series[specialSeriesIndex]?.subtype ?? payload.subtype;
       if (stockSubtype.includes('volume')) {
-        const maximum = Math.max(1, ...(layout.stockPoints ?? []).map((point) => point.volume ?? 0));
+        let maximum = 1;
+        for (const point of layout.stockPoints ?? []) maximum = Math.max(maximum, point.volume ?? 0);
         layout.stockVolume = {
           maximum,
           top: layout.plot.top + layout.plot.height * 0.78,

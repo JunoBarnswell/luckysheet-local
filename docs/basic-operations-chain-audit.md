@@ -9,7 +9,7 @@
 - **已确认的产品取舍**：2026-09-26 用户选择“统一由 Java 服务规划，可要求服务在线”。结构操作不再承诺无服务的浏览器离线执行；连接失败时拒绝提交并保留编辑草稿。此授权只改变结构规划归属，不自动扩展为全部普通输入或图表样式都必须远程。
 - 建档 60 个操作，操作数不等于缺陷数。下表是追踪清单，**不是 60 项审查完成/通过的声明**。同根因的行列、图表类型、入口变体不重复算 bug。
 - 审计底稿形成时只做静态阅读。后续仅有下列明示的定向回归证据；上一已提交 head 的 CI 成功不能作为当前工作树验收。
-- 当前续审已完成 core-model 59 项、Java structural facts 10 项、chart layout 14 项及 Canvas drawing 11 项定向测试；本批改动后 chart layout 14/14、Canvas drawing 11/11。前端项目级 `tsc` 仍因工作区缺少已声明的 `@types/react` 失败，本轮 4 个改动 TS/TSX 文件均无目标诊断。已在 in-app browser 打开 Vite 页面并查 Console/Network；页面因 `GET /api/auth/config → 500` 停在认证配置错误，Console 无 JS error/warn，未能进入工作簿或做图表 UI 操作。完整门禁、性能和 Excel 验收未完成。
+- 当前续审已完成 core-model 59 项、Java structural facts 10 项、chart layout 15 项及 Canvas drawing 13 项定向测试。前端项目级 `tsc` 仍因工作区缺少已声明的 `@types/react` 失败，本轮 5 个改动 TS/TSX 文件均无目标诊断。已在 in-app browser 打开 Vite 页面并查 Console/Network；页面因 `GET /api/auth/config → 500` 停在认证配置错误，Console 无 JS error/warn，未能进入工作簿或做图表 UI 操作。完整门禁、性能和 Excel 验收未完成。
 - Java `StructuralStateChanges` 目前只提供事实载体和历史迁移捕获/回放，**尚未接入在线结构意图规划和提交**。当前客户端先做 TS 结构变换，Java 再执行 reducer，远端客户端仍按 intent 重放；唯一 Java planner 尚未达成。
 
 ## 审查单位与证据要求
@@ -125,7 +125,7 @@
 10. **C6 趋势线不是对应算法**：`buildTrendline:337` 对所有类型先做原始线性回归；多项式用 `predictor ** 2 * slope * 0.02`，指数/对数/幂也沿用线性系数；forecast 是加在 y 上而不是扩展 x 域。必须用正式回归领域输出曲线、统计及 forecast 范围，覆盖拒绝域和阶数。
 11. **C7 直方图 underflow/overflow 丢数据**：`histogram:391` 直接 continue 不生成边界箱，图上总数不等于输入。过小 binWidth 还可产生与输入规模无关的超大 Array.from。需明确边界箱与容量拒绝，不能静默截断或随意改变用户设置。
 12. **C8 数据表仍是占位文本**：`drawChartLayoutOnCanvas:1404` 只绘制 `Chart Data Table` 字样，不绘制实际系列/类别/值。数据表必须进入同一布局与命中模型。
-13. **C9 大数据按参数展开**：layout `axisValuesForSeries` 的 push(...values)，bubble/map/stock extrema 及 renderer 多处 Math.max/min(...array) 会受引擎参数个数上限影响，同时制造大临时数组。应逐项统计/预分配或迭代输入，不能靠截断点数掩盖。
+13. **C9 大数据按参数展开及 sparkline 空值 O(n²)（本轮已修复）**：layout `axisValuesForSeries` 的 push(...values)，map/stock extrema、structured min/max 和 sparkline group bounds 的 Math.max/min(...array) 会受引擎参数个数上限影响并制造临时数组；same-group 还通过逐项 `find` 形成重复扫描，sparkline `emptyCells=connect` 对每个空槽切片反向查找前值，最坏为二次复杂度。本轮改为逐项统计、sparkline ID Map 和前值状态扫描；130,000 点布局/同组边界回归覆盖引擎参数阈值，空值连接回归校验线段保持同值。
 
 ### X：native codec 与图表领域脱节
 
@@ -195,7 +195,16 @@
 3. **箱线统计**：inner points 使用 lower/upper whisker 范围内的原始观测；离群点仍独立受 `showOutlierPoints` 控制；mean marker 不混进 whisker 或异常值统计。
 4. **分类直方图**：按 PivotScalar 类型区分 `1`、`"1"`、空白与错误类别；重复类别按 Excel 支持说明求和，Pareto 的负总额明确拒绝，所有 bin 的绘制与命中几何由 layout 生成。
 5. **饼/圆环标签**：series label overrides chart-level labels；百分比在对应 pie/doughnut ring 内计算；爆炸切片偏移同步应用于 label 位置和 hit bounds；所有字段显式关闭时不再强行展示数值。
-6. **拒绝与门禁**：chart 14/14、Canvas 11/11；全项目 `tsc` 仍因缺少 React typings 退出 2，修改 TS/TSX 文件目标诊断为 0。Vite 浏览器页已打开但 `GET /api/auth/config` 返回 500，未进入 workbook；不绕过认证，UI/OOXML/native Excel/大数据性能仍阻塞或未验收。
+6. **拒绝与门禁**：chart 15/15、Canvas 13/13；全项目 `tsc` 仍因缺少 React typings 退出 2，修改 TS/TSX 文件目标诊断为 0。Vite 浏览器页已打开但 `GET /api/auth/config` 返回 500，未进入 workbook；不绕过认证，UI/OOXML/native Excel/大数据性能仍阻塞或未验收。
+
+## 本轮图表大数据路径六轮复核
+
+1. **参数边界**：chart axis series 不再 `push(...values)`；130,000 点 line layout 实测构建成功，点数保持完整，无静默截断。
+2. **地图分布**：map extrema 在遍历已映射值时累计 min/max，不再额外创建 finite 数组或传入巨型参数列表；无有效值仍保持既有 0/1 空域。
+3. **股价范围**：draw 与 hit-test 均移除 `flatMap + Math.min/max spread`，仅用常量数量的标量更新界限；volume 最大值同样单遍扫描。
+4. **结构化聚合**：table/report series 的 min/max 通过 reduce 扫描已有数组，不复制元素到参数栈；空输入仍在既有分支中先返回。
+5. **Sparkline 内存与复杂度**：same-group 从每个 id 搜索全体 sparkline 改为一次 Map 建索引，跨 series 的 group bounds 逐项累计、不再拼接总 values；`connect` 空槽沿用上一有效值状态，避免 per-gap slice/reverse/find。
+6. **实证边界**：chart 15/15、Canvas 13/13；全项目 typecheck 退出码 2 的原因仍为 React typings 缺失，5 个改动 TS/TSX 文件无诊断。in-app browser 的 API auth config 500 阻止 UI 和网络保存链实测；百万级性能、OOXML/Excel 仍未验收。
 
 ## 本轮第二组六轮身份边界复核
 
