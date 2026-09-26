@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { ChartDrawingPayload, DrawingObject, ShapeDrawingPayload, StructuralFormulaOwnerDelta, WorkbookTableModel } from '@react-sheets/core-model';
-import { WorkbookSession } from '../../workbook-session';
+import { createRemoteReadySessionFixture } from '../../session-test-fixtures';
 
 describe('ProjectionRuntime chart dependencies', () => {
   it('invalidates a cross-sheet chart when its workbook table source is removed', async () => {
-    const app = new WorkbookSession();
+    const app = createRemoteReadySessionFixture();
     const sourceSheetId = app.getActiveSheetId();
     app.addSheet();
     const ownerSheetId = app.getActiveSheetId();
@@ -73,7 +73,7 @@ describe('ProjectionRuntime chart dependencies', () => {
 
 describe('ProjectionRuntime structural formula owners', () => {
   it('invalidates the formula owner sheet when a structural patch targets another sheet', () => {
-    const app = new WorkbookSession();
+    const app = createRemoteReadySessionFixture();
     const sourceSheetId = app.getActiveSheetId();
     app.addSheet();
     const ownerSheetId = app.getActiveSheetId();
@@ -108,7 +108,7 @@ describe('ProjectionRuntime structural formula owners', () => {
   });
 
   it('invalidates cached conditional-format, drawing, and Table Sheet owners on their own sheet', () => {
-    const app = new WorkbookSession();
+    const app = createRemoteReadySessionFixture();
     const sourceSheetId = app.getActiveSheetId();
     app.addSheet();
     const ownerSheetId = app.getActiveSheetId();

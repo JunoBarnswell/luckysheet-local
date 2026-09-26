@@ -11,6 +11,35 @@ public final class GeneratedWorkbookContract {
     public static final int MAX_WORKBOOK_NAME_LENGTH = 255;
     public static final int MAX_DRAWING_SOURCE_CELLS = 100000;
     public static final Set<String> ERROR_CODES = Set.of("UNAUTHENTICATED", "FORBIDDEN", "VALIDATION_ERROR", "NOT_FOUND", "CONFLICT", "OPERATION_ID_REUSED", "ARTIFACT_REVISION_CONFLICT", "WORKBOOK_TRASHED", "TIMEOUT", "SERVICE_UNAVAILABLE", "INTERNAL_ERROR", "STORAGE_CORRUPT", "UNSUPPORTED_FEATURE");
+    public static final Set<String> SERVER_STRUCTURAL_PLANNER_MUTATIONS = Set.of(
+        "rows.inserted",
+        "rows.deleted",
+        "columns.inserted",
+        "columns.deleted",
+        "cells.inserted",
+        "cells.deleted",
+        "cells.inserted.restore",
+        "cells.deleted.restore",
+        "rows.permuted",
+        "range.move",
+        "range.paste",
+        "fill.applied",
+        "fill.restored",
+        "sheet.add",
+        "sheet.remove",
+        "sheet.rename",
+        "sheet.duplicated",
+        "sheet.restore",
+        "sheet.reordered",
+        "sheetTable.add",
+        "sheetTable.remove",
+        "sheetTable.update",
+        "table.add",
+        "table.remove",
+        "tableSheet.update",
+        "ganttSheet.update",
+        "reportSheet.update"
+    );
     public static final Map<String, MutationCapability> MUTATIONS = Map.ofEntries(
         Map.entry("cell.set", new MutationCapability("remote", true, "CellSet", "editor", "range", true, "edit-cell", true, "declared", "range")),
         Map.entry("workbook.editing.options.set", new MutationCapability("remote", true, "WorkbookEditingOptions", "editor", "exact", true, "none", false, "none", "workbook")),
@@ -219,6 +248,10 @@ public final class GeneratedWorkbookContract {
 
     public static String protectionAllowField(String action) {
         return PROTECTION_ALLOW_FIELDS.get(action);
+    }
+
+    public static boolean requiresServerStructuralPlanner(String mutationId) {
+        return SERVER_STRUCTURAL_PLANNER_MUTATIONS.contains(mutationId);
     }
 
     public record MutationCapability(String durability, boolean remote, String schema, String minRole, String rebasePolicy, boolean javaReducer, String protectionAction, boolean checksProtection, String affectedRangeMode, String objectScope) {}

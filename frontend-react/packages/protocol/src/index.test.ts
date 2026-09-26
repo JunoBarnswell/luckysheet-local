@@ -13,8 +13,31 @@ import {
   validatePivotDefinition,
   validateStructuralPatch,
   validateWorkbookSnapshot,
+  requiresServerStructuralPlanner,
+  SERVER_STRUCTURAL_PLANNER_MUTATIONS,
+  requiresServerStructuralPlannerCommand,
+  SERVER_STRUCTURAL_PLANNER_COMMANDS,
 } from './index';
 import { PIVOT_MAX_MEMBER_COUNT, PIVOT_MEMBER_DISPLAY_LIMIT, WorkbookModel } from '@react-sheets/core-model';
+
+test('server structural planner classification is explicit and excludes ordinary edits', () => {
+  assert.ok(SERVER_STRUCTURAL_PLANNER_MUTATIONS.includes('rows.inserted'));
+  assert.ok(SERVER_STRUCTURAL_PLANNER_MUTATIONS.includes('cells.inserted'));
+  assert.ok(SERVER_STRUCTURAL_PLANNER_MUTATIONS.includes('rows.permuted'));
+  assert.ok(SERVER_STRUCTURAL_PLANNER_MUTATIONS.includes('range.move'));
+  assert.ok(SERVER_STRUCTURAL_PLANNER_MUTATIONS.includes('range.paste'));
+  assert.ok(SERVER_STRUCTURAL_PLANNER_MUTATIONS.includes('fill.applied'));
+  assert.ok(SERVER_STRUCTURAL_PLANNER_MUTATIONS.includes('sheet.rename'));
+  assert.ok(SERVER_STRUCTURAL_PLANNER_MUTATIONS.includes('sheet.remove'));
+  assert.ok(SERVER_STRUCTURAL_PLANNER_MUTATIONS.includes('sheetTable.update'));
+  assert.ok(SERVER_STRUCTURAL_PLANNER_COMMANDS.includes('sheet.rows.insert'));
+  assert.ok(SERVER_STRUCTURAL_PLANNER_COMMANDS.includes('sheet.range.move'));
+  assert.ok(SERVER_STRUCTURAL_PLANNER_COMMANDS.includes('sheet.add'));
+  assert.equal(requiresServerStructuralPlanner('row.hidden'), false);
+  assert.equal(requiresServerStructuralPlanner('cell.set'), false);
+  assert.equal(requiresServerStructuralPlannerCommand('sheet.rows.insert'), true);
+  assert.equal(requiresServerStructuralPlannerCommand('sheet.cell.set'), false);
+});
 
 test('WebSocket presence messages round-trip without becoming a mutation transport', () => {
   const message = { type: 'cursor.updated' as const, unitId: 'unit-1', state: { row: 2, column: 4, sheetId: 'sheet-1' } };

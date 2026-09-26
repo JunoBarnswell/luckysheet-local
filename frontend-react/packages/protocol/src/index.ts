@@ -25,6 +25,10 @@ import {
   type PermissionPolicy,
   type ProtectionAction,
   mutationCapability,
+  requiresServerStructuralPlanner,
+  SERVER_STRUCTURAL_PLANNER_MUTATIONS,
+  requiresServerStructuralPlannerCommand,
+  SERVER_STRUCTURAL_PLANNER_COMMANDS,
   type ContractErrorCode,
 } from './generated-contract';
 
@@ -36,6 +40,10 @@ export {
   mutationPermission,
   commandPermission,
   mutationCapability,
+  requiresServerStructuralPlanner,
+  SERVER_STRUCTURAL_PLANNER_MUTATIONS,
+  requiresServerStructuralPlannerCommand,
+  SERVER_STRUCTURAL_PLANNER_COMMANDS,
 } from './generated-contract';
 
 export type { PermissionCapability, PermissionPolicy, ProtectionAction } from './generated-contract';

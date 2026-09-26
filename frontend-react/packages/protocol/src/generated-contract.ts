@@ -4,6 +4,77 @@ export const WORKBOOK_SNAPSHOT_SCHEMA = "WorkbookSnapshot" as const;
 export const WORKBOOK_SNAPSHOT_VERSION = 10 as const;
 export const MAX_WORKBOOK_NAME_LENGTH = 255 as const;
 export const CONTRACT_ERROR_CODES = ["UNAUTHENTICATED", "FORBIDDEN", "VALIDATION_ERROR", "NOT_FOUND", "CONFLICT", "OPERATION_ID_REUSED", "ARTIFACT_REVISION_CONFLICT", "WORKBOOK_TRASHED", "TIMEOUT", "SERVICE_UNAVAILABLE", "INTERNAL_ERROR", "STORAGE_CORRUPT", "UNSUPPORTED_FEATURE"] as const;
+export const SERVER_STRUCTURAL_PLANNER_MUTATIONS = [
+  "rows.inserted",
+  "rows.deleted",
+  "columns.inserted",
+  "columns.deleted",
+  "cells.inserted",
+  "cells.deleted",
+  "cells.inserted.restore",
+  "cells.deleted.restore",
+  "rows.permuted",
+  "range.move",
+  "range.paste",
+  "fill.applied",
+  "fill.restored",
+  "sheet.add",
+  "sheet.remove",
+  "sheet.rename",
+  "sheet.duplicated",
+  "sheet.restore",
+  "sheet.reordered",
+  "sheetTable.add",
+  "sheetTable.remove",
+  "sheetTable.update",
+  "table.add",
+  "table.remove",
+  "tableSheet.update",
+  "ganttSheet.update",
+  "reportSheet.update",
+] as const;
+const serverStructuralPlannerMutationIds: ReadonlySet<string> = new Set(SERVER_STRUCTURAL_PLANNER_MUTATIONS);
+export function requiresServerStructuralPlanner(mutationId: string): boolean {
+  return serverStructuralPlannerMutationIds.has(mutationId);
+}
+export const SERVER_STRUCTURAL_PLANNER_COMMANDS = [
+  "sheet.rows.insert",
+  "sheet.rows.delete",
+  "sheet.columns.insert",
+  "sheet.columns.delete",
+  "sheet.rows.insert.selected",
+  "sheet.rows.delete.selected",
+  "sheet.columns.insert.selected",
+  "sheet.columns.delete.selected",
+  "sheet.cells.insert",
+  "sheet.cells.delete",
+  "sheet.sort.multi",
+  "sheet.sort",
+  "data.sort.quick",
+  "data.sort.rows",
+  "data.sort.reapply",
+  "sheet.range.move",
+  "sheet.range.paste",
+  "sheet.range.fill",
+  "sheet.create.advanced",
+  "sheet.add",
+  "sheet.duplicate",
+  "sheet.remove",
+  "sheet.rename",
+  "sheet.reorder",
+  "table.add",
+  "table.remove",
+  "tableSheet.update",
+  "ganttSheet.update",
+  "reportSheet.update",
+  "sheetTable.add",
+  "sheetTable.remove",
+  "sheetTable.update",
+] as const;
+const serverStructuralPlannerCommandIds: ReadonlySet<string> = new Set(SERVER_STRUCTURAL_PLANNER_COMMANDS);
+export function requiresServerStructuralPlannerCommand(commandId: string): boolean {
+  return serverStructuralPlannerCommandIds.has(commandId);
+}
 export type ContractErrorCode = typeof CONTRACT_ERROR_CODES[number];
 export type MutationDurability = 'transient' | 'local' | 'remote';
 export type PermissionCapability = 'navigate' | 'edit-cell' | 'format' | 'structure' | 'drawing' | 'protect' | 'share' | 'comment' | 'restore' | 'query' | 'script';

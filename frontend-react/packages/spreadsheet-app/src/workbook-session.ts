@@ -86,6 +86,7 @@ import type {
   ServerQueryRequest,
   ShareTokenProvider,
 } from '@react-sheets/protocol';
+import { requiresServerStructuralPlanner, requiresServerStructuralPlannerCommand } from '@react-sheets/protocol';
 import type { WorkbookApiClient } from '@react-sheets/protocol';
 import type { NativeDocumentArtifact } from '@react-sheets/exchange-excel-ooxml';
 import { buildPivotGridProjection, clearPivotResultCache, findPivotProjectionCellAt, getLastValidPivotResult, getPivotFieldCatalog as buildPivotFieldCatalog, getPivotRevisionKey, normalizePivotDefinitionFromCatalog, pivotResultMatchesRevision, preparePivotTaskDescriptor, preparePivotTaskInputAsync } from './features/pivot/engine';
@@ -889,6 +890,10 @@ export class WorkbookSession {
     this.cellResolver = createWorkbookCellResolver(this.runtime.dataContent);
     this.permission = new PermissionService();
     this.runtime.commands.setMutationGuard((mutation, source) => {
+      if (source !== 'remote' && requiresServerStructuralPlanner(mutation.id)
+        && (this.runtime.localOnly || !this.runtime.remoteConnected)) {
+        throw new Error('STRUCTURAL_PLANNER_OFFLINE: 此结构操作需要连接服务端规划器，当前工作簿未修改');
+      }
       if (source !== 'remote' && !this.runtime.localOnly && !this.runtime.remoteConnected) throw new Error('COLLABORATION_OFFLINE: 连接尚未就绪，编辑草稿已保留');
       this.permission.syncFromWorkbook(this.runtime.model);
       const result = this.permission.checkMutation(mutation);
@@ -2206,10 +2211,13 @@ export class WorkbookSession {
   }
 
   runCommand(commandId: string, params?: unknown): CommandResult {
-    const resolvedParams = this.resolveCommandContext(commandId, params);
     if (!this.runtime.commands.registry.hasCommand(commandId)) {
       throw new Error(`Unknown command: ${commandId}`);
     }
+    if (requiresServerStructuralPlannerCommand(commandId) && !this.isServerStructuralPlannerAvailable()) {
+      throw new Error('STRUCTURAL_PLANNER_OFFLINE: 此结构操作需要连接服务端规划器，当前工作簿未修改');
+    }
+    const resolvedParams = this.resolveCommandContext(commandId, params);
     this.assertPermission(commandId, resolvedParams);
     const result = this.runtime.commands.execute(commandId, resolvedParams);
     if (commandId === 'pivot.refresh') {
@@ -2288,6 +2296,7 @@ export class WorkbookSession {
 
   canExecute(commandId: string, params?: unknown): boolean {
     if (!this.runtime.commands.registry.hasCommand(commandId)) return false;
+    if (requiresServerStructuralPlannerCommand(commandId) && !this.isServerStructuralPlannerAvailable()) return false;
     if (!this.runtime.localOnly && !this.runtime.remoteConnected) return false;
     const resolvedParams = this.resolveCommandContext(commandId, params);
     return canExecuteCommand(
@@ -2751,6 +2760,10 @@ export class WorkbookSession {
 
   getNativeDocumentFileName(): string | undefined {
     return this.nativeArtifact?.fileName;
+  }
+
+  private isServerStructuralPlannerAvailable(): boolean {
+    return !this.runtime.localOnly && this.runtime.remoteConnected;
   }
 
   /** Commit edits before exporting without rewriting the original native format. */

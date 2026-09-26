@@ -12,6 +12,37 @@ import { rebaseMutation } from './collaboration/ot-rebase';
 import { createSpreadsheetRuntime } from './runtime';
 
 describe('WorkbookSession collaboration integration', () => {
+  it('rejects offline structural edits before changing the workbook', () => {
+    const app = new WorkbookSession();
+    const runtime = app['runtime'];
+    const before = runtime.model.snapshot();
+
+    assert.equal(app.canExecute('sheet.rows.insert'), false);
+    assert.throws(
+      () => app.runCommand('sheet.rows.insert', { sheetId: runtime.model.primarySheetId, at: 0, count: 1 }),
+      /STRUCTURAL_PLANNER_OFFLINE/,
+    );
+    assert.deepEqual(runtime.model.snapshot(), before);
+    assert.equal(runtime.commands.getHistoryDepth().undo, 0);
+  });
+
+  it('allows structural mutation execution only after the remote connection is ready', () => {
+    const app = new WorkbookSession();
+    const runtime = app['runtime'];
+    runtime.localOnly = false;
+    runtime.remoteConnected = true;
+
+    assert.equal(app.canExecute('sheet.rows.insert'), true);
+    const result = app.runCommand('sheet.rows.insert', {
+      sheetId: runtime.model.primarySheetId,
+      at: 0,
+      count: 1,
+    });
+
+    assert.equal(result.mutationCount, 1);
+    assert.equal(runtime.commands.getHistoryDepth().undo, 1);
+  });
+
   it('exposes collaboration snapshot defaults when session is offline', () => {
     const app = new WorkbookSession();
     const snapshot = app.getCollaborationSnapshot();

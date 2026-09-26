@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.xc.luckysheet.server.contract.CommittedOperationMutation;
+import com.xc.luckysheet.server.contract.GeneratedWorkbookContract;
 import com.xc.luckysheet.server.contract.OperationMutation;
 import com.xc.luckysheet.server.contract.RangeRef;
 import com.xc.luckysheet.server.contract.StructuralPatch;
@@ -26,6 +27,19 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class MutationDescriptorRegistryTest {
     private final ObjectMapper mapper = new ObjectMapper();
+
+    @Test
+    void generatedServerPlannerMutationsHaveCanonicalJavaReducers() {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+
+        for (String mutationId : GeneratedWorkbookContract.SERVER_STRUCTURAL_PLANNER_MUTATIONS) {
+            assertTrue(GeneratedWorkbookContract.requiresServerStructuralPlanner(mutationId));
+            assertEquals(mutationId, registry.require(mutationId, false).id());
+        }
+        assertTrue(GeneratedWorkbookContract.SERVER_STRUCTURAL_PLANNER_MUTATIONS.contains("range.move"));
+        assertTrue(GeneratedWorkbookContract.SERVER_STRUCTURAL_PLANNER_MUTATIONS.contains("sheet.remove"));
+        assertTrue(GeneratedWorkbookContract.SERVER_STRUCTURAL_PLANNER_MUTATIONS.contains("table.add"));
+    }
 
     @Test
     void structuralDataModelCollectionsAllowOmissionButRejectMalformedOwner() {

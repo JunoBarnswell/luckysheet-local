@@ -3,7 +3,7 @@
 ## 基线、范围与真实状态
 
 - 2026-09-26 通过 GitHub Connector 重新读取 main：`a2a6140a90351b38f1e6f5fbc167d09b4f6ecc7f`，与本地 main 相同。
-- 当前审查工作分支：`codex/structural-reference-integrity`；本轮复核基线 `origin/main=a2a6140a90351b38f1e6f5fbc167d09b4f6ecc7f`，本轮代码改动从 PR head `4a7f77bc5542be465c109b15c60e7ecf52ff4bec` 继续。下面的行号以当前 PR head 的源码为准，不把历史 main 或旧 PR 文字当成当前实现证据。
+- 当前审查工作分支：`codex/structural-reference-integrity`；本轮复核基线 `origin/main=a2a6140a90351b38f1e6f5fbc167d09b4f6ecc7f`，本轮代码改动从已推送 PR head `3f4b7f37f3758ced95793d8e05968b62816f682f` 继续。下面的行号以当前 PR head 与本轮工作树源码为准，不把历史 main 或旧 PR 文字当成当前实现证据。
 - 唯一交付 PR：[草稿 #345](https://github.com/JunoBarnswell/luckysheet-local/pull/345)。本轮结构事实、sheet snapshot、chart geometry 和 snapshot owner identity 修复已分别提交；稀疏单元格规划、extent 和 cell-shift history 改动保留在同一 PR 待整体复核。
 - 最新用户要求：以整个使用链为单位；至少 40 个操作一起审查、集中修复并复核；**最后实测**。早先“仅静态、不测试”只约束前置审查阶段，不再替代最终运行验收。
 - **已确认的产品取舍**：2026-09-26 用户选择“统一由 Java 服务规划，可要求服务在线”。结构操作不再承诺无服务的浏览器离线执行；连接失败时拒绝提交并保留编辑草稿。此授权只改变结构规划归属，不自动扩展为全部普通输入或图表样式都必须远程。
@@ -11,6 +11,7 @@
 - 审计底稿形成时只做静态阅读。后续仅有下列明示的定向回归证据；上一已提交 head 的 CI 成功不能作为当前工作树验收。
 - 已完成的历史定向测试：core-model 59 项、Java structural facts 10 项、chart layout 15 项及 Canvas drawing 13 项。本轮新增 Java owned-patch 回归尚未执行：环境只有 JDK 17、无 Maven wrapper/可用 `mvn`，项目要求 Java 21。前端项目级 `tsc` 仍因工作区缺少已声明的 `@types/react` 失败，本轮 5 个改动 TS/TSX 文件均无目标诊断。已在 in-app browser 打开 Vite 页面并查 Console/Network；页面因 `GET /api/auth/config → 500` 停在认证配置错误，Console 无 JS error/warn，未能进入工作簿或做图表 UI 操作。完整门禁、性能和 Excel 验收未完成。
 - Java `StructuralStateChanges` 目前只提供事实载体和历史迁移捕获/回放，**尚未接入在线结构意图规划和提交**。当前客户端先做 TS 结构变换，Java 再执行 reducer，远端客户端仍按 intent 重放；唯一 Java planner 尚未达成。
+- 本轮继续发现并修复 S6：默认 local-only 绕过旧的 offline guard，结构 mutation 会由 TS 在无服务模式直接落地。新增生成式 mutation/command 分类、命令入口与 mutation guard 的在线前置条件，并将对应 `canExecute` 置为不可用。代码生成成功；本轮新增前后端回归测试尚未执行。该改动只关闭无服务结构编辑，不代表在线执行已由 Java 唯一规划。
 
 ## 审查单位与证据要求
 
@@ -115,6 +116,7 @@
 3. **S3 history 扫描矩形面积且校验方向错误**：cell-shift snapshot/restore 双层循环枚举 implicit cells；restore 按原 insert intent 预检，合法末端插入后撤销被当成再次插入拒绝。本地已改稀疏枚举及真实逆向检查；Java restore 本来就检查 inverse，不能重复修“同一个 Java bug”。
 4. **S4 不完整 patch 迫使全链重复推导**：v3 不含完整 cells/metadata/extents；command inverse、Java reducer、remote handler 和 preview/live reducer 分别解释结构。这是 S1–S3 之外的公共架构缺口，单改局部循环并没有关闭它。迁移必须包含 protocol/history/server/persistence，不能只给 v3 增加一个名义 planner。
 5. **S5 undo owner patch 重复复制整本快照（本轮代码已改、CI/本地 Java 验证待完成）**：`StructuralMutationDescriptor.applyWithPatch` 已返回独立候选快照，`WorkbookOperationService.commitInternal` 再以 detached `applyStructuralPatch` 应用 undo owner delta，会为该 undo 再深拷贝整本 JSON。现在只对这个独占候选走 owned reducer，保留原 `next` 供后续权限 owner 检查与数据块引用比较；一般结构 reducer 仍保持 detached 契约，未冒险原地改写变更前状态。
+6. **S6 local-only 绕过结构服务前置条件（本轮新增拦截，尚待实测）**：`WorkbookSession` 原 guard 仅在 `!localOnly && !remoteConnected` 时拒绝，因此 `localOnly=true` 允许行列/单元格位移、移动/粘贴/填充、排序与 sheet/table 结构命令由 TS reducer 直接改变模型。新增 contract 分类覆盖 27 个 address/reference mutation 与 32 个命令入口；离线命令在 `runCommand` 前被拒绝、`canExecute` 返回 false，mutation guard 仍覆盖复合命令/历史路径。在线分支当前仍先走 TS reducer、后由 Java reducer 复算，故唯一 Java planner 仍未实现。
 
 ### C：图表语义没有由完整几何事实承载
 
@@ -237,6 +239,17 @@
 6. **契约与验收**：detached `applyStructuralPatch` 保留给需要隔离的调用方，仅 commit undo 路径转用 owned 版本；新增成功路径核对返回对象身份，拒绝路径核对 precondition 和基础快照。测试未执行：本机只有 JDK 17、无 Maven，CI Java 21 结果待本次 push 后读取。
 
 这是一项已证实并已修改的独立性能问题，不等同于每轮至少 30 项根因完成整改；当前结构规划权、history facts、客户端重复推导等主目标仍未解决，本审计和 PR 保持进行中。
+
+## 本轮结构在线前置条件六轮静态复核
+
+1. **契约覆盖**：27 个 mutation ID 独立于宽泛的 `structure` permission capability 列出，避免把筛选/可见性等不改地址空间的动作误归类；生成器校验 ID 唯一且存在权限策略，Java 回归用例要求每个 ID 都能解析到 canonical reducer。
+2. **命令入口**：32 个明确的结构命令 ID 进入同一源契约；`WorkbookSession.runCommand` 在执行命令前拒绝离线结构命令，避免命令先做局部准备后才在 mutation 边界失败。
+3. **直达与复合路径**：`CommandRuntime` mutation guard 在每个 mutation 的 apply 前再次核验，覆盖绕过 `canExecute`/dispatch 的调用和产生结构 mutation 的复合命令。
+4. **历史与远端**：undo/redo 使用 history preflight 调用同一个 guard；已提交的远端 mutation 以 `source='remote'` 重放时豁免在线发起条件，避免把服务器结果当成本地新意图拒绝。
+5. **原子失败与界面状态**：本地拒绝路径新增快照不变/history 不增长用例；结构命令的 `canExecute` 离线为 false。CommandRuntime 根事务失败路径会回滚已应用的前序 mutation。新增成功路径只模拟 transport-ready 状态，不作为真实 Java 规划或网络证据。
+6. **架构诚实性与验收**：在线调用仍在客户端先执行 TS reducer，server 才应用 Java reducer；因此此轮仅完成离线 fail-close，不满足唯一 Java planner。生成器成功，前后端新测试、浏览器、Excel 文件互操作和性能验收尚未执行；旧 `/api/auth/config → 500` 仍是完整 UI 验收阻塞。
+
+六轮复核确认的是一个已证实根因及其边界，不是 30 项缺陷批次；本轮没有将一个根因拆成多个入口重复计数。
 
 ## 最终实测门禁（当前未执行）
 

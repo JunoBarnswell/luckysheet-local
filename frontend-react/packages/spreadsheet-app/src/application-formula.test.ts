@@ -4,6 +4,7 @@ import { WorkbookModel } from '@react-sheets/core-model';
 import { createPasteSpecialSpec } from '@react-sheets/sheet-features';
 import { createSpillEnvironment } from './formula-spill-sync';
 import { hydrateRuntime } from './runtime';
+import { createRemoteReadySessionFixture } from './session-test-fixtures';
 import { WorkbookSession } from './workbook-session';
 
 function cellValue(app: WorkbookSession, row: number, column: number): string {
@@ -12,7 +13,7 @@ function cellValue(app: WorkbookSession, row: number, column: number): string {
 
 describe('WorkbookSession formula integration', () => {
   it('preserves inactive sparse sheets through load, row insertion, undo and redo', async () => {
-    const app = new WorkbookSession();
+    const app = createRemoteReadySessionFixture();
     try {
       const runtime = app['runtime'];
       const target = runtime.model.getSheet('sheet-1');
@@ -172,7 +173,7 @@ describe('WorkbookSession formula integration', () => {
   });
 
   it('synchronizes row permutations incrementally without rebuilding the formula engine', async () => {
-    const app = new WorkbookSession();
+    const app = createRemoteReadySessionFixture();
     const sheetId = app.getActiveSheetId();
     app.runCommand('sheet.cell.set', { sheetId, row: 0, column: 0, value: { value: 2 } });
     app.runCommand('sheet.cell.set', { sheetId, row: 1, column: 0, value: { value: 1 } });
@@ -358,7 +359,7 @@ describe('WorkbookSession formula integration', () => {
   });
 
   it('synchronizes formulas after range paste and cell insert shifts', async () => {
-    const app = new WorkbookSession();
+    const app = createRemoteReadySessionFixture();
     const sheetId = app.getActiveSheetId();
     app.runCommand('sheet.cell.set', { sheetId, row: 0, column: 0, value: { value: 2 } });
     app.runCommand('sheet.cell.set', { sheetId, row: 0, column: 1, value: { formula: '=A1*3', value: null } });
@@ -384,7 +385,7 @@ describe('WorkbookSession formula integration', () => {
   });
 
   it('synchronizes formula inputs and external references after a canonical range move', async () => {
-    const app = new WorkbookSession();
+    const app = createRemoteReadySessionFixture();
     const sheetId = app.getActiveSheetId();
     app.runCommand('sheet.cell.set', { sheetId, row: 0, column: 0, value: { value: 5 } });
     app.runCommand('sheet.cell.set', { sheetId, row: 0, column: 1, value: { formula: '=A1*2', value: null } });
@@ -406,7 +407,7 @@ describe('WorkbookSession formula integration', () => {
   });
 
   it('synchronizes clear and emits #REF! after a deleted-row reference', async () => {
-    const app = new WorkbookSession();
+    const app = createRemoteReadySessionFixture();
     const sheetId = app.getActiveSheetId();
     app.runCommand('sheet.cell.set', { sheetId, row: 1, column: 0, value: { value: 7 } });
     app.runCommand('sheet.cell.set', { sheetId, row: 0, column: 1, value: { formula: '=A2*2', value: null } });
@@ -425,7 +426,7 @@ describe('WorkbookSession formula integration', () => {
   });
 
   it('rebuilds 3-D reference ownership after worksheet reorder and undo', () => {
-    const app = new WorkbookSession();
+    const app = createRemoteReadySessionFixture();
     const firstSheetId = app.getActiveSheetId();
     app.runCommand('sheet.add', { id: 'three-d-middle', name: 'Middle' });
     app.runCommand('sheet.add', { id: 'three-d-end', name: 'End' });
