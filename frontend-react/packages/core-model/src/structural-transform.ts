@@ -506,6 +506,42 @@ function applyAxisRangeOwnerDeltas(workbook: WorkbookModel, targetSheetId: strin
   }
 }
 
+interface StructuralCellPlan {
+  readonly moves: Array<{ row: Row; column: Column; targetRow: Row; targetColumn: Column; cell: CellData }>;
+  readonly removedCells: StructuralTransformResult['removedCells'];
+}
+
+/** Prepare sparse relocations without clearing cells or cloning surviving payloads. */
+function planStructuralCells(
+  sheet: WorksheetModel,
+  range: RangeRef,
+  mapAddress: (row: Row, column: Column) => { row: Row; column: Column } | null,
+): StructuralCellPlan {
+  const moves: StructuralCellPlan['moves'] = [];
+  const removedCells: StructuralCellPlan['removedCells'] = [];
+  sheet.cells.forEachInRange(range.startRow, range.endRow, range.startColumn, range.endColumn, (cell, row, column) => {
+    const target = mapAddress(row, column);
+    if (!target) {
+      removedCells.push({ row, column, cell: structuredClone(cell) });
+      return;
+    }
+    let prepared = cell;
+    if (cell.style?.fontFamily !== undefined) {
+      const fontFamily = normalizeFontFamily(cell.style.fontFamily);
+      if (fontFamily !== cell.style.fontFamily) prepared = { ...cell, style: { ...cell.style, fontFamily } };
+    }
+    moves.push({ row, column, targetRow: target.row, targetColumn: target.column, cell: prepared });
+  });
+  return { moves, removedCells };
+}
+
+/** Storage consumes explicit destinations; it does not interpret structural operations. */
+function applyStructuralCells(sheet: WorksheetModel, plan: StructuralCellPlan): void {
+  for (const entry of plan.removedCells) sheet.cells.delete(entry.row, entry.column);
+  for (const entry of plan.moves) sheet.cells.delete(entry.row, entry.column);
+  for (const entry of plan.moves) sheet.cells.set(entry.targetRow, entry.targetColumn, entry.cell);
+}
+
 function applyAxis(
   workbook: WorkbookModel,
   sheet: WorksheetModel,
@@ -544,33 +580,31 @@ function applyAxis(
     ? { sheetId: sheet.id, startRow: at, endRow: sheet.rowCount - 1, startColumn: 0, endColumn: Math.max(sheet.columnCount - 1, 0) }
     : { sheetId: sheet.id, startRow: 0, endRow: Math.max(sheet.rowCount - 1, 0), startColumn: at, endColumn: sheet.columnCount - 1 }, 'axis shift');
   const metadataPlan = planAxisMetadata(workbook, sheet, axis, at, count, direction, formulaRewrite);
-  const end = at + count - 1;
-  let removed: Array<{ row: Row; column: Column; cell: CellData }> = [];
-
-  if (direction === 1) {
-    if (axis === 'row') {
-      sheet.cells.shiftRows(at, count, 1);
-      sheet.rowCount += count;
-    } else {
-      sheet.cells.shiftColumns(at, count, 1);
-      sheet.columnCount += count;
-    }
-  } else if (axis === 'row') {
-    removed = sheet.cells.extractRegion(at, end, 0, Math.max(sheet.columnCount - 1, 0));
-    sheet.cells.shiftRows(end + 1, count, -1);
-    sheet.rowCount = Math.max(1, sheet.rowCount - count);
-  } else {
-    removed = sheet.cells.extractRegion(0, Math.max(sheet.rowCount - 1, 0), at, end);
-    sheet.cells.shiftColumns(end + 1, count, -1);
-    sheet.columnCount = Math.max(1, sheet.columnCount - count);
+  const cellRange: RangeRef = { sheetId: sheet.id,
+    startRow: axis === 'row' ? at : 0, endRow: MAX_ROW_INDEX,
+    startColumn: axis === 'column' ? at : 0, endColumn: MAX_COLUMN_INDEX };
+  const cells = planStructuralCells(sheet, cellRange, (row, column) => {
+    const mapped = shiftIndex(axis === 'row' ? row : column, at, count, direction, axis);
+    return mapped === null ? null : axis === 'row' ? { row: mapped, column } : { row, column: mapped };
+  });
+  // CellMatrix writes can grow SheetExtent. Never derive the result from that
+  // intermediate extent: tail writes would otherwise count the insertion twice.
+  const currentCount = axis === 'row' ? sheet.rowCount : sheet.columnCount;
+  const nextCount = Math.max(1, currentCount + direction * count);
+  if (nextCount > (axis === 'row' ? MAX_ROW_INDEX : MAX_COLUMN_INDEX) + 1) {
+    throw new Error(`STRUCTURAL_PATCH_INVARIANT: planned ${axis} extent exceeds worksheet bounds`);
   }
+
+  applyStructuralCells(sheet, cells);
+  if (axis === 'row') sheet.rowCount = nextCount;
+  else sheet.columnCount = nextCount;
 
   applyStructuralMetadataPlan(workbook, sheet.id, metadataPlan);
   if (reportSheetAfter) sheet.reportSheet = reportSheetAfter;
   const formulaRewriteResult = applyFormulaRewritePlan(workbook, formulaRewrite, metadataPlan.formulaRuleDeltas);
   return {
     kind: 'structural-transform',
-    removedCells: removed,
+    removedCells: cells.removedCells,
     clearInputRanges: calculationRanges.clearInputRanges,
     populateInputRanges: calculationRanges.populateInputRanges,
     rewrittenFormulaOwners: formulaRewriteResult.owners,
@@ -655,26 +689,13 @@ function applyCellShift(
   const formulaRewrite = preflightFormulaRewrite(workbook, sheet, shift, referenceOwners, referenceShift);
   rejectFormulaGroupMetadataInRange(sheet, plan.band, 'cell shift');
   const metadataPlan = planCellShiftMetadata(workbook, sheet, plan, formulaRewrite);
-  const sourceCells = sheet.cells.extractRegion(
-    plan.band.startRow,
-    plan.band.endRow,
-    plan.band.startColumn,
-    plan.band.endColumn,
-  );
-  const removedCells: Array<{ row: Row; column: Column; cell: CellData }> = [];
-  for (const entry of sourceCells) {
-    const destination = mapCellShiftCoordinate(plan, entry.row, entry.column);
-    if (!destination) {
-      removedCells.push(entry);
-      continue;
-    }
-    sheet.cells.set(destination.row, destination.column, entry.cell);
-  }
+  const cells = planStructuralCells(sheet, plan.band, (row, column) => mapCellShiftCoordinate(plan, row, column));
+  applyStructuralCells(sheet, cells);
   applyStructuralMetadataPlan(workbook, sheet.id, metadataPlan);
   const formulaRewriteResult = applyFormulaRewritePlan(workbook, formulaRewrite, metadataPlan.formulaRuleDeltas);
   return {
     kind: 'structural-transform',
-    removedCells,
+    removedCells: cells.removedCells,
     clearInputRanges: [structuredClone(plan.band)],
     populateInputRanges: [structuredClone(plan.band)],
     rewrittenFormulaOwners: formulaRewriteResult.owners,

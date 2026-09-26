@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { WorkbookModel } from '@react-sheets/core-model';
+import { MAX_SHEET_COLUMN_COUNT, MAX_SHEET_ROW_COUNT, WorkbookModel } from '@react-sheets/core-model';
 import { CommandRuntime } from '@react-sheets/command-runtime';
 import {
   registerSheetCommands,
@@ -1649,3 +1649,59 @@ test('sheet.cells.insert undo restores the complete affected band', () => {
   assert.equal(sheet.cells.get(0, 0)?.value, 'top');
   assert.equal(sheet.cells.get(1, 0)?.value, 'bottom');
 });
+
+for (const axis of ['row', 'column'] as const) {
+  for (const operation of ['insert', 'delete'] as const) {
+    test(`sparse ${axis} cell ${operation} preserves the full tail across undo and redo`, () => {
+      const workbook = new WorkbookModel(`sparse-history-${axis}-${operation}`, 'Sparse history');
+      const runtime = new CommandRuntime(workbook);
+      registerSheetCommands(runtime);
+      const sheet = workbook.getSheet(workbook.primarySheetId);
+      sheet.rowCount = MAX_SHEET_ROW_COUNT;
+      sheet.columnCount = MAX_SHEET_COLUMN_COUNT;
+      const maximum = (axis === 'row' ? MAX_SHEET_ROW_COUNT : MAX_SHEET_COLUMN_COUNT) - 1;
+      const tail = operation === 'insert' ? maximum - 1 : maximum;
+      const tailRow = axis === 'row' ? tail : 2;
+      const tailColumn = axis === 'column' ? tail : 2;
+      const outsideRow = axis === 'row' ? tail : MAX_SHEET_ROW_COUNT - 1;
+      const outsideColumn = axis === 'column' ? tail : MAX_SHEET_COLUMN_COUNT - 1;
+      sheet.cells.set(2, 2, { value: 'selection', style: { bold: true } });
+      sheet.cells.set(tailRow, tailColumn, { value: 'distant tail' });
+      sheet.cells.set(outsideRow, outsideColumn, { value: 'outside band' });
+      const range = axis === 'row'
+        ? { sheetId: sheet.id, startRow: 2, endRow: 2, startColumn: 1, endColumn: MAX_SHEET_COLUMN_COUNT - 2 }
+        : { sheetId: sheet.id, startRow: 1, endRow: MAX_SHEET_ROW_COUNT - 2, startColumn: 2, endColumn: 2 };
+      const before = workbook.snapshot();
+
+      runtime.execute(`sheet.cells.${operation}`, { sheetId: sheet.id, range, operation, axis });
+
+      const delta = operation === 'insert' ? 1 : -1;
+      assert.equal(sheet.cells.get(2, 2), undefined);
+      if (operation === 'insert') assert.equal(sheet.cells.get(axis === 'row' ? 3 : 2, axis === 'column' ? 3 : 2)?.value, 'selection');
+      assert.equal(sheet.cells.get(tailRow + (axis === 'row' ? delta : 0), tailColumn + (axis === 'column' ? delta : 0))?.value, 'distant tail');
+      assert.equal(sheet.cells.get(outsideRow, outsideColumn)?.value, 'outside band');
+      const after = workbook.snapshot();
+      assert.equal(runtime.undo(), true);
+      assert.deepEqual(workbook.snapshot(), before);
+      assert.equal(runtime.redo(), true);
+      assert.deepEqual(workbook.snapshot(), after);
+    });
+  }
+
+  test(`rejects a sparse ${axis} cell insertion that would discard the last cell`, () => {
+    const workbook = new WorkbookModel(`sparse-overflow-${axis}`, 'Sparse overflow');
+    const runtime = new CommandRuntime(workbook);
+    registerSheetCommands(runtime);
+    const sheet = workbook.getSheet(workbook.primarySheetId);
+    sheet.rowCount = MAX_SHEET_ROW_COUNT;
+    sheet.columnCount = MAX_SHEET_COLUMN_COUNT;
+    sheet.cells.set(axis === 'row' ? MAX_SHEET_ROW_COUNT - 1 : 0, axis === 'column' ? MAX_SHEET_COLUMN_COUNT - 1 : 0, { value: 'last cell' });
+    const range = { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 };
+    const before = workbook.snapshot();
+
+    assert.throws(() => runtime.execute('sheet.cells.insert', { sheetId: sheet.id, range, operation: 'insert', axis }), /outside worksheet bounds/);
+
+    assert.deepEqual(workbook.snapshot(), before);
+    assert.deepEqual(runtime.getHistoryDepth(), { undo: 0, redo: 0 });
+  });
+}

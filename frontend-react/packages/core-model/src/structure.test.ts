@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { collectFormulaDependencies, collectFormulaReferenceNodes, MAX_COLUMN_INDEX, MAX_ROW_INDEX, parseFormula, RangeIndex } from '@react-sheets/formula-engine';
-import { CellMatrix, planSheetIdentityTransform, structuralRuleFormulaFields, StructuralTransform as CoreStructuralTransform, WorkbookModel, type StructuralFormulaRule, type StructuralTransformParams } from './index';
+import { planSheetIdentityTransform, structuralRuleFormulaFields, StructuralTransform as CoreStructuralTransform, WorkbookModel, type StructuralFormulaRule, type StructuralTransformParams } from './index';
 import type { ReportSheetDefinition } from './data-model';
 
 const StructuralTransform = {
@@ -113,23 +113,29 @@ function reportDefinition(
 }
 
 describe('structural operations', () => {
-  it('shiftRows moves cells below the insertion point', () => {
-    const matrix = new CellMatrix();
+  it('canonical row edits move cells below the insertion point', () => {
+    const workbook = new WorkbookModel('unit-row-movement', 'Row movement');
+    const sheet = workbook.getSheet('sheet-1');
+    const matrix = sheet.cells;
     matrix.set(0, 0, { value: 'top' });
     matrix.set(5, 1, { value: 'bottom' });
-    matrix.shiftRows(3, 2, 1);
+    StructuralTransform.apply(workbook, { kind: 'insert-rows', sheetId: sheet.id, at: 3, count: 2 });
     assert.equal(matrix.get(0, 0)?.value, 'top');
     assert.equal(matrix.get(7, 1)?.value, 'bottom');
-    matrix.shiftRows(3, 2, -1);
+    StructuralTransform.apply(workbook, { kind: 'delete-rows', sheetId: sheet.id, at: 3, count: 2 });
     assert.equal(matrix.get(5, 1)?.value, 'bottom');
   });
 
   it('axis shifts hydrate deferred sparse cells before reading row buckets', () => {
-    const matrix = new CellMatrix();
+    const workbook = new WorkbookModel('unit-deferred-axis-movement', 'Deferred axis movement');
+    const sheet = workbook.getSheet('sheet-1');
+    const matrix = sheet.cells;
     matrix.deferJSON({ '5': { '1': { value: 'row' }, '4': { value: 'column' } } });
-    matrix.shiftRows(3, 2, 1);
+    const index = new RangeIndex([{ id: sheet.id, name: sheet.name }]);
+    assert.equal(matrix.isHydrated, false);
+    CoreStructuralTransform.apply(workbook, { kind: 'insert-rows', sheetId: sheet.id, at: 3, count: 2 }, index);
     assert.equal(matrix.get(7, 1)?.value, 'row');
-    matrix.shiftColumns(3, 2, 1);
+    CoreStructuralTransform.apply(workbook, { kind: 'insert-columns', sheetId: sheet.id, at: 3, count: 2 }, index);
     assert.equal(matrix.get(7, 6)?.value, 'column');
   });
 

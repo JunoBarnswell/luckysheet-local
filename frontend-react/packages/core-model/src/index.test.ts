@@ -57,6 +57,7 @@ test('canonical snapshots and model replacement reject duplicate defined-name ow
   delete legacyProjection.definedNameModels;
   legacyProjection.definedNames = { TaxRate: '0.1', taxrate: '0.2' };
   assert.throws(() => assertCanonicalWorkbookSnapshot(legacyProjection as unknown as WorkbookSnapshot), /definedNames projection contains duplicate identity/);
+  assert.throws(() => WorkbookModel.fromSnapshot(legacyProjection as unknown as WorkbookSnapshot), /definedNames projection contains duplicate identity/);
 
   const staleProjection = structuredClone(workbook.snapshot());
   staleProjection.definedNameModels = [];
@@ -183,7 +184,12 @@ test('canonical chart text formulas must resolve to one cell owner', () => {
     source: { kind: 'worksheet-ranges', ranges: [{ sheetId: sheet.id, startRow: 0, endRow: 1, startColumn: 0, endColumn: 0 }] },
     elements: { hiddenData: 'show', titleText: { linkedFormula: '=A1&B1' } },
   };
-  assert.throws(() => assertCanonicalWorkbookSnapshot(snapshot), /must be a resolvable single-cell reference/);
+  const before = structuredClone(snapshot);
+  assert.throws(() => assertCanonicalWorkbookSnapshot(snapshot), {
+    name: 'Error',
+    message: 'UNSUPPORTED_FEATURE: chart text formula titleText.linkedFormula on chart-1 is not a resolvable single-cell reference: formula root binary-expression is not a single cell reference',
+  });
+  assert.deepEqual(snapshot, before, 'rejecting a chart text expression cannot change the authored payload');
 });
 
 test('canonical chart text formulas preserve a structural #REF! result', () => {
@@ -290,7 +296,9 @@ test('CellMatrix range traversal stays ordered and refreshes row indexes after s
   matrix.delete(50, 2);
   assert.deepEqual(matrix.getRegion(2, 5, 2, 2).map(({ row }) => row), [2, 5]);
 
-  matrix.shiftRows(5, 2, 1);
+  const moved = matrix.get(5, 2)!;
+  matrix.delete(5, 2);
+  matrix.set(7, 2, moved);
   assert.deepEqual(matrix.getRegion(5, 7, 2, 2).map(({ row }) => row), [7]);
 });
 
@@ -379,6 +387,89 @@ test('CellMatrix rewrites deferred formula owners without hydrating or mutating 
   assert.equal(matrix.toJSON()['2']?.['3']?.formula, '=Orders[Amount]');
   assert.equal(deferred['2']?.['3']?.formula, '=Sales[Amount]');
   assert.equal(matrix.replaceFormulaOwnerWithoutHydration(2, 4, { value: 'changed' }), false);
+});
+
+test('CellMatrix applies sparse additions, replacements and deletions without loading an inactive sheet', () => {
+  const input = {
+    '2': { '3': { value: 10 }, '4': { value: 'untouched' } },
+    '900000': { '16383': { value: 'tail' } },
+  };
+  const original = structuredClone(input);
+  Object.freeze(input['2']);
+  Object.freeze(input['900000']);
+  Object.freeze(input);
+  const matrix = new CellMatrix();
+  matrix.deferJSON(input);
+  let revision = matrix.revision;
+  assert.equal(matrix.count(), 3);
+  matrix.set(2, 3, { value: 20, style: { fontFamily: ' arial ' } });
+  assert.equal(matrix.revision, ++revision);
+  matrix.set(2, 5, { value: 'new column' });
+  assert.equal(matrix.revision, ++revision);
+  matrix.set(1, 0, { value: 'new row' });
+  assert.equal(matrix.revision, ++revision);
+  matrix.delete(900_000, 16_383);
+  assert.equal(matrix.revision, ++revision);
+  matrix.delete(2, 3);
+  assert.equal(matrix.revision, ++revision);
+  matrix.delete(2, 3);
+  assert.equal(matrix.revision, revision, 'deleting an absent cell is not a content change');
+  assert.equal(matrix.count(), 3);
+  assert.equal(matrix.isHydrated, false);
+  assert.deepEqual(matrix.occupiedRange('inactive'), {
+    sheetId: 'inactive', startRow: 1, endRow: 2, startColumn: 0, endColumn: 5,
+  });
+  assert.equal(matrix.getWithoutHydration(2, 4), input['2']['4']);
+  assert.deepEqual(input, original, 'the persisted input must remain unchanged');
+  const serialized = matrix.toJSON();
+  assert.equal(matrix.get(2, 5)?.value, 'new column');
+  assert.equal(matrix.isHydrated, true);
+  assert.equal(matrix.revision, revision, 'materialization cannot invalidate an unchanged content token');
+  assert.deepEqual(matrix.toJSON(), serialized);
+});
+
+test('CellMatrix keeps empty-row recreation and deferred revision/count/bounds coherent', () => {
+  const matrix = new CellMatrix();
+  matrix.deferJSON({});
+  assert.equal(matrix.revision, 0);
+  assert.equal(matrix.count(), 0);
+  for (let iteration = 0; iteration < 8; iteration += 1) {
+    matrix.set(8, 4, { value: iteration });
+    assert.equal(matrix.revision, iteration * 4 + 1);
+    matrix.set(8, 7, { value: iteration });
+    assert.equal(matrix.revision, iteration * 4 + 2);
+    assert.equal(matrix.count(), 2);
+    matrix.delete(8, 4);
+    assert.equal(matrix.revision, iteration * 4 + 3);
+    matrix.delete(8, 7);
+    assert.equal(matrix.revision, iteration * 4 + 4);
+    assert.equal(matrix.count(), 0);
+    assert.equal(matrix.isHydrated, false);
+    assert.deepEqual(matrix.toJSON(), {});
+  }
+  assert.deepEqual(matrix.occupiedRange('inactive'), {
+    sheetId: 'inactive', startRow: 0, endRow: 0, startColumn: 0, endColumn: 0,
+  });
+  matrix.get(8, 4);
+  assert.equal(matrix.revision, 32);
+});
+
+test('CellMatrix deferred writes reject invalid metadata before modifying payload, extent or revision', () => {
+  const sheet = new WorksheetModel('inactive-write', 'Inactive', 10, 10);
+  const input = { '2': { '3': { value: 'original' } } };
+  sheet.cells.deferJSON(input);
+  const revision = sheet.cells.revision;
+  assert.throws(() => sheet.cells.set(200, 40, { value: 'invalid', style: { fontFamily: ' ' } }), /must not be empty/);
+  assert.throws(() => sheet.cells.replaceCellWithoutHydration(2, 3, { value: 'invalid', style: { fontFamily: ' ' } }), /must not be empty/);
+  assert.equal(sheet.cells.revision, revision);
+  assert.deepEqual(sheet.cells.toJSON(), input);
+  assert.equal(sheet.cells.isHydrated, false);
+  assert.equal(sheet.rowCount, 10);
+  assert.equal(sheet.columnCount, 10);
+  sheet.cells.set(200, 40, { value: 'valid' });
+  assert.equal(sheet.cells.isHydrated, false);
+  assert.equal(sheet.rowCount, 201);
+  assert.equal(sheet.columnCount, 41);
 });
 
 test('CellMatrix keeps deferred cells intact when normalization fails during hydration', () => {
@@ -961,6 +1052,59 @@ test('defers sparse worksheet cell hydration until the sheet is read', () => {
   assert.equal(deferred.cells.isHydrated, false);
   assert.equal(deferred.cells.get(100, 4)?.value, 'second');
   assert.equal(deferred.cells.isHydrated, true);
+});
+
+test('sheet lifecycle restores only its own deferred cells while preserving other scoped names', () => {
+  const workbook = new WorkbookModel('unit-sheet-lifecycle-lazy', 'Lifecycle');
+  const second = workbook.addSheet('sheet-2', 'Second');
+  second.cells.set(100, 4, { value: 'sparse' });
+  workbook.setDefinedName({ name: 'FirstRate', formula: '0.1', scope: 'sheet', sheetId: 'sheet-1' });
+  workbook.setDefinedName({ name: 'SecondRate', formula: '0.2', scope: 'sheet', sheetId: 'sheet-2' });
+  const saved = workbook.getSheetSnapshot(second.id);
+  workbook.removeSheet(second.id);
+  assert.equal(workbook.getDefinedNameExact('SecondRate', 'sheet', second.id), undefined);
+
+  workbook.restoreSheetSnapshot(saved);
+  assert.equal(workbook.getDefinedNameExact('FirstRate', 'sheet', 'sheet-1')?.formula, '0.1');
+  assert.equal(workbook.getDefinedNameExact('SecondRate', 'sheet', second.id)?.formula, '0.2');
+  assert.equal(workbook.getSheet(second.id).cells.isHydrated, false);
+  assert.equal(workbook.getSheet(second.id).cells.count(), 1);
+  assert.equal(workbook.getSheet(second.id).cells.isHydrated, false);
+  assert.equal(workbook.getSheet(second.id).cells.get(100, 4)?.value, 'sparse');
+});
+
+test('sheet lifecycle rejects invalid owners and indexes without partial restoration', () => {
+  const workbook = new WorkbookModel('unit-sheet-lifecycle-atomic', 'Lifecycle');
+  const second = workbook.addSheet('sheet-2', 'Second');
+  workbook.setDefinedName({ name: 'Preserved', formula: '0.1', scope: 'sheet', sheetId: 'sheet-1' });
+  const saved = workbook.getSheetSnapshot(second.id);
+  workbook.removeSheet(second.id);
+  const before = workbook.snapshot();
+  const assertUnchanged = () => assert.deepEqual(workbook.snapshot(), before);
+
+  assert.throws(() => workbook.restoreSheetSnapshot(saved, 0.5), /Invalid sheet restore index/);
+  assertUnchanged();
+  const wrongOwner = structuredClone(saved);
+  wrongOwner.lifecycleDefinedNames = [{ name: 'Foreign', formula: '0.2', scope: 'sheet', sheetId: 'sheet-1' }];
+  assert.throws(() => workbook.restoreSheetSnapshot(wrongOwner), /defined-name owner does not match worksheet/);
+  assertUnchanged();
+  const duplicateOwner = structuredClone(saved);
+  duplicateOwner.lifecycleDefinedNames = [
+    { name: 'Rate', formula: '0.2', scope: 'sheet', sheetId: second.id },
+    { name: 'rate', formula: '0.3', scope: 'sheet', sheetId: second.id },
+  ];
+  assert.throws(() => workbook.restoreSheetSnapshot(duplicateOwner), /duplicate defined-name identity/);
+  assertUnchanged();
+  const wrongDocument = structuredClone(saved);
+  wrongDocument.lifecyclePrintDocument = {
+    schema: 'PrintDocument', unitId: workbook.unitId, sheetId: 'sheet-1',
+    pageSetup: { paperSize: 'a4', orientation: 'portrait', scale: 100,
+      margins: { top: 1, right: 1, bottom: 1, left: 1, header: 1, footer: 1 },
+      printGridlines: false, printHeadings: false, centerHorizontally: false, centerVertically: false },
+    printAreas: [], pageBreaks: [],
+  };
+  assert.throws(() => workbook.restoreSheetSnapshot(wrongDocument), /print document owner does not match worksheet/);
+  assertUnchanged();
 });
 
 test('persists print documents and redacted query definitions in the workbook snapshot', () => {

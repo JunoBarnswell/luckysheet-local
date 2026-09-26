@@ -29,7 +29,7 @@ import type {
 } from './domain';
 import { DEFAULT_WORKSHEET_SNAP_SETTINGS, isFormulaError, normalizeDefinedNameModel } from './domain';
 import type { FormulaErrorCode } from './domain';
-import type { WorkbookDimensionMetrics, WorkbookSnapshot } from './snapshot';
+import { assertCanonicalDefinedNameModels, type WorkbookDimensionMetrics, type WorkbookSnapshot } from './snapshot';
 import { isCellEditorConfig, type CellEditorConfig } from './cell-editor';
 import { DEFAULT_WORKBOOK_EDITING_OPTIONS, normalizeWorkbookEditingOptions, type WorkbookEditingOptions } from './editing-options';
 export { ASSET_REF_SCHEMA, assertAssetRef, isAssetRef, isSupportedAssetMime, type AssetRef } from './asset';
@@ -1055,7 +1055,7 @@ export class CellMatrix {
   private revisionCounter = 0;
   private deferredJSON?: Record<string, Record<string, CellData>>;
   private deferredJSONOwned = false;
-  private readonly deferredOwnedRows = new Set<string>();
+  private readonly deferredOwnedRowCounts = new Map<string, number>();
   private deferredRevision = 0;
   private deferredBounds?: {
     count: number;
@@ -1067,7 +1067,7 @@ export class CellMatrix {
 
   constructor(private readonly onWrite?: (row: Row, column: Column) => void) {}
 
-  /** True until the persisted sparse matrix is first read or mutated. */
+  /** Whether indexed cell storage has been materialized; sparse writes can remain deferred. */
   get isHydrated(): boolean {
     return this.deferredJSON === undefined;
   }
@@ -1080,7 +1080,7 @@ export class CellMatrix {
     if (this.rows.size > 0 || this.deferredJSON !== undefined) throw new Error('CellMatrix already contains data');
     this.deferredJSON = input ?? {};
     this.deferredJSONOwned = false;
-    this.deferredOwnedRows.clear();
+    this.deferredOwnedRowCounts.clear();
     this.deferredRevision = 0;
     this.sortedRowCoordinates = undefined;
     this.deferredBounds = undefined;
@@ -1123,33 +1123,7 @@ export class CellMatrix {
 
   /** Replace one existing sparse cell without materializing deferred worksheet data. */
   replaceCellWithoutHydration(row: Row, column: Column, replacement: CellData): boolean {
-    const rowKey = String(row);
-    const columnKey = String(column);
-    if (this.deferredJSON !== undefined) {
-      const originalRows = this.deferredJSON;
-      const originalRow = originalRows[rowKey];
-      if (!originalRow) return false;
-      const current = originalRow[columnKey];
-      if (!current) return false;
-      const fontFamily = replacement.style?.fontFamily;
-      const normalized = fontFamily === undefined
-        ? replacement
-        : { ...replacement, style: { ...replacement.style, fontFamily: normalizeFontFamily(fontFamily) } };
-      if (!this.deferredJSONOwned) {
-        this.deferredJSON = { ...originalRows };
-        this.deferredJSONOwned = true;
-      }
-      const mutableRows = this.deferredJSON!;
-      if (!this.deferredOwnedRows.has(rowKey)) {
-        mutableRows[rowKey] = { ...originalRow };
-        this.deferredOwnedRows.add(rowKey);
-      }
-      this.onWrite?.(row, column);
-      mutableRows[rowKey]![columnKey] = normalized;
-      this.deferredRevision += 1;
-      return true;
-    }
-    if (!this.rows.get(row)?.has(column)) return false;
+    if (this.getWithoutHydration(row, column) === undefined) return false;
     this.set(row, column, replacement);
     return true;
   }
@@ -1159,12 +1133,33 @@ export class CellMatrix {
     const normalizedCell = fontFamily === undefined
       ? cell
       : { ...cell, style: { ...cell.style, fontFamily: normalizeFontFamily(fontFamily) } };
-    this.hydrate();
     this.writeNormalizedCell(row, column, normalizedCell);
   }
 
   private writeNormalizedCell(row: Row, column: Column, cell: CellData): void {
     this.onWrite?.(row, column);
+    if (this.deferredJSON !== undefined) {
+      const existed = this.getWithoutHydration(row, column) !== undefined;
+      this.ownDeferredRow(row)[String(column)] = cell;
+      if (existed) {
+        this.deferredRevision += 1;
+      } else {
+        const rowKey = String(row);
+        this.deferredOwnedRowCounts.set(rowKey, this.deferredOwnedRowCounts.get(rowKey)! + 1);
+        if (this.deferredBounds) {
+          const bounds = this.deferredBounds;
+          const wasEmpty = bounds.count === 0;
+          bounds.count += 1;
+          bounds.startRow = wasEmpty ? row : Math.min(bounds.startRow, row);
+          bounds.endRow = wasEmpty ? row : Math.max(bounds.endRow, row);
+          bounds.startColumn = wasEmpty ? column : Math.min(bounds.startColumn, column);
+          bounds.endColumn = wasEmpty ? column : Math.max(bounds.endColumn, column);
+        }
+      }
+      // A newly stored cell itself contributes +1 to revision. Hydration
+      // retains the same token because it writes exactly those stored cells.
+      return;
+    }
     let rowMap = this.rows.get(row);
     if (!rowMap) {
       rowMap = new Map<Column, CellData>();
@@ -1182,7 +1177,24 @@ export class CellMatrix {
   }
 
   delete(row: Row, column: Column): void {
-    this.hydrate();
+    if (this.deferredJSON !== undefined) {
+      if (this.getWithoutHydration(row, column) === undefined) return;
+      const columns = this.ownDeferredRow(row);
+      delete columns[String(column)];
+      const rowKey = String(row);
+      const remaining = this.deferredOwnedRowCounts.get(rowKey)! - 1;
+      if (remaining === 0) {
+        delete this.deferredJSON[rowKey];
+        this.deferredOwnedRowCounts.delete(rowKey);
+      } else {
+        this.deferredOwnedRowCounts.set(rowKey, remaining);
+      }
+      this.deferredBounds = undefined;
+      // Removing a stored cell subtracts one from the count term. Add two
+      // so every successful deletion still advances the content token by one.
+      this.deferredRevision += 2;
+      return;
+    }
     const rowMap = this.rows.get(row);
     const existed = rowMap?.has(column) ?? false;
     rowMap?.delete(column);
@@ -1248,6 +1260,20 @@ export class CellMatrix {
     for (const [row, columns] of this.rows) {
       for (const [column, cell] of columns) callback(cell, row, column);
     }
+  }
+
+  /** Own only the sparse dictionary and touched row; unrelated payloads remain shared and read-only. */
+  private ownDeferredRow(row: Row): Record<string, CellData> {
+    const rowKey = String(row);
+    if (!this.deferredJSONOwned) {
+      this.deferredJSON = { ...this.deferredJSON! };
+      this.deferredJSONOwned = true;
+    }
+    if (!this.deferredOwnedRowCounts.has(rowKey)) {
+      this.deferredJSON![rowKey] = { ...this.deferredJSON![rowKey] };
+      this.deferredOwnedRowCounts.set(rowKey, Object.keys(this.deferredJSON![rowKey]!).length);
+    }
+    return this.deferredJSON![rowKey]!;
   }
 
   /** Read persisted sparse cells without constructing row maps or changing storage ownership. */
@@ -1383,7 +1409,7 @@ export class CellMatrix {
     this.revisionCounter += this.deferredRevision;
     this.deferredRevision = 0;
     this.deferredJSONOwned = false;
-    this.deferredOwnedRows.clear();
+    this.deferredOwnedRowCounts.clear();
     for (const [row, columns] of Object.entries(input)) {
       for (const [column, cell] of Object.entries(columns)) {
         const fontFamily = cell.style?.fontFamily;
@@ -1422,42 +1448,6 @@ export class CellMatrix {
       endColumn: Number.isFinite(endColumn) ? endColumn : 0,
     };
     return this.deferredBounds;
-  }
-
-  /** 沿行轴整体平移:dir=+1 下移(插入),dir=-1 上移(删除);越界丢弃 */
-  shiftRows(at: Row, count: number, direction: 1 | -1): void {
-    this.hydrate();
-    const entries: Array<[Row, Column, CellData]> = [];
-    const delta = direction * count;
-    if (this.sortedRowCoordinates) {
-      this.forEachInRange(at, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, Number.POSITIVE_INFINITY, (cell, row, column) => {
-        entries.push([row, column, cell]);
-      });
-    } else {
-      for (const [row, columns] of this.rows) {
-        if (row < at) continue;
-        for (const [column, cell] of columns) entries.push([row, column, cell]);
-      }
-    }
-    for (const [row, column] of entries) this.delete(row, column);
-    for (const [row, column, cell] of entries) {
-      this.set(row + delta, column, cell);
-    }
-  }
-
-  /** 沿列轴整体平移:dir=+1 右移(插入),dir=-1 左移(删除) */
-  shiftColumns(at: Column, count: number, direction: 1 | -1): void {
-    this.hydrate();
-    const delta = direction * count;
-    for (const [row, columns] of [...this.rows]) {
-      const entries: Array<[Column, CellData]> = [];
-      for (const [column, cell] of columns) {
-        if (column >= at) entries.push([column, cell]);
-      }
-      if (entries.length === 0) continue;
-      for (const [column] of entries) this.delete(row, column);
-      for (const [column, cell] of entries) this.set(row, column + delta, cell);
-    }
   }
 
   /** 按稀疏行列索引读取范围内实际存在的单元格。 */
@@ -1521,6 +1511,101 @@ export class WorksheetModel {
   readonly hiddenColumns = new Set<number>();
   tabColor?: string;
   pane: WorksheetPane = { kind: 'none' };
+
+  snapshot(): SheetSnapshot {
+    return {
+      kind: this.kind,
+      id: this.id,
+      name: this.name,
+      rowCount: this.rowCount,
+      columnCount: this.columnCount,
+      cells: this.cells.toJSON(),
+      dataRegions: this.dataRegions.map((region) => structuredClone(region)),
+      merges: structuredClone(this.merges),
+      pane: normalizeWorksheetPane(this.pane),
+      pivots: structuredClone(this.pivots),
+      sparklines: structuredClone(this.sparklines),
+      conditionalFormats: structuredClone(this.conditionalFormats),
+      dataValidations: structuredClone(this.dataValidations),
+      defaultRowHeightPx: this.defaultRowHeightPx,
+      defaultColumnWidthPx: this.defaultColumnWidthPx,
+      rowHeightsPx: { ...this.rowHeightsPx },
+      columnWidthsPx: { ...this.columnWidthsPx },
+      hiddenRows: [...this.hiddenRows],
+      hiddenColumns: [...this.hiddenColumns],
+      tabColor: this.tabColor,
+      bandedRule: this.bandedRule ? structuredClone(this.bandedRule) : undefined,
+      autoFilter: this.autoFilter ? structuredClone(this.autoFilter) : undefined,
+      sheetTables: structuredClone(this.sheetTables),
+      sparklineGroups: structuredClone(this.sparklineGroups),
+      drawings: structuredClone(this.drawings),
+      drawingPayloads: Object.fromEntries([...this.drawingPayloads.entries()].map(([k, v]) => [k, structuredClone(v)])),
+      drawingGroups: structuredClone(this.drawingGroups),
+      snapSettings: structuredClone(this.snapSettings),
+      hyperlinks: [...this.hyperlinks.entries()].map(([key, hyperlink]) => {
+        const [row, column] = key.split(':').map(Number);
+        return { row: row!, column: column!, hyperlink: structuredClone(hyperlink) };
+      }),
+      review: this.review.toSnapshot(),
+      spillRanges: structuredClone(this.spillRanges),
+      protectionRules: structuredClone(this.protectionRules),
+      showGridlines: this.showGridlines,
+      showHeaders: this.showHeaders,
+      zoom: this.zoom,
+      hidden: this.hidden,
+      outline: this.outline ? structuredClone(this.outline) : undefined,
+      tableSheet: this.tableSheet ? structuredClone(this.tableSheet) : undefined,
+      ganttSheet: this.ganttSheet ? structuredClone(this.ganttSheet) : undefined,
+      reportSheet: this.reportSheet ? structuredClone(this.reportSheet) : undefined,
+    };
+  }
+
+  static fromSnapshot(input: SheetSnapshot): WorksheetModel {
+    const paneError = worksheetPaneValidationError(input.pane);
+    if (paneError !== undefined) throw new Error(`Workbook snapshot pane ${paneError} is invalid`);
+    const sheet = new WorksheetModel(input.id, input.name, input.rowCount, input.columnCount);
+    sheet.kind = input.kind;
+    sheet.tableSheet = input.tableSheet ? structuredClone(input.tableSheet) : undefined;
+    sheet.ganttSheet = input.ganttSheet ? structuredClone(input.ganttSheet) : undefined;
+    sheet.reportSheet = input.reportSheet ? structuredClone(input.reportSheet) : undefined;
+    sheet.cells.deferJSON(input.cells);
+    if (input.dataRegions) sheet.replaceDataRegions(input.dataRegions);
+    sheet.merges.push(...structuredClone(input.merges));
+    sheet.pane = normalizeWorksheetPane(input.pane);
+    sheet.pivots.push(...input.pivots.map((pivot) => canonicalizePivotDefinition(structuredClone(pivot))));
+    sheet.sparklines.push(...structuredClone(input.sparklines));
+    if (input.sparklineGroups) sheet.sparklineGroups.push(...structuredClone(input.sparklineGroups));
+    sheet.drawings.push(...structuredClone(input.drawings));
+    for (const [key, payload] of Object.entries(input.drawingPayloads)) {
+      sheet.drawingPayloads.set(key, structuredClone(payload));
+    }
+    if (input.drawingGroups) sheet.drawingGroups.push(...structuredClone(input.drawingGroups));
+    sheet.snapSettings = input.snapSettings ? structuredClone(input.snapSettings) : structuredClone(DEFAULT_WORKSHEET_SNAP_SETTINGS);
+    for (const entry of input.hyperlinks) sheet.hyperlinks.set(cellKey(entry.row, entry.column), structuredClone(entry.hyperlink));
+    const review = ReviewStore.fromSnapshot(input.id, input.review);
+    sheet.review.replaceNotes(review.noteEntries());
+    sheet.review.replaceThreads(review.threadEntries());
+    if (input.conditionalFormats) sheet.conditionalFormats.push(...structuredClone(input.conditionalFormats));
+    if (input.dataValidations) sheet.dataValidations.push(...structuredClone(input.dataValidations));
+    sheet.defaultRowHeightPx = input.defaultRowHeightPx;
+    sheet.defaultColumnWidthPx = input.defaultColumnWidthPx;
+    if (input.rowHeightsPx) Object.assign(sheet.rowHeightsPx, input.rowHeightsPx);
+    if (input.columnWidthsPx) Object.assign(sheet.columnWidthsPx, input.columnWidthsPx);
+    if (input.hiddenRows) input.hiddenRows.forEach((r) => sheet.hiddenRows.add(r));
+    if (input.hiddenColumns) input.hiddenColumns.forEach((c) => sheet.hiddenColumns.add(c));
+    if (input.bandedRule) sheet.bandedRule = structuredClone(input.bandedRule);
+    if (input.autoFilter) sheet.autoFilter = structuredClone(input.autoFilter);
+    if (input.sheetTables) sheet.sheetTables.push(...structuredClone(input.sheetTables));
+    if (input.spillRanges) sheet.spillRanges.push(...structuredClone(input.spillRanges));
+    if (input.protectionRules) sheet.protectionRules.push(...structuredClone(input.protectionRules));
+    if (input.showGridlines != null) sheet.showGridlines = input.showGridlines;
+    if (input.showHeaders != null) sheet.showHeaders = input.showHeaders;
+    if (input.zoom != null) sheet.zoom = input.zoom;
+    if (input.hidden != null) sheet.hidden = input.hidden;
+    if (input.outline) sheet.outline = structuredClone(input.outline);
+    sheet.tabColor = input.tabColor;
+    return sheet;
+  }
 
   /** 深拷贝当前工作表(删除工作表撤销恢复用) */
   cloneSheet(): WorksheetModel {
@@ -2099,8 +2184,7 @@ export class WorkbookModel {
   }
 
   getSheetSnapshot(sheetId: SheetId): SheetSnapshot {
-    const sheet = this.snapshot().sheets.find((entry) => entry.id === sheetId);
-    if (!sheet) throw new Error(`Unknown sheet: ${sheetId}`);
+    const sheet = this.getSheet(sheetId).snapshot();
     sheet.lifecycleDefinedNames = structuredClone(this.definedNameModels.filter((entry) => entry.scope === 'sheet' && entry.sheetId === sheetId));
     const printDocument = this.printDocuments.get(sheetId);
     if (printDocument) sheet.lifecyclePrintDocument = structuredClone(printDocument);
@@ -2109,14 +2193,29 @@ export class WorkbookModel {
 
   restoreSheetSnapshot(snapshot: SheetSnapshot, index = this.sheetOrder.length): void {
     if (this.sheets.has(snapshot.id)) throw new Error(`Sheet already exists: ${snapshot.id}`);
-    const current = this.snapshot();
-    const hydrated = WorkbookModel.fromSnapshot({ ...current, sheets: [structuredClone(snapshot)] });
-    const sheet = hydrated.getSheet(snapshot.id);
-    this.sheets.set(sheet.id, sheet);
-    if (snapshot.lifecycleDefinedNames) {
-      for (const entry of snapshot.lifecycleDefinedNames) this.setDefinedName(entry);
+    if (!Number.isSafeInteger(index)) throw new Error(`Invalid sheet restore index: ${index}`);
+    if (this.getSheetByName(snapshot.name)) throw new Error(`Sheet name already exists: ${snapshot.name}`);
+    const sheet = WorksheetModel.fromSnapshot(structuredClone(snapshot));
+    const lifecycleNames = snapshot.lifecycleDefinedNames ?? [];
+    for (const entry of lifecycleNames) {
+      if (entry.scope !== 'sheet' || entry.sheetId !== sheet.id) {
+        throw new Error(`Sheet restore defined-name owner does not match worksheet: ${entry.name}`);
+      }
     }
-    if (snapshot.lifecyclePrintDocument) this.printDocuments.set(snapshot.id, structuredClone(snapshot.lifecyclePrintDocument));
+    const definedNames = [...this.definedNameModels, ...lifecycleNames];
+    assertCanonicalDefinedNameModels({
+      sheets: [...this.getSheets(), sheet],
+      definedNameModels: definedNames,
+      definedNames: this.definedNames,
+    });
+    const printDocument = snapshot.lifecyclePrintDocument;
+    if (printDocument && (printDocument.unitId !== this.unitId || printDocument.sheetId !== sheet.id)) {
+      throw new Error(`Sheet restore print document owner does not match worksheet: ${sheet.id}`);
+    }
+    const normalizedPrintDocument = printDocument ? normalizePrintDocumentSnapshot(printDocument) : undefined;
+    if (lifecycleNames.length > 0) this.replaceDefinedNames(definedNames);
+    this.sheets.set(sheet.id, sheet);
+    if (normalizedPrintDocument) this.printDocuments.set(sheet.id, normalizedPrintDocument);
     const bounded = Math.max(0, Math.min(index, this.sheetOrder.length));
     this.sheetOrder.splice(bounded, 0, sheet.id);
   }
@@ -2140,51 +2239,7 @@ export class WorkbookModel {
       printDocuments: this.listPrintDocuments(),
       queryDefinitions: this.listQueryDefinitions(),
       cellStyleTemplates: this.listCellStyleTemplates(),
-      sheets: this.getSheets().map((sheet) => ({
-        kind: sheet.kind,
-        id: sheet.id,
-        name: sheet.name,
-        rowCount: sheet.rowCount,
-        columnCount: sheet.columnCount,
-        cells: sheet.cells.toJSON(),
-        dataRegions: sheet.dataRegions.map((region) => structuredClone(region)),
-        merges: structuredClone(sheet.merges),
-        pane: normalizeWorksheetPane(sheet.pane),
-        pivots: structuredClone(sheet.pivots),
-        sparklines: structuredClone(sheet.sparklines),
-        conditionalFormats: structuredClone(sheet.conditionalFormats),
-        dataValidations: structuredClone(sheet.dataValidations),
-        defaultRowHeightPx: sheet.defaultRowHeightPx,
-        defaultColumnWidthPx: sheet.defaultColumnWidthPx,
-        rowHeightsPx: { ...sheet.rowHeightsPx },
-        columnWidthsPx: { ...sheet.columnWidthsPx },
-        hiddenRows: [...sheet.hiddenRows],
-        hiddenColumns: [...sheet.hiddenColumns],
-        tabColor: sheet.tabColor,
-        bandedRule: sheet.bandedRule ? structuredClone(sheet.bandedRule) : undefined,
-        autoFilter: sheet.autoFilter ? structuredClone(sheet.autoFilter) : undefined,
-        sheetTables: structuredClone(sheet.sheetTables),
-        sparklineGroups: structuredClone(sheet.sparklineGroups),
-        drawings: structuredClone(sheet.drawings),
-        drawingPayloads: Object.fromEntries([...sheet.drawingPayloads.entries()].map(([k, v]) => [k, structuredClone(v)])),
-        drawingGroups: structuredClone(sheet.drawingGroups),
-        snapSettings: structuredClone(sheet.snapSettings),
-        hyperlinks: [...sheet.hyperlinks.entries()].map(([key, hyperlink]) => {
-          const [row, column] = key.split(':').map(Number);
-          return { row: row!, column: column!, hyperlink: structuredClone(hyperlink) };
-        }),
-        review: sheet.review.toSnapshot(),
-        spillRanges: structuredClone(sheet.spillRanges),
-        protectionRules: structuredClone(sheet.protectionRules),
-        showGridlines: sheet.showGridlines,
-        showHeaders: sheet.showHeaders,
-        zoom: sheet.zoom,
-        hidden: sheet.hidden,
-        outline: sheet.outline ? structuredClone(sheet.outline) : undefined,
-        tableSheet: sheet.tableSheet ? structuredClone(sheet.tableSheet) : undefined,
-        ganttSheet: sheet.ganttSheet ? structuredClone(sheet.ganttSheet) : undefined,
-        reportSheet: sheet.reportSheet ? structuredClone(sheet.reportSheet) : undefined,
-      })),
+      sheets: this.getSheets().map((sheet) => sheet.snapshot()),
     };
   }
 
@@ -2196,6 +2251,7 @@ export class WorkbookModel {
       const paneError = worksheetPaneValidationError(sheet.pane);
       if (paneError !== undefined) throw new Error(`Workbook snapshot pane ${paneError} is invalid`);
     }
+    assertCanonicalDefinedNameModels(snapshot);
     const workbook = new WorkbookModel(snapshot.unitId, snapshot.name);
     workbook.dimensionMetrics = structuredClone(snapshot.dimensionMetrics);
     if (snapshot.theme) workbook.setTheme(snapshot.theme);
@@ -2214,47 +2270,7 @@ export class WorkbookModel {
     for (const relationship of snapshot.dataModel.relationships) workbook.dataModel.relationships.set(relationship.id, structuredClone(relationship));
     for (const view of snapshot.dataModel.views) workbook.dataModel.views.set(view.id, structuredClone(view));
     for (const input of snapshot.sheets) {
-      const sheet = new WorksheetModel(input.id, input.name, input.rowCount, input.columnCount);
-      sheet.kind = input.kind;
-      sheet.tableSheet = input.tableSheet ? structuredClone(input.tableSheet) : undefined;
-      sheet.ganttSheet = input.ganttSheet ? structuredClone(input.ganttSheet) : undefined;
-      sheet.reportSheet = input.reportSheet ? structuredClone(input.reportSheet) : undefined;
-      sheet.cells.deferJSON(input.cells);
-      if (input.dataRegions) sheet.replaceDataRegions(input.dataRegions);
-      sheet.merges.push(...structuredClone(input.merges));
-      sheet.pane = normalizeWorksheetPane(input.pane);
-      sheet.pivots.push(...input.pivots.map((pivot) => canonicalizePivotDefinition(structuredClone(pivot))));
-      sheet.sparklines.push(...structuredClone(input.sparklines));
-      if (input.sparklineGroups) sheet.sparklineGroups.push(...structuredClone(input.sparklineGroups));
-      sheet.drawings.push(...structuredClone(input.drawings));
-      for (const [key, payload] of Object.entries(input.drawingPayloads)) {
-        sheet.drawingPayloads.set(key, structuredClone(payload));
-      }
-      if (input.drawingGroups) sheet.drawingGroups.push(...structuredClone(input.drawingGroups));
-      sheet.snapSettings = input.snapSettings ? structuredClone(input.snapSettings) : structuredClone(DEFAULT_WORKSHEET_SNAP_SETTINGS);
-      for (const entry of input.hyperlinks) sheet.hyperlinks.set(cellKey(entry.row, entry.column), structuredClone(entry.hyperlink));
-      const review = ReviewStore.fromSnapshot(input.id, input.review);
-      sheet.review.replaceNotes(review.noteEntries());
-      sheet.review.replaceThreads(review.threadEntries());
-      if (input.conditionalFormats) sheet.conditionalFormats.push(...structuredClone(input.conditionalFormats));
-      if (input.dataValidations) sheet.dataValidations.push(...structuredClone(input.dataValidations));
-      sheet.defaultRowHeightPx = input.defaultRowHeightPx;
-      sheet.defaultColumnWidthPx = input.defaultColumnWidthPx;
-      if (input.rowHeightsPx) Object.assign(sheet.rowHeightsPx, input.rowHeightsPx);
-      if (input.columnWidthsPx) Object.assign(sheet.columnWidthsPx, input.columnWidthsPx);
-      if (input.hiddenRows) input.hiddenRows.forEach((r) => sheet.hiddenRows.add(r));
-      if (input.hiddenColumns) input.hiddenColumns.forEach((c) => sheet.hiddenColumns.add(c));
-      if (input.bandedRule) sheet.bandedRule = structuredClone(input.bandedRule);
-      if (input.autoFilter) sheet.autoFilter = structuredClone(input.autoFilter);
-      if (input.sheetTables) sheet.sheetTables.push(...structuredClone(input.sheetTables));
-      if (input.spillRanges) sheet.spillRanges.push(...structuredClone(input.spillRanges));
-      if (input.protectionRules) sheet.protectionRules.push(...structuredClone(input.protectionRules));
-      if (input.showGridlines != null) sheet.showGridlines = input.showGridlines;
-      if (input.showHeaders != null) sheet.showHeaders = input.showHeaders;
-      if (input.zoom != null) sheet.zoom = input.zoom;
-      if (input.hidden != null) sheet.hidden = input.hidden;
-      if (input.outline) sheet.outline = structuredClone(input.outline);
-      sheet.tabColor = input.tabColor;
+      const sheet = WorksheetModel.fromSnapshot(input);
       workbook.sheets.set(sheet.id, sheet);
     }
     for (const document of snapshot.printDocuments ?? []) workbook.setPrintDocument(document);

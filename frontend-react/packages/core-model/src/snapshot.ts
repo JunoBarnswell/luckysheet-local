@@ -367,7 +367,7 @@ export function assertCanonicalWorkbookSnapshot(snapshot: WorkbookSnapshot): Wor
     }
   }
   assertCanonicalWorkbookHyperlinks(snapshot);
-  validateCanonicalDefinedNameModels(snapshot);
+  assertCanonicalDefinedNameModels(snapshot);
   const pivotIds = new Set<string>();
   const sheetTableIds = new Set<string>();
   const sheetTableNames = new Set<string>();
@@ -526,7 +526,12 @@ export function assertCanonicalWorkbookSnapshot(snapshot: WorkbookSnapshot): Wor
   return canonical;
 }
 
-function validateCanonicalDefinedNameModels(snapshot: WorkbookSnapshot): void {
+/** Shared load-boundary validation; model hydration must not silently overwrite an owner. */
+export function assertCanonicalDefinedNameModels(snapshot: {
+  readonly definedNameModels?: readonly DefinedNameModel[];
+  readonly definedNames?: Readonly<Record<string, string>>;
+  readonly sheets: readonly { readonly id: string }[];
+}): void {
   const models: unknown = snapshot.definedNameModels;
   if (models === undefined) {
     validateDefinedNamesProjection(snapshot.definedNames);

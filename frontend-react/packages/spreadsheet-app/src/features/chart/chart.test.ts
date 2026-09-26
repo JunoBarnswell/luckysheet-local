@@ -263,6 +263,43 @@ describe('chart feature', () => {
     assert.deepEqual(zeroData.series[0]?.missing, [false, false, false]);
   });
 
+  it('separates clustered horizontal bars and derives positive automatic logarithmic bounds', () => {
+    const workbook = new WorkbookModel('chart-axis-and-bars', 'Chart geometry');
+    const sheet = workbook.getSheet('sheet-1');
+    [
+      ['Category', 'Series A', 'Series B'],
+      ['East', 2, 6],
+      ['West', 4, 8],
+    ].forEach((row, rowIndex) => row.forEach((value, columnIndex) => sheet.cells.set(rowIndex, columnIndex, { value })));
+
+    const bar: ChartPayload = {
+      kind: 'chart', chartId: 'clustered-bars', chartType: 'bar', subtype: 'clustered',
+      source: { kind: 'worksheet-ranges', ranges: [{ sheetId: sheet.id, startRow: 0, endRow: 2, startColumn: 0, endColumn: 2 }] },
+      elements: { hiddenData: 'show' },
+    };
+    const barLayout = buildChartLayout(bar, resolveChartData(workbook, bar), 400, 240);
+    assert.equal(barLayout.status.kind, 'ready');
+    const eastA = barLayout.series[0]?.bars.find((entry) => entry.index === 0);
+    const eastB = barLayout.series[1]?.bars.find((entry) => entry.index === 0);
+    assert.ok(eastA && eastB);
+    assert.ok(eastA.y < eastB.y, 'series in one category occupy separate vertical slots');
+    assert.equal(eastA.height, eastB.height);
+    assert.ok(eastA.y + eastA.height <= eastB.y);
+
+    const line: ChartPayload = {
+      kind: 'chart', chartId: 'log-axis', chartType: 'line', subtype: 'line',
+      source: { kind: 'worksheet-ranges', ranges: [{ sheetId: sheet.id, startRow: 0, endRow: 2, startColumn: 0, endColumn: 1 }] },
+      elements: { hiddenData: 'show', valueAxis: { id: 'y', position: 'left', scale: 'logarithmic' } },
+    };
+    const logarithmicLayout = buildChartLayout(line, resolveChartData(workbook, line), 400, 240);
+    assert.equal(logarithmicLayout.status.kind, 'ready');
+    assert.ok(logarithmicLayout.valueAxis!.minimum > 0);
+    assert.ok(logarithmicLayout.valueAxis!.maximum > logarithmicLayout.valueAxis!.minimum);
+
+    const invalidBounds = { ...line, elements: { ...line.elements, valueAxis: { id: 'y', position: 'left' as const, scale: 'logarithmic' as const, maximum: 1 } } };
+    assert.equal(buildChartLayout(invalidBounds, resolveChartData(workbook, invalidBounds), 400, 240).status.kind, 'invalid');
+  });
+
   it('switches row-oriented worksheet matrices without converting categories into X coordinates', () => {
     const workbook = new WorkbookModel('chart-row-orientation', 'Row Orientation');
     const sheet = workbook.getSheet('sheet-1');

@@ -161,18 +161,22 @@ function axisBounds(model: ChartAxisModel, values: readonly number[], percent = 
   const finite = values.filter(Number.isFinite);
   const dataMinimum = finite.length ? finite.reduce((minimum, value) => Math.min(minimum, value), Infinity) : 0;
   const dataMaximum = finite.length ? finite.reduce((maximum, value) => Math.max(maximum, value), -Infinity) : 1;
-  let minimum = model.minimum ?? (percent ? dataMinimum < 0 ? -100 : 0 : Math.min(0, dataMinimum));
+  const logarithmic = model.scale === 'logarithmic';
+  const positiveMinimum = finite.length ? finite.reduce((minimum, value) => value > 0 ? Math.min(minimum, value) : minimum, Infinity) : 1;
+  let minimum = model.minimum ?? (logarithmic ? positiveMinimum : percent ? dataMinimum < 0 ? -100 : 0 : Math.min(0, dataMinimum));
   let maximum = model.maximum ?? (percent ? dataMaximum > 0 ? 100 : 0 : dataMaximum);
-  if (model.minimum === undefined && !percent && minimum === maximum) minimum -= 1;
-  if (model.maximum === undefined && !percent) {
+  if (model.minimum === undefined && !percent && !logarithmic && minimum === maximum) minimum -= 1;
+  if (model.maximum === undefined && !percent && !logarithmic) {
     const span = Math.max(1, maximum - minimum);
     maximum += span * 0.1;
   }
-  if (model.scale === 'logarithmic') {
+  if (logarithmic) {
+    const base = model.logBase ?? 10;
     if (finite.some((value) => value <= 0) || minimum <= 0 || maximum <= 0) {
       throw new Error('INVALID_CHART_SOURCE: logarithmic axes require strictly positive finite values');
     }
-    maximum = Math.max(minimum * 10, maximum);
+    if (!Number.isFinite(base) || base <= 1) throw new Error('INVALID_CHART_SOURCE: logarithmic axis base must be greater than one');
+    if (model.maximum === undefined) maximum = Math.max(minimum * base, maximum);
   }
   if (!Number.isFinite(minimum) || !Number.isFinite(maximum) || maximum <= minimum) throw new Error('INVALID_CHART_SOURCE: Axis bounds are not finite');
   const ticks: number[] = [];
@@ -488,7 +492,7 @@ function createSeriesLayouts(payload: ChartDrawingPayload, data: ResolvedChartDa
         const barStart = Math.min(lowerRatio, upperRatio);
         const barEnd = Math.max(lowerRatio, upperRatio);
         const slotIndex = categorySlot(index, categoryCount, categoryAxis);
-        bars.push({ index, category, start, end, x: chartType === 'bar' ? plot.left + barStart * plot.width : plot.left + slotIndex * slot + slot * 0.14 + offset, y: chartType === 'bar' ? plot.top + slotIndex * slot + slot * 0.14 : plot.top + (1 - barEnd) * plot.height, width: chartType === 'bar' ? Math.max(1, (barEnd - barStart) * plot.width) : Math.max(1, band - 1), height: chartType === 'bar' ? Math.max(3, slot * 0.72) : Math.max(1, (barEnd - barStart) * plot.height), color: colorFor(series, seriesIndex), visible });
+        bars.push({ index, category, start, end, x: chartType === 'bar' ? plot.left + barStart * plot.width : plot.left + slotIndex * slot + slot * 0.14 + offset, y: chartType === 'bar' ? plot.top + slotIndex * slot + slot * 0.14 + offset : plot.top + (1 - barEnd) * plot.height, width: chartType === 'bar' ? Math.max(1, (barEnd - barStart) * plot.width) : Math.max(1, band - 1), height: chartType === 'bar' ? Math.max(1, band - 1) : Math.max(1, (barEnd - barStart) * plot.height), color: colorFor(series, seriesIndex), visible });
       }
     }
     const trendlines = (series.trendlines ?? []).map((trendline) => buildTrendline(trendline, points, axis, plot));

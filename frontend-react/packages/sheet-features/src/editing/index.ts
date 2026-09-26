@@ -1742,9 +1742,10 @@ export function registerEditingCommands(runtime: CommandRuntime): void {
     },
   });
 
-  const validateCellShiftEnvelope = (params: CellShiftParams, context: { workbook: WorkbookModel }): void => {
+  const validateCellShiftEnvelope = (params: CellShiftParams, context: { workbook: WorkbookModel }) => {
     const plan = planCellShift(context.workbook, params);
     if (JSON.stringify(plan.band) !== JSON.stringify(params.affectedBand)) throw new Error('Cell shift affected band is not canonical');
+    return plan;
   };
   const cellShiftMutationHandler = (operation: CellShiftParams['operation'], id: 'cells.inserted' | 'cells.deleted') => (item: { params: unknown }, context: CommandContext) => {
       if (!isCellShiftMutation(item.params) || item.params.operation !== operation) throw new Error(`Invalid ${id} mutation payload`);
@@ -1755,11 +1756,12 @@ export function registerEditingCommands(runtime: CommandRuntime): void {
   runtime.registry.registerMutation<CellShiftParams>({ id: 'cells.deleted', handler: cellShiftMutationHandler('delete', 'cells.deleted'), metadata: { schema: { name: 'CellShiftDelete', validate: (value: unknown): value is CellShiftParams => isCellShiftMutation(value) && value.operation === 'delete' }, permission: { capability: 'sheet.cell.write', roles: ['owner', 'editor'] }, affectedRanges: { resolve: (params) => [structuredClone(params.affectedBand)], mode: 'exact' }, historyRebase: { kind: 'invalidate', reason: 'cell shifts have no canonical history transform' }, inverseIds: ['cells.deleted.restore'] } });
   const cellShiftRestoreMutationHandler = (operation: CellShiftParams['operation'], id: 'cells.inserted.restore' | 'cells.deleted.restore') => (item: { params: unknown }, context: CommandContext) => {
       if (!isCellShiftRestoreMutation(item.params) || item.params.spec.operation !== operation) throw new Error(`Invalid ${id} mutation payload`);
-      validateCellShiftEnvelope(item.params.spec, context);
-      const plan = planCellShift(context.workbook, item.params.spec);
-      const sheet = context.workbook.getSheet(item.params.spec.sheetId);
-      const effect = StructuralTransform.apply(context.workbook, { kind: 'cell-shift', sheetId: item.params.spec.sheetId, sourceRange: item.params.spec.range, operation: operation === 'insert' ? 'delete' : 'insert', axis: item.params.spec.axis }, context.structuralReferenceOwners);
-      for (let row = plan.band.startRow; row <= plan.band.endRow; row += 1) for (let column = plan.band.startColumn; column <= plan.band.endColumn; column += 1) sheet.cells.delete(row, column);
+      const spec: CellShiftParams = { ...item.params.spec, operation: operation === 'insert' ? 'delete' : 'insert' };
+      const plan = validateCellShiftEnvelope(spec, context);
+      const sheet = context.workbook.getSheet(spec.sheetId);
+      const effect = StructuralTransform.apply(context.workbook, { kind: 'cell-shift', sheetId: spec.sheetId, sourceRange: spec.range, operation: spec.operation, axis: spec.axis }, context.structuralReferenceOwners);
+      sheet.cells.forEachInRange(plan.band.startRow, plan.band.endRow, plan.band.startColumn, plan.band.endColumn,
+        (_cell, row, column) => sheet.cells.delete(row, column));
       for (const entry of item.params.cells) sheet.cells.set(entry.row, entry.column, structuredClone(entry.cell));
       return effect;
     };
@@ -1770,7 +1772,8 @@ export function registerEditingCommands(runtime: CommandRuntime): void {
     const canonicalParams: CellShiftParams = { ...params, affectedBand: plan.band };
     const sheet = context.workbook.getSheet(params.sheetId);
     const snapshot: Array<{ row: number; column: number; cell: CellData }> = [];
-    forEachCell(sheet, plan.band, (row, column, cell) => { if (cell) snapshot.push({ row, column, cell: structuredClone(cell) }); });
+    sheet.cells.forEachInRange(plan.band.startRow, plan.band.endRow, plan.band.startColumn, plan.band.endColumn,
+      (cell, row, column) => snapshot.push({ row, column, cell: structuredClone(cell) }));
     const affectedRanges: RangeRef[] = [structuredClone(plan.band)];
     return { canonicalParams, snapshot, affectedRanges };
   };
