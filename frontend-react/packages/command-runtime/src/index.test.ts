@@ -403,7 +403,7 @@ test('CommandRuntime adopts committed sheet-rename owner facts for undo history'
   const owner = workbook.addSheet('owner', 'Owner');
   const beforeFormula = "='Source'!A1";
   const afterFormula = "='Renamed'!A1";
-  owner.cells.set(0, 0, { formula: beforeFormula });
+  owner.cells.set(0, 0, { value: '', formula: beforeFormula });
   const runtime = new CommandRuntime(workbook);
   const metadata = {
     schema: {
