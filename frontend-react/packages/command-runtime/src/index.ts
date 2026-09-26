@@ -1859,6 +1859,7 @@ function preflightCommittedStructuralPatches(workbook: WorkbookModel, items: rea
     }
   }
   const dataRegionsByIdentity = indexStructuralDataRegions(workbook, rangeDeltas);
+  const sheetTablesByIdentity = indexStructuralSheetTables(workbook, rangeDeltas);
   for (const item of items) {
     for (const delta of item.structuralFormulaOwnerDeltas ?? []) {
       const key = formulaOwnerPatchKey(delta);
@@ -1907,7 +1908,8 @@ function preflightCommittedStructuralPatches(workbook: WorkbookModel, items: rea
     }
     for (const delta of item.structuralRangeOwnerDeltas ?? []) {
       const key = structuralRangeOwnerKey(delta);
-      const current = rangeOwnerStates.get(key) ?? readStructuralRangeOwnerState(workbook, delta, dataRegionsByIdentity);
+      const current = rangeOwnerStates.get(key)
+        ?? readStructuralRangeOwnerState(workbook, delta, dataRegionsByIdentity, sheetTablesByIdentity);
       const next = prepareStructuralRangeOwnerUpdate(current, delta, 'forward');
       rangeOwnerStates.set(key, next ?? current);
     }
@@ -2199,9 +2201,14 @@ function inverseStructuralRangeOwnerDelta(delta: StructuralRangeOwnerDelta): Str
       before: structuredClone(delta.after), after: structuredClone(delta.before),
     };
   }
+  if (delta.ownerKind === 'sheet-table') {
+    return {
+      ownerKind: 'sheet-table', sheetId: delta.sheetId, ownerId: delta.ownerId,
+      before: structuredClone(delta.after), after: structuredClone(delta.before),
+    };
+  }
   return {
     ownerKind: delta.ownerKind, ownerId: delta.ownerId,
-    ...(delta.ownerKind === 'sheet-table' ? { sheetId: delta.sheetId } : {}),
     before: structuredClone(delta.after), after: structuredClone(delta.before),
   };
 }

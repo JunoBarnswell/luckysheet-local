@@ -1500,3 +1500,9 @@ Six non-overlapping static review passes confirmed two independent performance r
 本轮确认并修复 **3 个独立问题**：Sheet Table 几何事实缺席统一引用链；range-owner 固定尺寸规则误拒合法表格扩缩；TS replay 对多表 patch 重复全表扫描。按用户提出的“至少 30 个独立问题”标准，本轮没有达到 30，未拆分 owner 类型、入口或断言凑数；目标仍需继续完整链路审查。
 
 新增 TS/Java/协议/迁移回归源码，**未运行**测试、build、lint、typecheck、浏览器或 Excel。仅执行 `git diff --check`，退出码 0（Git 另提示若下次写回，部分 LF 文件将按配置转换 CRLF）。v5 repeatable migration 会改写已持久化 operation/outbox envelope；没有自动反向迁移，降级旧程序前必须恢复 migration 前数据库备份，不能只回退应用二进制。PR 保持 draft；浏览器、真实 Excel 往返及大数据 CPU/heap 测量仍未验收。
+
+### CI correction — Sheet Table sparse preflight/inverse typing
+
+- `0c331076` 的 PR CI `36257401587` 未通过 frontend compile。日志指出 sparse committed-patch preflight 调用 range-owner reader 时没有传 Sheet Table 索引；inverse delta 通过条件 spread 构造 union，TS 无法将 `sheetId` 与 `ownerKind` 关联。
+- 修复为 sparse preflight 与 live apply 共用每受影响工作表一次构建的 Sheet Table identity index；inverse 为 Sheet Table 单独构造窄化分支，其余范围 owner 保持原类型。
+- 本地仍未运行测试/build/typecheck；待新 head 的自动 CI 复核这些源码修正。该编译修正不计作新增业务问题，也不改变本轮三个结构/性能根因的计数。
