@@ -16,13 +16,16 @@ import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Function;
 
 /**
  * Server authority for every persistent operation accepted from a browser.
@@ -35,6 +38,12 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 @Component
 public class MutationDescriptorRegistry {
+    private record FormulaOwnerMergeKey(String kind, String sheetId, Integer row, Integer column,
+            String ruleKind, String ruleId, String field, String ownerKind, String ownerId,
+            String fieldId, String viewId, String templateId) { }
+
+    private record DefinedNameMergeKey(String scope, String normalizedName, String sheetId) { }
+
     public record StructuralPatchMigrationReplay(JsonNode snapshot, List<Optional<StructuralPatch>> structuralPatches) {
         public StructuralPatchMigrationReplay {
             if (snapshot == null || snapshot.isNull() || structuralPatches == null) {
@@ -332,63 +341,78 @@ public class MutationDescriptorRegistry {
     ) {
         if (generated == null) return inverse;
         if (inverse == null) return generated;
-        List<StructuralPatch.FormulaOwnerDelta> deltas = new ArrayList<>(generated.formulaOwnerDeltas());
-        for (StructuralPatch.FormulaOwnerDelta candidate : inverse.formulaOwnerDeltas()) {
-            StructuralPatch.FormulaOwnerDelta sameAddress = deltas.stream()
-                    .filter(existing -> sameFormulaOwner(existing, candidate))
-                    .findFirst().orElse(null);
-            if (sameAddress == null) deltas.add(candidate);
-            else if (!sameAddress.equals(candidate)) {
-                throw ServiceException.conflict("STRUCTURAL_PATCH_CONFLICT: inverse and reducer patches disagree for one formula owner");
-            }
-        }
-        List<StructuralPatch.DefinedNameOwnerDelta> definedNameDeltas = new ArrayList<>(generated.definedNameOwnerDeltas());
-        for (StructuralPatch.DefinedNameOwnerDelta candidate : inverse.definedNameOwnerDeltas()) {
-            StructuralPatch.DefinedNameOwnerDelta sameOwner = definedNameDeltas.stream()
-                    .filter(existing -> sameDefinedNameOwner(existing, candidate))
-                    .findFirst().orElse(null);
-            if (sameOwner == null) definedNameDeltas.add(candidate);
-            else if (!sameOwner.equals(candidate)) {
-                throw ServiceException.conflict("STRUCTURAL_PATCH_CONFLICT: inverse and reducer patches disagree for one defined-name owner");
-            }
-        }
+        List<StructuralPatch.FormulaOwnerDelta> deltas = mergeOwnerDeltas(
+                generated.formulaOwnerDeltas(), inverse.formulaOwnerDeltas(),
+                MutationDescriptorRegistry::formulaOwnerMergeKey,
+                "STRUCTURAL_PATCH_CONFLICT: inverse and reducer patches disagree for one formula owner");
+        List<StructuralPatch.DefinedNameOwnerDelta> definedNameDeltas = mergeOwnerDeltas(
+                generated.definedNameOwnerDeltas(), inverse.definedNameOwnerDeltas(),
+                MutationDescriptorRegistry::definedNameMergeKey,
+                "STRUCTURAL_PATCH_CONFLICT: inverse and reducer patches disagree for one defined-name owner");
         return new StructuralPatch(StructuralPatch.VERSION, mutationId, deltas, definedNameDeltas);
     }
 
-    private static boolean sameDefinedNameOwner(
-            StructuralPatch.DefinedNameOwnerDelta left,
-            StructuralPatch.DefinedNameOwnerDelta right
-    ) {
-        StructuralPatch.DefinedNameOwnerIdentity leftOwner = left.owner();
-        StructuralPatch.DefinedNameOwnerIdentity rightOwner = right.owner();
-        return leftOwner.scope().equals(rightOwner.scope())
-                && leftOwner.name().equalsIgnoreCase(rightOwner.name())
-                && Objects.equals(leftOwner.sheetId(), rightOwner.sheetId());
+    private static <T, K> List<T> mergeOwnerDeltas(List<T> generated, List<T> inverse,
+            Function<T, K> ownerKey, String conflictMessage) {
+        List<T> merged = new ArrayList<>(generated);
+        if (generated.isEmpty()) {
+            merged.addAll(inverse);
+            return merged;
+        }
+        if (inverse.isEmpty()) return merged;
+
+        if (generated.size() <= inverse.size()) {
+            Map<K, T> generatedByOwner = new HashMap<>();
+            for (T delta : generated) generatedByOwner.put(ownerKey.apply(delta), delta);
+            for (T candidate : inverse) {
+                T existing = generatedByOwner.get(ownerKey.apply(candidate));
+                if (existing == null) merged.add(candidate);
+                else if (!Objects.equals(existing, candidate)) throw ServiceException.conflict(conflictMessage);
+            }
+            return merged;
+        }
+
+        Map<K, T> inverseByOwner = new HashMap<>();
+        for (T delta : inverse) inverseByOwner.put(ownerKey.apply(delta), delta);
+        for (T delta : generated) {
+            T candidate = inverseByOwner.remove(ownerKey.apply(delta));
+            if (candidate != null && !Objects.equals(delta, candidate)) throw ServiceException.conflict(conflictMessage);
+        }
+        for (T candidate : inverse) {
+            if (inverseByOwner.remove(ownerKey.apply(candidate)) != null) merged.add(candidate);
+        }
+        return merged;
     }
 
-    private static boolean sameFormulaOwner(StructuralPatch.FormulaOwnerDelta left, StructuralPatch.FormulaOwnerDelta right) {
-        if (!left.kind().equals(right.kind())) return false;
-        if ("formula-cell".equals(left.kind())) return left.afterAddress().equals(right.afterAddress());
-        if ("formula-object".equals(left.kind())) {
-            if (!left.ownerKind().equals(right.ownerKind())) return false;
-            return switch (left.ownerKind()) {
-                case "chart-text" -> Objects.equals(left.sheetId(), right.sheetId())
-                        && Objects.equals(left.ownerId(), right.ownerId()) && Objects.equals(left.field(), right.field());
-                case "shape-property" -> Objects.equals(left.sheetId(), right.sheetId())
-                        && Objects.equals(left.ownerId(), right.ownerId());
-                case "table-sheet-column" -> Objects.equals(left.sheetId(), right.sheetId())
-                        && Objects.equals(left.fieldId(), right.fieldId());
-                case "data-view-field" -> Objects.equals(left.viewId(), right.viewId())
-                        && Objects.equals(left.fieldId(), right.fieldId());
-                case "cell-style-template" -> Objects.equals(left.templateId(), right.templateId())
-                        && Objects.equals(left.field(), right.field());
-                default -> false;
+    private static DefinedNameMergeKey definedNameMergeKey(StructuralPatch.DefinedNameOwnerDelta delta) {
+        StructuralPatch.DefinedNameOwnerIdentity owner = delta.owner();
+        return new DefinedNameMergeKey(owner.scope(), owner.name().toUpperCase(Locale.ROOT), owner.sheetId());
+    }
+
+    private static FormulaOwnerMergeKey formulaOwnerMergeKey(StructuralPatch.FormulaOwnerDelta delta) {
+        return switch (delta.kind()) {
+            case "formula-cell" -> {
+                StructuralPatch.CellAddress address = delta.afterAddress();
+                yield new FormulaOwnerMergeKey(delta.kind(), address.sheetId(), address.row(), address.column(),
+                        null, null, null, null, null, null, null, null);
+            }
+            case "formula-rule" -> new FormulaOwnerMergeKey(delta.kind(), delta.sheetId(), null, null,
+                    delta.ruleKind(), delta.ruleId(), delta.field(), null, null, null, null, null);
+            case "formula-object" -> switch (delta.ownerKind()) {
+                case "chart-text" -> new FormulaOwnerMergeKey(delta.kind(), delta.sheetId(), null, null,
+                        null, null, delta.field(), delta.ownerKind(), delta.ownerId(), null, null, null);
+                case "shape-property" -> new FormulaOwnerMergeKey(delta.kind(), delta.sheetId(), null, null,
+                        null, null, null, delta.ownerKind(), delta.ownerId(), null, null, null);
+                case "table-sheet-column" -> new FormulaOwnerMergeKey(delta.kind(), delta.sheetId(), null, null,
+                        null, null, null, delta.ownerKind(), null, delta.fieldId(), null, null);
+                case "data-view-field" -> new FormulaOwnerMergeKey(delta.kind(), null, null, null,
+                        null, null, null, delta.ownerKind(), null, delta.fieldId(), delta.viewId(), null);
+                case "cell-style-template" -> new FormulaOwnerMergeKey(delta.kind(), null, null, null,
+                        null, null, delta.field(), delta.ownerKind(), null, null, null, delta.templateId());
+                default -> throw new IllegalArgumentException("Unsupported structural formula-object owner identity");
             };
-        }
-        return left.sheetId().equals(right.sheetId())
-                && left.ruleKind().equals(right.ruleKind())
-                && left.ruleId().equals(right.ruleId())
-                && left.field().equals(right.field());
+            default -> throw new IllegalArgumentException("Unsupported structural formula owner identity");
+        };
     }
 
     public JsonNode applyStructuralPatch(JsonNode snapshot, StructuralPatch patch) {
