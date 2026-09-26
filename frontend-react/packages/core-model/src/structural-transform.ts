@@ -417,26 +417,24 @@ function structuralFormulaObjectDeltas(
 const UNANCHORED_WORKBOOK_FORMULA_OWNER = '';
 
 function shiftDataRegionAxis(
-  workbook: WorkbookModel,
   sheet: WorksheetModel,
   axis: 'row' | 'column',
   at: number,
   count: number,
   direction: 1 | -1,
-  sources: Map<string, DataSourceManifest> = workbook.dataModel.sources,
+  sources: Map<string, DataSourceManifest>,
 ): void {
   for (const region of sheet.dataRegions) {
     const start = axis === 'row' ? region.range.startRow : region.range.startColumn;
     const shouldShift = direction === 1 ? at <= start : at + count - 1 < start;
     if (!shouldShift) continue;
-    const delta = direction * count;
+    if (!shiftRangeRef(region.range, axis, at, count, direction)) {
+      throw new Error(`STRUCTURAL_PATCH_INVARIANT: axis transform removes data region ${region.id}`);
+    }
     if (axis === 'row') {
-      region.range.startRow += delta;
-      region.range.endRow += delta;
-      region.headerRow += delta;
-    } else {
-      region.range.startColumn += delta;
-      region.range.endColumn += delta;
+      const headerRow = shiftIndex(region.headerRow, at, count, direction, axis);
+      if (headerRow === null) throw new Error(`STRUCTURAL_PATCH_INVARIANT: axis transform removes data region ${region.id} header`);
+      region.headerRow = headerRow;
     }
   }
   for (const source of sources.values()) {
@@ -459,7 +457,6 @@ function applyAxis(
   validateAxisBounds(sheet, axis, at, count, direction);
   validateAxisMetadataPreservation(workbook, sheet, axis, at, count, direction);
   validateDataRegionAxisPreservation(workbook, sheet, axis, at, count, direction);
-  if (count <= 0) return { kind: 'structural-transform', removedCells: [], clearInputRanges: [], populateInputRanges: [], rewrittenFormulaOwners: [], definedNameOwnerDeltas: [] };
   const reportSheetAfter = sheet.reportSheet
     ? mapReportSheetCoordinates(
       sheet.reportSheet,
@@ -485,7 +482,7 @@ function applyAxis(
   rejectFormulaGroupMetadataInRange(sheet, axis === 'row'
     ? { sheetId: sheet.id, startRow: at, endRow: sheet.rowCount - 1, startColumn: 0, endColumn: Math.max(sheet.columnCount - 1, 0) }
     : { sheetId: sheet.id, startRow: 0, endRow: Math.max(sheet.rowCount - 1, 0), startColumn: at, endColumn: sheet.columnCount - 1 }, 'axis shift');
-  preflightAxisMetadata(workbook, sheet, axis, at, count, direction);
+  const metadataPlan = planAxisMetadata(workbook, sheet, axis, at, count, direction);
   const end = at + count - 1;
   let removed: Array<{ row: Row; column: Column; cell: CellData }> = [];
 
@@ -507,32 +504,7 @@ function applyAxis(
     sheet.columnCount = Math.max(1, sheet.columnCount - count);
   }
 
-  // Only complete regions outside the structural edit are moved.  Any
-  // intersecting edit was rejected above because it needs a block rewrite.
-  shiftDataRegionAxis(workbook, sheet, axis, at, count, direction);
-
-  shiftMerges(sheet, axis, at, count, direction);
-  for (const owner of workbook.getSheets()) {
-    shiftRuleRanges(owner.conditionalFormats, axis, at, count, direction, sheet.id);
-    shiftRuleRanges(owner.dataValidations, axis, at, count, direction, sheet.id);
-    shiftSparklines(owner, axis, at, count, direction, sheet.id);
-    shiftPivots(owner, axis, at, count, direction, sheet.id);
-    shiftDrawingPayloadReferences(owner, axis, at, count, direction, sheet.id);
-  }
-  shiftFilter(sheet, axis, at, count, direction);
-  shiftFreeze(sheet, axis, at, count, direction);
-  shiftHiddenAndSizes(sheet, axis, at, count, direction);
-  shiftDrawings(sheet, axis, at, count, direction);
-  shiftSheetTables(sheet, axis, at, count, direction);
-  shiftWorkbookTables(workbook, sheet.id, axis, at, count, direction);
-  shiftReview(sheet, axis, at, count, direction);
-  shiftHyperlinks(sheet, axis, at, count, direction);
-  shiftHyperlinkTargets(workbook, workbook.getSheets(), sheet.id, axis, at, count, direction);
-  shiftSpills(sheet, axis, at, count, direction);
-  shiftProtection(sheet, axis, at, count, direction);
-  shiftBanded(sheet, axis, at, count, direction);
-  shiftOutline(sheet, axis, at, count, direction);
-  shiftPrintDocumentAxis(workbook.printDocuments.get(sheet.id), sheet.id, axis, at, count, direction);
+  applyAxisMetadataPlan(workbook, sheet.id, metadataPlan);
   if (reportSheetAfter) sheet.reportSheet = reportSheetAfter;
   const formulaRewriteResult = applyFormulaRewritePlan(workbook, sheet.id, shift, undefined, formulaRewrite);
   return {
@@ -834,14 +806,37 @@ function preflightCellShiftMetadata(workbook: WorkbookModel, sheet: WorksheetMod
   }
 }
 
-function preflightAxisMetadata(
+interface AxisMetadataPlan {
+  readonly sheets: readonly AxisSheetMetadataPlan[];
+  readonly tables: readonly WorkbookTableModel[];
+  readonly sources: ReadonlyMap<string, DataSourceManifest>;
+  readonly printDocument: PrintDocumentSnapshot | undefined;
+}
+
+const AXIS_REFERENCE_METADATA_FIELDS = [
+  'conditionalFormats', 'dataValidations', 'pivots', 'sparklines', 'drawingPayloads', 'hyperlinks',
+] as const;
+const AXIS_LOCAL_METADATA_FIELDS = [
+  'dataRegions', 'merges', 'sheetTables', 'drawings', 'spillRanges', 'protectionRules',
+  'autoFilter', 'bandedRule', 'outline', 'pane', 'hiddenRows', 'hiddenColumns', 'rowHeightsPx', 'columnWidthsPx',
+] as const;
+type AxisMetadataField = typeof AXIS_REFERENCE_METADATA_FIELDS[number] | typeof AXIS_LOCAL_METADATA_FIELDS[number];
+
+interface AxisSheetMetadataPlan {
+  readonly after: WorksheetModel;
+  readonly changedFields: ReadonlySet<AxisMetadataField>;
+  readonly notes: ReturnType<WorksheetModel['review']['noteEntries']> | undefined;
+  readonly threads: ReturnType<WorksheetModel['review']['threadEntries']> | undefined;
+}
+
+function planAxisMetadata(
   workbook: WorkbookModel,
   sheet: WorksheetModel,
   axis: 'row' | 'column',
   at: number,
   count: number,
   direction: 1 | -1,
-): void {
+): AxisMetadataPlan {
   const stagedSheets = cloneStructuralPreflightSheets(workbook, sheet);
   const staged = stagedSheets.find((candidate) => candidate.id === sheet.id);
   if (!staged) throw new Error(`STRUCTURAL_PATCH_INVARIANT: worksheet ${sheet.id} is absent from metadata preflight`);
@@ -853,7 +848,7 @@ function preflightAxisMetadata(
   for (const [id, source] of workbook.dataModel.sources) {
     if (source.sourceRange?.sheetId === sheet.id) sources.set(id, structuredClone(source));
   }
-  shiftDataRegionAxis(workbook, staged, axis, at, count, direction, sources);
+  shiftDataRegionAxis(staged, axis, at, count, direction, sources);
   shiftMerges(staged, axis, at, count, direction);
   for (const owner of stagedSheets) {
     shiftRuleRanges(owner.conditionalFormats, axis, at, count, direction, staged.id);
@@ -867,7 +862,7 @@ function preflightAxisMetadata(
   shiftHiddenAndSizes(staged, axis, at, count, direction);
   shiftDrawings(staged, axis, at, count, direction);
   shiftSheetTables(staged, axis, at, count, direction);
-  shiftWorkbookTables(workbook, staged.id, axis, at, count, direction, tables);
+  shiftWorkbookTables(staged.id, axis, at, count, direction, tables);
   shiftReview(staged, axis, at, count, direction);
   shiftHyperlinks(staged, axis, at, count, direction);
   shiftHyperlinkTargets(workbook, stagedSheets, staged.id, axis, at, count, direction);
@@ -875,8 +870,121 @@ function preflightAxisMetadata(
   shiftProtection(staged, axis, at, count, direction);
   shiftBanded(staged, axis, at, count, direction);
   shiftOutline(staged, axis, at, count, direction);
-  const printDocument = workbook.printDocuments.get(sheet.id);
-  if (printDocument) shiftPrintDocumentAxis(structuredClone(printDocument), staged.id, axis, at, count, direction);
+  const currentPrintDocument = workbook.printDocuments.get(sheet.id);
+  const printDocument = currentPrintDocument ? structuredClone(currentPrintDocument) : undefined;
+  if (printDocument) shiftPrintDocumentAxis(printDocument, staged.id, axis, at, count, direction);
+  const sheets = stagedSheets.map((after): AxisSheetMetadataPlan => {
+    const before = workbook.getSheet(after.id);
+    const changedFields = new Set<AxisMetadataField>();
+    const fields: readonly AxisMetadataField[] = before.id === sheet.id
+      ? [...AXIS_REFERENCE_METADATA_FIELDS, ...AXIS_LOCAL_METADATA_FIELDS]
+      : AXIS_REFERENCE_METADATA_FIELDS;
+    for (const field of fields) {
+      const current = before[field];
+      const next = after[field];
+      if (sameAxisMetadata(current, next)) continue;
+      changedFields.add(field);
+      // An unchanged owner must not acquire a new identity merely because a
+      // different owner in its collection moved. Do this before any live write.
+      if (Array.isArray(current) && Array.isArray(next)) {
+        for (let index = 0; index < Math.min(current.length, next.length); index += 1) {
+          if (sameAxisMetadata(current[index], next[index])) next[index] = current[index];
+        }
+      }
+    }
+    if (changedFields.has('drawingPayloads')) retainUnchangedAxisMetadataMapOwners(before.drawingPayloads, after.drawingPayloads);
+    if (changedFields.has('hyperlinks')) retainUnchangedAxisMetadataMapOwners(before.hyperlinks, after.hyperlinks);
+    const notes = before.id === sheet.id ? after.review.noteEntries() : undefined;
+    const threads = before.id === sheet.id ? after.review.threadEntries() : undefined;
+    return {
+      after,
+      changedFields,
+      notes: notes && !sameAxisMetadata(before.review.noteEntries(), notes) ? notes : undefined,
+      threads: threads && !sameAxisMetadata(before.review.threadEntries(), threads) ? threads : undefined,
+    };
+  });
+  return {
+    sheets,
+    tables: tables.filter((table) => !sameAxisMetadata(workbook.dataModel.tables.get(table.id), table)),
+    sources: new Map([...sources].filter(([id, source]) => !sameAxisMetadata(workbook.dataModel.sources.get(id), source))),
+    printDocument: !sameAxisMetadata(currentPrintDocument, printDocument) ? printDocument : undefined,
+  };
+}
+
+/**
+ * Consume the already validated metadata result. No coordinate/reference
+ * transform is allowed here: cells have moved by the time this runs.
+ * This internal plan is not the persisted, owner-complete StructuralPatch.
+ */
+function applyAxisMetadataPlan(workbook: WorkbookModel, targetSheetId: string, plan: AxisMetadataPlan): void {
+  for (const { after: staged, changedFields, notes, threads } of plan.sheets) {
+    const sheet = workbook.getSheet(staged.id);
+    if (changedFields.has('conditionalFormats')) applyAxisMetadataArray(sheet.conditionalFormats, staged.conditionalFormats);
+    if (changedFields.has('dataValidations')) applyAxisMetadataArray(sheet.dataValidations, staged.dataValidations);
+    if (changedFields.has('pivots')) applyAxisMetadataArray(sheet.pivots, staged.pivots);
+    if (changedFields.has('sparklines')) applyAxisMetadataArray(sheet.sparklines, staged.sparklines);
+    if (changedFields.has('drawingPayloads')) applyAxisMetadataMap(sheet.drawingPayloads, staged.drawingPayloads);
+    if (changedFields.has('hyperlinks')) applyAxisMetadataMap(sheet.hyperlinks, staged.hyperlinks);
+    if (sheet.id !== targetSheetId) continue;
+
+    if (changedFields.has('dataRegions')) sheet.replaceDataRegions(staged.dataRegions);
+    if (changedFields.has('merges')) applyAxisMetadataArray(sheet.merges, staged.merges);
+    if (changedFields.has('sheetTables')) applyAxisMetadataArray(sheet.sheetTables, staged.sheetTables);
+    if (changedFields.has('drawings')) applyAxisMetadataArray(sheet.drawings, staged.drawings);
+    if (changedFields.has('spillRanges')) applyAxisMetadataArray(sheet.spillRanges, staged.spillRanges);
+    if (changedFields.has('protectionRules')) applyAxisMetadataArray(sheet.protectionRules, staged.protectionRules);
+    if (changedFields.has('autoFilter')) sheet.autoFilter = staged.autoFilter;
+    if (changedFields.has('bandedRule')) sheet.bandedRule = staged.bandedRule;
+    if (changedFields.has('outline')) sheet.outline = staged.outline;
+    if (changedFields.has('pane')) sheet.pane = staged.pane;
+    for (const field of ['hiddenRows', 'hiddenColumns'] as const) {
+      if (!changedFields.has(field)) continue;
+      const current = sheet[field];
+      const next = staged[field];
+      current.clear();
+      for (const coordinate of next) current.add(coordinate);
+    }
+    for (const field of ['rowHeightsPx', 'columnWidthsPx'] as const) {
+      if (!changedFields.has(field)) continue;
+      const current = sheet[field];
+      const next = staged[field];
+      for (const key of Object.keys(current)) delete current[Number(key)];
+      Object.assign(current, next);
+    }
+    if (notes) sheet.review.replaceNotes(notes);
+    if (threads) sheet.review.replaceThreads(threads);
+  }
+  for (const table of plan.tables) workbook.dataModel.tables.set(table.id, table);
+  for (const [id, source] of plan.sources) workbook.dataModel.sources.set(id, source);
+  if (plan.printDocument) workbook.printDocuments.set(targetSheetId, plan.printDocument);
+}
+
+/** Compare canonical metadata during planning only, never after live cells move. */
+function sameAxisMetadata(before: unknown, after: unknown): boolean {
+  const snapshotValue = (value: unknown): unknown => value instanceof Map || value instanceof Set ? [...value] : value;
+  try {
+    return JSON.stringify(snapshotValue(before)) === JSON.stringify(snapshotValue(after));
+  } catch (cause) {
+    throw new Error('STRUCTURAL_PATCH_INVARIANT: axis metadata cannot be represented as snapshot data', { cause });
+  }
+}
+
+function retainUnchangedAxisMetadataMapOwners<T>(before: ReadonlyMap<string, T>, after: Map<string, T>): void {
+  for (const [key, value] of after) {
+    const current = before.get(key);
+    if (current !== undefined && sameAxisMetadata(current, value)) after.set(key, current);
+  }
+}
+
+function applyAxisMetadataArray<T>(current: T[], next: readonly T[]): void {
+  // Keep the canonical collection instance; owner identity was resolved in planning.
+  current.length = next.length;
+  for (let index = 0; index < next.length; index += 1) current[index] = next[index]!;
+}
+
+function applyAxisMetadataMap<T>(current: Map<string, T>, next: ReadonlyMap<string, T>): void {
+  for (const key of current.keys()) if (!next.has(key)) current.delete(key);
+  for (const [key, value] of next) if (current.get(key) !== value || !current.has(key)) current.set(key, value);
 }
 
 function shiftCellBandMetadata(
@@ -1713,13 +1821,12 @@ function shiftSheetTables(sheet: WorksheetModel, axis: 'row' | 'column', at: num
 }
 
 function shiftWorkbookTables(
-  workbook: WorkbookModel,
   sheetId: string,
   axis: 'row' | 'column',
   at: number,
   count: number,
   direction: 1 | -1,
-  tables: Iterable<WorkbookTableModel> = workbook.dataModel.tables.values(),
+  tables: Iterable<WorkbookTableModel>,
 ): void {
   for (const table of tables) {
     if (table.sourceRange?.sheetId !== sheetId) continue;

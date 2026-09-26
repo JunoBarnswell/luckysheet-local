@@ -1112,6 +1112,131 @@ describe('structural operations', () => {
       sheetId: sheet.id, startRow: 7, endRow: 9, startColumn: 2, endColumn: 3,
     });
     assert.equal(sheet.cells.get(8, 2)?.value, 999);
+    assert.deepEqual(sheet.usedRange, {
+      sheetId: sheet.id, startRow: 7, endRow: 9, startColumn: 2, endColumn: 3,
+    });
+
+    StructuralTransform.apply(workbook, { kind: 'delete-rows', sheetId: sheet.id, at: 2, count: 2 });
+    assert.deepEqual(sheet.usedRange, {
+      sheetId: sheet.id, startRow: 5, endRow: 7, startColumn: 2, endColumn: 3,
+    });
+    assert.equal(sheet.cells.get(6, 2)?.value, 999);
+    StructuralTransform.apply(workbook, { kind: 'insert-columns', sheetId: sheet.id, at: 1, count: 2 });
+    assert.deepEqual(sheet.usedRange, {
+      sheetId: sheet.id, startRow: 5, endRow: 7, startColumn: 4, endColumn: 5,
+    });
+    StructuralTransform.apply(workbook, { kind: 'delete-columns', sheetId: sheet.id, at: 1, count: 2 });
+    assert.deepEqual(sheet.usedRange, {
+      sheetId: sheet.id, startRow: 5, endRow: 7, startColumn: 2, endColumn: 3,
+    });
+  });
+
+  it('applies planned axis metadata once and keeps unaffected cross-sheet owner identities', () => {
+    const workbook = new WorkbookModel('unit-axis-metadata-plan', 'Axis metadata plan');
+    const target = workbook.getSheet('sheet-1');
+    const owner = workbook.addSheet('reference-owner', 'Reference owner', 20, 10);
+    target.cells.set(3, 1, { value: 42 });
+    target.hiddenRows.add(3);
+    target.rowHeightsPx[3] = 36;
+    target.pane = { kind: 'frozen', state: 'frozen', xSplit: 0, ySplit: 2, startRow: 2, startColumn: 0 };
+    target.review.setNote(3, 1, { id: 'plan-note', author: 'user', text: 'note', createdAt: 'now', visible: true });
+    owner.sparklines.push(
+      { id: 'affected', sheetId: owner.id, anchor: { row: 0, column: 5 }, type: 'line', color: '#000',
+        sourceRange: { sheetId: target.id, startRow: 3, endRow: 4, startColumn: 0, endColumn: 0 } },
+      { id: 'unaffected', sheetId: owner.id, anchor: { row: 1, column: 5 }, type: 'line', color: '#000',
+        sourceRange: { sheetId: owner.id, startRow: 3, endRow: 4, startColumn: 0, endColumn: 0 } },
+    );
+    owner.hyperlinks.set('0:0', { id: 'affected-link', target: { kind: 'sheet', sheetId: target.id, row: 4, column: 1 } });
+    owner.hyperlinks.set('0:1', { id: 'unaffected-link', target: { kind: 'sheet', sheetId: owner.id, row: 4, column: 1 } });
+    const unaffectedSparkline = owner.sparklines[1];
+    const unaffectedHyperlink = owner.hyperlinks.get('0:1');
+    const sparklineCollection = owner.sparklines;
+    const hyperlinkCollection = owner.hyperlinks;
+    const widths = target.columnWidthsPx;
+    const before = workbook.snapshot();
+
+    StructuralTransform.apply(workbook, { kind: 'insert-rows', sheetId: target.id, at: 1, count: 2 });
+
+    assert.equal(target.cells.get(5, 1)?.value, 42);
+    assert.deepEqual([...target.hiddenRows], [5]);
+    assert.deepEqual(target.rowHeightsPx, { 5: 36 });
+    assert.deepEqual(target.pane, { kind: 'frozen', state: 'frozen', xSplit: 0, ySplit: 4, startRow: 4, startColumn: 0 });
+    assert.equal(target.review.getNoteAt(5, 1)?.id, 'plan-note');
+    assert.equal(target.review.hasNoteAt(3, 1), false);
+    assert.deepEqual(owner.sparklines[0]?.sourceRange, {
+      sheetId: target.id, startRow: 5, endRow: 6, startColumn: 0, endColumn: 0,
+    });
+    assert.deepEqual(owner.sparklines[0]?.anchor, { row: 0, column: 5 });
+    assert.deepEqual(owner.hyperlinks.get('0:0')?.target, { kind: 'sheet', sheetId: target.id, row: 6, column: 1 });
+    assert.equal(owner.sparklines[1], unaffectedSparkline);
+    assert.equal(owner.hyperlinks.get('0:1'), unaffectedHyperlink);
+    assert.equal(owner.sparklines, sparklineCollection);
+    assert.equal(owner.hyperlinks, hyperlinkCollection);
+    assert.equal(target.columnWidthsPx, widths);
+    StructuralTransform.apply(workbook, { kind: 'delete-rows', sheetId: target.id, at: 1, count: 2 });
+    assert.deepEqual(workbook.snapshot(), before);
+  });
+
+  it('rejects a late metadata planning failure without committing earlier cells or owners', () => {
+    const workbook = new WorkbookModel('unit-axis-plan-rejection', 'Axis plan rejection');
+    const sheet = workbook.getSheet('sheet-1');
+    sheet.cells.set(3, 1, { value: 'unchanged' });
+    sheet.hiddenRows.add(3);
+    sheet.review.setNote(3, 1, { id: 'late-note', author: 'user', text: 'note', createdAt: 'now', visible: true });
+    workbook.printDocuments.set(sheet.id, {
+      schema: 'PrintDocument', unitId: workbook.unitId, sheetId: sheet.id,
+      pageSetup: {
+        paperSize: 'a4', orientation: 'portrait', margins: { top: 1, right: 1, bottom: 1, left: 1, header: 0, footer: 0 },
+        scale: 100, printGridlines: false, printHeadings: false, centerHorizontally: false, centerVertically: false,
+      },
+      printAreas: [{ sheetId: sheet.id, range: { sheetId: sheet.id, startRow: 3, endRow: 4, startColumn: 0, endColumn: 2 } }],
+      pageBreaks: [{ sheetId: sheet.id, row: MAX_ROW_INDEX }],
+    });
+    const before = workbook.snapshot();
+
+    assert.throws(() => StructuralTransform.apply(workbook, {
+      kind: 'insert-rows', sheetId: sheet.id, at: 1, count: 1,
+    }), /UNSUPPORTED_STRUCTURAL_REFERENCE: row coordinate .* exceeds worksheet bounds/);
+    assert.deepEqual(workbook.snapshot(), before);
+
+    workbook.printDocuments.get(sheet.id)!.pageBreaks = [{ sheetId: sheet.id, row: 5 }];
+    StructuralTransform.apply(workbook, { kind: 'insert-rows', sheetId: sheet.id, at: 1, count: 1 });
+    assert.equal(sheet.cells.get(4, 1)?.value, 'unchanged');
+    assert.equal(sheet.review.getNoteAt(4, 1)?.id, 'late-note');
+    assert.equal(workbook.printDocuments.get(sheet.id)?.printAreas[0]?.range.startRow, 4);
+    assert.equal(workbook.printDocuments.get(sheet.id)?.pageBreaks[0]?.row, 6);
+  });
+
+  it('rejects block-backed projection overflow before cells, metadata, or bounds index change', () => {
+    for (const axis of ['row', 'column'] as const) {
+      const workbook = new WorkbookModel(`unit-region-${axis}-overflow`, 'Region overflow');
+      const sheet = workbook.getSheet('sheet-1');
+      sheet.rowCount = 8;
+      sheet.columnCount = 8;
+      sheet.cells.set(3, 1, { value: 'preserve' });
+      workbook.addDataSource({
+        schema: 'DataSourceManifest', version: 1, id: 'block-source', name: 'Block source', kind: 'chunked-table',
+        rowCount: 2, fields: [
+          { id: 'f0', name: 'Code', ordinal: 0, type: 'text' },
+          { id: 'f1', name: 'Value', ordinal: 1, type: 'number' },
+        ],
+        blockRowCount: 65_536, revision: 0,
+        blocks: [{ id: 'overflow-block', dataSourceId: 'block-source', startRow: 0, rowCount: 2,
+          storageKey: 'overflow-block', checksum: 'a'.repeat(64), byteLength: 1, encoding: 'columnar-v1', revision: 0 }],
+      });
+      const range = axis === 'row'
+        ? { sheetId: sheet.id, startRow: MAX_ROW_INDEX - 2, endRow: MAX_ROW_INDEX, startColumn: 1, endColumn: 2 }
+        : { sheetId: sheet.id, startRow: 2, endRow: 4, startColumn: MAX_COLUMN_INDEX - 1, endColumn: MAX_COLUMN_INDEX };
+      sheet.addDataRegion({ id: 'edge-region', sourceId: 'block-source', range, headerRow: range.startRow, revision: 0 });
+      const before = workbook.snapshot();
+      const usedRangeBefore = sheet.usedRange;
+
+      assert.throws(() => StructuralTransform.apply(workbook, {
+        kind: axis === 'row' ? 'insert-rows' : 'insert-columns', sheetId: sheet.id, at: 1, count: 1,
+      }), /UNSUPPORTED_STRUCTURAL_REFERENCE: (row|column) interval exceeds worksheet bounds/);
+      assert.deepEqual(workbook.snapshot(), before);
+      assert.deepEqual(sheet.usedRange, usedRangeBefore);
+    }
   });
 
   it('rejects row or column edits that intersect a block-backed region until a block transaction is supplied', () => {

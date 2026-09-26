@@ -1253,3 +1253,22 @@ PR 上两个 `canonical-build` job 使用相同 head，前端依赖安装与前�
 本轮确认并修复 **7 个独立问题**；坐标上界为解析入口修正后的附加拒绝约束，不另凑问题数。成功/拒绝回归测试源码已补充，但没有执行，不能把静态推导当成测试通过。验收仅包括六轮源码复核、共享 JSON 语法读取及 `git diff --check`；本地 tests/build/lint/typecheck/UI 均未运行。上一 head 的 CI 失败是已知事实，本轮 head 的自动 CI 结果须单独记录，不能沿用旧成功记录。
 
 **剩余工作与回退**：这只是跨端公式语义收敛的一步；完整无副作用 `CanonicalStructuralPlanner`、typed metadata ReferenceIndex、全量可逆 StructuralPatch、OT/OOXML opaque-owner 参与仍未完成。PR 继续 draft，不宣称通过浏览器或原生 Excel 互操作验收。回退需整体 revert 本轮 production、共享向量和回归源码的提交；不需要数据降级迁移。
+
+### 六轮静态自审 — 轴 metadata 从重复推导收敛到规划结果提交（2026-09-26）
+
+**本轮基线**：重新读取 GitHub main 分支，HEAD 仍为 `a2a6140a90351b38f1e6f5fbc167d09b4f6ecc7f`；开发分支从 `21325eea58f83683e3c3be3a8895f6bbea6f1a81` 继续。该上一提交的自动 PR/push workflows `36209046085` / `36209043773` 均已成功，本轮未执行或重跑本地验证。
+
+**有界方案**：整行/整列插删的 metadata 在单元格写入前只执行一次变换，把已校验的结果交给应用阶段。删除旧 `preflightAxisMetadata` 丢弃结果后在 live 模型上再次调用全部 shift helpers 的路径；内部 `AxisMetadataPlan` 仅由同一次同步调用使用，不暴露为 wire patch，也不冒称完整 Canonical Planner。单元格算法、公式计划、权限、mutation IDs、StructuralPatch v3 和持久化格式保持不变。
+
+六个独立视角的源码证据与自审修正：
+
+1. **真实入口及推导次数**：`rows/columns.inserted/deleted` 的 command apply 和 mutation replay 均进入 `StructuralTransform.apply → applyAxis`。原来 metadata 先在 detached owners 上变换，再于 cell shift 之后对 live owners 重算；现在 `planAxisMetadata` 生成结果，`applyAxisMetadataPlan` 只应用值，不调用任何坐标/引用变换。`shiftDataRegionAxis`、`shiftWorkbookTables` 不再提供默认 live workbook collections，避免重新引入隐式写入目标。
+2. **参与者覆盖**：对照删除的 live 调用逐项核验，计划提交包含六类跨表 owner 集合（CF、DV、Pivot、Sparkline、drawing payload、hyperlink）和目标表 dataRegions、merge、Sheet Table、drawing anchors、spill、protection、filter、banded、outline、pane、隐藏行列、尺寸、notes/threads；workbook tables/sources 和 PrintDocument 同批提交。ReportSheet 与 formula owners 保持原有独立预计算结果，不由 metadata staging 覆盖。
+3. **失败原子性**：所有 shift、范围有效性判断及 metadata 差异比较都发生在 cell shift 前。自审中将最初位于 apply 阶段的比较移回规划阶段，避免序列化失败出现在部分写入之后；不可表示为 snapshot data 的值保留 `STRUCTURAL_PATCH_INVARIANT` 错误。新增源码用例在最后的 print page-break 映射溢出时验证 cells/隐藏行/notes/print state 全部不变，再改为有效 page break 验证成功提交。
+4. **canonical 索引同步**：`DataRegionBoundsIndex.add` 保存的是 `region.range` 的 clone，而旧轴路径直接修改 live `region.range`，因此 `sheet.usedRange` 会保留旧边界。新提交通过 `WorksheetModel.replaceDataRegions` 同步写入范围与索引；回归源码同时覆盖 row/column insert-delete 往返，不能仅以 snapshot 范围正确作为索引正确的证据。
+5. **跨端坐标拒绝与对象身份**：旧 TS data-region range/header 使用裸 `+= count`，当 chunked-table projection 位于 Excel 边缘且没有 worksheet source range 代为检查时可能越界；Java `shiftDataRegions` 已使用 `requireShiftedRange` 和 `shiftIndex`。TS 现也走 `ReferenceTransformDomain`，在计划阶段拒绝溢出。changed-field 集合仅提交变化字段；数组/Map 集合实例及仍位于同一槽位/键下的未变化 owner 保留身份，避免无关 owner 被 cloned staging 替换。新增跨表 Sparkline/hyperlink 身份与冻结窗格/尺寸/notes 一次移动、整体逆向恢复源码断言。
+6. **history/replay/持久化与验收边界**：mutation replay 复用同一轴入口，formula-owner 应用仍按 owner ID 解析已提交 metadata，不持有旧 staging 引用。现有 mutation/result/protocol 不变；本轮并没有把 metadata 计划写进服务器 operation log 或 history，因此 metadata 的完整事实逆向回放仍需 owner-complete patch 迁移。只做静态 review，新增测试源码未运行；不会把上一个 head 的 CI 通过当成本轮验收。
+
+本轮确认 **3 个独立问题**：轴 metadata 重复推导、data-region bounds index 过期、TS data-region 坐标越界缺少领域检查。验证范围为六轮源码复核及 `git diff --check`，不运行 tests/build/lint/typecheck/browser。没有 schema/data migration；回退为整体 revert 本轮实现和回归源码提交。
+
+**明确未完成**：内部计划仍暂存 detached worksheet metadata，并枚举既有跨表 owner families；差异比较也有线性开销。虽然删去第二次结构推导，但尚未建立 affected-owner metadata index，也没有证明达到 `O(affected references + affected objects + moved cells)`，本轮没有 benchmark。下一步仍须用 typed owner delta 替代 coarse staging，并将 cells、formula、metadata、calculation/projection、history、Java authority 和 OOXML 纳入完整可逆 StructuralPatch，移除余下独立 reducers。本步骤不缩减最终目标，PR 继续 draft。
