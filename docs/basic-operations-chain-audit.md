@@ -3,13 +3,13 @@
 ## 基线、范围与真实状态
 
 - 2026-09-26 通过 GitHub Connector 重新读取 main：`a2a6140a90351b38f1e6f5fbc167d09b4f6ecc7f`，与本地 main 相同。
-- 当前审查工作分支：`codex/structural-reference-integrity`；初始基线 `4efee2d97ea0d506b43e7ac2805731ccf3b5caf1`，本轮最新代码提交 `cc3331b`。下面的行号以当前 PR head 的源码为准，不把历史 main 或旧 PR 文字当成当前实现证据。
+- 当前审查工作分支：`codex/structural-reference-integrity`；本轮复核基线 `origin/main=a2a6140a90351b38f1e6f5fbc167d09b4f6ecc7f`，本轮代码改动从 PR head `4a7f77bc5542be465c109b15c60e7ecf52ff4bec` 继续。下面的行号以当前 PR head 的源码为准，不把历史 main 或旧 PR 文字当成当前实现证据。
 - 唯一交付 PR：[草稿 #345](https://github.com/JunoBarnswell/luckysheet-local/pull/345)。本轮结构事实、sheet snapshot、chart geometry 和 snapshot owner identity 修复已分别提交；稀疏单元格规划、extent 和 cell-shift history 改动保留在同一 PR 待整体复核。
 - 最新用户要求：以整个使用链为单位；至少 40 个操作一起审查、集中修复并复核；**最后实测**。早先“仅静态、不测试”只约束前置审查阶段，不再替代最终运行验收。
 - **已确认的产品取舍**：2026-09-26 用户选择“统一由 Java 服务规划，可要求服务在线”。结构操作不再承诺无服务的浏览器离线执行；连接失败时拒绝提交并保留编辑草稿。此授权只改变结构规划归属，不自动扩展为全部普通输入或图表样式都必须远程。
 - 建档 60 个操作，操作数不等于缺陷数。下表是追踪清单，**不是 60 项审查完成/通过的声明**。同根因的行列、图表类型、入口变体不重复算 bug。
 - 审计底稿形成时只做静态阅读。后续仅有下列明示的定向回归证据；上一已提交 head 的 CI 成功不能作为当前工作树验收。
-- 当前续审已完成 core-model 59 项、Java structural facts 10 项、chart layout 15 项及 Canvas drawing 13 项定向测试。前端项目级 `tsc` 仍因工作区缺少已声明的 `@types/react` 失败，本轮 5 个改动 TS/TSX 文件均无目标诊断。已在 in-app browser 打开 Vite 页面并查 Console/Network；页面因 `GET /api/auth/config → 500` 停在认证配置错误，Console 无 JS error/warn，未能进入工作簿或做图表 UI 操作。完整门禁、性能和 Excel 验收未完成。
+- 已完成的历史定向测试：core-model 59 项、Java structural facts 10 项、chart layout 15 项及 Canvas drawing 13 项。本轮新增 Java owned-patch 回归尚未执行：环境只有 JDK 17、无 Maven wrapper/可用 `mvn`，项目要求 Java 21。前端项目级 `tsc` 仍因工作区缺少已声明的 `@types/react` 失败，本轮 5 个改动 TS/TSX 文件均无目标诊断。已在 in-app browser 打开 Vite 页面并查 Console/Network；页面因 `GET /api/auth/config → 500` 停在认证配置错误，Console 无 JS error/warn，未能进入工作簿或做图表 UI 操作。完整门禁、性能和 Excel 验收未完成。
 - Java `StructuralStateChanges` 目前只提供事实载体和历史迁移捕获/回放，**尚未接入在线结构意图规划和提交**。当前客户端先做 TS 结构变换，Java 再执行 reducer，远端客户端仍按 intent 重放；唯一 Java planner 尚未达成。
 
 ## 审查单位与证据要求
@@ -114,6 +114,7 @@
 2. **S2 写入失败出现在清除之后**：cell-shift 原 extractRegion 先删除，再逐 cell normalize/set；后面的非法字体可令前面的写入已生效。本地计划先准备全部幸存者，删除项独立复制，提交只消费目标坐标；未宣称目标 sheet 无 hydration。
 3. **S3 history 扫描矩形面积且校验方向错误**：cell-shift snapshot/restore 双层循环枚举 implicit cells；restore 按原 insert intent 预检，合法末端插入后撤销被当成再次插入拒绝。本地已改稀疏枚举及真实逆向检查；Java restore 本来就检查 inverse，不能重复修“同一个 Java bug”。
 4. **S4 不完整 patch 迫使全链重复推导**：v3 不含完整 cells/metadata/extents；command inverse、Java reducer、remote handler 和 preview/live reducer 分别解释结构。这是 S1–S3 之外的公共架构缺口，单改局部循环并没有关闭它。迁移必须包含 protocol/history/server/persistence，不能只给 v3 增加一个名义 planner。
+5. **S5 undo owner patch 重复复制整本快照（本轮代码已改、CI/本地 Java 验证待完成）**：`StructuralMutationDescriptor.applyWithPatch` 已返回独立候选快照，`WorkbookOperationService.commitInternal` 再以 detached `applyStructuralPatch` 应用 undo owner delta，会为该 undo 再深拷贝整本 JSON。现在只对这个独占候选走 owned reducer，保留原 `next` 供后续权限 owner 检查与数据块引用比较；一般结构 reducer 仍保持 detached 契约，未冒险原地改写变更前状态。
 
 ### C：图表语义没有由完整几何事实承载
 
@@ -225,6 +226,17 @@
 6. **集中完成实现后六轮复核**：产品语义；输入/权限/拒绝；owner/reference 完整性；事务/history/remote；复杂度/lazy/内存；OOXML/真实验收证据。每轮记录新增证据与被推翻假设，不能把同一段 diff 看六次算六轮。
 
 当前 localOnly 默认规则位于 `runtime.ts:228`，浏览器直连/本地模式确实存在；用户已授权调整结构操作在线前置条件。**决策已定，实现未完成**，不能把当前 partial v3 patch 称为 Java-only 架构。切换必须包括所有绕过 dispatch 直接调用 runCommand 的结构入口、未确认操作的 UI 状态、撤销记录、事件重放与检查点恢复。
+
+## 本轮服务端 undo owner-patch 六轮静态复核
+
+1. **独占所有权**：公共 `applyWithPatch` 契约不修改输入并返回独立快照；结构 descriptor 确实先 `deepCopy()`。只有该返回候选适合 owned patch，不把工作簿当前基线交给可变 reducer。
+2. **变更前状态消费者**：commit 仍需用原 `next` 执行 `committedRanges` 的保护 owner 检查，并与候选比较 data-block refs。直接原地改写 `next` 会破坏两项基准，所以本轮没有采用全结构 reducer in-place。
+3. **提交边界**：operation row、revision event、workbook revision/checkpoint 的写入均发生在 mutation loop 后。inverse patch 预检失败时，受影响的只是未发布候选；基础快照与持久化行仍在原状态。
+4. **拒绝语义**：owner delta 按序应用，后续 precondition 冲突可能发生在前一 delta 已写入候选之后。owned API 明确要求异常时丢弃候选；新增拒绝用例覆盖“候选部分变化、基础快照不变”。
+5. **复杂度边界**：undo 的每个非空 inverse patch 不再额外复制完整 JSON 树，patch 仍按 owner delta 处理。本轮不声称已消除正常结构 reducer 自身的快照 clone，也没有大数据基准证据。
+6. **契约与验收**：detached `applyStructuralPatch` 保留给需要隔离的调用方，仅 commit undo 路径转用 owned 版本；新增成功路径核对返回对象身份，拒绝路径核对 precondition 和基础快照。测试未执行：本机只有 JDK 17、无 Maven，CI Java 21 结果待本次 push 后读取。
+
+这是一项已证实并已修改的独立性能问题，不等同于每轮至少 30 项根因完成整改；当前结构规划权、history facts、客户端重复推导等主目标仍未解决，本审计和 PR 保持进行中。
 
 ## 最终实测门禁（当前未执行）
 

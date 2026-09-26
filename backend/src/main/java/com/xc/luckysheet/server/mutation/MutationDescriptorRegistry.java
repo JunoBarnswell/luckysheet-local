@@ -395,6 +395,14 @@ public class MutationDescriptorRegistry {
         return StructuralSnapshotReducer.applyStructuralOwnerPatch(snapshot, patch);
     }
 
+    /**
+     * Apply an owner delta to a detached candidate that is exclusively owned by the current transaction.
+     * The caller must discard the candidate if this method throws because earlier deltas may already have applied.
+     */
+    public JsonNode applyStructuralPatchOnOwnedSnapshot(JsonNode ownedSnapshot, StructuralPatch patch) {
+        return StructuralSnapshotReducer.applyStructuralOwnerPatchOnOwnedSnapshot(ownedSnapshot, patch);
+    }
+
     public List<RangeRef> resolveRanges(JsonNode snapshot, OperationMutation mutation) {
         return require(mutation.id(), false).affectedRanges(snapshot, mutation);
     }

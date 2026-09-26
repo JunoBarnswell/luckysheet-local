@@ -155,7 +155,7 @@ public class WorkbookOperationService {
             var application = prepared.descriptor().applyWithPatch(next, mutation);
             JsonNode candidate = application.snapshot();
             StructuralPatch inversePatch = inverseStructuralPatch(mutation, undoTarget);
-            if (inversePatch != null) candidate = registry.applyStructuralPatch(candidate, inversePatch);
+            if (inversePatch != null) candidate = registry.applyStructuralPatchOnOwnedSnapshot(candidate, inversePatch);
             StructuralPatch committedPatch = MutationDescriptorRegistry.mergeStructuralPatches(mutation.id(), application.structuralPatch(), inversePatch);
             List<RangeRef> committedRanges = registry.committedRanges(next, prepared, actorRole, committedPatch);
             List<RangeRef> structuralImpactRanges = registry.structuralImpactRanges(committedPatch);

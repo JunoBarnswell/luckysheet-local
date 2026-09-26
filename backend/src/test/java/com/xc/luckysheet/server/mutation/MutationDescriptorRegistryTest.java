@@ -123,6 +123,49 @@ class MutationDescriptorRegistryTest {
     }
 
     @Test
+    void ownedStructuralPatchReusesCandidateAndRejectsConflictsWithoutChangingBaseSnapshot() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        ObjectNode baseSnapshot = (ObjectNode) mapper.readTree("""
+                {"sheets":[{"id":"sheet-1","cells":{"0":{"0":{"formula":"=A1"},"1":{"formula":"=B1"}}}]}
+                """);
+        JsonNode original = baseSnapshot.deepCopy();
+        StructuralPatch.CellAddress firstAddress = new StructuralPatch.CellAddress("sheet-1", 0, 0);
+        StructuralPatch.CellAddress secondAddress = new StructuralPatch.CellAddress("sheet-1", 0, 1);
+        StructuralPatch.FormulaOwnerDelta firstDelta = new StructuralPatch.FormulaOwnerDelta(
+                "formula-cell", firstAddress, firstAddress,
+                new StructuralPatch.FormulaOwnerState("=A1", null, null),
+                new StructuralPatch.FormulaOwnerState("=A2", null, null));
+        StructuralPatch.FormulaOwnerDelta conflictingDelta = new StructuralPatch.FormulaOwnerDelta(
+                "formula-cell", secondAddress, secondAddress,
+                new StructuralPatch.FormulaOwnerState("=B1", null, null),
+                new StructuralPatch.FormulaOwnerState("=B2", null, null));
+
+        ObjectNode successfulCandidate = baseSnapshot.deepCopy();
+        JsonNode applied = registry.applyStructuralPatchOnOwnedSnapshot(successfulCandidate,
+                new StructuralPatch(StructuralPatch.VERSION, "rows.inserted", List.of(firstDelta)));
+
+        assertSame(successfulCandidate, applied);
+        assertEquals("=A2", applied.path("sheets").get(0).path("cells").path("0").path("0").path("formula").asText());
+        assertEquals(original, baseSnapshot);
+
+        ObjectNode rejectedCandidate = baseSnapshot.deepCopy();
+        ((ObjectNode) rejectedCandidate.path("sheets").get(0).path("cells").path("0").path("1")).put("formula", "=BROKEN");
+        JsonNode rejectedBase = rejectedCandidate.deepCopy();
+        StructuralPatch patchWithConflict = new StructuralPatch(
+                StructuralPatch.VERSION, "rows.inserted", List.of(firstDelta, conflictingDelta));
+
+        ServiceException error = assertThrows(ServiceException.class,
+                () -> registry.applyStructuralPatchOnOwnedSnapshot(rejectedCandidate, patchWithConflict));
+
+        assertEquals("CONFLICT", error.code());
+        assertTrue(error.getMessage().contains("STRUCTURAL_PATCH_PRECONDITION"));
+        assertEquals("=A2", rejectedCandidate.path("sheets").get(0).path("cells").path("0").path("0").path("formula").asText());
+        assertEquals("=BROKEN", rejectedCandidate.path("sheets").get(0).path("cells").path("0").path("1").path("formula").asText());
+        assertEquals(original, baseSnapshot);
+        assertEquals("=A1", rejectedBase.path("sheets").get(0).path("cells").path("0").path("0").path("formula").asText());
+    }
+
+    @Test
     void cellSetUsesServerResolvedRangeAndChangesSnapshot() throws Exception {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         var snapshot = mapper.readTree("{\"sheets\":[{\"id\":\"sheet-1\",\"rowCount\":1000,\"columnCount\":26,\"cells\":{}}]}");
