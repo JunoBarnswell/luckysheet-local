@@ -1437,3 +1437,5 @@ PR 上两个 `canonical-build` job 使用相同 head，前端依赖安装与前�
 六轮静态复核：1) 预检不再随无关 sheets/cells 的 workbook snapshot 扩张；2) overlay 顺序与实际 item/delta 顺序一致，重复 owner 使用同一 staged state；3) formula、provenance、barcode、formulaValue 清理及字体规范化与真实 CellMatrix 写入共用准备路径；4) rule owner 仍要求唯一 identity 与精确 after-ranges；5) formula-object precondition 必须先读到 before/after 中一个有效字符串，避免写入时 owner 消失；6) defined-name anchor/identity 经规范化后再进入 overlay，且拒绝路径在 live 写入前完成。确认并修复 **1 个独立根因**：非空 ACK patch 的全 workbook 预检副本。没有把 cell/rule/object 或多入口拆成问题数；30 个问题的规模目标不据此虚报。
 
 新增源码回归覆盖：成功的多 owner patch 不得调用 `snapshot()`；第二个 owner precondition 失败时首个 owner 不得变化；owner 状态合法但 cell storage normalization 失败时也不得部分写入。按静态优先指令未执行本地测试/build/lint/typecheck/browser；`git diff --check` 通过。尚无该新 head 的 CI 结果、浏览器协同实测、原生 Excel 往返或 CPU/heap benchmark。无 schema/data/protocol migration；失败仍 fail-close，回滚方式为整体 revert 本 follow-up。
+
+**CI follow-up (`5fe481de`)**：两条 `canonical-build` 均因 `formula-rule` 预检状态将 Conditional Formatting 的 `value1` 误窄为 `string | undefined`，而模型契约允许 `number`，报同一 TS2322。状态类型已保留 `number`；比较仍针对 `beforeFormula` / `afterFormula` 字符串，因此数值 owner 继续 fail-close，与原应用路径相同。此纯类型修正尚待新 head 的远端 CI 确认；未在本地运行 typecheck。

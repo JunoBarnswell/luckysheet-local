@@ -1657,7 +1657,7 @@ function prepareFormulaCellOwnerUpdate(
 
 type FormulaPatchState =
   | { readonly kind: 'formula-cell'; readonly cell: CellData }
-  | { readonly kind: 'formula-rule'; readonly formula: string | undefined; readonly ranges: readonly RangeRef[] }
+  | { readonly kind: 'formula-rule'; readonly formula: string | number | undefined; readonly ranges: readonly RangeRef[] }
   | { readonly kind: 'formula-object'; readonly formula: string | undefined };
 
 function formulaOwnerPatchKey(delta: StructuralFormulaOwnerDelta): string {
