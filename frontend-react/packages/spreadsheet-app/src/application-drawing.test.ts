@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { WorkbookModel } from '@react-sheets/core-model';
+import { createRemoteReadySessionFixture } from './session-test-fixtures';
 import { WorkbookSession } from './workbook-session';
 import { hydrateRuntime } from './runtime';
 
@@ -208,7 +209,7 @@ describe('WorkbookSession drawing integration', () => {
   });
 
   it('reconciles remote removal and deleted-sheet selection through the same boundary', () => {
-    const app = new WorkbookSession();
+    const app = createRemoteReadySessionFixture();
     const sheetId = app.getActiveSheetId();
     app.addShape({
       id: 'draw-remote-reconcile',
