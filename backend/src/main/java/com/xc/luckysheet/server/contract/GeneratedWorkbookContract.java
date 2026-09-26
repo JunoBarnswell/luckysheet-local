@@ -51,6 +51,7 @@ public final class GeneratedWorkbookContract {
         "cells.deleted.restore",
         "rows.permuted",
         "range.move",
+        "sheet.rename",
         "sheetTable.update"
     );
     public static final Map<String, MutationCapability> MUTATIONS = Map.ofEntries(

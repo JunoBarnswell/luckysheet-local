@@ -44,6 +44,7 @@ export const STRUCTURAL_PATCH_MUTATIONS = [
   "cells.deleted.restore",
   "rows.permuted",
   "range.move",
+  "sheet.rename",
   "sheetTable.update",
 ] as const;
 const serverStructuralPlannerMutationIds: ReadonlySet<string> = new Set(SERVER_STRUCTURAL_PLANNER_MUTATIONS);

@@ -230,6 +230,70 @@ final class StructuralSnapshotReducer {
         return List.copyOf(deltas);
     }
 
+    static StructuralPatch renameSheetReferences(ObjectNode root, String sheetId, String previousName, String nextName) {
+        List<StructuralPatch.FormulaOwnerDelta> formulaOwnerDeltas = new ArrayList<>();
+        List<RuleFormulaSnapshot> ruleFormulaSnapshots = captureRuleFormulaSnapshots(root);
+        for (JsonNode rawSheet : SnapshotMutationSupport.sheets(root)) {
+            ObjectNode owner = requireObject(rawSheet, "Sheet");
+            String ownerSheetId = identity(owner).id();
+            rewriteCellFormulaOwners(
+                    owner,
+                    formula -> FormulaReferenceTransformer.renameSheet(formula, previousName, nextName),
+                    "sheet rename",
+                    formulaOwnerDeltas,
+                    entry -> new StructuralPatch.CellAddress(ownerSheetId, entry.row(), entry.column()),
+                    true,
+                    false);
+            for (String property : List.of("conditionalFormats", "dataValidations")) {
+                for (JsonNode rawRule : readOptionalArray(owner, property)) {
+                    rewriteRuleFormulas(requireObject(rawRule, "Range rule"),
+                            formula -> FormulaReferenceTransformer.renameSheet(formula, previousName, nextName));
+                }
+            }
+        }
+        appendRuleFormulaDeltas(root, ruleFormulaSnapshots, formulaOwnerDeltas);
+
+        ObjectNode targetSheet = SnapshotMutationSupport.sheet(root, sheetId);
+        formulaOwnerDeltas.addAll(rewritePersistedFormulaOwners(
+                root,
+                identity(targetSheet),
+                (formula, owner) -> FormulaReferenceTransformer.renameSheet(formula, previousName, nextName),
+                ObjectNode::deepCopy,
+                true));
+
+        JsonNode rawNameModels = root.get("definedNameModels");
+        JsonNode nameModelsBefore = rawNameModels == null ? null : rawNameModels.deepCopy();
+        JsonNode rawProjection = root.get("definedNames");
+        if ((rawNameModels == null || rawNameModels.isNull()) && rawProjection != null && !rawProjection.isNull()) {
+            if (!rawProjection.isObject()) throw ServiceException.validation("definedNames must be an object");
+            if (!rawProjection.isEmpty()) {
+                throw ServiceException.unavailable("STRUCTURAL_PATCH_INVARIANT: defined-name owner models are required for sheet rename");
+            }
+        }
+        if (rawNameModels != null && !rawNameModels.isNull()) {
+            if (!rawNameModels.isArray()) throw ServiceException.validation("definedNameModels must be an array");
+            for (JsonNode rawModel : rawNameModels) {
+                ObjectNode model = requireObject(rawModel, "Defined name model");
+                String formula = SnapshotMutationSupport.text(model, "formula");
+                model.put("formula", FormulaReferenceTransformer.renameSheet(formula, previousName, nextName));
+            }
+        }
+        if (rawProjection != null && !rawProjection.isNull()) {
+            if (!rawProjection.isObject()) throw ServiceException.validation("definedNames must be an object");
+            ObjectNode projection = (ObjectNode) rawProjection;
+            projection.fields().forEachRemaining(entry -> {
+                if (entry.getValue().isTextual()) {
+                    projection.put(entry.getKey(), FormulaReferenceTransformer.renameSheet(
+                            entry.getValue().asText(), previousName, nextName));
+                }
+            });
+        }
+        List<StructuralPatch.DefinedNameOwnerDelta> definedNameOwnerDeltas =
+                definedNameOwnerDeltas(nameModelsBefore, root.get("definedNameModels"));
+        return new StructuralPatch(StructuralPatch.VERSION, "sheet.rename",
+                formulaOwnerDeltas, definedNameOwnerDeltas, List.of());
+    }
+
     static StructuralPatch renameSheetTableReferences(
             JsonNode beforeSnapshot,
             JsonNode afterSnapshot,
@@ -2579,7 +2643,7 @@ final class StructuralSnapshotReducer {
             String sheetId = identity(owner).id();
             for (String property : List.of("conditionalFormats", "dataValidations")) {
                 String ruleKind = "conditionalFormats".equals(property) ? "conditional-format" : "data-validation";
-                ArrayNode rules = SnapshotMutationSupport.array(owner, property);
+                ArrayNode rules = readOptionalArray(owner, property);
                 Map<String, Integer> idCounts = new HashMap<>();
                 for (JsonNode rawRule : rules) idCounts.merge(rawRule.path("id").asText(), 1, Integer::sum);
                 for (JsonNode rawRule : rules) {
@@ -2909,6 +2973,30 @@ final class StructuralSnapshotReducer {
             List<StructuralPatch.FormulaOwnerDelta> formulaOwnerDeltas,
             Function<CellEntry, StructuralPatch.CellAddress> beforeAddressResolver
     ) {
+        rewriteCellFormulaOwners(sheet, mapper, operation, formulaOwnerDeltas, beforeAddressResolver, false);
+    }
+
+    private static void rewriteCellFormulaOwners(
+            ObjectNode sheet,
+            Function<String, String> mapper,
+            String operation,
+            List<StructuralPatch.FormulaOwnerDelta> formulaOwnerDeltas,
+            Function<CellEntry, StructuralPatch.CellAddress> beforeAddressResolver,
+            boolean allowFormulaGroups
+    ) {
+        rewriteCellFormulaOwners(sheet, mapper, operation, formulaOwnerDeltas, beforeAddressResolver,
+                allowFormulaGroups, true);
+    }
+
+    private static void rewriteCellFormulaOwners(
+            ObjectNode sheet,
+            Function<String, String> mapper,
+            String operation,
+            List<StructuralPatch.FormulaOwnerDelta> formulaOwnerDeltas,
+            Function<CellEntry, StructuralPatch.CellAddress> beforeAddressResolver,
+            boolean allowFormulaGroups,
+            boolean invalidateUnchangedFormulaCaches
+    ) {
         String sheetId = sheet.path("id").asText();
         forEachCell(sheet, entry -> {
             ObjectNode cell = entry.cell();
@@ -2930,15 +3018,21 @@ final class StructuralSnapshotReducer {
             boolean formulaChanged = original != null && !original.equals(rewritten);
             boolean sourceFormulaChanged = sourceFormula != null && !sourceFormula.equals(rewrittenSourceFormula);
             boolean barcodeFormulaChanged = barcodeFormula != null && !barcodeFormula.equals(rewrittenBarcodeFormula);
-            if ((formulaChanged || sourceFormulaChanged || barcodeFormulaChanged) && hasFormulaGroupMetadata(cell)) {
+            boolean changed = formulaChanged || sourceFormulaChanged || barcodeFormulaChanged;
+            if (changed && hasFormulaGroupMetadata(cell) && !allowFormulaGroups) {
                 throw ServiceException.unavailable("UNSUPPORTED_STRUCTURAL_REFERENCE: formula group at "
                         + sheetId + "!" + entry.row() + ":" + entry.column()
                         + " requires an explicit formula-group operation before " + operation);
             }
+            if (changed && allowFormulaGroups && cell.path("formulaMetadata").path("preservedOnly").asBoolean(false)) {
+                throw ServiceException.unavailable("UNSUPPORTED_STRUCTURAL_REFERENCE: preserved-only formula at "
+                        + sheetId + "!" + entry.row() + ":" + entry.column()
+                        + " references a renamed worksheet");
+            }
             if (formulaChanged) cell.put("formula", rewritten);
             if (sourceFormulaChanged) SnapshotMutationSupport.requiredObject(cell, "formulaMetadata").put("sourceFormula", rewrittenSourceFormula);
             if (barcodeFormulaChanged) ((ObjectNode) rawBarcodeSource).put("formula", rewrittenBarcodeFormula);
-            if (original != null) cell.remove("formulaValue");
+            if (formulaChanged || (original != null && invalidateUnchangedFormulaCaches)) cell.remove("formulaValue");
             if (formulaOwnerDeltas != null && (formulaChanged || sourceFormulaChanged || barcodeFormulaChanged)) {
                 StructuralPatch.CellAddress beforeAddress = beforeAddressResolver.apply(entry);
                 formulaOwnerDeltas.add(new StructuralPatch.FormulaOwnerDelta(

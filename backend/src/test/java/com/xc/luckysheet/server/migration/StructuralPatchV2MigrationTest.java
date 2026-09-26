@@ -66,6 +66,28 @@ class StructuralPatchV2MigrationTest {
         assertEquals(mapper.valueToTree(currentPatch), canonicalV5Envelope.path("mutations").get(0).get("structuralPatch"));
     }
 
+    @Test
+    void backfillsLegacyWorksheetRenameOwnerPatches() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        StructuralPatch renamePatch = new StructuralPatch(StructuralPatch.VERSION,
+                "sheet.rename", List.of(), List.of(), List.of());
+        ObjectNode envelope = mapper.createObjectNode();
+        ObjectNode mutationNode = envelope.putArray("mutations").addObject()
+                .put("id", "sheet.rename").put("sheetId", "sheet-1");
+        mutationNode.set("structuralImpactRanges", mapper.createArrayNode());
+        Instant now = Instant.parse("2026-09-26T00:00:00Z");
+        CommittedOperationEnvelope operation = new CommittedOperationEnvelope(
+                "session-1", OperationEnvelope.SCHEMA, "operation-1", "unit-1", "actor-1",
+                OperationOrigin.CLIENT, 1, 0, 1,
+                List.of(new CommittedOperationMutation("sheet.rename", "sheet-1", mapper.createObjectNode(), List.of())), now, now);
+
+        new V4__TestMigration().rewriteMutationPatches(envelope, operation,
+                List.of(Optional.of(renamePatch)), registry, "unit-1", 1);
+
+        assertEquals(mapper.valueToTree(renamePatch), envelope.path("mutations").get(0).get("structuralPatch"));
+        assertEquals(mapper.createArrayNode(), envelope.path("mutations").get(0).get("structuralImpactRanges"));
+    }
+
     private ObjectNode rawEnvelope(int version, StructuralPatch currentPatch, List<RangeRef> impact) {
         ObjectNode legacyPatch = (ObjectNode) mapper.valueToTree(currentPatch);
         legacyPatch.put("version", version);

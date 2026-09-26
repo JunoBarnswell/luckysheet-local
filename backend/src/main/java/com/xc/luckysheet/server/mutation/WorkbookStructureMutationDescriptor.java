@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.xc.luckysheet.server.contract.OperationMutation;
 import com.xc.luckysheet.server.contract.RangeRef;
+import com.xc.luckysheet.server.contract.StructuralPatch;
 import com.xc.luckysheet.server.contract.WorkbookAclRole;
 import com.xc.luckysheet.server.service.ServiceException;
 
@@ -46,19 +47,25 @@ final class WorkbookStructureMutationDescriptor extends CanonicalJsonMutationDes
 
     @Override
     public JsonNode apply(JsonNode snapshot, OperationMutation mutation) {
+        return applyWithPatch(snapshot, mutation).snapshot();
+    }
+
+    @Override
+    public MutationApplication applyWithPatch(JsonNode snapshot, OperationMutation mutation) {
         ObjectNode root = SnapshotMutationSupport.root(snapshot.deepCopy());
         ObjectNode params = SnapshotMutationSupport.params(mutation);
+        StructuralPatch structuralPatch = null;
         switch (id()) {
             case "sheet.add" -> add(root, mutation.sheetId(), params);
             case "sheet.remove" -> remove(root, params);
-            case "sheet.rename" -> rename(root, mutation.sheetId(), params);
+            case "sheet.rename" -> structuralPatch = rename(root, mutation.sheetId(), params);
             case "sheet.duplicated" -> duplicate(root, params);
             case "sheet.restore" -> restore(root, params);
             case "hyperlink.set" -> setHyperlink(root, mutation.sheetId(), params);
             case "hyperlink.remove" -> removeHyperlink(root, mutation.sheetId(), params);
             default -> throw ServiceException.validation("Unsupported workbook structure mutation: " + id());
         }
-        return root;
+        return new MutationApplication(root, structuralPatch);
     }
 
     private void add(ObjectNode root, String mutationSheetId, ObjectNode params) {
@@ -107,14 +114,17 @@ final class WorkbookStructureMutationDescriptor extends CanonicalJsonMutationDes
         removeSheetScopedDocuments(root, id);
     }
 
-    private void rename(ObjectNode root, String mutationSheetId, ObjectNode params) {
+    private StructuralPatch rename(ObjectNode root, String mutationSheetId, ObjectNode params) {
         String sheetId = SnapshotMutationSupport.text(params, "sheetId");
         String name = SnapshotMutationSupport.text(params, "name").trim();
         if (!mutationSheetId.equals(sheetId) || name.isBlank()) throw ServiceException.validation("sheet.rename identity is invalid");
         ObjectNode sheet = SnapshotMutationSupport.sheet(root, sheetId);
         String previousName = sheet.path("name").asText();
-        if (!previousName.equals(name)) rewriteSheetReferences(root, previousName, name);
+        StructuralPatch patch = previousName.equals(name)
+                ? new StructuralPatch(StructuralPatch.VERSION, "sheet.rename", List.of(), List.of(), List.of())
+                : StructuralSnapshotReducer.renameSheetReferences(root, sheetId, previousName, name);
         sheet.put("name", name);
+        return patch;
     }
 
     private void duplicate(ObjectNode root, ObjectNode params) {
@@ -1020,80 +1030,6 @@ final class WorkbookStructureMutationDescriptor extends CanonicalJsonMutationDes
         });
         rewriteRuleFormulaFields(copy.get("conditionalFormats"), sourceName, targetName);
         rewriteRuleFormulaFields(copy.get("dataValidations"), sourceName, targetName);
-    }
-
-    private void rewriteSheetReferences(ObjectNode root, String previousName, String nextName) {
-        for (JsonNode rawSheet : SnapshotMutationSupport.sheets(root)) {
-            ObjectNode sheet = (ObjectNode) rawSheet;
-            ObjectNode cells = SnapshotMutationSupport.cells(sheet);
-            cells.fields().forEachRemaining(row -> {
-                if (!row.getValue().isObject()) return;
-                ((ObjectNode) row.getValue()).fields().forEachRemaining(cellEntry -> {
-                    if (!cellEntry.getValue().isObject()) return;
-                    ObjectNode cell = (ObjectNode) cellEntry.getValue();
-                    rewriteFormulaField(cell, "formula", previousName, nextName);
-                    JsonNode metadata = cell.get("formulaMetadata");
-                    if (metadata != null && metadata.isObject()) rewriteFormulaMetadataSource((ObjectNode) metadata, previousName, nextName, "renamed");
-                    JsonNode presentation = cell.get("presentation");
-                    JsonNode barcodeSource = presentation == null ? null : presentation.get("source");
-                    if (presentation != null && "barcode".equals(presentation.path("kind").asText())
-                            && barcodeSource != null && "formula".equals(barcodeSource.path("kind").asText())) {
-                        rewriteFormulaField((ObjectNode) barcodeSource, "formula", previousName, nextName);
-                    }
-                });
-            });
-            rewriteRuleFormulaFields(sheet.get("conditionalFormats"), previousName, nextName);
-            rewriteRuleFormulaFields(sheet.get("dataValidations"), previousName, nextName);
-            JsonNode tableSheet = sheet.get("tableSheet");
-            if (tableSheet != null && tableSheet.isObject()) {
-                JsonNode columns = optionalArray(tableSheet, "columns");
-                if (columns != null) for (JsonNode column : columns) if (column.isObject()) rewriteFormulaField((ObjectNode) column, "formula", previousName, nextName);
-            }
-            JsonNode payloads = sheet.get("drawingPayloads");
-            if (payloads != null && payloads.isObject()) payloads.fields().forEachRemaining(entry -> {
-                JsonNode payload = entry.getValue();
-                if (payload.isObject() && "shape".equals(payload.path("kind").asText())) {
-                    rewriteFormulaField((ObjectNode) payload, "propertyFormula", previousName, nextName);
-                } else if (payload.isObject() && "chart".equals(payload.path("kind").asText())) {
-                    rewriteChartTextFormulas((ObjectNode) payload, previousName, nextName);
-                }
-            });
-        }
-        JsonNode names = root.get("definedNameModels");
-        if (names != null && names.isArray()) {
-            for (JsonNode raw : names) {
-                if (raw.isObject() && raw.path("formula").isTextual()) {
-                    ((ObjectNode) raw).put("formula", FormulaReferenceTransformer.renameSheet(raw.path("formula").asText(), previousName, nextName));
-                }
-            }
-        }
-        JsonNode legacy = root.get("definedNames");
-        if (legacy != null && legacy.isObject()) {
-            ((ObjectNode) legacy).fields().forEachRemaining(entry -> {
-                if (entry.getValue().isTextual()) ((ObjectNode) legacy).put(entry.getKey(), FormulaReferenceTransformer.renameSheet(entry.getValue().asText(), previousName, nextName));
-            });
-        }
-        JsonNode dataModel = root.get("dataModel");
-        if (dataModel != null && !dataModel.isNull()) {
-            if (!dataModel.isObject()) throw ServiceException.validation("dataModel must be an object");
-            JsonNode views = optionalArray(dataModel, "views");
-            if (views != null) for (JsonNode view : views) {
-                JsonNode fields = optionalArray(view, "fields");
-                if (fields != null) for (JsonNode field : fields) if (field.isObject()) rewriteFormulaField((ObjectNode) field, "formula", previousName, nextName);
-            }
-        }
-        JsonNode templates = optionalArray(root, "cellStyleTemplates");
-        if (templates != null) for (JsonNode template : templates) {
-            JsonNode validation = template.get("dataValidation");
-            if (validation != null && validation.isObject()) {
-                rewriteFormulaField((ObjectNode) validation, "formula1", previousName, nextName);
-                rewriteFormulaField((ObjectNode) validation, "formula2", previousName, nextName);
-                JsonNode listSource = validation.get("listSource");
-                if (listSource != null && listSource.isObject() && "formula".equals(listSource.path("kind").asText())) {
-                    rewriteFormulaField((ObjectNode) listSource, "formula", previousName, nextName);
-                }
-            }
-        }
     }
 
     private void rewriteRuleFormulaFields(JsonNode values, String previousName, String nextName) {

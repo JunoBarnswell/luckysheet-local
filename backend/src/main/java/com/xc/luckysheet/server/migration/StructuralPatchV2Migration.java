@@ -614,7 +614,7 @@ public abstract class StructuralPatchV2Migration extends BaseJavaMigration {
             }
             StructuralPatch patch = derived.orElseThrow();
             if (oldPatch == null || oldPatch.isNull()) {
-                // Verified legacy table renames had no owner patch; v1/v2 rows may persist an empty impact array.
+                // Legacy rename commits may lack owner patches; replay reconstructs their canonical facts.
                 if (oldImpact != null && !oldImpact.isNull()
                         && (!(oldImpact instanceof ArrayNode ranges) || !ranges.isEmpty())) {
                     throw failure("STRUCTURAL_PATCH_PARTIAL_LEGACY", unitId,

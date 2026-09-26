@@ -13,6 +13,10 @@ This redesign covers axis and cell insert/delete, move/copy/cut/paste, fill, dra
 5. **Collaboration coordinates:** (a) OT maintains duplicate row/column bounds and transform algebra; (b) `transformParams` infers coordinate meaning recursively from field names; (c) rebasing queued drafts across move, sort, and table-resize operations is rejected because no canonical patch exists, while direct committed replay could still apply those operations and leave local undo history untransformed. The replay history gap now fails closed, but full OT support remains open.
 6. **OOXML structural state:** (a) source-byte passthrough is guarded by exact snapshot hash, but changed-snapshot export still starts from all imported package parts; (b) registered workbook/worksheet/native object paths are rewritten while opaque parts have no structural transform; (c) an opaque part with an affected reference can therefore be preserved byte-for-byte with stale coordinates instead of causing a typed rejection.
 
+### Follow-up — worksheet rename owner facts
+
+`sheet.rename` was listed as a Java structural planner mutation but omitted from the required-patch contract; its Java reducer rewrote formula owners and returned no patch. The reducer now emits the existing v5 reversible cell/rule/formula-object/defined-name facts from the same rewrite, the generated protocol requires those facts for `sheet.rename`, and repeatable-history replay can backfill legacy rename events. Formula-rule owners must have stable identity/ranges, and preserved-only formula owners still fail closed. Regression coverage was added but not run in this static-review phase. This closes only the rename-patch omission; the TypeScript client still has an independent rename transform, the full owner index/patch contract remains incomplete, and structural collaboration plus opaque OOXML reference handling remain open.
+
 ## Target architecture
 
 - `CanonicalStructuralPlanner` resolves the operation and current owner index into an immutable `StructuralPatch`; it does not mutate a model or clone/replay the workbook to discover whether a mutation is valid.

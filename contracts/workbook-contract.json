@@ -61,6 +61,7 @@
     "cells.deleted.restore",
     "rows.permuted",
     "range.move",
+    "sheet.rename",
     "sheetTable.update"
   ],
   "serverStructuralPlannerCommands": [

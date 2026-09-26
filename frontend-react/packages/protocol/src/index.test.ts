@@ -197,6 +197,17 @@ test('committed row-permutation structural patches are accepted by the protocol'
   });
 });
 
+test('committed worksheet-rename structural patches are accepted by the protocol', () => {
+  const patch = {
+    version: 5,
+    mutationId: 'sheet.rename',
+    formulaOwnerDeltas: [],
+    definedNameOwnerDeltas: [],
+    rangeOwnerDeltas: [],
+  };
+  assert.deepEqual(validateStructuralPatch(patch, 'sheet.rename'), patch);
+});
+
 test('Sheet Table rename patches accept every canonical formula-object owner and reject mixed identities', () => {
   const formulaOwnerDeltas = [
     { kind: 'formula-object', ownerKind: 'chart-text', sheetId: 'sheet-1', payloadId: 'chart-1', field: 'titleText.linkedFormula', beforeFormula: '=Sales[Amount]', afterFormula: '=Orders[Amount]' },

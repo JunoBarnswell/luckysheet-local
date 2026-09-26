@@ -40,6 +40,7 @@ class MutationDescriptorRegistryTest {
         assertTrue(GeneratedWorkbookContract.SERVER_STRUCTURAL_PLANNER_MUTATIONS.contains("range.move"));
         assertTrue(GeneratedWorkbookContract.SERVER_STRUCTURAL_PLANNER_MUTATIONS.contains("sheet.remove"));
         assertTrue(GeneratedWorkbookContract.SERVER_STRUCTURAL_PLANNER_MUTATIONS.contains("table.add"));
+        assertTrue(GeneratedWorkbookContract.STRUCTURAL_PATCH_MUTATIONS.contains("sheet.rename"));
     }
 
     @Test
@@ -3071,16 +3072,21 @@ class MutationDescriptorRegistryTest {
         ObjectNode external = sheets.addObject().put("id", "owner").put("name", "Owner");
         external.putObject("cells").putObject("1").putObject("0").putObject("formulaMetadata")
                 .put("kind", "normal").put("sourceFormula", "='Source'!A1");
-        external.putArray("conditionalFormats").addObject().put("id", "cf").put("formula1", "='Source'!A1");
-        external.putArray("dataValidations").addObject().put("id", "dv").put("listSource", mapper.createObjectNode()
-                .put("kind", "formula").put("formula", "='Source'!A1"));
+        ObjectNode conditionalFormat = external.putArray("conditionalFormats").addObject()
+                .put("id", "cf").put("sheetId", "owner").put("value1", "='Source'!A1");
+        conditionalFormat.putArray("ranges").addObject().put("sheetId", "owner")
+                .put("startRow", 1).put("endRow", 1).put("startColumn", 0).put("endColumn", 0);
+        ObjectNode dataValidation = external.putArray("dataValidations").addObject().put("id", "dv").put("sheetId", "owner");
+        dataValidation.putArray("ranges").addObject().put("sheetId", "owner")
+                .put("startRow", 1).put("endRow", 1).put("startColumn", 0).put("endColumn", 0);
+        dataValidation.set("listSource", mapper.createObjectNode().put("kind", "formula").put("formula", "='Source'!A1"));
         ObjectNode externalDrawings = external.putObject("drawingPayloads");
         externalDrawings.putObject("external-shape").put("kind", "shape").put("propertyFormula", "='Source'!A1");
         externalDrawings.putObject("external-chart").put("kind", "chart").put("chartId", "external-chart")
                 .putObject("elements").put("hiddenData", "show").putObject("legend").put("visible", true)
                 .put("position", "bottom").putObject("text").put("linkedFormula", "='Source'!A1");
 
-        snapshot.putArray("definedNameModels").addObject().put("name", "SourceName").put("formula", "='Source'!A1");
+        snapshot.putArray("definedNameModels").addObject().put("name", "SourceName").put("formula", "='Source'!A1").put("scope", "workbook");
         snapshot.putObject("definedNames").put("SourceName", "='Source'!A1");
         snapshot.putObject("dataModel").putArray("views").addObject().put("id", "view")
                 .putArray("fields").addObject().put("fieldId", "calculated").put("formula", "='Source'!A1");
@@ -3089,8 +3095,20 @@ class MutationDescriptorRegistryTest {
 
         OperationMutation rename = new OperationMutation("sheet.rename", "source",
                 mapper.readTree("{\"sheetId\":\"source\",\"name\":\"Renamed Sheet\"}"));
-        JsonNode renamed = new WorkbookStructureMutationDescriptor("sheet.rename").apply(snapshot, rename);
+        MutationApplication application = new WorkbookStructureMutationDescriptor("sheet.rename").applyWithPatch(snapshot, rename);
+        JsonNode renamed = application.snapshot();
+        StructuralPatch patch = application.structuralPatch();
 
+        assertTrue(patch != null);
+        assertEquals("sheet.rename", patch.mutationId());
+        assertTrue(patch.formulaOwnerDeltas().stream().anyMatch(delta -> "formula-cell".equals(delta.kind())));
+        assertTrue(patch.formulaOwnerDeltas().stream().anyMatch(delta -> "formula-rule".equals(delta.kind())));
+        assertTrue(patch.formulaOwnerDeltas().stream().anyMatch(delta -> "shape-property".equals(delta.ownerKind())));
+        assertTrue(patch.formulaOwnerDeltas().stream().anyMatch(delta -> "chart-text".equals(delta.ownerKind())));
+        assertTrue(patch.formulaOwnerDeltas().stream().anyMatch(delta -> "table-sheet-column".equals(delta.ownerKind())));
+        assertTrue(patch.formulaOwnerDeltas().stream().anyMatch(delta -> "data-view-field".equals(delta.ownerKind())));
+        assertTrue(patch.formulaOwnerDeltas().stream().anyMatch(delta -> "cell-style-template".equals(delta.ownerKind())));
+        assertEquals(1, patch.definedNameOwnerDeltas().size());
         assertEquals("Renamed Sheet", renamed.path("sheets").get(0).path("name").asText());
         assertEquals("='Renamed Sheet'!A1", renamed.path("sheets").get(0).path("cells").path("0").path("0").path("formula").asText());
         assertEquals("='Renamed Sheet'!A1", renamed.path("sheets").get(0).path("cells").path("0").path("0").path("formulaMetadata").path("sourceFormula").asText());
@@ -3099,7 +3117,7 @@ class MutationDescriptorRegistryTest {
         assertEquals("='Renamed Sheet'!A1", renamed.path("sheets").get(0).path("drawingPayloads").path("formula-shape").path("propertyFormula").asText());
         assertEquals("='Renamed Sheet'!A1", renamed.path("sheets").get(0).path("drawingPayloads").path("chart").path("elements").path("titleText").path("linkedFormula").asText());
         assertEquals("='Renamed Sheet'!A1", renamed.path("sheets").get(1).path("cells").path("1").path("0").path("formulaMetadata").path("sourceFormula").asText());
-        assertEquals("='Renamed Sheet'!A1", renamed.path("sheets").get(1).path("conditionalFormats").get(0).path("formula1").asText());
+        assertEquals("='Renamed Sheet'!A1", renamed.path("sheets").get(1).path("conditionalFormats").get(0).path("value1").asText());
         assertEquals("='Renamed Sheet'!A1", renamed.path("sheets").get(1).path("dataValidations").get(0).path("listSource").path("formula").asText());
         assertEquals("='Renamed Sheet'!A1", renamed.path("sheets").get(1).path("drawingPayloads").path("external-shape").path("propertyFormula").asText());
         assertEquals("='Renamed Sheet'!A1", renamed.path("sheets").get(1).path("drawingPayloads").path("external-chart").path("elements").path("legend").path("text").path("linkedFormula").asText());
@@ -3108,6 +3126,29 @@ class MutationDescriptorRegistryTest {
         assertEquals("='Renamed Sheet'!A1", renamed.path("definedNameModels").get(0).path("formula").asText());
         assertEquals("='Renamed Sheet'!A1", renamed.path("definedNames").path("SourceName").asText());
         assertEquals("='Source'!A1", snapshot.path("sheets").get(0).path("cells").path("0").path("0").path("formulaMetadata").path("sourceFormula").asText());
+
+        JsonNode patchedOwners = StructuralSnapshotReducer.applyStructuralOwnerPatch(snapshot, patch);
+        assertEquals("='Renamed Sheet'!A1", patchedOwners.path("sheets").get(0).path("cells").path("0").path("0").path("formula").asText());
+        assertEquals("='Renamed Sheet'!A1", patchedOwners.path("definedNames").path("SourceName").asText());
+    }
+
+    @Test
+    void sheetRenameRejectsFormulaRuleOwnersWithoutStableIdentityBeforeMutatingInput() throws Exception {
+        ObjectNode snapshot = mapper.createObjectNode();
+        ArrayNode sheets = snapshot.putArray("sheets");
+        sheets.addObject().put("id", "source").put("name", "Source").putObject("cells");
+        ObjectNode owner = sheets.addObject().put("id", "owner").put("name", "Owner");
+        owner.putObject("cells");
+        ObjectNode rule = owner.putArray("conditionalFormats").addObject().put("sheetId", "owner").put("value1", "='Source'!A1");
+        rule.putArray("ranges").addObject().put("sheetId", "owner")
+                .put("startRow", 0).put("endRow", 0).put("startColumn", 0).put("endColumn", 0);
+        OperationMutation rename = new OperationMutation("sheet.rename", "source",
+                mapper.readTree("{\"sheetId\":\"source\",\"name\":\"Renamed\"}"));
+
+        assertThrows(ServiceException.class,
+                () -> new WorkbookStructureMutationDescriptor("sheet.rename").applyWithPatch(snapshot, rename));
+        assertEquals("Source", snapshot.path("sheets").get(0).path("name").asText());
+        assertEquals("='Source'!A1", snapshot.path("sheets").get(1).path("conditionalFormats").get(0).path("value1").asText());
     }
 
     @Test
