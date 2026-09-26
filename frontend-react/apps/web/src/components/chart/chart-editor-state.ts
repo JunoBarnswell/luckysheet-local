@@ -1,4 +1,4 @@
-import { chartSeriesSupportsErrorBars, chartSeriesSupportsTrendlines, chartStackingForSubtype, resolveWorksheetChartRanges, type ChartDrawingPayload, type ChartSeriesModel, type RangeRef } from '@react-sheets/core-model';
+import { chartSeriesSupportsErrorBars, chartSeriesSupportsTrendlines, chartStackingForSubtype, isChartHistogramOptions, resolveWorksheetChartRanges, type ChartDrawingPayload, type ChartHistogramOptions, type ChartSeriesModel, type RangeRef } from '@react-sheets/core-model';
 import { parseRangeInput } from '../../domain/range-input';
 
 export interface ChartSeriesDraft {
@@ -22,6 +22,40 @@ export interface ChartEditorDraft {
   sourceRanges: string;
   categoryRange: string;
   series: ChartSeriesDraft[];
+}
+
+export type ChartHistogramNumericOption = 'binWidth' | 'binCount' | 'underflow' | 'overflow';
+
+export function chartHistogramOptionsForMode(current: ChartHistogramOptions | undefined, mode: ChartHistogramOptions['mode']): ChartHistogramOptions {
+  const options = current && isChartHistogramOptions(current) ? current : undefined;
+  const thresholds = options && options.mode !== 'by-category'
+    ? { ...(options.underflow === undefined ? {} : { underflow: options.underflow }), ...(options.overflow === undefined ? {} : { overflow: options.overflow }) }
+    : {};
+  if (mode === 'by-category') return { mode };
+  if (mode === 'automatic') return { mode, ...thresholds };
+  if (mode === 'bin-width') {
+    const binWidth = options?.mode === 'bin-width' && Number.isFinite(options.binWidth) && options.binWidth! > 0 ? options.binWidth! : 1;
+    return { mode, binWidth, ...thresholds };
+  }
+  const binCount = options?.mode === 'bin-count' && Number.isSafeInteger(options.binCount) && options.binCount! > 0 ? options.binCount! : 10;
+  return { mode, binCount, ...thresholds };
+}
+
+export function chartHistogramOptionsWithNumber(current: ChartHistogramOptions, key: ChartHistogramNumericOption, text: string): ChartHistogramOptions {
+  const next = { ...current };
+  if (text.trim() === '') {
+    if (key === 'binWidth') delete next.binWidth;
+    else if (key === 'binCount') delete next.binCount;
+    else if (key === 'underflow') delete next.underflow;
+    else delete next.overflow;
+    return next;
+  }
+  const numeric = Number(text);
+  if (key === 'binWidth') next.binWidth = numeric;
+  else if (key === 'binCount') next.binCount = numeric;
+  else if (key === 'underflow') next.underflow = numeric;
+  else next.overflow = numeric;
+  return next;
 }
 
 export function formatChartRange(range: RangeRef | undefined): string {
@@ -200,6 +234,9 @@ export function chartPayloadFromDraft(draft: ChartEditorDraft, sheetId: string):
     if (axis.scale === 'logarithmic' && axis.minimum !== undefined && axis.minimum <= 0) throw new Error('对数坐标轴的最小值必须大于 0');
     if (axis.scale === 'logarithmic' && axis.maximum !== undefined && axis.maximum <= 0) throw new Error('对数坐标轴的最大值必须大于 0');
   }
+  const hasHistogramOptions = Object.prototype.hasOwnProperty.call(payload, 'histogramOptions');
+  if (hasHistogramOptions && !isChartHistogramOptions(payload.histogramOptions)) throw new Error('直方图分箱选项无效');
+  if (hasHistogramOptions && payload.chartType !== 'histogram' && payload.chartType !== 'pareto') throw new Error('直方图分箱选项只能用于直方图或帕累托图');
   if (payload.source.kind === 'worksheet-ranges') resolveWorksheetChartRanges(payload, () => null);
   return payload;
 }

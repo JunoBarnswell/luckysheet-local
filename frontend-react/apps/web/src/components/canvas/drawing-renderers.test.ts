@@ -237,7 +237,47 @@ test('by-category histogram hit testing returns the category represented by its 
   const bin = layout.histogramBins![0]!;
   assert.deepEqual(drawable?.hitTest?.({ x: bin.geometry.x + bin.geometry.width / 2, y: bin.geometry.y + bin.geometry.height / 2 }), {
     action: 'chart.select-element',
-    data: { kind: 'histogram-bin', seriesId: layout.series[0]!.id, binIndex: 0, category: 'North' },
+    data: { kind: 'histogram-bin', seriesId: layout.series[0]!.id, binIndex: 0, category: 'North', label: 'North' },
+  });
+});
+
+test('numeric histogram hit testing retains the selected underflow boundary and display label', () => {
+  const values: Array<Array<string | number>> = [
+    ['Category', 'Value'],
+    ['A', -1],
+    ['B', 0],
+    ['C', 1],
+    ['D', 2],
+  ];
+  const source = {
+    ...sourceSnapshot(),
+    getCell: (row: number, column: number) => {
+      const value = values[row]?.[column];
+      return value === undefined ? undefined : { address: `${row}:${column}`, value: String(value) };
+    },
+  } satisfies CanvasSheetSnapshot;
+  const payload: ChartDrawingPayload = {
+    kind: 'chart', chartId: 'numeric-histogram-hit', chartType: 'histogram', subtype: 'histogram',
+    source: { kind: 'worksheet-ranges', ranges: [{ sheetId: source.id, startRow: 0, endRow: 4, startColumn: 0, endColumn: 1 }] },
+    elements: { hiddenData: 'show', legend: { visible: false, position: 'bottom' } },
+    histogramOptions: { mode: 'bin-width', binWidth: 1, underflow: 0, overflow: 1 },
+  };
+  const drawing: DrawingObject = {
+    id: 'numeric-histogram-drawing', sheetId: source.id, kind: 'chart', payloadId: payload.chartId,
+    anchor: { kind: 'absolute' },
+    transform: { x: 0, y: 0, width: 400, height: 240, rotation: 0 }, zIndex: 0,
+  };
+  const data = resolveChartDataFromSources(payload, (sheetId) => sheetId === source.id ? source : undefined);
+  const layout = buildChartLayout(payload, data, drawing.transform.width, drawing.transform.height);
+  const [drawable] = createCanvasFloatingDrawables({
+    drawings: [drawing], drawingPayloads: new Map([[payload.chartId, payload]]), allSheets: [source], sheet: source,
+    pivotResults: {}, sparklines: [], skeleton: {} as SheetSkeleton, imageCache: new Map(),
+    requestRender: () => undefined, tables: [],
+  });
+  const bin = layout.histogramBins![0]!;
+  assert.deepEqual(drawable?.hitTest?.({ x: bin.geometry.x + bin.geometry.width / 2, y: bin.geometry.y + bin.geometry.height / 2 }), {
+    action: 'chart.select-element',
+    data: { kind: 'histogram-bin', seriesId: layout.series[0]!.id, binIndex: 0, start: 0, end: 0, boundary: 'underflow', label: '≤ 0' },
   });
 });
 

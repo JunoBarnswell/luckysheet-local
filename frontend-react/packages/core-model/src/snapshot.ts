@@ -7,7 +7,7 @@ import { isAssetRef } from './asset';
 import { canonicalSnapSettings, validateDrawingGraph } from './drawing-planner';
 import { isCellEditorConfig } from './cell-editor';
 import { DEFAULT_WORKBOOK_EDITING_OPTIONS, isWorkbookEditingOptions, type WorkbookEditingOptions } from './editing-options';
-import { chartSeriesSupportsErrorBars, chartSeriesSupportsTrendlines, isChartSubtypeForType } from './domain';
+import { chartSeriesSupportsErrorBars, chartSeriesSupportsTrendlines, isChartHistogramOptions, isChartSubtypeForType } from './domain';
 import type { ChartDrawingPayload } from './domain';
 import { chartTextFormulaEntries, chartTextFormulaRange } from './chart-text-reference';
 import { isEmbeddedObjectDrawingPayload, isEquationDrawingPayload, isIconDrawingPayload, isModel3dDrawingPayload, isScreenshotDrawingPayload, isSignatureLineDrawingPayload, isSmartArtDrawingPayload, isWordArtDrawingPayload } from './domain';
@@ -913,7 +913,9 @@ function validateChartSnapshotPayload(payload: ChartDrawingPayload, snapshot: Wo
     throw new Error(`Chart ${payload.chartId} row-oriented series must be horizontal vectors`);
   }
   if (owned && payload.mapOptions && payload.chartType !== 'map') throw new Error(`Chart ${payload.chartId} map options require a map chart`);
-  if (owned && payload.histogramOptions && payload.chartType !== 'histogram' && payload.chartType !== 'pareto') throw new Error(`Chart ${payload.chartId} histogram options require a histogram or pareto chart`);
+  const hasHistogramOptions = Object.prototype.hasOwnProperty.call(payload, 'histogramOptions');
+  if (owned && hasHistogramOptions && !isChartHistogramOptions(payload.histogramOptions)) throw new Error(`Chart ${payload.chartId} histogram options are invalid`);
+  if (owned && hasHistogramOptions && payload.chartType !== 'histogram' && payload.chartType !== 'pareto') throw new Error(`Chart ${payload.chartId} histogram options require a histogram or pareto chart`);
   if (owned && payload.boxWhiskerOptions && payload.chartType !== 'box-whisker') throw new Error(`Chart ${payload.chartId} box-whisker options require a box-whisker chart`);
   if (owned && payload.waterfallOptions && payload.chartType !== 'waterfall') throw new Error(`Chart ${payload.chartId} waterfall options require a waterfall chart`);
   if (payload.categoryRange) validateDrawingSourceRange(payload.categoryRange, snapshot, `Chart ${payload.chartId} category`);

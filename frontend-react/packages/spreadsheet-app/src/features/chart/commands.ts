@@ -1,5 +1,5 @@
 import type { CommandContext, CommandRuntime } from '@react-sheets/command-runtime';
-import { MAX_SHEET_COLUMN_COUNT, MAX_SHEET_ROW_COUNT, chartSeriesSupportsErrorBars, chartSeriesSupportsTrendlines, resolveWorksheetChartRanges, retargetChartPayload, isChartSubtypeForType, type ChartAxisModel, type ChartDrawingPayload, type ChartMapResource, type ChartSeriesModel, type ChartSource, type ChartSubtype, type DrawingObject, type RangeRef, type WorksheetModel } from '@react-sheets/core-model';
+import { MAX_SHEET_COLUMN_COUNT, MAX_SHEET_ROW_COUNT, chartSeriesSupportsErrorBars, chartSeriesSupportsTrendlines, resolveWorksheetChartRanges, retargetChartPayload, isChartHistogramOptions, isChartSubtypeForType, type ChartAxisModel, type ChartDrawingPayload, type ChartMapResource, type ChartSeriesModel, type ChartSource, type ChartSubtype, type DrawingObject, type RangeRef, type WorksheetModel } from '@react-sheets/core-model';
 import { chartSourceRanges } from './data';
 
 export type ChartType = ChartDrawingPayload['chartType'];
@@ -361,7 +361,7 @@ function isChartPayload(value: unknown): value is ChartPayload {
     && isElements(payload.elements)
     && (payload.categoryRange === undefined || isRange(payload.categoryRange))
     && (payload.nativeIdentity === undefined || isNativeIdentity(payload.nativeIdentity))
-    && (payload.histogramOptions === undefined || isRecord(payload.histogramOptions))
+    && (!Object.prototype.hasOwnProperty.call(payload, 'histogramOptions') || isChartHistogramOptions(payload.histogramOptions))
     && (payload.boxWhiskerOptions === undefined || isRecord(payload.boxWhiskerOptions))
     && (payload.waterfallOptions === undefined || isRecord(payload.waterfallOptions))
     && (payload.mapOptions === undefined || isMapOptions(payload.mapOptions))

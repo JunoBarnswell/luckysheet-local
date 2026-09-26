@@ -1028,6 +1028,31 @@ export interface ChartHistogramOptions {
   underflow?: number;
 }
 
+/** Runtime guard shared by chart mutation, snapshot, and layout boundaries. */
+export function isChartHistogramOptions(value: unknown): value is ChartHistogramOptions {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const options = value as Record<string, unknown>;
+  const has = (key: string) => Object.prototype.hasOwnProperty.call(options, key);
+  if (Object.keys(options).some((key) => !['mode', 'binWidth', 'binCount', 'overflow', 'underflow'].includes(key))) return false;
+  if (!has('mode') || (options.mode !== 'automatic' && options.mode !== 'by-category' && options.mode !== 'bin-width' && options.mode !== 'bin-count')) return false;
+
+  const hasWidth = has('binWidth');
+  const hasCount = has('binCount');
+  const hasOverflow = has('overflow');
+  const hasUnderflow = has('underflow');
+  if (hasOverflow && (typeof options.overflow !== 'number' || !Number.isFinite(options.overflow))) return false;
+  if (hasUnderflow && (typeof options.underflow !== 'number' || !Number.isFinite(options.underflow))) return false;
+  if (hasOverflow && hasUnderflow && (options.underflow as number) > (options.overflow as number)) return false;
+
+  if (options.mode === 'by-category') return !hasWidth && !hasCount && !hasOverflow && !hasUnderflow;
+  if (options.mode === 'automatic') return !hasWidth && !hasCount;
+  if (options.mode === 'bin-width') {
+    return hasWidth && !hasCount && typeof options.binWidth === 'number' && Number.isFinite(options.binWidth) && options.binWidth > 0;
+  }
+  if (hasWidth || !hasCount || typeof options.binCount !== 'number' || !Number.isSafeInteger(options.binCount) || options.binCount < 1) return false;
+  return options.binCount >= Number(hasUnderflow) + Number(hasOverflow);
+}
+
 export interface ChartBoxWhiskerOptions {
   quartile: 'inclusive-median' | 'exclusive-median';
   showInnerPoints?: boolean;

@@ -414,6 +414,154 @@ describe('chart feature', () => {
     assert.ok(layout.histogramBins!.every((bin) => bin.geometry.height > 0));
   });
 
+  it('preserves underflow, overflow, and exact upper-bound values in numeric histograms', () => {
+    const workbook = new WorkbookModel('histogram-boundaries', 'Histogram boundaries');
+    const sheet = workbook.getSheet('sheet-1');
+    [['Category', 'Value'], ['A', -10], ['B', -5], ['C', 0], ['D', 5], ['E', 10], ['F', 15]].forEach((row, rowIndex) => row.forEach((value, columnIndex) => sheet.cells.set(rowIndex, columnIndex, { value })));
+    const payload: ChartPayload = {
+      kind: 'chart', chartId: 'numeric-histogram', chartType: 'histogram', subtype: 'histogram',
+      source: { kind: 'worksheet-ranges', ranges: [{ sheetId: sheet.id, startRow: 0, endRow: 6, startColumn: 0, endColumn: 1 }] },
+      elements: { hiddenData: 'show' },
+      histogramOptions: { mode: 'bin-width', binWidth: 5, underflow: 0, overflow: 10 },
+    };
+
+    const layout = buildChartLayout(payload, resolveChartData(workbook, payload), 400, 240);
+    assert.equal(layout.status.kind, 'ready');
+    assert.equal(layout.series[0]!.points.length, 0);
+    assert.deepEqual(layout.histogramBins!.map((bin) => [bin.kind, bin.start, bin.end, bin.count, bin.label, bin.boundary]), [
+      ['numeric', 0, 0, 3, '≤ 0', 'underflow'],
+      ['numeric', 0, 5, 1, '(0, 5]', undefined],
+      ['numeric', 5, 10, 1, '(5, 10]', undefined],
+      ['numeric', 10, 10, 1, '> 10', 'overflow'],
+    ]);
+    assert.equal(layout.histogramBins!.reduce((sum, bin) => sum + bin.count, 0), 6);
+  });
+
+  it('counts underflow and overflow bins inside an explicit bin count', () => {
+    const workbook = new WorkbookModel('histogram-bin-count', 'Histogram bin count');
+    const sheet = workbook.getSheet('sheet-1');
+    [['Category', 'Value'], ['A', 0], ['B', 1], ['C', 2], ['D', 3]].forEach((row, rowIndex) => row.forEach((value, columnIndex) => sheet.cells.set(rowIndex, columnIndex, { value })));
+    const payload: ChartPayload = {
+      kind: 'chart', chartId: 'counted-histogram', chartType: 'histogram', subtype: 'histogram',
+      source: { kind: 'worksheet-ranges', ranges: [{ sheetId: sheet.id, startRow: 0, endRow: 4, startColumn: 0, endColumn: 1 }] },
+      elements: { hiddenData: 'show' },
+      histogramOptions: { mode: 'bin-count', binCount: 4, underflow: 0, overflow: 3 },
+    };
+
+    const layout = buildChartLayout(payload, resolveChartData(workbook, payload), 400, 240);
+    assert.equal(layout.status.kind, 'ready');
+    assert.equal(layout.histogramBins!.length, 4);
+    assert.deepEqual(layout.histogramBins!.map((bin) => bin.count), [1, 1, 2, 0]);
+    assert.equal(layout.histogramBins!.reduce((sum, bin) => sum + bin.count, 0), 4);
+  });
+
+  it('allows equal tail thresholds because underflow and overflow remain disjoint', () => {
+    const workbook = new WorkbookModel('histogram-equal-tails', 'Histogram equal tail thresholds');
+    const sheet = workbook.getSheet('sheet-1');
+    [['Category', 'Value'], ['A', -1], ['B', 0], ['C', 1]].forEach((row, rowIndex) => row.forEach((value, columnIndex) => sheet.cells.set(rowIndex, columnIndex, { value })));
+    const payload: ChartPayload = {
+      kind: 'chart', chartId: 'equal-tail-histogram', chartType: 'histogram', subtype: 'histogram',
+      source: { kind: 'worksheet-ranges', ranges: [{ sheetId: sheet.id, startRow: 0, endRow: 3, startColumn: 0, endColumn: 1 }] },
+      elements: { hiddenData: 'show' },
+      histogramOptions: { mode: 'bin-count', binCount: 2, underflow: 0, overflow: 0 },
+    };
+
+    const layout = buildChartLayout(payload, resolveChartData(workbook, payload), 400, 240);
+    assert.equal(layout.status.kind, 'ready');
+    assert.deepEqual(layout.histogramBins!.map((bin) => [bin.boundary, bin.count]), [['underflow', 2], ['overflow', 1]]);
+  });
+
+  it('rejects mismatched category and value vectors instead of truncating the longer source', () => {
+    const workbook = new WorkbookModel('histogram-category-mismatch', 'Histogram category mismatch');
+    const sheet = workbook.getSheet('sheet-1');
+    [['Category', 'Value'], ['A', 1], ['B', 2]].forEach((row, rowIndex) => row.forEach((value, columnIndex) => sheet.cells.set(rowIndex, columnIndex, { value })));
+    const payload: ChartPayload = {
+      kind: 'chart', chartId: 'mismatched-category-histogram', chartType: 'histogram', subtype: 'histogram',
+      source: { kind: 'worksheet-ranges', ranges: [{ sheetId: sheet.id, startRow: 0, endRow: 2, startColumn: 0, endColumn: 1 }] },
+      elements: { hiddenData: 'show' }, histogramOptions: { mode: 'by-category' },
+    };
+    const data = resolveChartData(workbook, payload);
+    data.categories = data.categories.slice(0, 1);
+
+    const layout = buildChartLayout(payload, data, 400, 240);
+    assert.equal(layout.status.kind, 'invalid');
+    assert.equal(layout.histogramBins, undefined);
+  });
+
+  it('rejects by-category aggregate and geometry overflow before emitting non-finite bars', () => {
+    const workbook = new WorkbookModel('histogram-category-overflow', 'Histogram category overflow');
+    const sheet = workbook.getSheet('sheet-1');
+    [['Category', 'Value'], ['A', Number.MAX_VALUE], ['A', Number.MAX_VALUE]].forEach((row, rowIndex) => row.forEach((value, columnIndex) => sheet.cells.set(rowIndex, columnIndex, { value })));
+    const payload: ChartPayload = {
+      kind: 'chart', chartId: 'overflowing-category-histogram', chartType: 'histogram', subtype: 'histogram',
+      source: { kind: 'worksheet-ranges', ranges: [{ sheetId: sheet.id, startRow: 0, endRow: 2, startColumn: 0, endColumn: 1 }] },
+      elements: { hiddenData: 'show' }, histogramOptions: { mode: 'by-category' },
+    };
+
+    const aggregateLayout = buildChartLayout(payload, resolveChartData(workbook, payload), 400, 240);
+    assert.equal(aggregateLayout.status.kind, 'invalid');
+    assert.equal(aggregateLayout.histogramBins, undefined);
+
+    sheet.cells.set(2, 0, { value: 'B' });
+    sheet.cells.set(1, 1, { value: -Number.MAX_VALUE });
+    sheet.cells.set(2, 1, { value: Number.MAX_VALUE });
+    const geometryLayout = buildChartLayout(payload, resolveChartData(workbook, payload), 400, 240);
+    assert.equal(geometryLayout.status.kind, 'invalid');
+    assert.equal(geometryLayout.histogramBins, undefined);
+  });
+
+  it('uses explicit tail boundaries without requiring an overflowing full-data span', () => {
+    const workbook = new WorkbookModel('histogram-extreme-tails', 'Histogram extreme tails');
+    const sheet = workbook.getSheet('sheet-1');
+    [['Category', 'Value'], ['Low', -1e308], ['High', 1e308]].forEach((row, rowIndex) => row.forEach((value, columnIndex) => sheet.cells.set(rowIndex, columnIndex, { value })));
+    const payload: ChartPayload = {
+      kind: 'chart', chartId: 'extreme-tail-histogram', chartType: 'histogram', subtype: 'histogram',
+      source: { kind: 'worksheet-ranges', ranges: [{ sheetId: sheet.id, startRow: 0, endRow: 2, startColumn: 0, endColumn: 1 }] },
+      elements: { hiddenData: 'show' },
+      histogramOptions: { mode: 'bin-width', binWidth: 1, underflow: 0, overflow: 1 },
+    };
+
+    const layout = buildChartLayout(payload, resolveChartData(workbook, payload), 400, 240);
+    assert.equal(layout.status.kind, 'ready');
+    assert.deepEqual(layout.histogramBins!.map((bin) => bin.count), [1, 0, 1]);
+  });
+
+  it('rejects invalid bin settings and bin widths beyond drawable resolution before materializing bins', () => {
+    const workbook = new WorkbookModel('histogram-bounds', 'Histogram bounds');
+    const sheet = workbook.getSheet('sheet-1');
+    [['Category', 'Value'], ['A', 0], ['B', 1], ['C', 2], ['D', 3]].forEach((row, rowIndex) => row.forEach((value, columnIndex) => sheet.cells.set(rowIndex, columnIndex, { value })));
+    const source = { kind: 'worksheet-ranges' as const, ranges: [{ sheetId: sheet.id, startRow: 0, endRow: 4, startColumn: 0, endColumn: 1 }] };
+    const invalid: ChartPayload = {
+      kind: 'chart', chartId: 'invalid-width', chartType: 'histogram', subtype: 'histogram', source,
+      elements: { hiddenData: 'show' }, histogramOptions: { mode: 'bin-width', binWidth: 0 },
+    };
+    const excessive: ChartPayload = {
+      kind: 'chart', chartId: 'excessive-width', chartType: 'histogram', subtype: 'histogram', source,
+      elements: { hiddenData: 'show' }, histogramOptions: { mode: 'bin-width', binWidth: 1e-18 },
+    };
+
+    const invalidLayout = buildChartLayout(invalid, resolveChartData(workbook, invalid), 400, 240);
+    const excessiveLayout = buildChartLayout(excessive, resolveChartData(workbook, excessive), 400, 240);
+    assert.equal(invalidLayout.status.kind, 'invalid');
+    assert.equal(excessiveLayout.status.kind, 'unsupported');
+    assert.equal(excessiveLayout.histogramBins, undefined);
+  });
+
+  it('rejects multiple visible source series instead of silently histogramming only the first', () => {
+    const workbook = new WorkbookModel('histogram-series', 'Histogram series');
+    const sheet = workbook.getSheet('sheet-1');
+    [['Category', 'First', 'Second'], ['A', 1, 10], ['B', 2, 20], ['C', 3, 30]].forEach((row, rowIndex) => row.forEach((value, columnIndex) => sheet.cells.set(rowIndex, columnIndex, { value })));
+    const payload: ChartPayload = {
+      kind: 'chart', chartId: 'multi-series-histogram', chartType: 'histogram', subtype: 'histogram',
+      source: { kind: 'worksheet-ranges', ranges: [{ sheetId: sheet.id, startRow: 0, endRow: 3, startColumn: 0, endColumn: 2 }] },
+      elements: { hiddenData: 'show' },
+    };
+
+    const layout = buildChartLayout(payload, resolveChartData(workbook, payload), 400, 240);
+    assert.equal(layout.status.kind, 'invalid');
+    assert.equal(layout.histogramBins, undefined);
+  });
+
   it('projects pie data-label text and hit bounds from the same slice facts', () => {
     const workbook = new WorkbookModel('pie-data-labels', 'Pie labels');
     const sheet = workbook.getSheet('sheet-1');

@@ -526,6 +526,7 @@ export {
   CHART_SUBTYPES_BY_TYPE,
   defaultChartSubtype,
   isChartSubtypeForType,
+  isChartHistogramOptions,
   chartStackingForSubtype,
   chartSeriesSupportsErrorBars,
   chartSeriesSupportsTrendlines,

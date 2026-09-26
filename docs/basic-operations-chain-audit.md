@@ -3,7 +3,7 @@
 ## 基线、范围与真实状态
 
 - 2026-09-26 通过 GitHub Connector 重新读取 main：`a2a6140a90351b38f1e6f5fbc167d09b4f6ecc7f`，与本地 main 相同。
-- 当前审查工作分支：`codex/structural-reference-integrity`；本轮复核基线 `origin/main=a2a6140a90351b38f1e6f5fbc167d09b4f6ecc7f`，本轮代码改动从已推送 PR head `3f4b7f37f3758ced95793d8e05968b62816f682f` 继续。下面的行号以当前 PR head 与本轮工作树源码为准，不把历史 main 或旧 PR 文字当成当前实现证据。
+- 当前审查工作分支：`codex/structural-reference-integrity`；本轮复核基线 `origin/main=a2a6140a90351b38f1e6f5fbc167d09b4f6ecc7f`，本轮代码改动从已推送 PR head `a827a741868dfbd9eef6cdab3b7e2b045ad94a0c` 继续。下面的行号以当前 PR head 与本轮工作树源码为准，不把历史 main 或旧 PR 文字当成当前实现证据。
 - 唯一交付 PR：[草稿 #345](https://github.com/JunoBarnswell/luckysheet-local/pull/345)。本轮结构事实、sheet snapshot、chart geometry 和 snapshot owner identity 修复已分别提交；稀疏单元格规划、extent 和 cell-shift history 改动保留在同一 PR 待整体复核。
 - 最新用户要求：以整个使用链为单位；至少 40 个操作一起审查、集中修复并复核；**最后实测**。早先“仅静态、不测试”只约束前置审查阶段，不再替代最终运行验收。
 - **已确认的产品取舍**：2026-09-26 用户选择“统一由 Java 服务规划，可要求服务在线”。结构操作不再承诺无服务的浏览器离线执行；连接失败时拒绝提交并保留编辑草稿。此授权只改变结构规划归属，不自动扩展为全部普通输入或图表样式都必须远程。
@@ -120,16 +120,18 @@
 
 ### C：图表语义没有由完整几何事实承载
 
-5. **C1 簇状条形图系列重叠**：`layout.ts:477–491` 算了 `ordinal/band/offset`，但 bar 分支 y 未用 offset、height 用整条带。两个系列同一 category 会重叠；column 分支有 offset。应统一横纵方向的 series slot geometry，绘制和命中消费同一矩形。
-6. **C2 自动对数轴无效**：`axisBounds:160` 对正值数据仍默认 `minimum = min(0,dataMinimum)`，随后 logarithmic 分支拒绝 minimum<=0。切换 log 且未手填最小值即失败。需以轴领域选择合适正值边界，不能在 Canvas 忽略错误。
+5. **C1 簇状条形图系列重叠（已修复，原问题描述过期）**：当前 `buildBarPlacements` 和 bar 布局将系列 ordinal 用于 y/height；Canvas 与 hit-test 使用同一 bar geometry。`chart.test.ts` 覆盖同类别两系列分槽且不重叠。旧版 `layout.ts:477–491` 的描述是修复前证据，不代表当前源码。
+6. **C2 自动对数轴无效（已修复，原问题描述过期）**：当前 `axisBounds` 对数轴从正数据域推导默认最小值，并拒绝非正值域/边界及非法 log base；`chart.test.ts` 覆盖正值自动边界和非法显式边界。旧版 `minimum = min(0,dataMinimum)` 的描述是修复前证据，不代表当前源码。
 7. **C3 子类型静默折叠**：柱/条 cone/cylinder/pyramid/3D 最终均 `fillRect`；pie-of-pie/bar-of-pie 仍走单饼扇区；surface 的 3D/wireframe/contour 均绘成热图矩形。模型允许这些类型，因此是缺少真实实现而非仅菜单少项。不能以添加标签或关闭报错宣称支持。
 8. **C4 层级信息未进入图表几何**：treemap 和 sunburst 在 renderer 将所有 point flatMap，分别画一排矩形/一圈圆环；没有父子层级 owner。需从 source binding 保留层级并在 layout 构造分区事实，hit-test 不能重新展开数据。
 9. **C5 雷达图负值被改成正值（本轮已修复）**：原 layout maximum 与 renderer/hit-test 均 `abs(value)`，-10 和 +10 落在相同半径。现在 layout 按 canonical value axis 一次生成 signed vertices，绘制与 hit-test 共用坐标；`radar`、`radar-markers`、`radar-filled` 分别控制线、标记和封闭多边形填充。chart layout 回归覆盖负/零/正/缺失值，Canvas 回归确认命中索引与顶点一致。
 10. **C6 趋势线不是对应算法**：`buildTrendline:337` 对所有类型先做原始线性回归；多项式用 `predictor ** 2 * slope * 0.02`，指数/对数/幂也沿用线性系数；forecast 是加在 y 上而不是扩展 x 域。必须用正式回归领域输出曲线、统计及 forecast 范围，覆盖拒绝域和阶数。
-11. **C7 直方图 underflow/overflow 丢数据**：`histogram:391` 直接 continue 不生成边界箱，图上总数不等于输入。过小 binWidth 还可产生与输入规模无关的超大 Array.from。需明确边界箱与容量拒绝，不能静默截断或随意改变用户设置。
-12. **C8 数据表占位绘制（本轮已修复，范围明确）**：数据表现在进入 `ChartLayout`，Canvas 从同一 resolved chart data 绘制类别、系列名、原始标量值和可选色键；系列名列不随 `showLegendKeys=false` 消失，图层命中只接受数据表实际 bounds。笛卡尔图表若表格无法放入绘图区或类别列窄于可显示字形则在物化点几何前返回 `UNSUPPORTED_FEATURE`；非笛卡尔图表的数据表也明确拒绝，非法字号/边框数值返回 `INVALID_CHART_SOURCE`，旋转文字、非纯色填充及非零透明度明确拒绝。新增 Canvas 回归源码覆盖多系列、文本值、legend-key 关闭、窄图、非法字号、样式拒绝、饼图拒绝与精确命中；本轮未本地运行测试/构建，PR head `2f053850` 的两条 `canonical-build` 已通过浏览器资源构建、Java 后端测试及前端边界/生成契约检查，真实浏览器与桌面 Excel 验收仍待完成。此项不宣称完整 Excel 图表格式/OOXML 兼容。
+11. **C7 直方图尾部箱丢数据及无界分配（本轮已实现，尚待最终验证）**：underflow/overflow 现在分别按 `<= threshold`、`> threshold` 计入显式边界箱；普通箱按 `(lower, upper]` 归属，`bin-count` 总数包含已启用尾部箱。相等阈值合法，因为两谓词互斥且共同覆盖数值域；倒置阈值拒绝。共享选项校验覆盖图表面板草稿、命令、快照与布局；非法区间 fail-close。数值路径只对 regular domain 计算所需的 Welford 方差，以源向量两趟扫描，不复制逐值数组；显式尾部可分割超出整体 double span 的数据；按绘图区像素容量先验拒绝过密分箱，不截断值或先分配巨型数组；by-category 要求类别/值向量严格等长，并在 Map 扩容越过可绘制容量时拒绝。histogram/Pareto 提前从通用布局分流，只物化系列显示元数据与 bins，不为每个源值创建随后丢弃的 Cartesian 点/轴数组。多可见系列明确拒绝；Canvas 的柱体和 hit-test 继续共享 layout 几何，Canvas 命中结果包含边界类型/标签；轴标签按空间稀疏显示但所有 bins 均保留。图表面板已提供 mode、宽度/数量及尾部阈值编辑，模式切换保留仍适用的阈值、清除不适用选项；新增 options、边界相等、计数总和、极值尾部、多系列拒绝、编辑状态转换和 Canvas 边界命中回归源码。本机测试未运行，待 PR 验证。
+12. **C8 数据表占位绘制（本轮已修复，范围明确）**：数据表现在进入 `ChartLayout`，Canvas 从同一 resolved chart data 绘制类别、系列名、原始标量值和可选色键；系列名列不随 `showLegendKeys=false` 消失，图层命中只接受数据表实际 bounds。笛卡尔图表若表格无法放入绘图区或类别列窄于可显示字形则在物化点几何前返回 `UNSUPPORTED_FEATURE`；非笛卡尔图表的数据表也明确拒绝，非法字号/边框数值返回 `INVALID_CHART_SOURCE`，旋转文字、非纯色填充及非零透明度明确拒绝。新增 Canvas 回归源码覆盖多系列、文本值、legend-key 关闭、窄图、非法字号、样式拒绝、饼图拒绝与精确命中；本机未运行测试/构建，改动前 PR head `a827a741` 的两条 `canonical-build` 已通过浏览器资源构建、Java 后端测试及前端边界/生成契约检查，真实浏览器与桌面 Excel 验收仍待完成。此项不宣称完整 Excel 图表格式/OOXML 兼容。
 
 本轮 C8 六轮静态复核分别检查了：① 从 `buildChartLayout` 到 Canvas draw/hit-test 的数据与坐标所有权；② 关闭 legend key 时系列名列仍需保留；③ 文字型源值不能从数值几何 `point.value` 推导，否则会静默丢失；④ 空值/缺类别与 fallback 序号的区分；⑤ 非有限字号、过窄单元格及非笛卡尔类型的 fail-close；⑥ 大类别集的参数展开、重复数组和不可读单元格绘制成本。修复后表格只保留 resolved vectors 的只读引用，类别宽度检查前移至点几何创建之前，不做静默抽样。
+
+本轮 C7 六轮静态复核分别检查了：① 从图表面板草稿到 mutation/snapshot 与 `buildChartLayout` 的配置所有权、显式 undefined 和绕过路径；② 对照 Excel 尾部阈值和 regular-bin 开闭边界，确定 `<=`、`>`、`(lower, upper]`；③ 核验最小值、内部精确边界、underflow/overflow 精确阈值均恰好归属一个 bin，并确认相等尾阈值不会产生重叠；④ 核验显式 `bin-count` 包含特殊尾箱，零 regular slot 仅能在没有 interior 值时成立；⑤ 对极小 width、不可表示边界、尾部阈值分割极值、稳定方差、类别向量长度、聚合溢出、几何范围溢出及源向量额外副本进行资源复核；⑥ 从布局到 Canvas 几何、hit-test 与面板配置核验边界类型/标签及像素容量，且拒绝多可见系列。修复后先校验再分配有界 bins；运行时仍须由 CI/最终实测确认。
 13. **C9 大数据按参数展开及 sparkline 空值 O(n²)（本轮已修复）**：layout `axisValuesForSeries` 的 push(...values)，map/stock extrema、structured min/max 和 sparkline group bounds 的 Math.max/min(...array) 会受引擎参数个数上限影响并制造临时数组；same-group 还通过逐项 `find` 形成重复扫描，sparkline `emptyCells=connect` 对每个空槽切片反向查找前值，最坏为二次复杂度。本轮改为逐项统计、sparkline ID Map 和前值状态扫描；130,000 点布局/同组边界回归覆盖引擎参数阈值，空值连接回归校验线段保持同值。
 
 ### X：native codec 与图表领域脱节
@@ -147,8 +149,8 @@
 20. **B3 Sheet 删除撤销快照遍历整个 Workbook**：`getSheetSnapshot` 从 `WorkbookModel.snapshot()` 生成所有工作表的完整快照后才选中目标 Sheet。成本与全簿所有单元格数和对象数相关；多 Sheet、大数据文件仅撤销删除一个 Sheet 就复制无关数据。本轮改为目标 `WorksheetModel.snapshot()`，并让恢复直接用 `WorksheetModel.fromSnapshot()`，保留延迟单元格 hydration。
 21. **B4 Sheet 恢复依赖临时 Workbook 且可能部分提交**：旧恢复路径把当前 Workbook 其余工作表移除后用 `WorkbookModel.fromSnapshot()` 解析单 Sheet，跨 Sheet anchor 的名称因此无法通过所有权校验；之后逐个调用 `setDefinedName`，重复名字可能覆盖。打印文档也在工作表插入之后才写入。现先构造 Sheet、组合校验名称 identity/anchor、校验打印文档所有者并标准化，再一次性更新名称并插入；拒绝测试确认失败时 Workbook 快照不变。
 
-22. **C10 簇状横条系列几何重叠**：`layout.ts` 的 bar 分支读取系列 offset 只计算 x 坐标（横向条形的数值轴），没有把系列 offset 用在 y 和 height，因此同一类别的系列矩形重合。现让 y 使用系列 slot offset、height 使用每个系列的 band；Canvas 绘制和 hit-test 共用这组矩形。
-23. **C11 正值对数轴默认最小值为零**：`axisBounds` 对非百分比轴统一从 0 起算，之后 logarithmic 检查又拒绝 `minimum <= 0`。即使数据全为正，未手填最小值的对数轴也会被判无效。本轮对数轴默认采用最小正数据值，并只在最大值为自动值时扩展；显式边界仍按有效域校验。
+22. **C10 簇状横条系列几何重叠（与 C1 同一根因，已修复）**：旧 bar 分支忽略纵向系列槽位；当前 y 使用系列 slot offset、height 使用每系列 band，Canvas 绘制和 hit-test 共用这组矩形。此处不另计一个独立根因。
+23. **C11 正值对数轴默认最小值为零（与 C2 同一根因，已修复）**：旧 `axisBounds` 对数轴默认取零；当前对数轴以最小正数据值作为默认下界并验证显式范围。此处不另计一个独立根因。
 24. **B5 worksheet identity 覆盖与标签歧义**：`WorkbookModel.fromSnapshot` 对重复 `sheet.id` 连续执行 `Map.set`，后一个 Sheet 覆盖前一个，而 `sheetOrder` 保留重复 ID；`getSheetByName` 按不区分大小写查找，重复标签会令公式/命令落到第一个匹配项。现在在 canonical snapshot、model hydration、创建、恢复、重命名和复制之前校验唯一 ID 与 case-insensitive name；冲突拒绝路径不改变模型。
 25. **B6 其他 workbook Map owner 重复时静默覆盖**：`fromSnapshot` 对 table、relationship、view 直接 `Map.set`，query definition 和 print document setter 也按 id/sheetId 覆盖已有 owner；style template 的直接 hydration 同样可能覆盖。现在 canonical 与直接 hydration 共用 Map owner identity 预检，涵盖 data source、table、relationship、view、query、style template 和每 Sheet 唯一打印文档；来源 Map 原有 `addDataSource` 拒绝语义保持一致。
 26. **C12 瀑布图连接线累计/端点错误且零值条不可命中（本轮已修复）**：布局把 from/to 排序成 min/max 后丢失累计方向；负增量连接线取错边，总计柱入线误落到零基线，连接线也没有从前柱边缘接到当前柱。绘制还强制 1px 最小高度，hit-test 却只用原始零高边界。现在 layout 为 connector 保留进入当前点前的累计值并按相邻 bar geometry 计算两端；draw/hit 共用规范几何。

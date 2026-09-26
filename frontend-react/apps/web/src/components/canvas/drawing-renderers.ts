@@ -1177,10 +1177,13 @@ function drawChartSpecial(context: CanvasRenderingContext2D, payload: ChartDrawi
   }
   if (layout.kind === 'histogram') {
     const bins = layout.histogramBins ?? [];
-    bins.forEach((bin) => {
+    const maximumTickLabelWidth = bins.reduce((width, bin) => Math.max(width, bin.label.length * 4.8 + 8), 24);
+    const visibleTickCount = Math.max(1, Math.floor(plot.width / maximumTickLabelWidth));
+    const tickStride = Math.max(1, Math.ceil(bins.length / visibleTickCount));
+    bins.forEach((bin, index) => {
       context.fillStyle = '#2563eb';
       context.fillRect(bin.geometry.x, bin.geometry.y, bin.geometry.width, bin.geometry.height);
-      drawChartText(context, bin.label, bin.geometry.x + bin.geometry.width / 2, plot.top + plot.height + 12, { size: 8, align: 'center' });
+      if (index % tickStride === 0 || index === bins.length - 1) drawChartText(context, bin.label, bin.geometry.x + bin.geometry.width / 2, plot.top + plot.height + 12, { size: 8, align: 'center' });
     });
     if (layout.paretoPoints?.length) {
       context.strokeStyle = '#dc2626';
@@ -1568,7 +1571,8 @@ function chartHitTest(layout: ChartLayout, point: { x: number; y: number }): { a
           action: 'chart.select-element',
           data: {
             kind: 'histogram-bin', seriesId: series.id, binIndex: index,
-            ...(bin.kind === 'category' ? { category: bin.category } : { start: bin.start, end: bin.end }),
+            ...(bin.kind === 'category' ? { category: bin.category } : { start: bin.start, end: bin.end, ...(bin.boundary ? { boundary: bin.boundary } : {}) }),
+            label: bin.label,
           },
         };
       }

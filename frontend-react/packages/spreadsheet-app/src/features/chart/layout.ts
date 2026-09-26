@@ -11,6 +11,7 @@ import type {
   ChartWaterfallOptions,
   PivotScalar,
 } from '@react-sheets/core-model';
+import { isChartHistogramOptions } from '@react-sheets/core-model';
 import { chartNumericValue, type ChartDataStatus, type ResolvedChartData, type ResolvedChartSeries } from './data';
 
 export interface ChartLayoutPoint {
@@ -89,13 +90,15 @@ export type ChartHistogramBinLayout = {
   label: string;
   geometry: { x: number; y: number; width: number; height: number };
 } & (
-  | { kind: 'numeric'; start: number; end: number; category?: never; value?: never }
+  | { kind: 'numeric'; start: number; end: number; boundary?: 'underflow' | 'overflow'; category?: never; value?: never }
   | { kind: 'category'; category: PivotScalar; value: number; start?: never; end?: never }
 );
 
 type ChartHistogramBinValue =
-  | { kind: 'numeric'; start: number; end: number; count: number; label: string }
+  | { kind: 'numeric'; start: number; end: number; count: number; label: string; boundary?: 'underflow' | 'overflow' }
   | { kind: 'category'; category: PivotScalar; value: number; count: number; label: string };
+
+type HistogramBuildResult = { ok: true; bins: ChartHistogramBinValue[] } | { ok: false; status: ChartDataStatus };
 
 export interface ChartBoxLayout {
   seriesIndex: number;
@@ -431,33 +434,176 @@ function standardDeviation(values: readonly number[]): number {
   return Math.sqrt(values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / (values.length - 1));
 }
 
-function histogram(values: readonly number[], options: ChartHistogramOptions | undefined): ChartHistogramBinValue[] {
-  if (!values.length) return [];
-  const minimum = values.reduce((value, next) => Math.min(value, next), Infinity);
-  const maximum = values.reduce((value, next) => Math.max(value, next), -Infinity);
-  const span = Math.max(Number.EPSILON, maximum - minimum);
-  const deviation = standardDeviation(values);
-  const scottWidth = deviation > 0 ? 3.5 * deviation / values.length ** (1 / 3) : span / Math.max(1, Math.ceil(Math.sqrt(values.length)));
-  const binCount = options?.mode === 'bin-count' ? Math.max(1, Math.floor(options.binCount ?? 1)) : options?.mode === 'bin-width' ? Math.max(1, Math.ceil(span / Math.max(Number.EPSILON, options.binWidth ?? scottWidth))) : Math.max(1, Math.ceil(span / Math.max(Number.EPSILON, scottWidth)));
-  const width = options?.mode === 'bin-width' ? Math.max(Number.EPSILON, options.binWidth ?? scottWidth) : span / binCount;
-  const counts = Array.from({ length: Math.max(1, Math.ceil(span / width)) }, () => 0);
-  for (const value of values) {
-    if (options?.underflow !== undefined && value < options.underflow) continue;
-    if (options?.overflow !== undefined && value >= options.overflow) continue;
-    const index = Math.min(counts.length - 1, Math.max(0, Math.floor((value - minimum) / width)));
-    counts[index] = (counts[index] ?? 0) + 1;
-  }
-  return counts.map((count, index) => {
-    const start = minimum + index * width;
-    const end = start + width;
-    return { kind: 'numeric', start, end, count, label: `${trimNumber(start)}–${trimNumber(end)}` };
-  });
+function histogramFailure(kind: 'invalid' | 'unsupported', code: NonNullable<ChartDataStatus['code']>, message: string): HistogramBuildResult {
+  return { ok: false, status: { kind, code, message } };
 }
 
-function categoricalHistogram(categories: readonly PivotScalar[], values: readonly PivotScalar[]): ChartHistogramBinValue[] {
+function histogram(values: readonly PivotScalar[], options: ChartHistogramOptions | undefined, maximumBinCount: number): HistogramBuildResult {
+  if (options !== undefined && !isChartHistogramOptions(options)) {
+    return histogramFailure('invalid', 'INVALID_CHART_SOURCE', 'Histogram bin options are invalid');
+  }
+  if (options?.mode === 'by-category') {
+    return histogramFailure('invalid', 'INVALID_CHART_SOURCE', 'By-category histogram options require categorical source grouping');
+  }
+  if (!Number.isSafeInteger(maximumBinCount) || maximumBinCount < 1) {
+    return histogramFailure('unsupported', 'UNSUPPORTED_FEATURE', 'Histogram plot width cannot display a bin without overlap');
+  }
+
+  const calculateVariance = options === undefined || options.mode === 'automatic';
+  let numericCount = 0;
+  let minimum = Infinity;
+  let maximum = -Infinity;
+  let mean = 0;
+  let squaredDeviation = 0;
+  let regularValueCount = 0;
+  for (const rawValue of values) {
+    const numeric = chartNumericValue(rawValue);
+    if (numeric === undefined) continue;
+    numericCount += 1;
+    minimum = Math.min(minimum, numeric);
+    maximum = Math.max(maximum, numeric);
+    const regular = (options?.underflow === undefined || numeric > options.underflow)
+      && (options?.overflow === undefined || numeric <= options.overflow);
+    if (regular) {
+      regularValueCount += 1;
+      if (calculateVariance) {
+        const delta = numeric - mean;
+        mean += delta / regularValueCount;
+        squaredDeviation += delta * (numeric - mean);
+      }
+    }
+  }
+  if (numericCount === 0) return { ok: true, bins: [] };
+
+  if (!Number.isFinite(minimum) || !Number.isFinite(maximum) || (calculateVariance && !Number.isFinite(squaredDeviation))) {
+    return histogramFailure('invalid', 'INVALID_CHART_SOURCE', 'Histogram numeric range exceeds finite calculation bounds');
+  }
+  const underflow = options?.underflow;
+  const overflow = options?.overflow;
+  const specialBinCount = Number(underflow !== undefined) + Number(overflow !== undefined);
+  const regularMinimum = underflow ?? minimum;
+  const regularMaximum = overflow === undefined ? maximum : Math.min(maximum, overflow);
+  const rawRegularSpan = regularMaximum - regularMinimum;
+  if (!Number.isFinite(rawRegularSpan)) {
+    return histogramFailure('invalid', 'INVALID_CHART_SOURCE', 'Histogram thresholds exceed finite calculation bounds');
+  }
+  if (rawRegularSpan < 0 && regularValueCount > 0) {
+    return histogramFailure('invalid', 'INVALID_CHART_SOURCE', 'Histogram thresholds do not enclose the values assigned to regular bins');
+  }
+  const regularSpan = Math.max(0, rawRegularSpan);
+  const sampleDeviation = calculateVariance && regularValueCount > 1
+    ? Math.sqrt(Math.max(0, squaredDeviation / (regularValueCount - 1)))
+    : 0;
+  const fallbackWidth = Math.max(1, Math.abs(regularMinimum) * Number.EPSILON * 4);
+  const automaticSampleCount = regularValueCount || numericCount;
+  const automaticWidthCandidate = sampleDeviation > 0
+    ? 3.5 * sampleDeviation / regularValueCount ** (1 / 3)
+    : regularSpan > 0 ? regularSpan / Math.max(1, Math.ceil(Math.sqrt(automaticSampleCount))) : fallbackWidth;
+  const automaticWidth = automaticWidthCandidate > 0 ? automaticWidthCandidate : regularSpan > 0 ? regularSpan : automaticWidthCandidate;
+  if (!Number.isFinite(automaticWidth) || automaticWidth <= 0) {
+    return histogramFailure('invalid', 'INVALID_CHART_SOURCE', 'Histogram automatic bin width is not finite and positive');
+  }
+
+  let regularBinCount: number;
+  let regularWidth = automaticWidth;
+  if (options?.mode === 'bin-count') {
+    if (options.binCount! > maximumBinCount) {
+      return histogramFailure('unsupported', 'UNSUPPORTED_FEATURE', 'Requested histogram bin count exceeds the drawable plot resolution');
+    }
+    regularBinCount = options.binCount! - specialBinCount;
+    if (regularBinCount === 0 && regularValueCount > 0) {
+      return histogramFailure('invalid', 'INVALID_CHART_SOURCE', 'Histogram bin count leaves values between the underflow and overflow bins unassigned');
+    }
+    if (regularSpan > 0 && regularBinCount > 0) regularWidth = regularSpan / regularBinCount;
+  } else if (options?.mode === 'bin-width' || options?.mode === 'automatic' || options === undefined) {
+    if (options?.mode === 'bin-width') regularWidth = options.binWidth!;
+    if (regularSpan === 0) regularBinCount = regularValueCount > 0 ? 1 : 0;
+    else {
+      const widthCount = regularSpan / regularWidth;
+      const availableRegularBins = maximumBinCount - specialBinCount;
+      if (!Number.isFinite(widthCount) || widthCount > availableRegularBins) {
+        return histogramFailure('unsupported', 'UNSUPPORTED_FEATURE', 'Histogram bin width exceeds the drawable plot resolution');
+      }
+      regularBinCount = Math.max(1, Math.ceil(widthCount));
+    }
+  } else {
+    return histogramFailure('invalid', 'INVALID_CHART_SOURCE', 'Histogram mode is invalid');
+  }
+
+  const totalBinCount = specialBinCount + regularBinCount;
+  if (!Number.isSafeInteger(totalBinCount) || totalBinCount > maximumBinCount) {
+    return histogramFailure('unsupported', 'UNSUPPORTED_FEATURE', 'Histogram bins exceed the drawable plot resolution');
+  }
+  if (regularSpan === 0 && regularBinCount > 1) {
+    return histogramFailure('invalid', 'INVALID_CHART_SOURCE', 'Histogram bin count cannot partition a zero-width numeric range');
+  }
+  if (regularBinCount > 0 && (!Number.isFinite(regularWidth) || regularWidth <= 0)) {
+    return histogramFailure('invalid', 'INVALID_CHART_SOURCE', 'Histogram bin boundaries are not representable at numeric precision');
+  }
+  if (regularBinCount > 0 && regularSpan === 0 && regularValueCount === 0) {
+    return histogramFailure('invalid', 'INVALID_CHART_SOURCE', 'Histogram thresholds leave no range for the requested regular bins');
+  }
+
+  const regularCounts = Array<number>(regularBinCount).fill(0);
+  let underflowCount = 0;
+  let overflowCount = 0;
+  for (const rawValue of values) {
+    const value = chartNumericValue(rawValue);
+    if (value === undefined) continue;
+    if (underflow !== undefined && value <= underflow) {
+      underflowCount += 1;
+      continue;
+    }
+    if (overflow !== undefined && value > overflow) {
+      overflowCount += 1;
+      continue;
+    }
+    if (regularBinCount === 0) {
+      return histogramFailure('invalid', 'INVALID_CHART_SOURCE', 'Histogram regular values have no bin');
+    }
+    const index = regularSpan === 0
+      ? 0
+      : Math.max(0, Math.min(regularBinCount - 1, Math.ceil((value - regularMinimum) / regularWidth) - 1));
+    regularCounts[index] = regularCounts[index]! + 1;
+  }
+
+  const bins: ChartHistogramBinValue[] = [];
+  if (underflow !== undefined) bins.push({ kind: 'numeric', start: underflow, end: underflow, count: underflowCount, label: `≤ ${trimNumber(underflow)}`, boundary: 'underflow' });
+  let previousEnd = regularMinimum;
+  for (let index = 0; index < regularBinCount; index += 1) {
+    const end = regularSpan === 0
+      ? regularMaximum
+      : index === regularBinCount - 1
+        ? regularMaximum
+        : options?.mode === 'bin-width'
+          ? regularMinimum + regularWidth * (index + 1)
+          : regularMinimum + regularSpan * (index + 1) / regularBinCount;
+    if (!Number.isFinite(end) || end < previousEnd || (regularSpan > 0 && end === previousEnd)) {
+      return histogramFailure('invalid', 'INVALID_CHART_SOURCE', 'Histogram bin boundaries are not finite and increasing');
+    }
+    const label = index === 0 && underflow === undefined
+      ? `≤ ${trimNumber(end)}`
+      : `(${trimNumber(previousEnd)}, ${trimNumber(end)}]`;
+    bins.push({ kind: 'numeric', start: previousEnd, end, count: regularCounts[index]!, label });
+    previousEnd = end;
+  }
+  if (overflow !== undefined) bins.push({ kind: 'numeric', start: overflow, end: overflow, count: overflowCount, label: `> ${trimNumber(overflow)}`, boundary: 'overflow' });
+  const assignedCount = bins.reduce((sum, bin) => sum + bin.count, 0);
+  if (assignedCount !== numericCount) {
+    return histogramFailure('invalid', 'INVALID_CHART_SOURCE', 'Histogram bin assignment did not preserve every numeric source value');
+  }
+  return { ok: true, bins };
+}
+
+function categoricalHistogram(categories: readonly PivotScalar[], values: readonly PivotScalar[], maximumBinCount: number): HistogramBuildResult {
+  if (categories.length !== values.length) {
+    return histogramFailure('invalid', 'INVALID_CHART_SOURCE', 'By-category histogram requires one category for every value');
+  }
+  if (!Number.isSafeInteger(maximumBinCount) || maximumBinCount < 1) {
+    return histogramFailure('unsupported', 'UNSUPPORTED_FEATURE', 'Histogram plot width cannot display a category without overlap');
+  }
   const grouped = new Map<string, { category: PivotScalar; count: number; value: number; label: string }>();
-  const count = Math.min(categories.length, values.length);
-  for (let index = 0; index < count; index += 1) {
+  for (let index = 0; index < categories.length; index += 1) {
     const category = categories[index];
     const value = chartNumericValue(values[index]);
     if (category === undefined || value === undefined) continue;
@@ -469,13 +615,107 @@ function categoricalHistogram(categories: readonly PivotScalar[], values: readon
     const label = category === null ? '(blank)' : typeof category === 'object' ? `#${category.code}` : String(category);
     const current = grouped.get(key);
     if (current) {
+      const aggregate = current.value + value;
+      if (!Number.isFinite(aggregate)) {
+        return histogramFailure('invalid', 'INVALID_CHART_SOURCE', 'By-category histogram aggregate exceeds finite calculation bounds');
+      }
       current.count += 1;
-      current.value += value;
+      current.value = aggregate;
     } else {
+      if (grouped.size >= maximumBinCount) {
+        return histogramFailure('unsupported', 'UNSUPPORTED_FEATURE', 'By-category histogram exceeds the drawable plot resolution');
+      }
       grouped.set(key, { category, count: 1, value, label });
     }
   }
-  return [...grouped.values()].map((bin) => ({ kind: 'category', ...bin }));
+  return { ok: true, bins: [...grouped.values()].map((bin) => ({ kind: 'category', ...bin })) };
+}
+
+function createHistogramSeriesLayouts(payload: ChartDrawingPayload, data: ResolvedChartData): ChartLayoutSeries[] {
+  return data.series.map((series, index) => {
+    const model = seriesModelFor(payload, series, index);
+    return {
+      id: series.id,
+      name: series.name,
+      chartType: effectiveChartType(payload, series),
+      subtype: series.subtype ?? model?.subtype ?? payload.subtype,
+      axis: series.axis,
+      color: colorFor(series, index),
+      points: [],
+      bars: [],
+      trendlines: [],
+      visible: model?.visible !== false,
+      smooth: series.smooth ?? model?.smooth,
+    };
+  });
+}
+
+function buildHistogramLayout(payload: ChartDrawingPayload, data: ResolvedChartData, layout: ChartLayout): ChartLayout {
+  const hasHistogramOptions = Object.prototype.hasOwnProperty.call(payload, 'histogramOptions');
+  if (hasHistogramOptions && !isChartHistogramOptions(payload.histogramOptions)) {
+    layout.status = statusError('invalid', 'INVALID_CHART_SOURCE', 'Histogram bin options are invalid');
+    return layout;
+  }
+  layout.series = createHistogramSeriesLayouts(payload, data);
+  const visibleSeries = layout.series.filter((series) => series.visible);
+  if (visibleSeries.length !== 1) {
+    layout.status = statusError('invalid', 'INVALID_CHART_SOURCE', 'Histogram and Pareto charts require exactly one visible series');
+    return layout;
+  }
+  const specialSeriesIndex = layout.series.indexOf(visibleSeries[0]!);
+  layout.specialSeriesIndex = specialSeriesIndex;
+  const values = data.series[specialSeriesIndex]?.values ?? [];
+  const maximumBinCount = Math.floor(layout.plot.width);
+  const result = payload.histogramOptions?.mode === 'by-category'
+    ? categoricalHistogram(data.categories, values, maximumBinCount)
+    : histogram(values, payload.histogramOptions, maximumBinCount);
+  if (!result.ok) {
+    layout.status = result.status;
+    return layout;
+  }
+  const bins = result.bins;
+  if (bins.length === 0 || bins.every((bin) => bin.count === 0)) {
+    layout.status = statusError('invalid', 'INVALID_CHART_SOURCE', 'Histogram charts require at least one value in range');
+    return layout;
+  }
+  let minimumValue = 0;
+  let maximumValue = 1;
+  let total = 0;
+  for (const bin of bins) {
+    const value = histogramValue(bin);
+    if (!Number.isFinite(value)) {
+      layout.status = statusError('invalid', 'INVALID_CHART_SOURCE', 'Histogram bin value exceeds finite calculation bounds');
+      return layout;
+    }
+    if (payload.chartType === 'pareto') {
+      if (value < 0) {
+        layout.status = statusError('invalid', 'INVALID_CHART_SOURCE', 'Pareto charts require non-negative category totals');
+        return layout;
+      }
+      total += value;
+      if (!Number.isFinite(total)) {
+        layout.status = statusError('invalid', 'INVALID_CHART_SOURCE', 'Pareto total exceeds finite calculation bounds');
+        return layout;
+      }
+    }
+    minimumValue = Math.min(minimumValue, value);
+    maximumValue = Math.max(maximumValue, value);
+  }
+  if (!Number.isFinite(maximumValue - minimumValue)) {
+    layout.status = statusError('invalid', 'INVALID_CHART_SOURCE', 'Histogram value range exceeds finite geometry bounds');
+    return layout;
+  }
+  const orderedBins = payload.chartType === 'pareto' ? bins.slice().sort((left, right) => histogramValue(right) - histogramValue(left)) : bins;
+  layout.histogramBins = histogramGeometry(orderedBins, layout.plot);
+  if (payload.chartType === 'pareto') {
+    let cumulative = 0;
+    if (total <= 0) {
+      layout.status = statusError('invalid', 'INVALID_CHART_SOURCE', 'Pareto charts require a positive total');
+      return layout;
+    }
+    layout.paretoPoints = layout.histogramBins.map((bin) => { cumulative += histogramValue(bin); return { x: bin.geometry.x + bin.geometry.width / 2, y: layout.plot.top + layout.plot.height * (1 - cumulative / total) }; });
+  }
+  return layout;
 }
 
 function histogramValue(bin: ChartHistogramBinValue): number {
@@ -494,12 +734,12 @@ function histogramGeometry(bins: readonly ChartHistogramBinValue[], plot: ChartL
     const geometry = {
       x,
       y: Math.min(baseline, valueY),
-      width: Math.max(1, slot - 1),
+      width: Math.min(slot, Math.max(1, slot - 1)),
       height: histogramValue(bin) === 0 ? 0 : Math.max(1, Math.abs(baseline - valueY)),
     };
     return bin.kind === 'category'
       ? { kind: bin.kind, category: bin.category, value: bin.value, count: bin.count, label: bin.label, geometry }
-      : { kind: bin.kind, start: bin.start, end: bin.end, count: bin.count, label: bin.label, geometry };
+      : { kind: bin.kind, start: bin.start, end: bin.end, count: bin.count, label: bin.label, ...(bin.boundary ? { boundary: bin.boundary } : {}), geometry };
   });
 }
 
@@ -862,6 +1102,7 @@ export function buildChartLayout(payload: ChartDrawingPayload, data: ResolvedCha
     layout.status = statusError('unsupported', 'UNSUPPORTED_FEATURE', `Chart data tables are not supported for ${payload.chartType} charts`);
     return layout;
   }
+  if (kind === 'histogram') return buildHistogramLayout(payload, data, layout);
   const values = data.series.flatMap((series) => numberValues(series.values));
   const percent = payload.stacked === 'percent' || payload.subtype.includes('percent');
   const isScatter = payload.chartType === 'scatter' || payload.chartType === 'bubble';
@@ -895,7 +1136,7 @@ export function buildChartLayout(payload: ChartDrawingPayload, data: ResolvedCha
     layout.status = statusError('invalid', 'INVALID_CHART_SOURCE', 'INVALID_CHART_SOURCE: chart has no visible series');
     return layout;
   }
-  if (['histogram', 'pareto', 'waterfall', 'funnel', 'stock', 'map'].includes(payload.chartType)
+  if (['waterfall', 'funnel', 'stock', 'map'].includes(payload.chartType)
     && layout.series.filter((series) => series.visible).length > 1) {
     layout.status = statusError('invalid', 'INVALID_CHART_SOURCE', `${payload.chartType} charts require exactly one visible series`);
     return layout;
@@ -968,33 +1209,6 @@ export function buildChartLayout(payload: ChartDrawingPayload, data: ResolvedCha
     layout.pieSlices = pieSlices(payload, data, layout.plot);
     if (layout.pieSlices.length === 0) {
       layout.status = statusError('invalid', 'INVALID_CHART_SOURCE', 'Pie and doughnut charts require at least one positive value');
-    }
-    return layout;
-  }
-  if (kind === 'histogram') {
-    const values = data.series[specialSeriesIndex]?.values ?? [];
-    const rawValues = values.map(chartNumericValue).filter((value): value is number => value !== undefined);
-    const bins = payload.histogramOptions?.mode === 'by-category'
-      ? categoricalHistogram(data.categories, values)
-      : histogram(rawValues, payload.histogramOptions);
-    if (bins.length === 0 || bins.every((bin) => bin.count === 0)) {
-      layout.status = statusError('invalid', 'INVALID_CHART_SOURCE', 'Histogram charts require at least one value in range');
-      return layout;
-    }
-    if (payload.chartType === 'pareto' && bins.some((bin) => histogramValue(bin) < 0)) {
-      layout.status = statusError('invalid', 'INVALID_CHART_SOURCE', 'Pareto charts require non-negative category totals');
-      return layout;
-    }
-    const orderedBins = payload.chartType === 'pareto' ? bins.slice().sort((left, right) => histogramValue(right) - histogramValue(left)) : bins;
-    layout.histogramBins = histogramGeometry(orderedBins, layout.plot);
-    if (payload.chartType === 'pareto') {
-      let cumulative = 0;
-      const total = bins.reduce((sum, bin) => sum + histogramValue(bin), 0);
-      if (total <= 0) {
-        layout.status = statusError('invalid', 'INVALID_CHART_SOURCE', 'Pareto charts require a positive total');
-        return layout;
-      }
-      layout.paretoPoints = layout.histogramBins.map((bin) => { cumulative += histogramValue(bin); return { x: bin.geometry.x + bin.geometry.width / 2, y: layout.plot.top + layout.plot.height * (1 - cumulative / total) }; });
     }
     return layout;
   }
