@@ -7,7 +7,7 @@ import type { ResolvedSpill, SpillBlockerRange } from './spill-resolver';
 import type { FormulaDefinedName } from './defined-names';
 import type { CanonicalExcelDateParts, ExcelDateSystem } from './excel-date';
 import type { ExcelNumericContext } from './numeric';
-import type { CalculationEntropyContext } from './random';
+import { isValidCalculationTimeUtcMs, type CalculationEntropyContext } from './random';
 import type { WorkbookCollationContext } from './collation';
 import { assertFormulaVisibilitySnapshot, type FormulaVisibilitySnapshot } from './reference-cursor';
 
@@ -268,7 +268,11 @@ function isCalculationEntropyContext(value: unknown): value is CalculationEntrop
     && value.entropySeed.trim().length > 0
     && typeof value.passIndex === 'number'
     && Number.isSafeInteger(value.passIndex)
-    && value.passIndex >= 0;
+    && value.passIndex >= 0
+    && isValidCalculationTimeUtcMs(value.calculationTimeUtcMs)
+    && typeof value.calculationTimeZoneOffsetMinutes === 'number'
+    && Number.isSafeInteger(value.calculationTimeZoneOffsetMinutes)
+    && Math.abs(value.calculationTimeZoneOffsetMinutes) <= 14 * 60;
 }
 
 function isWorkbookCollationContext(value: unknown): value is WorkbookCollationContext {

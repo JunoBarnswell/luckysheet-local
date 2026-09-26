@@ -2,9 +2,12 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   consumeBrowserCalculationTask,
+  consumeBrowserCalculationTaskWithEngine,
   consumeCalculationTask,
   FormulaEngine,
   installCalculationWorkerEntry,
+  canonicalExcelDateFromUtcDate,
+  createCalculationEntropyContext,
   type CalculationBrowserWorker,
   type CalculationTaskResult,
   type CalculationWorkerScope,
@@ -17,7 +20,7 @@ test('calculation worker entry consumes valid tasks without host indirection', (
 
   const result = consumeCalculationTask(engine, {
     protocol: 'react-sheets.formula-calculation',
-    version: 2,
+    version: 3,
     taskId: 'worker-task-1',
     kind: 'recalculate',
     revision: 9,
@@ -42,13 +45,46 @@ test('calculation worker entry returns a failed result for malformed tasks', () 
 test('calculation worker entry rejects the obsolete calculation task version', () => {
   const result = consumeCalculationTask(new FormulaEngine(), {
     protocol: 'react-sheets.formula-calculation',
-    version: 1,
+    version: 2,
     taskId: 'obsolete-worker-task',
     kind: 'recalculate',
     revision: 3,
   });
   assert.equal(result.status, 'failed');
   assert.match(result.error?.message ?? '', /unsupported calculation task version/i);
+});
+
+test('calculation worker rejects volatile entropy without a valid calculation clock', () => {
+  const engine = new FormulaEngine({ defaultSheetId: 'Sheet1' });
+  const request = {
+    protocol: 'react-sheets.formula-calculation',
+    version: 3,
+    taskId: 'missing-cycle-clock',
+    kind: 'recalculate',
+    revision: 1,
+    calculationEntropy: {
+      cycleId: 1,
+      entropySeed: 'seed',
+      passIndex: 0,
+      calculationTimeUtcMs: Date.UTC(2024, 0, 1),
+      calculationTimeZoneOffsetMinutes: 15 * 60,
+    },
+  };
+  const result = consumeCalculationTask(engine, request);
+  assert.equal(result.status, 'failed');
+  assert.match(result.error?.message ?? '', /entropy context is invalid/i);
+
+  const unrepresentable = consumeCalculationTask(engine, {
+    ...request,
+    taskId: 'unrepresentable-cycle-clock',
+    calculationEntropy: {
+      ...request.calculationEntropy,
+      calculationTimeUtcMs: Number.MAX_SAFE_INTEGER,
+      calculationTimeZoneOffsetMinutes: 0,
+    },
+  });
+  assert.equal(unrepresentable.status, 'failed');
+  assert.match(unrepresentable.error?.message ?? '', /entropy context is invalid/i);
 });
 
 test('calculation worker entry installs and restores a direct message handler', () => {
@@ -66,7 +102,7 @@ test('calculation worker entry installs and restores a direct message handler', 
   scope.onmessage?.({
     data: {
       protocol: 'react-sheets.formula-calculation',
-      version: 2,
+      version: 3,
       taskId: 'worker-task-2',
       kind: 'recalculate',
       revision: 10,
@@ -88,7 +124,7 @@ test('browser task port posts a calculation snapshot to a Worker and applies a m
   const port = engine.createCalculationTaskPort({ workerFactory: () => worker });
   const result = await port.submit({
     protocol: 'react-sheets.formula-calculation',
-    version: 2,
+    version: 3,
     taskId: 'browser-worker-task',
     kind: 'recalculate',
     revision: 11,
@@ -126,7 +162,7 @@ test('late browser Worker output cannot overwrite a newer formula input generati
   const port = engine.createCalculationTaskPort({ workerFactory: () => worker });
   const pending = port.submit({
     protocol: 'react-sheets.formula-calculation',
-    version: 2,
+    version: 3,
     taskId: 'stale-worker-task',
     kind: 'recalculate',
     revision: 12,
@@ -151,7 +187,7 @@ test('browser task cancellation settles immediately and ignores a late Worker re
   const port = engine.createCalculationTaskPort({ workerFactory: () => worker });
   const pending = port.submit({
     protocol: 'react-sheets.formula-calculation',
-    version: 2,
+    version: 3,
     taskId: 'cancelled-worker-task',
     kind: 'recalculate',
     revision: 13,
@@ -182,7 +218,7 @@ test('browser Worker snapshots calculate GROUPBY with the same default semantics
 
   const result = await port.submit({
     protocol: 'react-sheets.formula-calculation',
-    version: 2,
+    version: 3,
     taskId: 'groupby-worker-task',
     kind: 'recalculate',
     revision: 14,
@@ -193,6 +229,50 @@ test('browser Worker snapshots calculate GROUPBY with the same default semantics
   assert.equal(worker.calculationPosts, 1);
   assert.deepEqual(engine.getCellResult('D1')?.value, [['East', 30], ['West', 5]]);
   port.dispose?.();
+});
+
+test('persistent Worker advances NOW and TODAY from the host clock on each calculation cycle', () => {
+  const staticReferenceDate = { year: 2000, month: 1, day: 1, hour: 0, minute: 0, second: 0, millisecond: 0 };
+  const source = new FormulaEngine({ defaultSheetId: 'Sheet1', recalculationMode: 'manual', canonicalReferenceDate: staticReferenceDate });
+  source.setFormula('A1', '=NOW()');
+  source.setFormula('A2', '=TODAY()');
+  const hostOffsetMinutes = 480;
+  const firstTime = Date.UTC(2024, 0, 1, 4);
+  const secondTime = Date.UTC(2024, 0, 2, 4);
+  const first = consumeBrowserCalculationTaskWithEngine({
+    protocol: 'react-sheets.formula-calculation',
+    version: 3,
+    taskId: 'volatile-clock-1',
+    kind: 'recalculate',
+    revision: 1,
+    full: true,
+    calculationEntropy: createCalculationEntropyContext('volatile-clock', 1, 0, firstTime, hostOffsetMinutes),
+    snapshot: source.exportCalculationSnapshot(),
+  }, null);
+  const firstNow = first.result.report?.results.find(({ address }) => address.row === 0 && address.column === 0)?.value;
+  const firstToday = first.result.report?.results.find(({ address }) => address.row === 1 && address.column === 0)?.value;
+  const firstSerial = canonicalExcelDateFromUtcDate(new Date(firstTime - hostOffsetMinutes * 60_000), '1900').serial;
+  assert.equal(first.result.status, 'completed');
+  assert.ok(Math.abs(Number(firstNow) - firstSerial) < 1e-9);
+  assert.equal(firstToday, Math.floor(firstSerial));
+  assert.ok(first.engine);
+
+  const second = consumeBrowserCalculationTaskWithEngine({
+    protocol: 'react-sheets.formula-calculation',
+    version: 3,
+    taskId: 'volatile-clock-2',
+    kind: 'recalculate',
+    revision: 2,
+    full: true,
+    calculationEntropy: createCalculationEntropyContext('volatile-clock', 2, 0, secondTime, hostOffsetMinutes),
+  }, first.engine);
+  const secondNow = second.result.report?.results.find(({ address }) => address.row === 0 && address.column === 0)?.value;
+  const secondToday = second.result.report?.results.find(({ address }) => address.row === 1 && address.column === 0)?.value;
+  const secondSerial = canonicalExcelDateFromUtcDate(new Date(secondTime - hostOffsetMinutes * 60_000), '1900').serial;
+  assert.equal(second.result.status, 'completed');
+  assert.ok(Math.abs(Number(secondNow) - secondSerial) < 1e-9);
+  assert.equal(secondToday, Math.floor(secondSerial));
+  assert.notEqual(secondToday, firstToday);
 });
 
 abstract class BaseCalculationWorker implements CalculationBrowserWorker {

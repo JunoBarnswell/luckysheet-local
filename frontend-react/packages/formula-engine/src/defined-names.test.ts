@@ -173,7 +173,7 @@ test('scoped names survive the calculation worker snapshot boundary', () => {
   const restored = FormulaEngine.fromCalculationSnapshot(engine.exportCalculationSnapshot());
   restored.executeCalculationTask({
     protocol: 'react-sheets.formula-calculation',
-    version: 2,
+    version: 3,
     taskId: 'scoped-name-snapshot',
     kind: 'recalculate',
     revision: 1,

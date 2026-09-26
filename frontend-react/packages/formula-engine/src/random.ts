@@ -4,13 +4,37 @@ export interface CalculationEntropyContext {
   readonly cycleId: number;
   readonly entropySeed: string;
   readonly passIndex: number;
+  /** One host clock sample shared by every volatile date formula in this cycle. */
+  readonly calculationTimeUtcMs: number;
+  /** Host-local UTC offset at the sampled instant; Excel date serials have no timezone. */
+  readonly calculationTimeZoneOffsetMinutes: number;
 }
 
-export function createCalculationEntropyContext(seed: string, cycleId: number, passIndex = 0): CalculationEntropyContext {
+export function isValidCalculationTimeUtcMs(value: unknown): value is number {
+  return typeof value === 'number'
+    && Number.isSafeInteger(value)
+    && value >= 0
+    && Number.isFinite(new Date(value).getTime());
+}
+
+export function createCalculationEntropyContext(
+  seed: string,
+  cycleId: number,
+  passIndex = 0,
+  calculationTimeUtcMs = Date.now(),
+  calculationTimeZoneOffsetMinutes = new Date(calculationTimeUtcMs).getTimezoneOffset(),
+): CalculationEntropyContext {
   if (!seed.trim()) throw new Error('Calculation entropy requires a non-empty seed');
   if (!Number.isSafeInteger(cycleId) || cycleId < 0) throw new Error('Calculation entropy cycleId must be a non-negative integer');
   if (!Number.isSafeInteger(passIndex) || passIndex < 0) throw new Error('Calculation entropy passIndex must be a non-negative integer');
-  return { cycleId, entropySeed: seed, passIndex };
+  if (!isValidCalculationTimeUtcMs(calculationTimeUtcMs)) {
+    throw new Error('Calculation entropy time must be a non-negative UTC millisecond timestamp');
+  }
+  if (!Number.isSafeInteger(calculationTimeZoneOffsetMinutes)
+    || Math.abs(calculationTimeZoneOffsetMinutes) > 14 * 60) {
+    throw new Error('Calculation entropy timezone offset must be within fourteen hours');
+  }
+  return { cycleId, entropySeed: seed, passIndex, calculationTimeUtcMs, calculationTimeZoneOffsetMinutes };
 }
 
 /** Stable, order-independent random value for one volatile formula occurrence. */

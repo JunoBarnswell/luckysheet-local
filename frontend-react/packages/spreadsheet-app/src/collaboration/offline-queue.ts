@@ -1,4 +1,4 @@
-import { validateOperationEnvelope, type OperationEnvelope } from '@react-sheets/protocol';
+import { ApiRequestError, validateOperationEnvelope, type OperationEnvelope } from '@react-sheets/protocol';
 
 export type OfflineQueueState = 'idle' | 'syncing' | 'offline' | 'error';
 export type QueuedOperationStatus = 'pending' | 'sent' | 'acked' | 'rejected';
@@ -255,12 +255,20 @@ export class OfflineQueue {
         this.persistQueue();
         flushed += 1;
       } catch (cause) {
-        this.resultLookups.add(item.operation.operationId);
         if ((item as QueuedOperation).status === 'rejected') {
           failed += 1;
           this.state = 'error';
           break;
         }
+        if (cause instanceof ApiRequestError && cause.code === 'UNSUPPORTED_FEATURE') {
+          item.status = 'rejected';
+          item.rejection = cause;
+          failed += 1;
+          this.state = 'error';
+          this.persistQueue();
+          break;
+        }
+        this.resultLookups.add(item.operation.operationId);
         item.retryCount += 1;
         item.status = 'pending';
         if (item.retryCount >= this.maxRetries) {

@@ -167,7 +167,7 @@ class MutationDescriptorRegistryTest {
         JsonNode malformedOriginal = malformed.deepCopy();
         ServiceException error = assertThrows(ServiceException.class,
                 () -> registry.require("sheetTable.update", false).applyWithPatch(malformed, rename));
-        assertEquals("SERVICE_UNAVAILABLE", error.code());
+        assertEquals("UNSUPPORTED_FEATURE", error.code());
         assertEquals(malformedOriginal, malformed);
 
         ObjectNode grouped = snapshot.deepCopy();
@@ -180,7 +180,7 @@ class MutationDescriptorRegistryTest {
         JsonNode groupedOriginal = grouped.deepCopy();
         ServiceException groupedError = assertThrows(ServiceException.class,
                 () -> registry.require("sheetTable.update", false).applyWithPatch(grouped, rename));
-        assertEquals("SERVICE_UNAVAILABLE", groupedError.code());
+        assertEquals("UNSUPPORTED_FEATURE", groupedError.code());
         assertEquals(groupedOriginal, grouped);
 
         ObjectNode missingRuleRanges = snapshot.deepCopy();
@@ -608,7 +608,7 @@ class MutationDescriptorRegistryTest {
         ServiceException error = assertThrows(ServiceException.class,
                 () -> registry.prepare(snapshot, mutation, WorkbookAclRole.EDITOR));
 
-        assertEquals("SERVICE_UNAVAILABLE", error.code());
+        assertEquals("UNSUPPORTED_FEATURE", error.code());
         assertTrue(error.getMessage().contains("UNSUPPORTED_FEATURE"));
         assertEquals("source", snapshot.path("sheets").get(0).path("cells").path("0").path("0").path("value").asText());
         assertEquals("target", snapshot.path("sheets").get(1).path("cells").path("1").path("1").path("value").asText());
@@ -1964,7 +1964,7 @@ class MutationDescriptorRegistryTest {
         JsonNode groupedBandBefore = groupedBandSnapshot.deepCopy();
         ServiceException groupedBandRejection = assertThrows(ServiceException.class,
                 () -> registry.applyPublicMutations(groupedBandSnapshot, List.of(insert)));
-        assertEquals("SERVICE_UNAVAILABLE", groupedBandRejection.code());
+        assertEquals("UNSUPPORTED_FEATURE", groupedBandRejection.code());
         assertEquals(groupedBandBefore, groupedBandSnapshot);
 
         ObjectNode groupedDependentSnapshot = (ObjectNode) snapshot.deepCopy();
@@ -1975,7 +1975,7 @@ class MutationDescriptorRegistryTest {
         JsonNode groupedDependentBefore = groupedDependentSnapshot.deepCopy();
         ServiceException groupedDependentRejection = assertThrows(ServiceException.class,
                 () -> registry.applyPublicMutations(groupedDependentSnapshot, List.of(insert)));
-        assertEquals("SERVICE_UNAVAILABLE", groupedDependentRejection.code());
+        assertEquals("UNSUPPORTED_FEATURE", groupedDependentRejection.code());
         assertEquals(groupedDependentBefore, groupedDependentSnapshot);
     }
 
@@ -2221,7 +2221,7 @@ class MutationDescriptorRegistryTest {
             JsonNode before = snapshot.deepCopy();
             ServiceException failure = assertThrows(ServiceException.class,
                     () -> registry.require(operation.id(), false).apply(snapshot, operation));
-            assertEquals("SERVICE_UNAVAILABLE", failure.code());
+            assertEquals("UNSUPPORTED_FEATURE", failure.code());
             assertTrue(failure.getMessage().contains("cell shift intersects " + ownerKind.replace('-', ' ')));
             assertEquals(before, snapshot);
 
@@ -2273,7 +2273,7 @@ class MutationDescriptorRegistryTest {
         JsonNode groupedBandBefore = groupedBandSnapshot.deepCopy();
         ServiceException groupedBandRejection = assertThrows(ServiceException.class,
                 () -> registry.applyPublicMutations(groupedBandSnapshot, List.of(shift)));
-        assertEquals("SERVICE_UNAVAILABLE", groupedBandRejection.code());
+        assertEquals("UNSUPPORTED_FEATURE", groupedBandRejection.code());
         assertEquals(groupedBandBefore, groupedBandSnapshot);
 
         ObjectNode groupedDependentSnapshot = (ObjectNode) snapshot.deepCopy();
@@ -2285,7 +2285,7 @@ class MutationDescriptorRegistryTest {
         JsonNode groupedDependentBefore = groupedDependentSnapshot.deepCopy();
         ServiceException groupedDependentRejection = assertThrows(ServiceException.class,
                 () -> registry.applyPublicMutations(groupedDependentSnapshot, List.of(shift)));
-        assertEquals("SERVICE_UNAVAILABLE", groupedDependentRejection.code());
+        assertEquals("UNSUPPORTED_FEATURE", groupedDependentRejection.code());
         assertEquals(groupedDependentBefore, groupedDependentSnapshot);
 
         OperationMutation deleteAnchoredCell = new OperationMutation("cells.deleted", "sheet-1", mapper.readTree("""
@@ -2398,7 +2398,7 @@ class MutationDescriptorRegistryTest {
 
             ServiceException rejection = assertThrows(ServiceException.class,
                     () -> registry.prepare(snapshot, permutation, WorkbookAclRole.EDITOR).descriptor().apply(snapshot, permutation));
-            assertEquals("SERVICE_UNAVAILABLE", rejection.code());
+            assertEquals("UNSUPPORTED_FEATURE", rejection.code());
             assertEquals(before, snapshot);
         }
     }
@@ -2455,7 +2455,7 @@ class MutationDescriptorRegistryTest {
 
         ServiceException rejection = assertThrows(ServiceException.class,
                 () -> new MutationDescriptorRegistry().prepare(snapshot, permutation, WorkbookAclRole.EDITOR).descriptor().apply(snapshot, permutation));
-        assertEquals("SERVICE_UNAVAILABLE", rejection.code());
+        assertEquals("UNSUPPORTED_FEATURE", rejection.code());
         assertEquals(before, snapshot);
     }
 
@@ -2578,7 +2578,7 @@ class MutationDescriptorRegistryTest {
                 """));
         ServiceException groupedSourceRejection = assertThrows(ServiceException.class,
                 () -> registry.applyPublicMutations(groupedSourceSnapshot, List.of(singleCellMove)));
-        assertEquals("SERVICE_UNAVAILABLE", groupedSourceRejection.code());
+        assertEquals("UNSUPPORTED_FEATURE", groupedSourceRejection.code());
         assertEquals(groupedSourceBefore, groupedSourceSnapshot);
 
         ObjectNode groupedTargetSnapshot = (ObjectNode) snapshot.deepCopy();
@@ -2589,7 +2589,7 @@ class MutationDescriptorRegistryTest {
         JsonNode groupedTargetBefore = groupedTargetSnapshot.deepCopy();
         ServiceException groupedTargetRejection = assertThrows(ServiceException.class,
                 () -> registry.applyPublicMutations(groupedTargetSnapshot, List.of(singleCellMove)));
-        assertEquals("SERVICE_UNAVAILABLE", groupedTargetRejection.code());
+        assertEquals("UNSUPPORTED_FEATURE", groupedTargetRejection.code());
         assertEquals(groupedTargetBefore, groupedTargetSnapshot);
 
         ObjectNode groupedDependentSnapshot = (ObjectNode) snapshot.deepCopy();
@@ -2605,7 +2605,7 @@ class MutationDescriptorRegistryTest {
         JsonNode groupedDependentBefore = groupedDependentSnapshot.deepCopy();
         ServiceException groupedDependentRejection = assertThrows(ServiceException.class,
                 () -> registry.applyPublicMutations(groupedDependentSnapshot, List.of(singleCellMove)));
-        assertEquals("SERVICE_UNAVAILABLE", groupedDependentRejection.code());
+        assertEquals("UNSUPPORTED_FEATURE", groupedDependentRejection.code());
         assertEquals(groupedDependentBefore, groupedDependentSnapshot);
 
         ObjectNode partialRangeSnapshot = (ObjectNode) snapshot.deepCopy();
@@ -2797,7 +2797,7 @@ class MutationDescriptorRegistryTest {
         ServiceException error = assertThrows(ServiceException.class,
                 () -> registry.require(insert.id(), false).apply(snapshot, insert));
 
-        assertEquals("SERVICE_UNAVAILABLE", error.code());
+        assertEquals("UNSUPPORTED_FEATURE", error.code());
         assertTrue(error.getMessage().contains("requires a table transaction"));
         assertEquals(before, snapshot);
     }
@@ -2948,7 +2948,7 @@ class MutationDescriptorRegistryTest {
         ServiceException error = assertThrows(ServiceException.class,
                 () -> registry.prepare(snapshot, permutation, WorkbookAclRole.EDITOR).descriptor().apply(snapshot, permutation));
 
-        assertEquals("SERVICE_UNAVAILABLE", error.code());
+        assertEquals("UNSUPPORTED_FEATURE", error.code());
         assertEquals(before, snapshot);
     }
 

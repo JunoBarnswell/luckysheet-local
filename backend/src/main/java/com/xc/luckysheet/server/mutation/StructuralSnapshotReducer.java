@@ -331,7 +331,7 @@ final class StructuralSnapshotReducer {
                         && Objects.equals(barcodeFormula, beforeState.barcodeFormula())) return;
                 if (hasFormulaGroupMetadata(cell)
                         && !rewritesOnlyPreservedDataTableSource(cell, beforeState, formula, sourceFormula, barcodeFormula)) {
-                    throw ServiceException.unavailable("UNSUPPORTED_STRUCTURAL_REFERENCE: formula group at "
+                    throw ServiceException.unsupportedFeature("UNSUPPORTED_STRUCTURAL_REFERENCE: formula group at "
                             + ownerSheetId + "!" + entry.row() + ":" + entry.column()
                             + " requires an explicit table-reference transform");
                 }
@@ -907,7 +907,7 @@ final class StructuralSnapshotReducer {
         int columnDelta = destination.startColumn() - selected.startColumn();
         ObjectNode reportSheetAfter = mapReportSheetCoordinates(sheet, (row, column) -> {
             if (contains(destination, row, column) && !contains(selected, row, column)) {
-                throw ServiceException.unavailable("UNSUPPORTED_STRUCTURAL_REFERENCE: range.move overwrites report binding at " + row + ":" + column);
+                throw ServiceException.unsupportedFeature("UNSUPPORTED_STRUCTURAL_REFERENCE: range.move overwrites report binding at " + row + ":" + column);
             }
             return contains(selected, row, column)
                     ? new int[]{row + rowDelta, column + columnDelta}
@@ -1531,12 +1531,12 @@ final class StructuralSnapshotReducer {
             int column = reportCoordinate(cell, "column", SnapshotMutationSupport.MAX_COLUMN, index);
             int[] mapped = mapCell.apply(row, column);
             if (mapped == null) {
-                throw ServiceException.unavailable("UNSUPPORTED_STRUCTURAL_REFERENCE: " + operation
+                throw ServiceException.unsupportedFeature("UNSUPPORTED_STRUCTURAL_REFERENCE: " + operation
                         + " removes report binding " + index + " at " + row + ":" + column);
             }
             if (mapped.length != 2 || mapped[0] < 0 || mapped[0] > SnapshotMutationSupport.MAX_ROW
                     || mapped[1] < 0 || mapped[1] > SnapshotMutationSupport.MAX_COLUMN) {
-                throw ServiceException.unavailable("UNSUPPORTED_STRUCTURAL_REFERENCE: " + operation
+                throw ServiceException.unsupportedFeature("UNSUPPORTED_STRUCTURAL_REFERENCE: " + operation
                         + " moves report binding " + index + " outside worksheet bounds");
             }
             changed |= mapped[0] != row || mapped[1] != column;
@@ -1561,7 +1561,7 @@ final class StructuralSnapshotReducer {
                     continue;
                 }
                 if (mapped < 0 || mapped > SnapshotMutationSupport.MAX_ROW) {
-                    throw ServiceException.unavailable("UNSUPPORTED_STRUCTURAL_REFERENCE: " + operation
+                    throw ServiceException.unsupportedFeature("UNSUPPORTED_STRUCTURAL_REFERENCE: " + operation
                             + " moves a repeated header outside worksheet bounds");
                 }
                 mappedRows.add(mapped);
@@ -1701,7 +1701,7 @@ final class StructuralSnapshotReducer {
             if (axis == FormulaReferenceTransformer.Axis.COLUMN
                     && direction == FormulaReferenceTransformer.Direction.INSERT
                     && at > range.startColumn() && at <= range.endColumn()) {
-                throw ServiceException.unavailable("UNSUPPORTED_FEATURE: inserting a worksheet column inside Sheet Table "
+                throw ServiceException.unsupportedFeature("UNSUPPORTED_FEATURE: inserting a worksheet column inside Sheet Table "
                         + table.path("id").asText() + " requires a table-column structural patch");
             }
         }
@@ -2072,13 +2072,13 @@ final class StructuralSnapshotReducer {
         for (JsonNode raw : SnapshotMutationSupport.array(target, "dataRegions")) {
             ObjectNode region = requireObject(raw, "Data region");
             if (intersects(SnapshotMutationSupport.range(root, region.get("range")), referenceBand)) {
-                throw ServiceException.unavailable("UNSUPPORTED_FEATURE: cell shift intersects data region " + region.path("id").asText());
+                throw ServiceException.unsupportedFeature("UNSUPPORTED_FEATURE: cell shift intersects data region " + region.path("id").asText());
             }
         }
         for (JsonNode raw : SnapshotMutationSupport.array(target, "sheetTables")) {
             ObjectNode table = requireObject(raw, "Sheet table");
             if (intersects(SnapshotMutationSupport.range(root, table.get("range")), referenceBand)) {
-                throw ServiceException.unavailable("UNSUPPORTED_FEATURE: cell shift intersects sheet table " + table.path("id").asText() + "; use an explicit table operation");
+                throw ServiceException.unsupportedFeature("UNSUPPORTED_FEATURE: cell shift intersects sheet table " + table.path("id").asText() + "; use an explicit table operation");
             }
         }
         for (JsonNode raw : workbookTables(root)) {
@@ -2086,7 +2086,7 @@ final class StructuralSnapshotReducer {
             JsonNode sourceRange = table.get("sourceRange");
             if (sourceRange != null && !sourceRange.isNull() && targetSheetId.equals(sourceRange.path("sheetId").asText())
                     && intersects(SnapshotMutationSupport.range(root, sourceRange), referenceBand)) {
-                throw ServiceException.unavailable("UNSUPPORTED_FEATURE: cell shift intersects workbook table " + table.path("id").asText() + "; use an explicit table operation");
+                throw ServiceException.unsupportedFeature("UNSUPPORTED_FEATURE: cell shift intersects workbook table " + table.path("id").asText() + "; use an explicit table operation");
             }
         }
         for (JsonNode raw : SnapshotMutationSupport.dataModelArray(root, "sources")) {
@@ -2094,7 +2094,7 @@ final class StructuralSnapshotReducer {
             JsonNode sourceRange = source.get("sourceRange");
             if (sourceRange != null && !sourceRange.isNull() && targetSheetId.equals(sourceRange.path("sheetId").asText())
                     && intersects(SnapshotMutationSupport.range(root, sourceRange), referenceBand)) {
-                throw ServiceException.unavailable("UNSUPPORTED_FEATURE: cell shift intersects data source " + source.path("id").asText() + "; use a data-block transaction");
+                throw ServiceException.unsupportedFeature("UNSUPPORTED_FEATURE: cell shift intersects data source " + source.path("id").asText() + "; use a data-block transaction");
             }
         }
     }
@@ -2225,7 +2225,7 @@ final class StructuralSnapshotReducer {
         RangeRef current = SnapshotMutationSupport.range(root, rangeRaw);
         if (!targetSheetId.equals(current.sheetId())) return;
         if (axis == FormulaReferenceTransformer.Axis.COLUMN && intersects(current, band)) {
-            throw ServiceException.unavailable("UNSUPPORTED_FEATURE: cell shift intersects an AutoFilter column owner");
+            throw ServiceException.unsupportedFeature("UNSUPPORTED_FEATURE: cell shift intersects an AutoFilter column owner");
         }
         requireCellShiftRange(root, rangeRaw, targetSheetId, selection, axis, direction, "AutoFilter range");
         JsonNode sortRaw = filter.get("sortState");
@@ -2541,7 +2541,7 @@ final class StructuralSnapshotReducer {
             RangeRef after = SnapshotMutationSupport.range(root, sourceRange);
             if (before.endRow() - before.startRow() != after.endRow() - after.startRow()
                     || before.endColumn() - before.startColumn() != after.endColumn() - after.startColumn()) {
-                throw ServiceException.unavailable("UNSUPPORTED_FEATURE: structural edit changes the physical extent of data source " + source.path("id").asText());
+                throw ServiceException.unsupportedFeature("UNSUPPORTED_FEATURE: structural edit changes the physical extent of data source " + source.path("id").asText());
             }
         }
     }
@@ -2572,7 +2572,7 @@ final class StructuralSnapshotReducer {
             int end = axis == FormulaReferenceTransformer.Axis.ROW ? range.endRow() : range.endColumn();
             boolean shiftsWholeRegion = direction == FormulaReferenceTransformer.Direction.INSERT ? at <= start : operationEnd < start;
             if (!shiftsWholeRegion && at <= end) {
-                throw ServiceException.unavailable("UNSUPPORTED_FEATURE: structural edit intersects data region " + region.path("id").asText() + " and requires a data-block transaction");
+                throw ServiceException.unsupportedFeature("UNSUPPORTED_FEATURE: structural edit intersects data region " + region.path("id").asText() + " and requires a data-block transaction");
             }
         }
         for (JsonNode raw : SnapshotMutationSupport.dataModelArray(root, "sources")) {
@@ -2584,7 +2584,7 @@ final class StructuralSnapshotReducer {
             int end = axis == FormulaReferenceTransformer.Axis.ROW ? range.endRow() : range.endColumn();
             boolean shiftsWholeSource = direction == FormulaReferenceTransformer.Direction.INSERT ? at <= start : operationEnd < start;
             if (!shiftsWholeSource && at <= end) {
-                throw ServiceException.unavailable("UNSUPPORTED_FEATURE: structural edit intersects data source " + source.path("id").asText() + " and requires a data-block transaction");
+                throw ServiceException.unsupportedFeature("UNSUPPORTED_FEATURE: structural edit intersects data source " + source.path("id").asText() + " and requires a data-block transaction");
             }
         }
         if (direction == FormulaReferenceTransformer.Direction.INSERT) {
@@ -2596,7 +2596,7 @@ final class StructuralSnapshotReducer {
                 int start = axis == FormulaReferenceTransformer.Axis.ROW ? range.startRow() : range.startColumn();
                 int end = axis == FormulaReferenceTransformer.Axis.ROW ? range.endRow() : range.endColumn();
                 if (at > start && at <= end) {
-                    throw ServiceException.unavailable("UNSUPPORTED_FEATURE: structural edit intersects workbook table "
+                    throw ServiceException.unsupportedFeature("UNSUPPORTED_FEATURE: structural edit intersects workbook table "
                             + table.path("id").asText() + " and requires a table transaction");
                 }
             }
@@ -3039,12 +3039,12 @@ final class StructuralSnapshotReducer {
             boolean barcodeFormulaChanged = barcodeFormula != null && !barcodeFormula.equals(rewrittenBarcodeFormula);
             boolean changed = formulaChanged || sourceFormulaChanged || barcodeFormulaChanged;
             if (changed && hasFormulaGroupMetadata(cell) && !allowFormulaGroups) {
-                throw ServiceException.unavailable("UNSUPPORTED_STRUCTURAL_REFERENCE: formula group at "
+                throw ServiceException.unsupportedFeature("UNSUPPORTED_STRUCTURAL_REFERENCE: formula group at "
                         + sheetId + "!" + entry.row() + ":" + entry.column()
                         + " requires an explicit formula-group operation before " + operation);
             }
             if (changed && allowFormulaGroups && cell.path("formulaMetadata").path("preservedOnly").asBoolean(false)) {
-                throw ServiceException.unavailable("UNSUPPORTED_STRUCTURAL_REFERENCE: preserved-only formula at "
+                throw ServiceException.unsupportedFeature("UNSUPPORTED_STRUCTURAL_REFERENCE: preserved-only formula at "
                         + sheetId + "!" + entry.row() + ":" + entry.column()
                         + " references a renamed worksheet");
             }
@@ -3106,7 +3106,7 @@ final class StructuralSnapshotReducer {
     private static void rejectFormulaGroupMetadataInRange(ObjectNode sheet, RangeRef range, String operation) {
         for (CellEntry entry : cellsInRange(sheet, range)) {
             if (hasFormulaGroupMetadata(entry.cell())) {
-                throw ServiceException.unavailable("UNSUPPORTED_STRUCTURAL_REFERENCE: "
+                throw ServiceException.unsupportedFeature("UNSUPPORTED_STRUCTURAL_REFERENCE: "
                         + entry.cell().path("formulaMetadata").path("kind").asText("unknown")
                         + " formula metadata at " + range.sheetId() + "!" + entry.row() + ":" + entry.column()
                         + " requires an explicit formula-group operation before " + operation);
@@ -3580,7 +3580,7 @@ final class StructuralSnapshotReducer {
             String restored = inverse.apply(after);
             if (!FormulaReferenceTransformer.canonicalizeFormulaReferences(before)
                     .equals(FormulaReferenceTransformer.canonicalizeFormulaReferences(restored))) {
-                throw ServiceException.unavailable("UNSUPPORTED_STRUCTURAL_REFERENCE: " + participant
+                throw ServiceException.unsupportedFeature("UNSUPPORTED_STRUCTURAL_REFERENCE: " + participant
                         + " cannot be restored by the inverse structural operation");
             }
         }
@@ -3775,7 +3775,7 @@ final class StructuralSnapshotReducer {
                 if (columnIndex < range.startColumn() || columnIndex > range.endColumn()) continue;
                 if (targetRowsBySource[sourceRow - range.startRow()] != sourceRow
                         && hasFormulaGroupMetadata(requireObject(column.getValue(), "Cell"))) {
-                    throw ServiceException.unavailable("UNSUPPORTED_STRUCTURAL_REFERENCE: row permutation cannot remap formula-group metadata at "
+                    throw ServiceException.unsupportedFeature("UNSUPPORTED_STRUCTURAL_REFERENCE: row permutation cannot remap formula-group metadata at "
                             + range.sheetId() + "!" + sourceRow + ":" + columnIndex);
                 }
             }
@@ -3830,14 +3830,12 @@ final class StructuralSnapshotReducer {
             FormulaReferenceTransformer.assertRowOffsetSupported(formula);
             owner.put(field, FormulaReferenceTransformer.offsetForPermutation(formula, rowDelta));
         } catch (ServiceException error) {
-            if (!"SERVICE_UNAVAILABLE".equals(error.code())) {
-                throw new ServiceException("SERVICE_UNAVAILABLE", 503,
-                        "UNSUPPORTED_STRUCTURAL_REFERENCE: row permutation cannot rewrite formula owner " + sheetId + "!" + row + ":" + column,
-                        error);
-            }
-            throw error;
+            if ("UNSUPPORTED_FEATURE".equals(error.code())) throw error;
+            throw ServiceException.unsupportedFeature(
+                    "UNSUPPORTED_STRUCTURAL_REFERENCE: row permutation cannot rewrite formula owner " + sheetId + "!" + row + ":" + column,
+                    error);
         } catch (RuntimeException error) {
-            throw ServiceException.unavailable("UNSUPPORTED_STRUCTURAL_REFERENCE: row permutation cannot parse formula owner " + sheetId + "!" + row + ":" + column);
+            throw ServiceException.unsupportedFeature("UNSUPPORTED_STRUCTURAL_REFERENCE: row permutation cannot parse formula owner " + sheetId + "!" + row + ":" + column, error);
         }
     }
 
@@ -4490,10 +4488,10 @@ final class StructuralSnapshotReducer {
             FormulaReferenceTransformer.assertRowOffsetSupported(formula);
             return FormulaReferenceTransformer.offsetForPermutation(formula, rowDelta);
         } catch (ServiceException error) {
-            throw new ServiceException("SERVICE_UNAVAILABLE", 503,
-                    "UNSUPPORTED_STRUCTURAL_REFERENCE: row permutation cannot rewrite formula owner " + owner, error);
+            if ("UNSUPPORTED_FEATURE".equals(error.code())) throw error;
+            throw ServiceException.unsupportedFeature("UNSUPPORTED_STRUCTURAL_REFERENCE: row permutation cannot rewrite formula owner " + owner, error);
         } catch (RuntimeException error) {
-            throw ServiceException.unavailable("UNSUPPORTED_STRUCTURAL_REFERENCE: row permutation cannot parse formula owner " + owner);
+            throw ServiceException.unsupportedFeature("UNSUPPORTED_STRUCTURAL_REFERENCE: row permutation cannot parse formula owner " + owner, error);
         }
     }
 

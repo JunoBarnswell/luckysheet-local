@@ -1109,7 +1109,7 @@ final class WorkbookStructureMutationDescriptor extends CanonicalJsonMutationDes
         if (sourceFormula == null || !sourceFormula.isTextual()) return;
         String rewritten = renameFormula(sourceFormula.asText(), previousName, nextName);
         if (!rewritten.equals(sourceFormula.asText()) && metadata.path("preservedOnly").asBoolean(false)) {
-            throw ServiceException.unavailable("UNSUPPORTED_STRUCTURAL_REFERENCE: preserved-only formula references " + operation + " worksheet");
+            throw ServiceException.unsupportedFeature("UNSUPPORTED_STRUCTURAL_REFERENCE: preserved-only formula references " + operation + " worksheet");
         }
         metadata.put("sourceFormula", rewritten);
     }

@@ -144,7 +144,7 @@ final class FormulaReferenceTransformer {
         return rewrite(formula, reference -> {
             long row = reference.absoluteRow() ? reference.row() : (long) reference.row() + rowOffset;
             if (row < 0 || row > MAX_ROW) {
-                throw ServiceException.unavailable("UNSUPPORTED_STRUCTURAL_REFERENCE: row permutation would move a formula reference outside worksheet bounds");
+                throw ServiceException.unsupportedFeature("UNSUPPORTED_STRUCTURAL_REFERENCE: row permutation would move a formula reference outside worksheet bounds");
             }
             return reference.withCoordinates((int) row, reference.column());
         }, null, false, null);
@@ -161,7 +161,7 @@ final class FormulaReferenceTransformer {
             if (formula.charAt(index) == '[') {
                 int externalEnd = consumeExternalReference(formula, index);
                 if (externalEnd > index) {
-                    throw ServiceException.unavailable("UNSUPPORTED_STRUCTURAL_REFERENCE: row permutation cannot offset an external-workbook formula reference");
+                    throw ServiceException.unsupportedFeature("UNSUPPORTED_STRUCTURAL_REFERENCE: row permutation cannot offset an external-workbook formula reference");
                 }
                 index = consumeBracketedReference(formula, index);
                 continue;
@@ -170,7 +170,7 @@ final class FormulaReferenceTransformer {
             SheetPrefix prefix = parseSheetPrefix(formula, index);
             if (prefix != null) {
                 if (prefix.name().indexOf('[') >= 0 && prefix.name().indexOf(']') > prefix.name().indexOf('[')) {
-                    throw ServiceException.unavailable("UNSUPPORTED_STRUCTURAL_REFERENCE: row permutation cannot offset an external-workbook formula reference");
+                    throw ServiceException.unsupportedFeature("UNSUPPORTED_STRUCTURAL_REFERENCE: row permutation cannot offset an external-workbook formula reference");
                 }
                 if (prefix.afterPrefix() < formula.length() && formula.charAt(prefix.afterPrefix()) == '!') {
                     WholeAxisReference qualified = parseWholeAxisReference(formula, prefix.afterPrefix() + 1);
@@ -196,7 +196,7 @@ final class FormulaReferenceTransformer {
 
     private static void assertRowAxisOffsetSupported(WholeAxisReference reference) {
         if (reference.axis() == Axis.ROW) {
-            throw ServiceException.unavailable("UNSUPPORTED_STRUCTURAL_REFERENCE: row permutation cannot offset a whole-row formula reference");
+            throw ServiceException.unsupportedFeature("UNSUPPORTED_STRUCTURAL_REFERENCE: row permutation cannot offset a whole-row formula reference");
         }
     }
 
@@ -226,13 +226,13 @@ final class FormulaReferenceTransformer {
             int columnDelta
     ) {
         if (hasDifferentSheetEndpoints(parsed)) {
-            throw ServiceException.unavailable("UNSUPPORTED_STRUCTURAL_REFERENCE: moving cells cannot rewrite a cross-worksheet range");
+            throw ServiceException.unsupportedFeature("UNSUPPORTED_STRUCTURAL_REFERENCE: moving cells cannot rewrite a cross-worksheet range");
         }
         boolean startTargets = belongsToTarget(parsed.start(), owner, target);
         boolean endTargets = belongsToTarget(parsed.end(), owner, target);
         if (!startTargets && !endTargets) return RangeMapping.notHandled();
         if (!startTargets || !endTargets) {
-            throw ServiceException.validation("UNSUPPORTED_STRUCTURAL_REFERENCE: moved range has a partially qualified formula reference");
+            throw ServiceException.unsupportedFeature("UNSUPPORTED_STRUCTURAL_REFERENCE: moved range has a partially qualified formula reference");
         }
 
         int lowRow = Math.min(parsed.start().row(), parsed.end().row());
@@ -245,7 +245,7 @@ final class FormulaReferenceTransformer {
         boolean contained = lowRow >= selection.startRow() && highRow <= selection.endRow()
                 && lowColumn >= selection.startColumn() && highColumn <= selection.endColumn();
         if (!contained) {
-            throw ServiceException.unavailable("UNSUPPORTED_STRUCTURAL_REFERENCE: moving cells would make a formula reference non-contiguous");
+            throw ServiceException.unsupportedFeature("UNSUPPORTED_STRUCTURAL_REFERENCE: moving cells would make a formula reference non-contiguous");
         }
         Reference start = parsed.start().withCoordinates(parsed.start().row() + rowDelta, parsed.start().column() + columnDelta);
         Reference end = parsed.end().withCoordinates(parsed.end().row() + rowDelta, parsed.end().column() + columnDelta);
@@ -274,7 +274,7 @@ final class FormulaReferenceTransformer {
                     && first.name().contains(":")) {
                 int separator = first.name().indexOf(':');
                 if (separator == 0 || separator == first.name().length() - 1 || first.name().indexOf(':', separator + 1) >= 0) {
-                    throw ServiceException.unavailable("UNSUPPORTED_STRUCTURAL_REFERENCE: 3D reference boundary is invalid");
+                    throw ServiceException.unsupportedFeature("UNSUPPORTED_STRUCTURAL_REFERENCE: 3D reference boundary is invalid");
                 }
                 assertTargetOutsideThreeDimensionalRange(
                         first.name().substring(0, separator), first.name().substring(separator + 1), target, sheetOrder);
@@ -304,10 +304,10 @@ final class FormulaReferenceTransformer {
         int end = sheetIndex(sheetOrder, endName);
         int moved = sheetIndexById(sheetOrder, target.id());
         if (start < 0 || end < 0 || moved < 0) {
-            throw ServiceException.unavailable("UNSUPPORTED_STRUCTURAL_REFERENCE: 3D reference boundary is unresolved");
+            throw ServiceException.unsupportedFeature("UNSUPPORTED_STRUCTURAL_REFERENCE: 3D reference boundary is unresolved");
         }
         if (moved >= Math.min(start, end) && moved <= Math.max(start, end)) {
-            throw ServiceException.unavailable("UNSUPPORTED_STRUCTURAL_REFERENCE: structural edits cannot rewrite one sheet inside a 3D reference");
+            throw ServiceException.unsupportedFeature("UNSUPPORTED_STRUCTURAL_REFERENCE: structural edits cannot rewrite one sheet inside a 3D reference");
         }
     }
 
@@ -407,7 +407,7 @@ final class FormulaReferenceTransformer {
         boolean targetIntersects = targetStart <= high && targetEnd >= low;
         boolean bothCovered = sourceStart >= low && sourceEnd <= high && targetStart >= low && targetEnd <= high;
         if (!bothCovered && (sourceIntersects || targetIntersects)) {
-            throw ServiceException.unavailable("UNSUPPORTED_STRUCTURAL_REFERENCE: moving cells would make a whole-" + label + " reference non-contiguous");
+            throw ServiceException.unsupportedFeature("UNSUPPORTED_STRUCTURAL_REFERENCE: moving cells would make a whole-" + label + " reference non-contiguous");
         }
     }
 
@@ -481,7 +481,7 @@ final class FormulaReferenceTransformer {
     private static int requireStructuredReferenceEnd(String formula, int openingBracket) {
         int end = consumeBracketedReference(formula, openingBracket);
         if (end <= openingBracket || formula.charAt(end - 1) != ']') {
-            throw ServiceException.unavailable("UNSUPPORTED_STRUCTURAL_REFERENCE: structured table reference is unclosed");
+            throw ServiceException.unsupportedFeature("UNSUPPORTED_STRUCTURAL_REFERENCE: structured table reference is unclosed");
         }
         return end;
     }
@@ -729,8 +729,8 @@ final class FormulaReferenceTransformer {
         boolean startTargets = belongsToTarget(parsed.start(), owner, target);
         boolean endTargets = belongsToTarget(parsed.end(), owner, target);
         if (!startTargets && !endTargets) return RangeMapping.notHandled();
-        if (hasDifferentSheetEndpoints(parsed)) throw ServiceException.unavailable("UNSUPPORTED_FEATURE: structural transform cannot rewrite a cross-worksheet range");
-        if (!startTargets || !endTargets) throw ServiceException.validation("Structural transform cannot rewrite a partially qualified range");
+        if (hasDifferentSheetEndpoints(parsed)) throw ServiceException.unsupportedFeature("UNSUPPORTED_FEATURE: structural transform cannot rewrite a cross-worksheet range");
+        if (!startTargets || !endTargets) throw ServiceException.unsupportedFeature("UNSUPPORTED_STRUCTURAL_REFERENCE: structural transform cannot rewrite a partially qualified range");
 
         int startPosition = axis == Axis.ROW ? parsed.start().row() : parsed.start().column();
         int endPosition = axis == Axis.ROW ? parsed.end().row() : parsed.end().column();
@@ -753,8 +753,8 @@ final class FormulaReferenceTransformer {
         boolean startTargets = belongsToTarget(parsed.start(), owner, target);
         boolean endTargets = belongsToTarget(parsed.end(), owner, target);
         if (!startTargets && !endTargets) return RangeMapping.notHandled();
-        if (hasDifferentSheetEndpoints(parsed)) throw ServiceException.unavailable("UNSUPPORTED_FEATURE: cell shift cannot rewrite a cross-worksheet range");
-        if (!startTargets || !endTargets) throw ServiceException.validation("Cell shift cannot rewrite a partially qualified range");
+        if (hasDifferentSheetEndpoints(parsed)) throw ServiceException.unsupportedFeature("UNSUPPORTED_FEATURE: cell shift cannot rewrite a cross-worksheet range");
+        if (!startTargets || !endTargets) throw ServiceException.unsupportedFeature("UNSUPPORTED_STRUCTURAL_REFERENCE: cell shift cannot rewrite a partially qualified range");
 
         int lowRow = Math.min(parsed.start().row(), parsed.end().row());
         int highRow = Math.max(parsed.start().row(), parsed.end().row());
@@ -778,7 +778,7 @@ final class FormulaReferenceTransformer {
             }
         }
         List<Rectangle> merged = mergeRectangles(rectangles);
-        if (merged.size() > 1) throw ServiceException.unavailable("Cell shift makes a formula range non-contiguous");
+        if (merged.size() > 1) throw ServiceException.unsupportedFeature("UNSUPPORTED_FEATURE: cell shift makes a formula range non-contiguous");
         if (merged.isEmpty()) return RangeMapping.handled(null, null);
         Rectangle rectangle = merged.get(0);
         boolean reverseRows = parsed.start().row() > parsed.end().row();
@@ -800,7 +800,7 @@ final class FormulaReferenceTransformer {
                 direction == Direction.INSERT ? ReferenceTransformDomain.Operation.INSERT : ReferenceTransformDomain.Operation.DELETE);
         if (mapped.kind() == ReferenceTransformDomain.CellPointKind.DELETED) return null;
         if (mapped.kind() == ReferenceTransformDomain.CellPointKind.OUT_OF_BOUNDS) {
-            throw ServiceException.unavailable("UNSUPPORTED_FEATURE: cell shift moves a reference outside worksheet "
+            throw ServiceException.unsupportedFeature("UNSUPPORTED_FEATURE: cell shift moves a reference outside worksheet "
                     + (axis == Axis.ROW ? "row" : "column") + " bounds");
         }
         if (mapped.row() == reference.row() && mapped.column() == reference.column()) return reference;
@@ -814,7 +814,7 @@ final class FormulaReferenceTransformer {
                 direction == Direction.INSERT ? ReferenceTransformDomain.Operation.INSERT : ReferenceTransformDomain.Operation.DELETE);
         if (mapped.kind() == ReferenceTransformDomain.CellPointKind.DELETED) return null;
         if (mapped.kind() == ReferenceTransformDomain.CellPointKind.OUT_OF_BOUNDS) {
-            throw ServiceException.unavailable("UNSUPPORTED_FEATURE: cell shift moves a reference outside worksheet "
+            throw ServiceException.unsupportedFeature("UNSUPPORTED_FEATURE: cell shift moves a reference outside worksheet "
                     + (axis == Axis.ROW ? "row" : "column") + " bounds");
         }
         return new int[]{mapped.row(), mapped.column()};
@@ -892,13 +892,13 @@ final class FormulaReferenceTransformer {
             SheetPrefix first = parseSheetPrefix(formula, index);
             if (first != null && first.name().contains(":")
                     && first.afterPrefix() < formula.length() && formula.charAt(first.afterPrefix()) == '!') {
-                throw ServiceException.unavailable("UNSUPPORTED_FEATURE: quoted 3-D references require an ordered worksheet transform");
+                throw ServiceException.unsupportedFeature("UNSUPPORTED_FEATURE: quoted 3-D references require an ordered worksheet transform");
             }
             if (first != null && first.afterPrefix() < formula.length() && formula.charAt(first.afterPrefix()) == ':') {
                 int secondStart = first.afterPrefix() + 1;
                 SheetPrefix second = secondStart < formula.length() ? parseSheetPrefix(formula, secondStart) : null;
                 if (second != null && second.afterPrefix() < formula.length() && formula.charAt(second.afterPrefix()) == '!') {
-                    throw ServiceException.unavailable("UNSUPPORTED_FEATURE: 3-D references require an ordered worksheet transform");
+                    throw ServiceException.unsupportedFeature("UNSUPPORTED_FEATURE: 3-D references require an ordered worksheet transform");
                 }
             }
             index = nextReferenceCandidate(formula, index, first);

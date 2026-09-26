@@ -913,7 +913,7 @@ public class MutationDescriptorRegistry {
             RangeRef source = params.path("clearSource").asBoolean(false) ? requireBoundedSourceRange(root, params) : null;
             if (source != null && !source.equals(clipboardRange)) throw ServiceException.validation("Move source range differs from its clipboard range");
             if (source != null && !sheetId.equals(source.sheetId())) {
-                throw ServiceException.unavailable("UNSUPPORTED_FEATURE: cross-sheet cut/paste requires a canonical structural move patch");
+                throw ServiceException.unsupportedFeature("UNSUPPORTED_FEATURE: cross-sheet cut/paste requires a canonical structural move patch");
             }
             return new PasteShape(new RangeRef(sheetId, row, row + rows - 1, column, column + columns - 1), source);
         }

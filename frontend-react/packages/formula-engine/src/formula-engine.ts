@@ -25,7 +25,7 @@ import { createFormulaError, isArrayValue, isFormulaError, type ArrayValue, type
 import { normalizeDefinedNameModels, normalizeDefinedNames, parseDefinedNameFormula, resolveDefinedNameSource, type FormulaDefinedName } from './defined-names';
 import { collectNameReferences, collectTableReferences, formulaUsesRowVisibility, formulaUsesVolatile } from './formula-analysis';
 import { normalizeSheetTables, resolveSheetTableReference, type SheetTableRef } from './sheet-table-resolver';
-import type { CanonicalExcelDateParts, ExcelDateSystem } from './excel-date';
+import { canonicalExcelDateFromUtcDate, type CanonicalExcelDateParts, type ExcelDateSystem } from './excel-date';
 import { DEFAULT_EXCEL_NUMERIC_CONTEXT, normalizeExcelNumericContext, type ExcelNumericContext } from './numeric';
 import { createCalculationEntropyContext, formulaRandom, type CalculationEntropyContext } from './random';
 import { DEFAULT_WORKBOOK_COLLATION, normalizeWorkbookCollation, type WorkbookCollationContext } from './collation';
@@ -1734,6 +1734,12 @@ export class FormulaEngine {
         sheetOrder: this.sheetOrder,
         dateSystem: this.dateSystem,
         canonicalReferenceDate: this.canonicalReferenceDate,
+        calculationReferenceDate: this.activeCalculationEntropy
+          ? canonicalExcelDateFromUtcDate(new Date(
+            this.activeCalculationEntropy.calculationTimeUtcMs
+              - this.activeCalculationEntropy.calculationTimeZoneOffsetMinutes * 60_000,
+          ), this.dateSystem)
+          : undefined,
         numericContext: this.numericContext,
         collationContext: this.collationContext,
         rowVisibility: this.rowVisibilityResolver,

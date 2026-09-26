@@ -3,7 +3,7 @@ import { describe, it } from 'node:test';
 import { CommandRuntime } from '@react-sheets/command-runtime';
 import { WorkbookModel } from '@react-sheets/core-model';
 import { createCellSetMutationParams, registerSheetCommands } from '@react-sheets/sheet-features';
-import type { OperationEnvelope } from '@react-sheets/protocol';
+import { ApiRequestError, type OperationEnvelope } from '@react-sheets/protocol';
 import { CollaborationSession } from './collaboration-session';
 import { committedMutationToClassified } from './operation-types';
 import { OfflineQueue } from './offline-queue';
@@ -141,6 +141,28 @@ describe('collaboration helpers', () => {
     assert.deepEqual(committed, ['op-rest']);
     assert.equal(session.getRevision(), 8);
     assert.equal(session.offlineQueue.getPendingCount(), 0);
+  });
+
+  it('rejects unsupported operations without retrying or requesting an ambiguous-result lookup', async () => {
+    const operation = buildOperation('op-unsupported', 'wb-unsupported', 1, 0, [{
+      id: 'rows.inserted', sheetId: 'sheet-1', params: { sheetId: 'sheet-1', at: 1, count: 1 },
+    }], '2026-08-23T00:00:00.000Z');
+    let attempts = 0;
+    const queue = new OfflineQueue({
+      flush: async () => {
+        attempts += 1;
+        throw new ApiRequestError('Unsupported structural reference', 422, 'UNSUPPORTED_FEATURE');
+      },
+    });
+    queue.enqueue(operation);
+
+    const result = await queue.flushAll();
+
+    assert.deepEqual(result, { flushed: 0, failed: 1 });
+    assert.equal(attempts, 1);
+    assert.equal(queue.getStatus(operation.operationId), 'rejected');
+    assert.equal(queue.requiresResultLookup(operation.operationId), false);
+    assert.equal(queue.getPendingCount(), 1);
   });
 
   it('rejects unknown mutations and unmatched acknowledgements', () => {

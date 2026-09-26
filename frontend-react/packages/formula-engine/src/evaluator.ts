@@ -36,8 +36,10 @@ export interface FormulaEvaluationContext {
   resolveReference?(reference: FormulaReferenceNode): FormulaEvaluationReference | FormulaError | undefined;
   /** Workbook calendar used by serial/date functions. */
   readonly dateSystem?: ExcelDateSystem;
-  /** Host-owned deterministic clock; missing means TODAY/NOW fail-close. */
+  /** Stable workbook reference date for culture-sensitive date-entry parsing. */
   readonly canonicalReferenceDate?: CanonicalExcelDateParts;
+  /** Cycle-scoped clock for volatile TODAY/NOW; does not alter date-entry interpretation. */
+  readonly calculationReferenceDate?: CanonicalExcelDateParts;
   /** Workbook numeric semantics shared by inline and Worker evaluation. */
   readonly numericContext?: ExcelNumericContext;
   readonly collationContext?: WorkbookCollationContext;

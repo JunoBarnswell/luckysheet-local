@@ -53,7 +53,8 @@ class ReportSheetStructuralTransformTest {
         ServiceException error = assertThrows(ServiceException.class, () -> StructuralSnapshotReducer.applyAxis(snapshot,
                 "sheet-1", "columns.inserted", FormulaReferenceTransformer.Axis.COLUMN, 2, 1, FormulaReferenceTransformer.Direction.INSERT));
 
-        assertEquals("SERVICE_UNAVAILABLE", error.code());
+        assertEquals("UNSUPPORTED_FEATURE", error.code());
+        assertEquals(422, error.status());
         assertEquals(before, snapshot);
     }
 

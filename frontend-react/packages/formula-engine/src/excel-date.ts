@@ -27,6 +27,8 @@ export interface CanonicalExcelDate extends CanonicalExcelDateParts {
 export interface ExcelDateEvaluationContext {
   dateSystem?: ExcelDateSystem;
   canonicalReferenceDate?: CanonicalExcelDateParts;
+  /** Host clock sampled once for the current volatile calculation cycle. */
+  calculationReferenceDate?: CanonicalExcelDateParts;
 }
 
 export const EXCEL_MS_PER_DAY = 86_400_000;

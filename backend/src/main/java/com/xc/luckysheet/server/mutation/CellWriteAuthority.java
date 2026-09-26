@@ -130,8 +130,8 @@ final class CellWriteAuthority {
             if (!candidate.isNumber() || candidate.asDouble() < 0 || candidate.asDouble() >= 1) return new ValidationResult(false, alertStyle, "需要输入有效时间");
             return compareNumeric(candidate.asDouble(), rule, alertStyle);
         }
-        if ("custom".equals(type)) throw ServiceException.unavailable("UNSUPPORTED_FEATURE: server cannot authoritatively evaluate custom data validation formulas");
-        throw ServiceException.unavailable("UNSUPPORTED_FEATURE: server cannot authoritatively evaluate data validation type " + type);
+        if ("custom".equals(type)) throw ServiceException.unsupportedFeature("UNSUPPORTED_FEATURE: server cannot authoritatively evaluate custom data validation formulas");
+        throw ServiceException.unsupportedFeature("UNSUPPORTED_FEATURE: server cannot authoritatively evaluate data validation type " + type);
     }
 
     private static List<String> listValues(ObjectNode root, ObjectNode sheet, String sheetId, ObjectNode rule) {
@@ -156,7 +156,7 @@ final class CellWriteAuthority {
                 }
                 return result;
             }
-            throw ServiceException.unavailable("UNSUPPORTED_FEATURE: formula-backed list validation requires shared evaluator authority");
+            throw ServiceException.unsupportedFeature("UNSUPPORTED_FEATURE: formula-backed list validation requires shared evaluator authority");
         }
         String formula = textOrNull(rule, "formula1");
         if (formula == null) throw ServiceException.validation("list validation source is required");

@@ -3,11 +3,11 @@ import type { FormulaDependency } from './range-index';
 import type { ResolvedSpill } from './spill-resolver';
 import type { FormulaValue } from './values';
 import type { ScalarValue } from './values';
-import type { CalculationEntropyContext } from './random';
+import { isValidCalculationTimeUtcMs, type CalculationEntropyContext } from './random';
 
 /** Stable wire identity for the calculation task transport. */
 export const CALCULATION_TASK_PROTOCOL = 'react-sheets.formula-calculation' as const;
-export const CALCULATION_TASK_VERSION = 2 as const;
+export const CALCULATION_TASK_VERSION = 3 as const;
 
 export type CalculationTaskKind = 'recalculate';
 
@@ -107,7 +107,10 @@ export function assertCalculationTaskRequest(request: CalculationTaskRequest): v
     const entropy = request.calculationEntropy;
     if (!entropy || !Number.isSafeInteger(entropy.cycleId) || entropy.cycleId < 0
       || typeof entropy.entropySeed !== 'string' || entropy.entropySeed.trim().length === 0
-      || !Number.isSafeInteger(entropy.passIndex) || entropy.passIndex < 0) {
+      || !Number.isSafeInteger(entropy.passIndex) || entropy.passIndex < 0
+      || !isValidCalculationTimeUtcMs(entropy.calculationTimeUtcMs)
+      || !Number.isSafeInteger(entropy.calculationTimeZoneOffsetMinutes)
+      || Math.abs(entropy.calculationTimeZoneOffsetMinutes) > 14 * 60) {
       throw new Error('Calculation task entropy context is invalid');
     }
   }
