@@ -391,6 +391,95 @@ test('Pivot controls expose semantic child hit zones instead of a generic shape 
   assert.equal(clear?.action, 'pivot.slicer.clear');
 });
 
+test('chart data table renders source categories and values and hit-tests only its laid out bounds', () => {
+  const values: Array<Array<string | number>> = [
+    ['Quarter', 'Revenue', 'Status'],
+    ['Q1', 12, 'Budget'],
+    ['Q2', 7, 'Actual'],
+  ];
+  const source = {
+    ...sourceSnapshot(),
+    getCell: (row: number, column: number) => {
+      const value = values[row]?.[column];
+      return value === undefined ? undefined : { address: `${row}:${column}`, value: String(value) };
+    },
+  } satisfies CanvasSheetSnapshot;
+  const payload: ChartDrawingPayload = {
+    kind: 'chart', chartId: 'chart-data-table', chartType: 'column', subtype: 'column',
+    source: { kind: 'worksheet-ranges', ranges: [{ sheetId: source.id, startRow: 0, endRow: 2, startColumn: 0, endColumn: 2 }] },
+    elements: { hiddenData: 'show', legend: { visible: false, position: 'bottom' }, dataTable: { visible: true, showLegendKeys: true } },
+  };
+  const drawing: DrawingObject = {
+    id: 'chart-data-table-drawing', sheetId: source.id, kind: 'chart', payloadId: payload.chartId,
+    anchor: { kind: 'absolute' }, transform: { x: 0, y: 0, width: 400, height: 240, rotation: 0 }, zIndex: 0,
+  };
+  const data = resolveChartDataFromSources(payload, (sheetId) => sheetId === source.id ? source : undefined);
+  const layout = buildChartLayout(payload, data, drawing.transform.width, drawing.transform.height);
+  assert.equal(layout.status.kind, 'ready');
+  assert.equal(layout.dataTable?.categoryCount, 2);
+  assert.deepEqual(layout.dataTable?.series.map((entry) => entry.values), [['12', '7'], ['Budget', 'Actual']]);
+  const [drawable] = createCanvasFloatingDrawables({
+    drawings: [drawing], drawingPayloads: new Map([[payload.chartId, payload]]), allSheets: [source], sheet: source,
+    pivotResults: {}, sparklines: [], skeleton: {} as SheetSkeleton, imageCache: new Map(),
+    requestRender: () => undefined, tables: [],
+  });
+  const { context, calls } = mockCanvasContext();
+  drawable!.draw(context, drawing.transform);
+  for (const text of ['Series', 'Q1', 'Q2', 'Revenue', '12', '7', 'Status', 'Budget', 'Actual']) {
+    assert.ok(calls.includes(`fillText:${text}`), `expected chart table cell ${text}`);
+  }
+  assert.ok(!calls.some((call) => call.includes('Chart Data Table')));
+  const tableBounds = layout.dataTable!.bounds;
+  assert.deepEqual(drawable?.hitTest?.({ x: tableBounds.left + 1, y: tableBounds.top + 1 }), {
+    action: 'chart.select-element', data: { kind: 'data-table' },
+  });
+  assert.notDeepEqual(drawable?.hitTest?.({ x: tableBounds.left - 1, y: tableBounds.top + 1 }), {
+    action: 'chart.select-element', data: { kind: 'data-table' },
+  });
+
+  const noLegendKeysPayload: ChartDrawingPayload = {
+    ...payload,
+    chartId: 'chart-data-table-no-keys',
+    elements: { ...payload.elements, dataTable: { visible: true, showLegendKeys: false } },
+  };
+  const [noLegendKeysDrawable] = createCanvasFloatingDrawables({
+    drawings: [{ ...drawing, payloadId: noLegendKeysPayload.chartId }],
+    drawingPayloads: new Map([[noLegendKeysPayload.chartId, noLegendKeysPayload]]), allSheets: [source], sheet: source,
+    pivotResults: {}, sparklines: [], skeleton: {} as SheetSkeleton, imageCache: new Map(),
+    requestRender: () => undefined, tables: [],
+  });
+  const noLegendKeysCanvas = mockCanvasContext();
+  noLegendKeysDrawable!.draw(noLegendKeysCanvas.context, drawing.transform);
+  assert.ok(noLegendKeysCanvas.calls.includes('fillText:Revenue'), 'series names remain visible when legend keys are disabled');
+  assert.ok(noLegendKeysCanvas.calls.includes('fillText:Budget'), 'text-valued source cells remain in the data table');
+
+  const narrowLayout = buildChartLayout(payload, data, 100, drawing.transform.height);
+  assert.equal(narrowLayout.status.kind, 'unsupported', 'the renderer rejects cells that cannot display even one value glyph');
+  assert.equal(narrowLayout.status.code, 'UNSUPPORTED_FEATURE');
+  const invalidFontPayload: ChartDrawingPayload = {
+    ...payload,
+    elements: { ...payload.elements, dataTable: { visible: true, font: { fontSize: Number.NaN } } },
+  };
+  const invalidFontLayout = buildChartLayout(invalidFontPayload, data, drawing.transform.width, drawing.transform.height);
+  assert.equal(invalidFontLayout.status.kind, 'invalid');
+  assert.equal(invalidFontLayout.status.code, 'INVALID_CHART_SOURCE');
+  const unsupportedStylePayload: ChartDrawingPayload = {
+    ...payload,
+    elements: { ...payload.elements, dataTable: { visible: true, font: { rotation: 45 } } },
+  };
+  const unsupportedStyleLayout = buildChartLayout(unsupportedStylePayload, data, drawing.transform.width, drawing.transform.height);
+  assert.equal(unsupportedStyleLayout.status.kind, 'unsupported');
+  assert.equal(unsupportedStyleLayout.status.code, 'UNSUPPORTED_FEATURE');
+
+  const piePayload: ChartDrawingPayload = { ...payload, chartId: 'pie-data-table', chartType: 'pie', subtype: 'pie' };
+  const unsupportedLayout = buildChartLayout(piePayload,
+    resolveChartDataFromSources(piePayload, (sheetId) => sheetId === source.id ? source : undefined),
+    drawing.transform.width, drawing.transform.height);
+  assert.equal(unsupportedLayout.status.kind, 'unsupported');
+  assert.equal(unsupportedLayout.status.code, 'UNSUPPORTED_FEATURE');
+  assert.equal(unsupportedLayout.dataTable, undefined);
+});
+
 function mockCanvasContext(): { context: CanvasRenderingContext2D; calls: string[] } {
   const calls: string[] = [];
   const context = {

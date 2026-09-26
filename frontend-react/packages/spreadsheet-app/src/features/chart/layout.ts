@@ -134,6 +134,16 @@ export interface ChartMapFeatureLayout {
   polygons: Array<Array<{ x: number; y: number }>>;
 }
 
+export interface ChartDataTableLayout {
+  bounds: { left: number; top: number; width: number; height: number };
+  rowHeight: number;
+  categoryCount: number;
+  legendColumnWidth: number;
+  showLegendKeys: boolean;
+  categories: readonly PivotScalar[];
+  series: readonly { name: string; color: string; values: readonly PivotScalar[] }[];
+}
+
 export interface ChartLayout {
   status: ChartDataStatus;
   width: number;
@@ -169,6 +179,7 @@ export interface ChartLayout {
   };
   map?: ChartMapOptions & ({ resolved: false; reason: string } | { resolved: true; featureCount: number });
   mapFeatures?: ChartMapFeatureLayout[];
+  dataTable?: ChartDataTableLayout;
 }
 
 const DEFAULT_COLORS = ['#2563eb', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4'];
@@ -502,8 +513,52 @@ function baseLayout(payload: ChartDrawingPayload, data: ResolvedChartData, width
     : payload.elements.titleText?.text ?? payload.elements.title;
   const title = titleText ? { text: titleText, x: 16, y: 12 } : undefined;
   const legend = payload.elements.legend?.visible ? { visible: true, position: payload.elements.legend.position } : { visible: false, position: 'bottom' as const };
-  const plot = { left: 52, top: title ? 40 : 22, width: Math.max(10, width - 70 - (legend.position === 'right' ? 100 : 0)), height: Math.max(10, height - (title ? 62 : 42) - (legend.position === 'bottom' ? 24 : 0)) };
-  return { status: data.status, width, height, plot, title, legend, series: [], kind };
+  const dataTable = payload.elements.dataTable;
+  const tableRequested = dataTable?.visible === true && kind === 'cartesian';
+  const visibleSeriesCount = data.series.reduce((count, series, index) => count + (seriesModelFor(payload, series, index)?.visible === false ? 0 : 1), 0);
+  const requestedFontSize = dataTable?.font?.fontSize ?? 9;
+  const invalidFontSize = tableRequested && (!Number.isFinite(requestedFontSize) || requestedFontSize <= 0);
+  const tableFont = dataTable?.font;
+  const tableBorder = dataTable?.border;
+  const tableFill = tableFont?.fill;
+  const tableFillTransparency = tableFill && typeof tableFill !== 'string' ? tableFill.transparency ?? 0 : 0;
+  const invalidTableStyle = tableRequested && (
+    (tableFont?.rotation !== undefined && !Number.isFinite(tableFont.rotation))
+    || (tableBorder?.width !== undefined && (!Number.isFinite(tableBorder.width) || tableBorder.width < 0))
+    || (tableBorder?.transparency !== undefined && (!Number.isFinite(tableBorder.transparency) || tableBorder.transparency < 0 || tableBorder.transparency > 100))
+    || (tableFill && typeof tableFill !== 'string' && (!Number.isFinite(tableFillTransparency) || tableFillTransparency < 0 || tableFillTransparency > 100))
+    || (tableFill && typeof tableFill !== 'string' && tableFill.kind === 'solid' && !tableFont?.color && !tableFill.color)
+  );
+  const unsupportedTableStyle = tableRequested && (
+    (tableFont?.rotation !== undefined && tableFont.rotation !== 0)
+    || (tableBorder?.transparency !== undefined && tableBorder.transparency !== 0)
+    || (tableFill && typeof tableFill !== 'string' && (tableFill.kind !== 'solid' || tableFillTransparency !== 0))
+  );
+  const tableRowHeight = invalidFontSize ? 12 : Math.max(12, requestedFontSize + 4);
+  const tableHeight = tableRequested ? (visibleSeriesCount + 1) * tableRowHeight : 0;
+  const plotWidth = Math.max(10, width - 70 - (legend.position === 'right' ? 100 : 0));
+  const legendColumnWidth = Math.min(112, plotWidth * 0.32);
+  let categoryCount = Math.max(1, data.categories.length);
+  if (tableRequested) {
+    for (const [index, series] of data.series.entries()) {
+      if (seriesModelFor(payload, series, index)?.visible !== false) categoryCount = Math.max(categoryCount, series.values.length);
+    }
+  }
+  const tableTooNarrow = tableRequested && visibleSeriesCount > 0
+    && (plotWidth - legendColumnWidth) / categoryCount < requestedFontSize + 8;
+  const topReserve = title ? 62 : 42;
+  const bottomLegendReserve = legend.visible && legend.position === 'bottom' ? 24 : 0;
+  const tableReserve = tableRequested ? 32 + tableHeight : 0;
+  const requestedPlotHeight = height - topReserve - bottomLegendReserve - tableReserve;
+  const status = data.status.kind !== 'ready' ? data.status
+    : invalidFontSize || invalidTableStyle ? statusError('invalid', 'INVALID_CHART_SOURCE', 'INVALID_CHART_SOURCE: chart data table contains invalid font or border values')
+      : unsupportedTableStyle ? statusError('unsupported', 'UNSUPPORTED_FEATURE', 'Chart data table text rotation, fill, or border transparency is not supported')
+        : tableRequested && requestedPlotHeight < 10
+          ? statusError('unsupported', 'UNSUPPORTED_FEATURE', 'Chart data table does not fit within the drawing bounds')
+          : tableTooNarrow ? statusError('unsupported', 'UNSUPPORTED_FEATURE', 'Chart data table categories do not fit within the drawing bounds')
+          : data.status;
+  const plot = { left: 52, top: title ? 40 : 22, width: plotWidth, height: Math.max(10, requestedPlotHeight) };
+  return { status, width, height, plot, title, legend, series: [], kind };
 }
 
 function chartKind(payload: ChartDrawingPayload): ChartLayout['kind'] {
@@ -802,7 +857,11 @@ function mapLayouts(payload: ChartDrawingPayload, data: ResolvedChartData, plot:
 export function buildChartLayout(payload: ChartDrawingPayload, data: ResolvedChartData, width: number, height: number): ChartLayout {
   const kind = chartKind(payload);
   const layout = baseLayout(payload, data, width, height, kind);
-  if (data.status.kind !== 'ready') return layout;
+  if (layout.status.kind !== 'ready') return layout;
+  if (payload.elements.dataTable?.visible && kind !== 'cartesian') {
+    layout.status = statusError('unsupported', 'UNSUPPORTED_FEATURE', `Chart data tables are not supported for ${payload.chartType} charts`);
+    return layout;
+  }
   const values = data.series.flatMap((series) => numberValues(series.values));
   const percent = payload.stacked === 'percent' || payload.subtype.includes('percent');
   const isScatter = payload.chartType === 'scatter' || payload.chartType === 'bubble';
@@ -840,6 +899,35 @@ export function buildChartLayout(payload: ChartDrawingPayload, data: ResolvedCha
     && layout.series.filter((series) => series.visible).length > 1) {
     layout.status = statusError('invalid', 'INVALID_CHART_SOURCE', `${payload.chartType} charts require exactly one visible series`);
     return layout;
+  }
+  if (payload.elements.dataTable?.visible) {
+    let categoryCount = Math.max(1, data.categories.length);
+    const tableSeries: Array<{ name: string; color: string; values: readonly PivotScalar[] }> = [];
+    for (let index = 0; index < layout.series.length; index += 1) {
+      const series = layout.series[index]!;
+      if (!series.visible) continue;
+      const source = data.series[index]!;
+      categoryCount = Math.max(categoryCount, source.values.length);
+      tableSeries.push({ name: series.name, color: series.color, values: source.values });
+    }
+    const showLegendKeys = payload.elements.dataTable.showLegendKeys !== false;
+    const legendColumnWidth = Math.min(112, layout.plot.width * 0.32);
+    const fontSize = payload.elements.dataTable.font?.fontSize ?? 9;
+    const rowHeight = Math.max(12, fontSize + 4);
+    layout.dataTable = {
+      bounds: {
+        left: layout.plot.left,
+        top: layout.plot.top + layout.plot.height + 24,
+        width: layout.plot.width,
+        height: (tableSeries.length + 1) * rowHeight,
+      },
+      rowHeight,
+      categoryCount,
+      legendColumnWidth,
+      showLegendKeys,
+      categories: data.categories,
+      series: tableSeries,
+    };
   }
   if (kind === 'map') {
     const map = mapLayouts(payload, data, layout.plot, specialSeriesIndex);

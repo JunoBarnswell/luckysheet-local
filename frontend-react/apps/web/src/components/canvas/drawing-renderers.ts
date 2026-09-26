@@ -858,9 +858,9 @@ function paintChartFill(context: CanvasRenderingContext2D, fill: string | { kind
   return true;
 }
 
-function drawChartText(context: CanvasRenderingContext2D, text: string, x: number, y: number, options?: { color?: string; size?: number; bold?: boolean; align?: CanvasTextAlign }): void {
+function drawChartText(context: CanvasRenderingContext2D, text: string, x: number, y: number, options?: { color?: string; size?: number; bold?: boolean; italic?: boolean; fontFamily?: string; align?: CanvasTextAlign }): void {
   context.fillStyle = options?.color ?? '#334155';
-  context.font = `${options?.bold ? '600 ' : ''}${options?.size ?? 11}px Segoe UI, sans-serif`;
+  context.font = `${options?.italic ? 'italic ' : ''}${options?.bold ? '600 ' : ''}${options?.size ?? 11}px ${options?.fontFamily ?? 'Segoe UI'}, sans-serif`;
   context.textAlign = options?.align ?? 'left';
   context.textBaseline = 'middle';
   context.fillText(text, x, y);
@@ -1407,10 +1407,7 @@ function drawChartLayoutOnCanvas(options: { context: CanvasRenderingContext2D; p
       drawChartDataLabels(context, payload, series);
     }
   } else drawChartSpecial(context, payload, layout);
-  if (payload.elements.dataTable?.visible) {
-    const y = Math.min(bounds.height - 8, layout.plot.top + layout.plot.height + 28);
-    drawChartText(context, payload.elements.dataTable.showLegendKeys === false ? 'Chart Data Table' : 'Chart Data Table · Legend Keys', 8, y, { color: '#475569', size: 9 });
-  }
+  drawChartDataTable(context, payload, layout);
   drawChartLegend(context, layout);
   context.restore();
 }
@@ -1430,7 +1427,101 @@ function chartPointSelection(series: ChartLayout['series'][number], pointIndex: 
   return { action: 'chart.select-element', data: { kind: 'point', seriesId: series.id, pointIndex, ...(includeCategory ? { category: series.points[pointIndex]?.category ?? null } : {}) } };
 }
 
-function chartHitTest(layout: ChartLayout, point: { x: number; y: number }, dataTableVisible = false): { action: string; data: unknown } | null {
+function fitChartDataTableText(context: CanvasRenderingContext2D, text: string, width: number, font: NonNullable<ChartDrawingPayload['elements']['dataTable']>['font']): string {
+  const fontSize = font?.fontSize ?? 9;
+  context.font = `${font?.italic ? 'italic ' : ''}${font?.bold ? '600 ' : ''}${fontSize}px ${font?.fontFamily ?? 'Segoe UI'}, sans-serif`;
+  const availableWidth = Math.max(0, width - 8);
+  const measure = typeof context.measureText === 'function'
+    ? (candidate: string) => context.measureText(candidate).width
+    : (candidate: string) => candidate.length * fontSize * 0.58;
+  if (measure(text) <= availableWidth) return text;
+  const ellipsis = '…';
+  if (measure(ellipsis) > availableWidth) return '';
+  let low = 0;
+  let high = text.length;
+  while (low < high) {
+    const mid = Math.ceil((low + high) / 2);
+    const end = mid < text.length && mid > 0
+      && text.charCodeAt(mid - 1) >= 0xd800 && text.charCodeAt(mid - 1) <= 0xdbff
+      && text.charCodeAt(mid) >= 0xdc00 && text.charCodeAt(mid) <= 0xdfff
+      ? mid - 1
+      : mid;
+    if (measure(`${text.slice(0, end)}${ellipsis}`) <= availableWidth) low = mid;
+    else high = mid - 1;
+  }
+  const end = low < text.length && low > 0
+    && text.charCodeAt(low - 1) >= 0xd800 && text.charCodeAt(low - 1) <= 0xdbff
+    && text.charCodeAt(low) >= 0xdc00 && text.charCodeAt(low) <= 0xdfff
+    ? low - 1
+    : low;
+  return `${text.slice(0, end)}${ellipsis}`;
+}
+
+function chartDataTableValueText(value: PivotScalar | undefined): string {
+  return value === undefined || value === null || value === '' ? '' : formatPivotMember(value);
+}
+
+function drawChartDataTable(context: CanvasRenderingContext2D, payload: ChartDrawingPayload, layout: ChartLayout): void {
+  const table = layout.dataTable;
+  if (!table) return;
+  const { left, top, width, height } = table.bounds;
+  const categoryWidth = Math.max(0, width - table.legendColumnWidth) / table.categoryCount;
+  const font = payload.elements.dataTable?.font;
+  const fontSize = font?.fontSize ?? 9;
+  const textColor = font?.color ?? (typeof font?.fill === 'string' ? font.fill : font?.fill?.color) ?? '#334155';
+  context.save();
+  context.fillStyle = '#fff';
+  context.fillRect(left, top, width, height);
+  context.strokeStyle = payload.elements.dataTable?.border?.color ?? '#94a3b8';
+  context.lineWidth = payload.elements.dataTable?.border?.width ?? 0.75;
+  const borderDash = payload.elements.dataTable?.border?.dash;
+  if (borderDash && borderDash !== 'solid') {
+    context.setLineDash(borderDash === 'dash' ? [4, 3] : borderDash === 'dot' ? [1, 2] : [4, 2, 1, 2]);
+  }
+  const drawCell = (text: string, x: number, y: number, cellWidth: number, row: number, align: CanvasTextAlign): void => {
+    context.fillStyle = row === 0 ? '#f1f5f9' : '#fff';
+    context.fillRect(x, y, cellWidth, table.rowHeight);
+    context.strokeRect(x, y, cellWidth, table.rowHeight);
+    const textX = align === 'left' ? x + 4 : align === 'right' ? x + cellWidth - 4 : x + cellWidth / 2;
+    drawChartText(context, fitChartDataTableText(context, text, cellWidth, font), textX, y + table.rowHeight / 2, {
+      color: textColor,
+      size: fontSize,
+      bold: row === 0 || font?.bold,
+      italic: font?.italic,
+      fontFamily: font?.fontFamily,
+      align: font?.alignment ?? align,
+    });
+  };
+
+  for (let row = 0; row <= table.series.length; row += 1) {
+    const y = top + row * table.rowHeight;
+    drawCell(row === 0 ? 'Series' : '', left, y, table.legendColumnWidth, row, 'left');
+    if (row > 0) {
+      const entry = table.series[row - 1]!;
+      const swatchSize = table.showLegendKeys ? Math.min(8, table.rowHeight - 4, Math.max(0, table.legendColumnWidth - 8)) : 0;
+      if (swatchSize > 0) {
+        context.fillStyle = entry.color;
+        context.fillRect(left + 4, y + (table.rowHeight - swatchSize) / 2, swatchSize, swatchSize);
+      }
+      const inset = swatchSize > 0 ? swatchSize + 10 : 4;
+      const label = fitChartDataTableText(context, entry.name, table.legendColumnWidth - inset - 4, font);
+      drawChartText(context, label, left + inset, y + table.rowHeight / 2, {
+        color: textColor, size: fontSize, bold: font?.bold, italic: font?.italic,
+        fontFamily: font?.fontFamily, align: font?.alignment ?? 'left',
+      });
+    }
+    for (let column = 0; column < table.categoryCount; column += 1) {
+      const x = left + table.legendColumnWidth + column * categoryWidth;
+      const text = row === 0
+        ? chartDataTableValueText(column < table.categories.length ? table.categories[column] : column + 1)
+        : chartDataTableValueText(table.series[row - 1]?.values[column]);
+      drawCell(text, x, y, categoryWidth, row, row === 0 ? 'center' : 'right');
+    }
+  }
+  context.restore();
+}
+
+function chartHitTest(layout: ChartLayout, point: { x: number; y: number }): { action: string; data: unknown } | null {
   const horizontalBar = layout.kind === 'cartesian' && layout.series.some((series) => series.chartType === 'bar');
   if (layout.title && point.x >= layout.title.x - 4 && point.x <= layout.title.x + Math.max(40, layout.title.text.length * 9)
     && point.y >= layout.title.y - 14 && point.y <= layout.title.y + 6) return { action: 'chart.select-element', data: { kind: 'title' } };
@@ -1441,7 +1532,11 @@ function chartHitTest(layout: ChartLayout, point: { x: number; y: number }, data
           : { left: layout.plot.left + layout.plot.width + 8, top: 0, right: layout.width, bottom: layout.height };
     if (point.x >= legendBand.left && point.x <= legendBand.right && point.y >= legendBand.top && point.y <= legendBand.bottom) return { action: 'chart.select-element', data: { kind: 'legend' } };
   }
-  if (dataTableVisible && point.y >= layout.plot.top + layout.plot.height + 18) return { action: 'chart.select-element', data: { kind: 'data-table' } };
+  const dataTable = layout.dataTable?.bounds;
+  if (dataTable && point.x >= dataTable.left && point.x <= dataTable.left + dataTable.width
+    && point.y >= dataTable.top && point.y <= dataTable.top + dataTable.height) {
+    return { action: 'chart.select-element', data: { kind: 'data-table' } };
+  }
   if (layout.kind === 'pie') {
     const centerX = layout.plot.left + layout.plot.width / 2;
     const centerY = layout.plot.top + layout.plot.height / 2;
@@ -1969,7 +2064,7 @@ export function createCanvasFloatingDrawables(input: CanvasFloatingRendererInput
         id: drawing.id,
         bounds,
         draw: (context, rect) => drawChartLayoutOnCanvas({ context, payload: renderPayload, bounds: rect, layout }),
-        hitTest: (point) => chartHitTest(layout, point, payload.elements.dataTable?.visible === true),
+        hitTest: (point) => chartHitTest(layout, point),
       });
       continue;
     }
