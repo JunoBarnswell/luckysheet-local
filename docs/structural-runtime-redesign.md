@@ -1600,3 +1600,29 @@ Six non-overlapping static review passes confirmed two independent performance r
 单一根因是 **StructuralPatch / ReferenceIndex owner 集合不完整**，不能把 Chart、Pivot、Sparkline、Drawing 拆成多个重复问题。目标契约应以可判别 owner identity + 精确 before/after 状态表示其 range/anchor/reference 字段，由同一个 planner 构建增量 postings 和可逆 patch；Java 与 TS 都只消费该 patch，不再对同一操作各自重跑 owner walker。持久化升级应在显式 v5→v6 migration 边界重放并校验 operation/outbox；runtime 不接受旧 owner shape，也不使用全 workbook snapshot diff。migration 前的数据库备份是回滚边界。
 
 当前只完成此项六视角静态审计与目标契约收敛，尚未改造 owner model、ReferenceIndex 或 replay；不将其记作已修复。PR head `1e1b7c76` 的两条 `canonical-build` 均通过（含 Java backend tests、浏览器资源 build、frontend boundary/generated-contract 检查）；没有覆盖 in-app UI、桌面 Excel、opaque OOXML 互操作或大数据性能实测。下一实施步骤是在统一 typed owner identity 下扩展 range/reference postings 与 patch writer，再将其接入一个完整操作链；完整目标继续保持未完成。
+
+## 2026-09-27 — Java 唯一规划的事务与 cutover 契约
+
+### 源码确认的当前断层
+
+当前 `WorkbookSession.runCommand` 在在线状态检查后同步调用 `CommandRuntime.execute`；command mutation handler 先在客户端写入 canonical workbook，mutation listener 随后才将 intent 入队。Java commit 再独立执行 reducer 并生成目前仅包含部分引用 owner facts 的 StructuralPatch。由此可确认：在线 gate 只要求服务可用，没有把 Java 变成规划者；把局部 owner delta 扩充后仍不能安全地让客户端在收到 ACK 前执行 mutation，也不能让远端客户端重放原 intent 并宣称只由 Java 规划。
+
+### 唯一写入协议
+
+1. 客户端只提交 typed `StructuralIntent`：稳定 mutation ID、操作种类、worksheet/object identity、用户原始操作参数和 `expectedRevision`。Paste、Fill、Sort 等发送来源/目标/排序条件，不发送客户端预先计算的 cell writes 或排序结果。身份与权限上下文由服务端认证，不信任客户端传入的角色声明。
+2. Java 在同一 revision-guarded transaction 中，先验证 expected revision、权限、保护规则、identity 和全部 owner preconditions，再按 canonical structural semantics 规划并提交；不拆为无锁的 prepare 与稍后 commit，避免计划和提交之间发生 TOCTOU。事务同时写入 authoritative operation/patch 与 workbook revision；任一拒绝均不发布部分状态，并返回可判别的冲突、权限或 unsupported 错误。
+3. 成功响应携带唯一完整、可逆的 `StructuralPatch`。Patch 是稀疏变更事实，不是整本 workbook snapshot，也不要求客户端再运行地址/引用 planner。其契约至少涵盖 cell relocation/value/formula state、所有 typed metadata/reference owners（含 formula/name/rule/table/chart/pivot/sparkline/drawing/filter/spill 等）、稳定 owner identity、before/after preconditions、calculation/projection invalidation 和可逆 history facts。Owner 类型未建模或不可证明不变时，服务端拒绝提交。
+4. 本地在 ACK 前保留 canonical workbook 不变；仅可显示不参与计算/导出的 pending UI 状态。收到 patch 后先以 base revision 和全部 before facts 作原子校验，再一次 apply patch，并从 patch 更新 calculation、projection、undo/redo、协作和 persistence 状态。校验或应用失败不得推进 revision、清 pending、确认 outbox 或 ACK；保留可诊断错误和可恢复请求身份。
+5. 远端 replay、恢复查询与本地 ACK 消费同一 patch，不重放客户端 intent，不运行第二套 StructuralTransform。Undo/Redo 是带 expected revision 的服务端逆向结构意图，服务端生成新的 authoritative patch；客户端 history 保存 patch identity/facts，而不是再次执行 reducer 来推导逆操作。
+6. 服务端 operation log、checkpoint、outbox/recovery journal 使用同一已提交 patch 事实；snapshot checkpoint 可以作为读优化，但不是结构 patch 的推导输入。协议变更只在显式 migration 边界升级；迁移前先验证并保留可恢复备份，runtime 只接受新 canonical schema，不读旧字段、不做双写。
+
+### 实施与验收门槛
+
+- 先完成共享 wire/schema、Java patch validator、revision/permission transaction 和前端 patch validator，再以一个完整 vertical slice 接通 UI intent → Java commit → 本地 atomic apply → history → remote replay → persistence/recovery。切片不得只加客户端在线 guard、owner delta 或 ACK 对账；不完整类型须在写入前 fail-close。
+- 逐类迁移轴插删、cell shift、move/copy/cut/paste、drag/fill/sort、sheet identity、table resize、undo/redo；每类覆盖成功、拒绝后无变更、逆操作、并发 revision 冲突、远端 replay、reload 和公式/metadata owner。全部迁移后删除在线路径中客户端规划器及重复 reducer；local-only 结构编辑继续明确不支持。
+- 性能验收记录有代表性稀疏/稠密大工作簿的结构规划/apply CPU、分配量和 peak heap，并比较增长阶；禁止以全 workbook 深拷贝、全量快照 diff、隐藏行扫描或每次重建所有 owner index 作为 patch 生成办法。静态复杂度分析与实际基准分别报告，不互相替代。
+- OOXML 验收要求 changed patch 后每类注册 owner 正确改写；任何可能受影响但未索引的 opaque part 要在结构提交前给出 typed unsupported 拒绝，而不能等导出时才暴露。最后运行 repository gates、真实应用交互（含 console/network）、实际 XLSX round-trip；桌面 Excel 不可用时单独标记 `Blocked`，不得以 CI 成功代替。
+
+### 当前状态与下一实施步骤
+
+本节是对已接受产品取舍和现有源码证据的事务契约收敛，不表示现有实现已经切换为此协议，也不把当前 v5 部分 owner patch 解释为完整 patch。当前在线 structural mutation 仍为 TypeScript 先 apply、Java 后 commit；图表/透视表/迷你图/绘图等引用 owner、完整 cell/metadata patch、facts-only replay、真实 UI/Excel/performance 验收均未完成。下一实现切片必须以此协议贯通一类操作的全链路，并先解决 operation schema/migration 与完整稀疏 patch 的所有权，再移除该切片的客户端 planner；不得留下双路径作为最终设计。
