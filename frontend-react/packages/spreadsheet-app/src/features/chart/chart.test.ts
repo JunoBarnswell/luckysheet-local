@@ -300,6 +300,35 @@ describe('chart feature', () => {
     assert.equal(buildChartLayout(invalidBounds, resolveChartData(workbook, invalidBounds), 400, 240).status.kind, 'invalid');
   });
 
+  it('uses signed value-axis geometry for radar points and preserves missing categories', () => {
+    const workbook = new WorkbookModel('radar-signed-values', 'Radar signed values');
+    const sheet = workbook.getSheet('sheet-1');
+    [
+      ['', 'Series'],
+      ['Negative', -10],
+      ['Zero', 0],
+      ['Positive', 10],
+      ['Missing', null],
+    ].forEach((row, rowIndex) => row.forEach((value, columnIndex) => {
+      if (value !== null) sheet.cells.set(rowIndex, columnIndex, { value });
+    }));
+    const payload: ChartPayload = {
+      kind: 'chart', chartId: 'radar-signed', chartType: 'radar', subtype: 'radar',
+      source: { kind: 'worksheet-ranges', ranges: [{ sheetId: sheet.id, startRow: 0, endRow: 4, startColumn: 0, endColumn: 1 }] },
+      elements: { hiddenData: 'show' },
+    };
+
+    const layout = buildChartLayout(payload, resolveChartData(workbook, payload), 400, 240);
+    assert.equal(layout.status.kind, 'ready');
+    const radar = layout.radar!;
+    const vertices = radar.points[0]!.vertices;
+    assert.equal(vertices.length, 4);
+    assert.deepEqual(vertices.map((vertex) => vertex.visible), [true, true, true, false]);
+    const radii = vertices.slice(0, 3).map((vertex) => Math.hypot(vertex.x - radar.centerX, vertex.y - radar.centerY));
+    assert.notEqual(radii[0], radii[2], 'negative and positive values must not collapse to the same radius');
+    assert.ok(radii[0]! < radii[1]! && radii[1]! < radii[2]!, 'negative, zero, and positive values follow the signed value axis');
+  });
+
   it('switches row-oriented worksheet matrices without converting categories into X coordinates', () => {
     const workbook = new WorkbookModel('chart-row-orientation', 'Row Orientation');
     const sheet = workbook.getSheet('sheet-1');

@@ -142,7 +142,17 @@ export interface ChartLayout {
   stockPoints?: Array<{ index: number; open?: number; high: number; low: number; close: number; volume?: number; color: string }>;
   stockVolume?: { maximum: number; top: number; height: number; priceHeight: number };
   surfaceCells?: Array<{ row: number; column: number; seriesIndex: number; value: number | null; color: string; visible: boolean }>;
-  radar?: { count: number; maximum: number; points: Array<{ seriesIndex: number; values: number[]; visible: boolean[]; color: string }> };
+  radar?: {
+    count: number;
+    centerX: number;
+    centerY: number;
+    radius: number;
+    points: Array<{
+      seriesIndex: number;
+      color: string;
+      vertices: Array<{ index: number; x: number; y: number; visible: boolean }>;
+    }>;
+  };
   map?: ChartMapOptions & ({ resolved: false; reason: string } | { resolved: true; featureCount: number });
   mapFeatures?: ChartMapFeatureLayout[];
 }
@@ -831,7 +841,31 @@ export function buildChartLayout(payload: ChartDrawingPayload, data: ResolvedCha
     const visibleSeries = data.series.flatMap((series, seriesIndex) => layout.series[seriesIndex]?.visible === false ? [] : [{ series, seriesIndex }]);
     const count = Math.max(3, data.categories.length, ...visibleSeries.map(({ series }) => series.values.length));
     const radarValues = visibleSeries.flatMap(({ series }) => numberValues(series.values));
-    layout.radar = { count, maximum: radarValues.reduce((maximum, value) => Math.max(maximum, Math.abs(value)), 1), points: visibleSeries.map(({ series, seriesIndex }) => ({ seriesIndex, values: series.values.map(chartNumericValue).map((value) => value ?? 0), visible: series.values.map((value) => chartNumericValue(value) !== undefined), color: colorFor(series, seriesIndex) })) };
+    const centerX = layout.plot.left + layout.plot.width / 2;
+    const centerY = layout.plot.top + layout.plot.height / 2;
+    const radius = Math.min(layout.plot.width, layout.plot.height) * 0.42;
+    const valueAxis = layout.valueAxis!;
+    layout.radar = {
+      count,
+      centerX,
+      centerY,
+      radius,
+      points: visibleSeries.map(({ series, seriesIndex }) => ({
+        seriesIndex,
+        color: colorFor(series, seriesIndex),
+        vertices: Array.from({ length: count }, (_, index) => {
+          const value = chartNumericValue(series.values[index]);
+          const angle = -Math.PI / 2 + Math.PI * 2 * index / count;
+          const pointRadius = value === undefined ? 0 : radius * scale(value, valueAxis);
+          return {
+            index,
+            x: centerX + Math.cos(angle) * pointRadius,
+            y: centerY + Math.sin(angle) * pointRadius,
+            visible: value !== undefined,
+          };
+        }),
+      })),
+    };
     if (radarValues.length === 0) {
       layout.status = statusError('invalid', 'INVALID_CHART_SOURCE', 'Radar charts require at least one numeric value');
     }

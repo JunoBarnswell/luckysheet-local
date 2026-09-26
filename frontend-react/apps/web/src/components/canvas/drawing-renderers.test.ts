@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { RangeRef } from '@react-sheets/core-model';
-import type { CanvasSheetSnapshot } from '@react-sheets/spreadsheet-app';
+import { buildChartLayout, resolveChartDataFromSources, type CanvasSheetSnapshot } from '@react-sheets/spreadsheet-app';
 import { connectorEndpointHitTest, createCanvasFloatingDrawables, drawCanonicalConnectorOnCanvas, resolveCameraSourceGeometry } from './drawing-renderers';
-import type { ConnectorDrawingPayload, DrawingObject, DrawingPayload } from '@react-sheets/core-model';
+import type { ChartDrawingPayload, ConnectorDrawingPayload, DrawingObject, DrawingPayload } from '@react-sheets/core-model';
 import type { SheetSkeleton } from '@react-sheets/render-engine';
 
 function sourceSnapshot(): CanvasSheetSnapshot {
@@ -108,7 +108,56 @@ test('PivotChart with a missing Pivot renders a broken reference instead of sour
     tables: [],
   });
   assert.equal(drawables.length, 1);
-  assert.equal(drawables[0]?.kind, 'shape');
+  assert.equal(drawables[0]?.kind, 'chart');
+  const { context, calls } = mockCanvasContext();
+  drawables[0]!.draw(context, drawing.transform);
+  assert.ok(calls.some((call) => call.includes('Pivot reference unavailable: missing-pivot')));
+  assert.deepEqual(drawables[0]?.hitTest?.({ x: 20, y: 20 }), {
+    action: 'chart.select-element',
+    data: { kind: 'chart-area' },
+  });
+});
+
+test('radar chart hit testing selects the same signed vertices that its layout renders', () => {
+  const values: Array<Array<string | number>> = [
+    ['', 'Series'],
+    ['Negative', -10],
+    ['Zero', 0],
+    ['Positive', 10],
+  ];
+  const source = {
+    ...sourceSnapshot(),
+    getCell: (row: number, column: number) => {
+      const value = values[row]?.[column];
+      return value === undefined ? undefined : { address: `${row}:${column}`, value: String(value) };
+    },
+  } satisfies CanvasSheetSnapshot;
+  const payload: ChartDrawingPayload = {
+    kind: 'chart', chartId: 'radar-hit-test', chartType: 'radar', subtype: 'radar',
+    source: { kind: 'worksheet-ranges', ranges: [{ sheetId: source.id, startRow: 0, endRow: 3, startColumn: 0, endColumn: 1 }] },
+    elements: { hiddenData: 'show', legend: { visible: false, position: 'bottom' } },
+  };
+  const drawing: DrawingObject = {
+    id: 'radar-drawing', sheetId: source.id, kind: 'chart', payloadId: payload.chartId,
+    anchor: { kind: 'absolute' },
+    transform: { x: 0, y: 0, width: 400, height: 240, rotation: 0 }, zIndex: 0,
+  };
+  const data = resolveChartDataFromSources(payload, (sheetId) => sheetId === source.id ? source : undefined);
+  const layout = buildChartLayout(payload, data, drawing.transform.width, drawing.transform.height);
+  const [drawable] = createCanvasFloatingDrawables({
+    drawings: [drawing], drawingPayloads: new Map([[payload.chartId, payload]]), allSheets: [source], sheet: source,
+    pivotResults: {}, sparklines: [], skeleton: {} as SheetSkeleton, imageCache: new Map(),
+    requestRender: () => undefined, tables: [],
+  });
+  const vertices = layout.radar!.points[0]!.vertices;
+  for (const pointIndex of [0, 2]) {
+    const vertex = vertices[pointIndex]!;
+    assert.deepEqual(drawable?.hitTest?.({ x: vertex.x, y: vertex.y }), {
+      action: 'chart.select-element',
+      data: { kind: 'point', seriesId: layout.series[0]!.id, pointIndex, category: layout.series[0]!.points[pointIndex]!.category },
+    });
+  }
+  assert.notDeepEqual(vertices[0], vertices[2], 'negative and positive points occupy distinct rendered and selectable positions');
 });
 
 test('Pivot controls expose semantic child hit zones instead of a generic shape hit', () => {

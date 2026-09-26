@@ -1295,27 +1295,34 @@ function drawChartSpecial(context: CanvasRenderingContext2D, payload: ChartDrawi
   if (layout.kind === 'radar') {
     const radar = layout.radar;
     if (!radar) return;
-    const centerX = plot.left + plot.width / 2;
-    const centerY = plot.top + plot.height / 2;
-    const radius = Math.min(plot.width, plot.height) * 0.42;
     for (let ring = 1; ring <= 4; ring += 1) {
       context.strokeStyle = '#cbd5e1'; context.beginPath();
-      for (let index = 0; index < radar.count; index += 1) { const angle = -Math.PI / 2 + Math.PI * 2 * index / radar.count; const r = radius * ring / 4; const x = centerX + Math.cos(angle) * r; const y = centerY + Math.sin(angle) * r; index === 0 ? context.moveTo(x, y) : context.lineTo(x, y); }
+      for (let index = 0; index < radar.count; index += 1) { const angle = -Math.PI / 2 + Math.PI * 2 * index / radar.count; const r = radar.radius * ring / 4; const x = radar.centerX + Math.cos(angle) * r; const y = radar.centerY + Math.sin(angle) * r; index === 0 ? context.moveTo(x, y) : context.lineTo(x, y); }
       context.closePath(); context.stroke();
     }
     for (const entry of radar.points) {
-      context.strokeStyle = entry.color; context.fillStyle = `${entry.color}22`;
-      if (entry.visible.every(Boolean)) {
+      const vertices = entry.vertices;
+      const complete = vertices.length === radar.count && vertices.every((vertex) => vertex.visible);
+      context.strokeStyle = entry.color;
+      context.fillStyle = `${entry.color}22`;
+      if (complete && payload.subtype === 'radar-filled') {
         context.beginPath();
-        entry.values.forEach((value, index) => { const angle = -Math.PI / 2 + Math.PI * 2 * index / radar.count; const r = radius * Math.abs(value) / radar.maximum; const x = centerX + Math.cos(angle) * r; const y = centerY + Math.sin(angle) * r; index === 0 ? context.moveTo(x, y) : context.lineTo(x, y); });
-        context.closePath(); context.fill(); context.stroke();
-      } else {
-        entry.values.forEach((value, index) => {
-          if (!entry.visible[index]) return;
-          const angle = -Math.PI / 2 + Math.PI * 2 * index / radar.count;
-          const r = radius * Math.abs(value) / radar.maximum;
-          context.beginPath(); context.arc(centerX + Math.cos(angle) * r, centerY + Math.sin(angle) * r, 3, 0, Math.PI * 2); context.fill();
-        });
+        vertices.forEach((vertex, index) => index === 0 ? context.moveTo(vertex.x, vertex.y) : context.lineTo(vertex.x, vertex.y));
+        context.closePath(); context.fill();
+      }
+      context.beginPath();
+      for (let index = 0; index < vertices.length; index += 1) {
+        const current = vertices[index]!;
+        const next = vertices[(index + 1) % vertices.length]!;
+        if (!current.visible || !next.visible) continue;
+        context.moveTo(current.x, current.y);
+        context.lineTo(next.x, next.y);
+      }
+      context.stroke();
+      if (payload.subtype === 'radar-markers') for (const vertex of vertices) {
+        if (!vertex.visible) continue;
+        context.fillStyle = entry.color;
+        context.beginPath(); context.arc(vertex.x, vertex.y, 3, 0, Math.PI * 2); context.fill();
       }
     }
     return;
@@ -1551,17 +1558,12 @@ function chartHitTest(layout: ChartLayout, point: { x: number; y: number }, data
     if (series && cell?.visible) return chartPointSelection(series, cell.column);
   }
   if (layout.kind === 'radar' && layout.radar) {
-    const centerX = layout.plot.left + layout.plot.width / 2;
-    const centerY = layout.plot.top + layout.plot.height / 2;
-    const radius = Math.min(layout.plot.width, layout.plot.height) * 0.42;
     for (const entry of layout.radar.points) {
-      for (const [index, value] of entry.values.entries()) {
-        if (!entry.visible[index]) continue;
-        const angle = -Math.PI / 2 + Math.PI * 2 * index / layout.radar.count;
-        const target = { x: centerX + Math.cos(angle) * radius * Math.abs(value) / layout.radar.maximum, y: centerY + Math.sin(angle) * radius * Math.abs(value) / layout.radar.maximum };
-        if (Math.hypot(point.x - target.x, point.y - target.y) <= 7) {
+      for (const vertex of entry.vertices) {
+        if (!vertex.visible) continue;
+        if (Math.hypot(point.x - vertex.x, point.y - vertex.y) <= 7) {
           const series = layout.series[entry.seriesIndex];
-          if (series) return chartPointSelection(series, index);
+          if (series) return chartPointSelection(series, vertex.index);
         }
       }
     }

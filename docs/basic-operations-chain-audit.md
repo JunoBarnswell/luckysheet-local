@@ -9,7 +9,7 @@
 - **已确认的产品取舍**：2026-09-26 用户选择“统一由 Java 服务规划，可要求服务在线”。结构操作不再承诺无服务的浏览器离线执行；连接失败时拒绝提交并保留编辑草稿。此授权只改变结构规划归属，不自动扩展为全部普通输入或图表样式都必须远程。
 - 建档 60 个操作，操作数不等于缺陷数。下表是追踪清单，**不是 60 项审查完成/通过的声明**。同根因的行列、图表类型、入口变体不重复算 bug。
 - 审计底稿形成时只做静态阅读。后续仅有下列明示的定向回归证据；上一已提交 head 的 CI 成功不能作为当前工作树验收。
-- 当前续审已完成 core-model 59 项、Java structural facts 10 项、chart layout 9 项定向测试；前端项目级 `tsc` 因工作区缺少已声明的 `@types/react` 失败（3243 条连带诊断，修改文件未出现在诊断中）。本轮尚未做浏览器、完整门禁、性能或 Excel 验收。
+- 当前续审已完成 core-model 59 项、Java structural facts 10 项、chart layout 10 项及 Canvas drawing 8 项定向测试；前端项目级 `tsc` 仍因工作区缺少已声明的 `@types/react` 失败，本轮 4 个改动文件均无目标诊断。本轮尚未做浏览器、完整门禁、性能或 Excel 验收。
 - Java `StructuralStateChanges` 目前只提供事实载体和历史迁移捕获/回放，**尚未接入在线结构意图规划和提交**。当前客户端先做 TS 结构变换，Java 再执行 reducer，远端客户端仍按 intent 重放；唯一 Java planner 尚未达成。
 
 ## 审查单位与证据要求
@@ -121,7 +121,7 @@
 6. **C2 自动对数轴无效**：`axisBounds:160` 对正值数据仍默认 `minimum = min(0,dataMinimum)`，随后 logarithmic 分支拒绝 minimum<=0。切换 log 且未手填最小值即失败。需以轴领域选择合适正值边界，不能在 Canvas 忽略错误。
 7. **C3 子类型静默折叠**：柱/条 cone/cylinder/pyramid/3D 最终均 `fillRect`；pie-of-pie/bar-of-pie 仍走单饼扇区；surface 的 3D/wireframe/contour 均绘成热图矩形。模型允许这些类型，因此是缺少真实实现而非仅菜单少项。不能以添加标签或关闭报错宣称支持。
 8. **C4 层级信息未进入图表几何**：treemap 和 sunburst 在 renderer 将所有 point flatMap，分别画一排矩形/一圈圆环；没有父子层级 owner。需从 source binding 保留层级并在 layout 构造分区事实，hit-test 不能重新展开数据。
-9. **C5 雷达图负值被改成正值**：layout maximum 与 renderer/hit-test 均 `abs(value)`，-10 和 +10 落在相同半径。需同一有符号轴/顶点事实，不可只改其中一个消费者。
+9. **C5 雷达图负值被改成正值（本轮已修复）**：原 layout maximum 与 renderer/hit-test 均 `abs(value)`，-10 和 +10 落在相同半径。现在 layout 按 canonical value axis 一次生成 signed vertices，绘制与 hit-test 共用坐标；`radar`、`radar-markers`、`radar-filled` 分别控制线、标记和封闭多边形填充。chart layout 回归覆盖负/零/正/缺失值，Canvas 回归确认命中索引与顶点一致。
 10. **C6 趋势线不是对应算法**：`buildTrendline:337` 对所有类型先做原始线性回归；多项式用 `predictor ** 2 * slope * 0.02`，指数/对数/幂也沿用线性系数；forecast 是加在 y 上而不是扩展 x 域。必须用正式回归领域输出曲线、统计及 forecast 范围，覆盖拒绝域和阶数。
 11. **C7 直方图 underflow/overflow 丢数据**：`histogram:391` 直接 continue 不生成边界箱，图上总数不等于输入。过小 binWidth 还可产生与输入规模无关的超大 Array.from。需明确边界箱与容量拒绝，不能静默截断或随意改变用户设置。
 12. **C8 数据表仍是占位文本**：`drawChartLayoutOnCanvas:1404` 只绘制 `Chart Data Table` 字样，不绘制实际系列/类别/值。数据表必须进入同一布局与命中模型。
@@ -170,6 +170,17 @@
 6. **服务端权威**：Java 事实 DTO 的冲突预检和精确回放有测试，但在线 `WorkbookOperationService` 仍调用结构 reducer，前端仍按 intent 执行本地/远端结构变换；Java 唯一规划权尚未实现，本项保持未通过。
 
 本轮定向证据：core-model 59/59、Java structural facts 10/10、chart layout 9/9。项目级 TypeScript 检查未通过，因为已安装依赖缺少根 package 声明的 `@types/react`，产生 3243 条连锁类型诊断；修改文件不在诊断路径内，但因此不能记作 typecheck 通过。
+
+## 本轮雷达图六轮真实问题复核
+
+1. **数据/类别绑定**：series 值与类别按同一索引输入顶点数组；layout 固定 `count`，空值保留槽位且标为不可见，不压缩后续类别索引。
+2. **有符号轴语义**：正负数据进入同一 `valueAxis` 的 min/max 与 `scale`；不再对值取绝对值。回归样本 `[-10, 0, 10]` 的半径严格递增，缺失值不伪装为零。
+3. **绘制几何**：每个顶点的坐标在 layout 中生成一次；Canvas rings、series edges、filled polygon 和 markers 都引用同一 center/radius/vertices，不在 renderer 再推导数值半径。
+4. **交互几何**：`chartHitTest` 直接命中对应 vertex，并返回相同类别的 point index；Canvas 集成回归分别命中 -10 与 +10，确认两位置不重叠。
+5. **子类型与缺口**：只有 `radar-filled` 填充完整闭合系列；`radar-markers` 画点标记；缺失值两侧断线且不会形成闭合填充，避免用不存在的数据跨越缺口。
+6. **拒绝与验收边界**：无数值系列仍返回 invalid；缺失 Pivot 的既有 renderer 测试曾错误要求 `shape`，现改为验证 `chart` 错误视图和 chart-area 命中。chart 10/10、Canvas 8/8；项目 `tsc` 退出码 2，原因为缺少 React typings，改动文件无诊断。浏览器、性能及真实 Excel 仍未验收。
+
+该复核只关闭 C5 的一个根因组，不代表用户要求的 30 个新增问题或 60 个操作已审完；未完成项继续留在本 PR 的同一审计范围内。
 
 ## 本轮第二组六轮身份边界复核
 
