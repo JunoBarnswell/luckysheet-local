@@ -293,4 +293,16 @@
 
 前端现于写入前执行相同的轴/边界拒绝，新增行、列两条拒绝路径并验证完整 snapshot 不变；范围起点之前整体移动及范围尾后插入仍按既有语义保留。另修正 cell-shift 对必然为空的 range-owner facts 做两遍全 owner 快照扫描：intersection preflight 已证明这些 owner 不变，patch 显式携带空 facts。
 
-六轮自审：1) 对齐 Java 的闭区间边界；2) 分别覆盖行和列；3) 插入表首行/首列仍走整体平移而不误拒；4) 删除已有范围行为未改；5) 拒绝发生在 cell、extent 和 owner 写入前；6) 回归断言核对整个 snapshot 原样，且不把单测源码当作已执行证据。确认并修复 **1 个功能根因**及 **1 个独立的多余全量 owner 遍历成本**；本轮仍未达到 30 个问题，也未完成 Java-only planner。当前 PR head `3a5e19d2` 的两项远端 `canonical-build` 通过；本次工作区尚未提交改动未由 CI 验证，本地 tests/build 未运行。
+六轮自审：1) 对齐 Java 的闭区间边界；2) 分别覆盖行和列；3) 插入表首行/首列仍走整体平移而不误拒；4) 删除已有范围行为未改；5) 拒绝发生在 cell、extent 和 owner 写入前；6) 回归断言核对整个 snapshot 原样，且不把单测源码当作已执行证据。确认并修复 **1 个功能根因**及 **1 个独立的多余全量 owner 遍历成本**；本轮仍未达到 30 个问题，也未完成 Java-only planner。当时 PR head `3a5e19d2` 的两项远端 `canonical-build` 通过；后续修复另见下节。
+
+## Remote Replay 与 ReferenceIndex 复杂度静态复核（2026-09-26）
+
+证据一：`CommandRuntime.applyRemoteMutations` 先调用 `preflightHistory`，该方法执行 `workbook.snapshot()`、`WorkbookModel.fromSnapshot(...)`，并在 detached runtime 上重放全部 mutation；通过后再对 live workbook 调用 `applyHistory`。因此每个远端 operation 至少额外构造一份与整本工作簿同量级的模型，并对结构操作执行第二次 TS 变换。不能只删 detached preflight，否则会失去“后续 mutation 拒绝时前序 mutation 不留部分写入”的原子性；目标应是完整 facts 的全量 precondition 检查与单次 patch apply。
+
+证据二：正常 app runtime 将 `FormulaEngine.dependencies` 作为 `StructuralReferenceOwnerIndex` 提供者，但 `resolveStructuralReferenceOwners` 每次解析前仍调用 `indexStructuralFormulaRules`。后者遍历全部 worksheet 的 conditional-format / data-validation 规则、公式字段和 ranges，构造全量 entries/signatures，再做 owner 查询；工作量取决于全 workbook 规则数，而不是与结构编辑相交的 owners。缺 provider 的 detached history runtime 还会调用 `buildStructuralReferenceIndex`，遍历全部 occupied cells/公式、names 和 rules；这是第一项重复回放成本的放大因子，不单独重复计为第三个问题。
+
+索引契约证据：当前 `StructuralReferenceOwnerIndex` 只暴露公式依赖、defined-name 与 CF/DV 公式查询；chart/pivot/sparkline/drawing/filter/table/spill 等 owner 尚未统一进入可按几何查询的索引，结构变换仍有跨 sheet/全 owner 遍历。Java/TS 的 point 与 interval `ReferenceTransformDomain` 已共用 JSON vectors，说明这部分轴语义已有一致性基础，但不能据此推断 move/permutation/所有 owner 的语义已统一。
+
+六轮复核：1) 从 `WorkbookSession.dispatch/runCommand` 追到同步 mutation handler；2) 核验远端 operation 的 detached preflight 与 live apply 顺序；3) 核对失败原子性并排除“直接删预检”的错误方案；4) 核对 FormulaEngine provider 的真实 app 接线；5) 追踪 rule-index 的每次全量枚举及缺 provider fallback；6) 将可修根因限定为“完整事实 patch + 单次消费”和“扩展既有索引并增量维护”，不增加第二个权威索引。确认 **2 项独立性能根因**及 **1 项 ReferenceIndex owner 覆盖缺口**；不将 fallback 重扫重复计数。本轮问题数仍未达到 30，源码审查不等同于最终性能实测。
+
+本次审计记录时 PR head `291f4b09` 的两项 `canonical-build` 已通过；本轮没有运行本地 tests/build/browser，也未声称性能改善已测得。下一实施边界仍是 Java intent-first 原子提交、owner-complete sparse facts、统一 ReferenceIndex 增量写集，以及 facts-only 的 remote/history replay；不使用全快照 diff 充当在线写集。
