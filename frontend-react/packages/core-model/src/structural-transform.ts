@@ -761,15 +761,17 @@ function validateDataRegionCellShift(workbook: WorkbookModel, sheet: WorksheetMo
 
 function mapCellShiftCoordinate(plan: CellShiftPlan, row: number, column: number): { row: number; column: number } | null {
   if (!insideCell(plan.band, row, column)) return null;
-  const inSelection = insideCell(plan.selection, row, column);
-  if (plan.spec.axis === 'row') {
-    if (plan.spec.operation === 'delete' && inSelection) return null;
-    if (row < plan.selection.startRow) return { row, column };
-    return { row: plan.spec.operation === 'insert' ? row + plan.count : row - plan.count, column };
+  const axis = plan.spec.axis;
+  const start = axis === 'row' ? plan.selection.startRow : plan.selection.startColumn;
+  const end = axis === 'row' ? plan.selection.endRow : plan.selection.endColumn;
+  const position = axis === 'row' ? row : column;
+  const maximum = axis === 'row' ? MAX_ROW_INDEX : MAX_COLUMN_INDEX;
+  const mapped = ReferenceTransformDomain.mapCellShiftIndex(position, start, end, plan.spec.operation, maximum);
+  if (mapped < 0) return null;
+  if (mapped > maximum) {
+    throw new Error(`UNSUPPORTED_FEATURE: cell shift moves a reference outside worksheet ${plan.spec.axis} bounds`);
   }
-  if (plan.spec.operation === 'delete' && inSelection) return null;
-  if (column < plan.selection.startColumn) return { row, column };
-  return { row, column: plan.spec.operation === 'insert' ? column + plan.count : column - plan.count };
+  return axis === 'row' ? { row: mapped, column } : { row, column: mapped };
 }
 
 function rangeContains(outer: RangeRef, inner: RangeRef): boolean {
@@ -2557,17 +2559,18 @@ function mapCellShiftCoordinateForOwner(
   row: number,
   column: number,
 ): { row: number; column: number } | null {
-  const { selection } = transform;
-  const inBand = transform.axis === 'row'
-    ? row >= selection.startRow && column >= selection.startColumn && column <= selection.endColumn
-    : column >= selection.startColumn && row >= selection.startRow && row <= selection.endRow;
-  if (!inBand) return { row, column };
-  if (transform.axis === 'row') {
-    if (transform.direction < 0 && row <= selection.endRow) return null;
-    return { row: row + transform.direction * (selection.endRow - selection.startRow + 1), column };
+  const mapped = ReferenceTransformDomain.mapCellShiftPoint(
+    row,
+    column,
+    transform.selection,
+    transform.axis,
+    transform.direction === 1 ? 'insert' : 'delete',
+  );
+  if (mapped.kind === 'deleted') return null;
+  if (mapped.kind === 'out-of-bounds') {
+    throw new Error(`UNSUPPORTED_FEATURE: cell shift moves a reference outside worksheet ${transform.axis} bounds`);
   }
-  if (transform.direction < 0 && column <= selection.endColumn) return null;
-  return { row, column: column + transform.direction * (selection.endColumn - selection.startColumn + 1) };
+  return { row: mapped.row, column: mapped.column };
 }
 
 interface FormulaRewriteApplication {

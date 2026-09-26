@@ -5,6 +5,14 @@ final class ReferenceTransformDomain {
     static final int MAX_ROW_INDEX = 1_048_575;
     static final int MAX_COLUMN_INDEX = 16_383;
 
+    enum CellAxis { ROW, COLUMN }
+
+    enum Operation { INSERT, DELETE }
+
+    enum CellPointKind { MAPPED, DELETED, OUT_OF_BOUNDS }
+
+    record CellPointMapping(CellPointKind kind, Integer row, Integer column) { }
+
     enum PointKind { MAPPED, DELETED, OUT_OF_BOUNDS }
 
     record PointMapping(PointKind kind, Long position) {
@@ -16,6 +24,56 @@ final class ReferenceTransformDomain {
     }
 
     private ReferenceTransformDomain() {
+    }
+
+    static long mapCellShiftIndex(int position, int start, int end, Operation operation, int maximum) {
+        if (position < 0 || start < 0 || end < start || end > maximum || operation == null || maximum < 0) {
+            throw new IllegalArgumentException("Reference transform cell-shift index inputs are invalid");
+        }
+        if (position > maximum) return position;
+        if (operation == Operation.DELETE && position >= start && position <= end) return -1L;
+        if (position < start) return position;
+        long count = (long) end - start + 1;
+        return position + (operation == Operation.INSERT ? count : -count);
+    }
+
+    static CellPointMapping mapCellShiftPoint(
+            int row,
+            int column,
+            int startRow,
+            int endRow,
+            int startColumn,
+            int endColumn,
+            CellAxis axis,
+            Operation operation
+    ) {
+        if (row < 0 || column < 0 || startRow < 0 || endRow < startRow || endRow > MAX_ROW_INDEX
+                || startColumn < 0 || endColumn < startColumn || endColumn > MAX_COLUMN_INDEX
+                || axis == null || operation == null) {
+            throw new IllegalArgumentException("Reference transform cell-shift inputs are invalid");
+        }
+        if (row > MAX_ROW_INDEX || column > MAX_COLUMN_INDEX) {
+            return new CellPointMapping(CellPointKind.OUT_OF_BOUNDS, row, column);
+        }
+
+        int start = axis == CellAxis.ROW ? startRow : startColumn;
+        int end = axis == CellAxis.ROW ? endRow : endColumn;
+        int position = axis == CellAxis.ROW ? row : column;
+        boolean inBand = axis == CellAxis.ROW
+                ? column >= startColumn && column <= endColumn && row >= start
+                : row >= startRow && row <= endRow && column >= start;
+        if (!inBand) return new CellPointMapping(CellPointKind.MAPPED, row, column);
+        int maximum = axis == CellAxis.ROW ? MAX_ROW_INDEX : MAX_COLUMN_INDEX;
+        long mappedPosition = mapCellShiftIndex(position, start, end, operation, maximum);
+        if (mappedPosition == -1) return new CellPointMapping(CellPointKind.DELETED, null, null);
+        if (mappedPosition > maximum) {
+            return new CellPointMapping(CellPointKind.OUT_OF_BOUNDS,
+                    axis == CellAxis.ROW ? Math.toIntExact(mappedPosition) : row,
+                    axis == CellAxis.COLUMN ? Math.toIntExact(mappedPosition) : column);
+        }
+        return axis == CellAxis.ROW
+                ? new CellPointMapping(CellPointKind.MAPPED, (int) mappedPosition, column)
+                : new CellPointMapping(CellPointKind.MAPPED, row, (int) mappedPosition);
     }
 
     static PointMapping mapPoint(int position, int at, int count, boolean insert, int maximum) {

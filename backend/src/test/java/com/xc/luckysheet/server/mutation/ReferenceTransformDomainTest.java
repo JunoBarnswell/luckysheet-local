@@ -61,7 +61,7 @@ class ReferenceTransformDomainTest {
             assertNotNull(vectorsStream, "shared structural transform vectors must be on the test classpath");
             JsonNode vectors = new ObjectMapper().readTree(vectorsStream);
             assertEquals("ReferenceTransformVectors", vectors.path("schema").asText());
-            assertEquals(1, vectors.path("version").asInt());
+            assertEquals(2, vectors.path("version").asInt());
 
             for (JsonNode vector : vectors.path("points")) {
                 JsonNode expected = vector.path("expected");
@@ -95,7 +95,49 @@ class ReferenceTransformDomainTest {
                                 expectedEnd),
                         actual, vector.path("id").asText());
             }
+
+            for (JsonNode vector : vectors.path("cellShiftIndices")) {
+                assertEquals(vector.path("expected").asLong(), ReferenceTransformDomain.mapCellShiftIndex(
+                        vector.path("position").asInt(),
+                        vector.path("start").asInt(),
+                        vector.path("end").asInt(),
+                        ReferenceTransformDomain.Operation.valueOf(vector.path("operation").asText().toUpperCase(Locale.ROOT)),
+                        maximum(vector)),
+                        vector.path("id").asText());
+            }
+
+            for (JsonNode vector : vectors.path("cellShiftPoints")) {
+                JsonNode selection = vector.path("selection");
+                JsonNode expected = vector.path("expected");
+                Integer expectedRow = expected.has("row") ? expected.path("row").asInt() : null;
+                Integer expectedColumn = expected.has("column") ? expected.path("column").asInt() : null;
+                ReferenceTransformDomain.CellPointMapping actual = ReferenceTransformDomain.mapCellShiftPoint(
+                        vector.path("row").asInt(),
+                        vector.path("column").asInt(),
+                        selection.path("startRow").asInt(),
+                        selection.path("endRow").asInt(),
+                        selection.path("startColumn").asInt(),
+                        selection.path("endColumn").asInt(),
+                        ReferenceTransformDomain.CellAxis.valueOf(vector.path("axis").asText().toUpperCase(Locale.ROOT)),
+                        ReferenceTransformDomain.Operation.valueOf(vector.path("operation").asText().toUpperCase(Locale.ROOT)));
+                assertEquals(new ReferenceTransformDomain.CellPointMapping(
+                                ReferenceTransformDomain.CellPointKind.valueOf(expected.path("kind").asText().replace('-', '_').toUpperCase(Locale.ROOT)),
+                                expectedRow,
+                                expectedColumn),
+                        actual, vector.path("id").asText());
+            }
         }
+    }
+
+    @Test
+    void rejectsInvalidCellShiftDomainInputs() {
+        assertThrows(IllegalArgumentException.class, () -> ReferenceTransformDomain.mapCellShiftIndex(
+                -1, 0, 0, ReferenceTransformDomain.Operation.INSERT, ReferenceTransformDomain.MAX_ROW_INDEX));
+        assertThrows(IllegalArgumentException.class, () -> ReferenceTransformDomain.mapCellShiftIndex(
+                0, 1, 0, ReferenceTransformDomain.Operation.DELETE, ReferenceTransformDomain.MAX_ROW_INDEX));
+        assertThrows(IllegalArgumentException.class, () -> ReferenceTransformDomain.mapCellShiftPoint(
+                0, 0, 0, 0, 0, ReferenceTransformDomain.MAX_COLUMN_INDEX + 1,
+                ReferenceTransformDomain.CellAxis.COLUMN, ReferenceTransformDomain.Operation.INSERT));
     }
 
     private static int maximum(JsonNode vector) {

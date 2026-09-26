@@ -82,24 +82,18 @@ final class FormulaReferenceTransformer {
             List<SheetIdentity> sheetOrder
     ) {
         assertStructuralThreeDimensionalReferences(formula, target, sheetOrder);
-        int count = axis == Axis.ROW
-                ? selection.endRow() - selection.startRow() + 1
-                : selection.endColumn() - selection.startColumn() + 1;
         return rewrite(formula, reference -> {
             if (!belongsToTarget(reference, owner, target)) return reference;
-            return mapCellShiftPoint(reference, selection, axis, direction, count);
-        }, parsed -> remapCellShiftRange(parsed, owner, target, selection, axis, direction, count), true, null);
+            return mapCellShiftPoint(reference, selection, axis, direction);
+        }, parsed -> remapCellShiftRange(parsed, owner, target, selection, axis, direction), true, null);
     }
 
     static Range remapCellShiftRangeCoordinates(Range range, Range selection, Axis axis, Direction direction) {
-        int count = axis == Axis.ROW
-                ? selection.endRow() - selection.startRow() + 1
-                : selection.endColumn() - selection.startColumn() + 1;
         Reference start = new Reference(null, null, range.startRow(), range.startColumn(), false, false);
         Reference end = new Reference(null, null, range.endRow(), range.endColumn(), false, false);
         ParsedReference parsed = new ParsedReference(start, end, false, 0);
         SheetIdentity local = new SheetIdentity("__structural_range__", "__structural_range__");
-        RangeMapping mapped = remapCellShiftRange(parsed, local, local, selection, axis, direction, count);
+        RangeMapping mapped = remapCellShiftRange(parsed, local, local, selection, axis, direction);
         if (!mapped.handled()) throw ServiceException.validation("Cell-shift range transform did not resolve its local range");
         if (mapped.start() == null || mapped.end() == null) return null;
         return new Range(mapped.start().row(), mapped.end().row(), mapped.start().column(), mapped.end().column());
@@ -143,10 +137,7 @@ final class FormulaReferenceTransformer {
     }
 
     static int[] remapCellShiftCoordinate(int row, int column, Range selection, Axis axis, Direction direction) {
-        int count = axis == Axis.ROW
-                ? selection.endRow() - selection.startRow() + 1
-                : selection.endColumn() - selection.startColumn() + 1;
-        return mapCellShiftCoordinate(row, column, selection, axis, direction, count);
+        return mapCellShiftCoordinate(row, column, selection, axis, direction);
     }
 
     static String offsetForPermutation(String formula, int rowOffset) {
@@ -757,8 +748,7 @@ final class FormulaReferenceTransformer {
             SheetIdentity target,
             Range selection,
             Axis axis,
-            Direction direction,
-            int count
+            Direction direction
     ) {
         boolean startTargets = belongsToTarget(parsed.start(), owner, target);
         boolean endTargets = belongsToTarget(parsed.end(), owner, target);
@@ -779,8 +769,8 @@ final class FormulaReferenceTransformer {
         List<Rectangle> rectangles = new ArrayList<>();
         for (int[] rows : splitInterval(lowRow, highRow, rowCuts)) {
             for (int[] columns : splitInterval(lowColumn, highColumn, columnCuts)) {
-                int[] mappedStart = mapCellShiftCoordinate(rows[0], columns[0], selection, axis, direction, count);
-                int[] mappedEnd = mapCellShiftCoordinate(rows[1], columns[1], selection, axis, direction, count);
+                int[] mappedStart = mapCellShiftCoordinate(rows[0], columns[0], selection, axis, direction);
+                int[] mappedEnd = mapCellShiftCoordinate(rows[1], columns[1], selection, axis, direction);
                 if (mappedStart == null || mappedEnd == null) continue;
                 rectangles.add(new Rectangle(
                         Math.min(mappedStart[0], mappedEnd[0]), Math.max(mappedStart[0], mappedEnd[0]),
@@ -802,36 +792,31 @@ final class FormulaReferenceTransformer {
         return RangeMapping.handled(start, end);
     }
 
-    private static Reference mapCellShiftPoint(Reference reference, Range selection, Axis axis, Direction direction, int count) {
-        int row = reference.row();
-        int column = reference.column();
-        if (axis == Axis.ROW) {
-            if (column < selection.startColumn() || column > selection.endColumn() || row < selection.startRow()) return reference;
-            if (direction == Direction.DELETE && row <= selection.endRow()) return null;
-            int nextRow = row + (direction == Direction.INSERT ? count : -count);
-            if (nextRow > MAX_ROW) throw ServiceException.unavailable("UNSUPPORTED_FEATURE: cell shift moves a reference outside worksheet row bounds");
-            return reference.withRow(nextRow);
+    private static Reference mapCellShiftPoint(Reference reference, Range selection, Axis axis, Direction direction) {
+        ReferenceTransformDomain.CellPointMapping mapped = ReferenceTransformDomain.mapCellShiftPoint(
+                reference.row(), reference.column(), selection.startRow(), selection.endRow(),
+                selection.startColumn(), selection.endColumn(),
+                axis == Axis.ROW ? ReferenceTransformDomain.CellAxis.ROW : ReferenceTransformDomain.CellAxis.COLUMN,
+                direction == Direction.INSERT ? ReferenceTransformDomain.Operation.INSERT : ReferenceTransformDomain.Operation.DELETE);
+        if (mapped.kind() == ReferenceTransformDomain.CellPointKind.DELETED) return null;
+        if (mapped.kind() == ReferenceTransformDomain.CellPointKind.OUT_OF_BOUNDS) {
+            throw ServiceException.unavailable("UNSUPPORTED_FEATURE: cell shift moves a reference outside worksheet "
+                    + (axis == Axis.ROW ? "row" : "column") + " bounds");
         }
-        if (row < selection.startRow() || row > selection.endRow() || column < selection.startColumn()) return reference;
-        if (direction == Direction.DELETE && column <= selection.endColumn()) return null;
-        int nextColumn = column + (direction == Direction.INSERT ? count : -count);
-        if (nextColumn > MAX_COLUMN) throw ServiceException.unavailable("UNSUPPORTED_FEATURE: cell shift moves a reference outside worksheet column bounds");
-        return reference.withColumn(nextColumn);
+        return reference.withCoordinates(mapped.row(), mapped.column());
     }
 
-    private static int[] mapCellShiftCoordinate(int row, int column, Range selection, Axis axis, Direction direction, int count) {
-        if (axis == Axis.ROW) {
-            if (column < selection.startColumn() || column > selection.endColumn() || row < selection.startRow()) return new int[]{row, column};
-            if (direction == Direction.DELETE && row <= selection.endRow()) return null;
-            int nextRow = row + (direction == Direction.INSERT ? count : -count);
-            if (nextRow > MAX_ROW) throw ServiceException.unavailable("UNSUPPORTED_FEATURE: cell shift moves a reference outside worksheet row bounds");
-            return new int[]{nextRow, column};
+    private static int[] mapCellShiftCoordinate(int row, int column, Range selection, Axis axis, Direction direction) {
+        ReferenceTransformDomain.CellPointMapping mapped = ReferenceTransformDomain.mapCellShiftPoint(
+                row, column, selection.startRow(), selection.endRow(), selection.startColumn(), selection.endColumn(),
+                axis == Axis.ROW ? ReferenceTransformDomain.CellAxis.ROW : ReferenceTransformDomain.CellAxis.COLUMN,
+                direction == Direction.INSERT ? ReferenceTransformDomain.Operation.INSERT : ReferenceTransformDomain.Operation.DELETE);
+        if (mapped.kind() == ReferenceTransformDomain.CellPointKind.DELETED) return null;
+        if (mapped.kind() == ReferenceTransformDomain.CellPointKind.OUT_OF_BOUNDS) {
+            throw ServiceException.unavailable("UNSUPPORTED_FEATURE: cell shift moves a reference outside worksheet "
+                    + (axis == Axis.ROW ? "row" : "column") + " bounds");
         }
-        if (row < selection.startRow() || row > selection.endRow() || column < selection.startColumn()) return new int[]{row, column};
-        if (direction == Direction.DELETE && column <= selection.endColumn()) return null;
-        int nextColumn = column + (direction == Direction.INSERT ? count : -count);
-        if (nextColumn > MAX_COLUMN) throw ServiceException.unavailable("UNSUPPORTED_FEATURE: cell shift moves a reference outside worksheet column bounds");
-        return new int[]{row, nextColumn};
+        return new int[]{mapped.row(), mapped.column()};
     }
 
     private static List<int[]> splitInterval(int start, int end, List<Integer> boundaries) {

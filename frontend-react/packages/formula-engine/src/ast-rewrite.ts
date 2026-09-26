@@ -213,23 +213,19 @@ function mapCellShiftReference(
   reference: ParsedCellReference,
   transform: CellShiftReferenceTransform,
 ): ParsedCellReference | undefined {
-  const { selection, axis, direction } = transform;
-  if (axis === 'row') {
-    if (reference.column < selection.startColumn || reference.column > selection.endColumn
-      || reference.row < selection.startRow) return reference;
-    if (direction < 0 && reference.row <= selection.endRow) return undefined;
-    const count = selection.endRow - selection.startRow + 1;
-    const row = reference.row + direction * count;
-    if (row > MAX_ROW_INDEX) throw new Error('UNSUPPORTED_FEATURE: cell shift moves a reference outside worksheet row bounds');
-    return { ...reference, row };
+  const mapped = ReferenceTransformDomain.mapCellShiftPoint(
+    reference.row,
+    reference.column,
+    transform.selection,
+    transform.axis,
+    transform.direction === 1 ? 'insert' : 'delete',
+  );
+  if (mapped.kind === 'deleted') return undefined;
+  if (mapped.kind === 'out-of-bounds') {
+    throw new Error(`UNSUPPORTED_FEATURE: cell shift moves a reference outside worksheet ${transform.axis} bounds`);
   }
-  if (reference.row < selection.startRow || reference.row > selection.endRow
-    || reference.column < selection.startColumn) return reference;
-  if (direction < 0 && reference.column <= selection.endColumn) return undefined;
-  const count = selection.endColumn - selection.startColumn + 1;
-  const column = reference.column + direction * count;
-  if (column > MAX_COLUMN_INDEX) throw new Error('UNSUPPORTED_FEATURE: cell shift moves a reference outside worksheet column bounds');
-  return { ...reference, column };
+  if (mapped.row === reference.row && mapped.column === reference.column) return reference;
+  return { ...reference, row: mapped.row, column: mapped.column };
 }
 
 interface ReferenceRectangle {

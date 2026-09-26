@@ -9,6 +9,18 @@ export interface StructuralShift {
   op: 'insert' | 'delete';
 }
 
+export interface CellShiftSelection {
+  readonly startRow: number;
+  readonly endRow: number;
+  readonly startColumn: number;
+  readonly endColumn: number;
+}
+
+export type CellShiftPointTransformResult =
+  | { readonly kind: 'mapped'; readonly row: number; readonly column: number }
+  | { readonly kind: 'deleted' }
+  | { readonly kind: 'out-of-bounds'; readonly row: number; readonly column: number };
+
 export type PointTransformResult =
   | { readonly kind: 'mapped'; readonly position: number }
   | { readonly kind: 'deleted' }
@@ -20,6 +32,64 @@ export type IntervalTransformResult =
   | { readonly kind: 'out-of-bounds'; readonly start: number; readonly end: number };
 
 export class ReferenceTransformDomain {
+  static mapCellShiftIndex(position: number, start: number, end: number, op: 'insert' | 'delete', maximum: number): number {
+    if (!Number.isSafeInteger(position) || position < 0
+      || !Number.isSafeInteger(start) || start < 0
+      || !Number.isSafeInteger(end) || end < start
+      || !Number.isSafeInteger(maximum) || maximum < 0 || end > maximum
+      || (op !== 'insert' && op !== 'delete')) {
+      throw new Error('Reference transform cell-shift index inputs are invalid');
+    }
+    if (position > maximum) return position;
+    if (op === 'delete' && position >= start && position <= end) return -1;
+    if (position < start) return position;
+    return position + (op === 'insert' ? 1 : -1) * (end - start + 1);
+  }
+
+  static mapCellShiftPoint(
+    row: number,
+    column: number,
+    selection: CellShiftSelection,
+    axis: 'row' | 'column',
+    op: 'insert' | 'delete',
+  ): CellShiftPointTransformResult {
+    if (!Number.isSafeInteger(row) || row < 0
+      || !Number.isSafeInteger(column) || column < 0
+      || !selection
+      || !Number.isSafeInteger(selection.startRow) || selection.startRow < 0
+      || !Number.isSafeInteger(selection.endRow) || selection.endRow < selection.startRow || selection.endRow > MAX_ROW_INDEX
+      || !Number.isSafeInteger(selection.startColumn) || selection.startColumn < 0
+      || !Number.isSafeInteger(selection.endColumn) || selection.endColumn < selection.startColumn || selection.endColumn > MAX_COLUMN_INDEX
+      || (axis !== 'row' && axis !== 'column')
+      || (op !== 'insert' && op !== 'delete')) {
+      throw new Error('Reference transform cell-shift inputs are invalid');
+    }
+    const maximumRow = MAX_ROW_INDEX;
+    const maximumColumn = MAX_COLUMN_INDEX;
+    if (row > maximumRow || column > maximumColumn) return { kind: 'out-of-bounds', row, column };
+
+    const start = axis === 'row' ? selection.startRow : selection.startColumn;
+    const end = axis === 'row' ? selection.endRow : selection.endColumn;
+    const position = axis === 'row' ? row : column;
+    const inBand = axis === 'row'
+      ? column >= selection.startColumn && column <= selection.endColumn && row >= start
+      : row >= selection.startRow && row <= selection.endRow && column >= start;
+    if (!inBand) return { kind: 'mapped', row, column };
+    const maximum = axis === 'row' ? maximumRow : maximumColumn;
+    const mappedPosition = this.mapCellShiftIndex(position, start, end, op, maximum);
+    if (mappedPosition === -1) return { kind: 'deleted' };
+    if (mappedPosition > maximum) {
+      return {
+        kind: 'out-of-bounds',
+        row: axis === 'row' ? mappedPosition : row,
+        column: axis === 'column' ? mappedPosition : column,
+      };
+    }
+    return axis === 'row'
+      ? { kind: 'mapped', row: mappedPosition, column }
+      : { kind: 'mapped', row, column: mappedPosition };
+  }
+
   static mapPoint(position: number, at: number, count: number, direction: 1 | -1, maximum: number): PointTransformResult {
     if (!Number.isSafeInteger(position) || position < 0
       || !Number.isSafeInteger(at) || at < 0

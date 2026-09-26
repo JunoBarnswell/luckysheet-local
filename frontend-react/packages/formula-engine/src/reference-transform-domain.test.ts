@@ -29,6 +29,29 @@ interface SharedReferenceTransformVectors {
     readonly operation: 'insert' | 'delete';
     readonly expected: { readonly kind: string; readonly start?: number; readonly end?: number };
   }[];
+  readonly cellShiftIndices: readonly {
+    readonly id: string;
+    readonly axis: 'row' | 'column';
+    readonly position: number;
+    readonly start: number;
+    readonly end: number;
+    readonly operation: 'insert' | 'delete';
+    readonly expected: number;
+  }[];
+  readonly cellShiftPoints: readonly {
+    readonly id: string;
+    readonly axis: 'row' | 'column';
+    readonly row: number;
+    readonly column: number;
+    readonly selection: {
+      readonly startRow: number;
+      readonly endRow: number;
+      readonly startColumn: number;
+      readonly endColumn: number;
+    };
+    readonly operation: 'insert' | 'delete';
+    readonly expected: { readonly kind: string; readonly row?: number; readonly column?: number };
+  }[];
   readonly formulaSheetOrder: readonly { readonly id: string; readonly name: string }[];
   readonly formulaAxes: readonly {
     readonly id: string;
@@ -103,6 +126,36 @@ test('matches the shared TypeScript and Java structural-mapping vectors', () => 
       vector.id,
     );
   }
+  for (const vector of sharedVectors.cellShiftIndices) {
+    const maximum = vector.axis === 'row' ? MAX_ROW_INDEX : MAX_COLUMN_INDEX;
+    assert.equal(
+      ReferenceTransformDomain.mapCellShiftIndex(vector.position, vector.start, vector.end, vector.operation, maximum),
+      vector.expected,
+      vector.id,
+    );
+  }
+  for (const vector of sharedVectors.cellShiftPoints) {
+    assert.deepEqual(
+      ReferenceTransformDomain.mapCellShiftPoint(
+        vector.row,
+        vector.column,
+        vector.selection,
+        vector.axis,
+        vector.operation,
+      ),
+      vector.expected,
+      vector.id,
+    );
+  }
+});
+
+test('rejects invalid cell-shift domain inputs', () => {
+  assert.throws(() => ReferenceTransformDomain.mapCellShiftIndex(-1, 0, 0, 'insert', MAX_ROW_INDEX), /invalid/);
+  assert.throws(() => ReferenceTransformDomain.mapCellShiftIndex(0, 1, 0, 'delete', MAX_ROW_INDEX), /invalid/);
+  assert.throws(() => ReferenceTransformDomain.mapCellShiftIndex(0, 0, MAX_ROW_INDEX + 1, 'insert', MAX_ROW_INDEX), /invalid/);
+  assert.throws(() => ReferenceTransformDomain.mapCellShiftPoint(0, 0, {
+    startRow: 0, endRow: 0, startColumn: 0, endColumn: MAX_COLUMN_INDEX + 1,
+  }, 'column', 'insert'), /invalid/);
 });
 
 test('matches the shared TypeScript and Java formula-axis vectors', () => {

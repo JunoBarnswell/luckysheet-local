@@ -730,18 +730,15 @@ final class StructuralSnapshotReducer {
                 ? new RangeRef(sheetId, selection.startRow(), rowCount - 1, selection.startColumn(), selection.endColumn())
                 : new RangeRef(sheetId, selection.startRow(), selection.endRow(), selection.startColumn(), columnCount - 1);
         if (!expectedBand.equals(normalize(affectedBand))) throw ServiceException.validation("Cell shift affected band is not canonical");
-        int count = "row".equals(axis) ? selection.endRow() - selection.startRow() + 1 : selection.endColumn() - selection.startColumn() + 1;
-        int delta = "insert".equals(operation) ? count : -count;
-        validateCellShiftBounds(sheet, selection, expectedBand, axis, operation, count);
+        FormulaReferenceTransformer.Axis shiftAxis = "row".equals(axis)
+                ? FormulaReferenceTransformer.Axis.ROW : FormulaReferenceTransformer.Axis.COLUMN;
+        FormulaReferenceTransformer.Direction shiftDirection = "insert".equals(operation)
+                ? FormulaReferenceTransformer.Direction.INSERT : FormulaReferenceTransformer.Direction.DELETE;
         RangeRef referenceBand = "row".equals(axis)
                 ? new RangeRef(sheetId, selection.startRow(), SnapshotMutationSupport.MAX_ROW, selection.startColumn(), selection.endColumn())
                 : new RangeRef(sheetId, selection.startRow(), selection.endRow(), selection.startColumn(), SnapshotMutationSupport.MAX_COLUMN);
         validateCellShiftDataOwners(root, sheet, referenceBand);
         rejectFormulaGroupMetadataInRange(sheet, expectedBand, "cell shift");
-        FormulaReferenceTransformer.Axis shiftAxis = "row".equals(axis)
-                ? FormulaReferenceTransformer.Axis.ROW : FormulaReferenceTransformer.Axis.COLUMN;
-        FormulaReferenceTransformer.Direction shiftDirection = "insert".equals(operation)
-                ? FormulaReferenceTransformer.Direction.INSERT : FormulaReferenceTransformer.Direction.DELETE;
         preflightCellShiftFormulaAnchors(root, sheetId, selection, shiftAxis, shiftDirection);
         ObjectNode reportSheetAfter = mapReportSheetCoordinates(sheet,
                 (row, column) -> FormulaReferenceTransformer.remapCellShiftCoordinate(row, column, formulaRange(selection), shiftAxis, shiftDirection),
@@ -751,15 +748,31 @@ final class StructuralSnapshotReducer {
         List<RuleFormulaSnapshot> ruleFormulaSnapshots = captureRuleFormulaSnapshots(root);
 
         List<CellEntry> sourceCells = cellsInRange(sheet, expectedBand);
-        SnapshotMutationSupport.clearCells(sheet, expectedBand);
+        validateCellShiftBounds(sheet, selection, sourceCells, shiftAxis, shiftDirection);
+        ReferenceTransformDomain.Operation domainOperation = shiftDirection == FormulaReferenceTransformer.Direction.INSERT
+                ? ReferenceTransformDomain.Operation.INSERT : ReferenceTransformDomain.Operation.DELETE;
+        int maximum = shiftAxis == FormulaReferenceTransformer.Axis.ROW
+                ? ReferenceTransformDomain.MAX_ROW_INDEX : ReferenceTransformDomain.MAX_COLUMN_INDEX;
         for (CellEntry entry : sourceCells) {
-            int nextRow = "row".equals(axis) ? mapCellIndex(entry.row(), selection.startRow(), selection.endRow(), delta, operation) : entry.row();
-            int nextColumn = "column".equals(axis) ? mapCellIndex(entry.column(), selection.startColumn(), selection.endColumn(), delta, operation) : entry.column();
-            if (nextRow < 0 || nextColumn < 0 || !contains(expectedBand, nextRow, nextColumn)) continue;
-            ObjectNode cell = entry.cell().deepCopy();
-            SnapshotMutationSupport.putCell(sheet, new SnapshotMutationSupport.CellCoordinate(nextRow, nextColumn), cell);
+            SnapshotMutationSupport.removeCell(sheet,
+                    new SnapshotMutationSupport.CellCoordinate(entry.row(), entry.column()));
         }
-        shiftCellBandMetadata(root, sheet, selection, expectedBand, axis, operation, count);
+        for (CellEntry entry : sourceCells) {
+            long mappedPosition = ReferenceTransformDomain.mapCellShiftIndex(
+                    shiftAxis == FormulaReferenceTransformer.Axis.ROW ? entry.row() : entry.column(),
+                    shiftAxis == FormulaReferenceTransformer.Axis.ROW ? selection.startRow() : selection.startColumn(),
+                    shiftAxis == FormulaReferenceTransformer.Axis.ROW ? selection.endRow() : selection.endColumn(),
+                    domainOperation, maximum);
+            if (mappedPosition < 0) continue;
+            if (mappedPosition > maximum) {
+                throw ServiceException.validation("Cell shift would discard data outside worksheet bounds");
+            }
+            int nextRow = shiftAxis == FormulaReferenceTransformer.Axis.ROW ? Math.toIntExact(mappedPosition) : entry.row();
+            int nextColumn = shiftAxis == FormulaReferenceTransformer.Axis.COLUMN ? Math.toIntExact(mappedPosition) : entry.column();
+            if (!contains(expectedBand, nextRow, nextColumn)) continue;
+            SnapshotMutationSupport.putCell(sheet, new SnapshotMutationSupport.CellCoordinate(nextRow, nextColumn), entry.cell());
+        }
+        shiftCellBandMetadata(root, sheet, selection, expectedBand, axis, operation);
         applyReportSheetPlan(sheet, reportSheetAfter);
         // The preflight rejects every supported range owner intersecting the moved band;
         // cell-band metadata does not write those owners, so the canonical fact set is empty.
@@ -1232,13 +1245,21 @@ final class StructuralSnapshotReducer {
         return new StructuralPatch.CellAddress(ownerSheetId, row, column);
     }
 
-    private static void shiftCellBandAnchors(ObjectNode sheet, RangeRef selection, RangeRef band, String axis, String operation, int count) {
+    private static void shiftCellBandAnchors(
+            ObjectNode sheet,
+            RangeRef selection,
+            RangeRef band,
+            FormulaReferenceTransformer.Axis axis,
+            FormulaReferenceTransformer.Direction direction
+    ) {
         SnapshotMutationSupport.remapReviewCoordinates(sheet, coordinate -> {
             if (!contains(band, coordinate.row(), coordinate.column())) return coordinate;
-            int nextRow = "row".equals(axis) ? mapCellIndex(coordinate.row(), selection.startRow(), selection.endRow(), "insert".equals(operation) ? count : -count, operation) : coordinate.row();
-            int nextColumn = "column".equals(axis) ? mapCellIndex(coordinate.column(), selection.startColumn(), selection.endColumn(), "insert".equals(operation) ? count : -count, operation) : coordinate.column();
-            if (!contains(band, nextRow, nextColumn)) throw ServiceException.validation("Cell shift would remove review metadata");
-            return new SnapshotMutationSupport.CellCoordinate(nextRow, nextColumn);
+            int[] mapped = FormulaReferenceTransformer.remapCellShiftCoordinate(
+                    coordinate.row(), coordinate.column(), formulaRange(selection), axis, direction);
+            if (mapped == null || !contains(band, mapped[0], mapped[1])) {
+                throw ServiceException.validation("Cell shift would remove review metadata");
+            }
+            return new SnapshotMutationSupport.CellCoordinate(mapped[0], mapped[1]);
         });
     }
 
@@ -1321,20 +1342,28 @@ final class StructuralSnapshotReducer {
         return value.intValue();
     }
 
-    private static void validateCellShiftBounds(ObjectNode sheet, RangeRef selection, RangeRef band, String axis, String operation, int count) {
-        cellsInRange(sheet, band).forEach(entry -> {
-            int mapped = "row".equals(axis)
-                    ? mapCellIndex(entry.row(), selection.startRow(), selection.endRow(), "insert".equals(operation) ? count : -count, operation)
-                    : mapCellIndex(entry.column(), selection.startColumn(), selection.endColumn(), "insert".equals(operation) ? count : -count, operation);
-            int limit = "row".equals(axis) ? dimension(sheet, FormulaReferenceTransformer.Axis.ROW) : dimension(sheet, FormulaReferenceTransformer.Axis.COLUMN);
-            if (mapped >= limit || (mapped < 0 && "insert".equals(operation))) throw ServiceException.validation("Cell shift would discard data outside worksheet bounds");
-        });
-    }
-
-    private static int mapCellIndex(int value, int start, int end, int delta, String operation) {
-        if ("delete".equals(operation) && value >= start && value <= end) return -1;
-        if (value < start) return value;
-        return value + delta;
+    private static void validateCellShiftBounds(
+            ObjectNode sheet,
+            RangeRef selection,
+            List<CellEntry> cells,
+            FormulaReferenceTransformer.Axis axis,
+            FormulaReferenceTransformer.Direction direction
+    ) {
+        int start = axis == FormulaReferenceTransformer.Axis.ROW ? selection.startRow() : selection.startColumn();
+        int end = axis == FormulaReferenceTransformer.Axis.ROW ? selection.endRow() : selection.endColumn();
+        int maximum = axis == FormulaReferenceTransformer.Axis.ROW
+                ? ReferenceTransformDomain.MAX_ROW_INDEX : ReferenceTransformDomain.MAX_COLUMN_INDEX;
+        int lastAddress = dimension(sheet, axis) - 1;
+        ReferenceTransformDomain.Operation operation = direction == FormulaReferenceTransformer.Direction.INSERT
+                ? ReferenceTransformDomain.Operation.INSERT : ReferenceTransformDomain.Operation.DELETE;
+        for (CellEntry entry : cells) {
+            int position = axis == FormulaReferenceTransformer.Axis.ROW ? entry.row() : entry.column();
+            long mapped = ReferenceTransformDomain.mapCellShiftIndex(position, start, end, operation, maximum);
+            if (mapped == -1) continue;
+            if (mapped > lastAddress) {
+                throw ServiceException.validation("Cell shift would discard data outside worksheet bounds");
+            }
+        }
     }
 
     private static void setDimension(ObjectNode sheet, FormulaReferenceTransformer.Axis axis, int value) {
@@ -1972,7 +2001,7 @@ final class StructuralSnapshotReducer {
         }
     }
 
-    private static void shiftCellBandMetadata(ObjectNode root, ObjectNode target, RangeRef selection, RangeRef band, String axisName, String operation, int count) {
+    private static void shiftCellBandMetadata(ObjectNode root, ObjectNode target, RangeRef selection, RangeRef band, String axisName, String operation) {
         FormulaReferenceTransformer.Axis axis = "row".equals(axisName)
                 ? FormulaReferenceTransformer.Axis.ROW
                 : FormulaReferenceTransformer.Axis.COLUMN;
@@ -1982,7 +2011,7 @@ final class StructuralSnapshotReducer {
         FormulaReferenceTransformer.Range selected = formulaRange(selection);
         String targetSheetId = target.path("id").asText();
 
-        shiftCellBandAnchors(target, selection, band, axisName, operation, count);
+        shiftCellBandAnchors(target, selection, band, axis, direction);
         for (JsonNode raw : SnapshotMutationSupport.array(target, "merges")) {
             ObjectNode merge = requireObject(raw, "Merge");
             requireCellShiftRange(root, merge.get("range"), targetSheetId, selected, axis, direction, "merged range");
@@ -3006,7 +3035,8 @@ final class StructuralSnapshotReducer {
                     formula -> FormulaReferenceTransformer.remapCellShift(formula, ownerIdentity, target, selected, shiftAxis, direction, sheetOrder),
                     "cell shift",
                     formulaOwnerDeltas,
-                    entry -> cellShiftFormulaOwnerBeforeAddress(ownerIdentity.id(), entry, target.id(), selection, shiftAxis, direction));
+                    entry -> cellShiftFormulaOwnerBeforeAddress(
+                            ownerIdentity.id(), entry.row(), entry.column(), target.id(), selection, shiftAxis, direction));
             for (String property : List.of("conditionalFormats", "dataValidations")) {
                 for (JsonNode ruleRaw : SnapshotMutationSupport.array(owner, property)) {
                     ObjectNode rule = requireObject(ruleRaw, "Range rule");
@@ -3135,28 +3165,36 @@ final class StructuralSnapshotReducer {
         return List.copyOf(deltas);
     }
 
-    private static StructuralPatch.CellAddress cellShiftFormulaOwnerBeforeAddress(
+    static StructuralPatch.CellAddress cellShiftFormulaOwnerBeforeAddress(
             String ownerSheetId,
-            CellEntry entry,
+            int row,
+            int column,
             String targetSheetId,
             RangeRef selection,
             FormulaReferenceTransformer.Axis axis,
             FormulaReferenceTransformer.Direction direction
     ) {
-        int row = entry.row();
-        int column = entry.column();
         if (ownerSheetId.equals(targetSheetId)) {
-            int count = axis == FormulaReferenceTransformer.Axis.ROW
-                    ? selection.endRow() - selection.startRow() + 1
-                    : selection.endColumn() - selection.startColumn() + 1;
-            if (axis == FormulaReferenceTransformer.Axis.ROW
-                    && column >= selection.startColumn() && column <= selection.endColumn() && row >= selection.startRow()) {
-                if (direction == FormulaReferenceTransformer.Direction.INSERT && row >= selection.startRow() + count) row -= count;
-                else if (direction == FormulaReferenceTransformer.Direction.DELETE) row += count;
-            } else if (axis == FormulaReferenceTransformer.Axis.COLUMN
-                    && row >= selection.startRow() && row <= selection.endRow() && column >= selection.startColumn()) {
-                if (direction == FormulaReferenceTransformer.Direction.INSERT && column >= selection.startColumn() + count) column -= count;
-                else if (direction == FormulaReferenceTransformer.Direction.DELETE) column += count;
+            boolean inBand = axis == FormulaReferenceTransformer.Axis.ROW
+                    ? column >= selection.startColumn() && column <= selection.endColumn() && row >= selection.startRow()
+                    : row >= selection.startRow() && row <= selection.endRow() && column >= selection.startColumn();
+            if (inBand) {
+                int position = axis == FormulaReferenceTransformer.Axis.ROW ? row : column;
+                int start = axis == FormulaReferenceTransformer.Axis.ROW ? selection.startRow() : selection.startColumn();
+                int end = axis == FormulaReferenceTransformer.Axis.ROW ? selection.endRow() : selection.endColumn();
+                int maximum = axis == FormulaReferenceTransformer.Axis.ROW
+                        ? ReferenceTransformDomain.MAX_ROW_INDEX : ReferenceTransformDomain.MAX_COLUMN_INDEX;
+                ReferenceTransformDomain.Operation inverseOperation = direction == FormulaReferenceTransformer.Direction.INSERT
+                        ? ReferenceTransformDomain.Operation.DELETE : ReferenceTransformDomain.Operation.INSERT;
+                long mapped = ReferenceTransformDomain.mapCellShiftIndex(position, start, end, inverseOperation, maximum);
+                if (mapped == -1) {
+                    throw ServiceException.conflict("STRUCTURAL_PATCH_INVARIANT: formula owner occupies the inserted cell-shift band");
+                }
+                if (mapped > maximum) {
+                    throw ServiceException.conflict("STRUCTURAL_PATCH_INVARIANT: formula owner inverse address exceeds worksheet bounds");
+                }
+                if (axis == FormulaReferenceTransformer.Axis.ROW) row = Math.toIntExact(mapped);
+                else column = Math.toIntExact(mapped);
             }
         }
         return new StructuralPatch.CellAddress(ownerSheetId, row, column);
@@ -3470,7 +3508,7 @@ final class StructuralSnapshotReducer {
             ((ObjectNode) row.getValue()).fields().forEachRemaining(column -> {
                 int columnIndex = integerKey(column.getKey(), SnapshotMutationSupport.MAX_COLUMN, "Cell column");
                 if (!column.getValue().isObject()) throw ServiceException.validation("Cell payload must be an object");
-                if (contains(range, rowIndex, columnIndex)) entries.add(new CellEntry(rowIndex, columnIndex, ((ObjectNode) column.getValue()).deepCopy()));
+                if (contains(range, rowIndex, columnIndex)) entries.add(new CellEntry(rowIndex, columnIndex, (ObjectNode) column.getValue()));
             });
         });
         return entries;

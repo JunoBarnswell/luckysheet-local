@@ -1,6 +1,6 @@
 {
   "schema": "ReferenceTransformVectors",
-  "version": 1,
+  "version": 2,
   "points": [
     { "id": "row-insert-before", "axis": "row", "position": 2, "at": 3, "count": 2, "operation": "insert", "expected": { "kind": "mapped", "position": 2 } },
     { "id": "row-insert-at", "axis": "row", "position": 3, "at": 3, "count": 2, "operation": "insert", "expected": { "kind": "mapped", "position": 5 } },
@@ -22,6 +22,26 @@
     { "id": "column-delete-after", "axis": "column", "start": 2, "end": 5, "at": 6, "count": 2, "operation": "delete", "expected": { "kind": "mapped", "start": 2, "end": 5 } },
     { "id": "row-insert-at-limit", "axis": "row", "start": 1048575, "end": 1048575, "at": 1048575, "count": 1, "operation": "insert", "expected": { "kind": "out-of-bounds", "start": 1048576, "end": 1048576 } },
     { "id": "column-delete-reversed-input", "axis": "column", "start": 7, "end": 2, "at": 4, "count": 2, "operation": "delete", "expected": { "kind": "mapped", "start": 2, "end": 5 } }
+  ],
+  "cellShiftIndices": [
+    { "id": "row-insert-index-at-selection", "axis": "row", "position": 2, "start": 2, "end": 3, "operation": "insert", "expected": 4 },
+    { "id": "row-delete-index-before-selection", "axis": "row", "position": 1, "start": 2, "end": 4, "operation": "delete", "expected": 1 },
+    { "id": "row-delete-index-in-selection", "axis": "row", "position": 3, "start": 2, "end": 4, "operation": "delete", "expected": -1 },
+    { "id": "row-delete-index-after-selection", "axis": "row", "position": 6, "start": 2, "end": 4, "operation": "delete", "expected": 3 },
+    { "id": "column-insert-index-overflow", "axis": "column", "position": 16383, "start": 16383, "end": 16383, "operation": "insert", "expected": 16384 }
+  ],
+  "cellShiftPoints": [
+    { "id": "row-insert-point-in-band", "axis": "row", "row": 3, "column": 2, "selection": { "startRow": 2, "endRow": 3, "startColumn": 1, "endColumn": 2 }, "operation": "insert", "expected": { "kind": "mapped", "row": 5, "column": 2 } },
+    { "id": "row-insert-point-outside-columns", "axis": "row", "row": 3, "column": 3, "selection": { "startRow": 2, "endRow": 3, "startColumn": 1, "endColumn": 2 }, "operation": "insert", "expected": { "kind": "mapped", "row": 3, "column": 3 } },
+    { "id": "row-insert-point-before-selection", "axis": "row", "row": 1, "column": 1, "selection": { "startRow": 2, "endRow": 3, "startColumn": 1, "endColumn": 2 }, "operation": "insert", "expected": { "kind": "mapped", "row": 1, "column": 1 } },
+    { "id": "row-delete-point-in-selection", "axis": "row", "row": 2, "column": 2, "selection": { "startRow": 2, "endRow": 3, "startColumn": 1, "endColumn": 2 }, "operation": "delete", "expected": { "kind": "deleted" } },
+    { "id": "row-delete-point-after-selection", "axis": "row", "row": 6, "column": 2, "selection": { "startRow": 2, "endRow": 3, "startColumn": 1, "endColumn": 2 }, "operation": "delete", "expected": { "kind": "mapped", "row": 4, "column": 2 } },
+    { "id": "column-insert-point-in-band", "axis": "column", "row": 3, "column": 2, "selection": { "startRow": 1, "endRow": 3, "startColumn": 2, "endColumn": 3 }, "operation": "insert", "expected": { "kind": "mapped", "row": 3, "column": 4 } },
+    { "id": "column-insert-point-outside-rows", "axis": "column", "row": 4, "column": 2, "selection": { "startRow": 1, "endRow": 3, "startColumn": 2, "endColumn": 3 }, "operation": "insert", "expected": { "kind": "mapped", "row": 4, "column": 2 } },
+    { "id": "column-delete-point-in-selection", "axis": "column", "row": 1, "column": 2, "selection": { "startRow": 1, "endRow": 3, "startColumn": 2, "endColumn": 3 }, "operation": "delete", "expected": { "kind": "deleted" } },
+    { "id": "column-delete-point-after-selection", "axis": "column", "row": 3, "column": 5, "selection": { "startRow": 1, "endRow": 3, "startColumn": 2, "endColumn": 3 }, "operation": "delete", "expected": { "kind": "mapped", "row": 3, "column": 3 } },
+    { "id": "row-insert-point-overflow", "axis": "row", "row": 1048575, "column": 1, "selection": { "startRow": 1, "endRow": 1, "startColumn": 1, "endColumn": 2 }, "operation": "insert", "expected": { "kind": "out-of-bounds", "row": 1048576, "column": 1 } },
+    { "id": "column-insert-point-overflow", "axis": "column", "row": 2, "column": 16383, "selection": { "startRow": 1, "endRow": 2, "startColumn": 2, "endColumn": 2 }, "operation": "insert", "expected": { "kind": "out-of-bounds", "row": 2, "column": 16384 } }
   ],
   "formulaSheetOrder": [
     { "id": "local-id", "name": "Local" },
