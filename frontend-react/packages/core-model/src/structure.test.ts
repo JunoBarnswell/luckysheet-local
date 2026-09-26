@@ -897,7 +897,10 @@ describe('structural operations', () => {
       revision: 0,
     });
 
-    StructuralTransform.apply(workbook, { kind: 'insert-rows', sheetId: sheet.id, at: 1, count: 2 });
+    const tableOwner = workbook.getTable('table-1');
+    const blocks = tableOwner.blocks;
+    const fields = tableOwner.fields;
+    const result = StructuralTransform.apply(workbook, { kind: 'insert-rows', sheetId: sheet.id, at: 1, count: 2 });
     assert.deepEqual(workbook.getTable('table-1').sourceRange, {
       sheetId: sheet.id,
       startRow: 3,
@@ -905,11 +908,57 @@ describe('structural operations', () => {
       startColumn: 2,
       endColumn: 4,
     });
+    assert.equal(workbook.getTable('table-1'), tableOwner);
+    assert.equal(tableOwner.blocks, blocks);
+    assert.equal(tableOwner.fields, fields);
+    assert.deepEqual(result.rangeOwnerDeltas, [{
+      ownerKind: 'workbook-table', ownerId: 'table-1',
+      before: { sheetId: sheet.id, startRow: 1, endRow: 4, startColumn: 2, endColumn: 4 },
+      after: { sheetId: sheet.id, startRow: 3, endRow: 6, startColumn: 2, endColumn: 4 },
+    }]);
 
+    const beforeRejectedDelete = workbook.snapshot();
     assert.throws(
       () => StructuralTransform.apply(workbook, { kind: 'delete-rows', sheetId: sheet.id, at: 3, count: 1 }),
       /workbook table table-1 requires an explicit table operation/,
     );
+    assert.deepEqual(workbook.snapshot(), beforeRejectedDelete);
+    const unchangedRange = tableOwner.sourceRange;
+    const unchanged = StructuralTransform.apply(workbook, { kind: 'insert-rows', sheetId: sheet.id, at: 20, count: 1 });
+    assert.deepEqual(unchanged.rangeOwnerDeltas, []);
+    assert.equal(tableOwner.sourceRange, unchangedRange);
+  });
+
+  it('rejects ambiguous range-owner identities before an axis transform writes any state', () => {
+    for (const ownerKind of ['data-region', 'workbook-table', 'data-source'] as const) {
+      const workbook = new WorkbookModel(`unit-range-identity-${ownerKind}`, 'Range identity');
+      const sheet = workbook.getSheet('sheet-1');
+      const range = { sheetId: sheet.id, startRow: 5, endRow: 5, startColumn: 2, endColumn: 2 };
+      workbook.addTable({ id: 'range-table', name: 'Range table', sourceSheetId: sheet.id, sourceRange: range,
+        rowCount: 0, fields: [], blockSize: 128, blocks: [], revision: 0 });
+      workbook.addDataSource({
+        schema: 'DataSourceManifest', version: 1, id: 'range-source', name: 'Range source', kind: 'worksheet-range',
+        sourceSheetId: sheet.id, sourceRange: range, rowCount: 0,
+        fields: [{ id: 'f0', name: 'Code', ordinal: 0, type: 'text' }],
+        blockRowCount: 65_536, blocks: [], revision: 0,
+      });
+      sheet.addDataRegion({ id: 'range-region', sourceId: 'range-source', range, headerRow: 5, revision: 0 });
+      sheet.cells.set(6, 2, { value: 42 });
+      const source = workbook.dataModel.sources.get('range-source');
+      const region = sheet.dataRegions[0];
+      assert.ok(source && region);
+      if (ownerKind === 'data-region') region.id = '';
+      else if (ownerKind === 'workbook-table') workbook.getTable('range-table').id = 'mismatched-table';
+      else source.id = 'mismatched-source';
+      const before = workbook.snapshot();
+      const usedRangeBefore = sheet.usedRange;
+
+      assert.throws(() => StructuralTransform.apply(workbook, {
+        kind: 'insert-rows', sheetId: sheet.id, at: 1, count: 1,
+      }), /STRUCTURAL_PATCH_INVARIANT: .* has an invalid owner identity/);
+      assert.deepEqual(workbook.snapshot(), before);
+      assert.deepEqual(sheet.usedRange, usedRangeBefore);
+    }
   });
 
   it('move-range clears stale destinations, offsets formulas, and rewrites external references', () => {
@@ -1102,7 +1151,36 @@ describe('structural operations', () => {
     });
     sheet.cells.set(6, 2, { value: 999, style: { bold: true } });
 
-    StructuralTransform.apply(workbook, { kind: 'insert-rows', sheetId: sheet.id, at: 2, count: 2 });
+    const sourceOwner = workbook.dataModel.sources.get(sourceId);
+    assert.ok(sourceOwner);
+    const sourceReadSnapshot = workbook.getDataSource(sourceId);
+    const blocks = sourceOwner.blocks;
+    const fields = sourceOwner.fields;
+    const result = StructuralTransform.apply(workbook, { kind: 'insert-rows', sheetId: sheet.id, at: 2, count: 2 });
+    assert.deepEqual(result.rangeOwnerDeltas, [
+      {
+        ownerKind: 'data-region', sheetId: sheet.id, regionId: 'structure-region',
+        before: { range: { sheetId: sheet.id, startRow: 5, endRow: 7, startColumn: 2, endColumn: 3 }, headerRow: 5 },
+        after: { range: { sheetId: sheet.id, startRow: 7, endRow: 9, startColumn: 2, endColumn: 3 }, headerRow: 7 },
+      },
+      {
+        ownerKind: 'data-source', ownerId: sourceId,
+        before: { sheetId: sheet.id, startRow: 5, endRow: 7, startColumn: 2, endColumn: 3 },
+        after: { sheetId: sheet.id, startRow: 7, endRow: 9, startColumn: 2, endColumn: 3 },
+      },
+    ]);
+    assert.equal(workbook.dataModel.sources.get(sourceId), sourceOwner);
+    assert.equal(sourceOwner.blocks, blocks);
+    assert.equal(sourceOwner.fields, fields);
+    assert.equal(sourceReadSnapshot.sourceRange?.startRow, 5, 'public data source reads must remain detached');
+    assert.ok(result.rangeOwnerDeltas);
+    const serializedDeltas = JSON.stringify(result.rangeOwnerDeltas);
+    assert.deepEqual(JSON.parse(serializedDeltas), result.rangeOwnerDeltas);
+    assert.ok(Object.isFrozen(result.rangeOwnerDeltas));
+    for (const delta of result.rangeOwnerDeltas) {
+      assert.ok(Object.isFrozen(delta) && Object.isFrozen(delta.before) && Object.isFrozen(delta.after));
+      if (delta.ownerKind === 'data-region') assert.ok(Object.isFrozen(delta.before.range) && Object.isFrozen(delta.after.range));
+    }
 
     assert.deepEqual(sheet.dataRegions[0]?.range, {
       sheetId: sheet.id, startRow: 7, endRow: 9, startColumn: 2, endColumn: 3,
@@ -1129,6 +1207,8 @@ describe('structural operations', () => {
     assert.deepEqual(sheet.usedRange, {
       sheetId: sheet.id, startRow: 5, endRow: 7, startColumn: 2, endColumn: 3,
     });
+    assert.equal(JSON.stringify(result.rangeOwnerDeltas), serializedDeltas, 'later live edits must not alter captured range facts');
+    assert.equal(sourceOwner.blocks, blocks);
   });
 
   it('applies planned axis metadata once and keeps unaffected cross-sheet owner identities', () => {

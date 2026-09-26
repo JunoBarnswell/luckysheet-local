@@ -559,6 +559,7 @@ export {
   ensureDrawing,
 } from './structural-transform';
 export { structuralRuleFormulaFields, type StructuralFormulaRule, type StructuralFormulaRuleField } from './structural-formula-owner';
+export type { StructuralRangeOwnerDelta } from './structural-range-owner';
 export { SheetRuleRegistry, sheetRuleRegistry, ruleRangesIntersect, type RuleTransform, type RulePasteTransform, type SheetRule, type SheetRuleKind } from './rule-lifecycle';
 export {
   planBorderChange,

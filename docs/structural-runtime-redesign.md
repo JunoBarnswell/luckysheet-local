@@ -1272,3 +1272,22 @@ PR 上两个 `canonical-build` job 使用相同 head，前端依赖安装与前�
 本轮确认 **3 个独立问题**：轴 metadata 重复推导、data-region bounds index 过期、TS data-region 坐标越界缺少领域检查。验证范围为六轮源码复核及 `git diff --check`，不运行 tests/build/lint/typecheck/browser。没有 schema/data migration；回退为整体 revert 本轮实现和回归源码提交。
 
 **明确未完成**：内部计划仍暂存 detached worksheet metadata，并枚举既有跨表 owner families；差异比较也有线性开销。虽然删去第二次结构推导，但尚未建立 affected-owner metadata index，也没有证明达到 `O(affected references + affected objects + moved cells)`，本轮没有 benchmark。下一步仍须用 typed owner delta 替代 coarse staging，并将 cells、formula、metadata、calculation/projection、history、Java authority 和 OOXML 纳入完整可逆 StructuralPatch，移除余下独立 reducers。本步骤不缩减最终目标，PR 继续 draft。
+
+### 六轮静态自审 — 三类范围 owner 改为精确几何事实（2026-09-26）
+
+**基线及真实失败**：main 仍为 `a2a6140a90351b38f1e6f5fbc167d09b4f6ecc7f`，从开发 head `a7af29ae11c47365a9b789c16b1b3c9484274481` 继续。上一 head 的自动 workflows `36210201193` / `36210198645` 已失败；PR job `108314937919` 报 `structural-transform.ts(891,62)` TS2322：`noUncheckedIndexedAccess` 下数组索引值可能为 `undefined`。现将索引值保存在局部变量并在赋回前明确收窄。未执行本地编译，也不把源码修正写成 CI 已通过。
+
+**有界设计与实施**：轴操作仅移动范围时，上一版对 workbook table/data-source 连同 fields、blocks 等内容整体 clone、比较并替换 owner，付出了与范围变换无关的复制成本。此次只迁移 data-region range/header、workbook-table sourceRange、data-source sourceRange 三类无公式几何 owner：先生成冻结、可序列化的 `StructuralRangeOwnerDelta` before/after 事实，内部 apply 只提交这些值；删除这三类 owner 的 axis staging、`shiftDataRegionAxis`、`shiftWorkbookTables` 旧路径。其它 metadata 暂不迁移，避免整块 CF/DV/chart 快照覆盖独立公式计划。权限、事务入口、持久化 schema、StructuralPatch v3 与 Java wire shape 不变。
+
+六轮有不同检查对象，回看同一根因不重复计数：
+
+1. **入口与旧路径删除**：`applyAxis` 在 cells 写入前规划三类 owner；`applyAxisMetadataPlan` 只消费范围事实。检查 `cloneStructuralPreflightSheets` 两个调用者，cell-shift 已在 live 模型预检阶段拒绝与 data region 相交，`shiftCellBandMetadata` 不读取 dataRegions，因此删除公共 staging 中的 dataRegions 复制不会使 cell-shift 失去校验。
+2. **owner 与载荷边界**：table/source 的 fields、blocks、rowOrder、revision 都不是此次几何变换所有者，不能随坐标变化替换；新事实只包含稳定 owner ID、range 和必要 headerRow。table/source 本体与其字段、数据块数组保持身份，未变化范围不发 delta，也不替换范围对象。仍枚举现有 owner collections，不宣称 affected-only 复杂度。
+3. **读取与写入契约**：复核实际 getter 后发现 `getDataSource()` 返回 clone，而 `getTable()` 返回 live owner。本轮未提交草稿最初曾错误地向 data-source getter 的副本赋值，已在静态自审中撤掉；apply 现在按规划身份访问 canonical sources Map 并仅更新 sourceRange。回归源码分别锁定真实 owner 移动与公共读取快照仍然独立，不更改 getter 契约。
+4. **事实独立性与索引**：事实数组、条目、before/after 及 region 的嵌套 range 都冻结且不引用 live model。apply 给 live range 写入新值，dataRegions 仍通过 `replaceDataRegions` 同步 `DataRegionBoundsIndex`。回归源码覆盖 JSON 往返、冻结层级、后续 row/column 往返不能修改旧事实以及 usedRange 变化；不声称 region 整体替换已变成增量索引更新。
+5. **拒绝与写入时序**：范围/头行映射溢出、region 重复/空身份或错误 sheet、table/source Map key 与 owner ID 不一致均在 cells 写入前拒绝。新增三类 owner 的损坏身份源码用例，断言完整 snapshot 与 usedRange 不变；保留已有 block-backed 边缘溢出、跨 region 编辑拒绝及末端 print-plan 失败用例。mapInterval/shiftIndex 的范围语义与原路径一致，不在 apply 中重算。
+6. **消费者、回放与类型边界**：`StructuralTransformResult.rangeOwnerDeltas` 只由当前轴操作发出，用于暴露本轮已迁移事实；CommandRuntime、服务器 operation log 与 StructuralPatch v3 仍只处理已有公式/name facts，尚未消费这些范围事实。不能用“先反向执行旧算法、再覆盖整块 metadata”冒充可逆 patch。本轮不更改 undo、OT、Java、OOXML 协议，也不宣称其已经统一。静态检查可选结果字段的断言、判别联合及 `noUncheckedIndexedAccess` 收窄，未运行 typecheck。
+
+**验证与问题计数**：本轮修复两个已确认问题（上一提交的编译阻塞、范围变换不必要的整 owner 复制/替换）；三类 owner 是同一迁移的覆盖面，不拆成三个独立根因，也不把自审拦下的未提交回归计为额外完成项。新增/补充成功、未变化、拒绝、身份与事实不可变性的回归源码；按用户要求只做静态审查及 diff whitespace 检查，不执行 tests/build/lint/typecheck/browser。自动 CI 仅记录相应 head 的实际状态，未主动重跑。
+
+**剩余工作与回退**：这仍不是完整 Canonical Structural Planner、metadata ReferenceIndex 或可逆跨端 StructuralPatch。其它 detached metadata staging、cells/公式与 metadata 的计划聚合、history/Java authority/OT/OOXML 的事实消费仍待迁移。没有 schema/data migration；回退须整体 revert 本轮类型、实现与回归源码，不能只删结果字段却保留半套 apply。PR 保持 draft，浏览器、原生 Excel 文件与性能验收仍未完成。

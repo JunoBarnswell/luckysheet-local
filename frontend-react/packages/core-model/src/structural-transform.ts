@@ -1,5 +1,6 @@
 import type { CellAddress, CellData, RangeRef, Row, Column } from './index';
 import type { WorkbookCalculationContextEffect } from './calculation-context-effect';
+import type { StructuralRangeOwnerDelta } from './structural-range-owner';
 import type { CellHyperlink, ChartTextFormulaField, DrawingObject, StructuralTransformParams, SheetTableModel, SpillRange, ProtectionRule, OutlineGroup, CellShiftSpec } from './domain';
 import type { WorkbookTableModel } from './data-model';
 import type { DataSourceManifest } from './data-source';
@@ -48,6 +49,8 @@ export interface StructuralTransformResult {
   readonly formulaOwnerDeltas?: readonly StructuralFormulaOwnerDelta[];
   /** Exact defined-name before/after values; present when name owners were fully indexed. */
   readonly definedNameOwnerDeltas?: readonly StructuralDefinedNameOwnerDelta[];
+  /** Exact range/header facts for the migrated non-formula reference owners. */
+  readonly rangeOwnerDeltas?: readonly StructuralRangeOwnerDelta[];
   /** A caller must rebuild calculation context when incremental owner updates cannot resolve the new identity. */
   readonly calculationContextEffect?: WorkbookCalculationContextEffect;
 }
@@ -416,32 +419,90 @@ function structuralFormulaObjectDeltas(
 // Workbook-level formulas have no worksheet-relative origin unless they persist an explicit anchor.
 const UNANCHORED_WORKBOOK_FORMULA_OWNER = '';
 
-function shiftDataRegionAxis(
+function planAxisRangeOwners(
+  workbook: WorkbookModel,
   sheet: WorksheetModel,
   axis: 'row' | 'column',
   at: number,
   count: number,
   direction: 1 | -1,
-  sources: Map<string, DataSourceManifest>,
-): void {
+): readonly StructuralRangeOwnerDelta[] {
+  const changes: StructuralRangeOwnerDelta[] = [];
+  const startKey = axis === 'row' ? 'startRow' : 'startColumn';
+  const endKey = axis === 'row' ? 'endRow' : 'endColumn';
+  const shift: StructuralShift = { axis, at, count, op: direction === 1 ? 'insert' : 'delete' };
+  const mapRange = (before: RangeRef, owner: string): Readonly<RangeRef> | undefined => {
+    const mapped = ReferenceTransformDomain.mapInterval(before[startKey], before[endKey], shift);
+    if (mapped.kind === 'out-of-bounds') {
+      throw new Error(`UNSUPPORTED_STRUCTURAL_REFERENCE: ${axis} interval exceeds worksheet bounds for ${owner}`);
+    }
+    if (mapped.kind === 'deleted') throw new Error(`STRUCTURAL_PATCH_INVARIANT: axis transform removes ${owner}`);
+    if (mapped.start === before[startKey] && mapped.end === before[endKey]) return undefined;
+    return Object.freeze({ ...before, [startKey]: mapped.start, [endKey]: mapped.end });
+  };
+  const regionIds = new Set<string>();
   for (const region of sheet.dataRegions) {
-    const start = axis === 'row' ? region.range.startRow : region.range.startColumn;
+    if (!region.id || regionIds.has(region.id) || region.range.sheetId !== sheet.id) {
+      throw new Error(`STRUCTURAL_PATCH_INVARIANT: data region ${region.id} has an invalid owner identity`);
+    }
+    regionIds.add(region.id);
+    const start = region.range[startKey];
     const shouldShift = direction === 1 ? at <= start : at + count - 1 < start;
     if (!shouldShift) continue;
-    if (!shiftRangeRef(region.range, axis, at, count, direction)) {
-      throw new Error(`STRUCTURAL_PATCH_INVARIANT: axis transform removes data region ${region.id}`);
-    }
-    if (axis === 'row') {
-      const headerRow = shiftIndex(region.headerRow, at, count, direction, axis);
-      if (headerRow === null) throw new Error(`STRUCTURAL_PATCH_INVARIANT: axis transform removes data region ${region.id} header`);
-      region.headerRow = headerRow;
+    const range = mapRange(region.range, `data region ${region.id}`);
+    if (!range) continue;
+    const headerRow = axis === 'row' ? shiftIndex(region.headerRow, at, count, direction, axis) : region.headerRow;
+    if (headerRow === null) throw new Error(`STRUCTURAL_PATCH_INVARIANT: axis transform removes data region ${region.id} header`);
+    changes.push(Object.freeze({
+      ownerKind: 'data-region', sheetId: sheet.id, regionId: region.id,
+      before: Object.freeze({ range: Object.freeze({ ...region.range }), headerRow: region.headerRow }),
+      after: Object.freeze({ range, headerRow }),
+    }));
+  }
+  for (const [id, table] of workbook.dataModel.tables) {
+    if (table.sourceRange?.sheetId !== sheet.id) continue;
+    if (id !== table.id) throw new Error(`STRUCTURAL_PATCH_INVARIANT: workbook table ${id} has an invalid owner identity`);
+    const after = mapRange(table.sourceRange, `workbook table ${id}`);
+    if (after) changes.push(Object.freeze({
+      ownerKind: 'workbook-table', ownerId: id, before: Object.freeze({ ...table.sourceRange }), after,
+    }));
+  }
+  for (const [id, source] of workbook.dataModel.sources) {
+    if (source.sourceRange?.sheetId !== sheet.id) continue;
+    if (id !== source.id) throw new Error(`STRUCTURAL_PATCH_INVARIANT: data source ${id} has an invalid owner identity`);
+    const after = mapRange(source.sourceRange, `data source ${id}`);
+    if (after) changes.push(Object.freeze({
+      ownerKind: 'data-source', ownerId: id, before: Object.freeze({ ...source.sourceRange }), after,
+    }));
+  }
+  return Object.freeze(changes);
+}
+
+function applyAxisRangeOwnerDeltas(workbook: WorkbookModel, targetSheetId: string, changes: readonly StructuralRangeOwnerDelta[]): void {
+  const regions = new Map<string, Extract<StructuralRangeOwnerDelta, { ownerKind: 'data-region' }>>();
+  for (const change of changes) {
+    switch (change.ownerKind) {
+      case 'data-region':
+        regions.set(change.regionId, change);
+        break;
+      case 'workbook-table':
+        workbook.getTable(change.ownerId).sourceRange = { ...change.after };
+        break;
+      case 'data-source': {
+        // getDataSource returns a detached read model; commit only to the stored owner.
+        const source = workbook.dataModel.sources.get(change.ownerId);
+        if (!source) throw new Error(`STRUCTURAL_PATCH_INVARIANT: data source ${change.ownerId} is missing during axis commit`);
+        source.sourceRange = { ...change.after };
+        break;
+      }
     }
   }
-  for (const source of sources.values()) {
-    if (source.sourceRange?.sheetId === sheet.id
-      && !shiftRangeRef(source.sourceRange, axis, at, count, direction)) {
-      throw new Error(`Structural mutation removes data source range ${source.id}`);
-    }
+  if (regions.size > 0) {
+    const sheet = workbook.getSheet(targetSheetId);
+    sheet.replaceDataRegions(sheet.dataRegions.map((region) => {
+      const change = regions.get(region.id);
+      return change ? { ...region, range: { ...change.after.range }, headerRow: change.after.headerRow } : region;
+    }));
   }
 }
 
@@ -515,6 +576,7 @@ function applyAxis(
     rewrittenFormulaOwners: formulaRewriteResult.owners,
     formulaOwnerDeltas: [...formulaRewriteResult.deltas, ...formulaRewriteResult.formulaRuleDeltas],
     definedNameOwnerDeltas: formulaRewriteResult.definedNameDeltas,
+    rangeOwnerDeltas: metadataPlan.rangeOwners,
   };
 }
 
@@ -731,7 +793,6 @@ function shiftCellRangeReference(range: RangeRef, workbook: WorkbookModel, sheet
 
 function cloneStructuralMetadataSheet(sheet: WorksheetModel): WorksheetModel {
   const staged = new WorksheetModel(sheet.id, sheet.name, sheet.rowCount, sheet.columnCount);
-  staged.replaceDataRegions(sheet.dataRegions);
   staged.merges.push(...structuredClone(sheet.merges));
   staged.pivots.push(...structuredClone(sheet.pivots));
   staged.sparklines.push(...structuredClone(sheet.sparklines));
@@ -808,8 +869,7 @@ function preflightCellShiftMetadata(workbook: WorkbookModel, sheet: WorksheetMod
 
 interface AxisMetadataPlan {
   readonly sheets: readonly AxisSheetMetadataPlan[];
-  readonly tables: readonly WorkbookTableModel[];
-  readonly sources: ReadonlyMap<string, DataSourceManifest>;
+  readonly rangeOwners: readonly StructuralRangeOwnerDelta[];
   readonly printDocument: PrintDocumentSnapshot | undefined;
 }
 
@@ -817,7 +877,7 @@ const AXIS_REFERENCE_METADATA_FIELDS = [
   'conditionalFormats', 'dataValidations', 'pivots', 'sparklines', 'drawingPayloads', 'hyperlinks',
 ] as const;
 const AXIS_LOCAL_METADATA_FIELDS = [
-  'dataRegions', 'merges', 'sheetTables', 'drawings', 'spillRanges', 'protectionRules',
+  'merges', 'sheetTables', 'drawings', 'spillRanges', 'protectionRules',
   'autoFilter', 'bandedRule', 'outline', 'pane', 'hiddenRows', 'hiddenColumns', 'rowHeightsPx', 'columnWidthsPx',
 ] as const;
 type AxisMetadataField = typeof AXIS_REFERENCE_METADATA_FIELDS[number] | typeof AXIS_LOCAL_METADATA_FIELDS[number];
@@ -837,18 +897,10 @@ function planAxisMetadata(
   count: number,
   direction: 1 | -1,
 ): AxisMetadataPlan {
+  const rangeOwners = planAxisRangeOwners(workbook, sheet, axis, at, count, direction);
   const stagedSheets = cloneStructuralPreflightSheets(workbook, sheet);
   const staged = stagedSheets.find((candidate) => candidate.id === sheet.id);
   if (!staged) throw new Error(`STRUCTURAL_PATCH_INVARIANT: worksheet ${sheet.id} is absent from metadata preflight`);
-  const tables: WorkbookTableModel[] = [];
-  for (const table of workbook.dataModel.tables.values()) {
-    if (table.sourceRange?.sheetId === sheet.id) tables.push(structuredClone(table));
-  }
-  const sources = new Map<string, DataSourceManifest>();
-  for (const [id, source] of workbook.dataModel.sources) {
-    if (source.sourceRange?.sheetId === sheet.id) sources.set(id, structuredClone(source));
-  }
-  shiftDataRegionAxis(staged, axis, at, count, direction, sources);
   shiftMerges(staged, axis, at, count, direction);
   for (const owner of stagedSheets) {
     shiftRuleRanges(owner.conditionalFormats, axis, at, count, direction, staged.id);
@@ -862,7 +914,6 @@ function planAxisMetadata(
   shiftHiddenAndSizes(staged, axis, at, count, direction);
   shiftDrawings(staged, axis, at, count, direction);
   shiftSheetTables(staged, axis, at, count, direction);
-  shiftWorkbookTables(staged.id, axis, at, count, direction, tables);
   shiftReview(staged, axis, at, count, direction);
   shiftHyperlinks(staged, axis, at, count, direction);
   shiftHyperlinkTargets(workbook, stagedSheets, staged.id, axis, at, count, direction);
@@ -888,7 +939,8 @@ function planAxisMetadata(
       // different owner in its collection moved. Do this before any live write.
       if (Array.isArray(current) && Array.isArray(next)) {
         for (let index = 0; index < Math.min(current.length, next.length); index += 1) {
-          if (sameAxisMetadata(current[index], next[index])) next[index] = current[index];
+          const previous = current[index];
+          if (previous !== undefined && sameAxisMetadata(previous, next[index])) next[index] = previous;
         }
       }
     }
@@ -905,8 +957,7 @@ function planAxisMetadata(
   });
   return {
     sheets,
-    tables: tables.filter((table) => !sameAxisMetadata(workbook.dataModel.tables.get(table.id), table)),
-    sources: new Map([...sources].filter(([id, source]) => !sameAxisMetadata(workbook.dataModel.sources.get(id), source))),
+    rangeOwners,
     printDocument: !sameAxisMetadata(currentPrintDocument, printDocument) ? printDocument : undefined,
   };
 }
@@ -927,7 +978,6 @@ function applyAxisMetadataPlan(workbook: WorkbookModel, targetSheetId: string, p
     if (changedFields.has('hyperlinks')) applyAxisMetadataMap(sheet.hyperlinks, staged.hyperlinks);
     if (sheet.id !== targetSheetId) continue;
 
-    if (changedFields.has('dataRegions')) sheet.replaceDataRegions(staged.dataRegions);
     if (changedFields.has('merges')) applyAxisMetadataArray(sheet.merges, staged.merges);
     if (changedFields.has('sheetTables')) applyAxisMetadataArray(sheet.sheetTables, staged.sheetTables);
     if (changedFields.has('drawings')) applyAxisMetadataArray(sheet.drawings, staged.drawings);
@@ -954,8 +1004,7 @@ function applyAxisMetadataPlan(workbook: WorkbookModel, targetSheetId: string, p
     if (notes) sheet.review.replaceNotes(notes);
     if (threads) sheet.review.replaceThreads(threads);
   }
-  for (const table of plan.tables) workbook.dataModel.tables.set(table.id, table);
-  for (const [id, source] of plan.sources) workbook.dataModel.sources.set(id, source);
+  applyAxisRangeOwnerDeltas(workbook, targetSheetId, plan.rangeOwners);
   if (plan.printDocument) workbook.printDocuments.set(targetSheetId, plan.printDocument);
 }
 
@@ -1818,22 +1867,6 @@ function shiftSheetTables(sheet: WorksheetModel, axis: 'row' | 'column', at: num
     if (!shiftRangeRef(table.range, axis, at, count, direction)) throw new Error(`Structural mutation removes sheet table ${table.id}`);
   }
   for (const table of sheet.sheetTables) shiftTableAutoFilter(table, axis, at, count, direction);
-}
-
-function shiftWorkbookTables(
-  sheetId: string,
-  axis: 'row' | 'column',
-  at: number,
-  count: number,
-  direction: 1 | -1,
-  tables: Iterable<WorkbookTableModel>,
-): void {
-  for (const table of tables) {
-    if (table.sourceRange?.sheetId !== sheetId) continue;
-    if (!shiftRangeRef(table.sourceRange, axis, at, count, direction)) {
-      throw new Error(`Workbook table ${table.id} lost its source range`);
-    }
-  }
 }
 
 function shiftReview(sheet: WorksheetModel, axis: 'row' | 'column', at: number, count: number, direction: 1 | -1): void {
