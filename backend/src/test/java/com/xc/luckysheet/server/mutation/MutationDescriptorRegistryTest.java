@@ -178,7 +178,7 @@ class MutationDescriptorRegistryTest {
 
         ObjectNode successfulCandidate = baseSnapshot.deepCopy();
         JsonNode applied = registry.applyStructuralPatchOnOwnedSnapshot(successfulCandidate,
-                new StructuralPatch(StructuralPatch.VERSION, "rows.inserted", List.of(firstDelta)));
+                new StructuralPatch(StructuralPatch.VERSION, "rows.inserted", List.of(firstDelta), List.of(), List.of()));
 
         assertSame(successfulCandidate, applied);
         assertEquals("=A2", applied.path("sheets").get(0).path("cells").path("0").path("0").path("formula").asText());
@@ -188,7 +188,7 @@ class MutationDescriptorRegistryTest {
         ((ObjectNode) rejectedCandidate.path("sheets").get(0).path("cells").path("0").path("1")).put("formula", "=BROKEN");
         JsonNode rejectedBase = rejectedCandidate.deepCopy();
         StructuralPatch patchWithConflict = new StructuralPatch(
-                StructuralPatch.VERSION, "rows.inserted", List.of(firstDelta, conflictingDelta));
+                StructuralPatch.VERSION, "rows.inserted", List.of(firstDelta, conflictingDelta), List.of(), List.of());
 
         ServiceException error = assertThrows(ServiceException.class,
                 () -> registry.applyStructuralPatchOnOwnedSnapshot(rejectedCandidate, patchWithConflict));
@@ -404,7 +404,7 @@ class MutationDescriptorRegistryTest {
         assertEquals("=A3", replayed.path("definedNames").path("TaxRate").asText());
 
         StructuralPatch nameOnlyInverse = new StructuralPatch(StructuralPatch.VERSION, "rows.deleted", List.of(),
-                List.of(nameDelta.inverse()));
+                List.of(nameDelta.inverse()), List.of());
         JsonNode restoredName = registry.applyStructuralPatch(replayed, nameOnlyInverse);
         assertEquals("=A2", restoredName.path("definedNameModels").get(0).path("formula").asText());
         assertEquals(3, restoredName.path("definedNameModels").get(0).path("anchor").path("row").asInt());
@@ -413,7 +413,7 @@ class MutationDescriptorRegistryTest {
         assertEquals(original, snapshot);
 
         StructuralPatch corruptPatch = new StructuralPatch(StructuralPatch.VERSION, "rows.deleted",
-                patch.formulaOwnerDeltas());
+                patch.formulaOwnerDeltas(), patch.definedNameOwnerDeltas(), patch.rangeOwnerDeltas());
         CommittedOperationMutation corrupt = CommittedOperationMutation.from(
                 mutation, affectedRanges, registry.structuralImpactRanges(corruptPatch), corruptPatch);
         ServiceException error = assertThrows(ServiceException.class,
@@ -1954,7 +1954,7 @@ class MutationDescriptorRegistryTest {
         var formulaObjectDeltas = axisApplication.structuralPatch().formulaOwnerDeltas().stream()
                 .filter(delta -> "formula-object".equals(delta.kind())).toList();
         assertEquals(13, formulaObjectDeltas.size());
-        var formulaObjectPatch = new StructuralPatch(StructuralPatch.VERSION, "rows.inserted", formulaObjectDeltas);
+        var formulaObjectPatch = new StructuralPatch(StructuralPatch.VERSION, "rows.inserted", formulaObjectDeltas, List.of(), List.of());
         JsonNode restoredObjects = registry.applyStructuralPatch(shifted, formulaObjectPatch.inverse("rows.deleted"));
         assertEquals("=A1", restoredObjects.path("sheets").get(0).path("tableSheet").path("columns").get(0).path("formula").asText());
         assertEquals("=A1", restoredObjects.path("sheets").get(0).path("drawingPayloads").path("shape").path("propertyFormula").asText());
@@ -2681,6 +2681,100 @@ class MutationDescriptorRegistryTest {
             assertEquals("VALIDATION_ERROR", error.code());
             assertEquals(before, snapshot);
         }
+    }
+
+    @Test
+    void axisPatchCarriesEveryShiftedRangeOwnerAndInverseRestoresGeometry() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        ObjectNode snapshot = workbookSourceRangePermutationSnapshot();
+        ObjectNode targetSheet = (ObjectNode) snapshot.path("sheets").get(0);
+        ObjectNode region = targetSheet.putArray("dataRegions").addObject()
+                .put("id", "region-1").put("sourceId", "data-source").put("headerRow", 0).put("revision", 0);
+        region.set("range", range(0, 2, 0, 0));
+        OperationMutation insert = new OperationMutation("rows.inserted", "sheet-1", mapper.readTree(
+                "{\"sheetId\":\"sheet-1\",\"at\":0,\"count\":1}"));
+        MutationApplication application = registry.require(insert.id(), false).applyWithPatch(snapshot, insert);
+
+        StructuralPatch patch = application.structuralPatch();
+        assertEquals(List.of("data-region", "workbook-table", "data-source"),
+                patch.rangeOwnerDeltas().stream().map(StructuralPatch.RangeOwnerDelta::ownerKind).toList());
+        assertEquals(new RangeRef("sheet-1", 1, 3, 0, 0), patch.rangeOwnerDeltas().get(0).afterRange());
+        assertEquals(new RangeRef("sheet-1", 1, 3, 0, 0), patch.rangeOwnerDeltas().get(1).afterRange());
+        assertEquals(new RangeRef("sheet-1", 1, 3, 0, 0), patch.rangeOwnerDeltas().get(2).afterRange());
+
+        JsonNode undoneOwners = registry.applyStructuralPatch(application.snapshot(), patch.inverse("rows.deleted"));
+        assertEquals(snapshot.path("sheets").get(0).path("dataRegions"), undoneOwners.path("sheets").get(0).path("dataRegions"));
+        assertEquals(snapshot.path("dataModel"), undoneOwners.path("dataModel"));
+    }
+
+    @Test
+    void axisInsertInsideWorkbookTableFailsClosedBeforeChangingTheSnapshot() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        ObjectNode snapshot = workbookSourceRangePermutationSnapshot();
+        ((ArrayNode) snapshot.path("dataModel").path("sources")).removeAll();
+        OperationMutation insert = new OperationMutation("rows.inserted", "sheet-1", mapper.readTree(
+                "{\"sheetId\":\"sheet-1\",\"at\":1,\"count\":1}"));
+        JsonNode before = snapshot.deepCopy();
+
+        ServiceException error = assertThrows(ServiceException.class,
+                () -> registry.require(insert.id(), false).apply(snapshot, insert));
+
+        assertEquals("SERVICE_UNAVAILABLE", error.code());
+        assertTrue(error.getMessage().contains("requires a table transaction"));
+        assertEquals(before, snapshot);
+    }
+
+    @Test
+    void rowPermutationPatchCarriesDataRegionAndBackingRangeOwnerFacts() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        ObjectNode snapshot = workbookSourceRangePermutationSnapshot();
+        ObjectNode targetSheet = (ObjectNode) snapshot.path("sheets").get(0);
+        ObjectNode region = targetSheet.putArray("dataRegions").addObject()
+                .put("id", "region-1").put("sourceId", "data-source").put("headerRow", 0).put("revision", 0);
+        region.set("range", range(0, 2, 0, 0));
+        OperationMutation raw = new OperationMutation("rows.permuted", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":0,"endRow":3,"startColumn":0,"endColumn":0},"sourceRows":[3,0,1,2]}
+                """));
+        OperationMutation permutation = withSortContext(raw, range(0, 3, 0, 0), "worksheet", null, false, 0);
+
+        MutationApplication application = registry.prepare(snapshot, permutation, WorkbookAclRole.OWNER)
+                .descriptor().applyWithPatch(snapshot, permutation);
+
+        StructuralPatch patch = application.structuralPatch();
+        assertEquals(List.of("data-region", "workbook-table", "data-source"),
+                patch.rangeOwnerDeltas().stream().map(StructuralPatch.RangeOwnerDelta::ownerKind).toList());
+        assertEquals(new RangeRef("sheet-1", 0, 2, 0, 0), patch.rangeOwnerDeltas().get(0).beforeRange());
+        assertEquals(new RangeRef("sheet-1", 1, 3, 0, 0), patch.rangeOwnerDeltas().get(0).afterRange());
+        assertEquals(1, patch.rangeOwnerDeltas().get(0).afterHeaderRow());
+
+        JsonNode undoneOwners = registry.applyStructuralPatch(application.snapshot(), patch.inverse("rows.permuted"));
+        assertEquals(snapshot.path("sheets").get(0).path("dataRegions"), undoneOwners.path("sheets").get(0).path("dataRegions"));
+        assertEquals(snapshot.path("dataModel"), undoneOwners.path("dataModel"));
+    }
+
+    @Test
+    void rangeMovePatchCarriesRelocatedRangeOwnersAndInverseRestoresThem() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        ObjectNode snapshot = workbookSourceRangePermutationSnapshot();
+        ObjectNode targetSheet = (ObjectNode) snapshot.path("sheets").get(0);
+        ObjectNode region = targetSheet.putArray("dataRegions").addObject()
+                .put("id", "region-1").put("sourceId", "data-source").put("headerRow", 0).put("revision", 0);
+        region.set("range", range(0, 2, 0, 0));
+        OperationMutation move = new OperationMutation("range.move", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","sourceRange":{"sheetId":"sheet-1","startRow":0,"endRow":2,"startColumn":0,"endColumn":0},"targetOrigin":{"row":4,"column":0}}
+                """));
+
+        MutationApplication application = registry.require(move.id(), false).applyWithPatch(snapshot, move);
+
+        StructuralPatch patch = application.structuralPatch();
+        assertEquals(List.of("data-region", "workbook-table", "data-source"),
+                patch.rangeOwnerDeltas().stream().map(StructuralPatch.RangeOwnerDelta::ownerKind).toList());
+        assertEquals(new RangeRef("sheet-1", 4, 6, 0, 0), patch.rangeOwnerDeltas().get(0).afterRange());
+        assertEquals(4, patch.rangeOwnerDeltas().get(0).afterHeaderRow());
+
+        JsonNode undoneOwners = registry.applyStructuralPatch(application.snapshot(), patch.inverse("range.move"));
+        assertEquals(snapshot.path("sheets").get(0).path("dataRegions"), undoneOwners.path("sheets").get(0).path("dataRegions"));
+        assertEquals(snapshot.path("dataModel"), undoneOwners.path("dataModel"));
     }
 
     @Test

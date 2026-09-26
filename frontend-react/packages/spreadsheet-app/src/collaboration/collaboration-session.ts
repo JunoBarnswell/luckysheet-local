@@ -50,6 +50,14 @@ function structuralPatchImpactRanges(
       ranges.set(JSON.stringify([range.sheetId, range.startRow, range.endRow, range.startColumn, range.endColumn]), range);
     }
   }
+  for (const delta of patch.rangeOwnerDeltas) {
+    const deltaRanges: StructuralImpactRange[] = delta.ownerKind === 'data-region'
+      ? [delta.before.range, delta.after.range]
+      : [delta.before, delta.after];
+    for (const range of deltaRanges) {
+      ranges.set(JSON.stringify([range.sheetId, range.startRow, range.endRow, range.startColumn, range.endColumn]), range);
+    }
+  }
   return [...ranges.values()];
 }
 
@@ -71,6 +79,7 @@ function committedMutationInfos(operation: CommittedOperationEnvelope): Mutation
     ...(mutation.structuralPatch ? {
       structuralFormulaOwnerDeltas: structuredClone(mutation.structuralPatch.formulaOwnerDeltas),
       structuralDefinedNameOwnerDeltas: structuredClone(mutation.structuralPatch.definedNameOwnerDeltas),
+      structuralRangeOwnerDeltas: structuredClone(mutation.structuralPatch.rangeOwnerDeltas),
     } : {}),
   }));
 }
@@ -224,6 +233,7 @@ export class CollaborationSession {
       ...(mutation.structuralPatch ? {
         structuralFormulaOwnerDeltas: structuredClone(mutation.structuralPatch.formulaOwnerDeltas),
         structuralDefinedNameOwnerDeltas: structuredClone(mutation.structuralPatch.definedNameOwnerDeltas),
+        structuralRangeOwnerDeltas: structuredClone(mutation.structuralPatch.rangeOwnerDeltas),
       } : {}),
     })), { operationId: operation.operationId, baseRevision: operation.baseRevision, revision: operation.revision });
     this.committedOperationIds.add(operation.operationId);

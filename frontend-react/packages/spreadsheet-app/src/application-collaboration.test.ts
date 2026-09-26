@@ -158,10 +158,11 @@ describe('WorkbookSession collaboration integration', () => {
           affectedRanges,
           structuralImpactRanges: impact,
           structuralPatch: {
-            version: 3 as const,
+            version: 4 as const,
             mutationId: 'rows.inserted',
             formulaOwnerDeltas: [formulaOwnerDelta],
             definedNameOwnerDeltas: [],
+            rangeOwnerDeltas: [],
           },
         }],
       };

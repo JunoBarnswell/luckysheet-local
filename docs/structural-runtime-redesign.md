@@ -1439,3 +1439,39 @@ PR 上两个 `canonical-build` job 使用相同 head，前端依赖安装与前�
 新增源码回归覆盖：成功的多 owner patch 不得调用 `snapshot()`；第二个 owner precondition 失败时首个 owner 不得变化；owner 状态合法但 cell storage normalization 失败时也不得部分写入。按静态优先指令未执行本地测试/build/lint/typecheck/browser；`git diff --check` 通过。尚无该新 head 的 CI 结果、浏览器协同实测、原生 Excel 往返或 CPU/heap benchmark。无 schema/data/protocol migration；失败仍 fail-close，回滚方式为整体 revert 本 follow-up。
 
 **CI follow-up (`5fe481de`)**：两条 `canonical-build` 均因 `formula-rule` 预检状态将 Conditional Formatting 的 `value1` 误窄为 `string | undefined`，而模型契约允许 `number`，报同一 TS2322。状态类型已保留 `number`；比较仍针对 `beforeFormula` / `afterFormula` 字符串，因此数值 owner 继续 fail-close，与原应用路径相同。此纯类型修正尚待新 head 的远端 CI 确认；未在本地运行 typecheck。
+
+### Follow-up — Java range-owner writer、undo 与 v4 历史迁移（2026-09-26）
+
+**边界**：把 `data-region`、`workbook-table`、`data-source` 几何事实从 core/command-runtime 的本地 history 延伸到 Java 权威 reducer、exact StructuralPatch v4、协作 ACK/remote consumer 与 operation-log/outbox replay。Runtime 仅接受 v4；Flyway repeatable migration 在明示迁移边界内验证并升级 v1–v3，不加 runtime fallback。
+
+六轮静态复核：
+
+1. **轴插删生产端**：`applyAxis` 已在变换前后采集 owner，但构造补丁时丢弃了结果。现在 v4 patch 返回 range deltas，覆盖 before/after impact 与 owner protection preconditions。
+2. **移动与排序生产端**：`range.move` 会搬移 region/table/source ranges；`rows.permuted` 会重映射 workbook table/source ranges；旧返回值只含 formula owners。现在两条路径都采集并发出 before/after facts。排序还漏掉了 `dataRegions` 的实际几何与 headerRow 更新；现增加单值范围预检、header 归属校验和一致的 remap。
+3. **服务端消费与拒绝原子性**：按稳定 owner identity 建目标索引，先预检所有当前状态，再批量更新目标 owner；缺失、重复、漂移或非预期 before/after 均 fail-close。历史 patch inverse 可恢复同一 owner facts；测试源码覆盖 axis、move、permutation 往返。
+4. **wire 与跨端 impact**：Java、protocol validator、ACK/remote `MutationInfo` 统一要求精确 v4 字段；formula/name 与三类 range owners 的影响范围按同一顺序去重。旧 v3 客户端输入被拒绝，不让双方以缺字段的空 range delta 假装一致。
+5. **持久化迁移**：迁移 checksum 前进到 v4；v1–v3 的旧 impact 列表仍按其 formula-only 语义验证，再将日志改写为 v4 impact；v2 精确字段比较排除新 range 字段；v4 重放必须与 reducer 完全相等。待发布 outbox 从已迁移 operation-log source 重写，避免两份 envelope 分叉。迁移测试源码覆盖 v1/v2/v3 升级、v3 impact 篡改拒绝及 v4 幂等接受。
+6. **边界与失败语义**：该协议要求物理 extent 不变；服务端原先允许在 workbook table 内插入并扩展范围，随后会触发非业务型构造异常。现于 mutation 前以可观察 `UNSUPPORTED_FEATURE` 拒绝这类尚无 data-block/table transaction 的扩容；同时修正静态签名复核发现的无效 header-row 校验调用，以及 wire key 断言仍停留在 v3 的测试源码。
+
+本轮确认并修复 **8 个实现/契约根因**，另修正 **1 个过期测试契约断言**。未把轴类型、range owner 类型、版本分支或成功/拒绝断言拆分计数；本轮仍未达到目标中提出的 30 个独立问题，因此不能据此宣称整个 Structural Editing & Reference Integrity 目标已完成。
+
+新增 Java reducer、merge、migration 回归源码及既有 TS protocol/ACK/history 用例；按当前静态阶段要求没有运行本地 tests/build/lint/typecheck，也没有实测。该 commit 的 operation-log payload 升级是持久化写入；部署/迁移前需备份数据库。若 v4 repeatable migration 已应用，回滚应用代码必须同时恢复迁移前数据库快照；仅回退代码不会把 v4 历史降回旧版本。PR #345 仍为 draft，远端 CI 与最终实测待后续执行。
+
+**尚未覆盖的边界**：当前 v4 range-owner union 仍只覆盖以上三类。Chart/pivot/drawing source ranges 等其它 metadata references 即使被 structural reducer 重映射，也尚未纳入同一 owner-fact 协议；OOXML 往返、浏览器协同和原生 Excel corpus 也未验收。它们仍属于未完成目标，不能由本节结果代替。
+
+### Follow-up — range-owner history 与 ACK 消费
+
+**范围**：把 core-model 已生成的 `data-region`、`workbook-table`、`data-source` 三类几何 facts 接入本地 `CommandRuntime` history/undo/redo 和 committed-ACK consumer；尚未扩展 StructuralPatch wire v3、协作协议、Java reducer/日志或 OOXML。本节不能被解释成 range-owner facts 已跨端持久化。
+
+六轮静态自审：
+
+1. **生产者至消费者**：轴变换返回的 `rangeOwnerDeltas` 之前既不保存在 `MutationInfo`，也不进入 inverse history；已将精确 before/after facts 写入 mutation/inverse，并随 undo/redo/remote replay effect 暴露。ACK 与本地操作先按完整 facts 比较，server patch 不同会使该 history entry 失效；服务端目前仍未传这些 facts。
+2. **状态与身份**：data-region 按 `(sheetId, regionId)`，table/source 按各自稳定 ID 定位；读取必须唯一，sheet/range identity 要一致。facts 在 mutation registry、ACK sparse preflight 和 apply 前验证 Excel 坐标上限、sheet identity、轴平移不改变几何尺寸及 data-region header 边界；owner 缺失、重复、漂移均 fail-close。
+3. **提交原子性**：ACK 的所有 owner facts 先做 sparse overlay preflight，再可能失效 history 或写 live model；第二个 owner 的拒绝不会留下第一个 owner 的部分范围更新。历史失败仍由 `preflightHistory` 在 detached workbook 上先验证，拒绝后不移动 undo/redo 栈。
+4. **data-region 扇出与内存**：旧消费草案按每个 region 重新线性搜索 owner 并重复调用 `replaceDataRegions`，D 个变化可能引发 D 次全 sheet 扫描/索引重建。现先为每个受影响 sheet 建一次 ID 索引，批量比较所有 delta，再每张 sheet 单次替换；`WorksheetModel.replaceDataRegions` 复用已经完整验证的 bounds index，不再清空后第二次重建。仍有一次随该 sheet region 数线性增长的 replace，不宣称 affected-only 或测得提速。
+5. **其他 range owners 与规则兼容**：table/source 只写 `sourceRange`，不 clone/替换 fields、blocks、rowOrder 或 revision；范围不变时不写。混合 table/source/region facts 在同一 ACK item 先整体核验，且旧公式/name sparse preflight 保持顺序。回归源码增加两个 region 同批只 replace 一次、table/source 成功及第二个 owner 拒绝原子性断言；修正数据源 fixture，使字段数/范围宽度/rowCount 满足 manifest 契约。
+6. **协议与接受边界**：本地 ACK consumer 即使已支持，也不能从当前 exact-key StructuralPatch v3 收到 range deltas；Java patch constructor、reducer 和持久化迁移同样尚未接入。因此此提交仍是分阶段内部落点，不移除服务端旧 reducer、不声称协作重连或服务端 undo/redo 闭环，也没有 schema migration。下一步必须按新精确版本迁移 wire/log/outbox，再同步 Java authority 与 OT/history。
+
+本轮按独立根因确认并修复 **4 项**：range facts 没有进入客户端 history/ACK 消费；region fan-out 触发重复线性扫描/索引重建；ACK precondition 失败前先改写 history 状态；authoritative geometry 缺少运行时边界/身份校验。数据源测试夹具错误是测试输入修正，不计产品问题。没有将各 owner 类型、不同 replay 入口或断言拆分凑数，本轮未达到“至少 30 个独立问题”；要达到该数量必须继续扩大到完整协议/Java/OT/持久化链路并只计有证据的根因。
+
+按要求只完成源码静态检查并新增回归源码；未运行 tests/build/lint/typecheck/browser，也没有本轮 head 的 CI 结果。只读 diff/whitespace 检查尚待提交前执行。没有协议/数据迁移；PR #345 保持 draft。此分步修改需与 range-owner wire/Java 迁移保持同一 PR，若回退应整体 revert 本节实现、类型消费与回归源码，不能留下客户端半套 replay。

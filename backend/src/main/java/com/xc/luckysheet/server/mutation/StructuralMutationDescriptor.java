@@ -114,7 +114,8 @@ final class StructuralMutationDescriptor extends CanonicalJsonMutationDescriptor
                     StructuralPatch.VERSION,
                     mutation.id(),
                     structuralPatch == null ? List.of() : structuralPatch.formulaOwnerDeltas(),
-                    definedNameOwnerDeltas);
+                    definedNameOwnerDeltas,
+                    structuralPatch == null ? List.of() : structuralPatch.rangeOwnerDeltas());
         }
         return new MutationApplication(root, structuralPatch);
     }

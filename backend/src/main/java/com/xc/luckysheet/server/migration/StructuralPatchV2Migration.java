@@ -8,6 +8,7 @@ import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.xc.luckysheet.server.contract.CommittedOperationEnvelope;
 import com.xc.luckysheet.server.contract.CommittedOperationMutation;
 import com.xc.luckysheet.server.contract.OperationMutation;
+import com.xc.luckysheet.server.contract.RangeRef;
 import com.xc.luckysheet.server.contract.StructuralPatch;
 import com.xc.luckysheet.server.contract.WorkbookSnapshotValidator;
 import com.xc.luckysheet.server.mutation.MutationDescriptorRegistry;
@@ -28,7 +29,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.HexFormat;
 
-/** Fail-closed replay boundary upgrading verified history and snapshots to structural patch v3. */
+/** Fail-closed replay boundary upgrading verified history and snapshots to structural patch v4. */
 public abstract class StructuralPatchV2Migration extends BaseJavaMigration {
     private final ObjectMapper mapper = new ObjectMapper().registerModule(new JavaTimeModule());
 
@@ -39,7 +40,7 @@ public abstract class StructuralPatchV2Migration extends BaseJavaMigration {
 
     @Override
     public Integer getChecksum() {
-        return 3;
+        return 4;
     }
 
     @Override
@@ -579,7 +580,7 @@ public abstract class StructuralPatchV2Migration extends BaseJavaMigration {
         }
     }
 
-    private void rewriteMutationPatches(
+    void rewriteMutationPatches(
             ObjectNode rawEnvelope,
             CommittedOperationEnvelope operation,
             List<Optional<StructuralPatch>> patches,
@@ -595,7 +596,7 @@ public abstract class StructuralPatchV2Migration extends BaseJavaMigration {
             ObjectNode rawMutation = (ObjectNode) rawMutations.get(index);
             Optional<StructuralPatch> derived = patches.get(index);
             JsonNode oldPatch = rawMutation.get("structuralPatch");
-            List<com.xc.luckysheet.server.contract.RangeRef> expectedImpact = derived
+            List<RangeRef> expectedImpact = derived
                     .map(registry::structuralImpactRanges).orElseGet(List::of);
             JsonNode oldImpact = rawMutation.get("structuralImpactRanges");
             JsonNode expectedImpactNode = mapper.valueToTree(expectedImpact);
@@ -623,15 +624,23 @@ public abstract class StructuralPatchV2Migration extends BaseJavaMigration {
                 rawMutation.set("structuralImpactRanges", expectedImpactNode);
                 continue;
             }
-            if (oldImpact == null || !oldImpact.equals(expectedImpactNode)) {
-                throw failure("STRUCTURAL_IMPACT_MISMATCH", unitId, "stored impact differs from reducer at revision " + revision);
-            }
             if (oldPatch == null || !oldPatch.isObject()
                     || !oldPatch.path("version").isIntegralNumber()
+                    || !oldPatch.path("version").canConvertToInt()
                     || !patch.mutationId().equals(oldPatch.path("mutationId").asText())) {
                 throw failure("STRUCTURAL_PATCH_LEGACY_INVALID", unitId, "stored structural patch is invalid at revision " + revision);
             }
             int oldVersion = oldPatch.path("version").asInt(-1);
+            List<RangeRef> expectedStoredImpact = switch (oldVersion) {
+                case 1, 2, 3 -> legacyStructuralImpactRanges(patch, registry);
+                case 4 -> expectedImpact;
+                default -> throw failure("STRUCTURAL_PATCH_VERSION_UNSUPPORTED", unitId,
+                        "stored patch version is unsupported at revision " + revision);
+            };
+            if (oldImpact == null || !oldImpact.equals(mapper.valueToTree(expectedStoredImpact))) {
+                throw failure("STRUCTURAL_IMPACT_MISMATCH", unitId,
+                        "stored impact differs from its structural patch version at revision " + revision);
+            }
             ObjectNode expectedOldPatch = mapper.valueToTree(patch);
             if (oldVersion == 1) {
                 if (oldPatch.has("definedNameOwnerDeltas")
@@ -652,16 +661,43 @@ public abstract class StructuralPatchV2Migration extends BaseJavaMigration {
                 if (!fields.equals(Set.of("version", "mutationId", "formulaOwnerDeltas", "definedNameOwnerDeltas"))) {
                     throw failure("STRUCTURAL_PATCH_V2_FIELDS", unitId, "stored v2 patch has a non-canonical field set at revision " + revision);
                 }
-                expectedOldPatch.put("version", 2);
-                if (!oldPatch.equals(expectedOldPatch)) {
+                ObjectNode expectedV2Patch = expectedOldPatch.deepCopy();
+                expectedV2Patch.put("version", 2);
+                expectedV2Patch.remove("rangeOwnerDeltas");
+                if (!oldPatch.equals(expectedV2Patch)) {
                     throw failure("STRUCTURAL_PATCH_V2_MISMATCH", unitId, "stored v2 patch differs from legacy-derived owner state at revision " + revision);
                 }
-            } else {
-                throw failure("STRUCTURAL_PATCH_VERSION_UNSUPPORTED", unitId, "stored patch version is unsupported at revision " + revision);
+            } else if (oldVersion == 3) {
+                Set<String> fields = new HashSet<>();
+                oldPatch.fieldNames().forEachRemaining(fields::add);
+                if (!fields.equals(Set.of("version", "mutationId", "formulaOwnerDeltas", "definedNameOwnerDeltas"))) {
+                    throw failure("STRUCTURAL_PATCH_V3_FIELDS", unitId, "stored v3 patch has a non-canonical field set at revision " + revision);
+                }
+                ObjectNode expectedV3Patch = expectedOldPatch.deepCopy();
+                expectedV3Patch.put("version", 3);
+                expectedV3Patch.remove("rangeOwnerDeltas");
+                if (!oldPatch.equals(expectedV3Patch)) {
+                    throw failure("STRUCTURAL_PATCH_V3_MISMATCH", unitId, "stored v3 formula/name owners differ from replay at revision " + revision);
+                }
+            } else if (oldVersion == 4) {
+                Set<String> fields = new HashSet<>();
+                oldPatch.fieldNames().forEachRemaining(fields::add);
+                if (!fields.equals(Set.of("version", "mutationId", "formulaOwnerDeltas", "definedNameOwnerDeltas", "rangeOwnerDeltas"))) {
+                    throw failure("STRUCTURAL_PATCH_V4_FIELDS", unitId, "stored v4 patch has a non-canonical field set at revision " + revision);
+                }
+                if (!oldPatch.equals(expectedOldPatch)) {
+                    throw failure("STRUCTURAL_PATCH_V4_MISMATCH", unitId, "stored v4 owner facts differ from replay at revision " + revision);
+                }
             }
             rawMutation.set("structuralPatch", mapper.valueToTree(patch));
             rawMutation.set("structuralImpactRanges", expectedImpactNode);
         }
+    }
+
+    private List<RangeRef> legacyStructuralImpactRanges(StructuralPatch patch, MutationDescriptorRegistry registry) {
+        StructuralPatch formulaOwnersOnly = new StructuralPatch(
+                StructuralPatch.VERSION, patch.mutationId(), patch.formulaOwnerDeltas(), List.of(), List.of());
+        return registry.structuralImpactRanges(formulaOwnersOnly);
     }
 
     private void migratePendingOutbox(Connection connection) throws Exception {

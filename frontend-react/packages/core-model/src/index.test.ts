@@ -560,6 +560,16 @@ test('Worksheet used range combines the incremental cell and data-region indexes
   assert.deepEqual(sheet.usedRange, {
     sheetId: sheet.id, startRow: 5, endRow: 50, startColumn: 1, endColumn: 30,
   });
+  const replacement = {
+    id: 'region-2', sourceId: 'source-1',
+    range: { sheetId: sheet.id, startRow: 60, endRow: 70, startColumn: 10, endColumn: 30 },
+    headerRow: 60, revision: 0,
+  };
+  sheet.replaceDataRegions([replacement]);
+  assert.equal(sheet.usedRange.endRow, 70);
+  assert.throws(() => sheet.replaceDataRegions([replacement, { ...replacement, range: { ...replacement.range, startRow: 80, endRow: 90 } }]), /already exists/);
+  assert.deepEqual(sheet.dataRegions, [replacement]);
+  assert.equal(sheet.usedRange.endRow, 70);
   sheet.removeDataRegionAt(0);
   assert.deepEqual(sheet.usedRange, {
     sheetId: sheet.id, startRow: 5, endRow: 50, startColumn: 1, endColumn: 2,

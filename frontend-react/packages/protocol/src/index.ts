@@ -7,6 +7,7 @@ import type {
   RangeRef,
   StructuralFormulaOwnerDelta,
   StructuralDefinedNameOwnerDelta,
+  StructuralRangeOwnerDelta,
   SheetDataRegion,
   TableScalar,
   WorkbookSnapshot,
@@ -88,10 +89,11 @@ export interface OperationIntent {
 
 /** Server-derived reference-owner effects for one committed structural mutation. */
 export interface StructuralPatch {
-  version: 3;
+  version: 4;
   mutationId: string;
   formulaOwnerDeltas: StructuralFormulaOwnerDelta[];
   definedNameOwnerDeltas: StructuralDefinedNameOwnerDelta[];
+  rangeOwnerDeltas: StructuralRangeOwnerDelta[];
 }
 
 export interface OperationEnvelope {
@@ -1010,9 +1012,9 @@ export function validateDataSourceMutationParams(
 
 export function validateStructuralPatch(value: unknown, mutationId: string): StructuralPatch {
   const patch = requireRecord(value, 'Committed structural patch');
-  validateExactKeys(patch, ['version', 'mutationId', 'formulaOwnerDeltas', 'definedNameOwnerDeltas'], 'Committed structural patch');
-  if (patch.version !== 3 || patch.mutationId !== mutationId || !Array.isArray(patch.formulaOwnerDeltas)
-    || !Array.isArray(patch.definedNameOwnerDeltas)) {
+  validateExactKeys(patch, ['version', 'mutationId', 'formulaOwnerDeltas', 'definedNameOwnerDeltas', 'rangeOwnerDeltas'], 'Committed structural patch');
+  if (patch.version !== 4 || patch.mutationId !== mutationId || !Array.isArray(patch.formulaOwnerDeltas)
+    || !Array.isArray(patch.definedNameOwnerDeltas) || !Array.isArray(patch.rangeOwnerDeltas)) {
     throw new Error('Committed structural patch header is invalid');
   }
   if (!['rows.inserted', 'rows.deleted', 'columns.inserted', 'columns.deleted', 'cells.inserted', 'cells.deleted', 'cells.inserted.restore', 'cells.deleted.restore', 'rows.permuted', 'range.move', 'sheetTable.update'].includes(mutationId)) {
@@ -1028,21 +1030,23 @@ export function validateStructuralPatch(value: unknown, mutationId: string): Str
     }
     return { sheetId: item.sheetId, row: Number(item.row), column: Number(item.column) };
   };
+  const range = (rawRange: unknown, label: string): RangeRef => {
+    const item = requireRecord(rawRange, label);
+    validateExactKeys(item, ['sheetId', 'startRow', 'endRow', 'startColumn', 'endColumn'], label);
+    if (!isRangeRef(item) || Number(item.endRow) > 1_048_575 || Number(item.endColumn) > 16_383) {
+      throw new Error(`${label} is invalid or outside worksheet bounds`);
+    }
+    return {
+      sheetId: item.sheetId as string,
+      startRow: Number(item.startRow),
+      endRow: Number(item.endRow),
+      startColumn: Number(item.startColumn),
+      endColumn: Number(item.endColumn),
+    };
+  };
   const formulaOwnerDeltas = patch.formulaOwnerDeltas.map((raw, index) => {
     const delta = requireRecord(raw, `Committed structural patch delta ${index}`);
     const label = `Committed structural patch delta ${index}`;
-    const range = (rawRange: unknown, label: string): RangeRef => {
-      const item = requireRecord(rawRange, label);
-      validateExactKeys(item, ['sheetId', 'startRow', 'endRow', 'startColumn', 'endColumn'], label);
-      if (!isRangeRef(item)) throw new Error(`${label} is invalid`);
-      return {
-        sheetId: item.sheetId as string,
-        startRow: Number(item.startRow),
-        endRow: Number(item.endRow),
-        startColumn: Number(item.startColumn),
-        endColumn: Number(item.endColumn),
-      };
-    };
     const state = (rawState: unknown, label: string) => {
       const item = requireRecord(rawState, label);
       validateExactKeys(item, ['formula', 'sourceFormula', 'barcodeFormula'], label);
@@ -1230,7 +1234,57 @@ export function validateStructuralPatch(value: unknown, mutationId: string): Str
     if (definedNameOwnerKeys.has(key)) throw new Error('Committed structural patch contains duplicate defined-name owner deltas');
     definedNameOwnerKeys.add(key);
   }
-  return { version: 3, mutationId, formulaOwnerDeltas, definedNameOwnerDeltas };
+  const rangeOwnerDeltas = patch.rangeOwnerDeltas.map((raw, index): StructuralRangeOwnerDelta => {
+    const label = `Committed structural patch range-owner delta ${index}`;
+    const delta = requireRecord(raw, label);
+    if (delta.ownerKind === 'data-region') {
+      validateExactKeys(delta, ['ownerKind', 'sheetId', 'regionId', 'before', 'after'], label);
+      if (!isNonEmptyString(delta.sheetId) || !isNonEmptyString(delta.regionId)) {
+        throw new Error(`${label} data-region identity is invalid`);
+      }
+      const regionState = (rawState: unknown, stateLabel: string) => {
+        const state = requireRecord(rawState, stateLabel);
+        validateExactKeys(state, ['range', 'headerRow'], stateLabel);
+        const mappedRange = range(state.range, `${stateLabel}.range`);
+        if (mappedRange.sheetId !== delta.sheetId || !Number.isSafeInteger(state.headerRow)
+          || Number(state.headerRow) < mappedRange.startRow || Number(state.headerRow) > mappedRange.endRow) {
+          throw new Error(`${stateLabel} does not match its data-region identity or bounds`);
+        }
+        return { range: mappedRange, headerRow: Number(state.headerRow) };
+      };
+      const before = regionState(delta.before, `${label}.before`);
+      const after = regionState(delta.after, `${label}.after`);
+      if (before.range.endRow - before.range.startRow !== after.range.endRow - after.range.startRow
+        || before.range.endColumn - before.range.startColumn !== after.range.endColumn - after.range.startColumn
+        || JSON.stringify(before) === JSON.stringify(after)) {
+        throw new Error(`${label} data-region geometry is unchanged or changes physical extent`);
+      }
+      return { ownerKind: 'data-region', sheetId: delta.sheetId, regionId: delta.regionId, before, after };
+    }
+    if (delta.ownerKind !== 'workbook-table' && delta.ownerKind !== 'data-source') {
+      throw new Error(`${label} range-owner kind is unsupported`);
+    }
+    validateExactKeys(delta, ['ownerKind', 'ownerId', 'before', 'after'], label);
+    if (!isNonEmptyString(delta.ownerId)) throw new Error(`${label} identity is invalid`);
+    const before = range(delta.before, `${label}.before`);
+    const after = range(delta.after, `${label}.after`);
+    if (before.sheetId !== after.sheetId
+      || before.endRow - before.startRow !== after.endRow - after.startRow
+      || before.endColumn - before.startColumn !== after.endColumn - after.startColumn
+      || JSON.stringify(before) === JSON.stringify(after)) {
+      throw new Error(`${label} geometry is unchanged, cross-sheet, or changes physical extent`);
+    }
+    return { ownerKind: delta.ownerKind, ownerId: delta.ownerId, before, after };
+  });
+  const rangeOwnerKeys = new Set<string>();
+  for (const delta of rangeOwnerDeltas) {
+    const key = delta.ownerKind === 'data-region'
+      ? JSON.stringify([delta.ownerKind, delta.sheetId, delta.regionId])
+      : JSON.stringify([delta.ownerKind, delta.ownerId]);
+    if (rangeOwnerKeys.has(key)) throw new Error('Committed structural patch contains duplicate range-owner deltas');
+    rangeOwnerKeys.add(key);
+  }
+  return { version: 4, mutationId, formulaOwnerDeltas, definedNameOwnerDeltas, rangeOwnerDeltas };
 }
 
 /** Validate the shared dashboard state before it enters a recovery journal. */
@@ -2737,11 +2791,15 @@ function validateCommittedOperationEnvelope(value: unknown): CommittedOperationE
     }
     const actualImpact = (structuralImpactRanges ?? []) as RangeRef[];
     if (structuralPatch !== undefined) {
-      const expectedImpact = structuralPatch.formulaOwnerDeltas.flatMap((delta) => delta.kind === 'formula-cell'
+      const formulaImpact = structuralPatch.formulaOwnerDeltas.flatMap((delta) => delta.kind === 'formula-cell'
         ? [delta.beforeAddress, delta.afterAddress].map((address) => ({
           sheetId: address.sheetId, startRow: address.row, endRow: address.row, startColumn: address.column, endColumn: address.column,
         }))
         : delta.kind === 'formula-rule' ? [...delta.beforeRanges, ...delta.afterRanges] : []);
+      const rangeOwnerImpact = structuralPatch.rangeOwnerDeltas.flatMap((delta) => delta.ownerKind === 'data-region'
+        ? [delta.before.range, delta.after.range]
+        : [delta.before, delta.after]);
+      const expectedImpact = [...formulaImpact, ...rangeOwnerImpact];
       const uniqueExpected = [...new Map(expectedImpact.map((range) => [
         JSON.stringify([range.sheetId, range.startRow, range.endRow, range.startColumn, range.endColumn]), range,
       ])).values()];

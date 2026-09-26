@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { CALCULATION_CONTEXT_EFFECTS, WorkbookModel, type StructuralDefinedNameOwnerDelta, type StructuralFormulaOwnerDelta } from '@react-sheets/core-model';
+import { CALCULATION_CONTEXT_EFFECTS, WorkbookModel, type DataSourceManifest, type StructuralDefinedNameOwnerDelta, type StructuralFormulaOwnerDelta, type StructuralRangeOwnerDelta } from '@react-sheets/core-model';
 import { FormulaEngine } from '@react-sheets/formula-engine';
 import { CommandRegistry, CommandRuntime, type MutationInfo } from './index';
 
@@ -394,6 +394,170 @@ test('CommandRuntime records and guards defined-name owner patches in history', 
   assert.equal(runtime.getHistoryDepth().undo, 0);
   assert.match(runtime.getInvalidHistoryEntries()[0]?.invalidReason ?? '', /defined-name owner patch/);
   assert.equal(workbook.getDefinedNameExact('Rate', 'workbook')?.formula, '=A3');
+});
+
+test('CommandRuntime replays exact structural range-owner facts through undo and redo', () => {
+  const workbook = new WorkbookModel('unit-range-owner-history', 'Range Owner History');
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  const beforeRange = { sheetId: sheet.id, startRow: 2, endRow: 6, startColumn: 1, endColumn: 4 };
+  const afterRange = { ...beforeRange, startRow: 3, endRow: 7 };
+  sheet.replaceDataRegions([{ id: 'region-1', sourceId: 'source-1', range: beforeRange, headerRow: 2, revision: 4 }]);
+  const delta: StructuralRangeOwnerDelta = {
+    ownerKind: 'data-region',
+    sheetId: sheet.id,
+    regionId: 'region-1',
+    before: { range: beforeRange, headerRow: 2 },
+    after: { range: afterRange, headerRow: 3 },
+  };
+  const affectedRanges = [beforeRange, afterRange];
+  const runtime = new CommandRuntime(workbook);
+  const replayEffects: unknown[] = [];
+  runtime.onMutation((_mutation, source, effect) => {
+    if (source === 'undo' || source === 'redo') replayEffects.push(effect);
+  });
+  const metadata = (name: string, inverseId: string) => ({
+    schema: { name, validate: (value: unknown) => !!value && typeof value === 'object' },
+    permission: { capability: 'test.range-owner.write' },
+    affectedRanges: { resolve: () => affectedRanges, mode: 'exact' as const },
+    inversePolicy: { allowedMutationIds: [inverseId], minCount: 1 },
+  });
+  runtime.registry.registerMutation({
+    id: 'range.owner.transform',
+    handler: () => undefined,
+    metadata: metadata('RangeOwnerTransform', 'range.owner.restore'),
+  });
+  runtime.registry.registerMutation({
+    id: 'range.owner.restore',
+    handler: () => undefined,
+    metadata: metadata('RangeOwnerRestore', 'range.owner.transform'),
+  });
+  runtime.registry.registerCommand({
+    id: 'range.owner.transform',
+    execute: (_params, context) => {
+      context.applyMutation({
+        id: 'range.owner.transform', unitId: workbook.unitId, sheetId: sheet.id, params: {}, affectedRanges,
+        inverse: [{ id: 'range.owner.restore', unitId: workbook.unitId, sheetId: sheet.id, params: {}, affectedRanges }],
+        apply: () => {
+          sheet.replaceDataRegions([{ ...sheet.dataRegions[0]!, range: afterRange, headerRow: 3 }]);
+          return { kind: 'structural-transform', removedCells: [], clearInputRanges: [], populateInputRanges: [],
+            rewrittenFormulaOwners: [], rangeOwnerDeltas: [delta] };
+        },
+      });
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges };
+    },
+  });
+
+  const operation = runtime.execute('range.owner.transform', {});
+  assert.deepEqual(runtime.getUndoEntries()[0]?.inversePlan[0]?.structuralRangeOwnerDeltas, [delta]);
+  assert.deepEqual(sheet.dataRegions[0]?.range, afterRange);
+  const originalSnapshot = workbook.snapshot.bind(workbook);
+  workbook.snapshot = () => { throw new Error('range-owner ACK preflight must not snapshot the workbook'); };
+  runtime.applyCommittedStructuralPatches(operation.operationId, [{
+    id: 'range.owner.transform',
+    unitId: workbook.unitId,
+    sheetId: sheet.id,
+    params: {},
+    affectedRanges,
+    structuralRangeOwnerDeltas: [delta],
+  }], 1);
+  workbook.snapshot = originalSnapshot;
+  assert.equal(runtime.undo(), true);
+  assert.deepEqual(sheet.dataRegions[0]?.range, beforeRange);
+  assert.deepEqual((replayEffects[0] as { rangeOwnerDeltas: StructuralRangeOwnerDelta[] }).rangeOwnerDeltas, [{
+    ...delta,
+    before: delta.after,
+    after: delta.before,
+  }]);
+  assert.equal(runtime.redo(), true);
+  assert.deepEqual(sheet.dataRegions[0]?.range, afterRange);
+  assert.deepEqual((replayEffects[1] as { rangeOwnerDeltas: StructuralRangeOwnerDelta[] }).rangeOwnerDeltas, [delta]);
+
+  const divergentRange = { ...afterRange, startRow: 9, endRow: 13 };
+  sheet.replaceDataRegions([{ ...sheet.dataRegions[0]!, range: divergentRange, headerRow: 9 }]);
+  const mismatchedAckDelta: StructuralRangeOwnerDelta = {
+    ...delta,
+    after: { range: { ...afterRange, startRow: 4, endRow: 8 }, headerRow: 4 },
+  };
+  assert.throws(() => runtime.applyCommittedStructuralPatches(operation.operationId, [{
+    id: 'range.owner.transform', unitId: workbook.unitId, sheetId: sheet.id, params: {}, affectedRanges,
+    structuralRangeOwnerDeltas: [mismatchedAckDelta],
+  }], 2), /STRUCTURAL_PATCH_PRECONDITION: data-region owner/);
+  assert.equal(runtime.getHistoryDepth().undo, 1);
+  assert.equal(runtime.getInvalidHistoryEntries().length, 0);
+  assert.throws(() => runtime.undo(), /STRUCTURAL_PATCH_PRECONDITION: data-region owner/);
+  assert.deepEqual(sheet.dataRegions[0]?.range, divergentRange);
+  assert.equal(runtime.getHistoryDepth().undo, 1);
+});
+
+test('CommandRuntime applies workbook-table and data-source range deltas atomically', () => {
+  const workbook = new WorkbookModel('unit-range-owner-models', 'Range Owner Models');
+  const sheetId = workbook.primarySheetId;
+  const beforeRange = { sheetId, startRow: 1, endRow: 3, startColumn: 0, endColumn: 2 };
+  const afterRange = { ...beforeRange, startRow: 2, endRow: 4 };
+  workbook.addTable({
+    id: 'table-1', name: 'Table1', sourceId: 'source-1', sourceSheetId: sheetId,
+    sourceRange: beforeRange, rowCount: 2,
+    fields: [0, 1, 2].map((ordinal) => ({ id: `f${ordinal}`, name: `Field${ordinal}`, ordinal, type: 'text' as const })),
+    blockSize: 1024, blocks: [], revision: 0,
+  });
+  const source: DataSourceManifest = {
+    schema: 'DataSourceManifest', version: 1, id: 'source-1', name: 'Source1', kind: 'worksheet-range',
+    sourceSheetId: sheetId, sourceRange: beforeRange, rowCount: 2,
+    fields: [0, 1, 2].map((ordinal) => ({ id: `f${ordinal}`, name: `Field${ordinal}`, ordinal, type: 'text' as const })),
+    blockRowCount: 65_536, blocks: [], revision: 0,
+  };
+  workbook.addDataSource(source);
+  const regionBefore = { sheetId, startRow: 5, endRow: 7, startColumn: 0, endColumn: 2 };
+  const regionAfter = { ...regionBefore, startRow: 6, endRow: 8 };
+  const secondRegionBefore = { sheetId, startRow: 10, endRow: 12, startColumn: 0, endColumn: 2 };
+  const secondRegionAfter = { ...secondRegionBefore, startRow: 11, endRow: 13 };
+  sheet.addDataRegion({ id: 'region-1', sourceId: 'source-1', range: regionBefore, headerRow: 5, revision: 0 });
+  sheet.addDataRegion({ id: 'region-2', sourceId: 'source-1', range: secondRegionBefore, headerRow: 10, revision: 0 });
+  const deltas: StructuralRangeOwnerDelta[] = [
+    { ownerKind: 'workbook-table', ownerId: 'table-1', before: beforeRange, after: afterRange },
+    { ownerKind: 'data-source', ownerId: 'source-1', before: beforeRange, after: afterRange },
+    { ownerKind: 'data-region', sheetId, regionId: 'region-1', before: { range: regionBefore, headerRow: 5 }, after: { range: regionAfter, headerRow: 6 } },
+    { ownerKind: 'data-region', sheetId, regionId: 'region-2', before: { range: secondRegionBefore, headerRow: 10 }, after: { range: secondRegionAfter, headerRow: 11 } },
+  ];
+  const runtime = new CommandRuntime(workbook);
+  let regionReplaceCount = 0;
+  const replaceDataRegions = sheet.replaceDataRegions.bind(sheet);
+  sheet.replaceDataRegions = (regions) => {
+    regionReplaceCount += 1;
+    replaceDataRegions(regions);
+  };
+  runtime.applyCommittedStructuralPatches('range-owner-model-patch', [{
+    id: 'rows.inserted', unitId: workbook.unitId, sheetId, params: { sheetId, at: 1, count: 1 },
+    affectedRanges: [beforeRange, afterRange], structuralRangeOwnerDeltas: deltas,
+  }], 1);
+  assert.deepEqual(workbook.dataModel.tables.get('table-1')?.sourceRange, afterRange);
+  assert.deepEqual(workbook.dataModel.sources.get('source-1')?.sourceRange, afterRange);
+  assert.deepEqual(sheet.dataRegions.map((region) => region.range), [regionAfter, secondRegionAfter]);
+  assert.equal(regionReplaceCount, 1);
+
+  const rejected = new WorkbookModel('unit-range-owner-models-rejected', 'Rejected Range Owner Models');
+  const rejectedSheetId = rejected.primarySheetId;
+  const rejectedBefore = { ...beforeRange, sheetId: rejectedSheetId };
+  const rejectedAfter = { ...afterRange, sheetId: rejectedSheetId };
+  const divergentRange = { ...rejectedBefore, startRow: 8, endRow: 10 };
+  rejected.addTable({
+    id: 'table-1', name: 'Table1', sourceId: 'source-1', sourceSheetId: rejectedSheetId,
+    sourceRange: rejectedBefore, rowCount: 2,
+    fields: [0, 1, 2].map((ordinal) => ({ id: `f${ordinal}`, name: `Field${ordinal}`, ordinal, type: 'text' as const })),
+    blockSize: 1024, blocks: [], revision: 0,
+  });
+  rejected.addDataSource({ ...source, sourceSheetId: rejectedSheetId, sourceRange: divergentRange });
+  const rejectedBeforeSnapshot = rejected.snapshot();
+  const rejectedRuntime = new CommandRuntime(rejected);
+  assert.throws(() => rejectedRuntime.applyCommittedStructuralPatches('range-owner-model-rejected', [{
+    id: 'rows.inserted', unitId: rejected.unitId, sheetId: rejectedSheetId, params: { sheetId: rejectedSheetId, at: 1, count: 1 },
+    affectedRanges: [rejectedBefore, rejectedAfter],
+    structuralRangeOwnerDeltas: [
+      { ownerKind: 'workbook-table', ownerId: 'table-1', before: rejectedBefore, after: rejectedAfter },
+      { ownerKind: 'data-source', ownerId: 'source-1', before: rejectedBefore, after: rejectedAfter },
+    ],
+  }], 1), /STRUCTURAL_PATCH_PRECONDITION: data-source owner source-1/);
+  assert.deepEqual(rejected.snapshot(), rejectedBeforeSnapshot);
 });
 
 test('CommandRuntime skips full workbook snapshot for empty committed structural owner deltas', () => {

@@ -225,6 +225,10 @@ public class MutationDescriptorRegistry {
             for (var delta : structuralPatch.formulaOwnerDeltas()) {
                 ownerPreconditions.addAll(formulaOwnerRanges(delta));
             }
+            for (var delta : structuralPatch.rangeOwnerDeltas()) {
+                ownerPreconditions.add(delta.beforeRange());
+                ownerPreconditions.add(delta.afterRange());
+            }
             if (prepared.descriptor().checksProtection() && role != WorkbookAclRole.OWNER) {
                 List<RangeRef> protectedRanges = new ArrayList<>(prepared.affectedRanges());
                 protectedRanges.addAll(ownerPreconditions);
@@ -239,6 +243,10 @@ public class MutationDescriptorRegistry {
         LinkedHashSet<RangeRef> ranges = new LinkedHashSet<>();
         for (var delta : structuralPatch.formulaOwnerDeltas()) {
             ranges.addAll(formulaOwnerRanges(delta));
+        }
+        for (var delta : structuralPatch.rangeOwnerDeltas()) {
+            ranges.add(delta.beforeRange());
+            ranges.add(delta.afterRange());
         }
         return List.copyOf(ranges);
     }
@@ -391,7 +399,11 @@ public class MutationDescriptorRegistry {
                 generated.definedNameOwnerDeltas(), inverse.definedNameOwnerDeltas(),
                 StructuralPatch::definedNameOwnerKey,
                 "STRUCTURAL_PATCH_CONFLICT: inverse and reducer patches disagree for one defined-name owner");
-        return new StructuralPatch(StructuralPatch.VERSION, mutationId, deltas, definedNameDeltas);
+        List<StructuralPatch.RangeOwnerDelta> rangeOwnerDeltas = mergeOwnerDeltas(
+                generated.rangeOwnerDeltas(), inverse.rangeOwnerDeltas(),
+                StructuralPatch::rangeOwnerKey,
+                "STRUCTURAL_PATCH_CONFLICT: inverse and reducer patches disagree for one range owner");
+        return new StructuralPatch(StructuralPatch.VERSION, mutationId, deltas, definedNameDeltas, rangeOwnerDeltas);
     }
 
     private static <T, K> List<T> mergeOwnerDeltas(List<T> generated, List<T> inverse,

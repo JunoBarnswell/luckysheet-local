@@ -72,6 +72,37 @@ class StructuralPatchMergeTest {
     }
 
     @Test
+    void mergeDeduplicatesRangeOwnersAndPreservesGeneratedThenInverseOrder() {
+        StructuralPatch.RangeOwnerDelta table = StructuralPatch.RangeOwnerDelta.range(
+                "workbook-table", "table-1", range("sheet-1", 0, 2, 0, 1), range("sheet-1", 1, 3, 0, 1));
+        StructuralPatch.RangeOwnerDelta region = StructuralPatch.RangeOwnerDelta.dataRegion(
+                "sheet-1", "region-1", range("sheet-1", 0, 2, 0, 1), 0,
+                range("sheet-1", 1, 3, 0, 1), 1);
+        StructuralPatch.RangeOwnerDelta source = StructuralPatch.RangeOwnerDelta.range(
+                "data-source", "source-1", range("sheet-1", 4, 6, 0, 1), range("sheet-1", 5, 7, 0, 1));
+
+        StructuralPatch merged = MutationDescriptorRegistry.mergeStructuralPatches("rows.inserted",
+                patch("rows.inserted", List.of(), List.of(), List.of(table, region)),
+                patch("rows.inserted", List.of(), List.of(), List.of(table, region, source)));
+
+        assertEquals(List.of(table, region, source), merged.rangeOwnerDeltas());
+    }
+
+    @Test
+    void mergeRejectsConflictingRangeOwnerFactsForOneStableIdentity() {
+        StructuralPatch.RangeOwnerDelta generated = StructuralPatch.RangeOwnerDelta.range(
+                "workbook-table", "table-1", range("sheet-1", 0, 2, 0, 1), range("sheet-1", 1, 3, 0, 1));
+        StructuralPatch.RangeOwnerDelta inverse = StructuralPatch.RangeOwnerDelta.range(
+                "workbook-table", "table-1", range("sheet-1", 0, 2, 0, 1), range("sheet-1", 2, 4, 0, 1));
+
+        ServiceException error = assertThrows(ServiceException.class, () -> MutationDescriptorRegistry.mergeStructuralPatches(
+                "rows.inserted", patch("rows.inserted", List.of(), List.of(), List.of(generated)),
+                patch("rows.inserted", List.of(), List.of(), List.of(inverse))));
+
+        assertEquals("CONFLICT", error.code());
+    }
+
+    @Test
     void mergeRejectsDefinedNamesThatDifferOnlyByCaseAsOneOwnerConflict() {
         StructuralPatch.DefinedNameOwnerDelta generatedDelta = nameDelta("workbook", "Revenue", null, "=A1", "=A2");
         StructuralPatch.DefinedNameOwnerDelta inverseDelta = nameDelta("workbook", "revenue", null, "=A1", "=A3");
@@ -84,19 +115,24 @@ class StructuralPatchMergeTest {
     }
 
     @Test
-    void canonicalIdentityHelpersDoNotChangeStructuralPatchWireShape() {
+    void structuralPatchSerializesRangeOwnerDeltasAsAnExactTopLevelField() {
         ObjectMapper mapper = new ObjectMapper();
         StructuralPatch patch = patch("rows.inserted", List.of(), List.of());
 
         Set<String> fields = new HashSet<>();
         mapper.valueToTree(patch).fieldNames().forEachRemaining(fields::add);
 
-        assertEquals(Set.of("version", "mutationId", "formulaOwnerDeltas", "definedNameOwnerDeltas"), fields);
+        assertEquals(Set.of("version", "mutationId", "formulaOwnerDeltas", "definedNameOwnerDeltas", "rangeOwnerDeltas"), fields);
     }
 
     private static StructuralPatch patch(String mutationId, List<StructuralPatch.FormulaOwnerDelta> formulas,
             List<StructuralPatch.DefinedNameOwnerDelta> names) {
-        return new StructuralPatch(StructuralPatch.VERSION, mutationId, formulas, names);
+        return patch(mutationId, formulas, names, List.of());
+    }
+
+    private static StructuralPatch patch(String mutationId, List<StructuralPatch.FormulaOwnerDelta> formulas,
+            List<StructuralPatch.DefinedNameOwnerDelta> names, List<StructuralPatch.RangeOwnerDelta> ranges) {
+        return new StructuralPatch(StructuralPatch.VERSION, mutationId, formulas, names, ranges);
     }
 
     private static StructuralPatch.FormulaOwnerDelta cellDelta(String sheetId, int row, int column,

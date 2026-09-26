@@ -1021,14 +1021,6 @@ class DataRegionBoundsIndex {
     this.ranges.delete(regionId);
   }
 
-  clear(): void {
-    this.ranges.clear();
-    this.startRows.clear();
-    this.endRows.clear();
-    this.startColumns.clear();
-    this.endColumns.clear();
-  }
-
   get range(): RangeRef | undefined {
     const startRow = this.read(this.startRows, 'startRow');
     const endRow = this.read(this.endRows, 'endRow');
@@ -1484,7 +1476,7 @@ export class WorksheetModel {
   readonly cells: CellMatrix;
   /** Block-backed regions are metadata only; their bytes never enter CellMatrix. */
   private readonly dataRegionStore: SheetDataRegion[] = [];
-  private readonly dataRegionBounds = new DataRegionBoundsIndex();
+  private dataRegionBounds = new DataRegionBoundsIndex();
   readonly merges: MergeSpan[] = [];
   readonly pivots: PivotModel[] = [];
   readonly sparklines: SparklineModel[] = [];
@@ -1715,8 +1707,7 @@ export class WorksheetModel {
       nextBounds.add(region);
     }
     this.dataRegionStore.splice(0, this.dataRegionStore.length, ...copies);
-    this.dataRegionBounds.clear();
-    for (const region of copies) this.dataRegionBounds.add(region);
+    this.dataRegionBounds = nextBounds;
   }
 
   /** One incremental used-range authority for cells and block-backed regions. */
