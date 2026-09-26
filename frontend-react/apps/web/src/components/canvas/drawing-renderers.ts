@@ -1481,7 +1481,7 @@ function drawChartDataTable(context: CanvasRenderingContext2D, payload: ChartDra
   const drawCell = (text: string, x: number, y: number, cellWidth: number, row: number, align: CanvasTextAlign): void => {
     context.fillStyle = row === 0 ? '#f1f5f9' : '#fff';
     context.fillRect(x, y, cellWidth, dataTableLayout.rowHeight);
-    context.strokeRect(x, y, cellWidth, table.rowHeight);
+    context.strokeRect(x, y, cellWidth, dataTableLayout.rowHeight);
     const textX = align === 'left' ? x + 4 : align === 'right' ? x + cellWidth - 4 : x + cellWidth / 2;
     drawChartText(context, fitChartDataTableText(context, text, cellWidth, font), textX, y + dataTableLayout.rowHeight / 2, {
       color: textColor,
