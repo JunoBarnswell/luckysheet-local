@@ -9,9 +9,9 @@
 - **已确认的产品取舍**：2026-09-26 用户选择“统一由 Java 服务规划，可要求服务在线”。结构操作不再承诺无服务的浏览器离线执行；连接失败时拒绝提交并保留编辑草稿。此授权只改变结构规划归属，不自动扩展为全部普通输入或图表样式都必须远程。
 - 建档 60 个操作，操作数不等于缺陷数。下表是追踪清单，**不是 60 项审查完成/通过的声明**。同根因的行列、图表类型、入口变体不重复算 bug。
 - 审计底稿形成时只做静态阅读。后续仅有下列明示的定向回归证据；上一已提交 head 的 CI 成功不能作为当前工作树验收。
-- 已完成的历史定向测试：core-model 59 项、Java structural facts 10 项、chart layout 15 项及 Canvas drawing 13 项。本轮新增 Java owned-patch 回归尚未执行：环境只有 JDK 17、无 Maven wrapper/可用 `mvn`，项目要求 Java 21。前端项目级 `tsc` 仍因工作区缺少已声明的 `@types/react` 失败，本轮 5 个改动 TS/TSX 文件均无目标诊断。已在 in-app browser 打开 Vite 页面并查 Console/Network；页面因 `GET /api/auth/config → 500` 停在认证配置错误，Console 无 JS error/warn，未能进入工作簿或做图表 UI 操作。完整门禁、性能和 Excel 验收未完成。
+- 已完成的历史定向测试：core-model 59 项、Java structural facts 10 项、chart layout 15 项及 Canvas drawing 13 项。本机仍未执行新增 Java/前端测试（只有 JDK 17、无 Maven wrapper/可用 `mvn`，项目要求 Java 21）；当前 PR head `221cea5b` 的两个 `canonical-build` CI 均通过，workflow 明示包含 Java 服务后端测试、browser assets build、frontend boundaries/generated contract 检查。前端项目级 `tsc` 仍因工作区缺少已声明的 `@types/react` 失败，本轮目标 TS/TSX 文件没有目标诊断。in-app browser 仍因 `GET /api/auth/config → 500` 停在认证配置错误，未能进入工作簿或做图表 UI 操作。完整交互、性能和 Excel 验收未完成。
 - Java `StructuralStateChanges` 目前只提供事实载体和历史迁移捕获/回放，**尚未接入在线结构意图规划和提交**。当前客户端先做 TS 结构变换，Java 再执行 reducer，远端客户端仍按 intent 重放；唯一 Java planner 尚未达成。
-- 本轮继续发现并修复 S6：默认 local-only 绕过旧的 offline guard，结构 mutation 会由 TS 在无服务模式直接落地。新增生成式 mutation/command 分类、命令入口与 mutation guard 的在线前置条件，并将对应 `canExecute` 置为不可用。代码生成成功；本轮新增前后端回归测试尚未执行。该改动只关闭无服务结构编辑，不代表在线执行已由 Java 唯一规划。
+- 本轮继续发现并修复 S6：默认 local-only 绕过旧的 offline guard，结构 mutation 会由 TS 在无服务模式直接落地。新增生成式 mutation/command 分类、命令入口与 mutation guard 的在线前置条件，并将对应 `canExecute` 置为不可用。代码生成成功；本机未运行新增前端回归，当前 CI build/boundary 门禁通过。该改动只关闭无服务结构编辑，不代表在线执行已由 Java 唯一规划。
 
 ## 审查单位与证据要求
 
@@ -135,12 +135,12 @@
 14. **X1 现代图表写错原生 vocabulary**：`native-chart.ts:294–299` 写 `c:treemapChart` 等 2006 chart namespace 节点；微软 Office2016 使用 ChartEx `cx:chartSpace/chart` 与 layout。需要真正的 ChartEx package/relationships/codec，保留未知部件；自产自读通过不等于 Excel 兼容。
 15. **X2 系列与轴语义丢失**：combo exporter 仅按 chartType 分组，将所有组绑定 201/202，忽略 series.axis；scatter/bubble 的 axisXml 仍默认分类轴；stock 把 roles 写为单个 ser 内 open/high/low/close/vol 元素。需 type-specific 原生系列/轴编译，不靠通用 XML 字符串拼接重猜模型。
 16. **X3 原生类型识别丢子类型**：classifier 对 line3DChart 不保留 3D subtype，surfaceChart/3DChart 仅凭 wireframe 区分，ofPieChart family=pie 后 subtype 落成 pie。读写 codec 需共享正式 family/subtype 映射和拒绝边界。
-17. **P1 服务端图表修改重复全量复制（本轮已修复）**：DrawingMutationDescriptor 的 affectedRanges 原用 apply(snapshot) 预检，提交再 deepCopy/reduce 一次。保护范围本来就是整张表；现在预检只解析参数并返回整表范围，唯一提交 reducer 仍在 detached candidate 上执行全部相机范围、payload、stale before-image 与 owner 校验。Java 回归调整为预检可得范围、apply 拒绝非法 camera 且原快照不变；本地未运行 Java 测试，等 PR Java 21 CI。
+17. **P1 服务端图表修改重复全量复制（本轮已修复）**：DrawingMutationDescriptor 的 affectedRanges 原用 apply(snapshot) 预检，提交再 deepCopy/reduce 一次。保护范围本来就是整张表；现在预检只解析参数并返回整表范围，唯一提交 reducer 仍在 detached candidate 上执行全部相机范围、payload、stale before-image 与 owner 校验。Java 回归调整为预检可得范围、apply 拒绝非法 camera 且原快照不变；本机未运行测试，当前 `canonical-build` 中的 Java 后端测试已通过。
 
 ### B：基础操作追加证据
 
 18. **B1 格式化隐式空白区域造成体积膨胀**：`sheet-features/src/index.ts:1818` 对选择矩形的每个地址生成 before 和 cell.restore；`style.set:1748` 为每个空白地址创建 `{value:null}` 再写样式。整列/整表格式操作的时间、history 和存储都与矩形面积相关，而不只是 occupied cells。不能简单跳过空白（会丢失 Excel 格式语义），应将范围/行列格式纳入 canonical style owner，统一 cell resolution、render、undo、server 与 OOXML。
-19. **B2 formula-owner redo 丢失（本轮已修复）**：`CommandRuntime` 之前只把 mutation effect 的 formula-owner deltas 写进 inverse，forward history 没保存；history replay 只在 undo/remote 应用公式 delta，redo 对 `sheetTable.update` 等只重放 metadata reducer，表名变回新值但结构化公式仍是旧值。现在 forward mutation 同样保存 delta，redo 按 precondition 应用 forward owner facts，并通过 structural-transform effect 同步公式索引和投影；已有 deferred-cell regression 现在明确断言 forward facts、redo 结果与通知 effect。本地测试未运行，等待当前 PR CI。
+19. **B2 formula-owner redo 丢失（本轮已修复）**：`CommandRuntime` 之前只把 mutation effect 的 formula-owner deltas 写进 inverse，forward history 没保存；history replay 只在 undo/remote 应用公式 delta，redo 对 `sheetTable.update` 等只重放 metadata reducer，表名变回新值但结构化公式仍是旧值。现在 forward mutation 同样保存 delta，redo 按 precondition 应用 forward owner facts，并通过 structural-transform effect 同步公式索引和投影；deferred-cell regression 断言 forward facts、redo 结果与通知 effect。本机未运行前端单测；当前 CI 的 browser assets/build 与 boundary 步骤通过，但该 workflow 没有声明运行前端 unit suite。
 
 20. **B3 Sheet 删除撤销快照遍历整个 Workbook**：`getSheetSnapshot` 从 `WorkbookModel.snapshot()` 生成所有工作表的完整快照后才选中目标 Sheet。成本与全簿所有单元格数和对象数相关；多 Sheet、大数据文件仅撤销删除一个 Sheet 就复制无关数据。本轮改为目标 `WorksheetModel.snapshot()`，并让恢复直接用 `WorksheetModel.fromSnapshot()`，保留延迟单元格 hydration。
 21. **B4 Sheet 恢复依赖临时 Workbook 且可能部分提交**：旧恢复路径把当前 Workbook 其余工作表移除后用 `WorkbookModel.fromSnapshot()` 解析单 Sheet，跨 Sheet anchor 的名称因此无法通过所有权校验；之后逐个调用 `setDefinedName`，重复名字可能覆盖。打印文档也在工作表插入之后才写入。现先构造 Sheet、组合校验名称 identity/anchor、校验打印文档所有者并标准化，再一次性更新名称并插入；拒绝测试确认失败时 Workbook 快照不变。
@@ -236,7 +236,7 @@
 3. **提交边界**：operation row、revision event、workbook revision/checkpoint 的写入均发生在 mutation loop 后。inverse patch 预检失败时，受影响的只是未发布候选；基础快照与持久化行仍在原状态。
 4. **拒绝语义**：owner delta 按序应用，后续 precondition 冲突可能发生在前一 delta 已写入候选之后。owned API 明确要求异常时丢弃候选；新增拒绝用例覆盖“候选部分变化、基础快照不变”。
 5. **复杂度边界**：undo 的每个非空 inverse patch 不再额外复制完整 JSON 树，patch 仍按 owner delta 处理。本轮不声称已消除正常结构 reducer 自身的快照 clone，也没有大数据基准证据。
-6. **契约与验收**：detached `applyStructuralPatch` 保留给需要隔离的调用方，仅 commit undo 路径转用 owned 版本；新增成功路径核对返回对象身份，拒绝路径核对 precondition 和基础快照。测试未执行：本机只有 JDK 17、无 Maven，CI Java 21 结果待本次 push 后读取。
+6. **契约与验收**：detached `applyStructuralPatch` 保留给需要隔离的调用方，仅 commit undo 路径转用 owned 版本；新增成功路径核对返回对象身份，拒绝路径核对 precondition 和基础快照。本机未执行 Java 测试；当前 PR 的 Java 21 backend-test CI 已通过。
 
 这是一项已证实并已修改的独立性能问题，不等同于每轮至少 30 项根因完成整改；当前结构规划权、history facts、客户端重复推导等主目标仍未解决，本审计和 PR 保持进行中。
 
@@ -281,4 +281,4 @@
 5. **计算/投影通知**：replay effect 带结构变换 shape；既有 runtime synchronization 消费 changed formula owners、defined names 和表定义，recalc roots 与 projection listeners 不只看到 metadata 替换。
 6. **远端与 wire 边界**：remote source 继续 forward 应用服务端 owner delta；client operation 明确只投递 mutation id/sheetId/params，不把本地 history facts 当成客户端权威协议字段。新增/扩充 deferred-cell history regression 检查 forward facts、redo owner 值、通知形状及无 hydration。
 
-六轮复核都落在同一个 undo/redo 根因上，不拆成多个 bug。当前源码证据与 diff whitespace 检查通过；该回归及完整前端门禁留给当前 PR CI，未在本机执行。
+六轮复核都落在同一个 undo/redo 根因上，不拆成多个 bug。源码审查和 `git diff --check` 通过；当前 PR 的 build/boundary CI 通过，但 deferred-cell 前端单测尚未由该 workflow 覆盖，需在最终前端实测门禁运行。
