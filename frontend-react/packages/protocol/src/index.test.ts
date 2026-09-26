@@ -33,9 +33,11 @@ test('server structural planner classification is explicit and excludes ordinary
   assert.ok(SERVER_STRUCTURAL_PLANNER_COMMANDS.includes('sheet.rows.insert'));
   assert.ok(SERVER_STRUCTURAL_PLANNER_COMMANDS.includes('sheet.range.move'));
   assert.ok(SERVER_STRUCTURAL_PLANNER_COMMANDS.includes('sheet.add'));
+  assert.ok(SERVER_STRUCTURAL_PLANNER_COMMANDS.includes('pivot.drillDown'));
   assert.equal(requiresServerStructuralPlanner('row.hidden'), false);
   assert.equal(requiresServerStructuralPlanner('cell.set'), false);
   assert.equal(requiresServerStructuralPlannerCommand('sheet.rows.insert'), true);
+  assert.equal(requiresServerStructuralPlannerCommand('pivot.drillDown'), true);
   assert.equal(requiresServerStructuralPlannerCommand('sheet.cell.set'), false);
 });
 

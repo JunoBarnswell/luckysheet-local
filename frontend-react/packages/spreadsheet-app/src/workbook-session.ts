@@ -890,10 +890,7 @@ export class WorkbookSession {
     this.cellResolver = createWorkbookCellResolver(this.runtime.dataContent);
     this.permission = new PermissionService();
     this.runtime.commands.setMutationGuard((mutation, source) => {
-      if (source !== 'remote' && requiresServerStructuralPlanner(mutation.id)
-        && (this.runtime.localOnly || !this.runtime.remoteConnected)) {
-        throw new Error('STRUCTURAL_PLANNER_OFFLINE: 此结构操作需要连接服务端规划器，当前工作簿未修改');
-      }
+      if (source !== 'remote' && requiresServerStructuralPlanner(mutation.id)) this.assertServerStructuralPlannerReady();
       if (source !== 'remote' && !this.runtime.localOnly && !this.runtime.remoteConnected) throw new Error('COLLABORATION_OFFLINE: 连接尚未就绪，编辑草稿已保留');
       this.permission.syncFromWorkbook(this.runtime.model);
       const result = this.permission.checkMutation(mutation);
@@ -2214,9 +2211,7 @@ export class WorkbookSession {
     if (!this.runtime.commands.registry.hasCommand(commandId)) {
       throw new Error(`Unknown command: ${commandId}`);
     }
-    if (requiresServerStructuralPlannerCommand(commandId) && !this.isServerStructuralPlannerAvailable()) {
-      throw new Error('STRUCTURAL_PLANNER_OFFLINE: 此结构操作需要连接服务端规划器，当前工作簿未修改');
-    }
+    if (requiresServerStructuralPlannerCommand(commandId)) this.assertServerStructuralPlannerReady();
     const resolvedParams = this.resolveCommandContext(commandId, params);
     this.assertPermission(commandId, resolvedParams);
     const result = this.runtime.commands.execute(commandId, resolvedParams);
@@ -2764,6 +2759,12 @@ export class WorkbookSession {
 
   private isServerStructuralPlannerAvailable(): boolean {
     return !this.runtime.localOnly && this.runtime.remoteConnected;
+  }
+
+  private assertServerStructuralPlannerReady(): void {
+    if (!this.isServerStructuralPlannerAvailable()) {
+      throw new Error('STRUCTURAL_PLANNER_OFFLINE: 此结构操作需要连接服务端规划器，当前工作簿未修改');
+    }
   }
 
   /** Commit edits before exporting without rewriting the original native format. */
@@ -5405,6 +5406,7 @@ export class WorkbookSession {
 
   async drillDownPivot(pivotId: string, label: string, paths: readonly PivotSourceRowPath[]): Promise<void> {
     if (paths.length === 0) return;
+    this.assertServerStructuralPlannerReady();
     const workbook = this.runtime.model;
     const owner = workbook.getSheets().find((sheet) => sheet.pivots.some((entry) => entry.id === pivotId));
     const pivot = owner?.pivots.find((entry) => entry.id === pivotId);

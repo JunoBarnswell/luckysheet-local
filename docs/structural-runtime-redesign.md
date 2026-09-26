@@ -35,7 +35,7 @@ This PR slice fixes statically confirmed server regressions and connects row per
 
 ### Confirmed issue and scoped repair
 
-`WorkbookSession` previously rejected mutations only when `localOnly` was false and `remoteConnected` was false. That condition therefore allowed local-only workbooks to execute address-changing structural mutations through the TypeScript reducers, despite the user's decision that Java owns structural planning and may be required online. The continuation adds generated contract sets for 27 planner-sensitive mutation IDs and 32 corresponding command IDs. The command gate rejects before context resolution/reducer execution, `canExecute` reports those commands unavailable offline, and the central mutation guard provides a second check for compound/history paths. The changes are committed to PR #345 as `21e43340` and `72d516e3`; test-only session fixtures explicitly model transport-ready state and do not claim to exercise Java planning.
+`WorkbookSession` previously rejected mutations only when `localOnly` was false and `remoteConnected` was false. That condition therefore allowed local-only workbooks to execute address-changing structural mutations through the TypeScript reducers, despite the user's decision that Java owns structural planning and may be required online. The continuation adds generated contract sets for 27 planner-sensitive mutation IDs and 33 corresponding command IDs. The command gate rejects before context resolution/reducer execution, `canExecute` reports those commands unavailable offline, and the central mutation guard provides a second check for compound/history paths. Pivot “Show Details” now checks service availability before preparing or staging detail blocks, and its menu entry is disabled offline. The changes are committed to PR #345 as `21e43340`, `72d516e3`, and the current continuation; test-only session fixtures explicitly model transport-ready state and do not claim to exercise Java planning.
 
 ### End-to-end authority gap remains open
 
@@ -46,13 +46,13 @@ The required next slice is not another availability check: it must establish an 
 ### Six static review lenses and evidence
 
 1. **Contract coverage**: generator checks uniqueness and canonical permission ownership; a Java regression requires every classified mutation to resolve to a registered reducer. Static source comparison found all 27 IDs in the Java registry ID set.
-2. **Command ordering**: planner commands are rejected before parameter-context resolution; the mutation guard remains before each mutation's `apply` for callers or compound commands outside the explicit command list.
+2. **Command ordering**: planner commands are rejected before parameter-context resolution; Pivot drill-down is rejected before reading/preparing/uploading details. The mutation guard remains before each mutation's `apply` for callers or compound commands outside the explicit command list.
 3. **History**: undo/redo invoke mutation-guard preflight; offline structural history therefore rejects before replay. Successful remote committed replay is intentionally exempt from the local service-availability gate.
 4. **Atomic rejection**: command runtime rolls back already-applied mutations if a later step fails; the new simple rejection regression checks unchanged model snapshot and history depth. Those new regressions were not run locally.
-5. **UI state and test scope**: all 32 direct command IDs return unavailable from `canExecute` while offline; the test fixture only toggles runtime transport flags and is explicitly not a live service test. A direct `runtime.commands.execute('sheet.add')` test call was included in the fixture audit.
+5. **UI state and test scope**: all 33 classified command IDs return unavailable from `canExecute` while offline; Pivot’s Show Details menu uses that result. The test fixture only toggles runtime transport flags and is explicitly not a live service test. A direct `runtime.commands.execute('sheet.add')` test call was included in the fixture audit.
 6. **Architecture and acceptance**: the online path still executes a TS reducer first, as the end-to-end trace above demonstrates. Contract generation and `git diff --check` passed; both PR `canonical-build` checks passed on head `72d516e3`. The app/browser remains gated by the previously observed `/api/auth/config` 500, and native Excel round-trip/performance acceptance remain outstanding.
 
-This pass confirms one local-only structural-editing root cause; the 27/32 contract coverage counts are not defect counts and do not satisfy the requested 30-distinct-issue batch. No same-root symptoms were double-counted.
+This pass confirms one local-only structural-editing root cause; the 27/33 contract coverage counts are not defect counts and do not satisfy the requested 30-distinct-issue batch. No same-root symptoms were double-counted.
 
 ## Incremental worksheet rename calculation path
 

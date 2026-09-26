@@ -12,7 +12,7 @@ import { rebaseMutation } from './collaboration/ot-rebase';
 import { createSpreadsheetRuntime } from './runtime';
 
 describe('WorkbookSession collaboration integration', () => {
-  it('rejects offline structural edits before changing the workbook', () => {
+  it('rejects offline structural edits before changing the workbook', async () => {
     const app = new WorkbookSession();
     const runtime = app['runtime'];
     const before = runtime.model.snapshot();
@@ -20,6 +20,11 @@ describe('WorkbookSession collaboration integration', () => {
     assert.equal(app.canExecute('sheet.rows.insert'), false);
     assert.throws(
       () => app.runCommand('sheet.rows.insert', { sheetId: runtime.model.primarySheetId, at: 0, count: 1 }),
+      /STRUCTURAL_PLANNER_OFFLINE/,
+    );
+    assert.equal(app.canExecute('pivot.drillDown'), false);
+    await assert.rejects(
+      app.drillDownPivot('unresolved-pivot', 'Details', [{ sheetId: runtime.model.primarySheetId, row: 0 }]),
       /STRUCTURAL_PLANNER_OFFLINE/,
     );
     assert.deepEqual(runtime.model.snapshot(), before);

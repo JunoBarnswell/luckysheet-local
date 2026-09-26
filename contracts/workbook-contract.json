@@ -82,7 +82,8 @@
     "reportSheet.update",
     "sheetTable.add",
     "sheetTable.remove",
-    "sheetTable.update"
+    "sheetTable.update",
+    "pivot.drillDown"
   ],
   "mutations": {
     "cell.set": { "durability": "remote", "remote": true, "schema": "CellSet", "minRole": "editor", "rebasePolicy": "range", "javaReducer": true },

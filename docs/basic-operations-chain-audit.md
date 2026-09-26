@@ -116,7 +116,7 @@
 3. **S3 history 扫描矩形面积且校验方向错误**：cell-shift snapshot/restore 双层循环枚举 implicit cells；restore 按原 insert intent 预检，合法末端插入后撤销被当成再次插入拒绝。本地已改稀疏枚举及真实逆向检查；Java restore 本来就检查 inverse，不能重复修“同一个 Java bug”。
 4. **S4 不完整 patch 迫使全链重复推导**：v3 不含完整 cells/metadata/extents；command inverse、Java reducer、remote handler 和 preview/live reducer 分别解释结构。这是 S1–S3 之外的公共架构缺口，单改局部循环并没有关闭它。迁移必须包含 protocol/history/server/persistence，不能只给 v3 增加一个名义 planner。
 5. **S5 undo owner patch 重复复制整本快照（本轮代码已改、CI/本地 Java 验证待完成）**：`StructuralMutationDescriptor.applyWithPatch` 已返回独立候选快照，`WorkbookOperationService.commitInternal` 再以 detached `applyStructuralPatch` 应用 undo owner delta，会为该 undo 再深拷贝整本 JSON。现在只对这个独占候选走 owned reducer，保留原 `next` 供后续权限 owner 检查与数据块引用比较；一般结构 reducer 仍保持 detached 契约，未冒险原地改写变更前状态。
-6. **S6 local-only 绕过结构服务前置条件（本轮新增拦截，尚待实测）**：`WorkbookSession` 原 guard 仅在 `!localOnly && !remoteConnected` 时拒绝，因此 `localOnly=true` 允许行列/单元格位移、移动/粘贴/填充、排序与 sheet/table 结构命令由 TS reducer 直接改变模型。新增 contract 分类覆盖 27 个 address/reference mutation 与 32 个命令入口；离线命令在 `runCommand` 前被拒绝、`canExecute` 返回 false，mutation guard 仍覆盖复合命令/历史路径。在线分支当前仍先走 TS reducer、后由 Java reducer 复算，故唯一 Java planner 仍未实现。
+6. **S6 local-only 绕过结构服务前置条件（本轮新增拦截，尚待实测）**：`WorkbookSession` 原 guard 仅在 `!localOnly && !remoteConnected` 时拒绝，因此 `localOnly=true` 允许行列/单元格位移、移动/粘贴/填充、排序与 sheet/table 结构命令由 TS reducer 直接改变模型。新增 contract 分类覆盖 27 个 address/reference mutation 与 33 个命令入口；离线命令在 `runCommand` 前被拒绝、`canExecute` 返回 false，mutation guard 仍覆盖复合命令/历史路径。Pivot “Show Details” 在生成/暂存明细块前单独校验服务状态并同步禁用离线菜单。在线分支当前仍先走 TS reducer、后由 Java reducer 复算，故唯一 Java planner 仍未实现。
 
 ### C：图表语义没有由完整几何事实承载
 
@@ -243,7 +243,7 @@
 ## 本轮结构在线前置条件六轮静态复核
 
 1. **契约覆盖**：27 个 mutation ID 独立于宽泛的 `structure` permission capability 列出，避免把筛选/可见性等不改地址空间的动作误归类；生成器校验 ID 唯一且存在权限策略，Java 回归用例要求每个 ID 都能解析到 canonical reducer。
-2. **命令入口**：32 个明确的结构命令 ID 进入同一源契约；`WorkbookSession.runCommand` 在执行命令前拒绝离线结构命令，避免命令先做局部准备后才在 mutation 边界失败。
+2. **命令入口**：33 个明确的结构命令 ID 进入同一源契约；`WorkbookSession.runCommand` 在执行命令前拒绝离线结构命令，Pivot drill-down 还会在准备/暂存数据块前 fail-close，避免离线时先做昂贵工作再失败。
 3. **直达与复合路径**：`CommandRuntime` mutation guard 在每个 mutation 的 apply 前再次核验，覆盖绕过 `canExecute`/dispatch 的调用和产生结构 mutation 的复合命令。
 4. **历史与远端**：undo/redo 使用 history preflight 调用同一个 guard；已提交的远端 mutation 以 `source='remote'` 重放时豁免在线发起条件，避免把服务器结果当成本地新意图拒绝。
 5. **原子失败与界面状态**：本地拒绝路径新增快照不变/history 不增长用例；结构命令的 `canExecute` 离线为 false。CommandRuntime 根事务失败路径会回滚已应用的前序 mutation。新增成功路径只模拟 transport-ready 状态，不作为真实 Java 规划或网络证据。

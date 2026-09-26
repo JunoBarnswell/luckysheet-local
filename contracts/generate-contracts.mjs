@@ -37,7 +37,9 @@ if (!Array.isArray(serverStructuralPlannerCommands)
   throw new Error('serverStructuralPlannerCommands must be a unique array of command ids');
 }
 for (const id of serverStructuralPlannerCommands) {
-  if (typeof id !== 'string' || !permissionSource.commands[id]) {
+  const hasExactPermission = typeof id === 'string' && Boolean(permissionSource.commands[id]);
+  const hasPrefixPermission = typeof id === 'string' && commandPrefixEntries.some(({ prefix }) => id.startsWith(prefix));
+  if (!hasExactPermission && !hasPrefixPermission) {
     throw new Error(`Server structural planner command ${String(id)} is missing a canonical command permission policy`);
   }
 }

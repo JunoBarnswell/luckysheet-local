@@ -281,7 +281,7 @@ export function EditorShell({
                   const sourceRowPaths = hit.pivot?.sourceRowPaths ?? [];
                   return [
                     { id: "pivot-refresh", label: "Refresh PivotTable", onSelect: () => dispatchCommand({ commandId: "pivot.refresh", params: { sheetId: state.activeSheetId, pivotId } }) },
-                    { id: "pivot-show-details", label: "Show Details", disabled: sourceRowPaths.length === 0, onSelect: () => session.showPivotDetails(pivotId, sourceRowPaths) },
+                    { id: "pivot-show-details", label: "Show Details", disabled: sourceRowPaths.length === 0 || !session.canExecute("pivot.drillDown"), onSelect: () => session.showPivotDetails(pivotId, sourceRowPaths) },
                   ];
                 }}
                 onPivotShowDetails={({ pivotId, sourceRowPaths }) => session.showPivotDetails(pivotId, sourceRowPaths)}

@@ -70,6 +70,7 @@ export const SERVER_STRUCTURAL_PLANNER_COMMANDS = [
   "sheetTable.add",
   "sheetTable.remove",
   "sheetTable.update",
+  "pivot.drillDown",
 ] as const;
 const serverStructuralPlannerCommandIds: ReadonlySet<string> = new Set(SERVER_STRUCTURAL_PLANNER_COMMANDS);
 export function requiresServerStructuralPlannerCommand(commandId: string): boolean {
