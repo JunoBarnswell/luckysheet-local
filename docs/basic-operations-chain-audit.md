@@ -3,8 +3,8 @@
 ## 基线、范围与真实状态
 
 - 2026-09-26 通过 GitHub Connector 重新读取 main：`a2a6140a90351b38f1e6f5fbc167d09b4f6ecc7f`，与本地 main 相同。
-- 当前审查工作分支：`codex/structural-reference-integrity`；已提交基线 `4efee2d97ea0d506b43e7ac2805731ccf3b5caf1`。下面的行号指该分支当前源码，不把历史 main、旧 PR 文字当成当前实现证据。
-- 唯一交付 PR：[草稿 #345](https://github.com/JunoBarnswell/luckysheet-local/pull/345)。本批尚未提交；已有稀疏单元格规划、extent 和 cell-shift history 改动保留待整体复核。
+- 当前审查工作分支：`codex/structural-reference-integrity`；初始基线 `4efee2d97ea0d506b43e7ac2805731ccf3b5caf1`，本轮最新代码提交 `cc3331b`。下面的行号以当前 PR head 的源码为准，不把历史 main 或旧 PR 文字当成当前实现证据。
+- 唯一交付 PR：[草稿 #345](https://github.com/JunoBarnswell/luckysheet-local/pull/345)。本轮结构事实、sheet snapshot、chart geometry 和 snapshot owner identity 修复已分别提交；稀疏单元格规划、extent 和 cell-shift history 改动保留在同一 PR 待整体复核。
 - 最新用户要求：以整个使用链为单位；至少 40 个操作一起审查、集中修复并复核；**最后实测**。早先“仅静态、不测试”只约束前置审查阶段，不再替代最终运行验收。
 - **已确认的产品取舍**：2026-09-26 用户选择“统一由 Java 服务规划，可要求服务在线”。结构操作不再承诺无服务的浏览器离线执行；连接失败时拒绝提交并保留编辑草稿。此授权只改变结构规划归属，不自动扩展为全部普通输入或图表样式都必须远程。
 - 建档 60 个操作，操作数不等于缺陷数。下表是追踪清单，**不是 60 项审查完成/通过的声明**。同根因的行列、图表类型、入口变体不重复算 bug。
