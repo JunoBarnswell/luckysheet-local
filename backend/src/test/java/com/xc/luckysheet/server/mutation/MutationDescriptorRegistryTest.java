@@ -1260,8 +1260,10 @@ class MutationDescriptorRegistryTest {
                 {"sheetId":"sheet-1","drawing":{"id":"camera-1","sheetId":"sheet-1","kind":"camera","payloadId":"camera-payload","anchor":{"kind":"absolute"},"transform":{"x":1,"y":2,"width":30,"height":40,"rotation":0},"zIndex":1},"payload":{"kind":"camera","sourceRange":{"sheetId":"sheet-1","startRow":0,"endRow":999,"startColumn":0,"endColumn":999},"refreshPolicy":"live"}}
                 """));
 
-        ServiceException error = assertThrows(ServiceException.class, () -> registry.prepare(snapshot, add, WorkbookAclRole.EDITOR));
+        var prepared = registry.prepare(snapshot, add, WorkbookAclRole.EDITOR);
+        ServiceException error = assertThrows(ServiceException.class, () -> prepared.descriptor().apply(snapshot, add));
         assertEquals("VALIDATION_ERROR", error.code());
+        assertEquals(0, snapshot.path("sheets").get(0).path("drawings").size());
     }
 
     @Test

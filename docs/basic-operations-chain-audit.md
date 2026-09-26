@@ -135,7 +135,7 @@
 14. **X1 现代图表写错原生 vocabulary**：`native-chart.ts:294–299` 写 `c:treemapChart` 等 2006 chart namespace 节点；微软 Office2016 使用 ChartEx `cx:chartSpace/chart` 与 layout。需要真正的 ChartEx package/relationships/codec，保留未知部件；自产自读通过不等于 Excel 兼容。
 15. **X2 系列与轴语义丢失**：combo exporter 仅按 chartType 分组，将所有组绑定 201/202，忽略 series.axis；scatter/bubble 的 axisXml 仍默认分类轴；stock 把 roles 写为单个 ser 内 open/high/low/close/vol 元素。需 type-specific 原生系列/轴编译，不靠通用 XML 字符串拼接重猜模型。
 16. **X3 原生类型识别丢子类型**：classifier 对 line3DChart 不保留 3D subtype，surfaceChart/3DChart 仅凭 wireframe 区分，ofPieChart family=pie 后 subtype 落成 pie。读写 codec 需共享正式 family/subtype 映射和拒绝边界。
-17. **P1 服务端图表修改重复全量复制**：DrawingMutationDescriptor 的 affectedRanges 用 apply(snapshot) 预检，apply 再 deepCopy/reduce。重绘/拖动阶段之外的服务端计算和 heap 同样应计入性能。需事务拥有一个已验证的写入计划，而非跳过预检。
+17. **P1 服务端图表修改重复全量复制（本轮已修复）**：DrawingMutationDescriptor 的 affectedRanges 原用 apply(snapshot) 预检，提交再 deepCopy/reduce 一次。保护范围本来就是整张表；现在预检只解析参数并返回整表范围，唯一提交 reducer 仍在 detached candidate 上执行全部相机范围、payload、stale before-image 与 owner 校验。Java 回归调整为预检可得范围、apply 拒绝非法 camera 且原快照不变；本地未运行 Java 测试，等 PR Java 21 CI。
 
 ### B：基础操作追加证据
 
