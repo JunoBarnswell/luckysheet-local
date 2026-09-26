@@ -128,7 +128,7 @@ describe('WorkbookSession collaboration integration', () => {
       workbook.getSheet(sheetId).cells.set(1, 0, { value: null, formula });
 
       const params = { sheetId, at: 0, count: 1 };
-      const affectedRanges = runtime.registry.getMutationMetadata('rows.inserted').affectedRanges.resolve(params);
+      const affectedRanges = [...runtime.registry.getMutationMetadata('rows.inserted').affectedRanges.resolve(params)];
       const mutation = { id: 'rows.inserted', unitId: workbook.unitId, sheetId, params, affectedRanges };
       const pending = session.enqueueLocalMutations([mutation], workbook.unitId, 'local-structural-ack');
       const beforeAddress = { sheetId, row: 0, column: 0 };
