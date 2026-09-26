@@ -180,6 +180,21 @@ describe('WorkbookSession collaboration integration', () => {
     assert.equal(rejected.workbook.getSheet(rejected.sheetId).cells.get(1, 0)?.formula, '=Broken');
     assert.equal(rejected.session.offlineQueue.getPendingCount(), 1);
     assert.equal(rejected.session.getRevision(), 0);
+
+    const missingPatch = createPendingCommit('=A1');
+    const malformedCommit = {
+      ...missingPatch.committed,
+      mutations: [{
+        ...missingPatch.committed.mutations[0]!,
+        structuralPatch: undefined,
+        structuralImpactRanges: [],
+      }],
+    };
+    assert.throws(() => missingPatch.session.applyCommittedStructuralPatches(malformedCommit),
+      /requires a server-derived StructuralPatch/);
+    assert.equal(missingPatch.workbook.getSheet(missingPatch.sheetId).cells.get(1, 0)?.formula, '=A1');
+    assert.equal(missingPatch.session.offlineQueue.getPendingCount(), 1);
+    assert.equal(missingPatch.session.getRevision(), 0);
   });
 
   it('invalidates overlapping local undo after a committed remote cell write', () => {

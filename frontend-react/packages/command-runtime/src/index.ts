@@ -989,7 +989,9 @@ function transformHistoryEntry(
 ): HistoryTransformResult {
   const definedNameDeltas = entry.inversePlan.flatMap((mutation) => mutation.structuralDefinedNameOwnerDeltas ?? []);
   const hasStructuralOwnerPatch = entry.inversePlan.some((mutation) => (
-    mutation.structuralFormulaOwnerDeltas?.length || mutation.structuralDefinedNameOwnerDeltas?.length
+    mutation.structuralFormulaOwnerDeltas?.length
+    || mutation.structuralDefinedNameOwnerDeltas?.length
+    || mutation.structuralRangeOwnerDeltas?.length
   ));
   if (policy?.kind === 'axis' && hasStructuralOwnerPatch) return {
     ok: false,
@@ -1385,12 +1387,7 @@ export class CommandRuntime {
     const patched = items.filter((item) => item.structuralFormulaOwnerDeltas !== undefined
       || item.structuralDefinedNameOwnerDeltas !== undefined
       || item.structuralRangeOwnerDeltas !== undefined);
-    if (patched.length === 0) {
-      this.setRevision(Math.max(this.currentRevision, revision));
-      return;
-    }
-
-    preflightCommittedStructuralPatches(this.workbook, patched);
+    if (patched.length > 0) preflightCommittedStructuralPatches(this.workbook, patched);
 
     const entry = [...this.undoStack, ...this.redoStack].find((candidate) => candidate.operationId === operationId);
     if (entry) {
@@ -1409,6 +1406,11 @@ export class CommandRuntime {
       if (formulaMismatch || definedNameMismatch || rangeMismatch) {
         throw new Error('STRUCTURAL_PATCH_MISMATCH: server-derived owner facts differ from local history; operation remains unacknowledged and the workbook must be reloaded');
       }
+    }
+
+    if (patched.length === 0) {
+      this.setRevision(Math.max(this.currentRevision, revision));
+      return;
     }
 
     for (const item of patched) {

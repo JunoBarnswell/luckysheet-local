@@ -100,6 +100,10 @@ export interface StructuralPatch {
 
 const structuralPatchMutationIds: ReadonlySet<string> = new Set(STRUCTURAL_PATCH_MUTATIONS);
 
+export function requiresStructuralPatch(mutationId: string): boolean {
+  return structuralPatchMutationIds.has(mutationId);
+}
+
 export interface OperationEnvelope {
   clientSessionId: string;
   schema: typeof OPERATION_ENVELOPE_SCHEMA;
@@ -2803,7 +2807,7 @@ function validateCommittedOperationEnvelope(value: unknown): CommittedOperationE
     const structuralPatch = mutation.structuralPatch === undefined
       ? undefined
       : validateStructuralPatch(mutation.structuralPatch, operation.mutations[index]!.id);
-    if (structuralPatchMutationIds.has(operation.mutations[index]!.id) && structuralPatch === undefined) {
+    if (requiresStructuralPatch(operation.mutations[index]!.id) && structuralPatch === undefined) {
       throw new Error(`committed mutation[${index}] requires a server-derived StructuralPatch`);
     }
     const structuralImpactRanges = mutation.structuralImpactRanges;

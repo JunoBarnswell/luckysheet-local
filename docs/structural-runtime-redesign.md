@@ -1550,3 +1550,34 @@ Six non-overlapping static review passes confirmed two independent performance r
 
 - 随后的 PR CI `36259534120` 越过该 production compile error，发现 `WorkbookOperationServiceTest` 三处将 JSON 紧贴 `"""` 开始符；Java text block 开始符必须后接行终止符，因此 test source 无法编译。
 - 将三处 fixture 改为常规多行 text block。只修正 Java 21 语法，不改变用例数据或断言；本地仍未运行 Java test/build，待新的 PR CI 复核。
+
+### CI correction — missing Jackson import and snapshot root narrowing
+
+- PR CI `36259713919` 的前端阶段通过，Maven test-compile 报三处源码错误：迁移测试使用 `JsonNode` 但未导入；另两处把 `applyStructuralPatch` 的 `JsonNode` 返回值当作 `SnapshotMutationSupport.range` 所需的 `ObjectNode` 根对象。
+- 补入 `JsonNode` import，并仅在已知由 `ObjectNode` fixture/reducer 派生的测试结果边界窄化为 `ObjectNode`，不改生产代码或断言。错误日志共三项；本机未运行 Maven、前端构建或测试，等待下一次 PR CI 复核。
+
+### 2026-09-27 six-pass review — missing committed StructuralPatch bypass
+
+六轮交叉静态复核确认一个独立 ACK fail-close 缺口：
+
+1. **协议路径差异**：WebSocket `decodeOperationMessage` 调用 committed-envelope validator，结构 mutation 缺少 patch 会被拒绝；不能据此认为所有服务器响应均经过该解码器。
+2. **HTTP 边界**：`WorkbookApiClient.commitOperation/getOperationResult` 直接以 TypeScript 泛型读取 JSON；`assertOperationResultMatches` 只核对请求身份字段，不验证 committed mutation 的结构 patch。
+3. **会话调用**：REST commit、恢复查询和远端重放均进入 `CollaborationSession.assertCommittedOperation`；原检查只验证“patch 若存在”的内容，没有要求 `STRUCTURAL_PATCH_MUTATIONS` 中的 mutation 必须携带 patch。
+4. **ACK 顺序**：在线提交者在 `applyCommittedStructuralPatches` 成功后才确认 recovery journal、推进 revision、ACK 与 checkpoint；缺 patch 若穿过会话校验就可能作为成功结果继续流转。
+5. **运行时早退**：命令运行时把没有任何 owner-delta 字段的 items 视为无补丁并先推进 revision，之前未比较匹配 operation 的本地 undo/redo facts；因此单独修会话边界仍留下运行时完整性缺口。
+6. **失败原子性**：拒绝必须发生在 patch apply、history invalidation、revision 更新及 ACK 前；回归源码覆盖 HTTP committed-patch 方法拒绝缺 patch并保留 pending/revision，同时命令运行时覆盖整类空数组和完全缺字段两种 mismatch。
+
+修复：会话按协议生成的 `STRUCTURAL_PATCH_MUTATIONS` 要求结构 patch；命令运行时先将本地 history owner facts 与权威 delta 比较，再允许无补丁 revision 早退。新增成功路径未改变；新增拒绝路径断言工作簿引用值、pending 数与 revision 未变化。源码静态检查通过，未运行测试/build/typecheck；不将源码回归用例表述为已实测。确认 **1 个独立事务完整性问题**，不把 HTTP、会话、早退等根因证据拆开重复计数；总体结构编辑架构和用户要求的 30 项批量审查仍未完成。
+
+### 2026-09-27 six-pass review — range-owner history axis rebase
+
+另一条独立的 undo/redo 一致性缺口经六轮静态复核确认：
+
+1. **事实写入**：本地 range-owner 变更的精确 before/after delta 被保存在 history 的 inverse mutation 中，供 undo/redo 作前置检查及写入。
+2. **rebase 分支**：远端结构轴 mutation 带 `historyRebase.kind='axis'` 时，`transformHistoryEntry` 只以 formula 与 defined-name delta 判定 history 是否含 structural owner patch，遗漏新加入的 `structuralRangeOwnerDeltas`。
+3. **变换覆盖**：通过 axis 分支后 `transformMutation` 仅变换 mutation params 与 affected ranges，不变换 owner delta 的 before/after range/header facts；因此留下位置已过期的 history owner facts。
+4. **远端更新顺序**：远端 range-owner delta 在 `applyHistory` 中先成功应用，再对 undo/redo stack 执行 history rebase；本地 range-owner 的真实几何已经随远端轴操作移动。
+5. **用户可见后果**：未被标 invalid 的 history 仍可进入 undo/redo preflight，但其 owner precondition 对比的是旧范围，无法撤销当前合法状态，失败只在用户点击 undo/redo 时暴露。
+6. **修复边界**：像 formula/name facts 一样，暂不尝试在 TypeScript payload walker 内局部拼接/改写 range-owner 语义；把包含任一 range-owner delta 的条目统一 fail-close 标 invalid，并以远端真实 range patch 回归源码检查 workbook after state 与 history 可用性。
+
+修复是在 structural-owner history 检查中纳入 `structuralRangeOwnerDeltas`；新增范围 owner 先本地变更、再应用远端行插入的回归源码，要求远端 owner range 正确落位且本地旧 history 被明确标记 invalid。现有无 owner history/匹配 owner ACK 成功路径不变。该项确认 **1 个独立撤销历史一致性问题**；只执行静态代码审查与 `git diff --check`，未执行回归源码、构建或 typecheck。

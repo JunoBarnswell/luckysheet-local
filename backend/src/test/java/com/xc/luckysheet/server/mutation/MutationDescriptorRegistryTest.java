@@ -151,12 +151,13 @@ class MutationDescriptorRegistryTest {
                 application.snapshot().path("sheets").get(1).path("cells").path("0").path("0").path("formula").asText());
         assertEquals(original, snapshot);
         assertEquals(application.snapshot(), registry.applyPublicMutations(snapshot, List.of(rename)));
-        JsonNode undone = registry.applyStructuralPatch(application.snapshot(), application.structuralPatch().inverse("sheetTable.update"));
+        ObjectNode undone = (ObjectNode) registry.applyStructuralPatch(
+                application.snapshot(), application.structuralPatch().inverse("sheetTable.update"));
         assertEquals(new RangeRef("sheet-1", 0, 4, 0, 1), SnapshotMutationSupport.range(undone,
                 undone.path("sheets").get(0).path("sheetTables").get(0).path("range")));
         assertEquals("=Sales[Amount]", undone.path("sheets").get(0)
                 .path("cells").path("0").path("1").path("formulaMetadata").path("sourceFormula").asText());
-        JsonNode redone = registry.applyStructuralPatch(undone, application.structuralPatch());
+        ObjectNode redone = (ObjectNode) registry.applyStructuralPatch(undone, application.structuralPatch());
         assertEquals("=Orders[Amount]", redone.path("sheets").get(0)
                 .path("cells").path("0").path("1").path("formulaMetadata").path("sourceFormula").asText());
 
@@ -205,7 +206,7 @@ class MutationDescriptorRegistryTest {
         StructuralPatch patch = new StructuralPatch(StructuralPatch.VERSION, "sheetTable.update", List.of(), List.of(),
                 List.of(StructuralPatch.RangeOwnerDelta.sheetTable("sheet-1", "table-1", before, after)));
 
-        JsonNode applied = registry.applyStructuralPatch(snapshot, patch);
+        ObjectNode applied = (ObjectNode) registry.applyStructuralPatch(snapshot, patch);
         assertEquals(after, SnapshotMutationSupport.range(applied, applied.path("sheets").get(0)
                 .path("sheetTables").get(0).path("range")));
         assertEquals(before, SnapshotMutationSupport.range(snapshot, snapshot.path("sheets").get(0)

@@ -489,6 +489,89 @@ test('CommandRuntime replays exact structural range-owner facts through undo and
   assert.equal(runtime.getHistoryDepth().undo, 1);
 });
 
+test('CommandRuntime invalidates range-owner history before rebasing across a remote axis mutation', () => {
+  const workbook = new WorkbookModel('unit-range-owner-axis-rebase', 'Range Owner Axis Rebase');
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  const beforeRange = { sheetId: sheet.id, startRow: 2, endRow: 6, startColumn: 1, endColumn: 4 };
+  const localAfterRange = { ...beforeRange, startRow: 3, endRow: 7 };
+  const remoteAfterRange = { ...localAfterRange, startRow: 4, endRow: 8 };
+  sheet.replaceDataRegions([{ id: 'region-1', sourceId: 'source-1', range: beforeRange, headerRow: 2, revision: 4 }]);
+  const localDelta: StructuralRangeOwnerDelta = {
+    ownerKind: 'data-region', sheetId: sheet.id, regionId: 'region-1',
+    before: { range: beforeRange, headerRow: 2 },
+    after: { range: localAfterRange, headerRow: 3 },
+  };
+  const remoteDelta: StructuralRangeOwnerDelta = {
+    ...localDelta,
+    before: { range: localAfterRange, headerRow: 3 },
+    after: { range: remoteAfterRange, headerRow: 4 },
+  };
+  const localAffectedRanges = [beforeRange, localAfterRange];
+  const remoteAffectedRanges = cellRange({ sheetId: sheet.id, row: 0, column: 0 });
+  const runtime = new CommandRuntime(workbook);
+  const localMetadata = (name: string, inverseId: string) => ({
+    schema: { name, validate: (value: unknown) => !!value && typeof value === 'object' },
+    permission: { capability: 'test.range-owner.write' },
+    affectedRanges: { resolve: () => localAffectedRanges, mode: 'exact' as const },
+    inversePolicy: { allowedMutationIds: [inverseId], minCount: 1 },
+  });
+  runtime.registry.registerMutation({
+    id: 'range.owner.transform', handler: () => undefined,
+    metadata: localMetadata('RangeOwnerTransform', 'range.owner.restore'),
+  });
+  runtime.registry.registerMutation({
+    id: 'range.owner.restore', handler: () => undefined,
+    metadata: localMetadata('RangeOwnerRestore', 'range.owner.transform'),
+  });
+  runtime.registry.registerCommand({
+    id: 'range.owner.transform',
+    execute: (_params, context) => {
+      context.applyMutation({
+        id: 'range.owner.transform', unitId: workbook.unitId, sheetId: sheet.id, params: {},
+        affectedRanges: localAffectedRanges,
+        inverse: [{ id: 'range.owner.restore', unitId: workbook.unitId, sheetId: sheet.id, params: {}, affectedRanges: localAffectedRanges }],
+        apply: () => {
+          sheet.replaceDataRegions([{ ...sheet.dataRegions[0]!, range: localAfterRange, headerRow: 3 }]);
+          return { kind: 'structural-transform', removedCells: [], clearInputRanges: [], populateInputRanges: [],
+            rewrittenFormulaOwners: [], rangeOwnerDeltas: [localDelta] };
+        },
+      });
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges: localAffectedRanges };
+    },
+  });
+  const operation = runtime.execute('range.owner.transform', {});
+
+  const axisMetadata = (direction: 1 | -1, inverseId: string) => ({
+    schema: {
+      name: 'AxisMutation',
+      validate: (value: unknown) => !!value && typeof value === 'object'
+        && (value as { sheetId?: unknown }).sheetId === sheet.id
+        && Number.isSafeInteger((value as { at?: unknown }).at)
+        && Number.isSafeInteger((value as { count?: unknown }).count),
+    },
+    permission: { capability: 'test.row.write' },
+    affectedRanges: { resolve: () => remoteAffectedRanges, mode: 'exact' as const },
+    historyRebase: { kind: 'axis' as const, axis: 'row' as const, direction },
+    inversePolicy: { allowedMutationIds: [inverseId], minCount: 1 },
+  });
+  const remoteEffect = {
+    kind: 'structural-transform', removedCells: [], clearInputRanges: [], populateInputRanges: [],
+    rewrittenFormulaOwners: [], rangeOwnerDeltas: [remoteDelta],
+  };
+  runtime.registry.registerMutation({ id: 'rows.inserted', handler: () => remoteEffect, metadata: axisMetadata(1, 'rows.deleted') });
+  runtime.registry.registerMutation({ id: 'rows.deleted', handler: () => undefined, metadata: axisMetadata(-1, 'rows.inserted') });
+  runtime.applyRemoteMutations([{
+    id: 'rows.inserted', unitId: workbook.unitId, sheetId: sheet.id,
+    params: { sheetId: sheet.id, at: 0, count: 1 }, affectedRanges: remoteAffectedRanges,
+    structuralRangeOwnerDeltas: [remoteDelta],
+  }], { operationId: 'remote-row-insert', revision: 1 });
+
+  assert.deepEqual(sheet.dataRegions[0]?.range, remoteAfterRange);
+  assert.equal(runtime.getHistoryDepth().undo, 0);
+  assert.equal(runtime.getInvalidHistoryEntries()[0]?.operationId, operation.operationId);
+  assert.equal(runtime.undo(), false);
+});
+
 test('CommandRuntime applies workbook-table and data-source range deltas atomically', () => {
   const workbook = new WorkbookModel('unit-range-owner-models', 'Range Owner Models');
   const sheetId = workbook.primarySheetId;
@@ -580,7 +663,7 @@ test('CommandRuntime skips full workbook snapshot for empty committed structural
   workbook.snapshot = originalSnapshot;
 });
 
-test('CommandRuntime rejects an empty authoritative ACK patch when local history changed owners', () => {
+test('CommandRuntime rejects missing or empty authoritative ACK patches when local history changed owners', () => {
   const workbook = new WorkbookModel('unit-empty-authoritative-patch', 'Empty authoritative patch');
   const sheetId = workbook.primarySheetId;
   const before = { name: 'Rate', formula: '=A1', scope: 'workbook' as const, anchor: { sheetId, row: 0, column: 0 } };
@@ -625,13 +708,18 @@ test('CommandRuntime rejects an empty authoritative ACK patch when local history
   });
 
   const operation = runtime.execute('test.defined-name.apply', {});
-  assert.throws(() => runtime.applyCommittedStructuralPatches(operation.operationId, [{
+  const mutation = {
     id: 'test.defined-name.transform', unitId: workbook.unitId, sheetId, params: after,
     affectedRanges: ownerRanges,
+  };
+  assert.throws(() => runtime.applyCommittedStructuralPatches(operation.operationId, [{
+    ...mutation,
     structuralFormulaOwnerDeltas: [],
     structuralDefinedNameOwnerDeltas: [],
     structuralRangeOwnerDeltas: [],
   }], 1), /STRUCTURAL_PATCH_MISMATCH: server-derived owner facts differ from local history/);
+  assert.throws(() => runtime.applyCommittedStructuralPatches(operation.operationId, [mutation], 1),
+    /STRUCTURAL_PATCH_MISMATCH: server-derived owner facts differ from local history/);
   assert.equal(runtime.getHistoryDepth().undo, 1);
   assert.equal(runtime.getInvalidHistoryEntries().length, 0);
   assert.equal(workbook.getDefinedNameExact('Rate', 'workbook')?.formula, '=A2');

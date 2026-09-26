@@ -5,7 +5,7 @@ import type {
   OperationEnvelope,
   OperationIntent,
 } from '@react-sheets/protocol';
-import { validateOperationEnvelope, validateStructuralPatch } from '@react-sheets/protocol';
+import { requiresStructuralPatch, validateOperationEnvelope, validateStructuralPatch } from '@react-sheets/protocol';
 import { classifyMutation, committedMutationToClassified } from './operation-types';
 import { rebaseAgainstHistory } from './ot-rebase';
 import { OfflineQueue } from './offline-queue';
@@ -431,6 +431,9 @@ export class CollaborationSession {
       throw new Error('Committed operation timestamps are invalid');
     }
     for (const mutation of operation.mutations) {
+      if (mutation.structuralPatch === undefined && requiresStructuralPatch(mutation.id)) {
+        throw new Error(`Committed mutation ${mutation.id} requires a server-derived StructuralPatch`);
+      }
       if (mutation.structuralPatch !== undefined) {
         assertStructuralPatch(mutation.structuralPatch, mutation.id);
         const expectedImpact = structuralPatchImpactRanges(mutation.structuralPatch);
