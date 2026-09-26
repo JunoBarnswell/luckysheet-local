@@ -91,7 +91,7 @@ export type ChartHistogramBinLayout = {
   geometry: { x: number; y: number; width: number; height: number };
 } & (
   | { kind: 'numeric'; start: number; end: number; boundary?: 'underflow' | 'overflow'; category?: never; value?: never }
-  | { kind: 'category'; category: PivotScalar; value: number; start?: never; end?: never }
+  | { kind: 'category'; category: PivotScalar; value: number; start?: never; end?: never; boundary?: never }
 );
 
 type ChartHistogramBinValue =
