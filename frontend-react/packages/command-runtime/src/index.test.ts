@@ -396,6 +396,25 @@ test('CommandRuntime records and guards defined-name owner patches in history', 
   assert.equal(workbook.getDefinedNameExact('Rate', 'workbook')?.formula, '=A3');
 });
 
+test('CommandRuntime skips full workbook snapshot for empty committed structural owner deltas', () => {
+  const workbook = new WorkbookModel('unit-empty-structural-patch', 'Empty structural patch');
+  const runtime = new CommandRuntime(workbook);
+  const originalSnapshot = workbook.snapshot.bind(workbook);
+  workbook.snapshot = () => { throw new Error('empty patch must not snapshot the workbook'); };
+
+  runtime.applyCommittedStructuralPatches('empty-patch', [{
+    id: 'rows.inserted',
+    unitId: workbook.unitId,
+    sheetId: workbook.primarySheetId,
+    params: { sheetId: workbook.primarySheetId, at: 0, count: 1 },
+    affectedRanges: [],
+    structuralFormulaOwnerDeltas: [],
+    structuralDefinedNameOwnerDeltas: [],
+  }], 1);
+
+  workbook.snapshot = originalSnapshot;
+});
+
 test('CommandRuntime emits declared calculation-context effects for command, undo, and redo', () => {
   const workbook = new WorkbookModel('unit-calculation-context', 'Before');
   const runtime = new CommandRuntime(workbook);

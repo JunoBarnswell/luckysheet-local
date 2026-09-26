@@ -80,6 +80,40 @@ describe('collaboration helpers', () => {
     assert.equal(session.offlineQueue.getStatus('op-ack'), 'acked');
   });
 
+  it('reads a single pending operation without exposing the queued envelope', () => {
+    const operation = buildOperation('op-targeted', 'wb-targeted', 1, 0, [{
+      id: 'cell.set', sheetId: 'sheet-1', params: { value: 'original' },
+    }], '2026-08-23T00:00:00.000Z');
+    const queue = new OfflineQueue({ load: () => [operation] });
+
+    assert.equal(queue.hasPendingOperation(operation.operationId), true);
+    assert.deepEqual(queue.getPendingOperationIds(), [operation.operationId]);
+    const isolated = queue.getPendingOperation(operation.operationId)!;
+    (isolated.mutations[0]!.params as Record<string, unknown>).value = 'changed';
+    assert.equal((queue.getPendingOperation(operation.operationId)!.mutations[0]!.params as Record<string, unknown>).value, 'original');
+  });
+
+  it('persists batched queue acknowledgement and discard only once', () => {
+    const operations = [1, 2].map((sequence) => buildOperation(
+      `op-batch-${sequence}`, 'wb-batch', sequence, 0,
+      [{ id: 'cell.set', sheetId: 'sheet-1', params: { value: sequence } }],
+      '2026-08-23T00:00:00.000Z',
+    ));
+    let writes = 0;
+    const queue = new OfflineQueue({ load: () => operations, persist: () => { writes += 1; } });
+
+    assert.deepEqual(queue.acknowledgeMany(operations.map((operation) => operation.operationId)), operations.map((operation) => operation.operationId));
+    assert.equal(writes, 1);
+    assert.equal(queue.getPendingCount(), 0);
+
+    queue.enqueue(buildOperation('op-discard-1', 'wb-batch', 3, 0, [{ id: 'cell.set', sheetId: 'sheet-1', params: {} }], '2026-08-23T00:00:00.000Z'));
+    queue.enqueue(buildOperation('op-discard-2', 'wb-batch', 4, 0, [{ id: 'cell.set', sheetId: 'sheet-1', params: {} }], '2026-08-23T00:00:00.000Z'));
+    writes = 0;
+    assert.deepEqual(queue.discardMany(queue.getPendingOperationIds()), ['op-discard-1', 'op-discard-2']);
+    assert.equal(writes, 1);
+    assert.equal(queue.getPendingCount(), 0);
+  });
+
   it('flushes a REST-style async transport and clears only after the returned revision', async () => {
     const workbook = new WorkbookModel('wb-rest', 'Collab');
     const runtime = new CommandRuntime(workbook);

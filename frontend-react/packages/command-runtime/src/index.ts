@@ -1304,8 +1304,8 @@ export class CommandRuntime {
 
   applyCommittedStructuralPatches(operationId: string, items: readonly MutationInfo[], revision: number): void {
     if (!Number.isSafeInteger(revision) || revision < 1) throw new Error('Committed revision must be a positive safe integer');
-    const patched = items.filter((item) => item.structuralFormulaOwnerDeltas !== undefined
-      || item.structuralDefinedNameOwnerDeltas !== undefined);
+    const patched = items.filter((item) => (item.structuralFormulaOwnerDeltas?.length ?? 0) > 0
+      || (item.structuralDefinedNameOwnerDeltas?.length ?? 0) > 0);
     if (patched.length === 0) {
       this.setRevision(Math.max(this.currentRevision, revision));
       return;

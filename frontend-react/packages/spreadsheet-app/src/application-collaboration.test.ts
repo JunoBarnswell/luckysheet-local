@@ -118,6 +118,69 @@ describe('WorkbookSession collaboration integration', () => {
     assert.equal(runtime.undo(), false);
   });
 
+  it('applies committed structural owner patches before acknowledging local operations', () => {
+    const createPendingCommit = (formula: string) => {
+      const workbook = new WorkbookModel('wb-structural-ack', 'Structural ACK');
+      const sheetId = workbook.primarySheetId;
+      const runtime = new CommandRuntime(workbook);
+      registerSpreadsheetFeatures(runtime, new DrawingRuntime());
+      const session = new CollaborationSession(runtime, { clientSessionId: 'fixture-session' });
+      workbook.getSheet(sheetId).cells.set(1, 0, { value: null, formula });
+
+      const params = { sheetId, at: 0, count: 1 };
+      const affectedRanges = runtime.registry.getMutationMetadata('rows.inserted').affectedRanges.resolve(params);
+      const mutation = { id: 'rows.inserted', unitId: workbook.unitId, sheetId, params, affectedRanges };
+      const pending = session.enqueueLocalMutations([mutation], workbook.unitId, 'local-structural-ack');
+      const beforeAddress = { sheetId, row: 0, column: 0 };
+      const afterAddress = { sheetId, row: 1, column: 0 };
+      const formulaOwnerDelta = {
+        kind: 'formula-cell' as const,
+        beforeAddress,
+        afterAddress,
+        before: { formula: '=A1', sourceFormula: null, barcodeFormula: null },
+        after: { formula: '=A2', sourceFormula: null, barcodeFormula: null },
+      };
+      const impact = [beforeAddress, afterAddress].map((address) => ({
+        sheetId: address.sheetId,
+        startRow: address.row,
+        endRow: address.row,
+        startColumn: address.column,
+        endColumn: address.column,
+      }));
+      const committed = {
+        ...pending,
+        actorId: 'actor-1',
+        origin: 'client' as const,
+        revision: 1,
+        committedAt: new Date().toISOString(),
+        mutations: [{
+          ...pending.mutations[0]!,
+          affectedRanges,
+          structuralImpactRanges: impact,
+          structuralPatch: {
+            version: 3 as const,
+            mutationId: 'rows.inserted',
+            formulaOwnerDeltas: [formulaOwnerDelta],
+            definedNameOwnerDeltas: [],
+          },
+        }],
+      };
+      return { workbook, sheetId, session, committed };
+    };
+
+    const success = createPendingCommit('=A1');
+    success.session.applyRemote(success.committed);
+    assert.equal(success.workbook.getSheet(success.sheetId).cells.get(1, 0)?.formula, '=A2');
+    assert.equal(success.session.offlineQueue.getPendingCount(), 0);
+    assert.equal(success.session.getRevision(), 1);
+
+    const rejected = createPendingCommit('=Broken');
+    assert.throws(() => rejected.session.applyRemote(rejected.committed), /STRUCTURAL_PATCH_PRECONDITION/);
+    assert.equal(rejected.workbook.getSheet(rejected.sheetId).cells.get(1, 0)?.formula, '=Broken');
+    assert.equal(rejected.session.offlineQueue.getPendingCount(), 1);
+    assert.equal(rejected.session.getRevision(), 0);
+  });
+
   it('invalidates overlapping local undo after a committed remote cell write', () => {
     const workbook = new WorkbookModel('wb-collab-history-overlap', 'Collaboration history overlap');
     const runtime = new CommandRuntime(workbook);

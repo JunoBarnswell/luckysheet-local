@@ -1412,3 +1412,20 @@ PR 上两个 `canonical-build` job 使用相同 head，前端依赖安装与前�
 6. **复杂度与未覆盖调用方**：完整 snapshot 的读取/JSON parse 仍是 O(S)，保护规则及 block manifests 仍按其各自规模复制；优化仅去掉每 mutation 的整快照副本，不声称已实现 affected-only planner 或实测提速。公共 replay/migration 路径继续保持其原有 detach/ownership 规则。
 
 本轮确认并修复 **2 个独立问题**：每个结构 mutation 重复复制完整 candidate；空范围会跳过保护 action 契约验证。不把行/列、各 descriptor 或断言拆分凑数。新增源码回归覆盖 owned root 身份、cell-protection detached 选择、规则 preimage、无变化/变化数据引用，以及空范围非法 action 拒绝。按本阶段静态优先要求，未运行本地 tests/build；推送后的 CI 另行记录。没有性能基准、浏览器交互或桌面 Excel 互操作证据，这些仍属于最终验收。无数据库/schema/protocol migration；回退为整体 revert 本轮实现、回归源码与本节记录。
+
+### 基础操作协同链 — 权威 StructuralPatch ACK 与待提交队列（2026-09-26）
+
+**基线与范围**：从 `1ed7f6e2` 继续，分支仍基于 `main` 的 `a2a6140a`，目标是现有 draft PR #345。本轮只审查已经进入服务端提交结果后的客户端确认、恢复查询和 outbox，不把它误称为 intent-first planner 或完整 owner patch。
+
+六个独立静态复核视角与结论：
+
+1. **REST 正常提交闭环**：协议返回 `CommittedOperationEnvelope`，内含 server-derived `structuralPatch`；runtime 原先只检查 request identity、确认 recovery journal 并 ACK，未消费 patch。相同 operation 的 websocket 通知又因 `ownOperationIds` 被跳过，形成权威 formula/name owner facts 永远不进入本地 runtime 的闭环缺口。现在先验证并应用服务端 owner facts，再确认 recovery journal 与 outbox ACK。
+2. **恢复结果查询**：`getOperationResult` 恢复路径同样 ACK 并移除 pending 项，却不消费响应 patch；现与正常 REST 提交共享同一个权威 patch 入口，并在确认后推进 `remoteRevision`。
+3. **ACK 失败顺序**：websocket 收到尚未确认的本地 operation 时，旧顺序先移除 outbox、标记 committed，再应用结构 patch；patch precondition 失败会使已提交事实丢失重试入口。现在先应用/校验 patch，成功后才将 operation 变成 terminal ACK。新增成功与拒绝路径源码用例检查 formula owner、pending 队列和 revision。
+4. **本地 echo 生命周期**：runtime 只在 transport 失败时删除 `ownOperationIds`；成功提交后永久保留，集合随长期编辑增长。正常及恢复结果成功处理后均删除对应 ID，revision 先推进，因此迟到的同 revision 广播仍会被 revision gate 安全忽略。
+5. **稀疏 patch 与模型分配**：`CommandRuntime.applyCommittedStructuralPatches` 原来把已定义但为空的 delta 数组视为有 patch，触发整本 `snapshot → fromSnapshot`。现在只对非空公式/name delta 预检；新增源码用例将任何意外 snapshot 变成显式失败。非空 patch 仍需完整工作簿副本以保障批量 precondition 原子性，尚未解决。
+6. **outbox 查询与批处理**：协同点查询原先调用 `getPending()` 深拷贝整条队列；历史逐条匹配会重复拷贝，hydration API 还二次 clone 同一 envelope；批量 ACK/丢弃逐项持久化会反复重写剩余队列。现提供目标 operation/ID 读取、history 单次 ID 集合匹配、ACK/丢弃批处理单次持久化，并移除 hydration 的重复 clone。`rebaseQueuedOperations` 仍需一次完整快照，因为它会改写所有可变 pending intents。
+
+此外，`applyRemote` 已先完整校验 committed envelope，再走不重复校验的内部 patch 应用路径，避免大型 patch 被全量做两遍协议验证。以上按独立根因计 **6 项修复**；不把正常/恢复两个入口、公式/name 两类 delta 或各个队列查询逐一拆数凑成 30。完整 intent-first planner、非空 ACK patch 的 affected-owner-only 预检、owner-complete history/OT/Java/OOXML 仍未完成，本目标继续 active，PR 继续 draft。
+
+新增 ACK success/rejection 与 queue isolation/batch persistence 测试源码；按当前静态阶段要求，未运行本地 tests/build/lint/typecheck/browser。仅允许 `git diff --check` 静态检查；无 schema 或数据迁移。最终仍需 PR CI、真实浏览器协同、原生 Excel 文件往返及 CPU/heap 基准，不能用源码复杂度推导替代实测。

@@ -1320,8 +1320,11 @@ async function loadHistoryAndReplayPending(runtime: SpreadsheetRuntime): Promise
     const result = await runtime.api.getOperationResult(runtime.model.unitId, operation.operationId);
     if (result) {
       assertOperationResultMatches(operation, result.operation);
+      runtime.collaboration?.applyCommittedStructuralPatches(result.operation);
       await runtime.recoveryJournal?.confirm(operation, result.operation.revision);
       runtime.collaboration?.acknowledge(operation.operationId, result.operation.revision);
+      runtime.remoteRevision = Math.max(runtime.remoteRevision, result.operation.revision);
+      runtime.ownOperationIds.delete(operation.operationId);
       await runtime.recoveryJournal?.flushed();
       serverCheckpoint(runtime).request(result.operation.revision);
     }
@@ -1367,9 +1370,13 @@ export function startCollaborationSession(
         const committed = existing ?? await runtime.api.commitOperation(runtime.model.unitId, operation);
         assertOperationResultMatches(operation, committed.operation);
         const revision = committed.operation.revision;
+        const collaboration = runtime.collaboration;
+        if (!collaboration) throw new Error('COLLABORATION_SESSION_REQUIRED: committed operation cannot be reconciled without its session');
+        collaboration.applyCommittedStructuralPatches(committed.operation);
         await runtime.recoveryJournal?.confirm(operation, revision);
         runtime.remoteRevision = Math.max(runtime.remoteRevision, revision);
-        runtime.collaboration?.acknowledge(operation.operationId, revision);
+        collaboration.acknowledge(operation.operationId, revision);
+        runtime.ownOperationIds.delete(operation.operationId);
         await runtime.checkpointWorkspace(false);
         serverCheckpoint(runtime).request(revision);
         runtime.handlers.onSaveState?.(serverCheckpoint(runtime).hasFailure ? 'error' : runtime.collaboration?.getPendingOperations().length ? 'saving' : 'saved');
