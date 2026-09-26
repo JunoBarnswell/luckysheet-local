@@ -1540,3 +1540,8 @@ Six non-overlapping static review passes confirmed two independent performance r
 6. **失败恢复语义**：全量遗漏路径已经要求保持未 ACK 并 reload；部分遗漏风险相同，不应只把 undo entry 标 invalid 后继续使用可能分叉的模型。
 
 修复为任意公式/名称/范围 delta 数组不一致均在 ACK 前 fail-close，移除“标 invalid 后仍接受”的路径；新增“本地两个定义名称、服务端只回一个 delta”的部分遗漏拒绝回归源码。已有完全匹配与整类全遗漏用例分别覆盖成功/拒绝边界。本机按要求未运行测试、typecheck 或构建；`git diff --check` 通过。该项确认 **1 个独立事务完整性问题**，不能与调用链各环节重复计数，也不替代唯一 Java planner 的完整实现。
+
+### CI correction — Sheet Table index local-name collision
+
+- PR CI `36259308993` 的 frontend build/typecheck 完成后，在 Java compile 报 `StructuralSnapshotReducer.applyRangeOwnerDeltas` 重复声明 `tablesById`。外层是 workbook-table identity map，内层是按 sheet 建立的 Sheet Table map；Java 不允许内层局部变量遮蔽同方法已声明变量。
+- 将内层索引明确命名为 `sheetTablesById`，仅消除局部变量冲突，不改变索引目标、owner 身份或查找逻辑。修正待新 PR CI 复核；本地未运行 Java build/test。

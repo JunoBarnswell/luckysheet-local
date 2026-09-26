@@ -130,18 +130,18 @@ final class StructuralSnapshotReducer {
                 SnapshotMutationSupport.dataModelArray(root, "sources"), targetSourceIds, "Data source");
         Map<String, Map<String, ObjectNode>> sheetTablesBySheet = new HashMap<>();
         for (Map.Entry<String, Set<String>> entry : targetSheetTableIds.entrySet()) {
-            Map<String, ObjectNode> tablesById = new HashMap<>();
+            Map<String, ObjectNode> sheetTablesById = new HashMap<>();
             for (JsonNode raw : SnapshotMutationSupport.array(SnapshotMutationSupport.sheet(root, entry.getKey()), "sheetTables")) {
                 ObjectNode table = requireObject(raw, "Sheet Table");
                 String tableId = SnapshotMutationSupport.text(table, "id");
                 if (!entry.getValue().contains(tableId)) continue;
                 if (!entry.getKey().equals(table.path("sheetId").asText())
-                        || tablesById.putIfAbsent(tableId, table) != null) {
+                        || sheetTablesById.putIfAbsent(tableId, table) != null) {
                     throw ServiceException.conflict("STRUCTURAL_PATCH_PRECONDITION: Sheet Table identity is duplicated or belongs to another worksheet: "
                             + entry.getKey() + ":" + tableId);
                 }
             }
-            sheetTablesBySheet.put(entry.getKey(), tablesById);
+            sheetTablesBySheet.put(entry.getKey(), sheetTablesById);
         }
 
         List<StructuralPatch.RangeOwnerDelta> changes = new ArrayList<>();
