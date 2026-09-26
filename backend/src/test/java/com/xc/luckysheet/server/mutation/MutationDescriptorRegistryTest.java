@@ -2018,6 +2018,67 @@ class MutationDescriptorRegistryTest {
     }
 
     @Test
+    void cellShiftRejectsDataOwnersBeyondExtentAndPreservesUnrelatedSources() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        for (String axis : List.of("row", "column")) for (String ownerKind : List.of("data-region", "workbook-table", "data-source")) {
+            ObjectNode snapshot = (ObjectNode) mapper.readTree("""
+                    {"definedNames":{},"definedNameModels":[],"dataModel":{"tables":[],"sources":[],"views":[],"relationships":[]},"sheets":[
+                      {"id":"sheet-1","name":"Sheet1","rowCount":8,"columnCount":8,"cells":{"2":{"2":{"value":42}}},
+                       "pane":{"kind":"none"},"dataRegions":[],"sheetTables":[],"pivots":[]}]}
+                    """);
+            ObjectNode sheet = (ObjectNode) snapshot.path("sheets").get(0);
+            ObjectNode range = mapper.createObjectNode().put("sheetId", "sheet-1")
+                    .put("startRow", "row".equals(axis) ? 20 : 2).put("endRow", "row".equals(axis) ? 20 : 2)
+                    .put("startColumn", "column".equals(axis) ? 20 : 2).put("endColumn", "column".equals(axis) ? 20 : 2);
+            ObjectNode region = null;
+            if ("workbook-table".equals(ownerKind)) {
+                ObjectNode table = ((ArrayNode) snapshot.path("dataModel").path("tables")).addObject()
+                        .put("id", "far-table").put("name", "Far table").put("sourceSheetId", "sheet-1")
+                        .put("rowCount", 0).put("blockSize", 128).put("revision", 0);
+                table.set("sourceRange", range);
+                table.putArray("fields");
+                table.putArray("blocks");
+            } else {
+                ObjectNode source = ((ArrayNode) snapshot.path("dataModel").path("sources")).addObject()
+                        .put("schema", "DataSourceManifest").put("version", 1).put("id", "far-source").put("name", "Far source")
+                        .put("kind", "data-region".equals(ownerKind) ? "chunked-table" : "worksheet-range")
+                        .put("rowCount", 0).put("blockRowCount", 65_536).put("revision", 0);
+                source.putArray("fields").addObject().put("id", "f0").put("name", "Code").put("ordinal", 0).put("type", "text");
+                source.putArray("blocks");
+                if ("data-region".equals(ownerKind)) {
+                    region = ((ArrayNode) sheet.get("dataRegions")).addObject().put("id", "far-region")
+                            .put("sourceId", "far-source").put("headerRow", range.path("startRow").asInt()).put("revision", 0);
+                    region.set("range", range);
+                } else {
+                    source.put("sourceSheetId", "sheet-1");
+                    source.set("sourceRange", range);
+                }
+            }
+            ObjectNode params = mapper.createObjectNode().put("sheetId", "sheet-1").put("operation", "insert").put("axis", axis);
+            params.putObject("range").put("sheetId", "sheet-1").put("startRow", 2).put("endRow", 2).put("startColumn", 2).put("endColumn", 2);
+            params.putObject("affectedBand").put("sheetId", "sheet-1").put("startRow", 2).put("startColumn", 2)
+                    .put("endRow", "row".equals(axis) ? 7 : 2).put("endColumn", "column".equals(axis) ? 7 : 2);
+            OperationMutation operation = new OperationMutation("cells.inserted", "sheet-1", params);
+            JsonNode before = snapshot.deepCopy();
+            ServiceException failure = assertThrows(ServiceException.class,
+                    () -> registry.require(operation.id(), false).apply(snapshot, operation));
+            assertEquals("SERVICE_UNAVAILABLE", failure.code());
+            assertTrue(failure.getMessage().contains("cell shift intersects " + ownerKind.replace('-', ' ')));
+            assertEquals(before, snapshot);
+
+            range.put("startRow", 0).put("endRow", 0).put("startColumn", 0).put("endColumn", 0);
+            if (region != null) region.put("headerRow", 0);
+            JsonNode acceptedBefore = snapshot.deepCopy();
+            JsonNode updated = registry.require(operation.id(), false).apply(snapshot, operation);
+            assertEquals(acceptedBefore, snapshot);
+            assertEquals(snapshot.path("dataModel"), updated.path("dataModel"));
+            assertEquals(sheet.path("dataRegions"), updated.path("sheets").get(0).path("dataRegions"));
+            assertEquals(42, updated.path("sheets").get(0).path("cells")
+                    .path("row".equals(axis) ? "3" : "2").path("column".equals(axis) ? "3" : "2").path("value").asInt());
+        }
+    }
+
+    @Test
     void cellInsertAndRowPermutationHaveDeterministicInverseFriendlySnapshots() throws Exception {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         JsonNode snapshot = mapper.readTree("""

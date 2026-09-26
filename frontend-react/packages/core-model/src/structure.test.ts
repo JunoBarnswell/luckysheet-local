@@ -425,7 +425,9 @@ describe('structural operations', () => {
 
     sheet.reportSheet = reportDefinition(sheet.id, [{ row: 1, column: 1 }]);
     sheet.cells.set(1, 1, { value: 'must remain' });
+    sheet.review.setNote(3, 1, { id: 'report-rejection-note', author: 'user', text: 'keep', createdAt: 'now', visible: true });
     const before = structuredClone(sheet.reportSheet);
+    const snapshotBefore = workbook.snapshot();
     assert.throws(() => StructuralTransform.apply(workbook, {
       kind: 'cell-shift', sheetId: sheet.id,
       sourceRange: { sheetId: sheet.id, startRow: 1, endRow: 1, startColumn: 1, endColumn: 1 },
@@ -433,6 +435,7 @@ describe('structural operations', () => {
     }), /removes report binding/);
     assert.deepEqual(sheet.reportSheet, before);
     assert.equal(sheet.cells.get(1, 1)?.value, 'must remain');
+    assert.deepEqual(workbook.snapshot(), snapshotBefore);
   });
 
   it('moves report bindings with source cells and rejects overwriting a destination binding', () => {
@@ -1255,6 +1258,152 @@ describe('structural operations', () => {
     assert.equal(target.columnWidthsPx, widths);
     StructuralTransform.apply(workbook, { kind: 'delete-rows', sheetId: target.id, at: 1, count: 2 });
     assert.deepEqual(workbook.snapshot(), before);
+  });
+
+  it('applies cell-shift metadata once with canonical sheet ids and preserves unrelated owners', () => {
+    for (const axis of ['row', 'column'] as const) {
+      const workbook = new WorkbookModel(`unit-cell-plan-${axis}`, 'Cell metadata plan');
+      const target = workbook.getSheet('sheet-1');
+      target.rowCount = 12;
+      target.columnCount = 12;
+      // Formula qualifiers resolve names before ids; a canonical RangeRef must not.
+      const owner = workbook.addSheet('reference-owner', target.id, 12, 12);
+      const range = { sheetId: target.id, startRow: 4, endRow: 4, startColumn: 4, endColumn: 4 };
+      const afterRow = axis === 'row' ? 5 : 4;
+      const afterColumn = axis === 'column' ? 5 : 4;
+      const afterRange = { sheetId: target.id, startRow: afterRow, endRow: afterRow, startColumn: afterColumn, endColumn: afterColumn };
+      const selection = axis === 'row'
+        ? { sheetId: target.id, startRow: 2, endRow: 2, startColumn: 4, endColumn: 4 }
+        : { sheetId: target.id, startRow: 4, endRow: 4, startColumn: 2, endColumn: 2 };
+      target.cells.set(4, 4, { value: 42 });
+      target.review.setNote(4, 4, { id: 'cell-plan-note', author: 'user', text: 'note', createdAt: 'now', visible: true });
+      target.reportSheet = reportDefinition(target.id, [{ row: 4, column: 4 }]);
+      target.dataValidations.push({ id: 'cell-plan-rule', sheetId: target.id, type: 'custom', formula1: '=E5',
+        ranges: [{ ...range }], formulaAnchor: { sheetId: target.id, row: 4, column: 4 } });
+      owner.sparklines.push(
+        { id: 'affected-cell-plan', sheetId: owner.id, anchor: { row: 0, column: 0 }, type: 'line', color: '#000', sourceRange: { ...range } },
+        { id: 'unaffected-cell-plan', sheetId: owner.id, anchor: { row: 0, column: 1 }, type: 'line', color: '#000',
+          sourceRange: { ...range, sheetId: owner.id } },
+      );
+      owner.hyperlinks.set('0:0', { id: 'cell-plan-link', target: { kind: 'sheet', sheetId: target.id, row: 4, column: 4 } });
+      owner.drawingPayloads.set('cell-plan-chart', { kind: 'chart', chartId: 'cell-plan-chart', chartType: 'column', subtype: 'clustered',
+        source: { kind: 'worksheet-ranges', ranges: [{ ...range }] }, elements: { hiddenData: 'show' } });
+      const sourceRange = { sheetId: target.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 };
+      workbook.addDataSource({ schema: 'DataSourceManifest', version: 1, id: 'unrelated-source', name: 'Unrelated source',
+        kind: 'worksheet-range', sourceSheetId: target.id, sourceRange, rowCount: 0,
+        fields: [{ id: 'f0', name: 'Code', ordinal: 0, type: 'text' }], blockRowCount: 65_536, blocks: [], revision: 0 });
+      const source = workbook.dataModel.sources.get('unrelated-source');
+      assert.ok(source);
+      const sourceFields = source.fields;
+      const sourceBlocks = source.blocks;
+      const sourceCoordinates = source.sourceRange;
+      const unchangedSparkline = owner.sparklines[1];
+      const rules = target.dataValidations;
+      const sparklines = owner.sparklines;
+      const hyperlinks = owner.hyperlinks;
+      const before = workbook.snapshot();
+
+      StructuralTransform.apply(workbook, { kind: 'cell-shift', sheetId: target.id, sourceRange: selection, operation: 'insert', axis });
+
+      assert.equal(target.cells.get(afterRow, afterColumn)?.value, 42);
+      assert.equal(target.cells.get(4, 4), undefined);
+      assert.equal(target.review.getNoteAt(afterRow, afterColumn)?.id, 'cell-plan-note');
+      assert.deepEqual(target.reportSheet?.bindings[0]?.cell, { row: afterRow, column: afterColumn });
+      assert.deepEqual(target.dataValidations[0]?.ranges, [afterRange]);
+      assert.deepEqual(target.dataValidations[0]?.formulaAnchor, { sheetId: target.id, row: afterRow, column: afterColumn });
+      assert.equal(target.dataValidations[0]?.formula1, axis === 'row' ? '=E6' : '=F5');
+      assert.deepEqual(owner.sparklines[0]?.sourceRange, afterRange);
+      assert.equal(owner.sparklines[1], unchangedSparkline);
+      assert.deepEqual(owner.hyperlinks.get('0:0')?.target, { kind: 'sheet', sheetId: target.id, row: afterRow, column: afterColumn });
+      const chart = owner.drawingPayloads.get('cell-plan-chart');
+      assert.ok(chart?.kind === 'chart' && chart.source.kind === 'worksheet-ranges');
+      assert.deepEqual(chart.source.ranges, [afterRange]);
+      assert.equal(target.dataValidations, rules);
+      assert.equal(owner.sparklines, sparklines);
+      assert.equal(owner.hyperlinks, hyperlinks);
+      assert.equal(workbook.dataModel.sources.get('unrelated-source'), source);
+      assert.equal(source.fields, sourceFields);
+      assert.equal(source.blocks, sourceBlocks);
+      assert.equal(source.sourceRange, sourceCoordinates);
+
+      StructuralTransform.apply(workbook, { kind: 'cell-shift', sheetId: target.id, sourceRange: selection, operation: 'delete', axis });
+      assert.deepEqual(workbook.snapshot(), before);
+    }
+  });
+
+  it('rejects non-contiguous print ranges before committing cell-shift metadata', () => {
+    const workbook = new WorkbookModel('unit-cell-plan-print-rejection', 'Cell plan print rejection');
+    const sheet = workbook.getSheet('sheet-1');
+    sheet.cells.set(3, 4, { value: 42 });
+    sheet.review.setNote(3, 4, { id: 'print-rejection-note', author: 'user', text: 'keep', createdAt: 'now', visible: true });
+    workbook.printDocuments.set(sheet.id, {
+      schema: 'PrintDocument', unitId: workbook.unitId, sheetId: sheet.id,
+      pageSetup: { paperSize: 'a4', orientation: 'portrait', margins: { top: 1, right: 1, bottom: 1, left: 1, header: 0, footer: 0 },
+        scale: 100, printGridlines: false, printHeadings: false, centerHorizontally: false, centerVertically: false },
+      printAreas: [{ sheetId: sheet.id, range: { sheetId: sheet.id, startRow: 3, endRow: 3, startColumn: 3, endColumn: 5 } }],
+      pageBreaks: [],
+    });
+    const operation = { kind: 'cell-shift', sheetId: sheet.id, operation: 'insert', axis: 'row',
+      sourceRange: { sheetId: sheet.id, startRow: 1, endRow: 1, startColumn: 4, endColumn: 4 } } as const;
+    const before = workbook.snapshot();
+    assert.throws(() => StructuralTransform.apply(workbook, operation), /UNSUPPORTED_FEATURE: cell shift makes this formula range non-contiguous/);
+    assert.deepEqual(workbook.snapshot(), before);
+    const document = workbook.printDocuments.get(sheet.id);
+    assert.ok(document);
+    document.printAreas = [{ sheetId: sheet.id, range: { sheetId: sheet.id, startRow: 3, endRow: 3, startColumn: 4, endColumn: 4 } }];
+    StructuralTransform.apply(workbook, operation);
+    assert.equal(sheet.cells.get(4, 4)?.value, 42);
+    assert.equal(sheet.review.getNoteAt(4, 4)?.id, 'print-rejection-note');
+    assert.equal(workbook.printDocuments.get(sheet.id)?.printAreas[0]?.range.startRow, 4);
+  });
+
+  it('rejects block-backed owners in the shifted tail beyond materialized worksheet bounds', () => {
+    for (const axis of ['row', 'column'] as const) for (const ownerKind of ['data-region', 'workbook-table', 'data-source'] as const) {
+      const workbook = new WorkbookModel(`unit-lazy-tail-${axis}-${ownerKind}`, 'Lazy structural tail');
+      const sheet = workbook.getSheet('sheet-1');
+      sheet.rowCount = 8;
+      sheet.columnCount = 8;
+      sheet.cells.set(2, 2, { value: 42 });
+      const range = axis === 'row'
+        ? { sheetId: sheet.id, startRow: 20, endRow: 20, startColumn: 2, endColumn: 2 }
+        : { sheetId: sheet.id, startRow: 2, endRow: 2, startColumn: 20, endColumn: 20 };
+      if (ownerKind === 'workbook-table') {
+        workbook.addTable({ id: 'far-table', name: 'Far table', sourceSheetId: sheet.id, sourceRange: range,
+          rowCount: 0, fields: [], blockSize: 128, blocks: [], revision: 0 });
+      } else {
+        workbook.addDataSource({ schema: 'DataSourceManifest', version: 1, id: 'far-source', name: 'Far source',
+          kind: 'worksheet-range', sourceSheetId: sheet.id, sourceRange: range, rowCount: 0,
+          fields: [{ id: 'f0', name: 'Code', ordinal: 0, type: 'text' }], blockRowCount: 65_536, blocks: [], revision: 0 });
+        if (ownerKind === 'data-region') sheet.addDataRegion({ id: 'far-region', sourceId: 'far-source', range,
+          headerRow: range.startRow, revision: 0 });
+      }
+      const before = workbook.snapshot();
+      const failure = ownerKind === 'data-region' ? /Cannot shift cells across data region far-region/
+        : ownerKind === 'workbook-table' ? /UNSUPPORTED_FEATURE: cell shift intersects workbook table far-table/
+          : /UNSUPPORTED_FEATURE: cell shift intersects data source far-source/;
+      assert.throws(() => StructuralTransform.apply(workbook, { kind: 'cell-shift', sheetId: sheet.id,
+        sourceRange: { sheetId: sheet.id, startRow: 2, endRow: 2, startColumn: 2, endColumn: 2 }, operation: 'insert', axis }), failure);
+      assert.deepEqual(workbook.snapshot(), before);
+    }
+  });
+
+  it('commits empty metadata collections without replacing their canonical containers', () => {
+    const workbook = new WorkbookModel('unit-empty-metadata-plan', 'Empty metadata plan');
+    const sheet = workbook.getSheet('sheet-1');
+    sheet.hiddenRows.add(1);
+    sheet.rowHeightsPx[1] = 30;
+    sheet.hiddenColumns.add(1);
+    sheet.columnWidthsPx[1] = 90;
+    const hiddenRows = sheet.hiddenRows;
+    const heights = sheet.rowHeightsPx;
+    StructuralTransform.apply(workbook, { kind: 'delete-rows', sheetId: sheet.id, at: 1, count: 1 });
+    StructuralTransform.apply(workbook, { kind: 'delete-columns', sheetId: sheet.id, at: 1, count: 1 });
+    assert.equal(sheet.hiddenRows, hiddenRows);
+    assert.equal(sheet.rowHeightsPx, heights);
+    assert.equal(sheet.hiddenRows.size, 0);
+    assert.equal(sheet.hiddenColumns.size, 0);
+    assert.deepEqual(sheet.rowHeightsPx, {});
+    assert.deepEqual(sheet.columnWidthsPx, {});
   });
 
   it('rejects a late metadata planning failure without committing earlier cells or owners', () => {

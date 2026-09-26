@@ -633,6 +633,10 @@ final class StructuralSnapshotReducer {
         int count = "row".equals(axis) ? selection.endRow() - selection.startRow() + 1 : selection.endColumn() - selection.startColumn() + 1;
         int delta = "insert".equals(operation) ? count : -count;
         validateCellShiftBounds(sheet, selection, expectedBand, axis, operation, count);
+        RangeRef referenceBand = "row".equals(axis)
+                ? new RangeRef(sheetId, selection.startRow(), SnapshotMutationSupport.MAX_ROW, selection.startColumn(), selection.endColumn())
+                : new RangeRef(sheetId, selection.startRow(), selection.endRow(), selection.startColumn(), SnapshotMutationSupport.MAX_COLUMN);
+        validateCellShiftDataOwners(root, sheet, referenceBand);
         rejectFormulaGroupMetadataInRange(sheet, expectedBand, "cell shift");
         FormulaReferenceTransformer.Axis shiftAxis = "row".equals(axis)
                 ? FormulaReferenceTransformer.Axis.ROW : FormulaReferenceTransformer.Axis.COLUMN;
@@ -1826,6 +1830,39 @@ final class StructuralSnapshotReducer {
         });
     }
 
+    /** Block-backed owners can extend beyond the materialized worksheet extent. */
+    private static void validateCellShiftDataOwners(ObjectNode root, ObjectNode target, RangeRef referenceBand) {
+        String targetSheetId = target.path("id").asText();
+        for (JsonNode raw : SnapshotMutationSupport.array(target, "dataRegions")) {
+            ObjectNode region = requireObject(raw, "Data region");
+            if (intersects(SnapshotMutationSupport.range(root, region.get("range")), referenceBand)) {
+                throw ServiceException.unavailable("UNSUPPORTED_FEATURE: cell shift intersects data region " + region.path("id").asText());
+            }
+        }
+        for (JsonNode raw : SnapshotMutationSupport.array(target, "sheetTables")) {
+            ObjectNode table = requireObject(raw, "Sheet table");
+            if (intersects(SnapshotMutationSupport.range(root, table.get("range")), referenceBand)) {
+                throw ServiceException.unavailable("UNSUPPORTED_FEATURE: cell shift intersects sheet table " + table.path("id").asText() + "; use an explicit table operation");
+            }
+        }
+        for (JsonNode raw : workbookTables(root)) {
+            ObjectNode table = requireObject(raw, "Workbook table");
+            JsonNode sourceRange = table.get("sourceRange");
+            if (sourceRange != null && !sourceRange.isNull() && targetSheetId.equals(sourceRange.path("sheetId").asText())
+                    && intersects(SnapshotMutationSupport.range(root, sourceRange), referenceBand)) {
+                throw ServiceException.unavailable("UNSUPPORTED_FEATURE: cell shift intersects workbook table " + table.path("id").asText() + "; use an explicit table operation");
+            }
+        }
+        for (JsonNode raw : SnapshotMutationSupport.dataModelArray(root, "sources")) {
+            ObjectNode source = requireObject(raw, "Data source");
+            JsonNode sourceRange = source.get("sourceRange");
+            if (sourceRange != null && !sourceRange.isNull() && targetSheetId.equals(sourceRange.path("sheetId").asText())
+                    && intersects(SnapshotMutationSupport.range(root, sourceRange), referenceBand)) {
+                throw ServiceException.unavailable("UNSUPPORTED_FEATURE: cell shift intersects data source " + source.path("id").asText() + "; use a data-block transaction");
+            }
+        }
+    }
+
     private static void shiftCellBandMetadata(ObjectNode root, ObjectNode target, RangeRef selection, RangeRef band, String axisName, String operation, int count) {
         FormulaReferenceTransformer.Axis axis = "row".equals(axisName)
                 ? FormulaReferenceTransformer.Axis.ROW
@@ -1835,12 +1872,6 @@ final class StructuralSnapshotReducer {
                 : FormulaReferenceTransformer.Direction.DELETE;
         FormulaReferenceTransformer.Range selected = formulaRange(selection);
         String targetSheetId = target.path("id").asText();
-
-        for (JsonNode raw : SnapshotMutationSupport.array(target, "dataRegions")) {
-            ObjectNode region = requireObject(raw, "Data region");
-            RangeRef range = SnapshotMutationSupport.range(root, region.get("range"));
-            if (intersects(range, band)) throw ServiceException.unavailable("UNSUPPORTED_FEATURE: cell shift intersects data region " + region.path("id").asText());
-        }
 
         shiftCellBandAnchors(target, selection, band, axisName, operation, count);
         for (JsonNode raw : SnapshotMutationSupport.array(target, "merges")) {
@@ -1865,39 +1896,8 @@ final class StructuralSnapshotReducer {
         if (filterRaw != null && !filterRaw.isNull()) shiftCellBandFilter(root, requireObject(filterRaw, "AutoFilter"), targetSheetId, selected, band, axis, direction);
         for (JsonNode raw : SnapshotMutationSupport.array(target, "sheetTables")) {
             ObjectNode table = requireObject(raw, "Sheet table");
-            if (intersects(SnapshotMutationSupport.range(root, table.get("range")), band)) {
-                throw ServiceException.unavailable("UNSUPPORTED_FEATURE: cell shift intersects sheet table " + table.path("id").asText() + "; use an explicit table operation");
-            }
-            requireCellShiftRange(root, table.get("range"), targetSheetId, selected, axis, direction, "sheet table range");
             JsonNode filter = table.get("autoFilter");
             if (filter != null && !filter.isNull()) shiftCellBandFilter(root, requireObject(filter, "Table AutoFilter"), targetSheetId, selected, band, axis, direction);
-        }
-        for (JsonNode raw : workbookTables(root)) {
-            ObjectNode table = requireObject(raw, "Workbook table");
-            JsonNode sourceRange = table.get("sourceRange");
-            if (sourceRange != null && !sourceRange.isNull()) {
-                if (targetSheetId.equals(sourceRange.path("sheetId").asText())
-                        && intersects(SnapshotMutationSupport.range(root, sourceRange), band)) {
-                    throw ServiceException.unavailable("UNSUPPORTED_FEATURE: cell shift intersects workbook table " + table.path("id").asText() + "; use an explicit table operation");
-                }
-                requireCellShiftRange(root, sourceRange, targetSheetId, selected, axis, direction, "workbook table source range");
-            }
-        }
-        ArrayNode sources = SnapshotMutationSupport.dataModelArray(root, "sources");
-        for (JsonNode raw : sources) {
-            ObjectNode source = requireObject(raw, "Data source");
-            JsonNode sourceRange = source.get("sourceRange");
-            if (sourceRange == null || sourceRange.isNull() || !targetSheetId.equals(sourceRange.path("sheetId").asText())) continue;
-            RangeRef previous = SnapshotMutationSupport.range(root, sourceRange);
-            if (intersects(previous, band)) {
-                throw ServiceException.unavailable("UNSUPPORTED_FEATURE: cell shift intersects data source " + source.path("id").asText() + "; use a data-block transaction");
-            }
-            requireCellShiftRange(root, sourceRange, targetSheetId, selected, axis, direction, "data source range");
-            RangeRef next = SnapshotMutationSupport.range(root, sourceRange);
-            if (previous.endRow() - previous.startRow() != next.endRow() - next.startRow()
-                    || previous.endColumn() - previous.startColumn() != next.endColumn() - next.startColumn()) {
-                throw ServiceException.unavailable("UNSUPPORTED_FEATURE: cell shift changes the physical extent of data source " + source.path("id").asText());
-            }
         }
 
         shiftCellBandSpills(root, target, targetSheetId, selected, band, axis, direction);

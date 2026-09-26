@@ -1291,3 +1291,26 @@ PR 上两个 `canonical-build` job 使用相同 head，前端依赖安装与前�
 **验证与问题计数**：本轮修复两个已确认问题（上一提交的编译阻塞、范围变换不必要的整 owner 复制/替换）；三类 owner 是同一迁移的覆盖面，不拆成三个独立根因，也不把自审拦下的未提交回归计为额外完成项。新增/补充成功、未变化、拒绝、身份与事实不可变性的回归源码；按用户要求只做静态审查及 diff whitespace 检查，不执行 tests/build/lint/typecheck/browser。自动 CI 仅记录相应 head 的实际状态，未主动重跑。
 
 **剩余工作与回退**：这仍不是完整 Canonical Structural Planner、metadata ReferenceIndex 或可逆跨端 StructuralPatch。其它 detached metadata staging、cells/公式与 metadata 的计划聚合、history/Java authority/OT/OOXML 的事实消费仍待迁移。没有 schema/data migration；回退须整体 revert 本轮类型、实现与回归源码，不能只删结果字段却保留半套 apply。PR 保持 draft，浏览器、原生 Excel 文件与性能验收仍未完成。
+
+### 基础操作性能优先 — 单元格插删 metadata 计划（2026-09-26）
+
+用户进一步要求优先基础操作、大数据量、内存和计算时间，并参考微软官方设计。本轮先处理 Insert/Delete Cells：当前 `preflightCellShiftMetadata` 在 detached owners 上变换后丢弃结果，`applyCellShift` 再遍历 live metadata 重算；report bindings 同样映射两遍。预检还深拷贝所有同表 workbook tables/data sources，但 `planCellShift → validateDataRegionCellShift` 已拒绝它们与 affected band 相交，合法情况下这些对象不可能移动。
+
+上述最初方案在边界自审中发现一个前提缺口：原校验的 affected band 只覆盖当前 rowCount/columnCount，block-backed owner 可以合法地超出这个已物化范围，而引用位移覆盖 Excel 坐标域的整个尾部。因此先同步修正 TS/Java 的 owner guard，让它检查完整语义尾部；只有通过这个校验，删除 table/source 的无效范围变换才成立。不是简单假设“屏幕外/未加载对象不会受影响”。
+
+**实施边界**：让轴操作和单元格插删共用一个 metadata 计划提交器；cell-shift 保留完整预检结果，report binding 进入同一计划，删除第二次 live 变换和无变化 table/source 的整对象复制/范围变换。单元格移动、公式引用计算、权限和 wire/history schema 本轮不改。任何 planning 失败必须在 cells/metadata 写入前返回；成功提交保持未变化集合/owner 身份。验收源码覆盖行/列插删、跨表引用、report/review/print、无关数据 owner 和失败时 snapshot 不变；仍按本轮静态审查要求不执行本地 tests/build/browser。
+
+**微软依据与推导边界**：微软 [Excel calculation performance](https://learn.microsoft.com/en-us/office/vba/excel/concepts/excel-performance/excel-improving-calculation-performance) 说明依赖跟踪、smart recalculation 和重用计算顺序；[performance and limit improvements](https://learn.microsoft.com/en-us/office/vba/excel/concepts/excel-performance/excel-performance-and-limit-improvements) 记录了整列引用、多工作表，以及过滤/排序/复制粘贴在 CPU、内存和响应时间方面的改进。我们据此把受影响对象工作量、重复计算和分配量作为基础操作优化重点；这不是声称微软内部采用本仓库的 metadata plan。单元格位移与整行/整列操作的区别按 [Microsoft insert/delete guidance](https://support.microsoft.com/en-us/excel/get-started/insert-or-delete-rows-and-columns-in-excel) 保留。尚未实测延迟、峰值内存或百万行承载能力，不从源码调用次数推算加速倍数。
+
+六轮静态自审与本轮结果：
+
+1. **真实基础操作入口**：`sheet-features/src/editing/index.ts` 的 `sheet.cells.insert/delete`、对应 `cells.inserted/deleted` replay 与 restore 都进入 `StructuralTransform.apply → applyCellShift`。现在 `planCellShiftMetadata` 只调用一次 metadata 变换，并保留 report/print 结果；删除 cells 移动后的第二次 `shiftCellBandMetadata` 和第二次 report 映射。轴操作与 cell-shift 共用 `collectStructuralMetadataPlan → applyStructuralMetadataPlan`，未引入另一套 mutation 入口。
+2. **工作量与内存存活**：删除 cell-shift 对 workbook table/source（含 fields、blocks、rowOrder）的整对象克隆；应用阶段也不再访问这些未变化载荷。metadata 计划改存 typed changed-field values，不再持有完整 detached WorksheetModel；无变化工作表不进入提交列表。数组/Map/Set/尺寸容器实例与未变化 owner 保留身份，空集合仍会正确清空 live 内容。规划期间仍有 metadata 克隆和差异比较，不声称峰值分配已经消除。
+3. **参与者与公式顺序**：对照旧 live helper，范围/anchor、CF/DV、Chart、Pivot、Sparkline、drawing、filter/sort、spill、protection、banded、review、hyperlink、PrintDocument 均由一次计划覆盖；ReportSheet 加入 typed local fields。公式计划仍按稳定 owner identity 在已提交 geometry 上写公式，不能被 staged metadata 覆盖。回归源码覆盖两轴 insert/delete 往返、验证公式/anchor、柱状图源、跨表 Sparkline/hyperlink、report/note，以及无关数据源与集合身份。
+4. **canonical 身份与重复查表**：`shiftCellRangeReference` 之前把 RangeRef.sheetId 放进公式 qualifier，再构造完整 sheetOrder。公式解析按 display name 优先查找，另一张表的名称等于目标 ID 时会误判范围 owner，导致漏移。生成的局部 AST 现在使用已解析 owner 上下文，不再按名字解析，也不再为每个范围复制 sheet identities。超链接 address 是真实公式文本，仍保留名称语义，但身份列表移到操作级只构造一次。按源码调用数，该 metadata 子路径不再有“每个范围构造 S 个工作表身份 + 每张 owner sheet 再构造 S 个身份”的分配；不据此宣称整个结构操作已达 affected-only。
+5. **懒加载范围与失败原子性**：TS/Java 的 block region、Sheet Table、workbook table、data-source guard 都改查完整结构尾部，Java 将 guard 移到 cells 写入前；删除 Java metadata 阶段重复的 guard 与无效 table/source 移位。未物化范围与选区语义相交时明确要求专用 block/table 事务，不静默忽略或加载数据块。TS/Java 新增两轴、三种 owner 的尾部拒绝与输入不变源码；Java 同时覆盖移到不相关范围后可成功且数据 owner 内容不变。PrintDocument 非连续范围和末端 ReportSheet 拒绝源码确认已规划的 notes/cells 不先写入。
+6. **跨端与回放边界**：Java `mapCellShiftRange` 原本就按 canonical sheetId 比较后处理坐标，TS 身份修复恢复这一约束。当前 StructuralPatch v3/history 仍未存放完整 metadata/cell facts，不能把两个 reducer 的同向结果当成最终统一语义。未更改 protocol 或持久化版本；只删除已迁移的重复路径，不新增回放字段去掩盖剩余独立推导。新 generic typed-field 收集、可选字段存在性、空集合及 formula-owner 写入目标均完成静态复核；源码用例未运行。
+
+本轮确认 **5 个独立问题**：重复 metadata/report 变换、无关数据载荷复制及暂存保留、canonical 范围身份误解析、重复 sheet identity 列表构造、已物化 extent 导致尾部 owner guard 漏查。同根因的行/列或不同对象类型不重复计数。验证仅为六轮源码审查及 diff whitespace 检查；没有本地 tests/build/lint/typecheck/browser，也没有速度、峰值内存或承载规模的实测结论。前一 head `53891062` 的自动 workflows `36211353463` / `36211351079` 均成功，不代表当前修改已通过 CI。
+
+剩余 priority 是基础操作的 typed affected-owner index、稀疏 cell/metadata planning、精确可逆 history、Java authority/OT/OOXML 消费同一完整 patch，以及 100k formulas/500k–1m occupied cells 的实测。没有 schema/data migration；回退应整体 revert 本轮 TS/Java 实现和回归源码，不能只恢复一个端的尾部边界。PR 继续 draft，完整目标不变。
