@@ -16,6 +16,7 @@ import {
   formatFormula,
   MAX_COLUMN_INDEX,
   MAX_ROW_INDEX,
+  ReferenceTransformDomain,
   offsetAst,
   parseFormula,
   type FormulaDefinedName,
@@ -26,7 +27,7 @@ export interface RowPermutationPlan {
   readonly range: RangeRef;
   readonly metadataScope: RangeRef;
   readonly sourceRows: readonly Row[];
-  readonly sourceToTarget: ReadonlyMap<Row, Row>;
+  readonly targetRowsBySource: readonly Row[];
 }
 
 export interface RowPermutationResult {
@@ -51,14 +52,7 @@ export function createRowPermutationPlan(range: RangeRef, sourceRows: readonly R
   }
   const expectedCount = normalized.endRow - normalized.startRow + 1;
   if (sourceRows.length !== expectedCount) throw new Error('Row permutation length does not match the range');
-  const expected = new Set<number>();
-  for (let row = normalized.startRow; row <= normalized.endRow; row += 1) expected.add(row);
-  const sourceToTarget = new Map<Row, Row>();
-  sourceRows.forEach((sourceRow, targetOffset) => {
-    if (!Number.isInteger(sourceRow) || !expected.has(sourceRow) || sourceToTarget.has(sourceRow)) throw new Error('Row permutation must contain every selected row exactly once');
-    sourceToTarget.set(sourceRow, normalized.startRow + targetOffset);
-  });
-  if (sourceToTarget.size !== expectedCount) throw new Error('Row permutation must contain every selected row exactly once');
+  const targetRowsBySource = ReferenceTransformDomain.createRowPermutationMap(normalized.startRow, sourceRows);
   const metadataScope = {
     sheetId: normalized.sheetId,
     startRow: normalized.startRow,
@@ -66,7 +60,12 @@ export function createRowPermutationPlan(range: RangeRef, sourceRows: readonly R
     startColumn: 0,
     endColumn: affectedColumnEnd,
   };
-  return Object.freeze({ range: Object.freeze(normalized), metadataScope: Object.freeze(metadataScope), sourceRows: Object.freeze([...sourceRows]), sourceToTarget });
+  return Object.freeze({
+    range: Object.freeze(normalized),
+    metadataScope: Object.freeze(metadataScope),
+    sourceRows: Object.freeze([...sourceRows]),
+    targetRowsBySource,
+  });
 }
 
 function inRange(range: RangeRef, row: number, column: number): boolean {
@@ -87,7 +86,9 @@ function rangesIntersect(a: RangeRef, b: RangeRef): boolean {
   return a.sheetId === b.sheetId && a.startRow <= b.endRow && b.startRow <= a.endRow && a.startColumn <= b.endColumn && b.startColumn <= a.endColumn;
 }
 
-function remapRow(row: number, plan: RowPermutationPlan): number { return plan.sourceToTarget.get(row) ?? row; }
+function remapRow(row: number, plan: RowPermutationPlan): number {
+  return ReferenceTransformDomain.mapPermutationIndex(row, plan.range.startRow, plan.targetRowsBySource);
+}
 
 function cloneRange(range: RangeRef, startRow: number, endRow: number, startColumn = range.startColumn, endColumn = range.endColumn): RangeRef {
   return { ...range, startRow, endRow, startColumn, endColumn };
@@ -596,8 +597,8 @@ export function applyRowPermutation(
   const cellsByRow = new Map<number, Array<{ column: number; cell: CellData }>>();
   sheet.cells.forEachInRows(new Set(sourceRows), (cell, row, column) => {
     if (column < range.startColumn || column > range.endColumn) return;
-    const targetRow = plan.sourceToTarget.get(row);
-    if (targetRow === undefined) throw new Error(`ROW_PERMUTATION_INVARIANT: cell owner row ${row} is outside its source map`);
+    if (row < range.startRow || row > range.endRow) throw new Error(`ROW_PERMUTATION_INVARIANT: cell owner row ${row} is outside its source map`);
+    const targetRow = remapRow(row, plan);
     const rowDelta = targetRow - row;
     const nextCell = rowDelta === 0 ? structuredClone(cell) : remapPermutedFormulaOwner(cell, rowDelta, sheet.id, row, column);
     const before = permutationFormulaOwnerState(cell);

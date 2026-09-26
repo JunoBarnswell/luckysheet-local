@@ -52,6 +52,19 @@ interface SharedReferenceTransformVectors {
     readonly operation: 'insert' | 'delete';
     readonly expected: { readonly kind: string; readonly row?: number; readonly column?: number };
   }[];
+  readonly rowPermutations: readonly {
+    readonly id: string;
+    readonly startRow: number;
+    readonly sourceRowsByTarget: readonly number[];
+    readonly expectedTargetRowsBySource: readonly number[];
+  }[];
+  readonly permutationPoints: readonly {
+    readonly id: string;
+    readonly position: number;
+    readonly startRow: number;
+    readonly targetRowsBySource: readonly number[];
+    readonly expected: number;
+  }[];
   readonly formulaSheetOrder: readonly { readonly id: string; readonly name: string }[];
   readonly formulaAxes: readonly {
     readonly id: string;
@@ -105,7 +118,7 @@ test('rejects mapped intervals outside Excel address limits and invalid domain i
 
 test('matches the shared TypeScript and Java structural-mapping vectors', () => {
   assert.equal(sharedVectors.schema, 'ReferenceTransformVectors');
-  assert.equal(sharedVectors.version, 1);
+  assert.equal(sharedVectors.version, 3);
   for (const vector of sharedVectors.points) {
     const maximum = vector.axis === 'row' ? MAX_ROW_INDEX : MAX_COLUMN_INDEX;
     assert.deepEqual(
@@ -147,6 +160,20 @@ test('matches the shared TypeScript and Java structural-mapping vectors', () => 
       vector.id,
     );
   }
+  for (const vector of sharedVectors.rowPermutations) {
+    assert.deepEqual(
+      ReferenceTransformDomain.createRowPermutationMap(vector.startRow, vector.sourceRowsByTarget),
+      vector.expectedTargetRowsBySource,
+      vector.id,
+    );
+  }
+  for (const vector of sharedVectors.permutationPoints) {
+    assert.equal(
+      ReferenceTransformDomain.mapPermutationIndex(vector.position, vector.startRow, vector.targetRowsBySource),
+      vector.expected,
+      vector.id,
+    );
+  }
 });
 
 test('rejects invalid cell-shift domain inputs', () => {
@@ -156,6 +183,13 @@ test('rejects invalid cell-shift domain inputs', () => {
   assert.throws(() => ReferenceTransformDomain.mapCellShiftPoint(0, 0, {
     startRow: 0, endRow: 0, startColumn: 0, endColumn: MAX_COLUMN_INDEX + 1,
   }, 'column', 'insert'), /invalid/);
+});
+
+test('rejects invalid row-permutation maps and positions', () => {
+  assert.throws(() => ReferenceTransformDomain.createRowPermutationMap(4, [4, 4]), /duplicate/);
+  assert.throws(() => ReferenceTransformDomain.createRowPermutationMap(MAX_ROW_INDEX, [MAX_ROW_INDEX, MAX_ROW_INDEX + 1]), /invalid|outside/);
+  assert.throws(() => ReferenceTransformDomain.mapPermutationIndex(MAX_ROW_INDEX + 1, 0, [0]), /invalid/);
+  assert.throws(() => ReferenceTransformDomain.mapPermutationIndex(0, 0, [1]), /mapping is invalid/);
 });
 
 test('matches the shared TypeScript and Java formula-axis vectors', () => {

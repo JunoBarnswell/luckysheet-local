@@ -32,6 +32,49 @@ export type IntervalTransformResult =
   | { readonly kind: 'out-of-bounds'; readonly start: number; readonly end: number };
 
 export class ReferenceTransformDomain {
+  static createRowPermutationMap(startRow: number, sourceRowsByTarget: readonly number[]): readonly number[] {
+    if (!Number.isSafeInteger(startRow) || startRow < 0
+      || startRow > MAX_ROW_INDEX
+      || !Array.isArray(sourceRowsByTarget)
+      || sourceRowsByTarget.length < 1
+      || sourceRowsByTarget.length > MAX_ROW_INDEX - startRow + 1) {
+      throw new Error('Reference transform row-permutation inputs are invalid');
+    }
+    const count = sourceRowsByTarget.length;
+    const targetRowsBySource = new Array<number>(count);
+    for (let targetOffset = 0; targetOffset < count; targetOffset += 1) {
+      const sourceRow = sourceRowsByTarget[targetOffset];
+      if (!Number.isSafeInteger(sourceRow) || sourceRow! < startRow || sourceRow! >= startRow + count) {
+        throw new Error('Reference transform row-permutation source is outside its range');
+      }
+      const sourceOffset = sourceRow! - startRow;
+      if (targetRowsBySource[sourceOffset] !== undefined) {
+        throw new Error('Reference transform row-permutation contains a duplicate source');
+      }
+      targetRowsBySource[sourceOffset] = startRow + targetOffset;
+    }
+    if (targetRowsBySource.some((targetRow) => targetRow === undefined)) {
+      throw new Error('Reference transform row-permutation must contain every source');
+    }
+    return Object.freeze(targetRowsBySource);
+  }
+
+  static mapPermutationIndex(position: number, startRow: number, targetRowsBySource: readonly number[]): number {
+    if (!Number.isSafeInteger(position) || position < 0 || position > MAX_ROW_INDEX
+      || !Number.isSafeInteger(startRow) || startRow < 0 || startRow > MAX_ROW_INDEX
+      || !Array.isArray(targetRowsBySource) || targetRowsBySource.length < 1
+      || targetRowsBySource.length > MAX_ROW_INDEX - startRow + 1) {
+      throw new Error('Reference transform row-permutation mapping inputs are invalid');
+    }
+    const endExclusive = startRow + targetRowsBySource.length;
+    if (position < startRow || position >= endExclusive) return position;
+    const mapped = targetRowsBySource[position - startRow];
+    if (!Number.isSafeInteger(mapped) || mapped! < startRow || mapped! >= endExclusive) {
+      throw new Error('Reference transform row-permutation mapping is invalid');
+    }
+    return mapped!;
+  }
+
   static mapCellShiftIndex(position: number, start: number, end: number, op: 'insert' | 'delete', maximum: number): number {
     if (!Number.isSafeInteger(position) || position < 0
       || !Number.isSafeInteger(start) || start < 0

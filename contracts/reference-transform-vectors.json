@@ -1,6 +1,6 @@
 {
   "schema": "ReferenceTransformVectors",
-  "version": 2,
+  "version": 3,
   "points": [
     { "id": "row-insert-before", "axis": "row", "position": 2, "at": 3, "count": 2, "operation": "insert", "expected": { "kind": "mapped", "position": 2 } },
     { "id": "row-insert-at", "axis": "row", "position": 3, "at": 3, "count": 2, "operation": "insert", "expected": { "kind": "mapped", "position": 5 } },
@@ -42,6 +42,18 @@
     { "id": "column-delete-point-after-selection", "axis": "column", "row": 3, "column": 5, "selection": { "startRow": 1, "endRow": 3, "startColumn": 2, "endColumn": 3 }, "operation": "delete", "expected": { "kind": "mapped", "row": 3, "column": 3 } },
     { "id": "row-insert-point-overflow", "axis": "row", "row": 1048575, "column": 1, "selection": { "startRow": 1, "endRow": 1, "startColumn": 1, "endColumn": 2 }, "operation": "insert", "expected": { "kind": "out-of-bounds", "row": 1048576, "column": 1 } },
     { "id": "column-insert-point-overflow", "axis": "column", "row": 2, "column": 16383, "selection": { "startRow": 1, "endRow": 2, "startColumn": 2, "endColumn": 2 }, "operation": "insert", "expected": { "kind": "out-of-bounds", "row": 2, "column": 16384 } }
+  ],
+  "rowPermutations": [
+    { "id": "three-row-left-rotation", "startRow": 2, "sourceRowsByTarget": [3, 4, 2], "expectedTargetRowsBySource": [4, 2, 3] },
+    { "id": "three-row-reversal", "startRow": 1, "sourceRowsByTarget": [3, 2, 1], "expectedTargetRowsBySource": [3, 2, 1] },
+    { "id": "one-row-identity", "startRow": 17, "sourceRowsByTarget": [17], "expectedTargetRowsBySource": [17] }
+  ],
+  "permutationPoints": [
+    { "id": "permutation-point-before-range", "position": 1, "startRow": 2, "targetRowsBySource": [4, 2, 3], "expected": 1 },
+    { "id": "permutation-point-first-source", "position": 2, "startRow": 2, "targetRowsBySource": [4, 2, 3], "expected": 4 },
+    { "id": "permutation-point-middle-source", "position": 3, "startRow": 2, "targetRowsBySource": [4, 2, 3], "expected": 2 },
+    { "id": "permutation-point-last-source", "position": 4, "startRow": 2, "targetRowsBySource": [4, 2, 3], "expected": 3 },
+    { "id": "permutation-point-after-range", "position": 5, "startRow": 2, "targetRowsBySource": [4, 2, 3], "expected": 5 }
   ],
   "formulaSheetOrder": [
     { "id": "local-id", "name": "Local" },

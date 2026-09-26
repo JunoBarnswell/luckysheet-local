@@ -26,6 +26,45 @@ final class ReferenceTransformDomain {
     private ReferenceTransformDomain() {
     }
 
+    static int[] createRowPermutationMap(int startRow, int[] sourceRowsByTarget) {
+        if (startRow < 0 || startRow > MAX_ROW_INDEX || sourceRowsByTarget == null || sourceRowsByTarget.length == 0
+                || sourceRowsByTarget.length > MAX_ROW_INDEX - startRow + 1) {
+            throw new IllegalArgumentException("Reference transform row-permutation inputs are invalid");
+        }
+        int count = sourceRowsByTarget.length;
+        int[] targetRowsBySource = new int[count];
+        boolean[] seen = new boolean[count];
+        for (int targetOffset = 0; targetOffset < count; targetOffset++) {
+            int sourceRow = sourceRowsByTarget[targetOffset];
+            if (sourceRow < startRow || sourceRow >= startRow + count) {
+                throw new IllegalArgumentException("Reference transform row-permutation source is outside its range");
+            }
+            int sourceOffset = sourceRow - startRow;
+            if (seen[sourceOffset]) throw new IllegalArgumentException("Reference transform row-permutation contains a duplicate source");
+            seen[sourceOffset] = true;
+            targetRowsBySource[sourceOffset] = startRow + targetOffset;
+        }
+        for (boolean sourceSeen : seen) {
+            if (!sourceSeen) throw new IllegalArgumentException("Reference transform row-permutation must contain every source");
+        }
+        return targetRowsBySource;
+    }
+
+    static int mapPermutationIndex(int position, int startRow, int[] targetRowsBySource) {
+        if (position < 0 || position > MAX_ROW_INDEX || startRow < 0 || startRow > MAX_ROW_INDEX
+                || targetRowsBySource == null || targetRowsBySource.length == 0
+                || targetRowsBySource.length > MAX_ROW_INDEX - startRow + 1) {
+            throw new IllegalArgumentException("Reference transform row-permutation mapping inputs are invalid");
+        }
+        int endExclusive = startRow + targetRowsBySource.length;
+        if (position < startRow || position >= endExclusive) return position;
+        int mapped = targetRowsBySource[position - startRow];
+        if (mapped < startRow || mapped >= endExclusive) {
+            throw new IllegalArgumentException("Reference transform row-permutation mapping is invalid");
+        }
+        return mapped;
+    }
+
     static long mapCellShiftIndex(int position, int start, int end, Operation operation, int maximum) {
         if (position < 0 || start < 0 || end < start || end > maximum || operation == null || maximum < 0) {
             throw new IllegalArgumentException("Reference transform cell-shift index inputs are invalid");

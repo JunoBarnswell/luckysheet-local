@@ -1626,3 +1626,18 @@ Six non-overlapping static review passes confirmed two independent performance r
 ### 当前状态与下一实施步骤
 
 本节是对已接受产品取舍和现有源码证据的事务契约收敛，不表示现有实现已经切换为此协议，也不把当前 v5 部分 owner patch 解释为完整 patch。当前在线 structural mutation 仍为 TypeScript 先 apply、Java 后 commit；图表/透视表/迷你图/绘图等引用 owner、完整 cell/metadata patch、facts-only replay、真实 UI/Excel/performance 验收均未完成。下一实现切片必须以此协议贯通一类操作的全链路，并先解决 operation schema/migration 与完整稀疏 patch 的所有权，再移除该切片的客户端 planner；不得留下双路径作为最终设计。
+
+### 2026-09-27 six-view static review — row-permutation mapping contract
+
+六个互不替代的源码视角核对了 Sort/Rows Permuted 的映射边界：
+
+1. **TypeScript producer**：`createRowPermutationPlan` 把 `sourceRows` 逐项构造成 `Map<sourceRow,targetRow>`，定义域/重复检查在 core-model 自行实现。
+2. **Java producer**：`StructuralSnapshotReducer.validatePermutation` 再独立验证输入并保留 `sourceRowsByTarget`，随后另写循环反转为 `targetRowsBySource`。
+3. **TypeScript consumers**：cell/formula 与 CF/DV、spill、drawing、table、Pivot/Sparkline 等坐标重映射调用该 Map；range/anchor 逻辑共用 `remapRow`，但没有跨语言的置换映射契约。
+4. **Java consumers**：`permuteRows` 及后续 owner/range/formula helpers 使用反转数组；映射建立、越界与重复处理边界与 TS 不同位置维护。
+5. **Bounds/rejection**：选区大小、source-row 全覆盖和重复项是事务前置条件；将映射编译放进 ReferenceTransformDomain 后，TS plan 与 Java reducer 共用相同的反转定义，拒绝仍发生在 reducer 改写前。
+6. **共享证据**：原跨语言向量只覆盖 axis point/interval 与 cell-shift；JSON 已升到 version 2，但 TypeScript vector test 仍断言 version 1。该断言会在运行该测试时失败，当前 PR build gate 不等同于执行此 formula-engine 单测。
+
+本轮仅按真实根因计 **2 项**：row permutation 缺少共同映射域；共享向量版本断言落后于 fixture。修复为 TS/Java `ReferenceTransformDomain` 共用置换映射构造/坐标查询，Sort 两端统一经该域映射，并新增 source→target 与 point vectors（version 3）及拒绝用例。没有把多个 metadata consumer 拆分计数，也不宣称达到用户提出的 30 项批量问题门槛；更大的唯一规划、完整 patch 和 owner 收敛继续未完成。
+
+本轮仅静态审查，未运行新增 TS/Java 回归、构建或浏览器；待最终验收阶段实测。当前改动仍在 PR #345 同一分支，不能据本节把客户端输入 `sourceRows` 的规划权视为已迁移到 Java。

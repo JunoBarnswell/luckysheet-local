@@ -10,6 +10,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -61,7 +62,7 @@ class ReferenceTransformDomainTest {
             assertNotNull(vectorsStream, "shared structural transform vectors must be on the test classpath");
             JsonNode vectors = new ObjectMapper().readTree(vectorsStream);
             assertEquals("ReferenceTransformVectors", vectors.path("schema").asText());
-            assertEquals(2, vectors.path("version").asInt());
+            assertEquals(3, vectors.path("version").asInt());
 
             for (JsonNode vector : vectors.path("points")) {
                 JsonNode expected = vector.path("expected");
@@ -126,6 +127,26 @@ class ReferenceTransformDomainTest {
                                 expectedColumn),
                         actual, vector.path("id").asText());
             }
+
+            for (JsonNode vector : vectors.path("rowPermutations")) {
+                JsonNode sourceRows = vector.path("sourceRowsByTarget");
+                int[] input = new int[sourceRows.size()];
+                for (int index = 0; index < sourceRows.size(); index++) input[index] = sourceRows.get(index).asInt();
+                int[] expected = new int[vector.path("expectedTargetRowsBySource").size()];
+                for (int index = 0; index < expected.length; index++) expected[index] = vector.path("expectedTargetRowsBySource").get(index).asInt();
+                assertArrayEquals(expected,
+                        ReferenceTransformDomain.createRowPermutationMap(vector.path("startRow").asInt(), input),
+                        vector.path("id").asText());
+            }
+            for (JsonNode vector : vectors.path("permutationPoints")) {
+                int[] targetRowsBySource = new int[vector.path("targetRowsBySource").size()];
+                for (int index = 0; index < targetRowsBySource.length; index++) {
+                    targetRowsBySource[index] = vector.path("targetRowsBySource").get(index).asInt();
+                }
+                assertEquals(vector.path("expected").asInt(), ReferenceTransformDomain.mapPermutationIndex(
+                        vector.path("position").asInt(), vector.path("startRow").asInt(), targetRowsBySource),
+                        vector.path("id").asText());
+            }
         }
     }
 
@@ -138,6 +159,16 @@ class ReferenceTransformDomainTest {
         assertThrows(IllegalArgumentException.class, () -> ReferenceTransformDomain.mapCellShiftPoint(
                 0, 0, 0, 0, 0, ReferenceTransformDomain.MAX_COLUMN_INDEX + 1,
                 ReferenceTransformDomain.CellAxis.COLUMN, ReferenceTransformDomain.Operation.INSERT));
+    }
+
+    @Test
+    void rejectsInvalidRowPermutationMapsAndPositions() {
+        assertThrows(IllegalArgumentException.class, () -> ReferenceTransformDomain.createRowPermutationMap(4, new int[]{4, 4}));
+        assertThrows(IllegalArgumentException.class, () -> ReferenceTransformDomain.createRowPermutationMap(
+                ReferenceTransformDomain.MAX_ROW_INDEX, new int[]{ReferenceTransformDomain.MAX_ROW_INDEX, ReferenceTransformDomain.MAX_ROW_INDEX + 1}));
+        assertThrows(IllegalArgumentException.class, () -> ReferenceTransformDomain.mapPermutationIndex(
+                ReferenceTransformDomain.MAX_ROW_INDEX + 1, 0, new int[]{0}));
+        assertThrows(IllegalArgumentException.class, () -> ReferenceTransformDomain.mapPermutationIndex(0, 0, new int[]{1}));
     }
 
     private static int maximum(JsonNode vector) {

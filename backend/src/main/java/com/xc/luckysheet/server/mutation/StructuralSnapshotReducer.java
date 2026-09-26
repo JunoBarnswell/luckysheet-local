@@ -1395,11 +1395,7 @@ final class StructuralSnapshotReducer {
         int expected = selected.endRow() - selected.startRow() + 1;
         if (sourceRows.size() != expected) throw ServiceException.validation("Row permutation length does not match range");
         validatePermutationPreservation(sheet, selected);
-        int[] sourceRowsByTarget = validatePermutation(selected, (ArrayNode) sourceRows);
-        int[] targetRowsBySource = new int[sourceRowsByTarget.length];
-        for (int targetOffset = 0; targetOffset < sourceRowsByTarget.length; targetOffset++) {
-            targetRowsBySource[sourceRowsByTarget[targetOffset] - selected.startRow()] = selected.startRow() + targetOffset;
-        }
+        int[] targetRowsBySource = validatePermutation(selected, (ArrayNode) sourceRows);
         rejectMovedFormulaGroups(sheet, selected, targetRowsBySource);
         validatePermutationMetadataExact(root, sheet, selected, metadataScope, targetRowsBySource);
         ObjectNode reportSheetAfter = mapReportSheetCoordinates(sheet,
@@ -3673,19 +3669,16 @@ final class StructuralSnapshotReducer {
 
     private static int[] validatePermutation(RangeRef range, ArrayNode sourceRows) {
         int[] rows = new int[sourceRows.size()];
-        boolean[] seen = new boolean[rows.length];
         for (int index = 0; index < sourceRows.size(); index++) {
             JsonNode raw = sourceRows.get(index);
             if (!raw.isIntegralNumber() || !raw.canConvertToInt()) throw ServiceException.validation("Row permutation entry is invalid");
-            int source = raw.intValue();
-            if (source < range.startRow() || source > range.endRow()) throw ServiceException.validation("Row permutation source is outside range");
-            int offset = source - range.startRow();
-            if (seen[offset]) throw ServiceException.validation("Row permutation contains a duplicate source row");
-            seen[offset] = true;
-            rows[index] = source;
+            rows[index] = raw.intValue();
         }
-        for (boolean value : seen) if (!value) throw ServiceException.validation("Row permutation must contain every row");
-        return rows;
+        try {
+            return ReferenceTransformDomain.createRowPermutationMap(range.startRow(), rows);
+        } catch (IllegalArgumentException invalidPermutation) {
+            throw ServiceException.validation(invalidPermutation.getMessage());
+        }
     }
 
     private static void validatePermutationPreservation(ObjectNode sheet, RangeRef range) {
@@ -4520,8 +4513,7 @@ final class StructuralSnapshotReducer {
     }
 
     private static int remapRow(int row, RangeRef range, int[] rowMap) {
-        if (row < range.startRow() || row > range.endRow()) return row;
-        return rowMap[row - range.startRow()];
+        return ReferenceTransformDomain.mapPermutationIndex(row, range.startRow(), rowMap);
     }
 
     private static ObjectNode requireObject(JsonNode value, String label) {
