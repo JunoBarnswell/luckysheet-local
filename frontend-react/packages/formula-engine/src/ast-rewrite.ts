@@ -484,7 +484,12 @@ export function mapAstMovedReferences(node: FormulaAst, context: MoveRangeRefere
     if (start.sheetId !== undefined && end.sheetId !== undefined && !sameSheet(start.sheetId, end.sheetId)) {
       throw new Error('UNSUPPORTED_STRUCTURAL_REFERENCE: move range endpoints target different worksheets');
     }
-    if (!targetsSheet(start.sheetId ?? end.sheetId)) return { start, end };
+    const startTargets = targetsSheet(start.sheetId);
+    const endTargets = targetsSheet(end.sheetId);
+    if (!startTargets && !endTargets) return { start, end };
+    if (startTargets !== endTargets) {
+      throw new Error('UNSUPPORTED_STRUCTURAL_REFERENCE: moved range has a partially qualified formula reference');
+    }
     const lowRow = Math.min(start.row, end.row);
     const highRow = Math.max(start.row, end.row);
     const lowColumn = Math.min(start.column, end.column);

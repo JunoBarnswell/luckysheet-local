@@ -1641,3 +1641,18 @@ Six non-overlapping static review passes confirmed two independent performance r
 本轮仅按真实根因计 **2 项**：row permutation 缺少共同映射域；共享向量版本断言落后于 fixture。修复为 TS/Java `ReferenceTransformDomain` 共用置换映射构造/坐标查询，Sort 两端统一经该域映射，并新增 source→target 与 point vectors（version 3）及拒绝用例。没有把多个 metadata consumer 拆分计数，也不宣称达到用户提出的 30 项批量问题门槛；更大的唯一规划、完整 patch 和 owner 收敛继续未完成。
 
 本轮仅静态审查，未运行新增 TS/Java 回归、构建或浏览器；待最终验收阶段实测。当前改动仍在 PR #345 同一分支，不能据本节把客户端输入 `sourceRows` 的规划权视为已迁移到 Java。
+
+### 2026-09-27 six-view static review — mixed-qualified Move formula range
+
+六个源码视角沿 Move 公式路径确认一项 TS/Java 真实语义分歧：
+
+1. **AST range selection**：TS `mapAstMovedReferences.mapRange` 用 `start.sheetId ?? end.sheetId` 决定整段是否属于目标 sheet；当 start 未限定时，这会忽略该端按公式 owner sheet 解析的语义。
+2. **Endpoint rewrite**：命中后 TS 又独立调用 `mapCell(start)` 与 `mapCell(end)`，两端按各自 owner/name 规则映射；因此外层“整段命中”判断与端点归属判断不是同一条件。
+3. **最小触发条件**：公式位于 `Local`，表达式为 `=A1:'Budget A1'!B2`，移动选区覆盖 A1:B2 且目标是 `Budget A1`。起点属于公式 owner `Local`，终点属于目标 sheet。
+4. **可观察结果**：旧 TS 因终点限定到目标 sheet，认为整段可移动；随后只移动终点，产出 `=A1:'Budget A1'!D4`，把跨 sheet range 表达为混合端点。
+5. **Java 对照**：`FormulaReferenceTransformer.remapMovedRange` 分别计算 start/end 是否属于目标；归属不一致时 fail-close 为 `UNSUPPORTED_STRUCTURAL_REFERENCE`。这与 TS 的部分坐标改写结果不同，不只是缺测试。
+6. **拒绝与成功边界**：当公式 owner 本身就是 `Budget A1` 时，两端均解析到目标，原有坐标平移仍有效；当两端均属于 Local 时，表达式应保持不变。共享向量需要同时固定这两条成功路和跨表拒绝路。
+
+修复：TS 对 range 两端分别按 owner/sheet identity 求目标归属；两端均非目标则保持原引用，只有一端为目标则在任何写入前以同一 typed unsupported reason 拒绝，两端均为目标才继续执行几何连续性检查与平移。新增共享 Move formula vectors 同时供 TypeScript AST 与 Java transformer 使用。确认 **1 个真实跨语言一致性问题**；没有把 AST 节点、公式用例或拒绝阶段拆成多个缺陷计数。
+
+本轮只做静态源码推演和 diff/向量结构检查，未运行新增 TS/Java 测试、构建、浏览器或 Excel。完整唯一 planner、全部 metadata owner patch 与性能验收仍未完成。

@@ -1,6 +1,6 @@
 {
   "schema": "ReferenceTransformVectors",
-  "version": 3,
+  "version": 4,
   "points": [
     { "id": "row-insert-before", "axis": "row", "position": 2, "at": 3, "count": 2, "operation": "insert", "expected": { "kind": "mapped", "position": 2 } },
     { "id": "row-insert-at", "axis": "row", "position": 3, "at": 3, "count": 2, "operation": "insert", "expected": { "kind": "mapped", "position": 5 } },
@@ -72,5 +72,10 @@
     { "id": "external-whole-axis-preservation", "formula": "=SUM([Book.xlsx]Other!A:A)+A1", "ownerSheetId": "local-id", "targetSheetId": "local-id", "axis": "row", "at": 0, "count": 1, "operation": "insert", "expected": "=SUM([Book.xlsx]Other!A:A)+A2" },
     { "id": "three-dimensional-whole-axis-outside-target", "formula": "=SUM('Budget A1':Other!A:A)+A1", "ownerSheetId": "local-id", "targetSheetId": "local-id", "axis": "row", "at": 0, "count": 1, "operation": "insert", "expected": "=SUM('Budget A1':Other!A:A)+A2" },
     { "id": "boolean-worksheet-qualifier-and-literal", "formula": "=SUM(TRUE!A:A)+TRUE", "ownerSheetId": "local-id", "targetSheetId": "boolean-id", "axis": "column", "at": 0, "count": 1, "operation": "insert", "expected": "=SUM(TRUE!B:B)+TRUE" }
+  ],
+  "formulaMoves": [
+    { "id": "partially-qualified-cross-sheet-range-rejected", "formula": "=A1:'Budget A1'!B2", "ownerSheetId": "local-id", "targetSheetId": "budget-id", "selection": { "startRow": 0, "endRow": 1, "startColumn": 0, "endColumn": 1 }, "rowDelta": 2, "columnDelta": 2, "expectedError": "UNSUPPORTED_STRUCTURAL_REFERENCE: moved range has a partially qualified formula reference" },
+    { "id": "partially-qualified-range-on-target-owner-moves-both-endpoints", "formula": "=A1:'Budget A1'!B2", "ownerSheetId": "budget-id", "targetSheetId": "budget-id", "selection": { "startRow": 0, "endRow": 1, "startColumn": 0, "endColumn": 1 }, "rowDelta": 2, "columnDelta": 2, "expected": "=C3:'Budget A1'!D4" },
+    { "id": "unqualified-range-on-other-owner-is-unchanged", "formula": "=A1:B2", "ownerSheetId": "local-id", "targetSheetId": "budget-id", "selection": { "startRow": 0, "endRow": 1, "startColumn": 0, "endColumn": 1 }, "rowDelta": 2, "columnDelta": 2, "expected": "=A1:B2" }
   ]
 }

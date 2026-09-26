@@ -2,6 +2,7 @@ package com.xc.luckysheet.server.mutation;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.xc.luckysheet.server.service.ServiceException;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -62,7 +63,7 @@ class ReferenceTransformDomainTest {
             assertNotNull(vectorsStream, "shared structural transform vectors must be on the test classpath");
             JsonNode vectors = new ObjectMapper().readTree(vectorsStream);
             assertEquals("ReferenceTransformVectors", vectors.path("schema").asText());
-            assertEquals(3, vectors.path("version").asInt());
+            assertEquals(4, vectors.path("version").asInt());
 
             for (JsonNode vector : vectors.path("points")) {
                 JsonNode expected = vector.path("expected");
@@ -147,6 +148,26 @@ class ReferenceTransformDomainTest {
                         vector.path("position").asInt(), vector.path("startRow").asInt(), targetRowsBySource),
                         vector.path("id").asText());
             }
+
+            for (JsonNode vector : vectors.path("formulaMoves")) {
+                FormulaReferenceTransformer.SheetIdentity owner = formulaSheet(vectors.path("formulaSheetOrder"), vector.path("ownerSheetId").asText());
+                FormulaReferenceTransformer.SheetIdentity target = formulaSheet(vectors.path("formulaSheetOrder"), vector.path("targetSheetId").asText());
+                JsonNode selection = vector.path("selection");
+                FormulaReferenceTransformer.Range range = new FormulaReferenceTransformer.Range(
+                        selection.path("startRow").asInt(), selection.path("endRow").asInt(),
+                        selection.path("startColumn").asInt(), selection.path("endColumn").asInt());
+                if (vector.has("expectedError")) {
+                    ServiceException error = assertThrows(ServiceException.class, () -> FormulaReferenceTransformer.remapMovedRegion(
+                            vector.path("formula").asText(), owner, target, range, vector.path("rowDelta").asInt(),
+                            vector.path("columnDelta").asInt(), formulaSheetOrder(vectors.path("formulaSheetOrder"))));
+                    assertTrue(error.getMessage().contains(vector.path("expectedError").asText()), vector.path("id").asText());
+                } else {
+                    assertEquals(vector.path("expected").asText(), FormulaReferenceTransformer.remapMovedRegion(
+                            vector.path("formula").asText(), owner, target, range, vector.path("rowDelta").asInt(),
+                            vector.path("columnDelta").asInt(), formulaSheetOrder(vectors.path("formulaSheetOrder"))),
+                            vector.path("id").asText());
+                }
+            }
         }
     }
 
@@ -177,6 +198,23 @@ class ReferenceTransformDomainTest {
             case "column" -> ReferenceTransformDomain.MAX_COLUMN_INDEX;
             default -> throw new IllegalArgumentException("Shared reference vector axis is invalid");
         };
+    }
+
+    private static FormulaReferenceTransformer.SheetIdentity formulaSheet(JsonNode sheets, String id) {
+        for (JsonNode sheet : sheets) {
+            if (id.equals(sheet.path("id").asText())) {
+                return new FormulaReferenceTransformer.SheetIdentity(id, sheet.path("name").asText());
+            }
+        }
+        throw new IllegalArgumentException("Shared reference vector sheet identity is missing: " + id);
+    }
+
+    private static List<FormulaReferenceTransformer.SheetIdentity> formulaSheetOrder(JsonNode sheets) {
+        List<FormulaReferenceTransformer.SheetIdentity> order = new ArrayList<>();
+        for (JsonNode sheet : sheets) {
+            order.add(new FormulaReferenceTransformer.SheetIdentity(sheet.path("id").asText(), sheet.path("name").asText()));
+        }
+        return List.copyOf(order);
     }
 
     @Test
