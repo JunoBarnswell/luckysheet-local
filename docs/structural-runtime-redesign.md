@@ -1581,3 +1581,18 @@ Six non-overlapping static review passes confirmed two independent performance r
 6. **修复边界**：像 formula/name facts 一样，暂不尝试在 TypeScript payload walker 内局部拼接/改写 range-owner 语义；把包含任一 range-owner delta 的条目统一 fail-close 标 invalid，并以远端真实 range patch 回归源码检查 workbook after state 与 history 可用性。
 
 修复是在 structural-owner history 检查中纳入 `structuralRangeOwnerDeltas`；新增范围 owner 先本地变更、再应用远端行插入的回归源码，要求远端 owner range 正确落位且本地旧 history 被明确标记 invalid。现有无 owner history/匹配 owner ACK 成功路径不变。该项确认 **1 个独立撤销历史一致性问题**；只执行静态代码审查与 `git diff --check`，未执行回归源码、构建或 typecheck。
+
+### 2026-09-27 six-pass audit — reference-range owners absent from StructuralPatch
+
+以当前 `main@a2a6140a` 与 PR head `1e1b7c76` 源码核对，确认一项尚未整改的架构缺口；这不是说现有 operation replay 已立刻造成错误数据，而是证明 StructuralPatch 还不能成为唯一结构结果：
+
+1. **TS patch contract**：`core-model/src/structural-range-owner.ts` 的范围 delta 仅列 data-region、workbook-table、data-source、sheet-table 四类；Chart series、Pivot worksheet source、Sparkline source 和 drawing anchors 没有稳定 owner identity/delta 类型。
+2. **TS structural writers**：`core-model/src/structural-transform.ts` 的 cell-shift、axis 和 move 路径会分别改写 chart series `range`、Pivot `source.ranges`、Sparkline `sourceRange` 与 Drawing payload `sourceRange`；这些写入不等于被现有四类 range owner delta 捕获。
+3. **Java capture/writer**：`StructuralSnapshotReducer.captureRangeOwnerSnapshots` 只枚举同样四类；`applyRangeOwnerDeltas` 也只按这些 owner kind 写入。Java reducer 另有独立的 chart/Pivot/Sparkline/Drawing 范围遍历，但这些 before/after 不出现在持久化 StructuralPatch。
+4. **ReferenceIndex ownership**：当前 `StructuralReferenceOwnerIndex` 暴露的是公式、名称和公式规则依赖查询；它不提供 Chart/Pivot/Sparkline/Drawing 几何 owner 的 identity/posting。结构变换虽能直接遍历并改写这些模型对象，但无法从该索引取得稳定、增量且可复用的 owner 集合。
+5. **Collaboration/history consumers**：committed patch 转成 `MutationInfo` 时只传公式、名称和当前 range-owner delta；`CommandRuntime.applyRemoteMutations` 随后执行本地 mutation handler，再由另一套 TS transform 重算未编码的对象范围。ACK 事实相等性自然也无法核验这些未编码对象。
+6. **Persistence/OOXML boundary**：operation log/outbox 只能重放并验证已存的 owner delta。当前 exporter 对未变化且 hash 完全匹配的 artifact 直接返回原始 bytes；对 unknown worksheet/workbook nodes、extensions、extended validation/conditional-format 和缺少 canonical owner 的非 editable/未索引 chart，在变更快照重生成时会 fail-close。此证据不支持“所有 opaque part 都未保护”的结论；其他 opaque part 类型仍需按具体 package feature 逐一核对专属门禁与结构引用语义。无论其导出门禁如何，当前 StructuralPatch 本身都没有通用 opaque-part owner 身份或可验证的 unchanged fact。
+
+单一根因是 **StructuralPatch / ReferenceIndex owner 集合不完整**，不能把 Chart、Pivot、Sparkline、Drawing 拆成多个重复问题。目标契约应以可判别 owner identity + 精确 before/after 状态表示其 range/anchor/reference 字段，由同一个 planner 构建增量 postings 和可逆 patch；Java 与 TS 都只消费该 patch，不再对同一操作各自重跑 owner walker。持久化升级应在显式 v5→v6 migration 边界重放并校验 operation/outbox；runtime 不接受旧 owner shape，也不使用全 workbook snapshot diff。migration 前的数据库备份是回滚边界。
+
+当前只完成此项六视角静态审计与目标契约收敛，尚未改造 owner model、ReferenceIndex 或 replay；不将其记作已修复。PR head `1e1b7c76` 的两条 `canonical-build` 均通过（含 Java backend tests、浏览器资源 build、frontend boundary/generated-contract 检查）；没有覆盖 in-app UI、桌面 Excel、opaque OOXML 互操作或大数据性能实测。下一实施步骤是在统一 typed owner identity 下扩展 range/reference postings 与 patch writer，再将其接入一个完整操作链；完整目标继续保持未完成。
