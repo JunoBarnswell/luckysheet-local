@@ -1462,10 +1462,10 @@ function chartDataTableValueText(value: PivotScalar | undefined): string {
 }
 
 function drawChartDataTable(context: CanvasRenderingContext2D, payload: ChartDrawingPayload, layout: ChartLayout): void {
-  const table = layout.dataTable;
-  if (!table) return;
-  const { left, top, width, height } = table.bounds;
-  const categoryWidth = Math.max(0, width - table.legendColumnWidth) / table.categoryCount;
+  const dataTableLayout = layout.dataTable;
+  if (!dataTableLayout) return;
+  const { left, top, width, height } = dataTableLayout.bounds;
+  const categoryWidth = Math.max(0, width - dataTableLayout.legendColumnWidth) / dataTableLayout.categoryCount;
   const font = payload.elements.dataTable?.font;
   const fontSize = font?.fontSize ?? 9;
   const textColor = font?.color ?? (typeof font?.fill === 'string' ? font.fill : font?.fill?.color) ?? '#334155';
@@ -1480,10 +1480,10 @@ function drawChartDataTable(context: CanvasRenderingContext2D, payload: ChartDra
   }
   const drawCell = (text: string, x: number, y: number, cellWidth: number, row: number, align: CanvasTextAlign): void => {
     context.fillStyle = row === 0 ? '#f1f5f9' : '#fff';
-    context.fillRect(x, y, cellWidth, table.rowHeight);
+    context.fillRect(x, y, cellWidth, dataTableLayout.rowHeight);
     context.strokeRect(x, y, cellWidth, table.rowHeight);
     const textX = align === 'left' ? x + 4 : align === 'right' ? x + cellWidth - 4 : x + cellWidth / 2;
-    drawChartText(context, fitChartDataTableText(context, text, cellWidth, font), textX, y + table.rowHeight / 2, {
+    drawChartText(context, fitChartDataTableText(context, text, cellWidth, font), textX, y + dataTableLayout.rowHeight / 2, {
       color: textColor,
       size: fontSize,
       bold: row === 0 || font?.bold,
@@ -1493,28 +1493,28 @@ function drawChartDataTable(context: CanvasRenderingContext2D, payload: ChartDra
     });
   };
 
-  for (let row = 0; row <= table.series.length; row += 1) {
-    const y = top + row * table.rowHeight;
-    drawCell(row === 0 ? 'Series' : '', left, y, table.legendColumnWidth, row, 'left');
+  for (let row = 0; row <= dataTableLayout.series.length; row += 1) {
+    const y = top + row * dataTableLayout.rowHeight;
+    drawCell(row === 0 ? 'Series' : '', left, y, dataTableLayout.legendColumnWidth, row, 'left');
     if (row > 0) {
-      const entry = table.series[row - 1]!;
-      const swatchSize = table.showLegendKeys ? Math.min(8, table.rowHeight - 4, Math.max(0, table.legendColumnWidth - 8)) : 0;
+      const entry = dataTableLayout.series[row - 1]!;
+      const swatchSize = dataTableLayout.showLegendKeys ? Math.min(8, dataTableLayout.rowHeight - 4, Math.max(0, dataTableLayout.legendColumnWidth - 8)) : 0;
       if (swatchSize > 0) {
         context.fillStyle = entry.color;
-        context.fillRect(left + 4, y + (table.rowHeight - swatchSize) / 2, swatchSize, swatchSize);
+        context.fillRect(left + 4, y + (dataTableLayout.rowHeight - swatchSize) / 2, swatchSize, swatchSize);
       }
       const inset = swatchSize > 0 ? swatchSize + 10 : 4;
-      const label = fitChartDataTableText(context, entry.name, table.legendColumnWidth - inset - 4, font);
-      drawChartText(context, label, left + inset, y + table.rowHeight / 2, {
+      const label = fitChartDataTableText(context, entry.name, dataTableLayout.legendColumnWidth - inset - 4, font);
+      drawChartText(context, label, left + inset, y + dataTableLayout.rowHeight / 2, {
         color: textColor, size: fontSize, bold: font?.bold, italic: font?.italic,
         fontFamily: font?.fontFamily, align: font?.alignment ?? 'left',
       });
     }
-    for (let column = 0; column < table.categoryCount; column += 1) {
-      const x = left + table.legendColumnWidth + column * categoryWidth;
+    for (let column = 0; column < dataTableLayout.categoryCount; column += 1) {
+      const x = left + dataTableLayout.legendColumnWidth + column * categoryWidth;
       const text = row === 0
-        ? chartDataTableValueText(column < table.categories.length ? table.categories[column] : column + 1)
-        : chartDataTableValueText(table.series[row - 1]?.values[column]);
+        ? chartDataTableValueText(column < dataTableLayout.categories.length ? dataTableLayout.categories[column] : column + 1)
+        : chartDataTableValueText(dataTableLayout.series[row - 1]?.values[column]);
       drawCell(text, x, y, categoryWidth, row, row === 0 ? 'center' : 'right');
     }
   }
