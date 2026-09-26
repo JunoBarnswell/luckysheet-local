@@ -10,6 +10,12 @@ import java.util.Map;
 /** Validates references before publication while the caller owns the workbook write lock. */
 @Service
 public class WorkbookDataBlockPublicationGuard {
+    record PreviousBlockReferences(Map<String, JsonNode> blocksBySource) {
+        PreviousBlockReferences {
+            blocksBySource = Map.copyOf(blocksBySource);
+        }
+    }
+
     private final WorkbookDataBlockStore blocks;
 
     public WorkbookDataBlockPublicationGuard(WorkbookDataBlockStore blocks) {
@@ -20,6 +26,19 @@ public class WorkbookDataBlockPublicationGuard {
         Map<String, JsonNode> previousBlocks = new HashMap<>();
         for (JsonNode source : sources(previous)) previousBlocks.put(source.path("id").asText(), source.path("blocks"));
         requireReferences(unitId, candidate, previousBlocks);
+    }
+
+    /** Save only reference manifests before a transaction-owned structural reducer mutates its source tree. */
+    PreviousBlockReferences capturePreviousBlockReferences(JsonNode snapshot) {
+        Map<String, JsonNode> previousBlocks = new HashMap<>();
+        for (JsonNode source : sources(snapshot)) {
+            previousBlocks.put(source.path("id").asText(), source.path("blocks").deepCopy());
+        }
+        return new PreviousBlockReferences(previousBlocks);
+    }
+
+    void requireNewReferences(String unitId, JsonNode candidate, PreviousBlockReferences previous) {
+        requireReferences(unitId, candidate, previous.blocksBySource());
     }
 
     /** Restoring a historical snapshot rechecks all referenced metadata, including previously missing bytes. */

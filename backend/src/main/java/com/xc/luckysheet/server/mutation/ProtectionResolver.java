@@ -1,6 +1,8 @@
 package com.xc.luckysheet.server.mutation;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.xc.luckysheet.server.contract.GeneratedWorkbookContract;
 import com.xc.luckysheet.server.contract.RangeRef;
@@ -18,12 +20,41 @@ final class ProtectionResolver {
     private ProtectionResolver() {
     }
 
+    /**
+     * Preserve only the immutable pre-mutation inputs needed by the post-reducer
+     * structural protection check. Structural insert/delete/sort checks consult
+     * dimensions and protection rules, not the workbook cell payload.
+     */
+    static JsonNode structuralProtectionPreimage(JsonNode snapshot) {
+        ObjectNode sourceRoot = SnapshotMutationSupport.root(snapshot);
+        ObjectNode preimage = JsonNodeFactory.instance.objectNode();
+        ArrayNode sheets = preimage.putArray("sheets");
+        for (JsonNode sourceSheet : SnapshotMutationSupport.sheets(sourceRoot)) {
+            if (!sourceSheet.isObject()) {
+                sheets.add(sourceSheet.deepCopy());
+                continue;
+            }
+            ObjectNode sheet = JsonNodeFactory.instance.objectNode();
+            copyField(sourceSheet, sheet, "id");
+            copyField(sourceSheet, sheet, "rowCount");
+            copyField(sourceSheet, sheet, "columnCount");
+            copyField(sourceSheet, sheet, "protectionRules");
+            sheets.add(sheet);
+        }
+        return preimage;
+    }
+
+    private static void copyField(JsonNode source, ObjectNode target, String field) {
+        JsonNode value = source.get(field);
+        if (value != null) target.set(field, value.deepCopy());
+    }
+
     static void assertAllowed(JsonNode snapshot, List<RangeRef> ranges, String action) {
-        if (ranges == null || ranges.isEmpty()) return;
         if (action == null || action.isBlank()) throw ServiceException.validation("Protection action is required");
         if (!"edit-cell".equals(action) && GeneratedWorkbookContract.protectionAllowField(action) == null) {
             throw ServiceException.validation("Unknown protection action: " + action);
         }
+        if (ranges == null || ranges.isEmpty()) return;
         ObjectNode root = SnapshotMutationSupport.root(snapshot);
         for (RangeRef target : ranges) {
             ObjectNode sheet = SnapshotMutationSupport.sheet(root, target.sheetId());

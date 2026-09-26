@@ -1375,3 +1375,22 @@ PR 上两个 `canonical-build` job 使用相同 head，前端依赖安装与前�
 6. **分配与边界**：空侧走无索引路径，非空时索引空间随较小输入线性增长；成功合并、公式冲突、大小写名称冲突及 StructuralPatch wire field 集合不变的测试源码已新增。未运行测试/build，仅执行静态审查和 `git diff --check`，不能据此宣称 wall-clock 加速。
 
 本轮只确认并修复这一项二次复杂度根因，不把 owner 类型、key 字段或测试断言拆成多个 bug。大型 structural patch 的实测 CPU/heap 仍待最终验收；完整 Java planner、客户端 intent-first、精确历史 patch、协作与 OOXML 消费仍未完成。
+
+### 基础操作性能继续 — commit snapshot 所有权
+
+静态追踪 `WorkbookOperationService.commitInternal → MutationDescriptorRegistry → StructuralMutationDescriptor` 确认：`currentSnapshot(row)` 已从持久化 JSON 解析出本次事务独占的 canonical tree，但每个结构 mutation 仍调用默认 `applyWithPatch`，再对整个 snapshot `deepCopy()`。一个 envelope 含 Q 个结构 mutation、snapshot 大小为 S 时，这条路径额外复制约 Q 份完整快照（O(Q×S) 字节复制），与真正修改的 cells/owner 数无关。
+
+现在 commit 对无保护/OWNER descriptor，以及编辑者下明确列入规则型 allowlist 的 `OwnedSnapshotMutationDescriptor`，直接规约事务独占的 candidate：行/列插删、行置换的编辑者路径只复制各 sheet 的维度与 protectionRules；数据块发布 guard 只复制每个 source 的 block-reference manifest；普通 `edit-cell` 保护仍保留独立完整 snapshot，因为它需要旧 cell 的显式 unlocked style。其余/未来未列入的受保护 descriptor 默认继续使用 detached reducer。应用后强制检查返回 root identity。数据块引用变化检测、公式 owner 的二次保护检查、undo inverse patch、冲突范围和提交序列仍处于同一调用顺序；失败发生在持久化写入前，事务 candidate 不会变成可见状态。
+
+同一边界检查还发现 `ProtectionResolver.assertAllowed` 先对空 affected-ranges 返回、后验证 action；缺失或未知 action 会绕过契约校验。现在先验证 action，再允许空范围结束，并增加拒绝用例；这不是把空范围改成全表授权。
+
+六个独立静态复审角度：
+
+1. **所有权来源**：确认 candidate 是 `currentSnapshot` 新解析的 JSON tree，不是共享缓存或 `WorkbookRow` 中可变对象；失败不会污染已存 snapshot。
+2. **descriptor 路由**：仅实现 owned capability 的 reducer可原地运行；显式 protection-action allowlist 控制编辑者路径，cell-edit 和未分类动作保留 detached copy。
+3. **保护前像**：post-reducer owner ranges 仍按 mutation 前的 dimensions/rules 检查；显式 unlocked cell 计数不被裁剪前像替代。
+4. **数据块引用**：在原地规约前复制 manifests，因此候选树被改写时仍可逐 source 检出新增/变更引用；未改变引用时不访问 block store。
+5. **事务与 undo**：inverse StructuralPatch 仍在 candidate 上应用，提交前校验及版本冲突失败均早于持久化写入；未改变 operation wire/history schema。
+6. **复杂度与未覆盖调用方**：完整 snapshot 的读取/JSON parse 仍是 O(S)，保护规则及 block manifests 仍按其各自规模复制；优化仅去掉每 mutation 的整快照副本，不声称已实现 affected-only planner 或实测提速。公共 replay/migration 路径继续保持其原有 detach/ownership 规则。
+
+本轮确认并修复 **2 个独立问题**：每个结构 mutation 重复复制完整 candidate；空范围会跳过保护 action 契约验证。不把行/列、各 descriptor 或断言拆分凑数。新增源码回归覆盖 owned root 身份、cell-protection detached 选择、规则 preimage、无变化/变化数据引用，以及空范围非法 action 拒绝。按本阶段静态优先要求，未运行本地 tests/build；推送后的 CI 另行记录。没有性能基准、浏览器交互或桌面 Excel 互操作证据，这些仍属于最终验收。无数据库/schema/protocol migration；回退为整体 revert 本轮实现、回归源码与本节记录。

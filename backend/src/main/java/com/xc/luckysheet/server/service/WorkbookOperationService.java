@@ -147,19 +147,29 @@ public class WorkbookOperationService {
             throw ServiceException.conflict("Revision conflict; rebase against revision " + row.revision());
         }
 
-        JsonNode before = currentSnapshot(row);
-        JsonNode next = before;
+        JsonNode next = currentSnapshot(row);
         List<CommittedOperationMutation> committedMutations = new ArrayList<>();
         for (OperationMutation mutation : operation.mutations()) {
             MutationPreparation prepared = registry.prepare(next, mutation, actorRole);
-            var application = prepared.descriptor().applyWithPatch(next, mutation);
+            boolean ownedSnapshotCommit = registry.usesOwnedSnapshotCommit(prepared, actorRole);
+            JsonNode protectionPreimage = ownedSnapshotCommit
+                    ? registry.captureProtectionPreimageForOwnedCommit(next, prepared, actorRole)
+                    : next;
+            WorkbookDataBlockPublicationGuard.PreviousBlockReferences previousBlockReferences = ownedSnapshotCommit
+                    ? dataBlockPublication.capturePreviousBlockReferences(next)
+                    : null;
+            var application = registry.applyPreparedCommit(next, mutation, prepared, actorRole);
             JsonNode candidate = application.snapshot();
             StructuralPatch inversePatch = inverseStructuralPatch(mutation, undoTarget);
             if (inversePatch != null) candidate = registry.applyStructuralPatchOnOwnedSnapshot(candidate, inversePatch);
             StructuralPatch committedPatch = MutationDescriptorRegistry.mergeStructuralPatches(mutation.id(), application.structuralPatch(), inversePatch);
-            List<RangeRef> committedRanges = registry.committedRanges(next, prepared, actorRole, committedPatch);
+            List<RangeRef> committedRanges = registry.committedRanges(protectionPreimage, prepared, actorRole, committedPatch);
             List<RangeRef> structuralImpactRanges = registry.structuralImpactRanges(committedPatch);
-            dataBlockPublication.requireNewReferences(routeUnitId, next, candidate);
+            if (ownedSnapshotCommit) {
+                dataBlockPublication.requireNewReferences(routeUnitId, candidate, previousBlockReferences);
+            } else {
+                dataBlockPublication.requireNewReferences(routeUnitId, next, candidate);
+            }
             next = candidate;
             committedMutations.add(CommittedOperationMutation.from(mutation, committedRanges, structuralImpactRanges, committedPatch));
         }

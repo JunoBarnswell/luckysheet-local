@@ -37,6 +37,9 @@ import java.util.function.Function;
  */
 @Component
 public class MutationDescriptorRegistry {
+    private static final Set<String> OWNED_SNAPSHOT_RULE_ONLY_PROTECTION_ACTIONS = Set.of(
+            "insert-rows", "delete-rows", "insert-columns", "delete-columns", "sort");
+
     public record StructuralPatchMigrationReplay(JsonNode snapshot, List<Optional<StructuralPatch>> structuralPatches) {
         public StructuralPatchMigrationReplay {
             if (snapshot == null || snapshot.isNull() || structuralPatches == null) {
@@ -162,6 +165,52 @@ public class MutationDescriptorRegistry {
             ProtectionResolver.assertAllowed(snapshot, ranges, descriptor.protectionAction());
         }
         return new MutationPreparation(descriptor, ranges);
+    }
+
+    /**
+     * Whether a commit may reduce directly into its exclusively-owned candidate.
+     * Protected edit-cell operations retain a detached preimage because their
+     * final owner check also reads each old cell's explicit unlocked style.
+     */
+    public boolean usesOwnedSnapshotCommit(MutationPreparation prepared, WorkbookAclRole role) {
+        MutationDescriptor descriptor = prepared.descriptor();
+        String protectionAction = descriptor.protectionAction();
+        return descriptor instanceof OwnedSnapshotMutationDescriptor
+                && (!descriptor.checksProtection() || role == WorkbookAclRole.OWNER
+                        || (protectionAction != null && OWNED_SNAPSHOT_RULE_ONLY_PROTECTION_ACTIONS.contains(protectionAction)));
+    }
+
+    /** Capture the pre-mutation protection inputs when an owned reduction would otherwise overwrite them. */
+    public JsonNode captureProtectionPreimageForOwnedCommit(
+            JsonNode snapshot,
+            MutationPreparation prepared,
+            WorkbookAclRole role
+    ) {
+        if (!usesOwnedSnapshotCommit(prepared, role)) {
+            throw new IllegalArgumentException("Mutation cannot use an owned-snapshot commit");
+        }
+        MutationDescriptor descriptor = prepared.descriptor();
+        return descriptor.checksProtection() && role != WorkbookAclRole.OWNER
+                ? ProtectionResolver.structuralProtectionPreimage(snapshot)
+                : snapshot;
+    }
+
+    /** Apply a prepared commit through the detached or transaction-owned descriptor contract. */
+    public MutationApplication applyPreparedCommit(
+            JsonNode snapshot,
+            OperationMutation mutation,
+            MutationPreparation prepared,
+            WorkbookAclRole role
+    ) {
+        if (usesOwnedSnapshotCommit(prepared, role)) {
+            MutationApplication application = ((OwnedSnapshotMutationDescriptor) prepared.descriptor())
+                    .applyWithPatchOnOwnedSnapshot(snapshot, mutation);
+            if (application.snapshot() != snapshot) {
+                throw new IllegalStateException("Owned-snapshot mutation must preserve its root identity");
+            }
+            return application;
+        }
+        return prepared.descriptor().applyWithPatch(snapshot, mutation);
     }
 
     /** Finalize authorization and conflict ranges after a structural reducer has derived owner deltas. */

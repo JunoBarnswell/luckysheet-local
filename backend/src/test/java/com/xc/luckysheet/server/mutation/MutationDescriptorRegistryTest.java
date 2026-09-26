@@ -20,6 +20,7 @@ import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -39,6 +40,27 @@ class MutationDescriptorRegistryTest {
         assertTrue(GeneratedWorkbookContract.SERVER_STRUCTURAL_PLANNER_MUTATIONS.contains("range.move"));
         assertTrue(GeneratedWorkbookContract.SERVER_STRUCTURAL_PLANNER_MUTATIONS.contains("sheet.remove"));
         assertTrue(GeneratedWorkbookContract.SERVER_STRUCTURAL_PLANNER_MUTATIONS.contains("table.add"));
+    }
+
+    @Test
+    void ownedCommitSelectionKeepsCellProtectionPreimageDetached() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        JsonNode snapshot = mapper.readTree("""
+                {"sheets":[{"id":"sheet-1","rowCount":20,"columnCount":10,"cells":{}}]}
+                """);
+        OperationMutation insertRows = new OperationMutation("rows.inserted", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","at":2,"count":1}
+                """));
+        MutationPreparation insertRowsPreparation = registry.prepare(snapshot, insertRows, WorkbookAclRole.EDITOR);
+        assertTrue(registry.usesOwnedSnapshotCommit(insertRowsPreparation, WorkbookAclRole.EDITOR));
+
+        OperationMutation moveRange = new OperationMutation("range.move", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","sourceRange":{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0},"targetOrigin":{"row":1,"column":0}}
+                """));
+        MutationPreparation movePreparation = registry.prepare(snapshot, moveRange, WorkbookAclRole.EDITOR);
+
+        assertFalse(registry.usesOwnedSnapshotCommit(movePreparation, WorkbookAclRole.EDITOR));
+        assertTrue(registry.usesOwnedSnapshotCommit(movePreparation, WorkbookAclRole.OWNER));
     }
 
     @Test
@@ -274,8 +296,10 @@ class MutationDescriptorRegistryTest {
         assertEquals("=A4", reduced.path("definedNameModels").get(0).path("formula").asText());
         assertEquals(5, reduced.path("definedNameModels").get(0).path("anchor").path("row").asInt());
 
+        MutationPreparation commitPreparation = registry.prepare(snapshot, mutation, WorkbookAclRole.EDITOR);
+        assertTrue(registry.usesOwnedSnapshotCommit(commitPreparation, WorkbookAclRole.EDITOR));
         ObjectNode ownedSnapshot = snapshot.deepCopy();
-        MutationApplication owned = descriptor.applyWithPatchOnOwnedSnapshot(ownedSnapshot, mutation);
+        MutationApplication owned = registry.applyPreparedCommit(ownedSnapshot, mutation, commitPreparation, WorkbookAclRole.EDITOR);
         assertSame(ownedSnapshot, owned.snapshot());
         assertEquals("=A2", ownedSnapshot.path("sheets").get(0)
                 .path("cells").path("1").path("0").path("formula").asText());
