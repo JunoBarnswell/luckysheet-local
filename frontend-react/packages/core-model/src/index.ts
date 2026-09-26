@@ -1250,25 +1250,28 @@ export class CellMatrix {
     }
   }
 
-  /**
-   * Enumerate only calculated formula inputs without materializing a deferred
-   * value-only worksheet. Formula workbooks still materialize when their
-   * value inputs are required for calculation.
-   */
-  forEachFormula(callback: (cell: CellData & { formula: string }, row: Row, column: Column) => void): void {
-    if (this.deferredJSON !== undefined) {
-      for (const [row, columns] of Object.entries(this.deferredJSON)) {
-        for (const [column, cell] of Object.entries(columns)) {
-          if (cell.formula !== undefined && !cell.formulaMetadata?.preservedOnly) callback(cell as CellData & { formula: string }, Number(row), Number(column));
+  /** Read persisted sparse cells without constructing row maps or changing storage ownership. */
+  forEachWithoutHydration(callback: (cell: CellData, row: Row, column: Column) => void): void {
+    const deferred = this.deferredJSON;
+    if (deferred !== undefined) {
+      for (const row of Object.keys(deferred)) {
+        const columns = deferred[row]!;
+        for (const column of Object.keys(columns)) {
+          callback(columns[column]!, Number(row), Number(column));
         }
       }
       return;
     }
     for (const [row, columns] of this.rows) {
-      for (const [column, cell] of columns) {
-        if (cell.formula !== undefined && !cell.formulaMetadata?.preservedOnly) callback(cell as CellData & { formula: string }, row, column);
-      }
+      for (const [column, cell] of columns) callback(cell, row, column);
     }
+  }
+
+  /** Enumerate only calculated formula inputs without materializing deferred worksheet data. */
+  forEachFormula(callback: (cell: CellData & { formula: string }, row: Row, column: Column) => void): void {
+    this.forEachWithoutHydration((cell, row, column) => {
+      if (cell.formula !== undefined && !cell.formulaMetadata?.preservedOnly) callback(cell as CellData & { formula: string }, row, column);
+    });
   }
 
   /** Enumerate persisted cells that own any formula text, without hydrating deferred JSON. */
@@ -1276,19 +1279,9 @@ export class CellMatrix {
     const hasFormulaOwner = (cell: CellData): boolean => cell.formula !== undefined
       || cell.formulaMetadata?.sourceFormula !== undefined
       || (cell.presentation?.kind === 'barcode' && cell.presentation.source.kind === 'formula');
-    if (this.deferredJSON !== undefined) {
-      for (const [row, columns] of Object.entries(this.deferredJSON)) {
-        for (const [column, cell] of Object.entries(columns)) {
-          if (hasFormulaOwner(cell)) callback(cell, Number(row), Number(column));
-        }
-      }
-      return;
-    }
-    for (const [row, columns] of this.rows) {
-      for (const [column, cell] of columns) {
-        if (hasFormulaOwner(cell)) callback(cell, row, column);
-      }
-    }
+    this.forEachWithoutHydration((cell, row, column) => {
+      if (hasFormulaOwner(cell)) callback(cell, row, column);
+    });
   }
 
   forEachInRows(rows: ReadonlySet<Row>, callback: (cell: CellData, row: Row, column: Column) => void): void {

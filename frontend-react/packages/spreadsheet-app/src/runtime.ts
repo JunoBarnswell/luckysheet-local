@@ -412,8 +412,8 @@ function rangeContainsOwner(
 
 function reindexAuxiliaryFormulaOwnerAt(
   engine: FormulaEngine,
-  workbook: WorkbookModel,
   owner: StructuralTransformResult['rewrittenFormulaOwners'][number],
+  cell: CellData,
 ): void {
   const point = {
     sheetId: owner.sheetId,
@@ -423,8 +423,7 @@ function reindexAuxiliaryFormulaOwnerAt(
     endColumn: owner.column,
   };
   removeAuxiliaryFormulaOwnersInRange(engine, point);
-  const cell = workbook.getSheet(owner.sheetId).cells.get(owner.row, owner.column);
-  if (cell) indexAuxiliaryFormulaOwners(engine, owner, cell);
+  indexAuxiliaryFormulaOwners(engine, owner, cell);
 }
 
 function synchronizeCellMutation(engine: FormulaEngine, workbook: WorkbookModel, mutation: MutationInfo): readonly CellAddressInput[] {
@@ -448,7 +447,7 @@ function synchronizeCellMutation(engine: FormulaEngine, workbook: WorkbookModel,
   if (!hadFormulaInputs && engine.getFormulaCount() > 0) {
     const ordinaryValues: CalculationInputUpdate[] = [];
     for (const sheet of workbook.getSheets()) {
-      sheet.cells.forEach((cell, row, column) => {
+      sheet.cells.forEachWithoutHydration((cell, row, column) => {
         const update = calculationInputUpdate(sheet.id, row, column, cell);
         if (update.input?.kind === 'value') ordinaryValues.push(update);
       });
@@ -513,11 +512,11 @@ function synchronizeStructuralMutation(
     const ownerKey = keyOf(owner);
     if (effect.populateInputRanges.some((range) => rangeContainsOwner(range, owner))) continue;
     const sheet = workbook.getSheet(owner.sheetId);
-    const cell = sheet.cells.get(owner.row, owner.column);
+    const cell = sheet.cells.getFormulaOwnerWithoutHydration(owner.row, owner.column);
     if (!cell) throw new Error(`STRUCTURAL_PATCH_INVARIANT: rewritten reference owner ${owner.sheetId}!${owner.row}:${owner.column} is not a live cell`);
     const update = calculationInputUpdate(owner.sheetId, owner.row, owner.column, cell);
     if (update.input !== null && !populated.has(ownerKey)) populated.set(ownerKey, update);
-    reindexAuxiliaryFormulaOwnerAt(engine, workbook, owner);
+    reindexAuxiliaryFormulaOwnerAt(engine, owner, cell);
   }
 
   const hadFormulaInputs = engine.getFormulaCount() > 0;
@@ -532,7 +531,7 @@ function synchronizeStructuralMutation(
   if (!hadFormulaInputs && engine.getFormulaCount() > 0) {
     const ordinaryValues: CalculationInputUpdate[] = [];
     for (const sheet of workbook.getSheets()) {
-      sheet.cells.forEach((cell, row, column) => {
+      sheet.cells.forEachWithoutHydration((cell, row, column) => {
         const update = calculationInputUpdate(sheet.id, row, column, cell);
         if (update.input?.kind === 'value') ordinaryValues.push(update);
       });
@@ -578,7 +577,7 @@ function loadFormulaInputs(engine: FormulaEngine, workbook: WorkbookModel): numb
   // benefit. Formula workbooks retain the complete existing input contract.
   if (formulaCount > 0) {
     for (const sheet of workbook.getSheets()) {
-      sheet.cells.forEach((cell, row, column) => {
+      sheet.cells.forEachWithoutHydration((cell, row, column) => {
         const update = calculationInputUpdate(sheet.id, row, column, cell);
         if (update.input?.kind === 'value') engine.setValue(update.address, update.input.value);
       });

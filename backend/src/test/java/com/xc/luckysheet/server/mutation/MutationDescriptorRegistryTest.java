@@ -2024,7 +2024,8 @@ class MutationDescriptorRegistryTest {
             ObjectNode snapshot = (ObjectNode) mapper.readTree("""
                     {"definedNames":{},"definedNameModels":[],"dataModel":{"tables":[],"sources":[],"views":[],"relationships":[]},"sheets":[
                       {"id":"sheet-1","name":"Sheet1","rowCount":8,"columnCount":8,"cells":{"2":{"2":{"value":42}}},
-                       "pane":{"kind":"none"},"dataRegions":[],"sheetTables":[],"pivots":[]}]}
+                       "pane":{"kind":"none"},"review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}},
+                       "dataRegions":[],"sheetTables":[],"pivots":[]}]}
                     """);
             ObjectNode sheet = (ObjectNode) snapshot.path("sheets").get(0);
             ObjectNode range = mapper.createObjectNode().put("sheetId", "sheet-1")

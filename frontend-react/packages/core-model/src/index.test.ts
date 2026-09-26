@@ -294,6 +294,45 @@ test('CellMatrix range traversal stays ordered and refreshes row indexes after s
   assert.deepEqual(matrix.getRegion(5, 7, 2, 2).map(({ row }) => row), [7]);
 });
 
+test('CellMatrix visits all persisted sparse cells without hydration and propagates reader failures', () => {
+  const input = {
+    '0': { '0': { value: 10 }, '1': { value: null, formula: '=A1' } },
+    '600000': { '16383': { value: 'tail' } },
+  };
+  const matrix = new CellMatrix();
+  matrix.deferJSON(input);
+  const before = structuredClone(input);
+  const revision = matrix.revision;
+  const read: Array<{ row: number; column: number; value: unknown; formula?: string }> = [];
+  matrix.forEachWithoutHydration((cell, row, column) => read.push({ row, column, value: cell.value,
+    ...(cell.formula === undefined ? {} : { formula: cell.formula }) }));
+  assert.deepEqual(read, [
+    { row: 0, column: 0, value: 10 },
+    { row: 0, column: 1, value: null, formula: '=A1' },
+    { row: 600_000, column: 16_383, value: 'tail' },
+  ]);
+  assert.equal(matrix.isHydrated, false);
+  assert.equal(matrix.revision, revision);
+  const readerError = new Error('reader rejected input');
+  assert.throws(() => matrix.forEachWithoutHydration(() => { throw readerError; }), (error) => error === readerError);
+  assert.equal(matrix.isHydrated, false);
+  assert.deepEqual(input, before);
+
+  const hydrated = CellMatrix.fromJSON(input);
+  const visited: string[] = [];
+  hydrated.forEachWithoutHydration((_cell, row, column) => visited.push(`${row}:${column}`));
+  assert.deepEqual(visited, ['0:0', '0:1', '600000:16383']);
+
+  const addresses: string[] = [];
+  matrix.forEachWithoutHydration((_cell, row, column) => {
+    addresses.push(`${row}:${column}`);
+    // A caller can explicitly request materialization during enumeration.
+    if (row === 0 && column === 0) matrix.get(0, 0);
+  });
+  assert.deepEqual(addresses, visited);
+  assert.equal(matrix.isHydrated, true);
+});
+
 test('CellMatrix enumerates non-calculation formula owners without hydrating deferred cells', () => {
   const matrix = new CellMatrix();
   matrix.deferJSON({

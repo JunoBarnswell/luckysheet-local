@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import { WorkbookModel } from '@react-sheets/core-model';
 import { createPasteSpecialSpec } from '@react-sheets/sheet-features';
 import { createSpillEnvironment } from './formula-spill-sync';
 import { hydrateRuntime } from './runtime';
@@ -10,6 +11,86 @@ function cellValue(app: WorkbookSession, row: number, column: number): string {
 }
 
 describe('WorkbookSession formula integration', () => {
+  it('preserves inactive sparse sheets through load, row insertion, undo and redo', async () => {
+    const app = new WorkbookSession();
+    try {
+      const runtime = app['runtime'];
+      const target = runtime.model.getSheet('sheet-1');
+      target.cells.set(4, 4, { value: 42 });
+      const other = runtime.model.addSheet('lazy-reference', 'LazyReference', 600_001, 16_384);
+      other.cells.set(2, 2, { value: null, formula: '=Sheet1!$E$5' });
+      other.cells.set(600_000, 16_383, { value: 'sparse tail' });
+      const unused = runtime.model.addSheet('lazy-unused', 'LazyUnused', 600_001, 16_384);
+      unused.cells.set(600_000, 16_383, { value: 'unreferenced' });
+      hydrateRuntime(runtime, { snapshot: runtime.model.snapshot(), revision: 0 });
+      await app.waitForFormulaCalculation();
+      const referenced = runtime.model.getSheet(other.id);
+      const unreferenced = runtime.model.getSheet(unused.id);
+      const owner = { sheetId: other.id, row: 2, column: 2 };
+      const engine = runtime.formula;
+      assert.equal(referenced.cells.isHydrated, false);
+      assert.equal(unreferenced.cells.isHydrated, false);
+      assert.equal(engine.getCellResult(owner)?.value, 42);
+
+      app.runCommand('sheet.rows.insert', { sheetId: target.id, at: 2, count: 1 });
+      await app.waitForFormulaCalculation();
+      assert.equal(runtime.formula, engine);
+      assert.equal(referenced.cells.getFormulaOwnerWithoutHydration(2, 2)?.formula, '=Sheet1!$E$6');
+      assert.equal(engine.getCellResult(owner)?.value, 42);
+      assert.equal(referenced.cells.isHydrated, false);
+      assert.equal(unreferenced.cells.isHydrated, false);
+
+      app.undo();
+      await app.waitForFormulaCalculation();
+      assert.equal(referenced.cells.getFormulaOwnerWithoutHydration(2, 2)?.formula, '=Sheet1!$E$5');
+      assert.equal(engine.getCellResult(owner)?.value, 42);
+      app.redo();
+      await app.waitForFormulaCalculation();
+      assert.equal(runtime.formula, engine);
+      assert.equal(referenced.cells.getFormulaOwnerWithoutHydration(2, 2)?.formula, '=Sheet1!$E$6');
+      assert.equal(engine.getCellResult(owner)?.value, 42);
+      assert.equal(referenced.cells.isHydrated, false);
+      assert.equal(unreferenced.cells.isHydrated, false);
+    } finally {
+      app.dispose();
+    }
+  });
+
+  it('loads every ordinary input for the first formula without materializing its source sheet', async () => {
+    const app = new WorkbookSession();
+    try {
+      const runtime = app['runtime'];
+      runtime.model.getSheet('sheet-1').cells.set(0, 0, { value: 20 });
+      const inputs = runtime.model.addSheet('lazy-inputs', 'Inputs', 600_001, 16_384);
+      inputs.cells.set(0, 0, { value: 10 });
+      inputs.cells.set(600_000, 16_383, { value: 7 });
+      hydrateRuntime(runtime, { snapshot: runtime.model.snapshot(), revision: 0 });
+      await app.waitForFormulaCalculation();
+      assert.equal(runtime.model.getSheet(inputs.id).cells.isHydrated, false);
+      app.runCommand('sheet.cell.set', { sheetId: 'sheet-1', row: 0, column: 1,
+        value: { value: null, formula: '=A1+Inputs!A1+Inputs!XFD600001' } });
+      await app.waitForFormulaCalculation();
+      assert.equal(runtime.formula.getCellResult({ sheetId: 'sheet-1', row: 0, column: 1 })?.value, 37);
+      assert.equal(runtime.model.getSheet(inputs.id).cells.isHydrated, false);
+    } finally {
+      app.dispose();
+    }
+  });
+
+  it('reads current spill blockers from deferred storage without hydrating the worksheet', () => {
+    const workbook = new WorkbookModel('lazy-spill-occupancy', 'Lazy spill');
+    const sheet = workbook.getSheet('sheet-1');
+    sheet.cells.deferJSON({ '1': { '0': { value: 'blocker' } } });
+    const environment = createSpillEnvironment(sheet);
+    assert.equal(environment.isOccupied(1, 0), true);
+    assert.equal(environment.isOccupied(1, 1), false);
+    assert.equal(sheet.cells.replaceCellWithoutHydration(1, 0, { value: null }), true);
+    assert.equal(environment.isOccupied(1, 0), false);
+    assert.equal(sheet.cells.replaceCellWithoutHydration(1, 0, { value: null, formula: '=1' }), true);
+    assert.equal(environment.isOccupied(1, 0), true);
+    assert.equal(sheet.cells.isHydrated, false);
+  });
+
   it('derives the AutoSum current region from resolved formula results', async () => {
     const app = new WorkbookSession();
     const sheetId = app.getActiveSheetId();

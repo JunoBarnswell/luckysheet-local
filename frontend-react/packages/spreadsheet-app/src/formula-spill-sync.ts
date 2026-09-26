@@ -20,7 +20,7 @@ export function createSpillEnvironment(sheet: WorksheetModel): SpillEnvironment 
     rowCount: sheet.rowCount,
     columnCount: sheet.columnCount,
     isOccupied: (row, column) => {
-      const cell = sheet.cells.get(row, column);
+      const cell = sheet.cells.getWithoutHydration(row, column);
       if (cell && (cell.formula !== undefined || (cell.value != null && cell.value !== ''))) return true;
       return false;
     },

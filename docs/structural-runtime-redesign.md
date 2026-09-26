@@ -1314,3 +1314,24 @@ PR 上两个 `canonical-build` job 使用相同 head，前端依赖安装与前�
 本轮确认 **5 个独立问题**：重复 metadata/report 变换、无关数据载荷复制及暂存保留、canonical 范围身份误解析、重复 sheet identity 列表构造、已物化 extent 导致尾部 owner guard 漏查。同根因的行/列或不同对象类型不重复计数。验证仅为六轮源码审查及 diff whitespace 检查；没有本地 tests/build/lint/typecheck/browser，也没有速度、峰值内存或承载规模的实测结论。前一 head `53891062` 的自动 workflows `36211353463` / `36211351079` 均成功，不代表当前修改已通过 CI。
 
 剩余 priority 是基础操作的 typed affected-owner index、稀疏 cell/metadata planning、精确可逆 history、Java authority/OT/OOXML 消费同一完整 patch，以及 100k formulas/500k–1m occupied cells 的实测。没有 schema/data migration；回退应整体 revert 本轮 TS/Java 实现和回归源码，不能只恢复一个端的尾部边界。PR 继续 draft，完整目标不变。
+
+### 基础操作继续 — 预规划公式写入与多 Sheet 稀疏读取（2026-09-26）
+
+**基线与真实 CI 证据**：从 `6cda327dc8e7ddb52b2e12c7a3a398680d480f1d` 继续。其 PR/push workflows `36212947081` / `36212944892` 均失败；PR job `108323128071` 的代表性错误是 `MutationDescriptorRegistryTest.cellShiftRejectsDataOwnersBeyondExtentAndPreservesUnrelatedSources:2072`、`review must be an object`。新增测试输入缺少 canonical review 对象，成功路径才到达该校验。本轮补齐 notes/thread 四个索引的空对象，不放宽生产校验。没有把上轮的“CI 进行中”沿用成已通过。
+
+**有界实施方案与影响**：当前 command history 仍先执行 inverse reducer，再覆盖公式/name facts；只把范围字段加入协议不能消除反向推导。因此先收敛轴编辑与 cell-shift 的公式计划：在首个 cell write 前计算目标地址、最终 CellData 和 before/after formula facts；CF/DV 公式写入 detached metadata，与几何变化一起收集和提交。range.move 的外部公式 owner 复用同一个准备/提交器，移除重复的 live-cell 组装路径。公式提交器不再接收轴操作或 cell-shift 参数，也不再解释地址变化。没有新增结构命令、兼容 reader、wire 字段、权限入口或持久化迁移。
+
+追踪实际调用方确认：仅替换模型中的 `cells.get/set` 不能维持惰性，因为 `synchronizeStructuralMutation`/auxiliary reindex 会再次强制读取整表，formula bootstrap/首个公式又使用 `cells.forEach` 物化全部 worksheet。此次同步引入 CellMatrix 所有的 `forEachWithoutHydration` 稀疏读取契约，并让两个已有公式枚举入口共用其存储遍历；计算输入加载、首次公式的完整值输入同步、跨表公式更新和 spill occupancy 都读取同一 canonical sparse storage。不复制第二份 workbook，不跳过普通值，也不把未加载单元格视为空。
+
+六轮静态自审：
+
+1. **入口及坐标所有权**：核对 `StructuralTransform.apply → applyAxis/applyCellShift` 与 range.move 外部引用入口。前两者的 formula-cell 目标地址和 before/after 状态在预检生成，删除后的 owner 进入 removedCells 而不是幸存者 delta。`applyFormulaRewritePlan` 不再接收 shift、targetSheetId 或 cellShiftPlan，`applyPlannedFormulaCellChanges` 只检查原 formula state 并写规划值；range.move 复用这条单元格写入链。source/destination 内被移动的实体仍由原 move planner 负责，不借本轮宣称整个 move/history 已迁移。
+2. **规则公式与几何合并**：CF/DV after-formula 在 `stageMetadataFormulaRules` 写入 detached rule；其 afterRanges 也在 cell write 前复制到 delta。之后才进行 changed-field 收集，因此公式单独变化、公式和范围同时变化都进入唯一 metadata 提交。删除轴/cell-shift apply 阶段的规则查找、字段写入和从 live model 生成 afterRanges；未变化 owner 身份仍由公共收集器保留。回归源码覆盖两轴插删/单元格位移的 CF/DV 公式与范围、后续修改不污染 history range facts。
+3. **多 Sheet 数据载荷**：公式索引命中的 owner 通过 `getFormulaOwnerWithoutHydration` 读取；`replaceFormulaOwnerWithoutHydration` 使用现有 copy-on-write sparse storage。初始加载、first-formula transition 的 ordinary-value 输入枚举改为无 hydration，但仍喂给 engine 所有普通值，包括远端稀疏尾部和 preserved-only 缓存。公式同步复用已读取 CellData 建 auxiliary index，删除第二次读取。没有仅对测试绕过 runtime 的专门入口。
+4. **规范化与失败原子性**：无 hydration 读取不负责修改字体；准备需要写入的 cell 时提前执行既有 `normalizeFontFamily`，并检查 provenance/barcode owner 可写性。控制字符字体在任意 cells/metadata 写入前拒绝，源码断言完整 snapshot 和 deferred 状态均不变。新的稀疏枚举不修改 revision、输入 JSON 或 storage ownership，callback 抛错向上传播；没有 catch/default 吞错。既有 `forEach` 的 materializing 契约保持不变。
+5. **计算、历史及 spill 链**：实际 runtime 的 rewritten-owner 查询改用稀疏读，bootstrap/首个公式路径保留完整值输入；spill occupancy 每次读取当前 sparse cell，清除 blocker 后会释放，公式单元格仍阻挡。新增 WorkbookSession 源码用例覆盖 snapshot load、insert row、undo、redo、引擎实例不被替换、远端公式值及 inactive sheet 状态；另覆盖首次公式使用本表/远端/极端坐标普通值以及实时 blocker 改变。未执行这些用例，不用它们的存在冒充行为通过。
+6. **跨端、类型与剩余工作量**：同一 formula owner delta shape 仍供 CommandRuntime 和 StructuralPatch v3 使用，没有 runtime legacy reader 或字段补丁。TS 类型、所有改动调用点、可选字段、被删除 owner、稀疏与 hydrated 两种存储读取逐项静态复核。Java 本轮只有测试 fixture 修正，仍是独立 structural reducer；history 精确 cell/metadata facts、server authority、OT 和 OOXML 尚未收敛。不能把这批内部预规划称为完整 CanonicalStructuralPlanner。
+
+**本轮结果与验证边界**：收敛两个已证实的架构缺口（写入后才决定公式 owner 目标/最终状态、规则公式与 metadata 结果分离），修复一组跨表强制物化路径和一个 CI 测试输入错误。不把多个调用点或行列变体凑成 30 个独立 bug。新增/补充成功与拒绝回归源码，按用户要求只做静态审查与 diff whitespace 检查，不执行本地 tests/build/lint/typecheck/browser。测试中的 600001 行/XFD 是稀疏边界坐标，只有少量 occupied cells，绝不是大数据量 benchmark。
+
+**性能与回退**：已删除公式 owner 更新引发的整表 Map 物化及重复 live 写入组装，但首次计算仍要枚举值、FormulaEngine 仍持有普通输入，deferred 写入仍有目录/行的 copy-on-write 成本，metadata 仍有 cloning/owner-family 枚举。没有毫秒、heap、加速倍数或百万 occupied cells 验收结论。无 schema/data migration；回退需整体 revert 模型公式计划、稀疏枚举及 runtime/spill 消费者和回归源码。完整目标保持 active，PR 继续 draft。
