@@ -187,20 +187,82 @@ export interface ChartLayout {
 
 const DEFAULT_COLORS = ['#2563eb', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4'];
 
+interface AxisValueSummary {
+  sourceCount: number;
+  finiteCount: number;
+  minimum: number;
+  maximum: number;
+  positiveMinimum: number;
+  hasNonPositive: boolean;
+}
+
 function numberValues(values: readonly PivotScalar[]): number[] {
   return values.map(chartNumericValue).filter((value): value is number => value !== undefined);
+}
+
+function summarizeAxisValues(values: Iterable<number>): AxisValueSummary {
+  let sourceCount = 0;
+  let finiteCount = 0;
+  let minimum = Infinity;
+  let maximum = -Infinity;
+  let positiveMinimum = Infinity;
+  let hasNonPositive = false;
+  for (const value of values) {
+    sourceCount += 1;
+    if (!Number.isFinite(value)) continue;
+    finiteCount += 1;
+    minimum = Math.min(minimum, value);
+    maximum = Math.max(maximum, value);
+    if (value > 0) positiveMinimum = Math.min(positiveMinimum, value);
+    else hasNonPositive = true;
+  }
+  return {
+    sourceCount,
+    finiteCount,
+    minimum: finiteCount ? minimum : 0,
+    maximum: finiteCount ? maximum : 1,
+    positiveMinimum: finiteCount ? positiveMinimum : 1,
+    hasNonPositive,
+  };
+}
+
+function categoryIndexSummary(categoryCount: number): AxisValueSummary {
+  const count = Math.max(1, categoryCount);
+  return {
+    sourceCount: count,
+    finiteCount: count,
+    minimum: 0,
+    maximum: count - 1,
+    positiveMinimum: count > 1 ? 1 : Infinity,
+    hasNonPositive: true,
+  };
+}
+
+function* numericValuesForSeries(series: readonly ResolvedChartSeries[]): IterableIterator<number> {
+  for (const entry of series) {
+    for (const value of entry.values) {
+      const numeric = chartNumericValue(value);
+      if (numeric !== undefined) yield numeric;
+    }
+  }
+}
+
+function* xValuesForSeries(series: readonly ResolvedChartSeries[]): IterableIterator<number> {
+  for (const entry of series) {
+    for (const value of entry.xValues ?? []) {
+      const numeric = chartNumericValue(value);
+      if (numeric !== undefined) yield numeric;
+    }
+  }
 }
 
 function defaultAxis(id: string, position: ChartAxisModel['position'], axisType: ChartAxisModel['axisType']): ChartAxisModel {
   return { id, position, visible: true, axisType, scale: 'linear', majorTickMark: 'outside', minorTickMark: 'none', tickLabelPosition: 'next-to-axis' };
 }
 
-function axisBounds(model: ChartAxisModel, values: readonly number[], percent = false): ChartAxisLayout {
-  const finite = values.filter(Number.isFinite);
-  const dataMinimum = finite.length ? finite.reduce((minimum, value) => Math.min(minimum, value), Infinity) : 0;
-  const dataMaximum = finite.length ? finite.reduce((maximum, value) => Math.max(maximum, value), -Infinity) : 1;
+function axisBounds(model: ChartAxisModel, values: AxisValueSummary, percent = false): ChartAxisLayout {
+  const { minimum: dataMinimum, maximum: dataMaximum, positiveMinimum } = values;
   const logarithmic = model.scale === 'logarithmic';
-  const positiveMinimum = finite.length ? finite.reduce((minimum, value) => value > 0 ? Math.min(minimum, value) : minimum, Infinity) : 1;
   let minimum = model.minimum ?? (logarithmic ? positiveMinimum : percent ? dataMinimum < 0 ? -100 : 0 : Math.min(0, dataMinimum));
   let maximum = model.maximum ?? (percent ? dataMaximum > 0 ? 100 : 0 : dataMaximum);
   if (model.minimum === undefined && !percent && !logarithmic && minimum === maximum) minimum -= 1;
@@ -210,7 +272,7 @@ function axisBounds(model: ChartAxisModel, values: readonly number[], percent = 
   }
   if (logarithmic) {
     const base = model.logBase ?? 10;
-    if (finite.some((value) => value <= 0) || minimum <= 0 || maximum <= 0) {
+    if (values.hasNonPositive || minimum <= 0 || maximum <= 0) {
       throw new Error('INVALID_CHART_SOURCE: logarithmic axes require strictly positive finite values');
     }
     if (!Number.isFinite(base) || base <= 1) throw new Error('INVALID_CHART_SOURCE: logarithmic axis base must be greater than one');
@@ -357,22 +419,20 @@ function buildBarPlacements(payload: ChartDrawingPayload, data: ResolvedChartDat
   return placements;
 }
 
-function axisValuesForSeries(payload: ChartDrawingPayload, data: ResolvedChartData, axis: 'primary' | 'secondary', placements: ReadonlyMap<number, BarPlacement>): number[] {
-  const values: number[] = [];
+function* axisValuesForSeries(payload: ChartDrawingPayload, data: ResolvedChartData, axis: 'primary' | 'secondary', placements: ReadonlyMap<number, BarPlacement>): IterableIterator<number> {
   for (const [seriesIndex, series] of data.series.entries()) {
     if (series.axis !== axis || seriesModelFor(payload, series, seriesIndex)?.visible === false) continue;
     const placement = placements.get(seriesIndex);
     if (placement) {
-      for (const value of placement.starts) values.push(value);
-      for (const value of placement.ends) values.push(value);
+      yield* placement.starts;
+      yield* placement.ends;
     } else {
       for (const value of series.values) {
         const numeric = chartNumericValue(value);
-        if (numeric !== undefined) values.push(numeric);
+        if (numeric !== undefined) yield numeric;
       }
     }
   }
-  return values;
 }
 
 function linearRegression(points: Array<{ x: number; y: number }>): { slope: number; intercept: number } {
@@ -1103,25 +1163,25 @@ export function buildChartLayout(payload: ChartDrawingPayload, data: ResolvedCha
     return layout;
   }
   if (kind === 'histogram') return buildHistogramLayout(payload, data, layout);
-  const values = data.series.flatMap((series) => numberValues(series.values));
   const percent = payload.stacked === 'percent' || payload.subtype.includes('percent');
   const isScatter = payload.chartType === 'scatter' || payload.chartType === 'bubble';
-  const xValues = data.series.flatMap((series) => series.xValues?.map(chartNumericValue).filter((value): value is number => value !== undefined) ?? []);
+  const values = summarizeAxisValues(numericValuesForSeries(data.series));
+  const xValues = summarizeAxisValues(xValuesForSeries(data.series));
   const categoryCount = Math.max(1, data.categories.length, ...data.series.map((series) => series.values.length));
   const barPlacements = buildBarPlacements(payload, data, categoryCount);
-  const primaryValues = axisValuesForSeries(payload, data, 'primary', barPlacements);
-  const secondaryValues = axisValuesForSeries(payload, data, 'secondary', barPlacements);
+  const primaryValues = summarizeAxisValues(axisValuesForSeries(payload, data, 'primary', barPlacements));
+  const secondaryValues = summarizeAxisValues(axisValuesForSeries(payload, data, 'secondary', barPlacements));
   let categoryAxis: ChartAxisLayout;
   let valueAxis: ChartAxisLayout;
   let secondaryAxis: ChartAxisLayout | undefined;
   try {
     categoryAxis = axisBounds(
       payload.elements.categoryAxis ?? defaultAxis(isScatter ? 'x' : 'category', 'bottom', isScatter ? 'value' : 'category'),
-      isScatter ? xValues : Array.from({ length: Math.max(1, data.categories.length) }, (_, index) => index),
+      isScatter ? xValues : categoryIndexSummary(data.categories.length),
       false,
     );
-    valueAxis = axisBounds(payload.elements.valueAxis ?? defaultAxis('value', 'left', 'value'), primaryValues.length ? primaryValues : values, percent);
-    secondaryAxis = secondaryValues.length ? axisBounds(payload.elements.secondaryValueAxis ?? defaultAxis('secondary-value', 'right', 'value'), secondaryValues, false) : undefined;
+    valueAxis = axisBounds(payload.elements.valueAxis ?? defaultAxis('value', 'left', 'value'), primaryValues.sourceCount ? primaryValues : values, percent);
+    secondaryAxis = secondaryValues.sourceCount ? axisBounds(payload.elements.secondaryValueAxis ?? defaultAxis('secondary-value', 'right', 'value'), secondaryValues, false) : undefined;
   } catch (error) {
     layout.status = statusError('invalid', 'INVALID_CHART_SOURCE', error instanceof Error ? error.message : String(error));
     return layout;

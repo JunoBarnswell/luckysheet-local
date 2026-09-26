@@ -1686,3 +1686,11 @@ CI 随后暴露 Java 侧另一个阻断该拒绝路径的解析缺陷：3D 预�
 6. **Inverse**：`StructuralPatch.inverse` 只能反转 patch 中已有的 defined-name owner；原空数组不会记录 anchor/formula 的逆向事实。
 
 修复：Java 排序 metadata mapper 在写入每个实际移动的 anchored name 时直接生成同一 typed before/after delta，并把这些 delta 一并放入 `rows.permuted` patch；不再为此深拷贝并二次扫描整个 name 数组。回归源码覆盖 patch 内容、在结构 reducer 已提交的 snapshot 上幂等校验、执行 inverse permutation 后恢复 name model 与投影，以及 tampered owner 在 replay 前置校验失败且输入 snapshot 保持不变。已有失败的 CI 同时确认：owner-only patch 不能作用于尚未执行结构 reducer 的原始 snapshot；这是当前契约的既有边界，不能把它称为 patch-only replay。按单一根因计 **1 项**。本轮未运行本地 Java 测试、构建、TypeScript 测试或浏览器验收；新提交需由 PR CI 实测。其他 owner 家族、完整 patch-only replay、OOXML、Excel 和大数据性能验收仍未完成。
+
+### 图表轴界限与高点数临时内存
+
+静态证据：`buildChartLayout` 在轴界限计算前通过 `flatMap` 展开所有系列数值与 X 数值、`axisValuesForSeries` 再复制主/次轴值，类别轴还用 `Array.from` 生成全部类别索引；`axisBounds` 随后创建 `filter` 副本并对同一数组多次扫描。对高点数图表，这些数组只服务于 min/max/log 验证，却额外占用 O(N) 临时内存。
+
+修复：改为对系列值、X 值、堆叠起止值做单遍摘要；类别索引直接由边界摘要表示。摘要保留 `sourceCount` 与有限值计数，维持空轴回退、非有限堆叠值、百分比/对数轴及空类别的既有分支语义。六项静态自审分别核对：有限数筛选、百分比最值、对数轴正数/非正数校验、主次轴空值回退、堆叠起止范围、空/非空类别索引边界。
+
+此项只移除轴界限路径的 O(N) 临时数组与重复扫描；图表布局点/柱和最终绘制仍按数据点 O(N)，本次没有声称完成降采样、百万行绘图能力或实测性能。未运行本地测试或构建，需由 PR CI 与后续大数据实测确认行为和收益。按单一根因计 **1 项性能问题**。
