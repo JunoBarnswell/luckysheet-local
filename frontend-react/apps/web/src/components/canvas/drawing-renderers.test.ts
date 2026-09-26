@@ -160,6 +160,131 @@ test('radar chart hit testing selects the same signed vertices that its layout r
   assert.notDeepEqual(vertices[0], vertices[2], 'negative and positive points occupy distinct rendered and selectable positions');
 });
 
+test('waterfall hit testing includes the visible one-pixel geometry of a zero-value bar', () => {
+  const values: Array<Array<string | number>> = [
+    ['', 'Change'],
+    ['Start', 10],
+    ['Decrease', -3],
+    ['Flat', 0],
+  ];
+  const source = {
+    ...sourceSnapshot(),
+    getCell: (row: number, column: number) => {
+      const value = values[row]?.[column];
+      return value === undefined ? undefined : { address: `${row}:${column}`, value: String(value) };
+    },
+  } satisfies CanvasSheetSnapshot;
+  const payload: ChartDrawingPayload = {
+    kind: 'chart', chartId: 'waterfall-hit-test', chartType: 'waterfall', subtype: 'waterfall',
+    source: { kind: 'worksheet-ranges', ranges: [{ sheetId: source.id, startRow: 0, endRow: 3, startColumn: 0, endColumn: 1 }] },
+    elements: { hiddenData: 'show', legend: { visible: false, position: 'bottom' } },
+  };
+  const drawing: DrawingObject = {
+    id: 'waterfall-drawing', sheetId: source.id, kind: 'chart', payloadId: payload.chartId,
+    anchor: { kind: 'absolute' },
+    transform: { x: 0, y: 0, width: 400, height: 240, rotation: 0 }, zIndex: 0,
+  };
+  const data = resolveChartDataFromSources(payload, (sheetId) => sheetId === source.id ? source : undefined);
+  const layout = buildChartLayout(payload, data, drawing.transform.width, drawing.transform.height);
+  const [drawable] = createCanvasFloatingDrawables({
+    drawings: [drawing], drawingPayloads: new Map([[payload.chartId, payload]]), allSheets: [source], sheet: source,
+    pivotResults: {}, sparklines: [], skeleton: {} as SheetSkeleton, imageCache: new Map(),
+    requestRender: () => undefined, tables: [],
+  });
+  const zeroBar = layout.waterfallBars![2]!;
+  const hit = drawable?.hitTest?.({
+    x: zeroBar.geometry.x + zeroBar.geometry.width / 2,
+    y: zeroBar.geometry.y + zeroBar.geometry.height / 2,
+  });
+  assert.deepEqual(hit, {
+    action: 'chart.select-element',
+    data: { kind: 'point', seriesId: layout.series[0]!.id, pointIndex: 2, category: layout.series[0]!.points[2]!.category },
+  });
+});
+
+test('by-category histogram hit testing returns the category represented by its rendered bin', () => {
+  const values: Array<Array<string | number>> = [
+    ['Category', 'Weight'],
+    ['North', 2],
+    ['South', 3],
+    ['North', 4],
+  ];
+  const source = {
+    ...sourceSnapshot(),
+    getCell: (row: number, column: number) => {
+      const value = values[row]?.[column];
+      return value === undefined ? undefined : { address: `${row}:${column}`, value: String(value) };
+    },
+  } satisfies CanvasSheetSnapshot;
+  const payload: ChartDrawingPayload = {
+    kind: 'chart', chartId: 'category-histogram-hit', chartType: 'histogram', subtype: 'histogram',
+    source: { kind: 'worksheet-ranges', ranges: [{ sheetId: source.id, startRow: 0, endRow: 3, startColumn: 0, endColumn: 1 }] },
+    elements: { hiddenData: 'show', legend: { visible: false, position: 'bottom' } },
+    histogramOptions: { mode: 'by-category' },
+  };
+  const drawing: DrawingObject = {
+    id: 'category-histogram-drawing', sheetId: source.id, kind: 'chart', payloadId: payload.chartId,
+    anchor: { kind: 'absolute' },
+    transform: { x: 0, y: 0, width: 400, height: 240, rotation: 0 }, zIndex: 0,
+  };
+  const data = resolveChartDataFromSources(payload, (sheetId) => sheetId === source.id ? source : undefined);
+  const layout = buildChartLayout(payload, data, drawing.transform.width, drawing.transform.height);
+  const [drawable] = createCanvasFloatingDrawables({
+    drawings: [drawing], drawingPayloads: new Map([[payload.chartId, payload]]), allSheets: [source], sheet: source,
+    pivotResults: {}, sparklines: [], skeleton: {} as SheetSkeleton, imageCache: new Map(),
+    requestRender: () => undefined, tables: [],
+  });
+  const bin = layout.histogramBins![0]!;
+  assert.deepEqual(drawable?.hitTest?.({ x: bin.geometry.x + bin.geometry.width / 2, y: bin.geometry.y + bin.geometry.height / 2 }), {
+    action: 'chart.select-element',
+    data: { kind: 'histogram-bin', seriesId: layout.series[0]!.id, binIndex: 0, category: 'North' },
+  });
+});
+
+test('pie data labels render and remain selectable outside their slice geometry', () => {
+  const values: Array<Array<string | number>> = [
+    ['Category', 'Value'],
+    ['North', 2],
+    ['South', 3],
+  ];
+  const source = {
+    ...sourceSnapshot(),
+    getCell: (row: number, column: number) => {
+      const value = values[row]?.[column];
+      return value === undefined ? undefined : { address: `${row}:${column}`, value: String(value) };
+    },
+  } satisfies CanvasSheetSnapshot;
+  const payload: ChartDrawingPayload = {
+    kind: 'chart', chartId: 'pie-label-hit', chartType: 'pie', subtype: 'pie',
+    source: { kind: 'worksheet-ranges', ranges: [{ sheetId: source.id, startRow: 0, endRow: 2, startColumn: 0, endColumn: 1 }] },
+    elements: {
+      hiddenData: 'show', legend: { visible: false, position: 'bottom' },
+      dataLabels: { visible: true, showCategoryName: true, showValue: true, separator: ', ', position: 'outside-end' },
+    },
+  };
+  const drawing: DrawingObject = {
+    id: 'pie-drawing', sheetId: source.id, kind: 'chart', payloadId: payload.chartId,
+    anchor: { kind: 'absolute' },
+    transform: { x: 0, y: 0, width: 400, height: 240, rotation: 0 }, zIndex: 0,
+  };
+  const data = resolveChartDataFromSources(payload, (sheetId) => sheetId === source.id ? source : undefined);
+  const layout = buildChartLayout(payload, data, drawing.transform.width, drawing.transform.height);
+  const [drawable] = createCanvasFloatingDrawables({
+    drawings: [drawing], drawingPayloads: new Map([[payload.chartId, payload]]), allSheets: [source], sheet: source,
+    pivotResults: {}, sparklines: [], skeleton: {} as SheetSkeleton, imageCache: new Map(),
+    requestRender: () => undefined, tables: [],
+  });
+  const slice = layout.pieSlices![0]!;
+  assert.equal(slice.dataLabelText, 'North, 2');
+  const { context, calls } = mockCanvasContext();
+  drawable!.draw(context, drawing.transform);
+  assert.ok(calls.includes('fillText:North, 2'));
+  assert.deepEqual(drawable?.hitTest?.({ x: slice.dataLabelX!, y: slice.dataLabelY! }), {
+    action: 'chart.select-element',
+    data: { kind: 'point', seriesId: layout.series[0]!.id, pointIndex: 0, category: layout.series[0]!.points[0]!.category },
+  });
+});
+
 test('Pivot controls expose semantic child hit zones instead of a generic shape hit', () => {
   const drawing: DrawingObject = {
     id: 'slicer-control',
@@ -222,8 +347,10 @@ function mockCanvasContext(): { context: CanvasRenderingContext2D; calls: string
     stroke: () => calls.push('stroke'),
     fill: () => calls.push('fill'),
     closePath: () => calls.push('closePath'),
+    arc: (x: number, y: number, radius: number) => calls.push(`arc:${x},${y},${radius}`),
     ellipse: () => calls.push('ellipse'),
     strokeRect: () => calls.push('strokeRect'),
+    fillRect: (x: number, y: number, width: number, height: number) => calls.push(`fillRect:${x},${y},${width},${height}`),
     fillText: (text: string) => calls.push(`fillText:${text}`),
     translate: (x: number, y: number) => calls.push(`translate:${x},${y}`),
     rotate: (angle: number) => calls.push(`rotate:${angle}`),

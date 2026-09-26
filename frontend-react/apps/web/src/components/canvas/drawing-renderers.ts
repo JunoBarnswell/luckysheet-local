@@ -1169,18 +1169,18 @@ function drawChartSpecial(context: CanvasRenderingContext2D, payload: ChartDrawi
       context.closePath();
       context.fill();
       context.restore();
+      if (slice.dataLabelText && slice.dataLabelX !== undefined && slice.dataLabelY !== undefined) {
+        drawChartText(context, slice.dataLabelText, slice.dataLabelX, slice.dataLabelY, { color: '#334155', size: 9, align: 'center' });
+      }
     }
     return;
   }
   if (layout.kind === 'histogram') {
     const bins = layout.histogramBins ?? [];
-    const maximum = Math.max(1, ...bins.map((bin) => bin.count));
-    const width = plot.width / Math.max(1, bins.length);
-    bins.forEach((bin, index) => {
-      const barHeight = bin.count / maximum * plot.height;
+    bins.forEach((bin) => {
       context.fillStyle = '#2563eb';
-      context.fillRect(plot.left + index * width, plot.top + plot.height - barHeight, Math.max(1, width - 1), barHeight);
-      drawChartText(context, bin.label, plot.left + (index + 0.5) * width, plot.top + plot.height + 12, { size: 8, align: 'center' });
+      context.fillRect(bin.geometry.x, bin.geometry.y, bin.geometry.width, bin.geometry.height);
+      drawChartText(context, bin.label, bin.geometry.x + bin.geometry.width / 2, plot.top + plot.height + 12, { size: 8, align: 'center' });
     });
     if (layout.paretoPoints?.length) {
       context.strokeStyle = '#dc2626';
@@ -1212,25 +1212,19 @@ function drawChartSpecial(context: CanvasRenderingContext2D, payload: ChartDrawi
       context.fillRect(x - slot * 0.24, y(box.q3), slot * 0.48, Math.max(1, y(box.q1) - y(box.q3)));
       context.strokeRect(x - slot * 0.24, y(box.q3), slot * 0.48, Math.max(1, y(box.q1) - y(box.q3)));
       context.beginPath(); context.moveTo(x - slot * 0.24, y(box.median)); context.lineTo(x + slot * 0.24, y(box.median)); context.stroke();
+      for (const value of box.innerPoints) { context.fillStyle = box.color; context.beginPath(); context.arc(x, y(value), 2, 0, Math.PI * 2); context.fill(); }
+      if (box.showMeanMarker) { const meanY = y(box.mean); context.fillStyle = box.color; context.beginPath(); context.moveTo(x, meanY - 4); context.lineTo(x + 4, meanY); context.lineTo(x, meanY + 4); context.lineTo(x - 4, meanY); context.closePath(); context.fill(); }
       for (const outlier of box.outliers) { context.fillStyle = box.color; context.beginPath(); context.arc(x, y(outlier), 2, 0, Math.PI * 2); context.fill(); }
     });
     return;
   }
   if (layout.kind === 'waterfall') {
-    const bars = layout.waterfallBars ?? [];
-    const minimum = Math.min(0, ...bars.map((bar) => bar.start));
-    const maximum = Math.max(1, ...bars.map((bar) => bar.end));
-    const span = Math.max(1, maximum - minimum);
-    const slot = plot.width / Math.max(1, bars.length);
-    bars.forEach((bar) => {
-      if (!bar.visible) return;
-      const x = plot.left + bar.index * slot + slot * 0.16;
-      const top = plot.top + plot.height * (1 - (bar.end - minimum) / span);
-      const bottom = plot.top + plot.height * (1 - (bar.start - minimum) / span);
+    for (const bar of layout.waterfallBars ?? []) {
+      if (!bar.visible) continue;
       context.fillStyle = bar.color;
-      context.fillRect(x, Math.min(top, bottom), slot * 0.68, Math.max(1, Math.abs(bottom - top)));
-      if (payload.waterfallOptions?.connectorLines !== false && bar.index > 0) { context.strokeStyle = '#94a3b8'; context.beginPath(); context.moveTo(x - slot * 0.16, bottom); context.lineTo(x, bottom); context.stroke(); }
-    });
+      context.fillRect(bar.geometry.x, bar.geometry.y, bar.geometry.width, bar.geometry.height);
+      if (payload.waterfallOptions?.connectorLines !== false && bar.connector) { context.strokeStyle = '#94a3b8'; context.beginPath(); context.moveTo(bar.connector.startX, bar.connector.y); context.lineTo(bar.connector.endX, bar.connector.y); context.stroke(); }
+    }
     return;
   }
   if (layout.kind === 'funnel') {
@@ -1448,6 +1442,11 @@ function chartHitTest(layout: ChartLayout, point: { x: number; y: number }, data
     const centerX = layout.plot.left + layout.plot.width / 2;
     const centerY = layout.plot.top + layout.plot.height / 2;
     for (const slice of layout.pieSlices ?? []) {
+      const labelBounds = slice.dataLabelBounds;
+      if (labelBounds && point.x >= labelBounds.left && point.x <= labelBounds.right && point.y >= labelBounds.top && point.y <= labelBounds.bottom) {
+        const series = layout.series[slice.seriesIndex];
+        if (series?.visible) return chartPointSelection(series, slice.pointIndex);
+      }
       const mid = (slice.startAngle + slice.endAngle) / 2;
       const sliceCenterX = centerX + Math.cos(mid) * slice.explosion;
       const sliceCenterY = centerY + Math.sin(mid) * slice.explosion;
@@ -1462,15 +1461,17 @@ function chartHitTest(layout: ChartLayout, point: { x: number; y: number }, data
     }
   }
   if (layout.kind === 'histogram') {
-    const bins = layout.histogramBins ?? [];
-    const maximum = Math.max(1, ...bins.map((bin) => bin.count));
-    const width = layout.plot.width / Math.max(1, bins.length);
-    for (const [index, bin] of bins.entries()) {
-      const height = bin.count / maximum * layout.plot.height;
-      if (point.x >= layout.plot.left + index * width && point.x <= layout.plot.left + (index + 1) * width
-        && point.y >= layout.plot.top + layout.plot.height - height && point.y <= layout.plot.top + layout.plot.height) {
+    for (const [index, bin] of (layout.histogramBins ?? []).entries()) {
+      const { x, y, width, height } = bin.geometry;
+      if (point.x >= x && point.x <= x + width && point.y >= y && point.y <= y + height && height > 0) {
         const series = layout.specialSeriesIndex === undefined ? undefined : layout.series[layout.specialSeriesIndex];
-        if (series?.visible && bin.count > 0) return { action: 'chart.select-element', data: { kind: 'histogram-bin', seriesId: series.id, binIndex: index, start: bin.start, end: bin.end } };
+        if (series?.visible) return {
+          action: 'chart.select-element',
+          data: {
+            kind: 'histogram-bin', seriesId: series.id, binIndex: index,
+            ...(bin.kind === 'category' ? { category: bin.category } : { start: bin.start, end: bin.end }),
+          },
+        };
       }
     }
   }
@@ -1483,17 +1484,10 @@ function chartHitTest(layout: ChartLayout, point: { x: number; y: number }, data
     if (series && point.y >= layout.plot.top && point.y <= layout.plot.top + layout.plot.height) return { action: 'chart.select-element', data: { kind: 'series', seriesId: series.id } };
   }
   if (layout.kind === 'waterfall') {
-    const bars = layout.waterfallBars ?? [];
-    const minimum = Math.min(0, ...bars.map((bar) => bar.start));
-    const maximum = Math.max(1, ...bars.map((bar) => bar.end));
-    const span = Math.max(1, maximum - minimum);
-    const slot = layout.plot.width / Math.max(1, bars.length);
-    for (const bar of bars) {
+    for (const bar of layout.waterfallBars ?? []) {
       if (!bar.visible) continue;
-      const left = layout.plot.left + bar.index * slot + slot * 0.16;
-      const top = layout.plot.top + layout.plot.height * (1 - (bar.end - minimum) / span);
-      const bottom = layout.plot.top + layout.plot.height * (1 - (bar.start - minimum) / span);
-      if (point.x >= left && point.x <= left + slot * 0.68 && point.y >= Math.min(top, bottom) && point.y <= Math.max(top, bottom)) {
+      const { x, y, width, height } = bar.geometry;
+      if (point.x >= x && point.x <= x + width && point.y >= y && point.y <= y + height) {
         const series = layout.series[bar.seriesIndex];
         if (series?.visible) return chartPointSelection(series, bar.index);
       }

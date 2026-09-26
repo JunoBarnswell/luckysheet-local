@@ -329,6 +329,91 @@ describe('chart feature', () => {
     assert.ok(radii[0]! < radii[1]! && radii[1]! < radii[2]!, 'negative, zero, and positive values follow the signed value axis');
   });
 
+  it('keeps waterfall delta direction for connectors and publishes visible bar geometry', () => {
+    const workbook = new WorkbookModel('waterfall-directed-geometry', 'Waterfall geometry');
+    const sheet = workbook.getSheet('sheet-1');
+    [['', 'Change'], ['Start', 10], ['Decrease', -3], ['Flat', 0], ['Total', 7]].forEach((row, rowIndex) => row.forEach((value, columnIndex) => sheet.cells.set(rowIndex, columnIndex, { value })));
+    const payload: ChartPayload = {
+      kind: 'chart', chartId: 'waterfall-directed', chartType: 'waterfall', subtype: 'waterfall',
+      source: { kind: 'worksheet-ranges', ranges: [{ sheetId: sheet.id, startRow: 0, endRow: 4, startColumn: 0, endColumn: 1 }] },
+      elements: { hiddenData: 'show' },
+      waterfallOptions: { connectorLines: true, totalPointIndexes: [3] },
+    };
+
+    const layout = buildChartLayout(payload, resolveChartData(workbook, payload), 400, 240);
+    assert.equal(layout.status.kind, 'ready');
+    const bars = layout.waterfallBars!;
+    assert.equal(bars[1]!.connector!.y, bars[1]!.geometry.y, 'a negative delta connects at the prior cumulative value on the top of the bar');
+    assert.equal(bars[1]!.connector!.startX, bars[0]!.geometry.x + bars[0]!.geometry.width, 'connectors begin at the previous bar edge');
+    assert.equal(bars[1]!.connector!.endX, bars[1]!.geometry.x, 'connectors end at the next bar edge');
+    assert.equal(bars[2]!.geometry.height, 1, 'zero-value bars retain the renderer minimum hit target height');
+    assert.equal(bars[2]!.geometry.width, bars[0]!.geometry.width);
+    assert.equal(bars[3]!.connector!.y, bars[3]!.geometry.y, 'a total bar connects from the preceding cumulative total, not the zero baseline');
+  });
+
+  it('projects box-whisker inner points and mean-marker options into chart facts', () => {
+    const workbook = new WorkbookModel('box-whisker-options', 'Box plot options');
+    const sheet = workbook.getSheet('sheet-1');
+    [['', 'Score'], ['A', 1], ['B', 2], ['C', 3], ['D', 4], ['E', 100]].forEach((row, rowIndex) => row.forEach((value, columnIndex) => sheet.cells.set(rowIndex, columnIndex, { value })));
+    const payload: ChartPayload = {
+      kind: 'chart', chartId: 'box-whisker-options', chartType: 'box-whisker', subtype: 'box-whisker',
+      source: { kind: 'worksheet-ranges', ranges: [{ sheetId: sheet.id, startRow: 0, endRow: 5, startColumn: 0, endColumn: 1 }] },
+      elements: { hiddenData: 'show' },
+      boxWhiskerOptions: { quartile: 'inclusive-median', showInnerPoints: true, showOutlierPoints: true, showMeanMarkers: true },
+    };
+
+    const layout = buildChartLayout(payload, resolveChartData(workbook, payload), 400, 240);
+    assert.equal(layout.status.kind, 'ready');
+    assert.deepEqual(layout.boxes![0]!.innerPoints, [1, 2, 3, 4]);
+    assert.equal(layout.boxes![0]!.showMeanMarker, true);
+    assert.equal(layout.boxes![0]!.mean, 22);
+    assert.deepEqual(layout.boxes![0]!.outliers, [100]);
+  });
+
+  it('groups duplicate text categories and sums their values in by-category histograms', () => {
+    const workbook = new WorkbookModel('histogram-by-category', 'Histogram categories');
+    const sheet = workbook.getSheet('sheet-1');
+    [['Category', 'Weight'], ['North', 2], ['South', 3], ['North', 4]].forEach((row, rowIndex) => row.forEach((value, columnIndex) => sheet.cells.set(rowIndex, columnIndex, { value })));
+    const payload: ChartPayload = {
+      kind: 'chart', chartId: 'category-histogram', chartType: 'histogram', subtype: 'histogram',
+      source: { kind: 'worksheet-ranges', ranges: [{ sheetId: sheet.id, startRow: 0, endRow: 3, startColumn: 0, endColumn: 1 }] },
+      elements: { hiddenData: 'show' },
+      histogramOptions: { mode: 'by-category' },
+    };
+
+    const layout = buildChartLayout(payload, resolveChartData(workbook, payload), 400, 240);
+    assert.equal(layout.status.kind, 'ready');
+    assert.deepEqual(layout.histogramBins!.map((bin) => [bin.kind, bin.category, bin.count, bin.value, bin.label]), [
+      ['category', 'North', 2, 6, 'North'],
+      ['category', 'South', 1, 3, 'South'],
+    ]);
+    assert.ok(layout.histogramBins!.every((bin) => bin.geometry.height > 0));
+  });
+
+  it('projects pie data-label text and hit bounds from the same slice facts', () => {
+    const workbook = new WorkbookModel('pie-data-labels', 'Pie labels');
+    const sheet = workbook.getSheet('sheet-1');
+    [['Category', 'Value'], ['North', 2], ['South', 3]].forEach((row, rowIndex) => row.forEach((value, columnIndex) => sheet.cells.set(rowIndex, columnIndex, { value })));
+    const payload: ChartPayload = {
+      kind: 'chart', chartId: 'pie-labels', chartType: 'pie', subtype: 'pie',
+      source: { kind: 'worksheet-ranges', ranges: [{ sheetId: sheet.id, startRow: 0, endRow: 2, startColumn: 0, endColumn: 1 }] },
+      elements: { hiddenData: 'show', dataLabels: { visible: true, showCategoryName: true, showValue: true, showPercentage: true, separator: ' · ', position: 'outside-end' } },
+    };
+
+    const layout = buildChartLayout(payload, resolveChartData(workbook, payload), 400, 240);
+    assert.equal(layout.status.kind, 'ready');
+    assert.deepEqual(layout.pieSlices!.map((slice) => slice.dataLabelText), ['North · 2 · 40%', 'South · 3 · 60%']);
+    assert.ok(layout.pieSlices!.every((slice) => slice.dataLabelBounds !== undefined));
+
+    const noLabelsPayload: ChartPayload = {
+      ...payload,
+      chartId: 'pie-no-label-fields',
+      elements: { hiddenData: 'show', dataLabels: { visible: true, showSeriesName: false, showCategoryName: false, showValue: false, showPercentage: false } },
+    };
+    const noLabelsLayout = buildChartLayout(noLabelsPayload, resolveChartData(workbook, noLabelsPayload), 400, 240);
+    assert.ok(noLabelsLayout.pieSlices!.every((slice) => slice.dataLabelText === undefined), 'explicitly disabling every label field produces no label');
+  });
+
   it('switches row-oriented worksheet matrices without converting categories into X coordinates', () => {
     const workbook = new WorkbookModel('chart-row-orientation', 'Row Orientation');
     const sheet = workbook.getSheet('sheet-1');

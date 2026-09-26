@@ -78,14 +78,24 @@ export interface ChartPieSliceLayout {
   explosion: number;
   color: string;
   label: string;
+  dataLabelText?: string;
+  dataLabelX?: number;
+  dataLabelY?: number;
+  dataLabelBounds?: { left: number; top: number; right: number; bottom: number };
 }
 
-export interface ChartHistogramBinLayout {
-  start: number;
-  end: number;
+export type ChartHistogramBinLayout = {
   count: number;
   label: string;
-}
+  geometry: { x: number; y: number; width: number; height: number };
+} & (
+  | { kind: 'numeric'; start: number; end: number; category?: never; value?: never }
+  | { kind: 'category'; category: PivotScalar; value: number; start?: never; end?: never }
+);
+
+type ChartHistogramBinValue =
+  | { kind: 'numeric'; start: number; end: number; count: number; label: string }
+  | { kind: 'category'; category: PivotScalar; value: number; count: number; label: string };
 
 export interface ChartBoxLayout {
   seriesIndex: number;
@@ -97,6 +107,8 @@ export interface ChartBoxLayout {
   upperWhisker: number;
   maximum: number;
   mean: number;
+  innerPoints: number[];
+  showMeanMarker: boolean;
   outliers: number[];
   color: string;
 }
@@ -109,6 +121,8 @@ export interface ChartWaterfallBarLayout {
   total: boolean;
   color: string;
   visible: boolean;
+  geometry: { x: number; y: number; width: number; height: number };
+  connector?: { startX: number; endX: number; y: number };
 }
 
 export interface ChartMapFeatureLayout {
@@ -402,7 +416,7 @@ function standardDeviation(values: readonly number[]): number {
   return Math.sqrt(values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / (values.length - 1));
 }
 
-function histogram(values: readonly number[], options: ChartHistogramOptions | undefined): ChartHistogramBinLayout[] {
+function histogram(values: readonly number[], options: ChartHistogramOptions | undefined): ChartHistogramBinValue[] {
   if (!values.length) return [];
   const minimum = values.reduce((value, next) => Math.min(value, next), Infinity);
   const maximum = values.reduce((value, next) => Math.max(value, next), -Infinity);
@@ -421,7 +435,56 @@ function histogram(values: readonly number[], options: ChartHistogramOptions | u
   return counts.map((count, index) => {
     const start = minimum + index * width;
     const end = start + width;
-    return { start, end, count, label: `${trimNumber(start)}–${trimNumber(end)}` };
+    return { kind: 'numeric', start, end, count, label: `${trimNumber(start)}–${trimNumber(end)}` };
+  });
+}
+
+function categoricalHistogram(categories: readonly PivotScalar[], values: readonly PivotScalar[]): ChartHistogramBinValue[] {
+  const grouped = new Map<string, { category: PivotScalar; count: number; value: number; label: string }>();
+  const count = Math.min(categories.length, values.length);
+  for (let index = 0; index < count; index += 1) {
+    const category = categories[index];
+    const value = chartNumericValue(values[index]);
+    if (category === undefined || value === undefined) continue;
+    const key = category === null
+      ? 'blank:'
+      : typeof category === 'object'
+        ? `error:${category.code}`
+        : `${typeof category}:${String(category)}`;
+    const label = category === null ? '(blank)' : typeof category === 'object' ? `#${category.code}` : String(category);
+    const current = grouped.get(key);
+    if (current) {
+      current.count += 1;
+      current.value += value;
+    } else {
+      grouped.set(key, { category, count: 1, value, label });
+    }
+  }
+  return [...grouped.values()].map((bin) => ({ kind: 'category', ...bin }));
+}
+
+function histogramValue(bin: ChartHistogramBinValue): number {
+  return bin.kind === 'category' ? bin.value : bin.count;
+}
+
+function histogramGeometry(bins: readonly ChartHistogramBinValue[], plot: ChartLayout['plot']): ChartHistogramBinLayout[] {
+  const minimum = bins.reduce((value, bin) => Math.min(value, histogramValue(bin)), 0);
+  const maximum = bins.reduce((value, bin) => Math.max(value, histogramValue(bin)), 1);
+  const span = Math.max(1, maximum - minimum);
+  const slot = plot.width / Math.max(1, bins.length);
+  const baseline = plot.top + plot.height * (1 - (0 - minimum) / span);
+  return bins.map((bin, index) => {
+    const valueY = plot.top + plot.height * (1 - (histogramValue(bin) - minimum) / span);
+    const x = plot.left + index * slot;
+    const geometry = {
+      x,
+      y: Math.min(baseline, valueY),
+      width: Math.max(1, slot - 1),
+      height: histogramValue(bin) === 0 ? 0 : Math.max(1, Math.abs(baseline - valueY)),
+    };
+    return bin.kind === 'category'
+      ? { kind: bin.kind, category: bin.category, value: bin.value, count: bin.count, label: bin.label, geometry }
+      : { kind: bin.kind, start: bin.start, end: bin.end, count: bin.count, label: bin.label, geometry };
   });
 }
 
@@ -530,11 +593,41 @@ function pieSlices(payload: ChartDrawingPayload, data: ResolvedChartData, plot: 
     if (total <= 0) continue;
     const ringWidth = maxRadius * (1 - hole) / ringCount;
     let angle = -Math.PI / 2 + ((payload.subtype === 'exploded-pie' || payload.subtype === 'exploded-three-dimensional-pie' || payload.subtype === 'exploded-doughnut') ? Math.PI / 18 : 0);
+    const labels = seriesModelFor(payload, series, seriesIndex)?.dataLabels ?? payload.elements.dataLabels;
     for (let pointIndex = 0; pointIndex < values.length; pointIndex += 1) {
       const value = values[pointIndex] ?? 0;
       if (value <= 0) continue;
       const sweep = value / total * Math.PI * 2;
-      slices.push({ seriesIndex, pointIndex, value, startAngle: angle, endAngle: angle + sweep, innerRadius: payload.chartType === 'doughnut' ? maxRadius * hole + ringWidth * ringIndex : 0, outerRadius: payload.chartType === 'doughnut' ? maxRadius * hole + ringWidth * (ringIndex + 1) : maxRadius, explosion: payload.subtype?.includes('exploded') ? Math.min(12, maxRadius * 0.08) : 0, color: DEFAULT_COLORS[pointIndex % DEFAULT_COLORS.length]!, label: String(data.categories[pointIndex] ?? pointIndex + 1) });
+      const innerRadius = payload.chartType === 'doughnut' ? maxRadius * hole + ringWidth * ringIndex : 0;
+      const outerRadius = payload.chartType === 'doughnut' ? maxRadius * hole + ringWidth * (ringIndex + 1) : maxRadius;
+      const explosion = payload.subtype?.includes('exploded') ? Math.min(12, maxRadius * 0.08) : 0;
+      const label = String(data.categories[pointIndex] ?? pointIndex + 1);
+      const slice: ChartPieSliceLayout = { seriesIndex, pointIndex, value, startAngle: angle, endAngle: angle + sweep, innerRadius, outerRadius, explosion, color: DEFAULT_COLORS[pointIndex % DEFAULT_COLORS.length]!, label };
+      if (labels?.visible) {
+        const parts: string[] = [];
+        if (labels.showSeriesName) parts.push(series.name);
+        if (labels.showCategoryName) parts.push(label);
+        if (labels.showValue !== false) parts.push(String(value));
+        if (labels.showPercentage) parts.push(`${Math.round(value / total * 10000) / 100}%`);
+        if (parts.length) {
+          const text = parts.join(labels.separator ?? ', ');
+          const midpoint = angle + sweep / 2;
+          const offsetRadius = labels.position === 'outside-end' ? outerRadius + 12
+            : labels.position === 'inside-base' ? innerRadius + (outerRadius - innerRadius) * 0.35
+              : labels.position === 'center' ? (innerRadius + outerRadius) / 2
+                : innerRadius + (outerRadius - innerRadius) * 0.72;
+          const centerX = plot.left + plot.width / 2 + Math.cos(midpoint) * explosion;
+          const centerY = plot.top + plot.height / 2 + Math.sin(midpoint) * explosion;
+          const dataLabelX = centerX + Math.cos(midpoint) * offsetRadius;
+          const dataLabelY = centerY + Math.sin(midpoint) * offsetRadius;
+          const halfWidth = Math.max(8, text.length * 3.2);
+          slice.dataLabelText = text;
+          slice.dataLabelX = dataLabelX;
+          slice.dataLabelY = dataLabelY;
+          slice.dataLabelBounds = { left: dataLabelX - halfWidth, top: dataLabelY - 7, right: dataLabelX + halfWidth, bottom: dataLabelY + 7 };
+        }
+      }
+      slices.push(slice);
       angle += sweep;
     }
   }
@@ -553,22 +646,43 @@ function boxLayouts(payload: ChartDrawingPayload, data: ResolvedChartData, color
     const lowerFence = q1 - 1.5 * iqr;
     const upperFence = q3 + 1.5 * iqr;
     const inliers = values.filter((value) => value >= lowerFence && value <= upperFence);
-    return [{ seriesIndex, minimum: values[0] ?? 0, lowerWhisker: inliers[0] ?? values[0] ?? 0, q1, median, q3, upperWhisker: inliers.at(-1) ?? values.at(-1) ?? 0, maximum: values.at(-1) ?? 0, mean: values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : 0, outliers: options.showOutlierPoints === false ? [] : values.filter((value) => value < lowerFence || value > upperFence), color: colors[seriesIndex % colors.length]! }];
+    return [{ seriesIndex, minimum: values[0] ?? 0, lowerWhisker: inliers[0] ?? values[0] ?? 0, q1, median, q3, upperWhisker: inliers.at(-1) ?? values.at(-1) ?? 0, maximum: values.at(-1) ?? 0, mean: values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : 0, innerPoints: options.showInnerPoints === true ? inliers : [], showMeanMarker: options.showMeanMarkers === true, outliers: options.showOutlierPoints === false ? [] : values.filter((value) => value < lowerFence || value > upperFence), color: colors[seriesIndex % colors.length]! }];
   });
 }
 
-function waterfallLayouts(payload: ChartDrawingPayload, data: ResolvedChartData, seriesIndex: number): ChartWaterfallBarLayout[] {
+function waterfallLayouts(payload: ChartDrawingPayload, data: ResolvedChartData, seriesIndex: number, plot: ChartLayout['plot']): ChartWaterfallBarLayout[] {
   const values = data.series[seriesIndex]?.values.map(chartNumericValue) ?? [];
   const options: ChartWaterfallOptions = payload.waterfallOptions ?? { connectorLines: true };
   const totals = new Set(options.totalPointIndexes ?? []);
   let running = 0;
-  return values.map((value, index) => {
-    if (value === undefined) return { seriesIndex, index, start: running, end: running, total: false, color: '#cbd5e1', visible: false };
+  const bars = values.map((value, index) => {
+    if (value === undefined) return { seriesIndex, index, start: running, end: running, connectorValue: running, total: false, color: '#cbd5e1', visible: false };
     const total = totals.has(index);
-    const start = total ? 0 : running;
-    const end = total ? value : running + value;
-    running = total ? value : end;
-    return { seriesIndex, index, start: Math.min(start, end), end: Math.max(start, end), total, color: total ? '#64748b' : value >= 0 ? '#10b981' : '#ef4444', visible: true };
+    const connectorValue = running;
+    const from = total ? 0 : running;
+    const to = total ? value : running + value;
+    running = to;
+    return { seriesIndex, index, start: Math.min(from, to), end: Math.max(from, to), connectorValue, total, color: total ? '#64748b' : value >= 0 ? '#10b981' : '#ef4444', visible: true };
+  });
+  let minimum = 0;
+  let maximum = 1;
+  for (const bar of bars) {
+    minimum = Math.min(minimum, bar.start, bar.end);
+    maximum = Math.max(maximum, bar.start, bar.end);
+  }
+  const span = Math.max(1, maximum - minimum);
+  const slot = plot.width / Math.max(1, bars.length);
+  const y = (value: number): number => plot.top + plot.height * (1 - (value - minimum) / span);
+  return bars.map(({ connectorValue, ...bar }) => {
+    const top = y(bar.end);
+    const bottom = y(bar.start);
+    const x = plot.left + bar.index * slot + slot * 0.16;
+    const previousX = plot.left + (bar.index - 1) * slot + slot * 0.16;
+    return {
+      ...bar,
+      geometry: { x, y: Math.min(top, bottom), width: slot * 0.68, height: Math.max(1, Math.abs(bottom - top)) },
+      ...(bar.index > 0 ? { connector: { startX: previousX + slot * 0.68, endX: x, y: y(connectorValue) } } : {}),
+    };
   });
 }
 
@@ -758,17 +872,29 @@ export function buildChartLayout(payload: ChartDrawingPayload, data: ResolvedCha
     return layout;
   }
   if (kind === 'histogram') {
-    const rawValues = data.series[specialSeriesIndex]?.values.map((value, index) => ({ index, value: chartNumericValue(value) })).filter((entry): entry is { index: number; value: number } => entry.value !== undefined) ?? [];
-    const bins = histogram(rawValues.map((entry) => entry.value), payload.histogramOptions);
-    if (rawValues.length === 0 || bins.every((bin) => bin.count === 0)) {
+    const values = data.series[specialSeriesIndex]?.values ?? [];
+    const rawValues = values.map(chartNumericValue).filter((value): value is number => value !== undefined);
+    const bins = payload.histogramOptions?.mode === 'by-category'
+      ? categoricalHistogram(data.categories, values)
+      : histogram(rawValues, payload.histogramOptions);
+    if (bins.length === 0 || bins.every((bin) => bin.count === 0)) {
       layout.status = statusError('invalid', 'INVALID_CHART_SOURCE', 'Histogram charts require at least one value in range');
       return layout;
     }
-    layout.histogramBins = payload.chartType === 'pareto' ? bins.slice().sort((left, right) => right.count - left.count) : bins;
+    if (payload.chartType === 'pareto' && bins.some((bin) => histogramValue(bin) < 0)) {
+      layout.status = statusError('invalid', 'INVALID_CHART_SOURCE', 'Pareto charts require non-negative category totals');
+      return layout;
+    }
+    const orderedBins = payload.chartType === 'pareto' ? bins.slice().sort((left, right) => histogramValue(right) - histogramValue(left)) : bins;
+    layout.histogramBins = histogramGeometry(orderedBins, layout.plot);
     if (payload.chartType === 'pareto') {
       let cumulative = 0;
-      const total = bins.reduce((sum, bin) => sum + bin.count, 0) || 1;
-      layout.paretoPoints = layout.histogramBins.map((bin, index) => { cumulative += bin.count; return { x: layout.plot.left + (index + 0.5) * layout.plot.width / Math.max(1, layout.histogramBins!.length), y: layout.plot.top + layout.plot.height * (1 - cumulative / total) }; });
+      const total = bins.reduce((sum, bin) => sum + histogramValue(bin), 0);
+      if (total <= 0) {
+        layout.status = statusError('invalid', 'INVALID_CHART_SOURCE', 'Pareto charts require a positive total');
+        return layout;
+      }
+      layout.paretoPoints = layout.histogramBins.map((bin) => { cumulative += histogramValue(bin); return { x: bin.geometry.x + bin.geometry.width / 2, y: layout.plot.top + layout.plot.height * (1 - cumulative / total) }; });
     }
     return layout;
   }
@@ -780,7 +906,7 @@ export function buildChartLayout(payload: ChartDrawingPayload, data: ResolvedCha
     return layout;
   }
   if (kind === 'waterfall') {
-    layout.waterfallBars = waterfallLayouts(payload, data, specialSeriesIndex);
+    layout.waterfallBars = waterfallLayouts(payload, data, specialSeriesIndex, layout.plot);
     if (!layout.waterfallBars.some((bar) => bar.visible)) {
       layout.status = statusError('invalid', 'INVALID_CHART_SOURCE', 'Waterfall charts require at least one numeric value');
     }

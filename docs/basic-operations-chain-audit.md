@@ -9,7 +9,7 @@
 - **已确认的产品取舍**：2026-09-26 用户选择“统一由 Java 服务规划，可要求服务在线”。结构操作不再承诺无服务的浏览器离线执行；连接失败时拒绝提交并保留编辑草稿。此授权只改变结构规划归属，不自动扩展为全部普通输入或图表样式都必须远程。
 - 建档 60 个操作，操作数不等于缺陷数。下表是追踪清单，**不是 60 项审查完成/通过的声明**。同根因的行列、图表类型、入口变体不重复算 bug。
 - 审计底稿形成时只做静态阅读。后续仅有下列明示的定向回归证据；上一已提交 head 的 CI 成功不能作为当前工作树验收。
-- 当前续审已完成 core-model 59 项、Java structural facts 10 项、chart layout 10 项及 Canvas drawing 8 项定向测试；前端项目级 `tsc` 仍因工作区缺少已声明的 `@types/react` 失败，本轮 4 个改动文件均无目标诊断。本轮尚未做浏览器、完整门禁、性能或 Excel 验收。
+- 当前续审已完成 core-model 59 项、Java structural facts 10 项、chart layout 14 项及 Canvas drawing 11 项定向测试；本批改动后 chart layout 14/14、Canvas drawing 11/11。前端项目级 `tsc` 仍因工作区缺少已声明的 `@types/react` 失败，本轮 4 个改动 TS/TSX 文件均无目标诊断。已在 in-app browser 打开 Vite 页面并查 Console/Network；页面因 `GET /api/auth/config → 500` 停在认证配置错误，Console 无 JS error/warn，未能进入工作簿或做图表 UI 操作。完整门禁、性能和 Excel 验收未完成。
 - Java `StructuralStateChanges` 目前只提供事实载体和历史迁移捕获/回放，**尚未接入在线结构意图规划和提交**。当前客户端先做 TS 结构变换，Java 再执行 reducer，远端客户端仍按 intent 重放；唯一 Java planner 尚未达成。
 
 ## 审查单位与证据要求
@@ -146,6 +146,12 @@
 23. **C11 正值对数轴默认最小值为零**：`axisBounds` 对非百分比轴统一从 0 起算，之后 logarithmic 检查又拒绝 `minimum <= 0`。即使数据全为正，未手填最小值的对数轴也会被判无效。本轮对数轴默认采用最小正数据值，并只在最大值为自动值时扩展；显式边界仍按有效域校验。
 24. **B5 worksheet identity 覆盖与标签歧义**：`WorkbookModel.fromSnapshot` 对重复 `sheet.id` 连续执行 `Map.set`，后一个 Sheet 覆盖前一个，而 `sheetOrder` 保留重复 ID；`getSheetByName` 按不区分大小写查找，重复标签会令公式/命令落到第一个匹配项。现在在 canonical snapshot、model hydration、创建、恢复、重命名和复制之前校验唯一 ID 与 case-insensitive name；冲突拒绝路径不改变模型。
 25. **B6 其他 workbook Map owner 重复时静默覆盖**：`fromSnapshot` 对 table、relationship、view 直接 `Map.set`，query definition 和 print document setter 也按 id/sheetId 覆盖已有 owner；style template 的直接 hydration 同样可能覆盖。现在 canonical 与直接 hydration 共用 Map owner identity 预检，涵盖 data source、table、relationship、view、query、style template 和每 Sheet 唯一打印文档；来源 Map 原有 `addDataSource` 拒绝语义保持一致。
+26. **C12 瀑布图连接线累计/端点错误且零值条不可命中（本轮已修复）**：布局把 from/to 排序成 min/max 后丢失累计方向；负增量连接线取错边，总计柱入线误落到零基线，连接线也没有从前柱边缘接到当前柱。绘制还强制 1px 最小高度，hit-test 却只用原始零高边界。现在 layout 为 connector 保留进入当前点前的累计值并按相邻 bar geometry 计算两端；draw/hit 共用规范几何。
+27. **C13 箱线图两个声明选项完全无效（本轮已修复）**：`showInnerPoints`、`showMeanMarkers` 只有 domain 字段，仓库无任何消费者；layout 现在根据须线内数据与 mean marker 开关生成事实，Canvas 按事实绘制。拒绝/无效选项校验仍需补齐。
+28. **C14 直方图 `by-category` 被当作自动数值分箱（本轮已修复）**：旧实现只提取数值并用 Scott width，重复文本类别没有分组。现在按有类型身份的类别聚合，并把数值列求和；layout 同时提供分类 bin 几何，Canvas 命中返回 category。Pareto 对负聚合值 fail-close。
+29. **C15 饼图/圆环图数据标签配置不进入渲染（本轮已修复）**：`drawChartDataLabels` 只在 cartesian 分支调用，pie slices 从未显示类别/值/百分比；且全部字段显式关闭时旧逻辑仍强行生成值标签。现在 slice layout 按 series/chart 选项生成标签文本、放置坐标和 hit bounds；无启用字段时不造标签，renderer 与 hit-test 使用同一 slice label facts。手动格式/全部 label positioning 的 Excel 细节仍待实测。
+
+另记 **T1 测试契约漂移**：缺失 Pivot 图表代码已返回 `chart` drawable 并带 typed error/hit area，旧测试仍断言 `shape`，导致套件本身失败。现断言实际错误文本和 chart-area 命中。当前根因登记共 30 条（29 个运行时根因 + 1 条测试契约问题），但不是 30 条全已整改，也不是 60 个操作都已审完。
 
 能力缺口单列，不冒充 silent corruption：跨 Sheet cut/paste 在 `editing/index.ts:1461` 明确 UNSUPPORTED；带外部引用的 Sheet 删除在 `sheet-identity-transform.ts:856` 明确拒绝。要达到目标 Excel 语义，仍须在 Java authority 中建立可逆跨表 move/delete-reference facts；不能只删除这些 guard。
 
@@ -182,6 +188,15 @@
 
 该复核只关闭 C5 的一个根因组，不代表用户要求的 30 个新增问题或 60 个操作已审完；未完成项继续留在本 PR 的同一审计范围内。
 
+## 本轮图表基础操作六轮真实问题复核
+
+1. **瀑布累计状态**：入线保存进入当前点前的累计值；负增量不再因矩形上下边排序而丢失方向；total 柱从零绘制，但入线仍连接前一累计值，后续点再以 total 值继续累计。
+2. **瀑布绘制/命中等价**：layout 只计算 bar rectangle 和连接线；连接线两端与相邻柱边一致；renderer 与 hit-test 共用 rectangle，零值条的 1px 可见范围也可点击。
+3. **箱线统计**：inner points 使用 lower/upper whisker 范围内的原始观测；离群点仍独立受 `showOutlierPoints` 控制；mean marker 不混进 whisker 或异常值统计。
+4. **分类直方图**：按 PivotScalar 类型区分 `1`、`"1"`、空白与错误类别；重复类别按 Excel 支持说明求和，Pareto 的负总额明确拒绝，所有 bin 的绘制与命中几何由 layout 生成。
+5. **饼/圆环标签**：series label overrides chart-level labels；百分比在对应 pie/doughnut ring 内计算；爆炸切片偏移同步应用于 label 位置和 hit bounds；所有字段显式关闭时不再强行展示数值。
+6. **拒绝与门禁**：chart 14/14、Canvas 11/11；全项目 `tsc` 仍因缺少 React typings 退出 2，修改 TS/TSX 文件目标诊断为 0。Vite 浏览器页已打开但 `GET /api/auth/config` 返回 500，未进入 workbook；不绕过认证，UI/OOXML/native Excel/大数据性能仍阻塞或未验收。
+
 ## 本轮第二组六轮身份边界复核
 
 1. **Map identity**：重复 Sheet ID、table/relationship/view id、query/style id 和 print sheet owner 原先会覆盖旧 owner；所有 Map 写入前统一拒绝。
@@ -215,6 +230,9 @@
 ## 微软官方基准
 
 - [Available chart types in Office](https://support.microsoft.com/en-us/excel/available-chart-types-in-office)：产品家族与子类型依据。
+- [Create a histogram](https://support.microsoft.com/en-us/excel/create-a-histogram)：by-category 聚合、underflow/overflow 与 bins 边界依据。
+- [Create a box and whisker chart](https://support.microsoft.com/en-us/excel/create-a-box-and-whisker-chart)：inner points、outliers、mean markers 与 quartile 设置依据。
+- [Trendline options in Office](https://support.microsoft.com/en-us/office/trendline-options-in-office)：趋势线拟合类型、阶数与 moving average 点数依据。
 - [XlChartType](https://learn.microsoft.com/en-us/office/vba/api/excel.xlcharttype)：原生类型身份依据。
 - [Office2016 ChartDrawing](https://learn.microsoft.com/en-us/dotnet/api/documentformat.openxml.office2016.drawing.chartdrawing?view=openxml-3.0.1)：ChartEx vocabulary 依据；具体 codec 实现仍需逐项 schema 核对与真实文件验收。
 
