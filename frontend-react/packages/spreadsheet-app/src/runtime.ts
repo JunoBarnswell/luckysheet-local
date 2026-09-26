@@ -1,6 +1,6 @@
 import { RecoveryJournal } from './features/persistence/recovery-journal';
 import { CheckpointCoordinator } from './features/persistence/checkpoint-coordinator';
-import { WorkbookModel, type DataSourceManifest } from '@react-sheets/core-model';
+import { WorkbookModel, isWorkbookCalculationContextEffect, type CellData, type DataSourceManifest, type StructuralTransformResult } from '@react-sheets/core-model';
 import { CommandRuntime, type HistoryEntry, type MutationInfo } from '@react-sheets/command-runtime';
 import { canonicalExcelDateFromUtcDate, FormulaEngine, type CanonicalExcelDateParts, type CellAddressInput, type ExcelDateSystem, type CalculationInputUpdate } from '@react-sheets/formula-engine';
 import {
@@ -166,7 +166,7 @@ export function createSpreadsheetRuntime(options: {
     const address = { sheetId: sheet.id, row, column };
     return formula?.getCellResult(address)?.value;
   });
-  formula = new FormulaEngine({ defaultSheetId: 'sheet-1', dateSystem, canonicalReferenceDate, collationContext: model.collationContext, calculationSettings: model.calculationSettings, rowVisibilityResolver });
+  formula = new FormulaEngine({ defaultSheetId: 'sheet-1', sheetOrder: model.sheetOrder.map((id) => ({ id, name: model.getSheet(id).name })), dateSystem, canonicalReferenceDate, collationContext: model.collationContext, calculationSettings: model.calculationSettings, rowVisibilityResolver });
   const formulaAudit = new FormulaAuditController(formula);
   registerSpreadsheetFeatures(commands, drawing);
   registerFormulaAuditCommands(commands.registry, formulaAudit);
@@ -239,6 +239,7 @@ export function createSpreadsheetRuntime(options: {
     disposed: false,
   };
   runtime.commands.setRevisionProvider(() => runtime.remoteRevision);
+  runtime.commands.setStructuralReferenceOwnersProvider(() => runtime.formula.dependencies);
   // The initial runtime has no workbook snapshot boundary yet, but it still
   // needs a live spill environment so the first authored dynamic-array formula
   // can resolve without rebuilding the whole calculation engine.
@@ -294,6 +295,7 @@ const FORMULA_SYNC_MUTATIONS = new Set([
   'flashFill.restored',
   'range.clear',
   'range.paste',
+  'range.move',
   'dataRegion.materialize.commit',
   'dataRegion.materialize.restore',
   'query.load.range',
@@ -310,17 +312,6 @@ const FORMULA_SYNC_MUTATIONS = new Set([
   'columns.inserted',
   'columns.deleted',
   'sheet.rename',
-  'sheet.remove',
-  'sheet.restore',
-  'sheet.add',
-  'sheet.duplicated',
-  'sheetTable.add',
-  'sheetTable.remove',
-  'sheetTable.update',
-  'table.add',
-  'table.remove',
-  'name.set',
-  'name.remove',
   'workbook.calculation.mode.set',
   'row.hidden',
   'row.unhidden',
@@ -332,6 +323,7 @@ const FORMULA_SYNC_MUTATIONS = new Set([
   'autoFilter.remove',
   'sheet.autoFilter.set',
   'sheet.autoFilter.remove',
+  'sheetTable.autoFilter.set',
   'outline.group.toggle',
   'outline.showLevel',
 ]);
@@ -340,6 +332,7 @@ const VISIBILITY_MUTATIONS = new Set([
   'row.hidden', 'row.unhidden', 'rows.unhidden.all', 'rows.hidden.restore',
   'sheet.rows.visibility.set', 'sheet.rows.unhide.all',
   'autoFilter.set', 'autoFilter.remove', 'sheet.autoFilter.set', 'sheet.autoFilter.remove',
+  'sheetTable.autoFilter.set', 'sheetTable.add', 'sheetTable.remove', 'sheetTable.update',
   'outline.group.toggle', 'outline.showLevel',
 ]);
 
@@ -353,6 +346,7 @@ const DIRECT_CELL_WRITE_MUTATIONS = new Set([
   'flashFill.restored',
   'range.clear',
   'range.paste',
+  'range.move',
   'cells.inserted',
   'cells.deleted',
   'cells.inserted.restore',
@@ -365,52 +359,188 @@ const DIRECT_CELL_WRITE_MUTATIONS = new Set([
   'query.load.workbook-table',
 ]);
 
-/** These operations change the dependency address space, not just cell inputs. */
-const CALCULATION_CONTEXT_REBUILDS = new Set([
-  'cells.inserted',
-  'cells.deleted',
-  'cells.inserted.restore',
-  'cells.deleted.restore',
-  'rows.permuted',
-  'rows.inserted',
-  'rows.deleted',
-  'columns.inserted',
-  'columns.deleted',
-  'sheet.rename',
-  'sheet.remove',
-  'sheet.restore',
-  'sheet.add',
-  'sheet.duplicated',
-]);
+function calculationInputUpdate(
+  sheetId: string,
+  row: number,
+  column: number,
+  cell: CellData | undefined,
+): CalculationInputUpdate {
+  const address = { sheetId, row, column };
+  const input = !cell || (cell.formula === undefined && cell.value == null)
+    ? null
+    : cell.formula !== undefined && !cell.formulaMetadata?.preservedOnly
+      ? { kind: 'formula' as const, formula: cell.formula }
+      : { kind: 'value' as const, value: (cell.value ?? null) as never };
+  return { address, input };
+}
 
-const CALCULATION_CONTEXT_UPDATES = new Set([
-  'sheetTable.add',
-  'sheetTable.remove',
-  'sheetTable.update',
-  'table.add',
-  'table.remove',
-  'name.set',
-  'name.remove',
-]);
+const STRUCTURAL_FORMULA_SOURCE_IDS = {
+  preservedFormula: 'structural:preserved-formula',
+  formulaProvenance: 'structural:formula-provenance',
+  barcode: 'structural:barcode',
+} as const;
+
+function indexAuxiliaryFormulaOwners(engine: FormulaEngine, address: CellAddressInput, cell: CellData): void {
+  if (cell.formulaMetadata?.preservedOnly && cell.formula !== undefined) {
+    engine.setStructuralFormulaReference(address, STRUCTURAL_FORMULA_SOURCE_IDS.preservedFormula, cell.formula);
+  }
+  if (cell.formulaMetadata?.sourceFormula !== undefined) {
+    engine.setStructuralFormulaReference(address, STRUCTURAL_FORMULA_SOURCE_IDS.formulaProvenance, cell.formulaMetadata.sourceFormula);
+  }
+  if (cell.presentation?.kind === 'barcode' && cell.presentation.source.kind === 'formula') {
+    engine.setStructuralFormulaReference(address, STRUCTURAL_FORMULA_SOURCE_IDS.barcode, cell.presentation.source.formula);
+  }
+}
+
+function removeAuxiliaryFormulaOwnersInRange(
+  engine: FormulaEngine,
+  range: StructuralTransformResult['clearInputRanges'][number],
+): void {
+  for (const owner of engine.dependencies.getStructuralReferenceOwnersInRange(range.sheetId, range)) {
+    engine.removeStructuralFormulaReference(owner.address, owner.sourceId);
+  }
+}
+
+function rangeContainsOwner(
+  range: StructuralTransformResult['clearInputRanges'][number],
+  owner: StructuralTransformResult['rewrittenFormulaOwners'][number],
+): boolean {
+  return range.sheetId === owner.sheetId
+    && range.startRow <= owner.row && range.endRow >= owner.row
+    && range.startColumn <= owner.column && range.endColumn >= owner.column;
+}
+
+function reindexAuxiliaryFormulaOwnerAt(
+  engine: FormulaEngine,
+  owner: StructuralTransformResult['rewrittenFormulaOwners'][number],
+  cell: CellData,
+): void {
+  const point = {
+    sheetId: owner.sheetId,
+    startRow: owner.row,
+    endRow: owner.row,
+    startColumn: owner.column,
+    endColumn: owner.column,
+  };
+  removeAuxiliaryFormulaOwnersInRange(engine, point);
+  indexAuxiliaryFormulaOwners(engine, owner, cell);
+}
 
 function synchronizeCellMutation(engine: FormulaEngine, workbook: WorkbookModel, mutation: MutationInfo): readonly CellAddressInput[] {
-  const updates = new Map<string, CalculationInputUpdate>();
+  const hadFormulaInputs = engine.getFormulaCount() > 0;
+  const cleared = new Map<string, CalculationInputUpdate>();
+  const populated = new Map<string, CalculationInputUpdate>();
   for (const range of mutation.affectedRanges) {
     const sheet = workbook.getSheet(range.sheetId);
-    for (let row = range.startRow; row <= range.endRow; row += 1) {
-      for (let column = range.startColumn; column <= range.endColumn; column += 1) {
-        const cell = sheet.cells.get(row, column);
-        const address = { sheetId: sheet.id, row, column };
-        const input = !cell || (cell.formula === undefined && cell.value == null)
-          ? null
-          : cell.formula !== undefined && !cell.formulaMetadata?.preservedOnly
-            ? { kind: 'formula' as const, formula: cell.formula }
-            : { kind: 'value' as const, value: (cell.value ?? null) as never };
-        updates.set(`${sheet.id}:${row}:${column}`, { address, input });
-      }
+    removeAuxiliaryFormulaOwnersInRange(engine, range);
+    for (const address of engine.getInputAddressesInRange(range)) {
+      cleared.set(`${address.sheetId}:${address.row}:${address.column}`, { address, input: null });
+    }
+    sheet.cells.forEachInRange(range.startRow, range.endRow, range.startColumn, range.endColumn, (cell, row, column) => {
+      indexAuxiliaryFormulaOwners(engine, { sheetId: sheet.id, row, column }, cell);
+      const update = calculationInputUpdate(sheet.id, row, column, cell);
+      if (update.input !== null) populated.set(`${sheet.id}:${row}:${column}`, update);
+    });
+  }
+  const updates = [...cleared.values(), ...populated.values()];
+  const roots = [...engine.synchronizeInputs(updates)];
+  if (!hadFormulaInputs && engine.getFormulaCount() > 0) {
+    const ordinaryValues: CalculationInputUpdate[] = [];
+    for (const sheet of workbook.getSheets()) {
+      sheet.cells.forEachWithoutHydration((cell, row, column) => {
+        const update = calculationInputUpdate(sheet.id, row, column, cell);
+        if (update.input?.kind === 'value') ordinaryValues.push(update);
+      });
+    }
+    roots.push(...engine.synchronizeInputs(ordinaryValues));
+  }
+  return [...new Map(roots.map((address) => [`${address.sheetId}:${address.row}:${address.column}`, address])).values()];
+}
+
+function isStructuralTransformResult(effect: unknown): effect is StructuralTransformResult {
+  if (typeof effect !== 'object' || effect === null) return false;
+  const result = effect as Partial<StructuralTransformResult>;
+  return result.kind === 'structural-transform'
+    && Array.isArray(result.clearInputRanges)
+    && Array.isArray(result.populateInputRanges)
+    && Array.isArray(result.rewrittenFormulaOwners);
+}
+
+function mutationTouchesFilterCriteria(workbook: WorkbookModel, ranges: MutationInfo['affectedRanges']): boolean {
+  for (const range of ranges) {
+    const sheet = workbook.getSheet(range.sheetId);
+    const filters = [
+      ...(sheet.autoFilter ? [sheet.autoFilter] : []),
+      ...sheet.sheetTables.flatMap((table) => table.autoFilter ? [table.autoFilter] : []),
+    ];
+    for (const filter of filters) {
+      if (range.startRow > filter.range.endRow || range.endRow < filter.range.startRow) continue;
+      if (Object.values(filter.columns).some(({ column, criterion }) => criterion !== undefined
+        && column >= range.startColumn && column <= range.endColumn)) return true;
     }
   }
-  return engine.synchronizeInputs([...updates.values()]);
+  return false;
+}
+
+function synchronizeStructuralMutation(
+  runtime: SpreadsheetRuntime,
+  mutation: MutationInfo,
+  effect: StructuralTransformResult,
+): readonly CellAddressInput[] {
+  const engine = runtime.formula;
+  const workbook = runtime.model;
+  const cleared = new Map<string, CalculationInputUpdate>();
+  const populated = new Map<string, CalculationInputUpdate>();
+  const keyOf = (address: { readonly sheetId: string; readonly row: number; readonly column: number }): string =>
+    `${address.sheetId}:${address.row}:${address.column}`;
+
+  for (const range of effect.clearInputRanges) {
+    removeAuxiliaryFormulaOwnersInRange(engine, range);
+    for (const address of engine.getInputAddressesInRange(range)) {
+      cleared.set(keyOf(address), { address, input: null });
+    }
+  }
+  for (const range of effect.populateInputRanges) {
+    const sheet = workbook.getSheet(range.sheetId);
+    sheet.cells.forEachInRange(range.startRow, range.endRow, range.startColumn, range.endColumn, (cell, row, column) => {
+      indexAuxiliaryFormulaOwners(engine, { sheetId: sheet.id, row, column }, cell);
+      const update = calculationInputUpdate(sheet.id, row, column, cell);
+      if (update.input !== null) populated.set(keyOf(update.address), update);
+    });
+  }
+  for (const owner of effect.rewrittenFormulaOwners) {
+    const ownerKey = keyOf(owner);
+    if (effect.populateInputRanges.some((range) => rangeContainsOwner(range, owner))) continue;
+    const sheet = workbook.getSheet(owner.sheetId);
+    const cell = sheet.cells.getFormulaOwnerWithoutHydration(owner.row, owner.column);
+    if (!cell) throw new Error(`STRUCTURAL_PATCH_INVARIANT: rewritten reference owner ${owner.sheetId}!${owner.row}:${owner.column} is not a live cell`);
+    const update = calculationInputUpdate(owner.sheetId, owner.row, owner.column, cell);
+    if (update.input !== null && !populated.has(ownerKey)) populated.set(ownerKey, update);
+    reindexAuxiliaryFormulaOwnerAt(engine, owner, cell);
+  }
+
+  const hadFormulaInputs = engine.getFormulaCount() > 0;
+  const roots = [...engine.synchronizeInputs([...cleared.values(), ...populated.values()])];
+  if (effect.definedNameOwnerDeltas !== undefined) {
+    engine.applyDefinedNameModelDeltas(effect.definedNameOwnerDeltas, false);
+  } else {
+    engine.setDefinedNameModels(workbook.definedNameModels, false);
+  }
+  syncWorkbookSheetTables(engine, workbook, false);
+  configureFormulaSpillEnvironment(engine, workbook.getSheet(mutation.sheetId));
+  if (!hadFormulaInputs && engine.getFormulaCount() > 0) {
+    const ordinaryValues: CalculationInputUpdate[] = [];
+    for (const sheet of workbook.getSheets()) {
+      sheet.cells.forEachWithoutHydration((cell, row, column) => {
+        const update = calculationInputUpdate(sheet.id, row, column, cell);
+        if (update.input?.kind === 'value') ordinaryValues.push(update);
+      });
+    }
+    roots.push(...engine.synchronizeInputs(ordinaryValues));
+  }
+  roots.push(...engine.getPendingRecalculationRoots());
+  runtime.formulaAudit.refresh();
+  return [...new Map(roots.map((address) => [`${address.sheetId}:${address.row}:${address.column}`, address])).values()];
 }
 
 /**
@@ -428,10 +558,17 @@ function loadFormulaInputs(engine: FormulaEngine, workbook: WorkbookModel): numb
   syncWorkbookSheetTables(engine, workbook);
   let formulaCount = 0;
   for (const sheet of workbook.getSheets()) {
-    sheet.cells.forEachFormula((cell, row, column) => {
+    sheet.cells.forEachFormulaOwner((cell, row, column) => {
       const address = { sheetId: sheet.id, row, column };
-      formulaCount += 1;
-      engine.setFormula(address, cell.formula);
+      if (cell.formula !== undefined) {
+        if (cell.formulaMetadata?.preservedOnly) {
+          engine.setStructuralFormulaReference(address, STRUCTURAL_FORMULA_SOURCE_IDS.preservedFormula, cell.formula);
+        } else {
+          formulaCount += 1;
+          engine.setFormula(address, cell.formula);
+        }
+      }
+      indexAuxiliaryFormulaOwners(engine, address, cell);
     });
   }
   // A value-only workbook has no formula dependency graph. Keeping tens of
@@ -440,9 +577,9 @@ function loadFormulaInputs(engine: FormulaEngine, workbook: WorkbookModel): numb
   // benefit. Formula workbooks retain the complete existing input contract.
   if (formulaCount > 0) {
     for (const sheet of workbook.getSheets()) {
-      sheet.cells.forEach((cell, row, column) => {
-        if (cell.formula !== undefined || cell.value == null) return;
-        engine.setValue({ sheetId: sheet.id, row, column }, cell.value as never);
+      sheet.cells.forEachWithoutHydration((cell, row, column) => {
+        const update = calculationInputUpdate(sheet.id, row, column, cell);
+        if (update.input?.kind === 'value') engine.setValue(update.address, update.input.value);
       });
     }
   }
@@ -530,7 +667,8 @@ export function scheduleFormulaRecalculation(runtime: SpreadsheetRuntime, force 
       try {
         const report = await engine.recalculateAsync(calculationRoots, undefined, fullCalculation);
         if (runtime.disposed || epoch !== state.epoch || runtime.formula !== engine || runtime.model !== workbook) return;
-        const affectedSheetIds = new Set(report.recalculated.map((address) => address.sheetId));
+        const changedAddresses = report.changedAddresses ?? [];
+        const affectedSheetIds = new Set(changedAddresses.map((address) => address.sheetId));
         for (const sheetId of affectedSheetIds) {
           syncFormulaSpillsToSheet(engine, workbook.getSheet(sheetId));
         }
@@ -538,7 +676,7 @@ export function scheduleFormulaRecalculation(runtime: SpreadsheetRuntime, force 
           runtime.handlers.onSaveState?.('error');
           runtime.handlers.onNotice?.(error instanceof Error ? error.message : 'Local formula checkpoint failed');
         });
-        runtime.handlers.onCalculationApplied?.(report.recalculated);
+        runtime.handlers.onCalculationApplied?.(changedAddresses);
         runtime.handlers.onMutationsApplied?.();
         runtime.handlers.onSaveState?.(localFormulaIdleState(runtime));
       } catch (error) {
@@ -559,6 +697,7 @@ function assertNoSpillChildWrite(
   for (const range of mutation.affectedRanges) {
     if (range.sheetId !== sheet.id) continue;
     for (const spill of sheet.spillRanges) {
+      if (spill.state !== 'ok') continue;
       const startRow = Math.max(range.startRow, spill.range.startRow);
       const endRow = Math.min(range.endRow, spill.range.endRow);
       const startColumn = Math.max(range.startColumn, spill.range.startColumn);
@@ -599,10 +738,16 @@ interface LocalPersistenceState {
   journalChecksum: string | null;
   queuedJournalChecksum: string | null;
   storageRevision: number | null;
+  snapshotLocalRevision: number;
   snapshotTimer: ReturnType<typeof setTimeout> | null;
 }
 
 const localPersistenceStates = new WeakMap<SpreadsheetRuntime, LocalPersistenceState>();
+const LOCAL_SNAPSHOT_CHECKPOINT_REVISION_LIMIT = 50;
+
+export function isLocalSnapshotCheckpointDue(localRevision: number, snapshotLocalRevision: number): boolean {
+  return localRevision - snapshotLocalRevision >= LOCAL_SNAPSHOT_CHECKPOINT_REVISION_LIMIT;
+}
 
 function localPersistenceState(runtime: SpreadsheetRuntime): LocalPersistenceState {
   const existing = localPersistenceStates.get(runtime);
@@ -611,10 +756,19 @@ function localPersistenceState(runtime: SpreadsheetRuntime): LocalPersistenceSta
     journalChecksum: null,
     queuedJournalChecksum: null,
     storageRevision: runtime.workspaceRecord?.storageRevision ?? null,
+    snapshotLocalRevision: runtime.workspaceRecord?.pending.snapshotRevision ?? runtime.localRevision,
     snapshotTimer: null,
   };
   localPersistenceStates.set(runtime, created);
   return created;
+}
+
+function adoptLocalSnapshotBaseline(runtime: SpreadsheetRuntime, record: WorkspaceRecord): void {
+  const state = localPersistenceState(runtime);
+  state.storageRevision = record.storageRevision;
+  state.snapshotLocalRevision = record.pending.snapshotRevision;
+  state.journalChecksum = record.pending.checksum;
+  if (state.queuedJournalChecksum === record.pending.checksum) state.queuedJournalChecksum = null;
 }
 
 function enqueuePersistenceWrite<T>(runtime: SpreadsheetRuntime, operation: () => Promise<T>): Promise<T> {
@@ -627,10 +781,13 @@ function enqueuePersistenceWrite<T>(runtime: SpreadsheetRuntime, operation: () =
 function scheduleLocalSnapshotCheckpoint(runtime: SpreadsheetRuntime): void {
   if (runtime.disposed || !runtime.localOnly) return;
   const state = localPersistenceState(runtime);
+  // The journal for this revision is durable; full workbook snapshots are periodic compaction, not per-edit durability.
+  if (!isLocalSnapshotCheckpointDue(runtime.localRevision, state.snapshotLocalRevision)) return;
   if (state.snapshotTimer !== null) return;
   state.snapshotTimer = setTimeout(() => {
     state.snapshotTimer = null;
     void writeLocalSnapshotCheckpoint(runtime).catch((error: unknown) => {
+      if (runtime.disposed) return;
       runtime.handlers.onSaveState?.('error');
       runtime.handlers.onNotice?.(error instanceof Error ? error.message : 'Local snapshot checkpoint failed');
     });
@@ -656,7 +813,7 @@ function commitLocalOperationJournal(runtime: SpreadsheetRuntime, pendingJournal
   const next = previous
     .catch(() => undefined)
     .then(() => enqueuePersistenceWrite(runtime, async () => {
-      if (runtime.disposed) return;
+      // A root operation already committed to this queue must survive a runtime unmount.
       const expectedStorageRevision = state.storageRevision ?? runtime.workspaceRecord?.storageRevision;
       const storageRevision = await runtime.workspacePersistence.commitOperationJournal(
         runtime.model.unitId,
@@ -677,8 +834,10 @@ function commitLocalOperationJournal(runtime: SpreadsheetRuntime, pendingJournal
           updatedAt: new Date().toISOString(),
         };
       }
-      scheduleLocalSnapshotCheckpoint(runtime);
-      runtime.handlers.onWorkspacePersisted?.();
+      if (!runtime.disposed) {
+        scheduleLocalSnapshotCheckpoint(runtime);
+        runtime.handlers.onWorkspacePersisted?.();
+      }
     }));
   checkpointChains.set(runtime, next);
   void next.catch(() => {
@@ -710,12 +869,10 @@ function writeLocalSnapshotCheckpoint(runtime: SpreadsheetRuntime, artifact?: Na
       const record = artifact
         ? await runtime.workspacePersistence.checkpointWithArtifact(snapshot, localRevision, serverRevision, syncMode, artifact, pendingJournal, metadata)
         : await runtime.workspacePersistence.checkpoint(snapshot, localRevision, serverRevision, syncMode, pendingJournal, metadata);
-      if (runtime.disposed) return;
+      runtime.operationJournal.adoptSnapshotCheckpoint(runtime.model.unitId, record.pending);
       runtime.workspaceRecord = record;
-      localPersistenceState(runtime).storageRevision = record.storageRevision;
-      localPersistenceState(runtime).journalChecksum = record.pending.checksum;
-      localPersistenceState(runtime).queuedJournalChecksum = null;
-      runtime.operationJournal.write(runtime.model.unitId, record.pending.operations, record.pending.nextClientSequence, record.localRevision);
+      adoptLocalSnapshotBaseline(runtime, record);
+      if (runtime.disposed) return;
       await runtime.assetStore.reconcile(collectAssetReferences(snapshot, [
         ...record.pending.operations,
         ...runtime.commands.getUndoEntries(),
@@ -767,27 +924,48 @@ export function attachCoreListeners(runtime: SpreadsheetRuntime): void {
   detachCoreListeners(runtime);
 
   runtime.detachers.push(
-    runtime.commands.onMutation((mutation, source) => {
+    runtime.commands.onMutation((mutation, source, appliedEffect) => {
       if (runtime.disposed) return;
-      if (VISIBILITY_MUTATIONS.has(mutation.id)) {
-        runtime.rowVisibilityResolver.invalidate();
-        runtime.formula.notifyVisibilityChanged();
-      }
+      let structuralRoots: readonly CellAddressInput[] | undefined;
+      const structuralEffect = isStructuralTransformResult(appliedEffect) ? appliedEffect : undefined;
+      const calculationContextEffect = isWorkbookCalculationContextEffect(appliedEffect)
+        ? appliedEffect
+        : structuralEffect?.calculationContextEffect;
+      const rebuildsCalculationContext = calculationContextEffect?.action === 'rebuild';
+      const changesVisibilityProjection = VISIBILITY_MUTATIONS.has(mutation.id)
+        || rebuildsCalculationContext
+        || structuralEffect !== undefined
+        || mutationTouchesFilterCriteria(runtime.model, mutation.affectedRanges);
+      if (changesVisibilityProjection) runtime.rowVisibilityResolver.invalidate();
       if (mutation.id === 'workbook.calculation.mode.set') {
         const mode = (mutation.params as { mode?: unknown } | undefined)?.mode;
         if (mode !== 'automatic' && mode !== 'manual' && mode !== 'partial') throw new Error('Workbook calculation mode mutation is invalid');
         runtime.formula.setRecalculationMode(mode);
       }
-      if (CALCULATION_CONTEXT_REBUILDS.has(mutation.id)) {
-        // Structural changes alter the canonical address space. Rebuild only
-        // at this explicit boundary; ordinary cell writes remain delta based.
+      if (rebuildsCalculationContext) {
+        // Add/remove/reorder and ambiguous rename references need a full
+        // address-space refresh; exact rename/structural deltas stay incremental.
         rebuildFormulaCalculation(runtime);
-      } else if (CALCULATION_CONTEXT_UPDATES.has(mutation.id)) {
-        if (mutation.id === 'name.set' || mutation.id === 'name.remove') {
-          runtime.formula.setDefinedNameModels(runtime.model.definedNameModels, false);
-        } else {
-          syncWorkbookSheetTables(runtime.formula, runtime.model, false);
+        runtime.formula.notifyVisibilityChanged();
+      } else if (structuralEffect) {
+        if (mutation.id === 'sheet.rename') {
+          runtime.formula.updateSheetNames(
+            runtime.model.sheetOrder.map((id) => ({ id, name: runtime.model.getSheet(id).name })),
+          );
         }
+        structuralRoots = synchronizeStructuralMutation(runtime, mutation, structuralEffect);
+        runtime.formula.notifyVisibilityChanged();
+        structuralRoots = [...new Map([
+          ...structuralRoots,
+          ...runtime.formula.getPendingRecalculationRoots(),
+        ].map((address) => [typeof address === 'string' ? address : `${address.sheetId}:${address.row}:${address.column}`, address])).values()];
+      } else if (calculationContextEffect?.action === 'sync-defined-names') {
+        runtime.formula.setDefinedNameModels(runtime.model.definedNameModels, false);
+      } else if (calculationContextEffect?.action === 'sync-tables') {
+        syncWorkbookSheetTables(runtime.formula, runtime.model, false);
+      }
+      if (changesVisibilityProjection && !rebuildsCalculationContext && !structuralEffect) {
+        runtime.formula.notifyVisibilityChanged();
       }
       // CommandRuntime invokes listeners after the mutation handler.  Throwing
       // here still causes the command transaction to run its inverse, so a
@@ -798,7 +976,16 @@ export function attachCoreListeners(runtime: SpreadsheetRuntime): void {
         assertNoSpillChildWrite(runtime.model, mutation);
       }
 
-      runtime.pendingPivotMutations.push(structuredClone(mutation));
+      const formulaOwnerDeltas = structuralEffect?.formulaOwnerDeltas ?? [];
+      const definedNameOwnerDeltas = structuralEffect?.definedNameOwnerDeltas ?? [];
+      const projectionMutation = formulaOwnerDeltas.length > 0 || definedNameOwnerDeltas.length > 0
+        ? {
+          ...mutation,
+          ...(formulaOwnerDeltas.length > 0 ? { structuralFormulaOwnerDeltas: [...formulaOwnerDeltas] } : {}),
+          ...(definedNameOwnerDeltas.length > 0 ? { structuralDefinedNameOwnerDeltas: [...definedNameOwnerDeltas] } : {}),
+        }
+        : mutation;
+      runtime.pendingPivotMutations.push(structuredClone(projectionMutation));
       if (mutation.id === 'dataSource.add' || mutation.id === 'dataSource.update' || mutation.id === 'dataSource.remove'
         || mutation.id === 'dataRegion.add' || mutation.id === 'dataRegion.remove'
         || mutation.id === 'dataRegion.materialize.commit' || mutation.id === 'dataRegion.materialize.restore'
@@ -807,22 +994,28 @@ export function attachCoreListeners(runtime: SpreadsheetRuntime): void {
         || mutation.id === 'pivot.drilldown.add' || mutation.id === 'pivot.drilldown.remove') {
         initializeDataContent(runtime);
       }
-      if (FORMULA_SYNC_MUTATIONS.has(mutation.id)) {
+      if (FORMULA_SYNC_MUTATIONS.has(mutation.id) || calculationContextEffect !== undefined) {
         const isDirectCellWrite = DIRECT_CELL_WRITE_MUTATIONS.has(mutation.id);
-        const roots = CALCULATION_CONTEXT_REBUILDS.has(mutation.id)
+        const roots = rebuildsCalculationContext
           ? undefined
-          : isDirectCellWrite
-            ? synchronizeCellMutation(runtime.formula, runtime.model, mutation)
-            : undefined;
+          : structuralRoots
+            ?? (isDirectCellWrite ? synchronizeCellMutation(runtime.formula, runtime.model, mutation) : undefined)
+            ?? (changesVisibilityProjection ? runtime.formula.getPendingRecalculationRoots() : undefined);
         const automatic = runtime.formula.getRecalculationMode() === 'automatic';
-        if (automatic || VISIBILITY_MUTATIONS.has(mutation.id) || !isDirectCellWrite || CALCULATION_CONTEXT_REBUILDS.has(mutation.id)) {
+        if (automatic || changesVisibilityProjection || !isDirectCellWrite || rebuildsCalculationContext) {
           void scheduleFormulaRecalculation(
             runtime,
             VISIBILITY_MUTATIONS.has(mutation.id),
             isDirectCellWrite ? undefined : roots,
-            VISIBILITY_MUTATIONS.has(mutation.id),
+            false,
           );
         }
+      } else if (changesVisibilityProjection) {
+        void scheduleFormulaRecalculation(
+          runtime,
+          VISIBILITY_MUTATIONS.has(mutation.id),
+          runtime.formula.getPendingRecalculationRoots(),
+        );
       }
     }),
   );
@@ -843,7 +1036,17 @@ export function attachCoreListeners(runtime: SpreadsheetRuntime): void {
         sheetId: mutation.sheetId,
         params: mutation.params,
         affectedRanges: [...mutation.affectedRanges],
+        ...(mutation.structuralImpactRanges
+          ? { structuralImpactRanges: [...mutation.structuralImpactRanges] }
+          : {}),
       });
+    }),
+  );
+
+  runtime.detachers.push(
+    runtime.commands.onCommandAbort(() => {
+      runtime.pendingMutations = [];
+      runtime.pendingLocalCheckpoint = false;
     }),
   );
 
@@ -857,13 +1060,6 @@ export function attachCoreListeners(runtime: SpreadsheetRuntime): void {
       runtime.pendingLocalCheckpoint = false;
       if (batch.length === 0 && !localCheckpoint) return;
       runtime.handlers.onMutationsApplied?.();
-      const history = runtime.commands.getUndoEntries().find((entry) => entry.operationId === result.operationId);
-      if (history) {
-        runtime.collaboration?.recordLocalUndo({
-          operationId: result.operationId,
-          undoMutations: history.inversePlan,
-        });
-      }
       if (batch.length > 0) {
         if (runtime.collaboration) submitChangeset(runtime, result.operationId, batch);
         else runtime.pendingLocalOperations.push({ operationId: result.operationId, mutations: batch });
@@ -879,18 +1075,17 @@ export function attachCoreListeners(runtime: SpreadsheetRuntime): void {
       // replayed mutation facts through the same session coordinator boundary
       // used by local and remote command application.
       runtime.handlers.onMutationsApplied?.();
-      if (!runtime.collaboration || entry.inversePlan.length === 0) return;
+      if (!runtime.collaboration) return;
+      const replayMutations = source === 'undo' ? entry.inversePlan : entry.forwardMutations;
+      if (replayMutations.length === 0) return;
       const operation = source === 'undo'
         ? runtime.collaboration.enqueueCompensatingMutations(
-          runtime.collaboration.undoOwnLast() ?? entry.inversePlan,
+          replayMutations,
           runtime.model.unitId,
           entry.operationId,
           entry.baseRevision,
         )
-        : runtime.collaboration.enqueueLocalMutations(entry.forwardMutations, runtime.model.unitId);
-      if (source === 'redo') {
-        runtime.collaboration.recordLocalUndo({ operationId: entry.operationId, undoMutations: entry.inversePlan });
-      }
+        : runtime.collaboration.enqueueLocalMutations(replayMutations, runtime.model.unitId);
       scheduleOperation(runtime, operation);
       void runtime.checkpointWorkspace();
     }),
@@ -1007,7 +1202,7 @@ export function setRuntimeDateContext(runtime: SpreadsheetRuntime, dateSystem: E
 }
 
 function rebuildFormulaEngine(workbook: WorkbookModel, dateSystem: ExcelDateSystem = '1900', canonicalReferenceDate?: CanonicalExcelDateParts, rowVisibilityResolver?: WorkbookRowVisibilityResolver): FormulaEngine {
-  const engine = new FormulaEngine({ defaultSheetId: workbook.primarySheetId, dateSystem, canonicalReferenceDate, collationContext: workbook.collationContext, calculationSettings: workbook.calculationSettings, rowVisibilityResolver });
+  const engine = new FormulaEngine({ defaultSheetId: workbook.primarySheetId, sheetOrder: workbook.sheetOrder.map((id) => ({ id, name: workbook.getSheet(id).name })), dateSystem, canonicalReferenceDate, collationContext: workbook.collationContext, calculationSettings: workbook.calculationSettings, rowVisibilityResolver });
   loadFormulaInputs(engine, workbook);
   return engine;
 }
@@ -1031,6 +1226,7 @@ export function hydrateRuntime(runtime: SpreadsheetRuntime, response: SnapshotRe
   runtime.commands.setRevisionProvider(() => runtime.remoteRevision);
   registerSpreadsheetFeatures(runtime.commands, runtime.drawing);
   runtime.formula = rebuildFormulaEngine(workbook, runtime.dateSystem, runtime.canonicalReferenceDate, runtime.rowVisibilityResolver);
+  runtime.commands.setStructuralReferenceOwnersProvider(() => runtime.formula.dependencies);
   installCommandCellValueResolver(runtime);
   runtime.formulaAudit.setFormula(runtime.formula);
   registerFormulaAuditCommands(runtime.commands.registry, runtime.formulaAudit);
@@ -1124,8 +1320,11 @@ async function loadHistoryAndReplayPending(runtime: SpreadsheetRuntime): Promise
     const result = await runtime.api.getOperationResult(runtime.model.unitId, operation.operationId);
     if (result) {
       assertOperationResultMatches(operation, result.operation);
+      runtime.collaboration?.applyCommittedStructuralPatches(result.operation);
       await runtime.recoveryJournal?.confirm(operation, result.operation.revision);
       runtime.collaboration?.acknowledge(operation.operationId, result.operation.revision);
+      runtime.remoteRevision = Math.max(runtime.remoteRevision, result.operation.revision);
+      runtime.ownOperationIds.delete(operation.operationId);
       await runtime.recoveryJournal?.flushed();
       serverCheckpoint(runtime).request(result.operation.revision);
     }
@@ -1171,9 +1370,13 @@ export function startCollaborationSession(
         const committed = existing ?? await runtime.api.commitOperation(runtime.model.unitId, operation);
         assertOperationResultMatches(operation, committed.operation);
         const revision = committed.operation.revision;
+        const collaboration = runtime.collaboration;
+        if (!collaboration) throw new Error('COLLABORATION_SESSION_REQUIRED: committed operation cannot be reconciled without its session');
+        collaboration.applyCommittedStructuralPatches(committed.operation);
         await runtime.recoveryJournal?.confirm(operation, revision);
         runtime.remoteRevision = Math.max(runtime.remoteRevision, revision);
-        runtime.collaboration?.acknowledge(operation.operationId, revision);
+        collaboration.acknowledge(operation.operationId, revision);
+        runtime.ownOperationIds.delete(operation.operationId);
         await runtime.checkpointWorkspace(false);
         serverCheckpoint(runtime).request(revision);
         runtime.handlers.onSaveState?.(serverCheckpoint(runtime).hasFailure ? 'error' : runtime.collaboration?.getPendingOperations().length ? 'saving' : 'saved');
@@ -1396,6 +1599,7 @@ async function initializePersistence(runtime: SpreadsheetRuntime, isActive: () =
   if (localRecord) {
     runtime.workspaceRecord = localRecord;
     runtime.localRevision = localRecord.localRevision;
+    adoptLocalSnapshotBaseline(runtime, localRecord);
     runtime.remoteRevision = resolution?.revision ?? localRecord.serverRevision;
     runtime.localOnly = runtime.localOnly || localRecord.syncMode === 'local-only';
     runtime.remoteSyncRequested = runtime.remoteSyncRequested || localRecord.syncMode === 'remote';
@@ -1506,6 +1710,7 @@ async function checkpointStartupLocally(runtime: SpreadsheetRuntime): Promise<vo
       role: runtime.workspaceRecord?.metadata.role ?? 'viewer',
     } : undefined,
   );
+  adoptLocalSnapshotBaseline(runtime, runtime.workspaceRecord);
 }
 
 function publishPersistenceFailure(runtime: SpreadsheetRuntime, error: unknown): void {

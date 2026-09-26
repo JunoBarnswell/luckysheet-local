@@ -1081,8 +1081,8 @@ function parseXlsbDocument(bytes: Uint8Array, fileName: string, limits: NativeDo
   return { snapshot, graph: { kind: 'xlsb', container: graph }, format: { family: 'xlsb', variant: 'xlsb' }, dateSystem: '1900', features: [...features] };
 }
 
-function untouched(request: NativeDocumentExportTransaction): NativeDocumentExportResult | undefined {
-  if (!request.artifact || request.artifact.fileName !== request.fileName || request.artifact.sourceSnapshotHash !== nativeSnapshotHash(request.snapshot)) return undefined;
+async function untouched(request: NativeDocumentExportTransaction): Promise<NativeDocumentExportResult | undefined> {
+  if (!request.artifact || request.artifact.fileName !== request.fileName || request.artifact.sourceSnapshotHash !== await nativeSnapshotHash(request.snapshot)) return undefined;
   return { taskId: `export-${Date.now().toString(36)}`, report: structuredClone(request.artifact.compatibility), buffer: request.artifact.sourceBytes.slice(0), fileName: request.fileName, artifact: request.artifact };
 }
 
@@ -1206,7 +1206,7 @@ export const biffCodec: NativeDocumentCodec<NativeDocumentImportTransaction, Nat
     return nativeImportResult(request.fileName, bytes, parseBiffDocument(bytes, request.fileName, limitsFor(request.options)), request.options);
   },
   export: async (request) => {
-    const stable = untouched(request);
+    const stable = await untouched(request);
     if (stable) return stable;
     const artifact = request.artifact;
     if (!artifact || artifact.nativeGraph.kind !== 'biff') unsupported('BIFF Save requires the original CFB artifact', 'Open the original .xls/.xlt/.xla document before saving.');
@@ -1240,7 +1240,7 @@ export const xlsbCodec: NativeDocumentCodec<NativeDocumentImportTransaction, Nat
     return nativeImportResult(request.fileName, bytes, parseXlsbDocument(bytes, request.fileName, limitsFor(request.options)), request.options);
   },
   export: async (request) => {
-    const stable = untouched(request);
+    const stable = await untouched(request);
     if (stable) return stable;
     const artifact = request.artifact;
     if (!artifact || artifact.nativeGraph.kind !== 'xlsb') unsupported('XLSB Save requires the original BIFF12 package artifact', 'Open the original .xlsb document before saving.');

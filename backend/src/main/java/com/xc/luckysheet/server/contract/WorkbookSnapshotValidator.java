@@ -5,13 +5,100 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.xc.luckysheet.server.service.ServiceException;
 
+import java.util.Locale;
+
 /**
  * Server-side wire validator for the canonical WorkbookSnapshot. The browser
  * has a richer type model, but persistence must reject malformed snapshots
  * before they become a historical checkpoint.
  */
 public final class WorkbookSnapshotValidator {
+    private static final int MAX_ROW_INDEX = 1_048_575;
+    private static final int MAX_COLUMN_INDEX = 16_383;
+    private static final java.util.Set<String> PANE_NONE_FIELDS = java.util.Set.of("kind");
+    private static final java.util.Set<String> PANE_FIELDS = java.util.Set.of("kind", "state", "xSplit", "ySplit", "startRow", "startColumn", "activePane");
+    private static final java.util.Set<String> HYPERLINK_ENTRY_FIELDS = java.util.Set.of("row", "column", "hyperlink");
+    private static final java.util.Set<String> HYPERLINK_FIELDS = java.util.Set.of("id", "target", "tooltip");
+    private static final java.util.Set<String> HYPERLINK_URL_FIELDS = java.util.Set.of("kind", "url");
+    private static final java.util.Set<String> HYPERLINK_EMAIL_FIELDS = java.util.Set.of("kind", "address", "subject");
+    private static final java.util.Set<String> HYPERLINK_SHEET_ADDRESS_FIELDS = java.util.Set.of("kind", "sheetId", "address");
+    private static final java.util.Set<String> HYPERLINK_SHEET_COORDINATE_FIELDS = java.util.Set.of("kind", "sheetId", "row", "column");
+    private static final java.util.Set<String> HYPERLINK_NAME_FIELDS = java.util.Set.of("kind", "name");
+    private static final java.util.Set<String> HYPERLINK_URL_SCHEMES = java.util.Set.of("http", "https", "ftp");
+    private static final java.util.regex.Pattern HYPERLINK_EMAIL_ADDRESS = java.util.regex.Pattern.compile("^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$");
+    private static final java.util.regex.Pattern HYPERLINK_SHEET_ADDRESS = java.util.regex.Pattern.compile("^([A-Za-z]+)([1-9][0-9]*)$");
+    private static final java.util.regex.Pattern HYPERLINK_DEFINED_NAME = java.util.regex.Pattern.compile("^[A-Za-z_\\\\][A-Za-z0-9_.]*$");
+    private static final java.util.regex.Pattern DEFINED_NAME = java.util.regex.Pattern.compile("^[A-Za-z_\\\\][A-Za-z0-9_.]*$");
+    private static final java.util.Set<String> DEFINED_NAME_FIELDS = java.util.Set.of("name", "formula", "scope", "sheetId", "anchor", "hidden", "comment");
+    private static final java.util.Set<String> DEFINED_NAME_ANCHOR_FIELDS = java.util.Set.of("sheetId", "row", "column");
+    private static final java.util.regex.Pattern SHEET_TABLE_NAME = java.util.regex.Pattern.compile("^[A-Za-z_][A-Za-z0-9_.]*$");
+
     private WorkbookSnapshotValidator() {
+    }
+
+    public static void requireCanonicalPane(JsonNode pane) {
+        if (pane == null || !pane.isObject()) throw ServiceException.validation("Workbook snapshot pane is invalid");
+        String kind = pane.path("kind").asText();
+        if ("none".equals(kind)) {
+            requirePaneFields(pane, PANE_NONE_FIELDS);
+            if (pane.has("state") || pane.has("xSplit") || pane.has("ySplit")
+                    || pane.has("startRow") || pane.has("startColumn") || pane.has("activePane")) {
+                throw ServiceException.validation("Workbook snapshot none pane contains split state");
+            }
+            return;
+        }
+        if (!("frozen".equals(kind) || "split".equals(kind))) {
+            throw ServiceException.validation("Workbook snapshot pane kind is invalid");
+        }
+        requirePaneFields(pane, PANE_FIELDS);
+        String state = pane.path("state").asText();
+        if (("frozen".equals(kind) && !("frozen".equals(state) || "frozenSplit".equals(state)))
+                || ("split".equals(kind) && !"split".equals(state))) {
+            throw ServiceException.validation("Workbook snapshot pane state is invalid");
+        }
+        requirePaneCoordinate(pane, "startRow", MAX_ROW_INDEX);
+        requirePaneCoordinate(pane, "startColumn", MAX_COLUMN_INDEX);
+        if ("frozen".equals(kind)) {
+            requireFrozenSplit(pane, "xSplit", MAX_COLUMN_INDEX + 1);
+            requireFrozenSplit(pane, "ySplit", MAX_ROW_INDEX + 1);
+        } else {
+            requireSplitPosition(pane, "xSplit");
+            requireSplitPosition(pane, "ySplit");
+        }
+        JsonNode activePane = pane.get("activePane");
+        if (activePane != null && (!activePane.isTextual()
+                || !java.util.Set.of("topLeft", "topRight", "bottomLeft", "bottomRight").contains(activePane.asText()))) {
+            throw ServiceException.validation("Workbook snapshot pane activePane is invalid");
+        }
+    }
+
+    private static void requirePaneFields(JsonNode pane, java.util.Set<String> allowedFields) {
+        pane.fieldNames().forEachRemaining(field -> {
+            if (!allowedFields.contains(field)) throw ServiceException.validation("Workbook snapshot pane field is not canonical: " + field);
+        });
+    }
+
+    private static void requirePaneCoordinate(JsonNode pane, String field, int maximum) {
+        JsonNode coordinate = pane.get(field);
+        if (coordinate == null || !coordinate.isIntegralNumber() || !coordinate.canConvertToInt()
+                || coordinate.intValue() < 0 || coordinate.intValue() > maximum) {
+            throw ServiceException.validation("Workbook snapshot pane " + field + " is invalid");
+        }
+    }
+
+    private static void requireFrozenSplit(JsonNode pane, String field, int maximum) {
+        JsonNode split = pane.get(field);
+        if (split == null || !split.isIntegralNumber() || !split.canConvertToInt()
+                || split.intValue() < 0 || split.intValue() > maximum) {
+            throw ServiceException.validation("Workbook snapshot frozen pane " + field + " is invalid");
+        }
+    }
+
+    private static void requireSplitPosition(JsonNode pane, String field) {
+        JsonNode split = pane.get(field);
+        if (split == null || !split.isNumber() || !Double.isFinite(split.asDouble()) || split.asDouble() < 0) {
+            throw ServiceException.validation("Workbook snapshot split pane " + field + " is invalid");
+        }
     }
 
     public static ObjectNode requireCanonical(JsonNode value, String expectedUnitId) {
@@ -56,13 +143,21 @@ public final class WorkbookSnapshotValidator {
             }
         }
         java.util.Set<String> pivotIds = new java.util.HashSet<>();
+        java.util.Set<String> sheetTableIds = new java.util.HashSet<>();
+        java.util.Set<String> sheetTableNames = new java.util.HashSet<>();
         java.util.Map<String, JsonNode> pivotsById = new java.util.HashMap<>();
         java.util.Map<String, String> pivotSourceKeys = new java.util.HashMap<>();
         for (JsonNode sheet : sheets) {
             if (!sheet.isObject()) throw ServiceException.validation("Workbook snapshot sheet is invalid");
-            String sheetId = sheet.path("id").asText().trim();
-            String sheetName = sheet.path("name").asText().trim();
-            if (sheetId.isBlank() || sheetName.isBlank() || !sheetIds.add(sheetId)) {
+            JsonNode rawSheetId = sheet.get("id");
+            JsonNode rawSheetName = sheet.get("name");
+            if (rawSheetId == null || !rawSheetId.isTextual() || rawSheetName == null || !rawSheetName.isTextual()) {
+                throw ServiceException.validation("Workbook snapshot sheet identity must use text values");
+            }
+            String rawSheetIdText = rawSheetId.asText();
+            String sheetId = rawSheetIdText.trim();
+            String sheetName = rawSheetName.asText();
+            if (sheetId.isBlank() || !sheetId.equals(rawSheetIdText) || sheetName.isBlank() || !sheetIds.add(sheetId)) {
                 throw ServiceException.validation("Workbook snapshot sheet identity is invalid");
             }
             String sheetKind = sheet.path("kind").asText();
@@ -74,7 +169,8 @@ public final class WorkbookSnapshotValidator {
                     || !sheet.path("columnCount").canConvertToInt() || sheet.path("columnCount").intValue() < 1
                     || !sheet.path("cells").isObject() || !sheet.path("merges").isArray()
                     || !sheet.path("pivots").isArray() || !sheet.path("sparklines").isArray()
-                    || !sheet.path("drawings").isArray() || !sheet.path("drawingPayloads").isObject()) {
+                    || !sheet.path("drawings").isArray() || !sheet.path("drawingPayloads").isObject()
+                    || !sheet.path("hyperlinks").isArray()) {
                 throw ServiceException.validation("Workbook snapshot sheet grid is invalid");
             }
             validateReviewSnapshot(sheet.get("review"), sheetId);
@@ -86,12 +182,10 @@ public final class WorkbookSnapshotValidator {
             }
             if (!sheet.path("defaultRowHeightPx").isNumber() || sheet.path("defaultRowHeightPx").asDouble() <= 0
                     || !sheet.path("defaultColumnWidthPx").isNumber() || sheet.path("defaultColumnWidthPx").asDouble() <= 0
-                    || !sheet.path("pane").isObject()
-                    || !("none".equals(sheet.path("pane").path("kind").asText())
-                    || "frozen".equals(sheet.path("pane").path("kind").asText())
-                    || "split".equals(sheet.path("pane").path("kind").asText()))) {
+                    || !sheet.path("pane").isObject()) {
                 throw ServiceException.validation("Workbook snapshot sheet pixel geometry is invalid");
             }
+            requireCanonicalPane(sheet.path("pane"));
             sheet.path("drawingPayloads").fields().forEachRemaining(entry -> {
                 JsonNode payload = entry.getValue();
                 if ("camera".equals(payload.path("kind").asText())) {
@@ -100,18 +194,14 @@ public final class WorkbookSnapshotValidator {
                 if ("image".equals(payload.path("kind").asText())) validateAssetRef(payload.get("asset"), "Drawing image");
             });
             sheet.path("cells").fields().forEachRemaining(row -> row.getValue().fields().forEachRemaining(cell -> {
+                if (cell.getValue().has("hyperlink") || cell.getValue().has("hyperlinkDetail")) {
+                    throw ServiceException.validation("Workbook snapshot cell contains legacy hyperlink metadata");
+                }
                 JsonNode presentation = cell.getValue().get("presentation");
                 if (presentation != null && "image".equals(presentation.path("kind").asText())) validateAssetRef(presentation.get("asset"), "Cell image");
             }));
             validateCellBounds(sheet);
-            JsonNode pane = sheet.path("pane");
-            if (!"none".equals(pane.path("kind").asText())) {
-                String state = pane.path("state").asText();
-                if (("frozen".equals(pane.path("kind").asText()) && !("frozen".equals(state) || "frozenSplit".equals(state)))
-                        || ("split".equals(pane.path("kind").asText()) && !"split".equals(state))) {
-                    throw ServiceException.validation("Workbook snapshot pane state is invalid");
-                }
-            }
+            validateCanonicalHyperlinks(sheet, snapshot, sheetId, sheetDimensions);
             JsonNode autoFilter = sheet.get("autoFilter");
             if (autoFilter != null && !autoFilter.isNull()) validateAutoFilter(autoFilter, sheetId, null);
             JsonNode tables = sheet.get("sheetTables");
@@ -119,14 +209,31 @@ public final class WorkbookSnapshotValidator {
                 if (!tables.isArray()) throw ServiceException.validation("Workbook snapshot sheetTables is invalid");
                 for (JsonNode table : tables) {
                     if (!table.isObject()) throw ServiceException.validation("Workbook snapshot table is invalid");
+                    JsonNode tableIdNode = table.get("id");
+                    JsonNode tableNameNode = table.get("name");
+                    String tableId = tableIdNode != null && tableIdNode.isTextual() ? tableIdNode.asText().trim() : "";
+                    String tableName = tableNameNode != null && tableNameNode.isTextual() ? tableNameNode.asText().trim() : "";
+                    if (tableId.isBlank() || tableName.isBlank() || !tableId.equals(tableIdNode.asText())
+                            || !tableName.equals(tableNameNode.asText()) || !SHEET_TABLE_NAME.matcher(tableName).matches()
+                            || !sheetTableIds.add(tableId) || !sheetTableNames.add(tableName.toUpperCase(java.util.Locale.ROOT))) {
+                        throw ServiceException.validation("Workbook snapshot Sheet Table identity is invalid or duplicated");
+                    }
+                    RangeRef tableRange = rangeOf(table.get("range"), sheetId);
+                    JsonNode columns = table.get("columns");
+                    int tableWidth = tableRange.endColumn() - tableRange.startColumn() + 1;
+                    if (columns == null || !columns.isArray() || columns.size() != tableWidth) {
+                        throw ServiceException.validation("Workbook snapshot Sheet Table columns must match its range width");
+                    }
                     JsonNode tableFilter = table.get("autoFilter");
                     if (tableFilter == null || tableFilter.isNull()) continue;
-                    RangeRef tableRange = rangeOf(table.get("range"), sheetId);
                     validateAutoFilter(tableFilter, sheetId, tableRange);
                 }
             }
             AutoFilterOwnershipValidator.resolveOwners((ObjectNode) sheet, sheetId);
         }
+        requireCanonicalWorksheetNames(sheets);
+        validateDefinedNameModels(snapshot, sheetIds);
+        validateDefinedNamesProjection(snapshot);
         for (JsonNode sheet : sheets) {
             ObjectNode sheetObject = (ObjectNode) sheet;
             ObjectNode payloads = (ObjectNode) sheetObject.path("drawingPayloads");
@@ -180,6 +287,47 @@ public final class WorkbookSnapshotValidator {
         return snapshot;
     }
 
+    /** Rejects a new worksheet name that would make case-insensitive lookup ambiguous. */
+    public static void requireWorksheetNameAvailable(JsonNode sheets, String candidateName, String excludedSheetId) {
+        if (sheets == null || !sheets.isArray()) throw ServiceException.validation("Workbook snapshot worksheets are invalid");
+        requireCanonicalWorksheetNames(sheets);
+        requireCanonicalWorksheetName(candidateName);
+        String candidateIdentity = worksheetNameIdentity(candidateName);
+        for (JsonNode sheet : sheets) {
+            if (excludedSheetId != null && excludedSheetId.equals(sheet.path("id").asText())) continue;
+            if (candidateIdentity.equals(worksheetNameIdentity(sheet.path("name").asText()))) {
+                throw ServiceException.conflict("Sheet name already exists: " + candidateName);
+            }
+        }
+    }
+
+    public static void requireCanonicalWorksheetNames(JsonNode sheets) {
+        if (sheets == null || !sheets.isArray()) throw ServiceException.validation("Workbook snapshot worksheets are invalid");
+        java.util.Set<String> names = new java.util.HashSet<>();
+        for (JsonNode sheet : sheets) {
+            JsonNode rawName = sheet.get("name");
+            if (rawName == null || !rawName.isTextual()) throw ServiceException.validation("Workbook snapshot worksheet name must be text");
+            String name = rawName.asText();
+            requireCanonicalWorksheetName(name);
+            if (!names.add(worksheetNameIdentity(name))) {
+                throw ServiceException.validation("Workbook snapshot contains duplicate worksheet name: " + name.trim());
+            }
+        }
+    }
+
+    private static void requireCanonicalWorksheetName(String name) {
+        if (name == null || name.isBlank() || name.length() > 31
+                || name.indexOf('/') >= 0 || name.indexOf('\\') >= 0 || name.indexOf('?') >= 0
+                || name.indexOf('*') >= 0 || name.indexOf(':') >= 0 || name.indexOf('[') >= 0 || name.indexOf(']') >= 0
+                || name.startsWith("'") || name.endsWith("'") || "history".equalsIgnoreCase(name)) {
+            throw ServiceException.validation("Worksheet name is invalid under Excel naming rules");
+        }
+    }
+
+    private static String worksheetNameIdentity(String name) {
+        return name.toLowerCase(Locale.ROOT);
+    }
+
     private static void validateCellBounds(JsonNode sheet) {
         int rowCount = sheet.path("rowCount").intValue();
         int columnCount = sheet.path("columnCount").intValue();
@@ -205,6 +353,273 @@ public final class WorkbookSnapshotValidator {
                 }
             });
         });
+    }
+
+    private static void validateCanonicalHyperlinks(JsonNode sheet, JsonNode snapshot, String sourceSheetId,
+                                                     java.util.Map<String, int[]> sheetDimensions) {
+        java.util.Set<String> positions = new java.util.HashSet<>();
+        for (JsonNode entry : sheet.path("hyperlinks")) {
+            if (!entry.isObject() || !hasOnlyFields(entry, HYPERLINK_ENTRY_FIELDS)
+                    || !entry.path("row").isIntegralNumber() || !entry.path("row").canConvertToInt()
+                    || !entry.path("column").isIntegralNumber() || !entry.path("column").canConvertToInt()) {
+                throw ServiceException.validation("Workbook snapshot hyperlink coordinate is invalid");
+            }
+            int row = entry.path("row").intValue();
+            int column = entry.path("column").intValue();
+            int[] dimensions = sheetDimensions.get(sourceSheetId);
+            String position = row + ":" + column;
+            if (dimensions == null || row < 0 || column < 0 || row >= dimensions[0] || column >= dimensions[1]) {
+                throw ServiceException.validation("Workbook snapshot hyperlink is outside worksheet bounds");
+            }
+            if (!positions.add(position)) throw ServiceException.validation("Workbook snapshot hyperlink coordinate is duplicated");
+            JsonNode hyperlink = entry.get("hyperlink");
+            if (hyperlink == null || !hyperlink.isObject() || !hyperlink.path("id").isTextual() || hyperlink.path("id").asText().isBlank()
+                    || !hasOnlyFields(hyperlink, HYPERLINK_FIELDS)
+                    || !hyperlink.path("target").isObject()
+                    || (hyperlink.has("tooltip") && !hyperlink.get("tooltip").isTextual())) {
+                throw ServiceException.validation("Workbook snapshot hyperlink is invalid");
+            }
+            validateCanonicalHyperlinkTarget(hyperlink.get("target"), snapshot, sourceSheetId, sheetDimensions);
+        }
+    }
+
+    private static void validateCanonicalHyperlinkTarget(JsonNode target, JsonNode snapshot, String sourceSheetId,
+                                                          java.util.Map<String, int[]> sheetDimensions) {
+        if (!target.path("kind").isTextual()) throw ServiceException.validation("Workbook snapshot hyperlink target kind is invalid");
+        String kind = target.path("kind").asText();
+        switch (kind) {
+            case "url" -> {
+                if (!hasOnlyFields(target, HYPERLINK_URL_FIELDS)) throw ServiceException.validation("Workbook snapshot hyperlink URL target has unsupported fields");
+                String value = target.path("url").asText().trim();
+                try {
+                    java.net.URI uri = new java.net.URI(value);
+                    String scheme = uri.getScheme();
+                    if (value.isBlank() || scheme == null
+                            || !HYPERLINK_URL_SCHEMES.contains(scheme.toLowerCase(java.util.Locale.ROOT))
+                            || uri.getHost() == null || uri.getHost().isBlank()) {
+                        throw ServiceException.validation("Workbook snapshot hyperlink URL is invalid");
+                    }
+                } catch (java.net.URISyntaxException exception) {
+                    throw ServiceException.validation("Workbook snapshot hyperlink URL is invalid");
+                }
+            }
+            case "email" -> {
+                if (!hasOnlyFields(target, HYPERLINK_EMAIL_FIELDS)) throw ServiceException.validation("Workbook snapshot email hyperlink target has unsupported fields");
+                String address = target.path("address").asText().trim();
+                if (!HYPERLINK_EMAIL_ADDRESS.matcher(address).matches()
+                        || (target.has("subject") && !target.get("subject").isTextual())) {
+                    throw ServiceException.validation("Workbook snapshot email hyperlink is invalid");
+                }
+            }
+            case "sheet" -> {
+                if (!target.path("sheetId").isTextual()) throw ServiceException.validation("Workbook snapshot hyperlink target sheet is invalid");
+                String targetSheetId = target.path("sheetId").asText();
+                int[] dimensions = sheetDimensions.get(targetSheetId);
+                if (targetSheetId.isBlank() || dimensions == null) {
+                    throw ServiceException.validation("Workbook snapshot hyperlink target sheet does not exist");
+                }
+                boolean hasAddress = target.has("address");
+                boolean hasRow = target.has("row");
+                boolean hasColumn = target.has("column");
+                if (!hasOnlyFields(target, hasAddress
+                        ? HYPERLINK_SHEET_ADDRESS_FIELDS
+                        : HYPERLINK_SHEET_COORDINATE_FIELDS)) {
+                    throw ServiceException.validation("Workbook snapshot worksheet hyperlink target has unsupported fields");
+                }
+                if (hasAddress && (hasRow || hasColumn) || !hasAddress && !(hasRow && hasColumn)) {
+                    throw ServiceException.validation("Workbook snapshot worksheet hyperlink address is invalid");
+                }
+                int row;
+                int column;
+                if (hasAddress) {
+                    java.util.regex.Matcher matcher = HYPERLINK_SHEET_ADDRESS.matcher(target.path("address").asText().trim());
+                    if (!matcher.matches()) throw ServiceException.validation("Workbook snapshot worksheet hyperlink address is invalid");
+                    column = columnIndex(matcher.group(1));
+                    try {
+                        row = Math.subtractExact(Integer.parseInt(matcher.group(2)), 1);
+                    } catch (NumberFormatException | ArithmeticException exception) {
+                        throw ServiceException.validation("Workbook snapshot worksheet hyperlink row is invalid");
+                    }
+                } else {
+                    if (!target.path("row").isIntegralNumber() || !target.path("row").canConvertToInt()
+                            || !target.path("column").isIntegralNumber() || !target.path("column").canConvertToInt()) {
+                        throw ServiceException.validation("Workbook snapshot worksheet hyperlink coordinates are invalid");
+                    }
+                    row = target.path("row").intValue();
+                    column = target.path("column").intValue();
+                }
+                if (row < 0 || column < 0 || row >= dimensions[0] || column >= dimensions[1]) {
+                    throw ServiceException.validation("Workbook snapshot worksheet hyperlink is outside worksheet bounds");
+                }
+            }
+            case "name" -> {
+                if (!hasOnlyFields(target, HYPERLINK_NAME_FIELDS)) throw ServiceException.validation("Workbook snapshot defined-name hyperlink target has unsupported fields");
+                if (!target.path("name").isTextual()) throw ServiceException.validation("Workbook snapshot defined-name hyperlink is invalid");
+                String name = target.path("name").asText();
+                if (!HYPERLINK_DEFINED_NAME.matcher(name).matches() || !hasHyperlinkName(snapshot, sourceSheetId, name)) {
+                    throw ServiceException.validation("Workbook snapshot defined-name hyperlink is invalid");
+                }
+            }
+            default -> throw ServiceException.validation("Workbook snapshot hyperlink target kind is invalid");
+        }
+    }
+
+    private static int columnIndex(String label) {
+        long value = 0;
+        for (int index = 0; index < label.length(); index++) {
+            int digit = Character.toUpperCase(label.charAt(index)) - 'A' + 1;
+            if (digit < 1 || digit > 26) throw ServiceException.validation("Workbook snapshot worksheet hyperlink column is invalid");
+            try {
+                value = Math.addExact(Math.multiplyExact(value, 26), digit);
+            } catch (ArithmeticException exception) {
+                throw ServiceException.validation("Workbook snapshot worksheet hyperlink column is invalid");
+            }
+        }
+        if (value < 1 || value > Integer.MAX_VALUE) throw ServiceException.validation("Workbook snapshot worksheet hyperlink column is invalid");
+        return (int) value - 1;
+    }
+
+    private static boolean hasHyperlinkName(JsonNode snapshot, String sourceSheetId, String name) {
+        JsonNode models = snapshot.get("definedNameModels");
+        if (models != null) {
+            if (!models.isArray()) return false;
+            for (JsonNode entry : models) {
+                if (name.equalsIgnoreCase(entry.path("name").asText())
+                        && ("workbook".equals(entry.path("scope").asText())
+                        || "sheet".equals(entry.path("scope").asText()) && sourceSheetId.equals(entry.path("sheetId").asText()))) return true;
+            }
+            return false;
+        }
+        JsonNode projection = snapshot.get("definedNames");
+        if (projection != null && projection.isObject()) {
+            java.util.Iterator<String> names = projection.fieldNames();
+            while (names.hasNext()) if (name.equalsIgnoreCase(names.next())) return true;
+        }
+        return false;
+    }
+
+    private static void validateDefinedNameModels(JsonNode snapshot, java.util.Set<String> sheetIds) {
+        JsonNode models = snapshot.get("definedNameModels");
+        if (models == null) return;
+        if (!models.isArray()) throw ServiceException.validation("Workbook snapshot definedNameModels must be an array");
+        java.util.Set<String> identities = new java.util.HashSet<>();
+        for (int index = 0; index < models.size(); index++) {
+            JsonNode model = models.get(index);
+            requireCanonicalDefinedNameModel(model, sheetIds);
+            String scope = model.path("scope").asText();
+            String sheetId = "sheet".equals(scope) ? model.path("sheetId").asText() : "";
+            String identity = scope + Character.toString(0) + sheetId + Character.toString(0)
+                    + model.path("name").asText().toUpperCase(java.util.Locale.ROOT);
+            if (!identities.add(identity)) {
+                throw ServiceException.validation("Workbook snapshot contains duplicate defined-name identity: "
+                        + scope + ":" + (sheetId.isBlank() ? "*" : sheetId) + ":" + model.path("name").asText());
+            }
+        }
+    }
+
+    private static void validateDefinedNamesProjection(JsonNode snapshot) {
+        JsonNode projection = snapshot.get("definedNames");
+        if (projection == null) return;
+        if (!projection.isObject()) throw ServiceException.validation("Workbook snapshot definedNames projection is invalid");
+        java.util.Map<String, String> expected = null;
+        JsonNode models = snapshot.get("definedNameModels");
+        if (models != null) {
+            expected = new java.util.HashMap<>();
+            for (JsonNode model : models) {
+                if ("workbook".equals(model.path("scope").asText())) {
+                    expected.put(model.path("name").asText(), model.path("formula").asText());
+                }
+            }
+        }
+        java.util.Set<String> identities = new java.util.HashSet<>();
+        java.util.Iterator<java.util.Map.Entry<String, JsonNode>> fields = projection.fields();
+        while (fields.hasNext()) {
+            java.util.Map.Entry<String, JsonNode> field = fields.next();
+            String name = field.getKey();
+            JsonNode formula = field.getValue();
+            if (!isEcmaScriptTrimmed(name) || name.length() > 255 || !DEFINED_NAME.matcher(name).matches()
+                    || formula == null || !formula.isTextual() || !isEcmaScriptTrimmed(formula.asText())
+                    || formula.asText().length() > 32_767) {
+                throw ServiceException.validation("Workbook snapshot definedNames projection contains an invalid entry");
+            }
+            if (!identities.add(name.toUpperCase(java.util.Locale.ROOT))) {
+                throw ServiceException.validation("Workbook snapshot definedNames projection contains duplicate identity: " + name);
+            }
+            if (expected != null && !java.util.Objects.equals(expected.get(name), formula.asText())) {
+                throw ServiceException.validation("Workbook snapshot definedNames projection does not match canonical definedNameModels");
+            }
+        }
+        if (expected != null && projection.size() != expected.size()) {
+            throw ServiceException.validation("Workbook snapshot definedNames projection does not match canonical definedNameModels");
+        }
+    }
+
+    public static void requireCanonicalDefinedNameModel(JsonNode model, java.util.Set<String> sheetIds) {
+        if (model == null || !model.isObject() || !hasOnlyFields(model, DEFINED_NAME_FIELDS)) {
+            throw ServiceException.validation("Defined name model is not canonical");
+        }
+        JsonNode nameNode = model.get("name");
+        JsonNode formulaNode = model.get("formula");
+        JsonNode scopeNode = model.get("scope");
+        if (nameNode == null || !nameNode.isTextual() || !isEcmaScriptTrimmed(nameNode.asText())
+                || nameNode.asText().length() > 255
+                || !DEFINED_NAME.matcher(nameNode.asText()).matches()
+                || formulaNode == null || !formulaNode.isTextual() || !isEcmaScriptTrimmed(formulaNode.asText())
+                || formulaNode.asText().length() > 32_767
+                || scopeNode == null || !scopeNode.isTextual()) {
+            throw ServiceException.validation("Defined name identity or formula is invalid");
+        }
+        String scope = scopeNode.asText();
+        JsonNode sheetIdNode = model.get("sheetId");
+        if ("workbook".equals(scope)) {
+            if (sheetIdNode != null) throw ServiceException.validation("Workbook-scoped defined name cannot specify sheetId");
+        } else if ("sheet".equals(scope)) {
+            if (sheetIdNode == null || !sheetIdNode.isTextual() || !isEcmaScriptTrimmed(sheetIdNode.asText())
+                    || !sheetIds.contains(sheetIdNode.asText())) {
+                throw ServiceException.validation("Sheet-scoped defined name targets an invalid worksheet");
+            }
+        } else {
+            throw ServiceException.validation("Defined name scope is invalid");
+        }
+        JsonNode hidden = model.get("hidden");
+        if (hidden != null && !hidden.isBoolean()) throw ServiceException.validation("Defined name hidden flag is invalid");
+        JsonNode comment = model.get("comment");
+        if (comment != null && !comment.isTextual()) throw ServiceException.validation("Defined name comment is invalid");
+        JsonNode anchor = model.get("anchor");
+        if (anchor != null) {
+            if (!anchor.isObject() || !hasOnlyFields(anchor, DEFINED_NAME_ANCHOR_FIELDS)) {
+                throw ServiceException.validation("Defined name anchor is invalid");
+            }
+            JsonNode anchorSheetId = anchor.get("sheetId");
+            JsonNode row = anchor.get("row");
+            JsonNode column = anchor.get("column");
+            if (anchorSheetId == null || !anchorSheetId.isTextual() || !isEcmaScriptTrimmed(anchorSheetId.asText())
+                    || !sheetIds.contains(anchorSheetId.asText())
+                    || row == null || !row.isIntegralNumber() || !row.canConvertToInt() || row.intValue() < 0 || row.intValue() > MAX_ROW_INDEX
+                    || column == null || !column.isIntegralNumber() || !column.canConvertToInt() || column.intValue() < 0 || column.intValue() > MAX_COLUMN_INDEX) {
+                throw ServiceException.validation("Defined name anchor is outside worksheet bounds");
+            }
+        }
+    }
+
+    private static boolean isEcmaScriptTrimmed(String value) {
+        if (value.isEmpty()) return false;
+        return !isEcmaScriptTrimWhitespace(value.codePointAt(0))
+                && !isEcmaScriptTrimWhitespace(value.codePointBefore(value.length()));
+    }
+
+    private static boolean isEcmaScriptTrimWhitespace(int codePoint) {
+        return (codePoint >= 0x0009 && codePoint <= 0x000D)
+                || codePoint == 0x0020 || codePoint == 0x00A0 || codePoint == 0x1680
+                || (codePoint >= 0x2000 && codePoint <= 0x200A)
+                || codePoint == 0x2028 || codePoint == 0x2029 || codePoint == 0x202F
+                || codePoint == 0x205F || codePoint == 0x3000 || codePoint == 0xFEFF;
+    }
+
+    private static boolean hasOnlyFields(JsonNode object, java.util.Set<String> allowed) {
+        java.util.Iterator<String> fields = object.fieldNames();
+        while (fields.hasNext()) if (!allowed.contains(fields.next())) return false;
+        return true;
     }
 
     private static JsonNode findPivotField(JsonNode pivot, String fieldId) {
@@ -357,7 +772,8 @@ public final class WorkbookSnapshotValidator {
             try {
                 int key = Integer.parseInt(entry.getKey());
                 JsonNode column = entry.getValue();
-                if (!column.isObject() || column.path("column").asInt(Integer.MIN_VALUE) != key
+                if (!Integer.toString(key).equals(entry.getKey())
+                        || !column.isObject() || column.path("column").asInt(Integer.MIN_VALUE) != key
                         || key < range.startColumn() || key > range.endColumn()
                         || !column.path("showButton").isBoolean() || !column.path("hiddenButton").isBoolean()) {
                     throw ServiceException.validation("AutoFilter column identity is invalid");

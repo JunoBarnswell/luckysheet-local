@@ -1,4 +1,4 @@
-import { validateOperationEnvelope, type OperationEnvelope } from '@react-sheets/protocol';
+import { ApiRequestError, validateOperationEnvelope, type OperationEnvelope } from '@react-sheets/protocol';
 
 export type OfflineQueueState = 'idle' | 'syncing' | 'offline' | 'error';
 export type QueuedOperationStatus = 'pending' | 'sent' | 'acked' | 'rejected';
@@ -87,6 +87,19 @@ export class OfflineQueue {
     return this.queue.length;
   }
 
+  hasPendingOperation(operationId: string): boolean {
+    return this.queue.some((item) => item.operation.operationId === operationId);
+  }
+
+  getPendingOperation(operationId: string): OperationEnvelope | undefined {
+    const item = this.queue.find((entry) => entry.operation.operationId === operationId);
+    return item ? structuredClone(item.operation) : undefined;
+  }
+
+  getPendingOperationIds(): string[] {
+    return this.queue.map((item) => item.operation.operationId);
+  }
+
   getPending(): readonly QueuedOperation[] {
     return this.queue.map((item) => ({ ...item, operation: structuredClone(item.operation) }));
   }
@@ -111,14 +124,23 @@ export class OfflineQueue {
 
   /** Remove only after the matching server ACK has been received. */
   acknowledge(operationId: string): boolean {
-    const index = this.queue.findIndex((item) => item.operation.operationId === operationId);
-    if (index < 0) return false;
-    this.queue[index]!.status = 'acked';
-    this.terminalStatuses.set(operationId, 'acked');
-    this.queue.splice(index, 1);
-    this.persistQueue();
+    return this.acknowledgeMany([operationId]).length > 0;
+  }
+
+  acknowledgeMany(operationIds: readonly string[]): string[] {
+    const requested = new Set(operationIds);
+    const removed: string[] = [];
+    for (let index = this.queue.length - 1; index >= 0; index -= 1) {
+      const operationId = this.queue[index]!.operation.operationId;
+      if (!requested.has(operationId)) continue;
+      this.terminalStatuses.set(operationId, 'acked');
+      removed.push(operationId);
+      this.queue.splice(index, 1);
+    }
+    if (removed.length === 0) return [];
     if (this.queue.length === 0 && this.state === 'syncing') this.state = 'idle';
-    return true;
+    this.persistQueue();
+    return removed.reverse();
   }
 
   /** Keep the rejected operation for audit/retry visibility. */
@@ -134,12 +156,22 @@ export class OfflineQueue {
 
   /** Explicit user/operator action; never called merely because a send failed. */
   discard(operationId: string): boolean {
-    const index = this.queue.findIndex((item) => item.operation.operationId === operationId);
-    if (index < 0) return false;
-    this.queue.splice(index, 1);
-    this.persistQueue();
+    return this.discardMany([operationId]).length > 0;
+  }
+
+  discardMany(operationIds: readonly string[]): string[] {
+    const requested = new Set(operationIds);
+    const removed: string[] = [];
+    for (let index = this.queue.length - 1; index >= 0; index -= 1) {
+      const operationId = this.queue[index]!.operation.operationId;
+      if (!requested.has(operationId)) continue;
+      removed.push(operationId);
+      this.queue.splice(index, 1);
+    }
+    if (removed.length === 0) return [];
     if (this.queue.length === 0) this.state = 'idle';
-    return true;
+    this.persistQueue();
+    return removed.reverse();
   }
 
   setOnline(online: boolean): void {
@@ -223,12 +255,20 @@ export class OfflineQueue {
         this.persistQueue();
         flushed += 1;
       } catch (cause) {
-        this.resultLookups.add(item.operation.operationId);
         if ((item as QueuedOperation).status === 'rejected') {
           failed += 1;
           this.state = 'error';
           break;
         }
+        if (cause instanceof ApiRequestError && cause.code === 'UNSUPPORTED_FEATURE') {
+          item.status = 'rejected';
+          item.rejection = cause;
+          failed += 1;
+          this.state = 'error';
+          this.persistQueue();
+          break;
+        }
+        this.resultLookups.add(item.operation.operationId);
         item.retryCount += 1;
         item.status = 'pending';
         if (item.retryCount >= this.maxRetries) {

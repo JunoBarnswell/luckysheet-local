@@ -5,18 +5,26 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.xc.luckysheet.server.contract.OperationMutation;
+import com.xc.luckysheet.server.contract.CommittedOperationMutation;
 import com.xc.luckysheet.server.contract.RangeRef;
+import com.xc.luckysheet.server.contract.StructuralPatch;
 import com.xc.luckysheet.server.contract.GeneratedWorkbookContract;
 import com.xc.luckysheet.server.contract.WorkbookAclRole;
+import com.xc.luckysheet.server.contract.WorkbookSnapshotValidator;
 import com.xc.luckysheet.server.service.ServiceException;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Function;
 
 /**
  * Server authority for every persistent operation accepted from a browser.
@@ -29,6 +37,18 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 @Component
 public class MutationDescriptorRegistry {
+    private static final Set<String> OWNED_SNAPSHOT_RULE_ONLY_PROTECTION_ACTIONS = Set.of(
+            "insert-rows", "delete-rows", "insert-columns", "delete-columns", "sort");
+
+    public record StructuralPatchMigrationReplay(JsonNode snapshot, List<Optional<StructuralPatch>> structuralPatches) {
+        public StructuralPatchMigrationReplay {
+            if (snapshot == null || snapshot.isNull() || structuralPatches == null) {
+                throw new IllegalArgumentException("Structural patch migration replay result is incomplete");
+            }
+            structuralPatches = List.copyOf(structuralPatches);
+        }
+    }
+
     private static final Set<String> HORIZONTAL_ALIGNMENTS = Set.of("general", "left", "center", "right", "centerContinuous", "justify", "distributed", "fill");
     private static final Set<String> VERTICAL_ALIGNMENTS = Set.of("top", "middle", "bottom", "justify", "distributed");
     private static final Set<String> READING_ORDERS = Set.of("context", "ltr", "rtl");
@@ -48,7 +68,7 @@ public class MutationDescriptorRegistry {
             "pivot.add", "pivot.chart.create", "pivot.drilldown.add", "pivot.drilldown.remove", "pivot.refresh", "pivot.remove", "pivot.update",
             "pageLayout.margins.set", "pageLayout.orientation.set", "pageLayout.paperSize.set", "pageLayout.pageSetupDetail.set", "pageLayout.scaleToFit.set", "pageLayout.printTitles.set", "pageLayout.printArea.set", "pageLayout.printArea.clear", "pageLayout.pageBreak.insert", "pageLayout.pageBreak.remove", "pageLayout.pageBreak.clear", "pageLayout.printGridlines.set", "pageLayout.printHeadings.set", "pageLayout.viewGridlines.set", "pageLayout.viewHeadings.set",
             "query.definition.replace", "query.load.pivot-source", "query.load.range", "query.load.sheet-table", "query.load.workbook-table",
-            "range.clear", "range.clear.restore", "range.paste", "range.set",
+            "range.clear", "range.clear.restore", "range.move", "range.paste", "range.set",
             "row.hidden", "row.resize", "row.unhidden", "rows.deleted", "rows.hidden.restore", "rows.inserted", "rows.permuted", "rows.unhidden.all", "rows.visibility",
             "sheet.add", "sheet.duplicated", "sheet.hidden", "sheet.protect.remove", "sheet.protect.set", "sheet.remove", "sheet.rename", "sheet.reordered", "sheet.restore", "sheet.tabColor", "sheet.unhidden",
             "sheetTable.add", "sheetTable.remove", "sheetTable.update", "sheetTable.autoFilter.set", "tableSheet.update", "ganttSheet.update", "reportSheet.update",
@@ -57,10 +77,6 @@ public class MutationDescriptorRegistry {
             "drawing.visibility.set", "drawing.rename"
     );
     private static final Map<String, String> UNAVAILABLE_REASONS = Map.ofEntries(
-            Map.entry("rows.inserted", "Requires one shared reference AST transform and complete structural participant relocation."),
-            Map.entry("rows.deleted", "Requires one shared reference AST transform and complete structural participant relocation."),
-            Map.entry("columns.inserted", "Requires one shared reference AST transform and complete structural participant relocation."),
-            Map.entry("columns.deleted", "Requires one shared reference AST transform and complete structural participant relocation."),
             Map.entry("pivot.chart.create", "PivotChart is persisted through one canonical drawing.add mutation; the UI command must never cross the workbook mutation boundary."),
             Map.entry("workbook.restore", "Only the server restore flow may materialize a historical workbook snapshot.")
     );
@@ -151,10 +167,287 @@ public class MutationDescriptorRegistry {
         return new MutationPreparation(descriptor, ranges);
     }
 
+    /**
+     * Whether a commit may reduce directly into its exclusively-owned candidate.
+     * Protected edit-cell operations retain a detached preimage because their
+     * final owner check also reads each old cell's explicit unlocked style.
+     */
+    public boolean usesOwnedSnapshotCommit(MutationPreparation prepared, WorkbookAclRole role) {
+        MutationDescriptor descriptor = prepared.descriptor();
+        String protectionAction = descriptor.protectionAction();
+        return descriptor instanceof OwnedSnapshotMutationDescriptor
+                && (!descriptor.checksProtection() || role == WorkbookAclRole.OWNER
+                        || (protectionAction != null && OWNED_SNAPSHOT_RULE_ONLY_PROTECTION_ACTIONS.contains(protectionAction)));
+    }
+
+    /** Capture the pre-mutation protection inputs when an owned reduction would otherwise overwrite them. */
+    public JsonNode captureProtectionPreimageForOwnedCommit(
+            JsonNode snapshot,
+            MutationPreparation prepared,
+            WorkbookAclRole role
+    ) {
+        if (!usesOwnedSnapshotCommit(prepared, role)) {
+            throw new IllegalArgumentException("Mutation cannot use an owned-snapshot commit");
+        }
+        MutationDescriptor descriptor = prepared.descriptor();
+        return descriptor.checksProtection() && role != WorkbookAclRole.OWNER
+                ? ProtectionResolver.structuralProtectionPreimage(snapshot)
+                : snapshot;
+    }
+
+    /** Apply a prepared commit through the detached or transaction-owned descriptor contract. */
+    public MutationApplication applyPreparedCommit(
+            JsonNode snapshot,
+            OperationMutation mutation,
+            MutationPreparation prepared,
+            WorkbookAclRole role
+    ) {
+        if (usesOwnedSnapshotCommit(prepared, role)) {
+            MutationApplication application = ((OwnedSnapshotMutationDescriptor) prepared.descriptor())
+                    .applyWithPatchOnOwnedSnapshot(snapshot, mutation);
+            if (application.snapshot() != snapshot) {
+                throw new IllegalStateException("Owned-snapshot mutation must preserve its root identity");
+            }
+            return application;
+        }
+        return prepared.descriptor().applyWithPatch(snapshot, mutation);
+    }
+
+    /** Finalize authorization and conflict ranges after a structural reducer has derived owner deltas. */
+    public List<RangeRef> committedRanges(
+            JsonNode before,
+            MutationPreparation prepared,
+            WorkbookAclRole role,
+            StructuralPatch structuralPatch
+    ) {
+        if (structuralPatch != null) {
+            List<RangeRef> ownerPreconditions = new ArrayList<>();
+            for (var delta : structuralPatch.formulaOwnerDeltas()) {
+                ownerPreconditions.addAll(formulaOwnerRanges(delta));
+            }
+            for (var delta : structuralPatch.rangeOwnerDeltas()) {
+                ownerPreconditions.add(delta.beforeRange());
+                ownerPreconditions.add(delta.afterRange());
+            }
+            if (prepared.descriptor().checksProtection() && role != WorkbookAclRole.OWNER) {
+                List<RangeRef> protectedRanges = new ArrayList<>(prepared.affectedRanges());
+                protectedRanges.addAll(ownerPreconditions);
+                ProtectionResolver.assertAllowed(before, List.copyOf(new LinkedHashSet<>(protectedRanges)), prepared.descriptor().protectionAction());
+            }
+        }
+        return List.copyOf(prepared.affectedRanges());
+    }
+
+    public List<RangeRef> structuralImpactRanges(StructuralPatch structuralPatch) {
+        if (structuralPatch == null) return List.of();
+        LinkedHashSet<RangeRef> ranges = new LinkedHashSet<>();
+        for (var delta : structuralPatch.formulaOwnerDeltas()) {
+            ranges.addAll(formulaOwnerRanges(delta));
+        }
+        for (var delta : structuralPatch.rangeOwnerDeltas()) {
+            ranges.add(delta.beforeRange());
+            ranges.add(delta.afterRange());
+        }
+        return List.copyOf(ranges);
+    }
+
+    private static RangeRef cellRange(String sheetId, int row, int column) {
+        return new RangeRef(sheetId, row, row, column, column);
+    }
+
+    private static List<RangeRef> formulaOwnerRanges(StructuralPatch.FormulaOwnerDelta delta) {
+        if ("formula-rule".equals(delta.kind())) {
+            List<RangeRef> ranges = new ArrayList<>(delta.beforeRanges());
+            ranges.addAll(delta.afterRanges());
+            return ranges;
+        }
+        if ("formula-object".equals(delta.kind())) return List.of();
+        var beforeAddress = delta.beforeAddress();
+        var afterAddress = delta.afterAddress();
+        return List.of(
+                cellRange(beforeAddress.sheetId(), beforeAddress.row(), beforeAddress.column()),
+                cellRange(afterAddress.sheetId(), afterAddress.row(), afterAddress.column()));
+    }
+
     public JsonNode applyPublicMutations(JsonNode snapshot, List<OperationMutation> mutations) {
-        JsonNode current = snapshot.deepCopy();
-        for (OperationMutation mutation : mutations) current = require(mutation.id(), false).apply(current, mutation);
+        if (mutations.isEmpty()) return snapshot.deepCopy();
+        JsonNode current = snapshot;
+        // Pure descriptors transfer a detached result; structural reducers mutate only once that result is owned.
+        boolean ownsCurrent = false;
+        for (OperationMutation mutation : mutations) {
+            MutationDescriptor descriptor = require(mutation.id(), false);
+            if (descriptor instanceof OwnedSnapshotMutationDescriptor ownedDescriptor) {
+                if (!ownsCurrent) {
+                    current = current.deepCopy();
+                    ownsCurrent = true;
+                }
+                current = ownedDescriptor.applyWithPatchOnOwnedSnapshot(current, mutation).snapshot();
+            } else {
+                current = descriptor.apply(current, mutation);
+                ownsCurrent = true;
+            }
+        }
         return current;
+    }
+
+    /** Replays pre-v3 history for migration verification without the new table-rename owner transform. */
+    public JsonNode applyLegacyMutations(JsonNode snapshot, List<OperationMutation> mutations) {
+        JsonNode current = snapshot;
+        for (OperationMutation mutation : mutations) {
+            MutationDescriptor descriptor = require(mutation.id(), false);
+            if ("sheetTable.update".equals(mutation.id()) && descriptor instanceof SheetDataMutationDescriptor sheetData) {
+                current = sheetData.applyMetadataWithoutStructuralPatch(current, mutation);
+            } else {
+                current = descriptor.apply(current, mutation);
+            }
+        }
+        return current;
+    }
+
+    public JsonNode applyCommittedMutations(
+            JsonNode snapshot,
+            List<CommittedOperationMutation> mutations,
+            List<StructuralPatch> inversePatches
+    ) {
+        if (inversePatches.size() != mutations.size()) {
+            throw new IllegalArgumentException("Committed replay requires one inverse-patch slot per mutation");
+        }
+        // Delay isolation until the first owned reducer; an empty replay still returns a detached snapshot below.
+        JsonNode current = snapshot;
+        boolean ownsCurrent = false;
+        for (int index = 0; index < mutations.size(); index++) {
+            CommittedOperationMutation committed = mutations.get(index);
+            OperationMutation mutation = new OperationMutation(committed.id(), committed.sheetId(), committed.params());
+            MutationDescriptor descriptor = require(mutation.id(), false);
+            MutationApplication application;
+            if (descriptor instanceof OwnedSnapshotMutationDescriptor ownedDescriptor) {
+                if (!ownsCurrent) {
+                    current = current.deepCopy();
+                    ownsCurrent = true;
+                }
+                application = ownedDescriptor.applyWithPatchOnOwnedSnapshot(current, mutation);
+            } else {
+                application = descriptor.applyWithPatch(current, mutation);
+                ownsCurrent = true;
+            }
+            StructuralPatch patch = committed.structuralPatch();
+            StructuralPatch expectedPatch = mergeStructuralPatches(mutation.id(), application.structuralPatch(), inversePatches.get(index));
+            if (patch != null) {
+                if (!Objects.equals(patch, expectedPatch)) {
+                    throw new ServiceException("STORAGE_CORRUPT", 409, "Committed structural patch does not match its reducer-derived or undo-target delta");
+                }
+                if (!structuralImpactRanges(patch).equals(committed.structuralImpactRanges())) {
+                    throw new ServiceException("STORAGE_CORRUPT", 409, "Committed structural impact ranges do not match their server-derived patch");
+                }
+            } else if (inversePatches.get(index) != null) {
+                throw new ServiceException("STORAGE_CORRUPT", 409, "Committed structural undo is missing its target-derived patch");
+            } else if (!committed.structuralImpactRanges().isEmpty()) {
+                throw new ServiceException("STORAGE_CORRUPT", 409, "Committed structural impact ranges have no server-derived patch");
+            }
+            current = application.snapshot();
+            if (patch != null) current = StructuralSnapshotReducer.applyStructuralOwnerPatchOnOwnedSnapshot(current, patch);
+        }
+        return ownsCurrent ? current : snapshot.deepCopy();
+    }
+
+    /** Explicit Flyway-only boundary for replaying verified legacy/v1 history into the canonical v2 patch contract. */
+    public StructuralPatchMigrationReplay replayStructuralPatchesForMigration(
+            JsonNode snapshot,
+            List<OperationMutation> mutations,
+            List<StructuralPatch> inversePatches
+    ) {
+        if (inversePatches.size() != mutations.size()) {
+            throw new IllegalArgumentException("Structural patch migration requires one inverse-patch slot per mutation");
+        }
+        JsonNode current = snapshot;
+        boolean ownsCurrent = false;
+        List<Optional<StructuralPatch>> patches = new ArrayList<>(mutations.size());
+        for (int index = 0; index < mutations.size(); index++) {
+            OperationMutation mutation = mutations.get(index);
+            MutationDescriptor descriptor = require(mutation.id(), false);
+            MutationApplication application;
+            if (descriptor instanceof OwnedSnapshotMutationDescriptor ownedDescriptor) {
+                if (!ownsCurrent) {
+                    current = current.deepCopy();
+                    ownsCurrent = true;
+                }
+                application = ownedDescriptor.applyWithPatchOnOwnedSnapshot(current, mutation);
+            } else {
+                application = descriptor.applyWithPatch(current, mutation);
+                ownsCurrent = true;
+            }
+            StructuralPatch patch = mergeStructuralPatches(mutation.id(), application.structuralPatch(), inversePatches.get(index));
+            current = application.snapshot();
+            if (patch != null) current = StructuralSnapshotReducer.applyStructuralOwnerPatchOnOwnedSnapshot(current, patch);
+            patches.add(Optional.ofNullable(patch));
+        }
+        return new StructuralPatchMigrationReplay(ownsCurrent ? current : snapshot.deepCopy(), patches);
+    }
+
+    public static StructuralPatch mergeStructuralPatches(
+            String mutationId,
+            StructuralPatch generated,
+            StructuralPatch inverse
+    ) {
+        if (generated == null) return inverse;
+        if (inverse == null) return generated;
+        List<StructuralPatch.FormulaOwnerDelta> deltas = mergeOwnerDeltas(
+                generated.formulaOwnerDeltas(), inverse.formulaOwnerDeltas(),
+                StructuralPatch::formulaOwnerKey,
+                "STRUCTURAL_PATCH_CONFLICT: inverse and reducer patches disagree for one formula owner");
+        List<StructuralPatch.DefinedNameOwnerDelta> definedNameDeltas = mergeOwnerDeltas(
+                generated.definedNameOwnerDeltas(), inverse.definedNameOwnerDeltas(),
+                StructuralPatch::definedNameOwnerKey,
+                "STRUCTURAL_PATCH_CONFLICT: inverse and reducer patches disagree for one defined-name owner");
+        List<StructuralPatch.RangeOwnerDelta> rangeOwnerDeltas = mergeOwnerDeltas(
+                generated.rangeOwnerDeltas(), inverse.rangeOwnerDeltas(),
+                StructuralPatch::rangeOwnerKey,
+                "STRUCTURAL_PATCH_CONFLICT: inverse and reducer patches disagree for one range owner");
+        return new StructuralPatch(StructuralPatch.VERSION, mutationId, deltas, definedNameDeltas, rangeOwnerDeltas);
+    }
+
+    private static <T, K> List<T> mergeOwnerDeltas(List<T> generated, List<T> inverse,
+            Function<T, K> ownerKey, String conflictMessage) {
+        List<T> merged = new ArrayList<>(generated);
+        if (generated.isEmpty()) {
+            merged.addAll(inverse);
+            return merged;
+        }
+        if (inverse.isEmpty()) return merged;
+
+        if (generated.size() <= inverse.size()) {
+            Map<K, T> generatedByOwner = new HashMap<>();
+            for (T delta : generated) generatedByOwner.put(ownerKey.apply(delta), delta);
+            for (T candidate : inverse) {
+                T existing = generatedByOwner.get(ownerKey.apply(candidate));
+                if (existing == null) merged.add(candidate);
+                else if (!Objects.equals(existing, candidate)) throw ServiceException.conflict(conflictMessage);
+            }
+            return merged;
+        }
+
+        Map<K, T> inverseByOwner = new HashMap<>();
+        for (T delta : inverse) inverseByOwner.put(ownerKey.apply(delta), delta);
+        for (T delta : generated) {
+            T candidate = inverseByOwner.remove(ownerKey.apply(delta));
+            if (candidate != null && !Objects.equals(delta, candidate)) throw ServiceException.conflict(conflictMessage);
+        }
+        for (T candidate : inverse) {
+            if (inverseByOwner.remove(ownerKey.apply(candidate)) != null) merged.add(candidate);
+        }
+        return merged;
+    }
+
+    public JsonNode applyStructuralPatch(JsonNode snapshot, StructuralPatch patch) {
+        return StructuralSnapshotReducer.applyStructuralOwnerPatch(snapshot, patch);
+    }
+
+    /**
+     * Apply an owner delta to a detached candidate that is exclusively owned by the current transaction.
+     * The caller must discard the candidate if this method throws because earlier deltas may already have applied.
+     */
+    public JsonNode applyStructuralPatchOnOwnedSnapshot(JsonNode ownedSnapshot, StructuralPatch patch) {
+        return StructuralSnapshotReducer.applyStructuralOwnerPatchOnOwnedSnapshot(ownedSnapshot, patch);
     }
 
     public List<RangeRef> resolveRanges(JsonNode snapshot, OperationMutation mutation) {
@@ -308,7 +601,7 @@ public class MutationDescriptorRegistry {
             if (id().equals("range.clear")) {
                 SnapshotMutationSupport.validateKnownKeys(params, Set.of("sheetId", "range", "family"), "range.clear");
             } else if (id().equals("range.clear.restore")) {
-                SnapshotMutationSupport.validateKnownKeys(params, Set.of("sheetId", "range", "snapshot"), "range.clear.restore");
+                validateClearRestore(params);
             }
             return switch (id()) {
                 case "cell.set", "cell.restore" -> List.of(SnapshotMutationSupport.cellRange(root, mutation.sheetId(), params));
@@ -352,9 +645,6 @@ public class MutationDescriptorRegistry {
             if (params.path("clearSource").asBoolean(false)) {
                 RangeRef source = requireBoundedSourceRange(root, params);
                 ranges.add(source);
-                if (!mutation.sheetId().equals(source.sheetId())) {
-                    addColumnWidthRanges(root, source.sheetId(), SnapshotMutationSupport.requiredObject(params, "sourceSnapshot"), List.of(source), ranges);
-                }
             }
             return List.copyOf(ranges);
         }
@@ -416,14 +706,6 @@ public class MutationDescriptorRegistry {
         private void applyPaste(ObjectNode root, ObjectNode targetSheet, String sheetId, ObjectNode params) {
             PasteShape shape = requirePasteShape(root, sheetId, params);
             applyPasteSnapshot(root, targetSheet, sheetId, SnapshotMutationSupport.requiredObject(params, "snapshot"), shape.allowedRanges());
-            if (params.path("clearSource").asBoolean(false)) {
-                RangeRef source = requireBoundedSourceRange(root, params);
-                if (!sheetId.equals(source.sheetId())) {
-                    JsonNode sourceSnapshot = params.get("sourceSnapshot");
-                    if (sourceSnapshot == null || !sourceSnapshot.isObject()) throw ServiceException.validation("Cross-sheet paste requires sourceSnapshot");
-                    applyPasteSnapshot(root, SnapshotMutationSupport.sheet(root, source.sheetId()), source.sheetId(), (ObjectNode) sourceSnapshot, List.of(source));
-                }
-            }
         }
 
         private void applyPasteSnapshot(ObjectNode root, ObjectNode sheet, String sheetId, ObjectNode snapshot, List<RangeRef> allowedRanges) {
@@ -573,6 +855,7 @@ public class MutationDescriptorRegistry {
         }
 
         private PasteShape requirePasteShape(ObjectNode root, String sheetId, ObjectNode params) {
+            if (!sheetId.equals(SnapshotMutationSupport.text(params, "sheetId"))) throw ServiceException.validation("Paste target sheet does not match its mutation envelope");
             String transfer = SnapshotMutationSupport.text(params, "transfer");
             if (!Set.of("copy", "move").contains(transfer)) throw ServiceException.validation("Paste transfer is invalid");
             if (!params.path("clearSource").isBoolean()) throw ServiceException.validation("Paste clearSource must be boolean");
@@ -581,6 +864,8 @@ public class MutationDescriptorRegistry {
             if ("copy".equals(transfer) && params.has("sourceRange")) throw ServiceException.validation("Copy paste cannot carry sourceRange");
             ObjectNode clipboard = SnapshotMutationSupport.requiredObject(params, "clipboard");
             if (!"SparseClipboardPayload".equals(clipboard.path("schema").asText())) throw ServiceException.validation("Paste clipboard schema is invalid");
+            if (!transfer.equals(SnapshotMutationSupport.text(clipboard, "transfer"))) throw ServiceException.validation("Paste transfer differs from its clipboard contract");
+            RangeRef clipboardRange = SnapshotMutationSupport.range(root, clipboard.get("range"));
             ObjectNode clipboardExtent = SnapshotMutationSupport.requiredObject(clipboard, "sourceExtent");
             ObjectNode declaredExtent = SnapshotMutationSupport.requiredObject(params, "sourceExtent");
             int clipboardRows = boundedValue(clipboardExtent, "rows", SnapshotMutationSupport.MAX_ROW + 1);
@@ -588,6 +873,10 @@ public class MutationDescriptorRegistry {
             int sourceRows = boundedValue(declaredExtent, "rows", SnapshotMutationSupport.MAX_ROW + 1);
             int sourceColumns = boundedValue(declaredExtent, "columns", SnapshotMutationSupport.MAX_COLUMN + 1);
             if (clipboardRows != sourceRows || clipboardColumns != sourceColumns || sourceRows <= 0 || sourceColumns <= 0) throw ServiceException.validation("Paste source extent is inconsistent");
+            if (clipboardRange.endRow() - clipboardRange.startRow() + 1 != clipboardRows
+                    || clipboardRange.endColumn() - clipboardRange.startColumn() + 1 != clipboardColumns) {
+                throw ServiceException.validation("Clipboard range differs from its declared source extent");
+            }
             JsonNode occupied = clipboard.get("occupiedCells");
             if (occupied == null || !occupied.isArray() || occupied.size() > SnapshotMutationSupport.MAX_CHANGED_CELLS) throw ServiceException.validation("Sparse clipboard occupied cells are required and bounded");
             for (JsonNode cell : occupied) {
@@ -621,12 +910,17 @@ public class MutationDescriptorRegistry {
             int columns = transpose ? sourceRows : sourceColumns;
             ObjectNode sheet = SnapshotMutationSupport.sheet(root, sheetId);
             if (row + rows > SnapshotMutationSupport.MAX_ROW + 1 || column + columns > SnapshotMutationSupport.MAX_COLUMN + 1) throw ServiceException.validation("Paste exceeds canonical worksheet limits");
-            return new PasteShape(new RangeRef(sheetId, row, row + rows - 1, column, column + columns - 1), params.path("clearSource").asBoolean(false) ? requireBoundedSourceRange(root, params) : null);
+            RangeRef source = params.path("clearSource").asBoolean(false) ? requireBoundedSourceRange(root, params) : null;
+            if (source != null && !source.equals(clipboardRange)) throw ServiceException.validation("Move source range differs from its clipboard range");
+            if (source != null && !sheetId.equals(source.sheetId())) {
+                throw ServiceException.unsupportedFeature("UNSUPPORTED_FEATURE: cross-sheet cut/paste requires a canonical structural move patch");
+            }
+            return new PasteShape(new RangeRef(sheetId, row, row + rows - 1, column, column + columns - 1), source);
         }
 
         private record PasteShape(RangeRef target, RangeRef source) {
             private List<RangeRef> allowedRanges() {
-                return source == null ? List.of(target) : source.sheetId().equals(target.sheetId()) ? List.of(target, source) : List.of(target);
+                return source == null ? List.of(target) : List.of(target, source);
             }
         }
 
@@ -665,6 +959,8 @@ public class MutationDescriptorRegistry {
                         if ("contents".equals(family)) {
                             next.putNull("value");
                             next.remove("formula");
+                            next.remove("formulaValue");
+                            next.remove("formulaMetadata");
                             next.remove("displayValue");
                         } else {
                             next.remove("style");
@@ -689,22 +985,25 @@ public class MutationDescriptorRegistry {
         }
 
         private void restoreRange(ObjectNode root, ObjectNode sheet, String sheetId, ObjectNode params) {
+            validateClearRestore(params);
             RangeRef range = requireOwnRange(root, sheetId, params);
-            SnapshotMutationSupport.clearCells(sheet, range);
             SnapshotMutationSupport.removeNotes(sheet, range);
             SnapshotMutationSupport.removeThreads(sheet, range);
             ObjectNode snapshot = SnapshotMutationSupport.requiredObject(params, "snapshot");
-            JsonNode cells = snapshot.get("cells");
-            if (cells == null || !cells.isArray()) throw ServiceException.validation("range.clear.restore cells must be an array");
-            if (cells.size() > SnapshotMutationSupport.MAX_CHANGED_CELLS) throw ServiceException.validation("Range restore is too large");
-            for (JsonNode entry : cells) {
-                if (!entry.isObject()) throw ServiceException.validation("Range restore cell must be an object");
-                SnapshotMutationSupport.CellCoordinate coordinate = SnapshotMutationSupport.coordinate(root, sheetId, (ObjectNode) entry);
-                if (!SnapshotMutationSupport.contains(range, coordinate)) throw ServiceException.validation("Range restore cell is outside its range");
-                JsonNode value = entry.get("value");
-                if (value != null && !value.isNull()) {
-                    if (!value.isObject()) throw ServiceException.validation("Range restore value must be an object");
-                    SnapshotMutationSupport.putCell(sheet, coordinate, value);
+            if (snapshot.has("cells")) {
+                JsonNode cells = snapshot.get("cells");
+                if (!cells.isArray()) throw ServiceException.validation("range.clear.restore cells must be an array");
+                if (cells.size() > SnapshotMutationSupport.MAX_CHANGED_CELLS) throw ServiceException.validation("Range restore is too large");
+                SnapshotMutationSupport.clearCells(sheet, range);
+                for (JsonNode entry : cells) {
+                    if (!entry.isObject()) throw ServiceException.validation("Range restore cell must be an object");
+                    SnapshotMutationSupport.CellCoordinate coordinate = SnapshotMutationSupport.coordinate(root, sheetId, (ObjectNode) entry);
+                    if (!SnapshotMutationSupport.contains(range, coordinate)) throw ServiceException.validation("Range restore cell is outside its range");
+                    JsonNode value = entry.get("value");
+                    if (value != null && !value.isNull()) {
+                        if (!value.isObject()) throw ServiceException.validation("Range restore value must be an object");
+                        SnapshotMutationSupport.putCell(sheet, coordinate, value);
+                    }
                 }
             }
             SnapshotMutationSupport.restoreNotes(root, sheet, sheetId, range, snapshot.get("notes"));
@@ -719,6 +1018,31 @@ public class MutationDescriptorRegistry {
                 JsonNode rules = snapshot.get("dataValidations");
                 if (!rules.isArray()) throw ServiceException.validation("Range restore dataValidations must be an array");
                 sheet.set("dataValidations", rules.deepCopy());
+            }
+        }
+
+        private void validateClearRestore(ObjectNode params) {
+            SnapshotMutationSupport.validateKnownKeys(params, Set.of("sheetId", "range", "family", "snapshot"), "range.clear.restore");
+            String family = params.path("family").asText(null);
+            if (!CLEAR_FAMILIES.contains(family)) throw ServiceException.validation("Unsupported clear restore family: " + family);
+            ObjectNode snapshot = SnapshotMutationSupport.requiredObject(params, "snapshot");
+            SnapshotMutationSupport.validateKnownKeys(snapshot,
+                    Set.of("cells", "notes", "hyperlinks", "comments", "conditionalFormats", "dataValidations"),
+                    "range.clear.restore snapshot");
+            boolean metadataOnly = "comments-and-notes".equals(family) || "hyperlinks".equals(family);
+            if (snapshot.has("cells") == metadataOnly) {
+                throw ServiceException.validation("range.clear.restore cell snapshot does not match its clear family");
+            }
+            if (snapshot.has("cells") && !snapshot.get("cells").isArray()) {
+                throw ServiceException.validation("range.clear.restore cells must be an array");
+            }
+            if (!snapshot.path("notes").isArray() || !snapshot.path("hyperlinks").isArray() || !snapshot.path("comments").isArray()) {
+                throw ServiceException.validation("range.clear.restore metadata snapshots are required");
+            }
+            boolean includesRules = "formats".equals(family) || "all".equals(family);
+            if (snapshot.has("conditionalFormats") != includesRules || snapshot.has("dataValidations") != includesRules
+                    || includesRules && (!snapshot.path("conditionalFormats").isArray() || !snapshot.path("dataValidations").isArray())) {
+                throw ServiceException.validation("range.clear.restore rule snapshots do not match its clear family");
             }
         }
 
@@ -870,18 +1194,7 @@ public class MutationDescriptorRegistry {
         private void freeze(ObjectNode params, ObjectNode sheet) {
             JsonNode pane = params.get("pane");
             if (pane == null || !pane.isObject()) throw ServiceException.validation("freeze.set requires pane");
-            String kind = pane.path("kind").asText();
-            if (!Set.of("none", "frozen", "split").contains(kind)) throw ServiceException.validation("pane.kind is invalid");
-            if ("none".equals(kind)) { sheet.set("pane", pane.deepCopy()); return; }
-            String state = pane.path("state").asText();
-            if (("frozen".equals(kind) && !Set.of("frozen", "frozenSplit").contains(state))
-                    || ("split".equals(kind) && !"split".equals(state))) {
-                throw ServiceException.validation("pane.state is invalid for pane.kind");
-            }
-            for (String field : List.of("xSplit", "ySplit", "startRow", "startColumn")) {
-                if (!pane.path(field).isNumber() || pane.path(field).asDouble() < 0) throw ServiceException.validation("pane." + field + " must be non-negative");
-            }
-            if (!pane.path("startRow").isIntegralNumber() || !pane.path("startColumn").isIntegralNumber()) throw ServiceException.validation("pane start coordinates must be integers");
+            WorkbookSnapshotValidator.requireCanonicalPane(pane);
             sheet.set("pane", pane.deepCopy());
         }
 

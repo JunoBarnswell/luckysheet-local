@@ -6,7 +6,7 @@ import { nativePivotFeatureStatus } from './native-pivot';
 import { createNativeDocumentArtifact } from './native-document-artifact';
 import type { NativeDocumentImportOptions, NativeDocumentImportResult } from './types';
 import { sanitizeImportedWorkbookName } from './ooxml-metrics';
-import { capabilityFor, detectWorksheetCapabilities } from './capability-manifest';
+import { capabilityFor, detectWorkbookCapabilities, detectWorksheetCapabilities } from './capability-manifest';
 
 export interface NativeDocumentImportRequest {
   fileName: string;
@@ -26,9 +26,12 @@ export async function importOoxmlDocument(request: NativeDocumentImportRequest):
   const dateSystem = request.options.dateSystem ?? parsed.packageGraph.dateSystem ?? parseDateSystem('');
   const snapshotFeatures = scanSnapshotFeatures(snapshot);
   const packageFeatures = detectPackageFeatures(parsed.packageGraph);
-  const worksheetDetections = detectWorksheetCapabilities(loaded.files, parsed.packageGraph);
+  const packageDetections = [
+    ...detectWorksheetCapabilities(loaded.files, parsed.packageGraph),
+    ...detectWorkbookCapabilities(loaded.files, parsed.packageGraph),
+  ];
   const mode = request.options.compatibilityMode ?? (request.options.compatibilityTarget === 'A' ? 'strict' : request.options.compatibilityTarget === 'C' ? 'best-effort' : 'balanced');
-  const capabilityDetections = worksheetDetections.map((detection) => {
+  const capabilityDetections = packageDetections.map((detection) => {
     const capability = capabilityFor(detection.feature);
     const reason = detection.reason ?? (capability.read === 'partial' || capability.write === 'partial'
       ? mode === 'best-effort'
@@ -40,7 +43,7 @@ export async function importOoxmlDocument(request: NativeDocumentImportRequest):
   const preservedNativeChartDetections = parsed.packageGraph.nativeChartGraph?.charts.filter((chart) => !chart.editable).map((chart) => ({ feature: 'preserved-native-chart', location: chart.chartPart, reason: chart.reason })) ?? [];
   const indexedNativeChartParts = new Set(parsed.packageGraph.nativeChartGraph?.charts.map((chart) => chart.chartPart) ?? []);
   const opaqueChartParts = Object.keys(parsed.packageGraph.opaqueParts).filter((part) => part.toLowerCase().includes('/charts/') && !indexedNativeChartParts.has(part));
-  const detectedFeatures = [...new Set([...packageFeatures, ...snapshotFeatures, ...worksheetDetections.map((entry) => entry.feature), ...preservedNativeChartDetections.map((entry) => entry.feature)])];
+  const detectedFeatures = [...new Set([...packageFeatures, ...snapshotFeatures, ...packageDetections.map((entry) => entry.feature), ...preservedNativeChartDetections.map((entry) => entry.feature)])];
   const nativeStatus = nativePivotFeatureStatus(snapshot, parsed.packageGraph.nativePivotGraph);
   const editableFeatures = new Set(detectedFeatures.filter((feature) => capabilityFor(feature).read !== 'none' && capabilityFor(feature).write !== 'none'));
   editableFeatures.add('defined-names');

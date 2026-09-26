@@ -74,6 +74,8 @@ export interface WholeColumnReferenceNode {
   readonly sheetId?: string;
   readonly startColumn: number;
   readonly endColumn: number;
+  readonly absoluteStartColumn?: boolean;
+  readonly absoluteEndColumn?: boolean;
   readonly span: SourceSpan;
   readonly parenthesized?: boolean;
 }
@@ -83,6 +85,8 @@ export interface WholeRowReferenceNode {
   readonly sheetId?: string;
   readonly startRow: number;
   readonly endRow: number;
+  readonly absoluteStartRow?: boolean;
+  readonly absoluteEndRow?: boolean;
   readonly span: SourceSpan;
   readonly parenthesized?: boolean;
 }

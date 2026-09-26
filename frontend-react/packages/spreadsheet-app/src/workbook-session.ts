@@ -86,6 +86,7 @@ import type {
   ServerQueryRequest,
   ShareTokenProvider,
 } from '@react-sheets/protocol';
+import { requiresServerStructuralPlanner, requiresServerStructuralPlannerCommand } from '@react-sheets/protocol';
 import type { WorkbookApiClient } from '@react-sheets/protocol';
 import type { NativeDocumentArtifact } from '@react-sheets/exchange-excel-ooxml';
 import { buildPivotGridProjection, clearPivotResultCache, findPivotProjectionCellAt, getLastValidPivotResult, getPivotFieldCatalog as buildPivotFieldCatalog, getPivotRevisionKey, normalizePivotDefinitionFromCatalog, pivotResultMatchesRevision, preparePivotTaskDescriptor, preparePivotTaskInputAsync } from './features/pivot/engine';
@@ -889,6 +890,7 @@ export class WorkbookSession {
     this.cellResolver = createWorkbookCellResolver(this.runtime.dataContent);
     this.permission = new PermissionService();
     this.runtime.commands.setMutationGuard((mutation, source) => {
+      if (source !== 'remote' && requiresServerStructuralPlanner(mutation.id)) this.assertServerStructuralPlannerReady();
       if (source !== 'remote' && !this.runtime.localOnly && !this.runtime.remoteConnected) throw new Error('COLLABORATION_OFFLINE: 连接尚未就绪，编辑草稿已保留');
       this.permission.syncFromWorkbook(this.runtime.model);
       const result = this.permission.checkMutation(mutation);
@@ -1101,8 +1103,7 @@ export class WorkbookSession {
       this.refresh();
     };
     this.runtime.handlers.onCalculationApplied = (addresses) => {
-      const sheetIds = new Set(addresses.map((address) => address.sheetId));
-      this.projection.invalidateFormulaResultProjections(sheetIds);
+      this.projection.invalidateFormulaResultProjections(addresses);
       this.calculationProjectionInvalidated = true;
     };
     this.runtime.handlers.onPhaseChange = (phase) => {
@@ -2207,10 +2208,11 @@ export class WorkbookSession {
   }
 
   runCommand(commandId: string, params?: unknown): CommandResult {
-    const resolvedParams = this.resolveCommandContext(commandId, params);
     if (!this.runtime.commands.registry.hasCommand(commandId)) {
       throw new Error(`Unknown command: ${commandId}`);
     }
+    if (requiresServerStructuralPlannerCommand(commandId)) this.assertServerStructuralPlannerReady();
+    const resolvedParams = this.resolveCommandContext(commandId, params);
     this.assertPermission(commandId, resolvedParams);
     const result = this.runtime.commands.execute(commandId, resolvedParams);
     if (commandId === 'pivot.refresh') {
@@ -2289,6 +2291,7 @@ export class WorkbookSession {
 
   canExecute(commandId: string, params?: unknown): boolean {
     if (!this.runtime.commands.registry.hasCommand(commandId)) return false;
+    if (requiresServerStructuralPlannerCommand(commandId) && !this.isServerStructuralPlannerAvailable()) return false;
     if (!this.runtime.localOnly && !this.runtime.remoteConnected) return false;
     const resolvedParams = this.resolveCommandContext(commandId, params);
     return canExecuteCommand(
@@ -2754,6 +2757,16 @@ export class WorkbookSession {
     return this.nativeArtifact?.fileName;
   }
 
+  private isServerStructuralPlannerAvailable(): boolean {
+    return !this.runtime.localOnly && this.runtime.remoteConnected;
+  }
+
+  private assertServerStructuralPlannerReady(): void {
+    if (!this.isServerStructuralPlannerAvailable()) {
+      throw new Error('STRUCTURAL_PLANNER_OFFLINE: 此结构操作需要连接服务端规划器，当前工作簿未修改');
+    }
+  }
+
   /** Commit edits before exporting without rewriting the original native format. */
   async flushPendingChanges(): Promise<void> {
     if (!this.canExecute('document.export')) throw new Error('You do not have permission to export the document');
@@ -2831,6 +2844,18 @@ export class WorkbookSession {
 
   undo(): void {
     const entry = this.runtime.commands.getUndoEntries().at(-1);
+    const hasStructuralMutation = entry?.forwardMutations.some((mutation) => (
+      mutation.id === 'rows.inserted' || mutation.id === 'rows.deleted'
+      || mutation.id === 'columns.inserted' || mutation.id === 'columns.deleted'
+      || mutation.id === 'cells.inserted' || mutation.id === 'cells.deleted'
+    )) ?? false;
+    if (entry?.committedRevision !== undefined
+      && this.runtime.collaboration
+      && hasStructuralMutation
+      && entry.committedRevision !== this.runtime.collaboration.getRevision()) {
+      this.notify('Structural Undo is no longer safe after a later workbook revision');
+      return;
+    }
     if (entry && !this.canReplayHistory(entry.inversePlan)) {
       this.notify('Undo is no longer allowed for the protected selection');
       return;
@@ -4225,7 +4250,7 @@ export class WorkbookSession {
     table.fields.forEach((field, column) => setCell(0, column, field.name, { bold: true, background: '#eaf2f8', verticalAlignment: 'middle' }));
     if (kind === 'report-sheet') setCell(0, 0, '报表', { bold: true, fontSizePx: 24, textColor: '#1f2937' });
     const sheet: SheetSnapshot = {
-      kind, id, name, rowCount: 1000, columnCount: Math.max(26, table.fields.length), cells, merges: [], pane: { kind: 'none' }, pivots: [], sparklines: [], drawings: [], drawingPayloads: {}, review: { notesByCell: {}, notesById: {}, threadIdsByCell: {}, threadsById: {} },
+      kind, id, name, rowCount: 1000, columnCount: Math.max(26, table.fields.length), cells, merges: [], pane: { kind: 'none' }, pivots: [], sparklines: [], drawings: [], drawingPayloads: {}, hyperlinks: [], review: { notesByCell: {}, notesById: {}, threadIdsByCell: {}, threadsById: {} },
       defaultRowHeightPx: 20, defaultColumnWidthPx: 80,
       ...(kind === 'table-sheet' ? { tableSheet: { viewId: table.id, columns: table.fields.map((field) => ({ fieldId: field.id, caption: field.name, type: field.type })), grouping: [] } } : {}),
       ...(kind === 'gantt-sheet' ? { ganttSheet: { viewId: table.id, fieldMap: { id: table.fields[0]!.id, title: table.fields[1]!.id, start: table.fields[2]!.id, end: table.fields[3]!.id, progress: table.fields[4]!.id, parentId: table.fields[5]?.id, dependencies: table.fields[6]?.id }, calendar: { workingDays: [1, 2, 3, 4, 5], dayStartHour: 9, dayEndHour: 18 }, timeline: { unit: 'week' }, dependencyStyle: { color: '#64748b', width: 1 } } } : {}),
@@ -5381,6 +5406,7 @@ export class WorkbookSession {
 
   async drillDownPivot(pivotId: string, label: string, paths: readonly PivotSourceRowPath[]): Promise<void> {
     if (paths.length === 0) return;
+    this.assertServerStructuralPlannerReady();
     const workbook = this.runtime.model;
     const owner = workbook.getSheets().find((sheet) => sheet.pivots.some((entry) => entry.id === pivotId));
     const pivot = owner?.pivots.find((entry) => entry.id === pivotId);

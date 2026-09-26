@@ -13,16 +13,19 @@ import type {
   WorkbookModel,
   WorksheetModel,
   StructuralTransformParams,
+  StructuralTransformResult,
   DefinedNameModel,
   TableSheetDefinition,
   GanttSheetDefinition,
   ReportSheetDefinition,
 } from '@react-sheets/core-model';
 import {
+  CALCULATION_CONTEXT_EFFECTS,
   clearFormulaProvenance,
   MAX_SHEET_COLUMN_COUNT,
   MAX_SHEET_ROW_COUNT,
   StructuralTransform,
+  isCanonicalWorksheetPane,
   normalizeDefinedNameModel,
   normalizeFontFamily,
   planBorderChange,
@@ -43,7 +46,7 @@ import { registerOutlineCommands } from './outline-commands';
 import { registerHomeCommands } from './home-commands';
 import { registerPhoneticCommands } from './phonetic-commands';
 import { normalizeCheckboxCellValue, registerCellTemplateCommands } from './cell-template-commands';
-import { applyClearRangePlan, createClearRangePlan, restoreClearRangeSnapshot, type ClearRangeParams, type ClearRangeSnapshot } from './clear-planner';
+import { applyClearRangePlan, createClearRangePlan, restoreClearRangeSnapshot, type ClearFamily, type ClearRangeParams, type ClearRangeSnapshot } from './clear-planner';
 import { assertCellWriteAuthority, createCellSetMutationParams, isCellSetMutationParams, type CellSetMutationParams } from './cell-write-authority';
 import { CellEntryError } from './cell-entry-error';
 
@@ -63,8 +66,8 @@ function snapshotCellRegion(
   return extracted;
 }
 
-function applyStructuralTransform(workbook: WorkbookModel, params: StructuralTransformParams): void {
-  StructuralTransform.apply(workbook, params);
+function applyStructuralTransform(context: CommandContext, params: StructuralTransformParams): StructuralTransformResult {
+  return StructuralTransform.apply(context.workbook, params, context.structuralReferenceOwners);
 }
 
 export * from './clipboard';
@@ -177,6 +180,7 @@ export interface SetRangeValuesParams {
 interface ClearRangeRestoreParams {
   sheetId: string;
   range: RangeRef;
+  family: ClearFamily;
   snapshot: ClearRangeSnapshot;
 }
 
@@ -455,15 +459,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
 
-function isWorksheetPane(value: unknown): value is WorksheetPane {
-  if (!isRecord(value) || !['none', 'frozen', 'split'].includes(String(value.kind))) return false;
-  if (value.kind === 'none') return true;
-  return typeof value.xSplit === 'number' && Number.isFinite(value.xSplit) && value.xSplit >= 0
-    && typeof value.ySplit === 'number' && Number.isFinite(value.ySplit) && value.ySplit >= 0
-    && Number.isSafeInteger(value.startRow) && Number(value.startRow) >= 0
-    && Number.isSafeInteger(value.startColumn) && Number(value.startColumn) >= 0;
-}
-
 function isColumnVisibilityMutation(value: unknown): value is ColumnsVisibilityParams {
   return isRecord(value) && typeof value.sheetId === 'string' && Array.isArray(value.states) && value.states.length > 0
     && value.states.every((state) => isRecord(state) && Number.isSafeInteger(state.column) && Number(state.column) >= 0 && typeof state.hidden === 'boolean');
@@ -584,12 +579,22 @@ function isClearRangeMutation(value: unknown): value is ClearRangeParams {
 }
 
 function isClearRangeRestoreMutation(value: unknown): value is ClearRangeRestoreParams {
-  return isRecord(value) && typeof value.sheetId === 'string' && isRange(value.range)
-    && isRecord(value.snapshot)
-    && Array.isArray(value.snapshot.cells) && value.snapshot.cells.every((entry) => isRecord(entry) && Number.isInteger(entry.row) && Number.isInteger(entry.column) && (entry.value === undefined || isCellData(entry.value)))
-    && Array.isArray(value.snapshot.notes) && Array.isArray(value.snapshot.hyperlinks) && Array.isArray(value.snapshot.comments)
-    && (value.snapshot.conditionalFormats === undefined || Array.isArray(value.snapshot.conditionalFormats))
-    && (value.snapshot.dataValidations === undefined || Array.isArray(value.snapshot.dataValidations));
+  if (!isRecord(value) || typeof value.sheetId !== 'string' || !isRange(value.range)
+    || !isRecord(value.snapshot)
+    || !Object.keys(value).every((key) => ['sheetId', 'range', 'family', 'snapshot'].includes(key))) return false;
+  const { family, snapshot } = value;
+  if (family !== 'all' && family !== 'contents' && family !== 'formats' && family !== 'comments-and-notes' && family !== 'hyperlinks') return false;
+  if (!Object.keys(snapshot).every((key) => ['cells', 'notes', 'hyperlinks', 'comments', 'conditionalFormats', 'dataValidations'].includes(key))) return false;
+  const metadataOnly = family === 'comments-and-notes' || family === 'hyperlinks';
+  const includesRules = family === 'formats' || family === 'all';
+  const cellsValid = metadataOnly
+    ? snapshot.cells === undefined
+    : Array.isArray(snapshot.cells) && snapshot.cells.every((entry) => isRecord(entry) && Number.isInteger(entry.row) && Number.isInteger(entry.column) && (entry.value === undefined || isCellData(entry.value)));
+  return cellsValid
+    && Array.isArray(snapshot.notes) && Array.isArray(snapshot.hyperlinks) && Array.isArray(snapshot.comments)
+    && (includesRules
+      ? Array.isArray(snapshot.conditionalFormats) && Array.isArray(snapshot.dataValidations)
+      : snapshot.conditionalFormats === undefined && snapshot.dataValidations === undefined);
 }
 
 function isStyleMutation(value: unknown): value is SetRangeStyleParams | { sheetId: string; ranges: RangeRef[]; numberFormat: string } {
@@ -1053,6 +1058,8 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       schema: { name: 'AddSheet', validate: isAddSheetMutation },
       permission: { capability: 'sheet.structure.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: () => [], mode: 'exact' },
+      historyRebase: { kind: 'invalidate', reason: 'worksheet identity changes have no canonical history transform' },
+      calculationContextEffect: CALCULATION_CONTEXT_EFFECTS.rebuild,
       inverseIds: ['sheet.remove'],
     },
   });
@@ -1066,6 +1073,8 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       schema: { name: 'RemoveSheet', validate: isSheetIdMutation },
       permission: { capability: 'sheet.structure.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: () => [], mode: 'exact' },
+      historyRebase: { kind: 'invalidate', reason: 'worksheet identity changes have no canonical history transform' },
+      calculationContextEffect: CALCULATION_CONTEXT_EFFECTS.rebuild,
       inverseIds: ['sheet.restore'],
     },
   });
@@ -1074,12 +1083,16 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
     handler: (item, context) => {
       if (!isRenameSheetMutation(item.params)) throw new Error('Invalid sheet.rename mutation payload');
       const params = item.params;
-      context.workbook.renameSheet(params.sheetId, params.name);
+      if (context.mutationSource === 'remote' || context.mutationSource === 'undo' || context.mutationSource === 'redo') {
+        return context.workbook.renameSheetIdentity(params.sheetId, params.name);
+      }
+      return context.workbook.renameSheet(params.sheetId, params.name);
     },
     metadata: {
       schema: { name: 'RenameSheet', validate: isRenameSheetMutation },
       permission: { capability: 'sheet.structure.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: () => [], mode: 'exact' },
+      historyRebase: { kind: 'invalidate', reason: 'worksheet identity changes have no canonical history transform' },
       inverseIds: ['sheet.rename'],
     },
   });
@@ -1093,6 +1106,8 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       schema: { name: 'RestoreSheet', validate: isSheetRestoreMutation },
       permission: { capability: 'sheet.structure.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: () => [], mode: 'exact' },
+      historyRebase: { kind: 'invalidate', reason: 'worksheet identity changes have no canonical history transform' },
+      calculationContextEffect: CALCULATION_CONTEXT_EFFECTS.rebuild,
       inverseIds: ['sheet.remove'],
     },
   });
@@ -1166,7 +1181,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
             affectedRanges,
           },
         ],
-        apply: () => workbook.removeSheet(params.id),
+        apply: () => { workbook.removeSheet(params.id); },
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -1191,8 +1206,9 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
             affectedRanges,
           },
         ],
-        apply: () =>
-          context.workbook.addSheet(params.id, params.name, params.rowCount, params.columnCount),
+        apply: () => {
+          context.workbook.addSheet(params.id, params.name, params.rowCount, params.columnCount);
+        },
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -1313,6 +1329,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       schema: { name: 'WorkbookTableModel', validate: isWorkbookTableMutation },
       permission: { capability: 'workbook.table.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: workbookTableRanges, mode: 'exact' },
+      calculationContextEffect: CALCULATION_CONTEXT_EFFECTS.syncTables,
       inverseIds: ['table.remove'],
     },
   });
@@ -1326,6 +1343,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       schema: { name: 'TableRemove', validate: isTableRemoveMutation },
       permission: { capability: 'workbook.table.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: tableRemoveRanges, mode: 'declared' },
+      calculationContextEffect: CALCULATION_CONTEXT_EFFECTS.syncTables,
       inverseIds: ['table.add'],
     },
   });
@@ -1340,7 +1358,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
         params: structuredClone(params),
         affectedRanges,
         inverse: [{ id: 'table.remove', unitId: context.workbook.unitId, sheetId: params.sourceSheetId ?? context.workbook.primarySheetId, params: { tableId: params.id, range: params.sourceRange }, affectedRanges }],
-        apply: () => context.workbook.addTable(params),
+        apply: () => { context.workbook.addTable(params); },
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -1357,7 +1375,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
         params: { tableId: params.tableId, range: previous.sourceRange },
         affectedRanges,
         inverse: [{ id: 'table.add', unitId: context.workbook.unitId, sheetId: params.sheetId, params: previous, affectedRanges }],
-        apply: () => context.workbook.removeTable(params.tableId),
+        apply: () => { context.workbook.removeTable(params.tableId); },
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -1598,7 +1616,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
         const rowValues = params.values[rowOffset] ?? [];
         for (let columnOffset = 0; columnOffset < rowValues.length; columnOffset += 1) {
           const value = rowValues[columnOffset];
-          if (value) sheet.cells.set(params.startRow + rowOffset, params.startColumn + columnOffset, clearFormulaProvenance(value));
+          if (value) sheet.cells.set(params.startRow + rowOffset, params.startColumn + columnOffset, structuredClone(value));
         }
       }
     },
@@ -1789,7 +1807,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
           id: 'range.clear.restore',
           unitId: context.workbook.unitId,
           sheetId: params.sheetId,
-          params: { sheetId: params.sheetId, range, snapshot: plan.snapshot },
+          params: { sheetId: params.sheetId, range, family: params.family, snapshot: plan.snapshot },
           affectedRanges,
         }],
         apply: () => runtime.registry.getMutation('range.clear')({ id: 'range.clear', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { ...params, range }, affectedRanges }, context),
@@ -2013,12 +2031,12 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
   runtime.registry.registerMutation<SetFreezeParams>({
     id: 'freeze.set',
     handler: (item, context) => {
-      if (!isRecord(item.params) || typeof item.params.sheetId !== 'string' || !isWorksheetPane(item.params.pane)) throw new Error('Invalid freeze.set mutation payload');
+      if (!isRecord(item.params) || typeof item.params.sheetId !== 'string' || !isCanonicalWorksheetPane(item.params.pane)) throw new Error('Invalid freeze.set mutation payload');
       const params = item.params as SetFreezeParams;
       context.workbook.getSheet(params.sheetId).pane = { ...params.pane };
     },
     metadata: {
-      schema: { name: 'SetPane', validate: (value: unknown) => isRecord(value) && typeof value.sheetId === 'string' && isWorksheetPane(value.pane) },
+      schema: { name: 'SetPane', validate: (value: unknown) => isRecord(value) && typeof value.sheetId === 'string' && isCanonicalWorksheetPane(value.pane) },
       permission: { capability: 'sheet.view.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: () => [], mode: 'exact' },
       inverseIds: ['freeze.set'],
@@ -2166,12 +2184,13 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
     handler: (item, context) => {
       if (!isSheetAtCountMutation(item.params)) throw new Error('Invalid rows.inserted mutation payload');
       const params = item.params;
-      applyStructuralTransform(context.workbook, { kind: 'insert-rows', sheetId: params.sheetId, at: params.at, count: params.count });
+      return applyStructuralTransform(context, { kind: 'insert-rows', sheetId: params.sheetId, at: params.at, count: params.count });
     },
     metadata: {
       schema: { name: 'RowsInserted', validate: isSheetAtCountMutation },
       permission: { capability: 'sheet.structure.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: structuralAffectedRanges, mode: 'declared' },
+      historyRebase: { kind: 'axis', axis: 'row', direction: 1 },
       inverseIds: ['rows.deleted'],
     },
   });
@@ -2180,12 +2199,13 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
     handler: (item, context) => {
       if (!isSheetAtCountMutation(item.params)) throw new Error('Invalid rows.deleted mutation payload');
       const params = item.params;
-      applyStructuralTransform(context.workbook, { kind: 'delete-rows', sheetId: params.sheetId, at: params.at, count: params.count });
+      return applyStructuralTransform(context, { kind: 'delete-rows', sheetId: params.sheetId, at: params.at, count: params.count });
     },
     metadata: {
       schema: { name: 'RowsDeleted', validate: isSheetAtCountMutation },
       permission: { capability: 'sheet.structure.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: structuralAffectedRanges, mode: 'declared' },
+      historyRebase: { kind: 'axis', axis: 'row', direction: -1 },
       inverseIds: ['rows.inserted', 'cell.restore'],
     },
   });
@@ -2194,12 +2214,13 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
     handler: (item, context) => {
       if (!isSheetAtCountMutation(item.params)) throw new Error('Invalid columns.inserted mutation payload');
       const params = item.params;
-      applyStructuralTransform(context.workbook, { kind: 'insert-columns', sheetId: params.sheetId, at: params.at, count: params.count });
+      return applyStructuralTransform(context, { kind: 'insert-columns', sheetId: params.sheetId, at: params.at, count: params.count });
     },
     metadata: {
       schema: { name: 'ColumnsInserted', validate: isSheetAtCountMutation },
       permission: { capability: 'sheet.structure.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: columnStructuralAffectedRanges, mode: 'declared' },
+      historyRebase: { kind: 'axis', axis: 'column', direction: 1 },
       inverseIds: ['columns.deleted'],
     },
   });
@@ -2208,12 +2229,13 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
     handler: (item, context) => {
       if (!isSheetAtCountMutation(item.params)) throw new Error('Invalid columns.deleted mutation payload');
       const params = item.params;
-      applyStructuralTransform(context.workbook, { kind: 'delete-columns', sheetId: params.sheetId, at: params.at, count: params.count });
+      return applyStructuralTransform(context, { kind: 'delete-columns', sheetId: params.sheetId, at: params.at, count: params.count });
     },
     metadata: {
       schema: { name: 'ColumnsDeleted', validate: isSheetAtCountMutation },
       permission: { capability: 'sheet.structure.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: columnStructuralAffectedRanges, mode: 'declared' },
+      historyRebase: { kind: 'axis', axis: 'column', direction: -1 },
       inverseIds: ['columns.inserted', 'cell.restore'],
     },
   });
@@ -2507,7 +2529,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
             affectedRanges,
           },
         ],
-        apply: () => applyStructuralTransform(context.workbook, { kind: 'insert-rows', sheetId: params.sheetId, at: params.at, count: params.count }),
+        apply: () => applyStructuralTransform(context, { kind: 'insert-rows', sheetId: params.sheetId, at: params.at, count: params.count }),
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -2548,7 +2570,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
             affectedRanges: cellRange({ sheetId: params.sheetId, row: entry.row, column: entry.column }),
           })),
         ],
-        apply: () => applyStructuralTransform(context.workbook, { kind: 'delete-rows', sheetId: params.sheetId, at: params.at, count: params.count }),
+        apply: () => applyStructuralTransform(context, { kind: 'delete-rows', sheetId: params.sheetId, at: params.at, count: params.count }),
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -2580,7 +2602,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
             affectedRanges,
           },
         ],
-        apply: () => applyStructuralTransform(context.workbook, { kind: 'insert-columns', sheetId: params.sheetId, at: params.at, count: params.count }),
+        apply: () => applyStructuralTransform(context, { kind: 'insert-columns', sheetId: params.sheetId, at: params.at, count: params.count }),
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -2621,7 +2643,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
             affectedRanges: cellRange({ sheetId: params.sheetId, row: entry.row, column: entry.column }),
           })),
         ],
-        apply: () => applyStructuralTransform(context.workbook, { kind: 'delete-columns', sheetId: params.sheetId, at: params.at, count: params.count }),
+        apply: () => applyStructuralTransform(context, { kind: 'delete-columns', sheetId: params.sheetId, at: params.at, count: params.count }),
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -3105,6 +3127,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       schema: { name: 'DefinedNameSet', validate: isNameSetMutation },
       permission: { capability: 'workbook.defined-name.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: () => [], mode: 'exact' },
+      calculationContextEffect: CALCULATION_CONTEXT_EFFECTS.syncDefinedNames,
       inverseIds: ['name.set', 'name.remove'],
     },
   });
@@ -3119,6 +3142,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       schema: { name: 'DefinedNameRemove', validate: isNameRemoveMutation },
       permission: { capability: 'workbook.defined-name.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: () => [], mode: 'exact' },
+      calculationContextEffect: CALCULATION_CONTEXT_EFFECTS.syncDefinedNames,
       inverseIds: ['name.set'],
     },
   });

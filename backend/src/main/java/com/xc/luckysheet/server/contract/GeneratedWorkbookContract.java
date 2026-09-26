@@ -7,10 +7,53 @@ import java.util.Set;
 public final class GeneratedWorkbookContract {
     public static final String API_VERSION = "2026-09-21";
     public static final String SNAPSHOT_SCHEMA = "WorkbookSnapshot";
-    public static final int SNAPSHOT_VERSION = 9;
+    public static final int SNAPSHOT_VERSION = 10;
     public static final int MAX_WORKBOOK_NAME_LENGTH = 255;
     public static final int MAX_DRAWING_SOURCE_CELLS = 100000;
     public static final Set<String> ERROR_CODES = Set.of("UNAUTHENTICATED", "FORBIDDEN", "VALIDATION_ERROR", "NOT_FOUND", "CONFLICT", "OPERATION_ID_REUSED", "ARTIFACT_REVISION_CONFLICT", "WORKBOOK_TRASHED", "TIMEOUT", "SERVICE_UNAVAILABLE", "INTERNAL_ERROR", "STORAGE_CORRUPT", "UNSUPPORTED_FEATURE");
+    public static final Set<String> SERVER_STRUCTURAL_PLANNER_MUTATIONS = Set.of(
+        "rows.inserted",
+        "rows.deleted",
+        "columns.inserted",
+        "columns.deleted",
+        "cells.inserted",
+        "cells.deleted",
+        "cells.inserted.restore",
+        "cells.deleted.restore",
+        "rows.permuted",
+        "range.move",
+        "range.paste",
+        "fill.applied",
+        "fill.restored",
+        "sheet.add",
+        "sheet.remove",
+        "sheet.rename",
+        "sheet.duplicated",
+        "sheet.restore",
+        "sheet.reordered",
+        "sheetTable.add",
+        "sheetTable.remove",
+        "sheetTable.update",
+        "table.add",
+        "table.remove",
+        "tableSheet.update",
+        "ganttSheet.update",
+        "reportSheet.update"
+    );
+    public static final Set<String> STRUCTURAL_PATCH_MUTATIONS = Set.of(
+        "rows.inserted",
+        "rows.deleted",
+        "columns.inserted",
+        "columns.deleted",
+        "cells.inserted",
+        "cells.deleted",
+        "cells.inserted.restore",
+        "cells.deleted.restore",
+        "rows.permuted",
+        "range.move",
+        "sheet.rename",
+        "sheetTable.update"
+    );
     public static final Map<String, MutationCapability> MUTATIONS = Map.ofEntries(
         Map.entry("cell.set", new MutationCapability("remote", true, "CellSet", "editor", "range", true, "edit-cell", true, "declared", "range")),
         Map.entry("workbook.editing.options.set", new MutationCapability("remote", true, "WorkbookEditingOptions", "editor", "exact", true, "none", false, "none", "workbook")),
@@ -42,6 +85,7 @@ public final class GeneratedWorkbookContract {
         Map.entry("dataRegion.materialize.commit", new MutationCapability("local", false, "DataRegionMaterializeCommit", "editor", "none", false, "edit-cell", true, "declared", "range")),
         Map.entry("dataRegion.materialize.restore", new MutationCapability("local", false, "DataRegionMaterializeRestore", "editor", "none", false, "edit-cell", true, "declared", "range")),
         Map.entry("analysis.view.replace", new MutationCapability("remote", true, "AnalysisViewReplace", "editor", "exact", true, "none", false, "none", "workbook")),
+        Map.entry("range.move", new MutationCapability("remote", true, "RangeMove", "editor", "exact", true, "edit-cell", true, "exact", "range")),
         Map.entry("style.preset.set", new MutationCapability("remote", true, "CellStylePreset", "editor", "range", true, "format", true, "declared", "range")),
         Map.entry("cf.reorder", new MutationCapability("remote", true, "ConditionalFormatReorder", "editor", "exact", true, "format", true, "declared", "range")),
         Map.entry("drawing.visibility.set", new MutationCapability("remote", true, "DrawingVisibilitySet", "editor", "exact", true, "edit-objects", true, "declared", "drawing")),
@@ -148,6 +192,7 @@ public final class GeneratedWorkbookContract {
         Map.entry("analysis.view.replace", new PermissionPolicy("structure", "none", false, "none", "workbook")),
         Map.entry("range.clear", new PermissionPolicy("edit-cell", "edit-cell", true, "declared", "range")),
         Map.entry("range.clear.restore", new PermissionPolicy("edit-cell", "edit-cell", true, "declared", "range")),
+        Map.entry("range.move", new PermissionPolicy("edit-cell", "edit-cell", true, "exact", "range")),
         Map.entry("range.paste", new PermissionPolicy("edit-cell", "edit-cell", true, "declared", "range")),
         Map.entry("range.set", new PermissionPolicy("edit-cell", "edit-cell", true, "declared", "range")),
         Map.entry("row.hidden", new PermissionPolicy("structure", "edit-cell", true, "declared", "range")),
@@ -217,6 +262,10 @@ public final class GeneratedWorkbookContract {
 
     public static String protectionAllowField(String action) {
         return PROTECTION_ALLOW_FIELDS.get(action);
+    }
+
+    public static boolean requiresServerStructuralPlanner(String mutationId) {
+        return SERVER_STRUCTURAL_PLANNER_MUTATIONS.contains(mutationId);
     }
 
     public record MutationCapability(String durability, boolean remote, String schema, String minRole, String rebasePolicy, boolean javaReducer, String protectionAction, boolean checksProtection, String affectedRangeMode, String objectScope) {}

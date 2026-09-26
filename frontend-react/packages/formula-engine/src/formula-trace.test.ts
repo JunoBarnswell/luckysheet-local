@@ -16,6 +16,7 @@ test('formula trace evaluates real AST nodes in order', () => {
 
   const standalone = evaluateFormulaWithTrace(parseFormula('=A1+2'), {
     currentCell: { sheetId: 'Sheet1', row: 0, column: 1 },
+    sheetOrder: [{ id: 'Sheet1', name: 'Sheet1' }],
     readCell: () => 3,
     readRange: () => [],
   });

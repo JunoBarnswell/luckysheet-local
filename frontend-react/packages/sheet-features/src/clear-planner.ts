@@ -8,7 +8,7 @@ import type {
   RangeRef,
   WorksheetModel,
 } from '@react-sheets/core-model';
-import { sheetRuleRegistry } from '@react-sheets/core-model';
+import { clearFormulaProvenance, sheetRuleRegistry } from '@react-sheets/core-model';
 
 /** The only clear semantics accepted by the worksheet range command. */
 export type ClearFamily = 'contents' | 'formats' | 'all' | 'comments-and-notes' | 'hyperlinks';
@@ -20,7 +20,8 @@ export interface ClearRangeParams {
 }
 
 export interface ClearRangeSnapshot {
-  cells: Array<{ row: number; column: number; value?: CellData }>;
+  /** Omitted for metadata-only clear operations so inverse replay never touches cell storage. */
+  cells?: Array<{ row: number; column: number; value?: CellData }>;
   notes: Array<{ row: number; column: number; note: CellNote }>;
   hyperlinks: Array<{ row: number; column: number; hyperlink: CellHyperlink }>;
   comments: CommentThread[];
@@ -52,11 +53,10 @@ function contains(range: RangeRef, row: number, column: number): boolean {
   return range.startRow <= row && row <= range.endRow && range.startColumn <= column && column <= range.endColumn;
 }
 
-function snapshotCells(sheet: WorksheetModel, range: RangeRef): ClearRangeSnapshot['cells'] {
-  const cells: ClearRangeSnapshot['cells'] = [];
-  sheet.cells.forEach((cell, row, column) => {
-    if (contains(range, row, column)) cells.push({ row, column, value: structuredClone(cell) });
-  });
+function snapshotCells(sheet: WorksheetModel, range: RangeRef): NonNullable<ClearRangeSnapshot['cells']> {
+  const cells: NonNullable<ClearRangeSnapshot['cells']> = [];
+  sheet.cells.forEachInRange(range.startRow, range.endRow, range.startColumn, range.endColumn,
+    (cell, row, column) => cells.push({ row, column, value: structuredClone(cell) }));
   return cells;
 }
 
@@ -79,7 +79,7 @@ export function createClearRangePlan(sheet: WorksheetModel, input: ClearRangePar
     params: { ...input, range },
     range,
     snapshot: {
-      cells: snapshotCells(sheet, range),
+      ...(input.family === 'comments-and-notes' || input.family === 'hyperlinks' ? {} : { cells: snapshotCells(sheet, range) }),
       notes,
       hyperlinks,
       comments,
@@ -89,9 +89,10 @@ export function createClearRangePlan(sheet: WorksheetModel, input: ClearRangePar
   };
 }
 
-function clearCellContents(cell: CellData): CellData {
-  const next = { ...cell, value: null };
+export function clearCellContents(cell: CellData): CellData {
+  const next = clearFormulaProvenance({ ...cell, value: null });
   delete next.formula;
+  delete next.formulaValue;
   delete next.displayValue;
   return next;
 }
@@ -107,32 +108,21 @@ function clearCellFormats(cell: CellData): CellData {
 
 export function applyClearRangePlan(sheet: WorksheetModel, plan: ClearRangePlan): void {
   const { range, params } = plan;
-  const cells: Array<{ row: number; column: number; cell: CellData }> = [];
-  sheet.cells.forEach((cell, row, column) => {
-    if (contains(range, row, column)) cells.push({ row, column, cell });
-  });
   if (params.family === 'comments-and-notes') {
-    for (const entry of cells) {
-      const { row, column, cell: current } = entry;
-      sheet.review.removeNote(row, column);
-      for (const thread of sheet.review.getThreadsAt(row, column)) sheet.review.removeThread(thread.id);
-    }
+    for (const { row, column } of sheet.review.noteEntries()) if (contains(range, row, column)) sheet.review.removeNote(row, column);
     for (const thread of sheet.review.threadEntries()) if (contains(range, thread.row, thread.column)) sheet.review.removeThread(thread.id);
     return;
   }
   if (params.family === 'hyperlinks') {
-    for (const entry of cells) {
-      const { row, column, cell: current } = entry;
-      if (current?.hyperlink !== undefined || current?.hyperlinkDetail !== undefined) {
-        const next = { ...current };
-        delete next.hyperlink;
-        delete next.hyperlinkDetail;
-        sheet.cells.set(row, column, next);
-      }
-      sheet.hyperlinks.delete(`${row}:${column}`);
+    for (const key of [...sheet.hyperlinks.keys()]) {
+      const [row, column] = key.split(':').map(Number);
+      if (Number.isInteger(row) && Number.isInteger(column) && contains(range, row!, column!)) sheet.hyperlinks.delete(key);
     }
     return;
   }
+  const cells: Array<{ row: number; column: number; cell: CellData }> = [];
+  sheet.cells.forEachInRange(range.startRow, range.endRow, range.startColumn, range.endColumn,
+    (cell, row, column) => cells.push({ row, column, cell }));
   for (const entry of cells) {
     const { row, column, cell: current } = entry;
     if (params.family === 'contents') sheet.cells.set(row, column, clearCellContents(current));
@@ -154,18 +144,19 @@ export function applyClearRangePlan(sheet: WorksheetModel, plan: ClearRangePlan)
 }
 
 export function restoreClearRangeSnapshot(sheet: WorksheetModel, range: RangeRef, snapshot: ClearRangeSnapshot): void {
-  const cells: Array<{ row: number; column: number }> = [];
-  sheet.cells.forEach((_cell, row, column) => {
-    if (contains(range, row, column)) cells.push({ row, column });
-  });
-  for (const { row, column } of cells) sheet.cells.delete(row, column);
+  if (snapshot.cells !== undefined) {
+    const cells: Array<{ row: number; column: number }> = [];
+    sheet.cells.forEachInRange(range.startRow, range.endRow, range.startColumn, range.endColumn,
+      (_cell, row, column) => cells.push({ row, column }));
+    for (const { row, column } of cells) sheet.cells.delete(row, column);
+  }
   for (const { row, column } of sheet.review.noteEntries()) if (contains(range, row, column)) sheet.review.removeNote(row, column);
   for (const key of [...sheet.hyperlinks.keys()]) {
     const [row, column] = key.split(':').map(Number);
     if (contains(range, row!, column!)) sheet.hyperlinks.delete(key);
   }
   for (const thread of sheet.review.threadEntries()) if (contains(range, thread.row, thread.column)) sheet.review.removeThread(thread.id);
-  for (const item of snapshot.cells) if (item.value !== undefined) sheet.cells.set(item.row, item.column, structuredClone(item.value));
+  for (const item of snapshot.cells ?? []) if (item.value !== undefined) sheet.cells.set(item.row, item.column, structuredClone(item.value));
   for (const item of snapshot.notes) sheet.review.setNote(item.row, item.column, item.note);
   for (const item of snapshot.hyperlinks) sheet.hyperlinks.set(`${item.row}:${item.column}`, structuredClone(item.hyperlink));
   for (const thread of snapshot.comments) sheet.review.addThread(thread);

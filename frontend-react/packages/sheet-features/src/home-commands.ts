@@ -10,13 +10,13 @@ import type {
   WorkbookModel,
   WorksheetModel,
 } from '@react-sheets/core-model';
-import { protectionResolver } from '@react-sheets/core-model';
+import { MAX_SHEET_COLUMN_COUNT, MAX_SHEET_ROW_COUNT, protectionResolver } from '@react-sheets/core-model';
 import type { CommandContext, CommandResult, CommandRuntime, MutationInfo } from '@react-sheets/command-runtime';
 import { normalizeAutoFilterModel, validateDataInput, type DataSortParams } from './data-features';
 import { assertDataRegionContextMatches, filterOwnerFromDataRegionContext, resolveDataRegionContext, type DataRegionContext } from './data-region-context';
 import { resolveActiveAutoFilter, resolveFilterOwner, validateFilterOwnership } from './sheet-table-features';
 import { copyRangeToClipboardData, createPasteSpecialSpec, shiftFormula, type ClipboardPayload } from './clipboard';
-import { resolveGoToRange, resolveGoToSpecial, type GoToSpecialKind, type GoToSpecialParams } from './editing';
+import { applyRangeMoveMutation, resolveGoToRange, resolveGoToSpecial, type GoToSpecialKind, type GoToSpecialParams } from './editing';
 import { isFormulaError, isSpillChild, type FormulaError, type ScalarValue } from '@react-sheets/formula-engine';
 import { parseReplacementValue, replacementCell, replaceFindText } from './find-replace';
 import { isCellInputInterpretationContext, type CellInputInterpretationContext } from './text-input';
@@ -417,8 +417,11 @@ function isValidFormatPainterParams(value: unknown): value is FormatPainterParam
 }
 
 function isValidRangeMoveParams(value: unknown): value is RangeMoveParams {
-  return isRecord(value) && typeof value.sheetId === 'string' && isRange(value.sourceRange)
-    && isRecord(value.targetOrigin) && isFiniteInt(value.targetOrigin.row) && isFiniteInt(value.targetOrigin.column)
+  if (!isRecord(value) || typeof value.sheetId !== 'string' || !isRange(value.sourceRange)
+    || !isRecord(value.targetOrigin)) return false;
+  const source = value.sourceRange;
+  return [source.startRow, source.endRow, source.startColumn, source.endColumn,
+    value.targetOrigin.row, value.targetOrigin.column].every(Number.isSafeInteger)
     && (value.copy === undefined || typeof value.copy === 'boolean')
     && (value.insert === undefined || typeof value.insert === 'boolean');
 }
@@ -1027,27 +1030,42 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
       if (!isValidRangeMoveParams(params)) throw new Error('Invalid range move parameters');
       const sourceRange = normalizeRange(params.sourceRange, params.sheetId);
       const sheet = context.workbook.getSheet(params.sheetId);
+      if (sourceRange.startRow < 0 || sourceRange.startColumn < 0
+        || sourceRange.endRow >= sheet.rowCount || sourceRange.endColumn >= sheet.columnCount) {
+        throw new Error('Range move source is outside worksheet bounds');
+      }
+      if (params.targetOrigin.row < 0 || params.targetOrigin.column < 0) throw new Error('Range move target is outside worksheet bounds');
+      const targetEndRow = params.targetOrigin.row + sourceRange.endRow - sourceRange.startRow;
+      const targetEndColumn = params.targetOrigin.column + sourceRange.endColumn - sourceRange.startColumn;
+      if (!Number.isSafeInteger(targetEndRow) || !Number.isSafeInteger(targetEndColumn)) {
+        throw new Error('Range move target exceeds safe worksheet coordinates');
+      }
       assertNoDataRegionIntersection(sheet, sourceRange, 'Range move');
       const targetRange: RangeRef = {
         sheetId: params.sheetId,
         startRow: params.targetOrigin.row,
-        endRow: params.targetOrigin.row + sourceRange.endRow - sourceRange.startRow,
+        endRow: targetEndRow,
         startColumn: params.targetOrigin.column,
-        endColumn: params.targetOrigin.column + sourceRange.endColumn - sourceRange.startColumn,
+        endColumn: targetEndColumn,
       };
       assertNoDataRegionIntersection(sheet, targetRange, 'Range move');
-      const clipboard = copyRangeToClipboardData(context.workbook, sourceRange);
       const copy = params.copy === true;
       const insert = params.insert === true;
-      const targetEndRow = params.targetOrigin.row + sourceRange.endRow - sourceRange.startRow;
-      const targetEndColumn = params.targetOrigin.column + sourceRange.endColumn - sourceRange.startColumn;
-      if (targetEndRow >= sheet.rowCount || targetEndColumn >= sheet.columnCount) throw new Error('Range move exceeds worksheet bounds');
+      if (targetEndRow >= MAX_SHEET_ROW_COUNT || targetEndColumn >= MAX_SHEET_COLUMN_COUNT) {
+        throw new Error('Range move exceeds worksheet bounds');
+      }
       if (targetRange.startRow === sourceRange.startRow && targetRange.startColumn === sourceRange.startColumn) throw new Error('Range drag cannot target the source range');
       if (!copy && rangesIntersect(sourceRange, targetRange)) throw new Error('Range move cannot overlap its source range');
       if (insert && params.targetOrigin.row !== sourceRange.startRow && params.targetOrigin.column !== sourceRange.startColumn) throw new Error('Range drag insert must move along one axis');
       let pasteSource = sourceRange;
       if (insert) {
         const axis = params.targetOrigin.row !== sourceRange.startRow ? 'row' as const : 'column' as const;
+        const insertionAt = axis === 'row' ? targetRange.startRow : targetRange.startColumn;
+        const sourceStart = axis === 'row' ? sourceRange.startRow : sourceRange.startColumn;
+        const sourceEnd = axis === 'row' ? sourceRange.endRow : sourceRange.endColumn;
+        if (insertionAt > sourceStart && insertionAt <= sourceEnd) {
+          throw new Error('Insert-drag cannot split its source range');
+        }
         const count = axis === 'row' ? targetRange.endRow - targetRange.startRow + 1 : targetRange.endColumn - targetRange.startColumn + 1;
         runtime.execute('sheet.cells.insert', {
           sheetId: params.sheetId,
@@ -1057,22 +1075,30 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
           operation: 'insert',
           axis,
         });
-        if (!copy) {
-          pasteSource = axis === 'row' && sourceRange.startRow >= targetRange.startRow
-            ? { ...sourceRange, startRow: sourceRange.startRow + count, endRow: sourceRange.endRow + count }
-            : axis === 'column' && sourceRange.startColumn >= targetRange.startColumn
-              ? { ...sourceRange, startColumn: sourceRange.startColumn + count, endColumn: sourceRange.endColumn + count }
-              : sourceRange;
-        }
+        pasteSource = axis === 'row' && sourceRange.startRow >= targetRange.startRow
+          ? { ...sourceRange, startRow: sourceRange.startRow + count, endRow: sourceRange.endRow + count }
+          : axis === 'column' && sourceRange.startColumn >= targetRange.startColumn
+            ? { ...sourceRange, startColumn: sourceRange.startColumn + count, endColumn: sourceRange.endColumn + count }
+            : sourceRange;
+      } else {
+        pasteSource = sourceRange;
       }
-      clipboard.transfer = copy ? 'copy' : 'move';
+      if (!copy) {
+        return applyRangeMoveMutation(context, {
+          sheetId: params.sheetId,
+          sourceRange: pasteSource,
+          targetOrigin: params.targetOrigin,
+        });
+      }
+      const clipboard = copyRangeToClipboardData(context.workbook, pasteSource);
+      clipboard.transfer = 'copy';
       return runtime.execute('sheet.range.paste', {
         sheetId: params.sheetId,
         targetOrigin: params.targetOrigin,
         clipboard,
-        sourceRange: copy ? undefined : pasteSource,
-        clearSource: copy ? false : true,
-        transfer: copy ? 'copy' : 'move',
+        sourceRange: undefined,
+        clearSource: false,
+        transfer: 'copy',
         spec: createPasteSpecialSpec(),
       });
     },

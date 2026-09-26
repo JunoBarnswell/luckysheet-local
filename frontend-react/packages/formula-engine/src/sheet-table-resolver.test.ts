@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { rewriteFormulaTableReferences } from './ast-rewrite';
 import { FormulaEngine } from './formula-engine';
-import type { SheetTableRef } from './sheet-table-resolver';
+import { normalizeSheetTables, type SheetTableRef } from './sheet-table-resolver';
 
 const sampleTable: SheetTableRef = {
   id: 't1',
@@ -15,6 +16,27 @@ const sampleTable: SheetTableRef = {
     { id: 'c2', name: 'Amount' },
   ],
 };
+
+test('table rename changes only matching structured-reference names and preserves literals', () => {
+  const formula = '=SUM(Sales[Amount])+Sales [@Amount]+ÅSales[Amount]+IF(A1="Sales[Amount]",1,0)';
+  assert.equal(
+    rewriteFormulaTableReferences(formula, 'Sales', 'Orders'),
+    '=SUM(Orders[Amount])+Orders [@Amount]+ÅSales[Amount]+IF(A1="Sales[Amount]",1,0)',
+  );
+  assert.equal(rewriteFormulaTableReferences('=[Book.xlsx]Sales[Amount]', 'Sales', 'Orders'), '=[Book.xlsx]Sales[Amount]');
+  assert.throws(() => rewriteFormulaTableReferences('=SUM(Sales[Amount]', 'Sales', 'Orders'), /UNSUPPORTED_STRUCTURAL_REFERENCE/);
+});
+
+test('Sheet Table formula context rejects duplicate workbook identities', () => {
+  assert.throws(() => normalizeSheetTables([
+    sampleTable,
+    { ...sampleTable, id: 't2', sheetId: 'Sheet2', name: 'sales' },
+  ]), /identities must be unique/);
+  assert.throws(() => normalizeSheetTables([
+    sampleTable,
+    { ...sampleTable, sheetId: 'Sheet2', name: 'Orders' },
+  ]), /identities must be unique/);
+});
 
 test('FormulaEngine resolves structured table column references', () => {
   const engine = new FormulaEngine({ defaultSheetId: 'Sheet1' });
@@ -71,4 +93,29 @@ test('FormulaEngine resolves #All structured table specifier', () => {
   engine.setValue('B2', 20);
   engine.setFormula('C1', '=SUM(Sales[#All])');
   assert.equal(engine.getCellValue('C1'), 30);
+});
+
+test('FormulaEngine refreshes only formulas bound to a changed table, including through a defined name', () => {
+  const engine = new FormulaEngine({ defaultSheetId: 'Sheet1' });
+  const initialTable: SheetTableRef = {
+    ...sampleTable,
+    range: { ...sampleTable.range, endRow: 2 },
+  };
+  engine.setSheetTables([initialTable]);
+  engine.setDefinedNameModels([{ name: 'Revenue', formula: 'SUM(Sales[Amount])', scope: 'workbook' }]);
+  engine.setValue('B2', 10);
+  engine.setValue('B3', 20);
+  engine.setValue('B4', 30);
+  engine.setFormula('D1', '=Revenue');
+  engine.setFormula('E1', '=1+1');
+  assert.equal(engine.getCellValue('D1'), 30);
+
+  const report = engine.setSheetTables([{
+    ...initialTable,
+    range: { ...initialTable.range, endRow: 3 },
+  }]);
+
+  assert.equal(engine.getCellValue('D1'), 60);
+  assert.ok(report.recalculated.some(({ row, column }) => row === 0 && column === 3));
+  assert.ok(!report.recalculated.some(({ row, column }) => row === 0 && column === 4));
 });

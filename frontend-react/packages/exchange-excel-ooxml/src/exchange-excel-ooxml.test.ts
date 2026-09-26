@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { createPivotMemberKey, defaultChartSubtype, planConnectorRoute, WorkbookModel } from '@react-sheets/core-model';
+import { createPivotMemberKey, defaultChartSubtype, planConnectorRoute, planSheetIdentityTransform, WorkbookModel } from '@react-sheets/core-model';
 import { exportOoxmlDocument } from './export';
 import { importOoxmlDocument } from './import';
 import { scanFormulaPreserveIssues, scanSnapshotFeatures } from './feature-scan';
@@ -446,7 +446,9 @@ describe('exchange-excel-ooxml', () => {
     const emitted = loadOpcPackageGraph(buffer);
     assert.match(strFromU8(emitted.files['xl/worksheets/sheet1.xml']!), /<hyperlink ref="A1"/);
     assert.match(strFromU8(emitted.files['xl/worksheets/_rels/sheet1.xml.rels']!), /https:\/\/openai\.com\//);
-    const imported = await importOoxmlDocument({ fileName: 'links.xlsx', buffer, options: { compatibilityTarget: 'B' } });
+    const worksheetXml = strFromU8(emitted.packageGraph.parts['xl/worksheets/sheet1.xml']!);
+    emitted.packageGraph.parts['xl/worksheets/sheet1.xml'] = strToU8(worksheetXml.replace('location="Target!B2"', 'location="target!$b$2"'));
+    const imported = await importOoxmlDocument({ fileName: 'links.xlsx', buffer: zipOpcPartsBuffer(emitted.packageGraph.parts), options: { compatibilityTarget: 'B' } });
     assert.equal(imported.snapshot.sheets[0]?.hyperlinks?.[0]?.hyperlink.target.kind, 'url');
     assert.deepEqual(imported.snapshot.sheets[0]?.hyperlinks?.[1]?.hyperlink.target, { kind: 'email', address: 'team@example.com', subject: 'Review' });
     assert.deepEqual(imported.snapshot.sheets[0]?.hyperlinks?.[2]?.hyperlink.target, { kind: 'sheet', sheetId: 'sheet-target', address: 'B2' });
@@ -664,6 +666,27 @@ describe('exchange-excel-ooxml', () => {
 
     const controlExport = await exportOoxmlDocument({ snapshot: workbook.snapshot(), fileName: 'native-controls.xlsx', options: { compatibilityTarget: 'B' } });
     assert.equal(controlExport.report.issues.some((issue) => issue.feature === 'images' && issue.status === 'unsupported'), false);
+
+    const importedDocument = await importOoxmlDocument({
+      fileName: 'native-controls.xlsx',
+      buffer: zipOpcPartsBuffer(output.packageGraph.parts),
+      options: { compatibilityTarget: 'B', compatibilityMode: 'balanced' },
+    });
+    const editedControlSnapshot = structuredClone(importedDocument.snapshot);
+    editedControlSnapshot.name = 'Edited native controls';
+    const regeneratedControls = await exportOoxmlDocument({
+      snapshot: editedControlSnapshot,
+      artifact: importedDocument.artifact,
+      fileName: 'native-controls.xlsx',
+      options: { compatibilityTarget: 'B' },
+    });
+    const regeneratedPackage = loadOpcPackageGraph(regeneratedControls.buffer);
+    const regeneratedWorksheet = strFromU8(regeneratedPackage.files['xl/worksheets/sheet1.xml']!);
+    const regeneratedWorkbook = strFromU8(regeneratedPackage.files['xl/workbook.xml']!);
+    assert.match(regeneratedWorksheet, /slicerList/);
+    assert.match(regeneratedWorksheet, /timelineRefs/);
+    assert.match(regeneratedWorkbook, /slicerCaches/);
+    assert.match(regeneratedWorkbook, /timelineCacheRefs/);
 
     const withoutControls = structuredClone(imported);
     const controlSheet = withoutControls.sheets[0]!;
@@ -963,6 +986,49 @@ describe('exchange-excel-ooxml', () => {
     const rewrittenXml = strFromU8(rewritten.files[preservedChartPart!]!);
     assert.match(rewrittenXml, /unknownChartNode/);
     assert.match(rewrittenXml, /uri="\{test\}"/);
+  });
+
+  it('round-trips linked chart titles and rejects unmodeled chart text formulas', () => {
+    const workbook = new WorkbookModel('wb-linked-chart-title', 'Linked Chart Title');
+    const sheet = workbook.getSheet(workbook.primarySheetId);
+    sheet.cells.set(0, 0, { value: 'Quarterly Sales' });
+    sheet.cells.set(1, 0, { value: 10 });
+    sheet.drawings.push({
+      id: 'linked-title-drawing', sheetId: sheet.id, kind: 'chart',
+      anchor: { kind: 'one-cell', row: 3, column: 2 },
+      transform: { x: 0, y: 0, width: 320, height: 220 }, zIndex: 1, payloadId: 'linked-title-chart',
+    });
+    sheet.drawingPayloads.set('linked-title-chart', {
+      kind: 'chart', chartId: 'linked-title-chart', chartType: 'line', subtype: 'line',
+      source: { kind: 'worksheet-ranges', ranges: [{ sheetId: sheet.id, startRow: 0, endRow: 1, startColumn: 0, endColumn: 0 }] },
+      elements: { hiddenData: 'show', titleText: { text: 'Quarterly Sales', linkedFormula: "='Sheet1'!$A$1" } },
+    });
+    planSheetIdentityTransform(workbook, {
+      kind: 'rename', sourceSheetId: sheet.id, sourceName: 'Sheet1', targetName: 'Renamed Sheet',
+    }).apply();
+
+    const output = loadOpcPackageGraph(exportSnapshotToOoxmlBuffer(workbook.snapshot()));
+    const chartPart = Object.keys(output.files).find((name) => name.startsWith('xl/charts/react-chart-'));
+    assert.ok(chartPart);
+    const xml = strFromU8(output.files[chartPart!]!);
+    assert.match(xml, /<c:f>&apos;Renamed Sheet&apos;!\$A\$1<\/c:f>/);
+    const imported = parseLoadedOoxml(output).snapshot;
+    const importedChart = Object.values(imported.sheets[0]!.drawingPayloads).find((payload) => payload.kind === 'chart');
+    assert.equal(importedChart?.kind, 'chart');
+    if (importedChart?.kind !== 'chart') throw new Error('Linked chart title did not import as a canonical chart');
+    assert.equal(importedChart.elements.titleText?.linkedFormula, "='Renamed Sheet'!$A$1");
+    assert.equal(importedChart.elements.titleText?.text, 'Quarterly Sales');
+
+    const unsupported = structuredClone(workbook.snapshot());
+    const unsupportedChart = unsupported.sheets[0]!.drawingPayloads['linked-title-chart'];
+    if (unsupportedChart?.kind !== 'chart') throw new Error('Linked chart title fixture is missing');
+    unsupportedChart.elements.valueAxis = {
+      id: 'value', position: 'left', titleText: { linkedFormula: "='Sheet1'!$A$1" },
+    };
+    assert.throws(
+      () => exportSnapshotToOoxmlBuffer(unsupported),
+      /UNSUPPORTED_FEATURE: OOXML chart text formula valueAxis\.titleText\.linkedFormula/,
+    );
   });
 
   it('serializes and imports native Sparkline design and group semantics', async () => {
@@ -1327,7 +1393,7 @@ describe('exchange-excel-ooxml', () => {
     assert.equal(cells['2']?.numberFormat, 'm/d/yy');
   });
 
-  it('preserves opaque chart/binary parts and relationships across an editable export', async () => {
+  it('preserves opaque chart/binary parts and relationships on an unchanged export', async () => {
     const workbook = new WorkbookModel('wb-preserve', 'Preserve');
     workbook.getSheet(workbook.primarySheetId).cells.set(0, 0, { value: 1 });
     const generated = loadOpcPackageGraph(exportSnapshotToOoxmlBuffer(workbook.snapshot()));
@@ -1341,8 +1407,8 @@ describe('exchange-excel-ooxml', () => {
       target: '../drawings/drawing1.xml',
     }];
     generated.packageGraph.parts['xl/worksheets/sheet1.xml'] = strToU8(strFromU8(generated.packageGraph.parts['xl/worksheets/sheet1.xml']!).replace('</worksheet>', '<drawing r:id="rIdChart" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"/></worksheet>'));
-    // Rebuild through the public package writer so this test exercises the
-    // same ZIP limits and relationship reader used by production imports.
+    // Repackage through the public ZIP writer so production import sees these
+    // parts and their relationship graph.
     const imported = await importOoxmlDocument({ fileName: 'opaque.xlsx', buffer: zipOpcPartsBuffer(generated.packageGraph.parts), options: { compatibilityTarget: 'B', preserveMacros: true } });
     const exported = await exportOoxmlDocument({ snapshot: imported.snapshot, artifact: imported.artifact, fileName: 'opaque.xlsx', options: { compatibilityTarget: 'B' } });
     const restored = loadOpcPackageGraph(exported.buffer);
@@ -1351,6 +1417,467 @@ describe('exchange-excel-ooxml', () => {
     assert.equal(strFromU8(restored.files['xl/worksheets/sheet1.xml']!).includes('rIdChart'), true);
     assert.equal(imported.report.issues.some((issue) => issue.feature === 'charts' && issue.preserved), true);
     assert.equal(exported.report.issues.some((issue) => issue.feature === 'charts' && issue.preserved), true);
+
+    const editedSnapshot = structuredClone(imported.snapshot);
+    editedSnapshot.sheets[0]!.cells['0']!['0']!.value = 2;
+    await assert.rejects(
+      () => exportOoxmlDocument({ snapshot: editedSnapshot, artifact: imported.artifact, fileName: 'opaque.xlsx', options: { compatibilityTarget: 'B' } }),
+      (error: unknown) => error instanceof Error && error.message.includes('NATIVE_DOCUMENT_UNCHANGED_SAVE_REQUIRED'),
+    );
+  });
+
+  it('preserves unrelated opaque package parts through a regenerated export', async () => {
+    const workbook = new WorkbookModel('wb-opaque-part-writer', 'Opaque part writer');
+    workbook.getSheet(workbook.primarySheetId).cells.set(0, 0, { value: 1 });
+    const generated = loadOpcPackageGraph(exportSnapshotToOoxmlBuffer(workbook.snapshot()));
+    generated.packageGraph.parts['customXml/item1.bin'] = Uint8Array.from([0, 1, 2, 255]);
+    const imported = await importOoxmlDocument({
+      fileName: 'opaque-part-writer.xlsx',
+      buffer: zipOpcPartsBuffer(generated.packageGraph.parts),
+      options: { compatibilityTarget: 'B' },
+    });
+    const editedSnapshot = structuredClone(imported.snapshot);
+    editedSnapshot.sheets[0]!.cells['0']!['0']!.value = 2;
+    const exported = await exportOoxmlDocument({
+      snapshot: editedSnapshot,
+      artifact: imported.artifact,
+      fileName: 'opaque-part-writer.xlsx',
+      options: { compatibilityTarget: 'B' },
+    });
+    const restored = loadOpcPackageGraph(exported.buffer);
+    assert.deepEqual([...restored.files['customXml/item1.bin']!], [0, 1, 2, 255]);
+    assert.match(strFromU8(restored.files['xl/worksheets/sheet1.xml']!), /<v>2<\/v>/);
+  });
+
+  it('keeps unsupported worksheet nodes and extensions on the source-byte path and rejects regeneration', async () => {
+    const workbook = new WorkbookModel('wb-unknown-worksheet-node', 'Unknown worksheet node');
+    workbook.getSheet(workbook.primarySheetId).cells.set(0, 0, { value: 1 });
+    const generated = loadOpcPackageGraph(exportSnapshotToOoxmlBuffer(workbook.snapshot()));
+    const worksheetPart = generated.packageGraph.sheetPartById[workbook.primarySheetId]!;
+    generated.packageGraph.parts[worksheetPart] = strToU8(
+      strFromU8(generated.packageGraph.parts[worksheetPart]!).replace('</worksheet>', '<futureSheetNode value="keep"/></worksheet>'),
+    );
+    const imported = await importOoxmlDocument({
+      fileName: 'unknown-worksheet-node.xlsx',
+      buffer: zipOpcPartsBuffer(generated.packageGraph.parts),
+      options: { compatibilityTarget: 'B', compatibilityMode: 'balanced' },
+    });
+
+    const unchanged = await exportOoxmlDocument({
+      snapshot: imported.snapshot,
+      artifact: imported.artifact,
+      fileName: 'unknown-worksheet-node.xlsx',
+      options: { compatibilityTarget: 'B' },
+    });
+    assert.match(strFromU8(loadOpcPackageGraph(unchanged.buffer).files[worksheetPart]!), /<futureSheetNode value="keep"\/>/);
+
+    const editedSnapshot = structuredClone(imported.snapshot);
+    editedSnapshot.name = 'Edited unknown worksheet node';
+    await assert.rejects(
+      () => exportOoxmlDocument({
+        snapshot: editedSnapshot,
+        artifact: imported.artifact,
+        fileName: 'unknown-worksheet-node.xlsx',
+        options: { compatibilityTarget: 'B' },
+      }),
+      (error: unknown) => error instanceof Error && error.message.includes('NATIVE_DOCUMENT_UNCHANGED_SAVE_REQUIRED'),
+    );
+
+    const extensionWorkbook = new WorkbookModel('wb-unknown-worksheet-extension', 'Unknown worksheet extension');
+    const extensionPackage = loadOpcPackageGraph(exportSnapshotToOoxmlBuffer(extensionWorkbook.snapshot()));
+    const extensionPart = extensionPackage.packageGraph.sheetPartById[extensionWorkbook.primarySheetId]!;
+    extensionPackage.packageGraph.parts[extensionPart] = strToU8(
+      strFromU8(extensionPackage.packageGraph.parts[extensionPart]!).replace(
+        '</worksheet>',
+        '<extLst><ext uri="urn:future:worksheet"><futureExtension ref="A1"/></ext></extLst></worksheet>',
+      ),
+    );
+    const extensionImport = await importOoxmlDocument({
+      fileName: 'unknown-worksheet-extension.xlsx',
+      buffer: zipOpcPartsBuffer(extensionPackage.packageGraph.parts),
+      options: { compatibilityTarget: 'B', compatibilityMode: 'balanced' },
+    });
+    const extensionUnchanged = await exportOoxmlDocument({
+      snapshot: extensionImport.snapshot,
+      artifact: extensionImport.artifact,
+      fileName: 'unknown-worksheet-extension.xlsx',
+      options: { compatibilityTarget: 'B' },
+    });
+    assert.match(strFromU8(loadOpcPackageGraph(extensionUnchanged.buffer).files[extensionPart]!), /futureExtension ref="A1"/);
+    const extensionEditedSnapshot = structuredClone(extensionImport.snapshot);
+    extensionEditedSnapshot.name = 'Edited unknown extension';
+    await assert.rejects(
+      () => exportOoxmlDocument({
+        snapshot: extensionEditedSnapshot,
+        artifact: extensionImport.artifact,
+        fileName: 'unknown-worksheet-extension.xlsx',
+        options: { compatibilityTarget: 'B' },
+      }),
+      (error: unknown) => error instanceof Error && error.message.includes('NATIVE_DOCUMENT_UNCHANGED_SAVE_REQUIRED'),
+    );
+
+    const workbookExtensionPackage = loadOpcPackageGraph(exportSnapshotToOoxmlBuffer(extensionWorkbook.snapshot()));
+    const workbookPart = workbookExtensionPackage.packageGraph.workbookPart;
+    workbookExtensionPackage.packageGraph.parts[workbookPart] = strToU8(
+      strFromU8(workbookExtensionPackage.packageGraph.parts[workbookPart]!).replace(
+        '</workbook>',
+        '<extLst><ext uri="urn:future:workbook"><futureWorkbookExtension ref="Sheet1!A1"/></ext></extLst></workbook>',
+      ),
+    );
+    const workbookExtensionImport = await importOoxmlDocument({
+      fileName: 'unknown-workbook-extension.xlsx',
+      buffer: zipOpcPartsBuffer(workbookExtensionPackage.packageGraph.parts),
+      options: { compatibilityTarget: 'B', compatibilityMode: 'balanced' },
+    });
+    const workbookExtensionUnchanged = await exportOoxmlDocument({
+      snapshot: workbookExtensionImport.snapshot,
+      artifact: workbookExtensionImport.artifact,
+      fileName: 'unknown-workbook-extension.xlsx',
+      options: { compatibilityTarget: 'B' },
+    });
+    assert.match(strFromU8(loadOpcPackageGraph(workbookExtensionUnchanged.buffer).files[workbookPart]!), /futureWorkbookExtension/);
+    const editedWorkbookSnapshot = structuredClone(workbookExtensionImport.snapshot);
+    editedWorkbookSnapshot.name = 'Edited unknown workbook extension';
+    await assert.rejects(
+      () => exportOoxmlDocument({
+        snapshot: editedWorkbookSnapshot,
+        artifact: workbookExtensionImport.artifact,
+        fileName: 'unknown-workbook-extension.xlsx',
+        options: { compatibilityTarget: 'B' },
+      }),
+      (error: unknown) => error instanceof Error && error.message.includes('NATIVE_DOCUMENT_UNCHANGED_SAVE_REQUIRED'),
+    );
+
+    const unownedRootPackage = loadOpcPackageGraph(exportSnapshotToOoxmlBuffer(extensionWorkbook.snapshot()));
+    const unownedRootPart = unownedRootPackage.packageGraph.workbookPart;
+    unownedRootPackage.packageGraph.parts[unownedRootPart] = strToU8(
+      strFromU8(unownedRootPackage.packageGraph.parts[unownedRootPart]!).replace(
+        '</workbook>',
+        '<futureWorkbookNode ref="Sheet1!A1"/></workbook>',
+      ),
+    );
+    const unownedRootImport = await importOoxmlDocument({
+      fileName: 'unknown-workbook-node.xlsx',
+      buffer: zipOpcPartsBuffer(unownedRootPackage.packageGraph.parts),
+      options: { compatibilityTarget: 'B', compatibilityMode: 'balanced' },
+    });
+    const unownedRootSnapshot = structuredClone(unownedRootImport.snapshot);
+    unownedRootSnapshot.name = 'Edited unknown workbook node';
+    await assert.rejects(
+      () => exportOoxmlDocument({
+        snapshot: unownedRootSnapshot,
+        artifact: unownedRootImport.artifact,
+        fileName: 'unknown-workbook-node.xlsx',
+        options: { compatibilityTarget: 'B' },
+      }),
+      (error: unknown) => error instanceof Error && error.message.includes('NATIVE_DOCUMENT_UNCHANGED_SAVE_REQUIRED'),
+    );
+
+    const unownedPivotCachePackage = loadOpcPackageGraph(exportSnapshotToOoxmlBuffer(extensionWorkbook.snapshot()));
+    const unownedPivotCachePart = unownedPivotCachePackage.packageGraph.workbookPart;
+    unownedPivotCachePackage.packageGraph.parts[unownedPivotCachePart] = strToU8(
+      strFromU8(unownedPivotCachePackage.packageGraph.parts[unownedPivotCachePart]!).replace(
+        '</workbook>',
+        '<pivotCaches count="0"><futurePivotCacheMetadata value="keep"/></pivotCaches></workbook>',
+      ),
+    );
+    const unownedPivotCacheImport = await importOoxmlDocument({
+      fileName: 'unknown-pivot-cache-metadata.xlsx',
+      buffer: zipOpcPartsBuffer(unownedPivotCachePackage.packageGraph.parts),
+      options: { compatibilityTarget: 'B', compatibilityMode: 'balanced' },
+    });
+    const unchangedUnownedPivotCache = await exportOoxmlDocument({
+      snapshot: unownedPivotCacheImport.snapshot,
+      artifact: unownedPivotCacheImport.artifact,
+      fileName: 'unknown-pivot-cache-metadata.xlsx',
+      options: { compatibilityTarget: 'B' },
+    });
+    assert.match(
+      strFromU8(loadOpcPackageGraph(unchangedUnownedPivotCache.buffer).files[unownedPivotCachePart]!),
+      /futurePivotCacheMetadata/,
+    );
+    const editedUnownedPivotCache = structuredClone(unownedPivotCacheImport.snapshot);
+    editedUnownedPivotCache.name = 'Edited unknown pivot-cache metadata';
+    await assert.rejects(
+      () => exportOoxmlDocument({
+        snapshot: editedUnownedPivotCache,
+        artifact: unownedPivotCacheImport.artifact,
+        fileName: 'unknown-pivot-cache-metadata.xlsx',
+        options: { compatibilityTarget: 'B' },
+      }),
+      (error: unknown) => error instanceof Error && error.message.includes('NATIVE_DOCUMENT_UNCHANGED_SAVE_REQUIRED'),
+    );
+
+    const veryHiddenPackage = loadOpcPackageGraph(exportSnapshotToOoxmlBuffer(extensionWorkbook.snapshot()));
+    const veryHiddenPart = veryHiddenPackage.packageGraph.workbookPart;
+    const veryHiddenXml = strFromU8(veryHiddenPackage.packageGraph.parts[veryHiddenPart]!).replace(
+      '<sheet name="Sheet1"',
+      '<sheet name="Sheet1" state="veryHidden"',
+    );
+    assert.match(veryHiddenXml, /state="veryHidden"/);
+    veryHiddenPackage.packageGraph.parts[veryHiddenPart] = strToU8(veryHiddenXml);
+    const veryHiddenImport = await importOoxmlDocument({
+      fileName: 'very-hidden-sheet.xlsx',
+      buffer: zipOpcPartsBuffer(veryHiddenPackage.packageGraph.parts),
+      options: { compatibilityTarget: 'B', compatibilityMode: 'balanced' },
+    });
+    assert.equal(veryHiddenImport.snapshot.sheets[0]?.hidden, true);
+    const editedVeryHiddenSnapshot = structuredClone(veryHiddenImport.snapshot);
+    editedVeryHiddenSnapshot.name = 'Edited very hidden sheet';
+    await assert.rejects(
+      () => exportOoxmlDocument({
+        snapshot: editedVeryHiddenSnapshot,
+        artifact: veryHiddenImport.artifact,
+        fileName: 'very-hidden-sheet.xlsx',
+        options: { compatibilityTarget: 'B' },
+      }),
+      (error: unknown) => error instanceof Error && error.message.includes('NATIVE_DOCUMENT_UNCHANGED_SAVE_REQUIRED'),
+    );
+
+    const namespaceLikeAttributePackage = loadOpcPackageGraph(exportSnapshotToOoxmlBuffer(extensionWorkbook.snapshot()));
+    const namespaceLikeAttributePart = namespaceLikeAttributePackage.packageGraph.workbookPart;
+    namespaceLikeAttributePackage.packageGraph.parts[namespaceLikeAttributePart] = strToU8(
+      strFromU8(namespaceLikeAttributePackage.packageGraph.parts[namespaceLikeAttributePart]!).replace(
+        '<workbook ',
+        '<workbook xmlnsfuture="urn:future" ',
+      ),
+    );
+    const namespaceLikeAttributeImport = await importOoxmlDocument({
+      fileName: 'namespace-like-workbook-attribute.xlsx',
+      buffer: zipOpcPartsBuffer(namespaceLikeAttributePackage.packageGraph.parts),
+      options: { compatibilityTarget: 'B', compatibilityMode: 'balanced' },
+    });
+    const editedNamespaceLikeAttribute = structuredClone(namespaceLikeAttributeImport.snapshot);
+    editedNamespaceLikeAttribute.name = 'Edited namespace-like workbook attribute';
+    await assert.rejects(
+      () => exportOoxmlDocument({
+        snapshot: editedNamespaceLikeAttribute,
+        artifact: namespaceLikeAttributeImport.artifact,
+        fileName: 'namespace-like-workbook-attribute.xlsx',
+        options: { compatibilityTarget: 'B' },
+      }),
+      (error: unknown) => error instanceof Error && error.message.includes('NATIVE_DOCUMENT_UNCHANGED_SAVE_REQUIRED'),
+    );
+
+    const invalidStatePackage = loadOpcPackageGraph(exportSnapshotToOoxmlBuffer(extensionWorkbook.snapshot()));
+    const invalidStatePart = invalidStatePackage.packageGraph.workbookPart;
+    invalidStatePackage.packageGraph.parts[invalidStatePart] = strToU8(
+      strFromU8(invalidStatePackage.packageGraph.parts[invalidStatePart]!).replace(
+        '<sheet name="Sheet1"',
+        '<sheet name="Sheet1" state="future"',
+      ),
+    );
+    const invalidStateImport = await importOoxmlDocument({
+      fileName: 'invalid-sheet-state.xlsx',
+      buffer: zipOpcPartsBuffer(invalidStatePackage.packageGraph.parts),
+      options: { compatibilityTarget: 'B', compatibilityMode: 'balanced' },
+    });
+    const editedInvalidState = structuredClone(invalidStateImport.snapshot);
+    editedInvalidState.name = 'Edited invalid sheet state';
+    await assert.rejects(
+      () => exportOoxmlDocument({
+        snapshot: editedInvalidState,
+        artifact: invalidStateImport.artifact,
+        fileName: 'invalid-sheet-state.xlsx',
+        options: { compatibilityTarget: 'B' },
+      }),
+      (error: unknown) => error instanceof Error && error.message.includes('NATIVE_DOCUMENT_UNCHANGED_SAVE_REQUIRED'),
+    );
+
+    const viewWorkbook = new WorkbookModel('wb-workbook-view-indexes', 'Workbook view indexes');
+    viewWorkbook.addSheet('sheet-2', 'Second');
+    const viewPackage = loadOpcPackageGraph(exportSnapshotToOoxmlBuffer(viewWorkbook.snapshot()));
+    const viewWorkbookPart = viewPackage.packageGraph.workbookPart;
+    viewPackage.packageGraph.parts[viewWorkbookPart] = strToU8(
+      strFromU8(viewPackage.packageGraph.parts[viewWorkbookPart]!).replace(
+        '<sheets>',
+        '<bookViews><workbookView activeTab="0" firstSheet="0"/></bookViews><sheets>',
+      ),
+    );
+    const viewImport = await importOoxmlDocument({
+      fileName: 'workbook-view-indexes.xlsx',
+      buffer: zipOpcPartsBuffer(viewPackage.packageGraph.parts),
+      options: { compatibilityTarget: 'B', compatibilityMode: 'balanced' },
+    });
+    const reorderedViewsSnapshot = structuredClone(viewImport.snapshot);
+    reorderedViewsSnapshot.sheets.reverse();
+    const reorderedViewsExport = await exportOoxmlDocument({
+      snapshot: reorderedViewsSnapshot,
+      artifact: viewImport.artifact,
+      fileName: 'workbook-view-indexes.xlsx',
+      options: { compatibilityTarget: 'B' },
+    });
+    const reorderedWorkbookXml = strFromU8(loadOpcPackageGraph(reorderedViewsExport.buffer).files[viewWorkbookPart]!);
+    assert.match(reorderedWorkbookXml, /activeTab="1" firstSheet="1"/);
+
+    const removedViewedSheetSnapshot = structuredClone(viewImport.snapshot);
+    removedViewedSheetSnapshot.sheets.shift();
+    await assert.rejects(
+      () => exportOoxmlDocument({
+        snapshot: removedViewedSheetSnapshot,
+        artifact: viewImport.artifact,
+        fileName: 'workbook-view-indexes.xlsx',
+        options: { compatibilityTarget: 'B' },
+      }),
+      (error: unknown) => error instanceof Error && error.message.includes('NATIVE_DOCUMENT_UNCHANGED_SAVE_REQUIRED'),
+    );
+
+    const invalidViewPackage = loadOpcPackageGraph(exportSnapshotToOoxmlBuffer(viewWorkbook.snapshot()));
+    const invalidViewPart = invalidViewPackage.packageGraph.workbookPart;
+    invalidViewPackage.packageGraph.parts[invalidViewPart] = strToU8(
+      strFromU8(invalidViewPackage.packageGraph.parts[invalidViewPart]!).replace(
+        '<sheets>',
+        '<bookViews><workbookView activeTab="0x0"/></bookViews><sheets>',
+      ),
+    );
+    const invalidViewImport = await importOoxmlDocument({
+      fileName: 'invalid-workbook-view-index.xlsx',
+      buffer: zipOpcPartsBuffer(invalidViewPackage.packageGraph.parts),
+      options: { compatibilityTarget: 'B', compatibilityMode: 'balanced' },
+    });
+    const editedInvalidView = structuredClone(invalidViewImport.snapshot);
+    editedInvalidView.name = 'Edited invalid workbook view';
+    await assert.rejects(
+      () => exportOoxmlDocument({
+        snapshot: editedInvalidView,
+        artifact: invalidViewImport.artifact,
+        fileName: 'invalid-workbook-view-index.xlsx',
+        options: { compatibilityTarget: 'B' },
+      }),
+      (error: unknown) => error instanceof Error && error.message.includes('NATIVE_DOCUMENT_UNCHANGED_SAVE_REQUIRED'),
+    );
+  });
+
+  it('regenerates canonically owned sparkline extensions and rejects unowned children', async () => {
+    const workbook = new WorkbookModel('wb-owned-sparkline-extension', 'Owned sparkline extension');
+    const sheet = workbook.getSheet(workbook.primarySheetId);
+    sheet.cells.set(0, 0, { value: 1 });
+    sheet.cells.set(0, 1, { value: 2 });
+    sheet.sparklines.push({
+      id: 'spark-owned-extension',
+      sheetId: sheet.id,
+      anchor: { row: 0, column: 2 },
+      sourceRange: { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 1 },
+      type: 'line',
+      color: '#2563eb',
+    });
+    const generated = loadOpcPackageGraph(exportSnapshotToOoxmlBuffer(workbook.snapshot()));
+    const worksheetPart = generated.packageGraph.sheetPartById[sheet.id]!;
+    const imported = await importOoxmlDocument({
+      fileName: 'owned-sparkline-extension.xlsx',
+      buffer: zipOpcPartsBuffer(generated.packageGraph.parts),
+      options: { compatibilityTarget: 'B', compatibilityMode: 'balanced' },
+    });
+
+    const editedSnapshot = structuredClone(imported.snapshot);
+    editedSnapshot.name = 'Regenerated owned sparkline extension';
+    const regenerated = await exportOoxmlDocument({
+      snapshot: editedSnapshot,
+      artifact: imported.artifact,
+      fileName: 'owned-sparkline-extension.xlsx',
+      options: { compatibilityTarget: 'B' },
+    });
+    assert.match(strFromU8(loadOpcPackageGraph(regenerated.buffer).files[worksheetPart]!), /sparklineGroups/);
+
+    const removedSnapshot = structuredClone(imported.snapshot);
+    removedSnapshot.name = 'Removed owned sparkline extension';
+    removedSnapshot.sheets[0]!.sparklines = [];
+    removedSnapshot.sheets[0]!.sparklineGroups = [];
+    const removed = await exportOoxmlDocument({
+      snapshot: removedSnapshot,
+      artifact: imported.artifact,
+      fileName: 'owned-sparkline-extension.xlsx',
+      options: { compatibilityTarget: 'B' },
+    });
+    assert.doesNotMatch(strFromU8(loadOpcPackageGraph(removed.buffer).files[worksheetPart]!), /sparklineGroups/);
+
+    const unsupported = loadOpcPackageGraph(zipOpcPartsBuffer(generated.packageGraph.parts));
+    unsupported.packageGraph.parts[worksheetPart] = strToU8(
+      strFromU8(unsupported.packageGraph.parts[worksheetPart]!).replace(
+        '</x14:sparklineGroups>',
+        '<x14:futureSparklineBehavior/></x14:sparklineGroups>',
+      ),
+    );
+    const unsupportedImport = await importOoxmlDocument({
+      fileName: 'unowned-sparkline-extension.xlsx',
+      buffer: zipOpcPartsBuffer(unsupported.packageGraph.parts),
+      options: { compatibilityTarget: 'B', compatibilityMode: 'balanced' },
+    });
+    const unsupportedSnapshot = structuredClone(unsupportedImport.snapshot);
+    unsupportedSnapshot.name = 'Edited unowned sparkline extension';
+    await assert.rejects(
+      () => exportOoxmlDocument({
+        snapshot: unsupportedSnapshot,
+        artifact: unsupportedImport.artifact,
+        fileName: 'unowned-sparkline-extension.xlsx',
+        options: { compatibilityTarget: 'B' },
+      }),
+      (error: unknown) => error instanceof Error && error.message.includes('NATIVE_DOCUMENT_UNCHANGED_SAVE_REQUIRED'),
+    );
+  });
+
+  it('honors explicit OOXML export options before reusing untouched source bytes', async () => {
+    const workbook = new WorkbookModel('wb-export-options', 'Export options');
+    const sheet = workbook.getSheet(workbook.primarySheetId);
+    sheet.cells.set(0, 0, { formula: '=1+1', value: 2 });
+    sheet.drawings.push({
+      id: 'image-drawing',
+      sheetId: sheet.id,
+      kind: 'image',
+      anchor: { kind: 'one-cell', row: 1, column: 1 },
+      transform: { x: 0, y: 0, width: 80, height: 40 },
+      zIndex: 0,
+      payloadId: 'image-payload',
+    });
+    sheet.drawingPayloads.set('image-payload', {
+      kind: 'image',
+      asset: { schema: 'AssetRef', assetId: 'asset-test', contentHash: 'a'.repeat(64), mimeType: 'image/png', byteLength: 2 },
+    });
+    const original = loadOpcPackageGraph(exportSnapshotToOoxmlBuffer(workbook.snapshot(), undefined, {
+      assetBytes: { 'asset-test': Uint8Array.from([1, 2]) },
+    }));
+    original.packageGraph.parts['xl/vbaProject.bin'] = Uint8Array.from([7, 8]);
+    const imported = await importOoxmlDocument({
+      fileName: 'export-options.xlsm',
+      buffer: zipOpcPartsBuffer(original.packageGraph.parts),
+      options: { compatibilityTarget: 'B', preserveMacros: true },
+    });
+
+    const exported = await exportOoxmlDocument({
+      snapshot: imported.snapshot,
+      artifact: imported.artifact,
+      fileName: 'export-options.xlsm',
+      options: {
+        compatibilityTarget: 'C',
+        dateSystem: '1904',
+        includeCachedValues: false,
+        preserveMacros: false,
+        assetBytes: { 'asset-test': Uint8Array.from([4, 5]) },
+      },
+    });
+    const output = loadOpcPackageGraph(exported.buffer);
+    assert.equal(output.files['xl/vbaProject.bin'], undefined);
+    assert.match(strFromU8(output.files['xl/workbook.xml']!), /date1904="1"/);
+    assert.equal(strFromU8(output.files['xl/worksheets/sheet1.xml']!).includes('<v>2</v>'), false);
+    assert.deepEqual([...output.files['xl/media/asset-test.png']!], [4, 5]);
+    assert.equal(exported.report.exportLevel, 'C');
+    assert.equal(exported.report.dateSystem, '1904');
+  });
+
+  it('applies caller resource limits to a regenerated OOXML package with an unchanged snapshot', async () => {
+    const workbook = new WorkbookModel('wb-export-limits', 'Export limits');
+    const buffer = exportSnapshotToOoxmlBuffer(workbook.snapshot());
+    const imported = await importOoxmlDocument({
+      fileName: 'export-limits.xlsx',
+      buffer,
+      options: { compatibilityTarget: 'B' },
+    });
+    await assert.rejects(() => exportOoxmlDocument({
+      snapshot: imported.snapshot,
+      artifact: imported.artifact,
+      fileName: 'export-limits.xlsx',
+      options: { compatibilityTarget: 'B', limits: { maxArchiveBytes: 1 } },
+    }), /archive exceeds 1 byte limit/);
   });
 
   it('rejects oversized and unsafe ZIP entries before inflation', () => {

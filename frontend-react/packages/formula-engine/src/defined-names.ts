@@ -6,6 +6,7 @@ import { offsetAst } from './ast-rewrite';
 import type { FormulaAst } from './ast';
 import { createFormulaError, isArrayValue, type ArrayValue, type FormulaValue } from './values';
 import type { ExcelNumericContext } from './numeric';
+import type { FormulaSheetIdentity } from './sheet-reference';
 
 /** Formula-engine representation of the workbook's canonical scoped names. */
 export interface FormulaDefinedName {
@@ -18,6 +19,7 @@ export interface FormulaDefinedName {
 
 export interface DefinedNameContext {
   currentCell: CellAddress;
+  sheetOrder: readonly FormulaSheetIdentity[];
   readCell: (address: CellAddress) => FormulaValue;
   readRangeMatrix: (range: RangeDependency) => ArrayValue;
   resolveName?: (name: string) => FormulaValue | undefined;
@@ -43,15 +45,19 @@ export function normalizeDefinedNameModels(names: readonly FormulaDefinedName[])
   for (const input of names) {
     const name = input.name.trim();
     const formula = input.formula.trim();
-    if (!name || !formula) throw new Error('Defined name requires a name and formula');
+    if (!name || name.length > 255 || !/^[A-Za-z_\\][A-Za-z0-9_.]*$/.test(name)
+      || !formula || formula.length > 32_767) throw new Error('Defined name requires a canonical name and formula');
     if (input.scope !== 'workbook' && input.scope !== 'sheet') throw new Error(`Invalid defined name scope: ${String(input.scope)}`);
     if (input.scope === 'sheet' && !input.sheetId?.trim()) throw new Error(`Sheet-scoped defined name ${name} requires a sheetId`);
     if (input.scope === 'workbook' && input.sheetId !== undefined) throw new Error(`Workbook-scoped defined name ${name} cannot specify sheetId`);
-    if (input.anchor && (!input.anchor.sheetId || !Number.isSafeInteger(input.anchor.row) || input.anchor.row < 0 || !Number.isSafeInteger(input.anchor.column) || input.anchor.column < 0)) throw new Error(`Defined name ${name} has an invalid anchor`);
+    if (input.anchor && (!input.anchor.sheetId?.trim() || input.anchor.sheetId !== input.anchor.sheetId.trim()
+      || !Number.isSafeInteger(input.anchor.row) || input.anchor.row < 0 || input.anchor.row > 1_048_575
+      || !Number.isSafeInteger(input.anchor.column) || input.anchor.column < 0 || input.anchor.column > 16_383)) throw new Error(`Defined name ${name} has an invalid anchor`);
     const sheetId = input.sheetId?.trim();
     const key = input.scope === 'sheet'
-      ? `sheet:${stableNameKey(sheetId!)}:${stableNameKey(name)}`
+      ? `sheet:${sheetId}:${stableNameKey(name)}`
       : `workbook:${stableNameKey(name)}`;
+    if (normalized.has(key)) throw new Error(`Defined-name owner identity is duplicated: ${input.scope}:${sheetId ?? '*'}:${name}`);
     normalized.set(key, {
       name,
       formula,
@@ -61,8 +67,8 @@ export function normalizeDefinedNameModels(names: readonly FormulaDefinedName[])
     });
   }
   return [...normalized.values()].sort((left, right) => {
-    const leftKey = `${left.scope}:${stableNameKey(left.sheetId ?? '')}:${stableNameKey(left.name)}`;
-    const rightKey = `${right.scope}:${stableNameKey(right.sheetId ?? '')}:${stableNameKey(right.name)}`;
+    const leftKey = `${left.scope}:${left.sheetId ?? ''}:${stableNameKey(left.name)}`;
+    const rightKey = `${right.scope}:${right.sheetId ?? ''}:${stableNameKey(right.name)}`;
     return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0;
   });
 }
@@ -82,6 +88,7 @@ export function resolveDefinedNameSource(source: string, context: DefinedNameCon
       : parsed;
     return evaluateFormula(ast, {
       currentCell: context.currentCell,
+      sheetOrder: context.sheetOrder,
       readCell: context.readCell,
       readRange: (rangeRef) => {
         const matrix = context.readRangeMatrix(rangeRef);

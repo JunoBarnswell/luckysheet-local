@@ -39,14 +39,14 @@ export const datetimeFunctions: Record<string, (args: FormulaValue[], context?: 
   MINUTE: (args, context) => { try { const date = parseDateInput(args[0], context); return date ? date.minute : createFormulaError('#VALUE!', 'Invalid date in MINUTE'); } catch (cause) { return error(cause, 'Invalid date in MINUTE'); } },
   SECOND: (args, context) => { try { const date = parseDateInput(args[0], context); return date ? date.second : createFormulaError('#VALUE!', 'Invalid date in SECOND'); } catch (cause) { return error(cause, 'Invalid date in SECOND'); } },
   TODAY: (_args, context) => {
-    if (!context?.canonicalReferenceDate) return createFormulaError('#VALUE!', 'TODAY requires an explicit canonical workbook reference date');
-    try { const system = context.dateSystem ?? '1900'; return Math.floor(canonicalExcelDateToSerial(canonicalExcelDateFromParts({ ...context.canonicalReferenceDate, hour: 0, minute: 0, second: 0, millisecond: 0 }, system), system)); }
-    catch (cause) { return error(cause, 'Invalid canonical workbook reference date'); }
+    if (!context?.calculationReferenceDate) return createFormulaError('#VALUE!', 'TODAY requires a calculation-cycle clock');
+    try { const system = context.dateSystem ?? '1900'; return Math.floor(canonicalExcelDateToSerial(canonicalExcelDateFromParts({ ...context.calculationReferenceDate, hour: 0, minute: 0, second: 0, millisecond: 0 }, system), system)); }
+    catch (cause) { return error(cause, 'Invalid calculation-cycle clock'); }
   },
   NOW: (_args, context) => {
-    if (!context?.canonicalReferenceDate) return createFormulaError('#VALUE!', 'NOW requires an explicit canonical workbook reference date');
-    try { const system = context.dateSystem ?? '1900'; return canonicalExcelDateToSerial(canonicalExcelDateFromParts(context.canonicalReferenceDate, system), system); }
-    catch (cause) { return error(cause, 'Invalid canonical workbook reference date'); }
+    if (!context?.calculationReferenceDate) return createFormulaError('#VALUE!', 'NOW requires a calculation-cycle clock');
+    try { const system = context.dateSystem ?? '1900'; return canonicalExcelDateToSerial(canonicalExcelDateFromParts(context.calculationReferenceDate, system), system); }
+    catch (cause) { return error(cause, 'Invalid calculation-cycle clock'); }
   },
   WEEKDAY: (args, context) => {
     try {

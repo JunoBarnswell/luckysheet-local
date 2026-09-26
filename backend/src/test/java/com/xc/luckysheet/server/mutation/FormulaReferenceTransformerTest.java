@@ -1,10 +1,13 @@
 package com.xc.luckysheet.server.mutation;
 
+import com.xc.luckysheet.server.service.ServiceException;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTimeout;
 
 class FormulaReferenceTransformerTest {
@@ -27,7 +30,7 @@ class FormulaReferenceTransformerTest {
     }
 
     @Test
-    void deletionCreatesRealReferenceErrorForDeletedRangeEndpoint() {
+    void deletionShrinksRangeWhenOnlyOneEndpointRowIsRemoved() {
         String result = FormulaReferenceTransformer.remapAxis(
                 "=A2:B3",
                 sheet,
@@ -38,7 +41,16 @@ class FormulaReferenceTransformerTest {
                 FormulaReferenceTransformer.Direction.DELETE
         );
 
-        assertEquals("=#REF!", result);
+        assertEquals("=A2:B2", result);
+        assertEquals("=#REF!", FormulaReferenceTransformer.remapAxis(
+                "=A2:B2",
+                sheet,
+                sheet,
+                FormulaReferenceTransformer.Axis.ROW,
+                1,
+                2,
+                FormulaReferenceTransformer.Direction.DELETE
+        ));
     }
 
     @Test
@@ -49,8 +61,36 @@ class FormulaReferenceTransformerTest {
     }
 
     @Test
-    void moveOffsetHonorsAbsoluteMarkers() {
-        assertEquals("=C3+$B$1+E$1+$D3", FormulaReferenceTransformer.offset("=A1+$B$1+C$1+$D1", 2, 2));
+    void rowPermutationOffsetsReferencesWithoutRewritingWholeColumnSheetNames() {
+        String formula = "=SUM('Budget A1'!B:B)+A1+$B$1+C$1+$D1";
+        FormulaReferenceTransformer.assertRowOffsetSupported(formula);
+        assertEquals("=SUM('Budget A1'!B:B)+A3+$B$1+C$1+$D3",
+                FormulaReferenceTransformer.offsetForPermutation(formula, 2));
+    }
+
+    @Test
+    void axisTransformPreservesQuotedExternalWholeAxisReferences() {
+        String formula = "=SUM('[Book.xlsx]Budget A1'!B:B)+A1";
+        assertEquals("=SUM('[Book.xlsx]Budget A1'!B:B)+A2", FormulaReferenceTransformer.remapAxis(
+                formula, sheet, sheet, FormulaReferenceTransformer.Axis.ROW, 0, 1,
+                FormulaReferenceTransformer.Direction.INSERT));
+        assertThrows(ServiceException.class, () -> FormulaReferenceTransformer.assertRowOffsetSupported(formula));
+        assertThrows(ServiceException.class, () -> FormulaReferenceTransformer.assertRowOffsetSupported("=SUM('Budget A1'!1:1)"));
+    }
+
+    @Test
+    void renameAndDeleteConsumeCompleteQualifiedWholeAxisReferences() {
+        String formula = "=SUM('Budget A1'!$B:$C)+SUM(Other!1:2)";
+        assertEquals("=SUM('Current Report'!$B:$C)+SUM(Other!1:2)",
+                FormulaReferenceTransformer.renameSheet(formula, "Budget A1", "Current Report"));
+        assertEquals("=SUM(#REF!)+SUM(Other!1:2)",
+                FormulaReferenceTransformer.invalidateSheet(formula, "budget-id", "Budget A1"));
+    }
+
+    @Test
+    void canonicalWholeAxisReferencesRetainEndpointAbsoluteMarkers() {
+        assertEquals("=SUM(B:$D,$2:5)",
+                FormulaReferenceTransformer.canonicalizeFormulaReferences("=SUM($D:B,5:$2)"));
     }
 
     @Test
@@ -74,6 +114,77 @@ class FormulaReferenceTransformerTest {
     }
 
     @Test
+    void structuralEditsPreserveThreeDimensionalReferencesWhenTargetIsOutsideTheirSheetSpan() {
+        List<FormulaReferenceTransformer.SheetIdentity> order = List.of(
+                new FormulaReferenceTransformer.SheetIdentity("sheet-1", "Sheet1"),
+                new FormulaReferenceTransformer.SheetIdentity("sheet-2", "Sheet2"),
+                new FormulaReferenceTransformer.SheetIdentity("sheet-3", "Sheet3"),
+                new FormulaReferenceTransformer.SheetIdentity("sheet-4", "Sheet4"));
+        FormulaReferenceTransformer.SheetIdentity target = order.get(3);
+        String formula = "=SUM(Sheet1:Sheet3!A1)+A1";
+
+        assertEquals("=SUM(Sheet1:Sheet3!A1)+A2", FormulaReferenceTransformer.remapAxis(
+                formula, target, target, FormulaReferenceTransformer.Axis.ROW, 0, 1,
+                FormulaReferenceTransformer.Direction.INSERT, order));
+        assertEquals("=SUM(Sheet1:Sheet3!A1)+A2", FormulaReferenceTransformer.remapCellShift(
+                formula, target, target, new FormulaReferenceTransformer.Range(0, 0, 0, 0),
+                FormulaReferenceTransformer.Axis.ROW, FormulaReferenceTransformer.Direction.INSERT, order));
+    }
+
+    @Test
+    void structuralEditsRejectThreeDimensionalReferencesWhenTargetIsInsideTheirSheetSpan() {
+        List<FormulaReferenceTransformer.SheetIdentity> order = List.of(
+                new FormulaReferenceTransformer.SheetIdentity("sheet-1", "Sheet1"),
+                new FormulaReferenceTransformer.SheetIdentity("sheet-2", "Sheet2"),
+                new FormulaReferenceTransformer.SheetIdentity("sheet-3", "Sheet3"));
+        FormulaReferenceTransformer.SheetIdentity target = order.get(1);
+        String formula = "=SUM(Sheet1:Sheet3!A1)";
+
+        assertThrows(ServiceException.class, () -> FormulaReferenceTransformer.remapAxis(
+                formula, target, target, FormulaReferenceTransformer.Axis.ROW, 0, 1,
+                FormulaReferenceTransformer.Direction.INSERT, order));
+        assertThrows(ServiceException.class, () -> FormulaReferenceTransformer.remapCellShift(
+                formula, target, target, new FormulaReferenceTransformer.Range(0, 0, 0, 0),
+                FormulaReferenceTransformer.Axis.ROW, FormulaReferenceTransformer.Direction.INSERT, order));
+    }
+
+    @Test
+    void formulaSheetNamesAreNotConfusedWithOtherWorksheetIds() {
+        FormulaReferenceTransformer.SheetIdentity owner = new FormulaReferenceTransformer.SheetIdentity("owner-id", "Owner");
+        FormulaReferenceTransformer.SheetIdentity target = new FormulaReferenceTransformer.SheetIdentity("End", "Target");
+        List<FormulaReferenceTransformer.SheetIdentity> order = List.of(
+                owner,
+                target,
+                new FormulaReferenceTransformer.SheetIdentity("end-id", "End"));
+
+        assertEquals("=End!A1", FormulaReferenceTransformer.remapAxis(
+                "=End!A1", owner, target, FormulaReferenceTransformer.Axis.ROW, 0, 1,
+                FormulaReferenceTransformer.Direction.INSERT, order));
+    }
+
+    @Test
+    void threeDimensionalBoundariesResolveNamesBeforeCrossCollidingIds() {
+        List<FormulaReferenceTransformer.SheetIdentity> order = List.of(
+                new FormulaReferenceTransformer.SheetIdentity("start-id", "Start"),
+                new FormulaReferenceTransformer.SheetIdentity("End", "Other"),
+                new FormulaReferenceTransformer.SheetIdentity("target-id", "Target"),
+                new FormulaReferenceTransformer.SheetIdentity("end-id", "End"));
+        FormulaReferenceTransformer.SheetIdentity target = order.get(2);
+
+        assertThrows(ServiceException.class, () -> FormulaReferenceTransformer.remapAxis(
+                "=SUM(Start:End!A1)", target, target, FormulaReferenceTransformer.Axis.ROW, 0, 1,
+                FormulaReferenceTransformer.Direction.INSERT, order));
+    }
+
+    @Test
+    void renameUpdatesOnlyMatchingEndpointsOfThreeDimensionalReferences() {
+        assertEquals("=SUM('New Name:Sheet3'!A1)+Old!B2",
+                FormulaReferenceTransformer.renameSheet("=SUM('Old Name:Sheet3'!A1)+Old!B2", "Old Name", "New Name"));
+        assertEquals("=SUM(Sheet1:'New Name'!A1)",
+                FormulaReferenceTransformer.renameSheet("=SUM(Sheet1:'Old Name'!A1)", "Old Name", "New Name"));
+    }
+
+    @Test
     void longNonReferenceIdentifierIsScannedInLinearTime() {
         String formula = "=" + "A".repeat(128_000);
 
@@ -83,5 +194,30 @@ class FormulaReferenceTransformerTest {
         );
 
         assertEquals(formula, result);
+    }
+
+    @Test
+    void structuralTransformsScanLongNonReferenceIdentifiersInLinearTime() {
+        String formula = "=" + "A".repeat(128_000);
+        List<FormulaReferenceTransformer.SheetIdentity> order = List.of(sheet,
+                new FormulaReferenceTransformer.SheetIdentity("sheet-2", "Sheet2"));
+
+        assertTimeout(Duration.ofSeconds(2), () -> FormulaReferenceTransformer.remapAxis(
+                formula, sheet, sheet, FormulaReferenceTransformer.Axis.ROW, 0, 1,
+                FormulaReferenceTransformer.Direction.INSERT, order));
+        assertTimeout(Duration.ofSeconds(2), () -> FormulaReferenceTransformer.remapMovedRegion(
+                formula, sheet, sheet, new FormulaReferenceTransformer.Range(0, 0, 0, 0),
+                0, 1, order));
+        assertTimeout(Duration.ofSeconds(2), () -> FormulaReferenceTransformer.invalidateSheet(
+                formula, "missing-sheet", "Missing"));
+    }
+
+    @Test
+    void rowPermutationFormulaPreflightAndOffsetScanLongNonReferenceIdentifiersInLinearTime() {
+        String formula = "=" + "A".repeat(128_000);
+
+        assertTimeout(Duration.ofSeconds(2), () -> FormulaReferenceTransformer.assertRowOffsetSupported(formula));
+        assertEquals(formula, assertTimeout(Duration.ofSeconds(2),
+                () -> FormulaReferenceTransformer.offsetForPermutation(formula, 1)));
     }
 }

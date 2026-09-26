@@ -3,6 +3,7 @@ import { describe, it } from 'node:test';
 import { WorkbookSession } from './workbook-session';
 import { createInlineJsonQuery } from './features/query';
 import { QueryLoadError } from './features/query/query-load-error';
+import { createRemoteReadySessionFixture } from './session-test-fixtures';
 
 describe('WorkbookSession query integration', () => {
   it('rejects an overlapping load of the same query without losing the first result', async () => {
@@ -55,7 +56,7 @@ describe('WorkbookSession query integration', () => {
   });
 
   it('refreshes one query without discarding another sheet data source reader', async () => {
-    const app = new WorkbookSession();
+    const app = createRemoteReadySessionFixture();
     try {
       const firstSheetId = app.getActiveSheetId();
       await app.loadQuery(createInlineJsonQuery('cache-first', 'First', [{ Value: 1 }]));

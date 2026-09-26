@@ -90,7 +90,7 @@ function scalarValue(value: unknown): FormulaScalar {
 
 function createPlanningFormulaEngine(workbook: WorkbookModel): FormulaEngine {
   const firstSheet = workbook.getSheets()[0];
-  const engine = new FormulaEngine({ defaultSheetId: firstSheet?.id ?? workbook.primarySheetId });
+  const engine = new FormulaEngine({ defaultSheetId: firstSheet?.id ?? workbook.primarySheetId, sheetOrder: workbook.sheetOrder.map((id) => ({ id, name: workbook.getSheet(id).name })) });
   for (const sheet of workbook.getSheets()) {
     sheet.cells.forEach((cell, row, column) => {
       const address = { sheetId: sheet.id, row, column };
@@ -108,12 +108,14 @@ function readFormulaScalar(engine: FormulaEngine, sheetId: string, row: number, 
 }
 
 function isSpillCell(workbook: WorkbookModel, sheetId: string, row: number, column: number): boolean {
-  return workbook.getSheet(sheetId).spillRanges.some((spill) => (
-    spill.range.startRow <= row
+  return workbook.getSheet(sheetId).spillRanges.some((spill) => {
+    if (spill.anchor.row === row && spill.anchor.column === column) return true;
+    return spill.state === 'ok'
+      && spill.range.startRow <= row
       && row <= spill.range.endRow
       && spill.range.startColumn <= column
-      && column <= spill.range.endColumn
-  ));
+      && column <= spill.range.endColumn;
+  });
 }
 
 function hasArrayResult(engine: FormulaEngine, sheetId: string, row: number, column: number): boolean {

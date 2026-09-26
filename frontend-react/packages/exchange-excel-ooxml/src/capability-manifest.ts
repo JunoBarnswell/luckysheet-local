@@ -1,7 +1,7 @@
 import { strFromU8 } from 'fflate';
-import { child, children, descendants, localName, parseXml } from './xml';
+import { child, children, descendants, localName, parseXml, type XmlNode } from './xml';
 import type { CompatibilityFeatureDetection } from './compatibility-report';
-import type { OpcPackageGraph } from './types';
+import type { NativePivotControlDefinition, OpcPackageGraph } from './types';
 
 export type NativeCapabilityState = 'full' | 'partial' | 'none';
 
@@ -75,6 +75,7 @@ export const NATIVE_DOCUMENT_CAPABILITY_MANIFEST = {
   'extended-validation': capability('extended-validation', 'full', 'none', 'none', 'none', 'full'),
   'extended-conditional-format': capability('extended-conditional-format', 'full', 'none', 'none', 'none', 'full'),
   'unknown-worksheet-node': capability('unknown-worksheet-node', 'full', 'none', 'none', 'none', 'none'),
+  'unknown-workbook-node': capability('unknown-workbook-node', 'full', 'none', 'none', 'none', 'none'),
 } as const satisfies Record<string, NativeCapabilityDeclaration>;
 
 function capability(
@@ -98,9 +99,26 @@ const WORKSHEET_NODES = new Map<string, string>([
 ]);
 
 const STRUCTURAL_NODES = new Set(['sheetPr', 'dimension', 'sheetViews', 'sheetFormatPr', 'sheetCalcPr', 'phoneticPr', 'extLst', 'drawing', 'legacyDrawing']);
+const SPARKLINE_GROUPS_EXTENSION_URI = '{05C60535-1F16-4FD2-B633-F4F36F0B64E0}';
+const SLICER_LIST_EXTENSION_URI = '{A8765BA9-456A-4DAB-B4F3-ACF838C121DE}';
+const TIMELINE_REFS_EXTENSION_URI = '{7E03D99C-DC04-49D9-9315-930204A7B6E9}';
+const SLICER_CACHE_EXTENSION_URI = '{BBE1A952-AA13-448E-AADC-164F8A28A991}';
+const TIMELINE_CACHE_EXTENSION_URI = '{D0CA8CA8-9F24-4464-BF8E-62219DCF47F9}';
+const SPARKLINE_GROUP_ATTRIBUTES = new Set([
+  'type', 'lineWeight', 'dateAxis', 'markers', 'high', 'low', 'first', 'last', 'negative',
+  'displayXAxis', 'rightToLeft', 'displayHidden', 'displayEmptyCellsAs', 'manualMin', 'manualMax',
+  'colorSeries', 'colorNegative', 'colorAxis', 'colorMarkers', 'colorFirst', 'colorLast', 'colorHigh', 'colorLow',
+]);
+const SPARKLINE_COLOR_NODES = new Set([
+  'colorSeries', 'colorNegative', 'colorAxis', 'colorMarkers', 'colorFirst', 'colorLast', 'colorHigh', 'colorLow',
+]);
+const WORKBOOK_ROOT_NODES = new Set([
+  'workbookPr', 'sheets', 'definedNames', 'pivotCaches', 'bookViews', 'calcPr', 'fileVersion', 'fileSharing', 'workbookProtection', 'extLst',
+]);
 
 export function detectWorksheetCapabilities(files: Record<string, Uint8Array>, pkg: OpcPackageGraph): CompatibilityFeatureDetection[] {
   const detections: CompatibilityFeatureDetection[] = [];
+  const worksheetNames = readWorksheetNames(files, pkg);
   // Drawing containers also hold charts and comments. Only an image relationship
   // establishes image ownership, including media at non-standard package paths.
   for (const [part, relationships] of Object.entries(pkg.relationships)) {
@@ -128,7 +146,9 @@ export function detectWorksheetCapabilities(files: Record<string, Uint8Array>, p
       if (name === 'extLst') {
         if (descendants(node, 'dataValidations').length || descendants(node, 'dataValidation').length) detections.push({ feature: 'extended-validation', location: `${part}#extLst`, reason: 'Extended data validation is preserved in the source package but is not editable' });
         if (descendants(node, 'conditionalFormatting').length) detections.push({ feature: 'extended-conditional-format', location: `${part}#extLst`, reason: 'Extended conditional formatting is preserved in the source package but is not editable' });
-        for (const extension of children(node, 'ext')) detections.push({ feature: 'unknown-extension', location: `${part}#${extension.attrs.uri ?? 'ext'}`, reason: 'Worksheet extension is retained byte-for-byte from the source package' });
+        for (const extension of children(node, 'ext')) {
+          if (!isCanonicallyOwnedWorksheetExtension(extension, worksheetNames, pkg, part)) detections.push({ feature: 'unknown-extension', location: `${part}#${extension.attrs.uri ?? 'ext'}`, reason: 'Worksheet extension is retained byte-for-byte from the source package' });
+        }
       }
     }
   }
@@ -137,6 +157,175 @@ export function detectWorksheetCapabilities(files: Record<string, Uint8Array>, p
   const sharedStrings = files[sharedStringsPart];
   if (sharedStrings && /<(?:\w+:)?r(?:\s|>)/.test(strFromU8(sharedStrings))) detections.push({ feature: 'rich-text', location: sharedStringsPart });
   return deduplicateDetections(detections);
+}
+
+export function detectWorkbookCapabilities(files: Record<string, Uint8Array>, pkg: OpcPackageGraph): CompatibilityFeatureDetection[] {
+  const bytes = files[pkg.workbookPart];
+  if (!bytes) return [];
+  const workbook = descendants(parseXml(strFromU8(bytes)), 'workbook')[0];
+  if (!workbook) return [];
+  const detections: CompatibilityFeatureDetection[] = [];
+  const detectUnownedNode = (location: string, reason: string): void => {
+    detections.push({ feature: 'unknown-workbook-node', location: `${pkg.workbookPart}#${location}`, reason });
+  };
+  if (!hasOnlyAttributes(workbook, new Set())) detectUnownedNode('workbook@attributes', 'Workbook root attributes are not represented by the canonical writer');
+  for (const node of workbook.children) {
+    const name = localName(node.name);
+    if (!WORKBOOK_ROOT_NODES.has(name)) {
+      detectUnownedNode(name, `No canonical reader/writer owner exists for workbook node <${name}>`);
+      continue;
+    }
+    if (name === 'workbookPr' && (!hasOnlyAttributes(node, new Set(['date1904'])) || node.children.length > 0 || !hasOnlyWhitespace(node.text))) {
+      detectUnownedNode('workbookPr', 'Only workbookPr@date1904 is represented by the canonical writer');
+    }
+    if (name === 'pivotCaches') {
+      if (!hasOnlyAttributes(node, new Set(['count'])) || !hasOnlyWhitespace(node.text)) {
+        detectUnownedNode('pivotCaches', 'Pivot-cache container metadata is not represented by the canonical writer');
+      }
+      for (const cache of node.children) {
+        if (localName(cache.name) !== 'pivotCache'
+          || !hasOnlyAttributes(cache, new Set(['cacheId', 'r:id', 'id']))
+          || cache.children.length > 0 || !hasOnlyWhitespace(cache.text)) {
+          detectUnownedNode('pivotCaches#pivotCache', 'Pivot-cache metadata or child markup is not represented by the canonical writer');
+        }
+      }
+    }
+    if (name === 'sheets') {
+      if (!hasOnlyAttributes(node, new Set()) || !hasOnlyWhitespace(node.text)) detectUnownedNode('sheets', 'Workbook sheet-container metadata is not represented by the canonical writer');
+      for (const sheet of node.children) {
+        if (localName(sheet.name) !== 'sheet'
+          || !hasOnlyAttributes(sheet, new Set(['name', 'sheetId', 'r:id', 'id', 'state']))
+          || sheet.children.length > 0 || !hasOnlyWhitespace(sheet.text)
+          || (sheet.attrs.state !== undefined && !['visible', 'hidden'].includes(sheet.attrs.state))) {
+          detectUnownedNode('sheets#sheet', 'Workbook sheet metadata or visibility state cannot be round-tripped canonically');
+        }
+      }
+    }
+    if (name === 'definedNames') {
+      if (!hasOnlyAttributes(node, new Set()) || !hasOnlyWhitespace(node.text)) detectUnownedNode('definedNames', 'Workbook defined-name container metadata is not represented by the canonical writer');
+      for (const definedName of node.children) {
+        if (localName(definedName.name) !== 'definedName'
+          || !hasOnlyAttributes(definedName, new Set(['name', 'localSheetId', 'hidden']))
+          || definedName.children.length > 0) {
+          detectUnownedNode('definedNames#definedName', 'Defined-name attributes or child markup are not represented by the canonical writer');
+        }
+      }
+    }
+  }
+  for (const extensionList of children(workbook, 'extLst')) {
+    for (const extension of children(extensionList, 'ext')) {
+      if (!isCanonicallyOwnedWorkbookControlExtension(extension, pkg.nativePivotGraph?.controls ?? [])) {
+        detections.push({ feature: 'unknown-extension', location: `${pkg.workbookPart}#${extension.attrs.uri ?? 'ext'}`, reason: 'Workbook extension is retained from the source package but has no canonical structural owner' });
+      }
+    }
+  }
+  return deduplicateDetections(detections);
+}
+
+export function isCanonicallyOwnedSparklineExtension(extension: XmlNode, worksheetNames: ReadonlySet<string>): boolean {
+  if (extension.attrs.uri?.toUpperCase() !== SPARKLINE_GROUPS_EXTENSION_URI) return false;
+  if (!hasOnlyAttributes(extension, new Set(['uri'])) || !hasOnlyWhitespace(extension.text) || extension.children.length !== 1) return false;
+  const groups = extension.children[0]!;
+  if (localName(groups.name) !== 'sparklineGroups' || !hasOnlyAttributes(groups, new Set()) || !hasOnlyWhitespace(groups.text) || groups.children.length === 0) return false;
+  let sparklineCount = 0;
+  const owned = groups.children.every((group) => {
+    if (localName(group.name) !== 'sparklineGroup' || !hasOnlyAttributes(group, SPARKLINE_GROUP_ATTRIBUTES) || !hasOnlyWhitespace(group.text)) return false;
+    if (group.attrs.type !== undefined && !['line', 'column', 'win-loss'].includes(group.attrs.type)) return false;
+    if (['lineWeight', 'manualMin', 'manualMax'].some((name) => group.attrs[name] !== undefined && !Number.isFinite(Number(group.attrs[name])))) return false;
+    if ((group.attrs.manualMin === undefined) !== (group.attrs.manualMax === undefined)) return false;
+    if (['dateAxis', 'markers', 'high', 'low', 'first', 'last', 'negative', 'displayXAxis', 'rightToLeft', 'displayHidden']
+      .some((name) => group.attrs[name] !== undefined && !/^(?:0|1|true|false)$/.test(group.attrs[name]!))) return false;
+    if ([...SPARKLINE_COLOR_NODES].some((name) => group.attrs[name] !== undefined && !isSparklineColor(group.attrs[name]!))) return false;
+    const names = group.children.map((node) => localName(node.name));
+    if (names.filter((name) => name === 'sparklines').length !== 1
+      || names.some((name) => name !== 'sparklines' && !SPARKLINE_COLOR_NODES.has(name))
+      || names.filter((name) => SPARKLINE_COLOR_NODES.has(name)).length !== new Set(names.filter((name) => SPARKLINE_COLOR_NODES.has(name))).size) return false;
+    return group.children.every((node) => {
+      if (localName(node.name) === 'sparklines') {
+        return hasOnlyAttributes(node, new Set()) && hasOnlyWhitespace(node.text) && node.children.every((sparkline) => {
+          if (localName(sparkline.name) !== 'sparkline' || !hasOnlyAttributes(sparkline, new Set()) || !hasOnlyWhitespace(sparkline.text)) return false;
+          const fields = sparkline.children;
+          const valid = fields.length === 2
+            && fields.every((field) => (localName(field.name) === 'f' || localName(field.name) === 'sqref')
+              && hasOnlyAttributes(field, new Set()) && field.children.length === 0 && field.text.trim().length > 0)
+            && fields.filter((field) => localName(field.name) === 'f').length === 1
+            && fields.filter((field) => localName(field.name) === 'sqref').length === 1
+            && isOwnedSparklineFormula(fields.find((field) => localName(field.name) === 'f')!.text, worksheetNames)
+            && /^\$?[A-Z]+\$?\d+$/i.test(fields.find((field) => localName(field.name) === 'sqref')!.text.trim());
+          if (valid) sparklineCount += 1;
+          return valid;
+        });
+      }
+      return hasOnlyAttributes(node, new Set(['rgb', 'val'])) && node.children.length === 0 && hasOnlyWhitespace(node.text)
+        && isSparklineColor(node.attrs.rgb ?? node.attrs.val ?? '');
+    });
+  });
+  return owned && sparklineCount > 0;
+}
+
+function isOwnedSparklineFormula(formula: string, worksheetNames: ReadonlySet<string>): boolean {
+  const match = /^'?((?:[^']|'')+)'?!\s*(\$?[A-Z]+\$?\d+(?::\$?[A-Z]+\$?\d+)?)$/i.exec(formula.trim());
+  return Boolean(match && worksheetNames.has(match[1]!.replaceAll("''", "'")));
+}
+
+function isCanonicallyOwnedWorksheetExtension(extension: XmlNode, worksheetNames: ReadonlySet<string>, pkg: OpcPackageGraph, sheetPart: string): boolean {
+  if (isCanonicallyOwnedSparklineExtension(extension, worksheetNames)) return true;
+  return isCanonicallyOwnedNativeControlExtension(extension, pkg.nativePivotGraph?.controls?.filter((entry) => entry.sheetPart === sheetPart) ?? []);
+}
+
+export function isCanonicallyOwnedNativeControlExtension(extension: XmlNode, sourceControls: readonly NativePivotControlDefinition[]): boolean {
+  const uri = extension.attrs.uri?.toUpperCase();
+  const control = uri === SLICER_LIST_EXTENSION_URI ? { kind: 'slicer' as const, container: 'slicerList', item: 'slicer' }
+    : uri === TIMELINE_REFS_EXTENSION_URI ? { kind: 'timeline' as const, container: 'timelineRefs', item: 'timelineRef' }
+      : undefined;
+  return control ? isCanonicallyOwnedControlReferenceExtension(extension, sourceControls, control, 'relationshipId') : false;
+}
+
+export function isCanonicallyOwnedWorkbookControlExtension(extension: XmlNode, sourceControls: readonly NativePivotControlDefinition[]): boolean {
+  const uri = extension.attrs.uri?.toUpperCase();
+  const control = uri === SLICER_CACHE_EXTENSION_URI ? { kind: 'slicer' as const, container: 'slicerCaches', item: 'slicerCache' }
+    : uri === TIMELINE_CACHE_EXTENSION_URI ? { kind: 'timeline' as const, container: 'timelineCacheRefs', item: 'timelineCacheRef' }
+      : undefined;
+  return control ? isCanonicallyOwnedControlReferenceExtension(extension, sourceControls, control, 'cacheRelationshipId') : false;
+}
+
+function isCanonicallyOwnedControlReferenceExtension(
+  extension: XmlNode,
+  sourceControls: readonly NativePivotControlDefinition[],
+  control: { kind: NativePivotControlDefinition['kind']; container: string; item: string },
+  relationshipKey: 'relationshipId' | 'cacheRelationshipId',
+): boolean {
+  if (!hasOnlyAttributes(extension, new Set(['uri'])) || !hasOnlyWhitespace(extension.text) || extension.children.length !== 1) return false;
+  const container = extension.children[0]!;
+  if (localName(container.name) !== control.container || !hasOnlyAttributes(container, new Set()) || !hasOnlyWhitespace(container.text)) return false;
+  const references = container.children;
+  if (!references.every((reference) => localName(reference.name) === control.item
+    && hasOnlyAttributes(reference, new Set(['r:id'])) && Boolean(reference.attrs['r:id'])
+    && reference.children.length === 0 && hasOnlyWhitespace(reference.text))) return false;
+  const referenceIds = references.map((reference) => reference.attrs['r:id']!);
+  if (new Set(referenceIds).size !== referenceIds.length) return false;
+  const ownedControls = sourceControls.filter((entry) => entry.kind === control.kind);
+  return !ownedControls.some((entry) => !entry.valid)
+    && referenceIds.every((id) => ownedControls.some((entry) => entry[relationshipKey] === id));
+}
+
+function isSparklineColor(value: string): boolean {
+  return /^#?(?:[0-9a-f]{6}|[0-9a-f]{8})$/i.test(value);
+}
+
+function readWorksheetNames(files: Record<string, Uint8Array>, pkg: OpcPackageGraph): ReadonlySet<string> {
+  const workbookBytes = files[pkg.workbookPart];
+  if (!workbookBytes) return new Set();
+  const workbook = descendants(parseXml(strFromU8(workbookBytes)), 'workbook')[0];
+  return new Set(children(child(workbook, 'sheets'), 'sheet').flatMap((sheet) => sheet.attrs.name ? [sheet.attrs.name] : []));
+}
+
+function hasOnlyAttributes(node: XmlNode, allowed: ReadonlySet<string>): boolean {
+  return Object.keys(node.attrs).every((name) => name === 'xmlns' || name.startsWith('xmlns:') || allowed.has(name));
+}
+
+function hasOnlyWhitespace(value: string): boolean {
+  return value.trim().length === 0;
 }
 
 function resolvePart(source: string, target: string): string {

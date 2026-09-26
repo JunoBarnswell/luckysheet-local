@@ -25,6 +25,7 @@ import type {
 import { columnNameToIndex, tryParseCellReferenceText } from './address';
 import { FormulaSyntaxError } from './errors';
 import { lexFormula, type Token, type TokenKind } from './lexer';
+import { MAX_COLUMN_INDEX, MAX_ROW_INDEX } from './reference-transform-domain';
 
 export function parseFormula(source: string): FormulaAst {
   return new Parser(lexFormula(source)).parse();
@@ -184,6 +185,7 @@ class Parser {
   private parsePrimary(): FormulaAst {
     const token = this.peek();
     if (token.kind === 'number') {
+      if (this.checkNext('colon')) return this.parseReference();
       this.advance();
       const node: NumberLiteralNode = { type: 'number-literal', value: Number(token.lexeme), span: token.span };
       return node;
@@ -194,7 +196,7 @@ class Parser {
       return { type: 'invalid-reference', code: '#REF!', span: token.span };
     }
 
-    if (token.kind === 'string' && !this.checkNext('bang')) {
+    if (token.kind === 'string' && !this.checkNext('bang') && !this.isSheetRangeQualifier(token)) {
       this.advance();
       const node: StringLiteralNode = { type: 'string-literal', value: token.value ?? '', span: token.span };
       return node;
@@ -203,7 +205,7 @@ class Parser {
     if (token.kind === 'identifier') {
       const upper = token.lexeme.toUpperCase();
       if (upper === 'TRUE' || upper === 'FALSE') {
-        if (!this.checkNext('left-paren')) {
+        if (!this.checkNext('left-paren') && !this.checkNext('bang') && !this.isSheetRangeQualifier(token)) {
           this.advance();
           const node: BooleanLiteralNode = {
             type: 'boolean-literal',
@@ -223,9 +225,11 @@ class Parser {
       const savedIndex = this.index;
       try {
         return this.parseReference();
-      } catch {
-        // parseReference consumes the leading identifier before failing.
-        if (this.index === savedIndex) this.advance();
+      } catch (error) {
+        // Only a token that never entered reference syntax can be a name.
+        // A consumed qualifier/endpoint must retain its real parse failure.
+        if (this.index !== savedIndex) throw error;
+        this.advance();
         return { type: 'name-reference', name: token.lexeme, span: token.span };
       }
     }
@@ -389,7 +393,7 @@ class Parser {
       this.expect('colon', 'Expected worksheet range separator');
       const endSheetToken = this.expectAny(['identifier', 'string'], 'Expected ending worksheet name');
       this.expect('bang', 'Expected separator after worksheet range');
-      const startReference = this.parseReferenceEndpoint(this.peek(), undefined, this.check('colon'));
+      const startReference = this.parseReferenceEndpoint(this.peek(), undefined, this.checkNext('colon'));
       const reference = this.match('colon')
         ? this.combineReferenceEndpoints(startReference, this.parseReferenceEndpoint(this.peek(), undefined))
         : startReference;
@@ -414,7 +418,7 @@ class Parser {
       cellToken = this.peek();
     }
 
-    const start = this.parseReferenceEndpoint(cellToken, sheetId, this.check('colon'));
+    const start = this.parseReferenceEndpoint(cellToken, sheetId, this.checkNext('colon'));
     if (!this.match('colon')) return this.parseReferenceOperators(start);
 
     let endSheetId: string | undefined;
@@ -462,14 +466,27 @@ class Parser {
         return { type: 'cell-reference', reference: sheetId === undefined ? cell : { ...cell, sheetId }, span: token.span };
       }
       const column = allowWhole ? columnNameToIndex(token.lexeme.replace(/^\$/, '')) : undefined;
-      if (column !== undefined) {
+      if (column !== undefined && column <= MAX_COLUMN_INDEX) {
         this.advance();
-        return { type: 'whole-column-reference', sheetId, startColumn: column, endColumn: column, span: token.span };
+        const absolute = token.lexeme.startsWith('$');
+        return {
+          type: 'whole-column-reference', sheetId, startColumn: column, endColumn: column,
+          ...(absolute ? { absoluteStartColumn: true, absoluteEndColumn: true } : {}),
+          span: token.span,
+        };
+      }
+      const absoluteRowMatch = allowWhole ? /^\$(\d+)$/.exec(token.lexeme) : undefined;
+      if (absoluteRowMatch) {
+        const row = Number(absoluteRowMatch[1]);
+        if (row > 0 && row <= MAX_ROW_INDEX + 1 && Number.isSafeInteger(row)) {
+          this.advance();
+          return { type: 'whole-row-reference', sheetId, startRow: row - 1, endRow: row - 1, absoluteStartRow: true, absoluteEndRow: true, span: token.span };
+        }
       }
     }
     if (allowWhole && token.kind === 'number' && /^\d+$/.test(token.lexeme)) {
       const row = Number(token.lexeme);
-      if (row > 0 && Number.isSafeInteger(row)) {
+      if (row > 0 && row <= MAX_ROW_INDEX + 1 && Number.isSafeInteger(row)) {
         this.advance();
         return { type: 'whole-row-reference', sheetId, startRow: row - 1, endRow: row - 1, span: token.span };
       }
@@ -485,20 +502,30 @@ class Parser {
       return { type: 'range-reference', start, end, span: { start: start.span.start, end: end.span.end } };
     }
     if (start.type === 'whole-column-reference' && end.type === 'whole-column-reference') {
+      const startIsFirst = start.startColumn <= end.startColumn;
+      const first = startIsFirst ? start : end;
+      const last = startIsFirst ? end : start;
       return {
         type: 'whole-column-reference',
         sheetId: start.sheetId ?? end.sheetId,
-        startColumn: Math.min(start.startColumn, end.startColumn),
-        endColumn: Math.max(start.endColumn, end.endColumn),
+        startColumn: first.startColumn,
+        endColumn: last.startColumn,
+        ...(first.absoluteStartColumn ? { absoluteStartColumn: true } : {}),
+        ...(last.absoluteEndColumn ? { absoluteEndColumn: true } : {}),
         span: { start: start.span.start, end: end.span.end },
       };
     }
     if (start.type === 'whole-row-reference' && end.type === 'whole-row-reference') {
+      const startIsFirst = start.startRow <= end.startRow;
+      const first = startIsFirst ? start : end;
+      const last = startIsFirst ? end : start;
       return {
         type: 'whole-row-reference',
         sheetId: start.sheetId ?? end.sheetId,
-        startRow: Math.min(start.startRow, end.startRow),
-        endRow: Math.max(start.endRow, end.endRow),
+        startRow: first.startRow,
+        endRow: last.startRow,
+        ...(first.absoluteStartRow ? { absoluteStartRow: true } : {}),
+        ...(last.absoluteEndRow ? { absoluteEndRow: true } : {}),
         span: { start: start.span.start, end: end.span.end },
       };
     }
@@ -511,7 +538,7 @@ class Parser {
     this.expect('right-bracket', 'Expected ] after external workbook identity');
     const sheet = this.expectAny(['identifier', 'string'], 'Expected worksheet after external workbook');
     this.expect('bang', 'Expected separator after external worksheet');
-    const startReference = this.parseReferenceEndpoint(this.peek(), undefined, this.check('colon'));
+    const startReference = this.parseReferenceEndpoint(this.peek(), undefined, this.checkNext('colon'));
     const reference = this.match('colon')
       ? this.combineReferenceEndpoints(startReference, this.parseReferenceEndpoint(this.peek(), undefined))
       : startReference;

@@ -4,21 +4,105 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.xc.luckysheet.server.contract.CommittedOperationMutation;
+import com.xc.luckysheet.server.contract.GeneratedWorkbookContract;
 import com.xc.luckysheet.server.contract.OperationMutation;
+import com.xc.luckysheet.server.contract.RangeRef;
+import com.xc.luckysheet.server.contract.StructuralPatch;
 import com.xc.luckysheet.server.contract.WorkbookAclRole;
 import com.xc.luckysheet.server.service.ServiceException;
 import org.junit.jupiter.api.Test;
 
+import java.util.Collections;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class MutationDescriptorRegistryTest {
     private final ObjectMapper mapper = new ObjectMapper();
+
+    @Test
+    void generatedServerPlannerMutationsHaveCanonicalJavaReducers() {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+
+        for (String mutationId : GeneratedWorkbookContract.SERVER_STRUCTURAL_PLANNER_MUTATIONS) {
+            assertTrue(GeneratedWorkbookContract.requiresServerStructuralPlanner(mutationId));
+            assertEquals(mutationId, registry.require(mutationId, false).id());
+        }
+        assertTrue(GeneratedWorkbookContract.SERVER_STRUCTURAL_PLANNER_MUTATIONS.contains("range.move"));
+        assertTrue(GeneratedWorkbookContract.SERVER_STRUCTURAL_PLANNER_MUTATIONS.contains("sheet.remove"));
+        assertTrue(GeneratedWorkbookContract.SERVER_STRUCTURAL_PLANNER_MUTATIONS.contains("table.add"));
+        assertTrue(GeneratedWorkbookContract.STRUCTURAL_PATCH_MUTATIONS.contains("sheet.rename"));
+    }
+
+    @Test
+    void structuralPatchMutationIdsAreGeneratedFromTheCanonicalWorkbookContract() {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+
+        for (String mutationId : GeneratedWorkbookContract.STRUCTURAL_PATCH_MUTATIONS) {
+            assertTrue(GeneratedWorkbookContract.requiresServerStructuralPlanner(mutationId));
+            assertEquals(mutationId, registry.require(mutationId, false).id());
+        }
+        assertTrue(GeneratedWorkbookContract.STRUCTURAL_PATCH_MUTATIONS.contains("cells.inserted.restore"));
+        assertTrue(GeneratedWorkbookContract.STRUCTURAL_PATCH_MUTATIONS.contains("sheetTable.update"));
+    }
+
+    @Test
+    void tableUpdateReferenceTransformEmitsAnExplicitEmptyPatchWhenNoOwnerFormulaChanges() throws Exception {
+        JsonNode before = mapper.readTree("""
+                {"sheets":[{"id":"sheet-1","name":"Sheet1","sheetTables":[
+                  {"id":"table-1","name":"Sales","range":{"sheetId":"sheet-1","startRow":0,"endRow":2,"startColumn":0,"endColumn":1}}
+                ]}]}
+                """);
+
+        StructuralPatch patch = StructuralSnapshotReducer.renameSheetTableReferences(
+                before, before.deepCopy(), "sheet-1", "table-1");
+
+        assertEquals("sheetTable.update", patch.mutationId());
+        assertTrue(patch.formulaOwnerDeltas().isEmpty());
+        assertTrue(patch.definedNameOwnerDeltas().isEmpty());
+        assertTrue(patch.rangeOwnerDeltas().isEmpty());
+    }
+
+    @Test
+    void ownedCommitSelectionKeepsCellProtectionPreimageDetached() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        JsonNode snapshot = mapper.readTree("""
+                {"sheets":[{"id":"sheet-1","rowCount":20,"columnCount":10,"cells":{}}]}
+                """);
+        OperationMutation insertRows = new OperationMutation("rows.inserted", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","at":2,"count":1}
+                """));
+        MutationPreparation insertRowsPreparation = registry.prepare(snapshot, insertRows, WorkbookAclRole.EDITOR);
+        assertTrue(registry.usesOwnedSnapshotCommit(insertRowsPreparation, WorkbookAclRole.EDITOR));
+
+        OperationMutation moveRange = new OperationMutation("range.move", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","sourceRange":{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0},"targetOrigin":{"row":1,"column":0}}
+                """));
+        MutationPreparation movePreparation = registry.prepare(snapshot, moveRange, WorkbookAclRole.EDITOR);
+
+        assertFalse(registry.usesOwnedSnapshotCommit(movePreparation, WorkbookAclRole.EDITOR));
+        assertTrue(registry.usesOwnedSnapshotCommit(movePreparation, WorkbookAclRole.OWNER));
+    }
+
+    @Test
+    void structuralDataModelCollectionsAllowOmissionButRejectMalformedOwner() {
+        ObjectNode snapshot = mapper.createObjectNode();
+        assertEquals(0, SnapshotMutationSupport.dataModelArray(snapshot, "sources").size());
+
+        snapshot.put("dataModel", "invalid");
+        ServiceException error = assertThrows(ServiceException.class,
+                () -> SnapshotMutationSupport.dataModelArray(snapshot, "sources"));
+        assertEquals("VALIDATION_ERROR", error.code());
+    }
 
     @Test
     void unknownMutationsFailClosed() {
@@ -30,6 +114,159 @@ class MutationDescriptorRegistryTest {
     }
 
     @Test
+    void sheetTableRenameAppliesEveryMatchingStructuredReferenceAndRejectsMalformedReferences() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        ObjectNode snapshot = (ObjectNode) mapper.readTree("""
+                {"sheets":[
+                  {"id":"sheet-1","name":"Sheet 1","rowCount":20,"columnCount":10,
+                   "cells":{"0":{"0":{"value":null,"formula":"=SUM(Sales[Amount])+Sales [Other]+ÅSales[Amount]+[Book.xlsx]Sales[Amount]+IF(A1=\\"Sales[Amount]\\",0,1)"},
+                     "1":{"value":null,"formulaMetadata":{"kind":"dataTable","range":"B1:B2","preservedOnly":true,"sourceFormula":"=Sales[Amount]"}}}},
+                   "sheetTables":[{"id":"sales-table","sheetId":"sheet-1","name":"Sales",
+                     "range":{"sheetId":"sheet-1","startRow":0,"endRow":4,"startColumn":0,"endColumn":1},
+                     "hasHeaderRow":true,"hasTotalRow":false,"showBandedRows":true,"showBandedColumns":false,
+                     "showFirstColumn":false,"showLastColumn":false,"showFilterButton":true,"autoExpand":"none",
+                     "columns":[{"id":"amount","name":"Amount"},{"id":"other","name":"Other"}]}]},
+                  {"id":"sheet-2","name":"Sheet 2","rowCount":20,"columnCount":10,
+                   "cells":{"0":{"0":{"value":null,"formula":"=Sales[Amount]"}}}}
+                ]}
+                """);
+        JsonNode original = snapshot.deepCopy();
+        ObjectNode params = ((ObjectNode) snapshot.path("sheets").get(0).path("sheetTables").get(0)).deepCopy();
+        params.put("name", "Orders");
+        ((ObjectNode) params.path("range")).put("startRow", 1).put("endRow", 6);
+        OperationMutation rename = new OperationMutation("sheetTable.update", "sheet-1", params);
+
+        MutationApplication application = registry.require("sheetTable.update", false).applyWithPatch(snapshot, rename);
+
+        assertEquals(3, application.structuralPatch().formulaOwnerDeltas().size());
+        assertEquals(1, application.structuralPatch().rangeOwnerDeltas().size());
+        assertEquals("sheet-table", application.structuralPatch().rangeOwnerDeltas().get(0).ownerKind());
+        assertEquals(new RangeRef("sheet-1", 1, 6, 0, 1), application.structuralPatch().rangeOwnerDeltas().get(0).afterRange());
+        assertEquals("=SUM(Orders[Amount])+Orders [Other]+ÅSales[Amount]+[Book.xlsx]Sales[Amount]+IF(A1=\"Sales[Amount]\",0,1)",
+                application.snapshot().path("sheets").get(0).path("cells").path("0").path("0").path("formula").asText());
+        assertEquals("=Orders[Amount]", application.snapshot().path("sheets").get(0)
+                .path("cells").path("0").path("1").path("formulaMetadata").path("sourceFormula").asText());
+        assertEquals("B1:B2", application.snapshot().path("sheets").get(0)
+                .path("cells").path("0").path("1").path("formulaMetadata").path("range").asText());
+        assertEquals("=Orders[Amount]",
+                application.snapshot().path("sheets").get(1).path("cells").path("0").path("0").path("formula").asText());
+        assertEquals(original, snapshot);
+        assertEquals(application.snapshot(), registry.applyPublicMutations(snapshot, List.of(rename)));
+        ObjectNode undone = (ObjectNode) registry.applyStructuralPatch(
+                application.snapshot(), application.structuralPatch().inverse("sheetTable.update"));
+        assertEquals(new RangeRef("sheet-1", 0, 4, 0, 1), SnapshotMutationSupport.range(undone,
+                undone.path("sheets").get(0).path("sheetTables").get(0).path("range")));
+        assertEquals("=Sales[Amount]", undone.path("sheets").get(0)
+                .path("cells").path("0").path("1").path("formulaMetadata").path("sourceFormula").asText());
+        ObjectNode redone = (ObjectNode) registry.applyStructuralPatch(undone, application.structuralPatch());
+        assertEquals("=Orders[Amount]", redone.path("sheets").get(0)
+                .path("cells").path("0").path("1").path("formulaMetadata").path("sourceFormula").asText());
+
+        ObjectNode malformed = snapshot.deepCopy();
+        ((ObjectNode) malformed.path("sheets").get(0).path("cells").path("0").path("0")).put("formula", "=SUM(Sales[Amount)");
+        JsonNode malformedOriginal = malformed.deepCopy();
+        ServiceException error = assertThrows(ServiceException.class,
+                () -> registry.require("sheetTable.update", false).applyWithPatch(malformed, rename));
+        assertEquals("UNSUPPORTED_FEATURE", error.code());
+        assertEquals(malformedOriginal, malformed);
+
+        ObjectNode grouped = snapshot.deepCopy();
+        ObjectNode groupedCells = (ObjectNode) grouped.path("sheets").get(0).path("cells");
+        ObjectNode groupedCell = groupedCells.putObject("2").putObject("0");
+        groupedCell.put("formula", "=Sales[Amount]");
+        groupedCell.putObject("formulaMetadata")
+                .put("kind", "shared").put("sharedIndex", 7).put("sharedMaster", true)
+                .put("range", "A3:A4").put("sourceFormula", "=Sales[Amount]");
+        JsonNode groupedOriginal = grouped.deepCopy();
+        ServiceException groupedError = assertThrows(ServiceException.class,
+                () -> registry.require("sheetTable.update", false).applyWithPatch(grouped, rename));
+        assertEquals("UNSUPPORTED_FEATURE", groupedError.code());
+        assertEquals(groupedOriginal, grouped);
+
+        ObjectNode missingRuleRanges = snapshot.deepCopy();
+        ObjectNode missingRuleSheet = (ObjectNode) missingRuleRanges.path("sheets").get(0);
+        missingRuleSheet.putArray("conditionalFormats").addObject()
+                .put("id", "formula-rule-without-ranges").put("sheetId", "sheet-1")
+                .put("operator", "formula").put("value1", "=Sales[Amount]");
+        JsonNode missingRuleRangesOriginal = missingRuleRanges.deepCopy();
+        ServiceException missingRangesError = assertThrows(ServiceException.class,
+                () -> registry.require("sheetTable.update", false).applyWithPatch(missingRuleRanges, rename));
+        assertEquals("VALIDATION_ERROR", missingRangesError.code());
+        assertEquals(missingRuleRangesOriginal, missingRuleRanges);
+    }
+
+    @Test
+    void sheetTableRangePatchAppliesAndRejectsDriftWithoutChangingTheBaseSnapshot() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        ObjectNode snapshot = (ObjectNode) mapper.readTree("""
+                {"sheets":[{"id":"sheet-1","sheetTables":[{"id":"table-1","sheetId":"sheet-1",
+                  "range":{"sheetId":"sheet-1","startRow":0,"endRow":3,"startColumn":0,"endColumn":1}}]}]}
+                """);
+        RangeRef before = new RangeRef("sheet-1", 0, 3, 0, 1);
+        RangeRef after = new RangeRef("sheet-1", 1, 5, 0, 1);
+        StructuralPatch patch = new StructuralPatch(StructuralPatch.VERSION, "sheetTable.update", List.of(), List.of(),
+                List.of(StructuralPatch.RangeOwnerDelta.sheetTable("sheet-1", "table-1", before, after)));
+
+        ObjectNode applied = (ObjectNode) registry.applyStructuralPatch(snapshot, patch);
+        assertEquals(after, SnapshotMutationSupport.range(applied, applied.path("sheets").get(0)
+                .path("sheetTables").get(0).path("range")));
+        assertEquals(before, SnapshotMutationSupport.range(snapshot, snapshot.path("sheets").get(0)
+                .path("sheetTables").get(0).path("range")));
+
+        ObjectNode divergent = snapshot.deepCopy();
+        ((ObjectNode) divergent.path("sheets").get(0).path("sheetTables").get(0).path("range"))
+                .put("startRow", 8).put("endRow", 11);
+        JsonNode divergentBefore = divergent.deepCopy();
+        ServiceException error = assertThrows(ServiceException.class, () -> registry.applyStructuralPatch(divergent, patch));
+        assertEquals("CONFLICT", error.code());
+        assertTrue(error.getMessage().contains("STRUCTURAL_PATCH_PRECONDITION"));
+        assertEquals(divergentBefore, divergent);
+    }
+
+    @Test
+    void ownedStructuralPatchReusesCandidateAndRejectsConflictsWithoutChangingBaseSnapshot() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        ObjectNode baseSnapshot = (ObjectNode) mapper.readTree("""
+                {"sheets":[{"id":"sheet-1","cells":{"0":{"0":{"formula":"=A1"},"1":{"formula":"=B1"}}}}]}
+                """);
+        JsonNode original = baseSnapshot.deepCopy();
+        StructuralPatch.CellAddress firstAddress = new StructuralPatch.CellAddress("sheet-1", 0, 0);
+        StructuralPatch.CellAddress secondAddress = new StructuralPatch.CellAddress("sheet-1", 0, 1);
+        StructuralPatch.FormulaOwnerDelta firstDelta = new StructuralPatch.FormulaOwnerDelta(
+                "formula-cell", firstAddress, firstAddress,
+                new StructuralPatch.FormulaOwnerState("=A1", null, null),
+                new StructuralPatch.FormulaOwnerState("=A2", null, null));
+        StructuralPatch.FormulaOwnerDelta conflictingDelta = new StructuralPatch.FormulaOwnerDelta(
+                "formula-cell", secondAddress, secondAddress,
+                new StructuralPatch.FormulaOwnerState("=B1", null, null),
+                new StructuralPatch.FormulaOwnerState("=B2", null, null));
+
+        ObjectNode successfulCandidate = baseSnapshot.deepCopy();
+        JsonNode applied = registry.applyStructuralPatchOnOwnedSnapshot(successfulCandidate,
+                new StructuralPatch(StructuralPatch.VERSION, "rows.inserted", List.of(firstDelta), List.of(), List.of()));
+
+        assertSame(successfulCandidate, applied);
+        assertEquals("=A2", applied.path("sheets").get(0).path("cells").path("0").path("0").path("formula").asText());
+        assertEquals(original, baseSnapshot);
+
+        ObjectNode rejectedCandidate = baseSnapshot.deepCopy();
+        ((ObjectNode) rejectedCandidate.path("sheets").get(0).path("cells").path("0").path("1")).put("formula", "=BROKEN");
+        JsonNode rejectedBase = rejectedCandidate.deepCopy();
+        StructuralPatch patchWithConflict = new StructuralPatch(
+                StructuralPatch.VERSION, "rows.inserted", List.of(firstDelta, conflictingDelta), List.of(), List.of());
+
+        ServiceException error = assertThrows(ServiceException.class,
+                () -> registry.applyStructuralPatchOnOwnedSnapshot(rejectedCandidate, patchWithConflict));
+
+        assertEquals("CONFLICT", error.code());
+        assertTrue(error.getMessage().contains("STRUCTURAL_PATCH_PRECONDITION"));
+        assertEquals("=A2", rejectedCandidate.path("sheets").get(0).path("cells").path("0").path("0").path("formula").asText());
+        assertEquals("=BROKEN", rejectedCandidate.path("sheets").get(0).path("cells").path("0").path("1").path("formula").asText());
+        assertEquals(original, baseSnapshot);
+        assertEquals("=A1", rejectedBase.path("sheets").get(0).path("cells").path("0").path("0").path("formula").asText());
+    }
+
+    @Test
     void cellSetUsesServerResolvedRangeAndChangesSnapshot() throws Exception {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         var snapshot = mapper.readTree("{\"sheets\":[{\"id\":\"sheet-1\",\"rowCount\":1000,\"columnCount\":26,\"cells\":{}}]}");
@@ -37,6 +274,217 @@ class MutationDescriptorRegistryTest {
         assertEquals(2, registry.resolveRanges(snapshot, mutation).get(0).startRow());
         var next = registry.applyPublicMutations(snapshot, List.of(mutation));
         assertEquals(42, next.path("sheets").get(0).path("cells").path("2").path("3").path("value").asInt());
+    }
+
+    @Test
+    void publicMutationReductionPreservesInputAndEmptyBatchIsolation() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        ObjectNode snapshot = (ObjectNode) mapper.readTree("{\"name\":\"before\",\"sheets\":[{\"id\":\"sheet-1\",\"rowCount\":1000,\"columnCount\":26,\"cells\":{}}]}");
+        JsonNode original = snapshot.deepCopy();
+        var mutation = new OperationMutation("cell.set", "sheet-1", mapper.readTree(cellSetParams(2, 3, "{\"value\":42}", "accepted")));
+
+        JsonNode next = registry.applyPublicMutations(snapshot, List.of(mutation));
+
+        assertNotSame(snapshot, next);
+        assertEquals(original, snapshot);
+        assertEquals(42, next.path("sheets").get(0).path("cells").path("2").path("3").path("value").asInt());
+
+        JsonNode emptyReduction = registry.applyPublicMutations(snapshot, List.of());
+        assertNotSame(snapshot, emptyReduction);
+        assertEquals(snapshot, emptyReduction);
+        ((ObjectNode) emptyReduction).put("isolationProbe", true);
+        assertTrue(snapshot.get("isolationProbe") == null);
+    }
+
+    @Test
+    void definedNameMutationsKeepCaseInsensitiveProjectionSynchronized() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        ObjectNode snapshot = (ObjectNode) mapper.readTree("""
+                {"sheets":[{"id":"sheet-1"}],
+                 "definedNames":{"TaxRate":"0.1"},
+                 "definedNameModels":[{"name":"TaxRate","formula":"0.1","scope":"workbook"}]}
+                """);
+
+        JsonNode changed = registry.applyPublicMutations(snapshot, List.of(new OperationMutation(
+                "name.set", "sheet-1", mapper.readTree("""
+                        {"model":{"name":"taxrate","formula":"0.2","scope":"workbook"}}
+                        """))));
+
+        assertEquals(1, changed.path("definedNameModels").size());
+        assertEquals("taxrate", changed.path("definedNameModels").get(0).path("name").asText());
+        assertEquals(1, changed.path("definedNames").size());
+        assertEquals("0.2", changed.path("definedNames").path("taxrate").asText());
+
+        JsonNode removed = registry.applyPublicMutations(changed, List.of(new OperationMutation(
+                "name.remove", "sheet-1", mapper.readTree("""
+                        {"name":"TAXRATE","scope":"workbook"}
+                        """))));
+
+        assertEquals(0, removed.path("definedNameModels").size());
+        assertEquals(0, removed.path("definedNames").size());
+    }
+
+    @Test
+    void structuralDescriptorKeepsPublicPurityAndMutatesOnlyOwnedSnapshots() throws Exception {
+        StructuralMutationDescriptor descriptor = new StructuralMutationDescriptor("rows.inserted");
+        ObjectNode snapshot = (ObjectNode) mapper.readTree("""
+                {"sheets":[{"id":"sheet-1","name":"Sheet1","rowCount":5,"columnCount":3,
+                  "cells":{"0":{"0":{"value":null,"formula":"=A1"}}},"pane":{"kind":"none"},
+                  "defaultRowHeightPx":20,"defaultColumnWidthPx":64,"hiddenRows":[],"hiddenColumns":[],
+                  "rowHeightsPx":{},"columnWidthsPx":{},"merges":[],"conditionalFormats":[],"dataValidations":[],
+                  "pivots":[],"sparklines":[],"drawings":[],"drawingPayloads":{},"sheetTables":[],
+                  "review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}},
+                  "spillRanges":[],"protectionRules":[],"outline":{"groups":[]}}],
+                 "definedNames":{"TaxRate":"=A2"},
+                 "definedNameModels":[{"name":"TaxRate","formula":"=A2","scope":"workbook",
+                   "anchor":{"sheetId":"sheet-1","row":3,"column":0}}]}
+                """);
+        JsonNode original = snapshot.deepCopy();
+        OperationMutation mutation = new OperationMutation("rows.inserted", "sheet-1",
+                mapper.readTree("{\"sheetId\":\"sheet-1\",\"at\":0,\"count\":1}"));
+
+        MutationApplication standalone = descriptor.applyWithPatch(snapshot, mutation);
+        assertNotSame(snapshot, standalone.snapshot());
+        assertEquals(original, snapshot);
+        assertEquals("=A2", standalone.snapshot().path("sheets").get(0)
+                .path("cells").path("1").path("0").path("formula").asText());
+        assertEquals("=A3", standalone.snapshot().path("definedNameModels").get(0).path("formula").asText());
+        assertEquals(4, standalone.snapshot().path("definedNameModels").get(0).path("anchor").path("row").asInt());
+        assertEquals("=A2", snapshot.path("definedNameModels").get(0).path("formula").asText());
+
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        JsonNode reduced = registry.applyPublicMutations(snapshot, List.of(mutation, mutation));
+        assertNotSame(snapshot, reduced);
+        assertEquals(original, snapshot);
+        assertEquals("=A3", reduced.path("sheets").get(0)
+                .path("cells").path("2").path("0").path("formula").asText());
+        assertEquals("=A4", reduced.path("definedNameModels").get(0).path("formula").asText());
+        assertEquals(5, reduced.path("definedNameModels").get(0).path("anchor").path("row").asInt());
+
+        MutationPreparation commitPreparation = registry.prepare(snapshot, mutation, WorkbookAclRole.EDITOR);
+        assertTrue(registry.usesOwnedSnapshotCommit(commitPreparation, WorkbookAclRole.EDITOR));
+        ObjectNode ownedSnapshot = snapshot.deepCopy();
+        MutationApplication owned = registry.applyPreparedCommit(ownedSnapshot, mutation, commitPreparation, WorkbookAclRole.EDITOR);
+        assertSame(ownedSnapshot, owned.snapshot());
+        assertEquals("=A2", ownedSnapshot.path("sheets").get(0)
+                .path("cells").path("1").path("0").path("formula").asText());
+        assertEquals("=A3", ownedSnapshot.path("definedNameModels").get(0).path("formula").asText());
+        assertEquals(4, ownedSnapshot.path("definedNameModels").get(0).path("anchor").path("row").asInt());
+        assertEquals(original, snapshot);
+    }
+
+    @Test
+    void structuralPatchMigrationPreservesPatchlessMutationSlots() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        JsonNode snapshot = mapper.readTree("{\"sheets\":[{\"id\":\"sheet-1\",\"rowCount\":1000,\"columnCount\":26,\"cells\":{}}]}");
+        List<OperationMutation> mutations = List.of(
+                new OperationMutation("cell.set", "sheet-1", mapper.readTree(cellSetParams(1, 1, "{\"value\":1}", "accepted"))),
+                new OperationMutation("cell.set", "sheet-1", mapper.readTree(cellSetParams(2, 2, "{\"value\":2}", "accepted"))));
+
+        var replay = registry.replayStructuralPatchesForMigration(snapshot, mutations, Collections.nCopies(mutations.size(), null));
+
+        assertEquals(List.of(Optional.empty(), Optional.empty()), replay.structuralPatches());
+        assertEquals(1, replay.snapshot().path("sheets").get(0).path("cells").path("1").path("1").path("value").asInt());
+        assertEquals(2, replay.snapshot().path("sheets").get(0).path("cells").path("2").path("2").path("value").asInt());
+    }
+
+    @Test
+    void structuralPatchDefinedNameParsingRejectsInvalidAnchorCoordinates() throws Exception {
+        JsonNode fractionalRow = mapper.readTree("""
+                [{"name":"LocalName","formula":"=A1","scope":"workbook",
+                  "anchor":{"sheetId":"sheet-1","row":1.5,"column":0}}]
+                """);
+        JsonNode outOfBoundsColumn = mapper.readTree("""
+                [{"name":"LocalName","formula":"=A1","scope":"workbook",
+                  "anchor":{"sheetId":"sheet-1","row":0,"column":16384}}]
+                """);
+
+        ServiceException fractionalError = assertThrows(ServiceException.class,
+                () -> StructuralSnapshotReducer.definedNameOwnerDeltas(fractionalRow, fractionalRow));
+        ServiceException boundsError = assertThrows(ServiceException.class,
+                () -> StructuralSnapshotReducer.definedNameOwnerDeltas(outOfBoundsColumn, outOfBoundsColumn));
+
+        assertEquals("VALIDATION_ERROR", fractionalError.code());
+        assertEquals("VALIDATION_ERROR", boundsError.code());
+    }
+
+    @Test
+    void structuralMutationRejectsProjectionOnlyDefinedNamesWithoutChangingSnapshot() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        ObjectNode snapshot = (ObjectNode) mapper.readTree("""
+                {"sheets":[{"id":"sheet-1","name":"Sheet1","rowCount":5,"columnCount":3,
+                  "cells":{},"pane":{"kind":"none"},"defaultRowHeightPx":20,"defaultColumnWidthPx":64,
+                  "hiddenRows":[],"hiddenColumns":[],"rowHeightsPx":{},"columnWidthsPx":{},"merges":[],
+                  "conditionalFormats":[],"dataValidations":[],"pivots":[],"sparklines":[],"drawings":[],
+                  "drawingPayloads":{},"sheetTables":[],"spillRanges":[],"protectionRules":[],"outline":{"groups":[]}}],
+                 "definedNames":{"TaxRate":"=A2"}}
+                """);
+        JsonNode original = snapshot.deepCopy();
+        OperationMutation mutation = new OperationMutation("rows.inserted", "sheet-1",
+                mapper.readTree("{\"sheetId\":\"sheet-1\",\"at\":0,\"count\":1}"));
+
+        ServiceException error = assertThrows(ServiceException.class,
+                () -> registry.applyPublicMutations(snapshot, List.of(mutation)));
+
+        assertEquals("SERVICE_UNAVAILABLE", error.code());
+        assertEquals(original, snapshot);
+    }
+
+    @Test
+    void committedStructuralReplayUsesDetachedBatchAndRejectsCorruptPatchWithoutChangingInput() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        ObjectNode snapshot = (ObjectNode) mapper.readTree("""
+                {"sheets":[{"id":"sheet-1","name":"Sheet1","rowCount":5,"columnCount":3,
+                  "cells":{"0":{"0":{"value":null,"formula":"=A1"}}},"pane":{"kind":"none"},
+                  "defaultRowHeightPx":20,"defaultColumnWidthPx":64,"hiddenRows":[],"hiddenColumns":[],
+                  "rowHeightsPx":{},"columnWidthsPx":{},"merges":[],"conditionalFormats":[],"dataValidations":[],
+                  "pivots":[],"sparklines":[],"drawings":[],"drawingPayloads":{},"sheetTables":[],
+                  "review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}},
+                  "spillRanges":[],"protectionRules":[],"outline":{"groups":[]}}],
+                 "definedNames":{"TaxRate":"=A2"},
+                 "definedNameModels":[{"name":"TaxRate","formula":"=A2","scope":"workbook",
+                   "anchor":{"sheetId":"sheet-1","row":3,"column":0}}]}
+                """);
+        JsonNode original = snapshot.deepCopy();
+        OperationMutation mutation = new OperationMutation("rows.inserted", "sheet-1",
+                mapper.readTree("{\"sheetId\":\"sheet-1\",\"at\":0,\"count\":1}"));
+        MutationApplication generated = new StructuralMutationDescriptor("rows.inserted")
+                .applyWithPatch(snapshot, mutation);
+        StructuralPatch patch = generated.structuralPatch();
+        List<RangeRef> affectedRanges = registry.resolveRanges(snapshot, mutation);
+        List<RangeRef> impactRanges = registry.structuralImpactRanges(patch);
+        CommittedOperationMutation committed = CommittedOperationMutation.from(
+                mutation, affectedRanges, impactRanges, patch);
+
+        JsonNode replayed = registry.applyCommittedMutations(snapshot, List.of(committed),
+                Collections.singletonList(null));
+        assertNotSame(snapshot, replayed);
+        assertEquals(generated.snapshot(), replayed);
+        assertEquals(1, patch.definedNameOwnerDeltas().size());
+        StructuralPatch.DefinedNameOwnerDelta nameDelta = patch.definedNameOwnerDeltas().get(0);
+        assertEquals("=A2", nameDelta.before().formula());
+        assertEquals("=A3", nameDelta.after().formula());
+        assertEquals(3, nameDelta.before().anchor().row());
+        assertEquals(4, nameDelta.after().anchor().row());
+        assertEquals("=A3", replayed.path("definedNames").path("TaxRate").asText());
+
+        StructuralPatch nameOnlyInverse = new StructuralPatch(StructuralPatch.VERSION, "rows.deleted", List.of(),
+                List.of(nameDelta.inverse()), List.of());
+        JsonNode restoredName = registry.applyStructuralPatch(replayed, nameOnlyInverse);
+        assertEquals("=A2", restoredName.path("definedNameModels").get(0).path("formula").asText());
+        assertEquals(3, restoredName.path("definedNameModels").get(0).path("anchor").path("row").asInt());
+        assertEquals("=A2", restoredName.path("definedNames").path("TaxRate").asText());
+
+        assertEquals(original, snapshot);
+
+        StructuralPatch corruptPatch = new StructuralPatch(StructuralPatch.VERSION, "rows.deleted",
+                patch.formulaOwnerDeltas(), patch.definedNameOwnerDeltas(), patch.rangeOwnerDeltas());
+        CommittedOperationMutation corrupt = CommittedOperationMutation.from(
+                mutation, affectedRanges, registry.structuralImpactRanges(corruptPatch), corruptPatch);
+        ServiceException error = assertThrows(ServiceException.class,
+                () -> registry.applyCommittedMutations(snapshot, List.of(corrupt), Collections.singletonList(null)));
+        assertEquals("STORAGE_CORRUPT", error.code());
+        assertEquals(original, snapshot);
     }
 
     @Test
@@ -125,7 +573,7 @@ class MutationDescriptorRegistryTest {
                 {"sheets":[{"id":"sheet-1","rowCount":20,"columnCount":20,"cells":{"0":{"0":{"value":"move"}}}}]}
                 """);
         var mutation = new OperationMutation("range.paste", "sheet-1", mapper.readTree("""
-                {"sheetId":"sheet-1","targetOrigin":{"row":1,"column":1},"sourceExtent":{"rows":1,"columns":1},"clipboard":{"schema":"SparseClipboardPayload","range":{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0},"sourceExtent":{"rows":1,"columns":1},"occupiedCells":[],"rangeMetadata":{"columnWidths":[],"validations":[],"conditionalFormats":[],"notes":[],"comments":[],"hyperlinks":[]}},
+                {"sheetId":"sheet-1","targetOrigin":{"row":1,"column":1},"sourceExtent":{"rows":1,"columns":1},"clipboard":{"schema":"SparseClipboardPayload","transfer":"move","range":{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0},"sourceExtent":{"rows":1,"columns":1},"occupiedCells":[],"rangeMetadata":{"columnWidths":[],"validations":[],"conditionalFormats":[],"notes":[],"comments":[],"hyperlinks":[]}},
                  "transfer":"move","clearSource":true,"sourceRange":{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0},
                  "spec":{"content":"all","formatting":"all","metadata":{"commentsNotes":true,"validation":true,"columnWidths":false,"conditionalFormats":true,"hyperlinks":true},"operation":"none","skipBlanks":false,"transpose":false,"link":false},
                  "snapshot":{"cells":[{"row":0,"column":0},{"row":1,"column":1,"value":{"value":"move"}}]}}
@@ -137,6 +585,54 @@ class MutationDescriptorRegistryTest {
         assertEquals(2, prepared.affectedRanges().size());
         assertEquals(true, next.path("sheets").get(0).path("cells").path("0").isMissingNode());
         assertEquals("move", next.path("sheets").get(0).path("cells").path("1").path("1").path("value").asText());
+    }
+
+    @Test
+    void crossSheetRangePasteFailsClosedBeforeApplyingSnapshots() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        var snapshot = mapper.readTree("""
+                {"sheets":[
+                  {"id":"sheet-1","rowCount":20,"columnCount":20,"cells":{"0":{"0":{"value":"source"}}}},
+                  {"id":"sheet-2","rowCount":20,"columnCount":20,"cells":{"1":{"1":{"value":"target"}}}}
+                ]}
+                """);
+        var mutation = new OperationMutation("range.paste", "sheet-2", mapper.readTree("""
+                {"sheetId":"sheet-2","targetOrigin":{"row":2,"column":2},"sourceExtent":{"rows":1,"columns":1},
+                 "clipboard":{"schema":"SparseClipboardPayload","transfer":"move","range":{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0},"sourceExtent":{"rows":1,"columns":1},"occupiedCells":[],"rangeMetadata":{"columnWidths":[],"validations":[],"conditionalFormats":[],"notes":[],"comments":[],"hyperlinks":[]}},
+                 "transfer":"move","clearSource":true,"sourceRange":{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0},
+                 "sourceSnapshot":{"cells":[]},
+                 "spec":{"content":"all","formatting":"all","metadata":{"commentsNotes":true,"validation":true,"columnWidths":false,"conditionalFormats":true,"hyperlinks":true},"operation":"none","skipBlanks":false,"transpose":false,"link":false},
+                 "snapshot":{"cells":[{"row":2,"column":2,"value":{"value":"source"}}]}}
+                """));
+
+        ServiceException error = assertThrows(ServiceException.class,
+                () -> registry.prepare(snapshot, mutation, WorkbookAclRole.EDITOR));
+
+        assertEquals("UNSUPPORTED_FEATURE", error.code());
+        assertTrue(error.getMessage().contains("UNSUPPORTED_FEATURE"));
+        assertEquals("source", snapshot.path("sheets").get(0).path("cells").path("0").path("0").path("value").asText());
+        assertEquals("target", snapshot.path("sheets").get(1).path("cells").path("1").path("1").path("value").asText());
+    }
+
+    @Test
+    void rangePasteRejectsMoveSourceRangeDifferentFromClipboardRange() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        var snapshot = mapper.readTree("""
+                {"sheets":[{"id":"sheet-1","rowCount":20,"columnCount":20,"cells":{"0":{"0":{"value":"source"}}}}]}
+                """);
+        var mutation = new OperationMutation("range.paste", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","targetOrigin":{"row":2,"column":2},"sourceExtent":{"rows":1,"columns":1},
+                 "clipboard":{"schema":"SparseClipboardPayload","transfer":"move","range":{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0},"sourceExtent":{"rows":1,"columns":1},"occupiedCells":[],"rangeMetadata":{"columnWidths":[],"validations":[],"conditionalFormats":[],"notes":[],"comments":[],"hyperlinks":[]}},
+                 "transfer":"move","clearSource":true,"sourceRange":{"sheetId":"sheet-1","startRow":1,"endRow":1,"startColumn":0,"endColumn":0},
+                 "spec":{"content":"all","formatting":"all","metadata":{"commentsNotes":true,"validation":true,"columnWidths":false,"conditionalFormats":true,"hyperlinks":true},"operation":"none","skipBlanks":false,"transpose":false,"link":false},
+                 "snapshot":{"clearRanges":[{"sheetId":"sheet-1","startRow":2,"endRow":2,"startColumn":2,"endColumn":2}],"cells":[]}}
+                """));
+
+        ServiceException error = assertThrows(ServiceException.class,
+                () -> registry.prepare(snapshot, mutation, WorkbookAclRole.EDITOR));
+
+        assertEquals("VALIDATION_ERROR", error.code());
+        assertEquals("source", snapshot.path("sheets").get(0).path("cells").path("0").path("0").path("value").asText());
     }
 
     private static String cellSetParams(int row, int column, String value, String status) {
@@ -152,7 +648,7 @@ class MutationDescriptorRegistryTest {
                 {"sheets":[{"id":"sheet-1","rowCount":20,"columnCount":20,"cells":{"0":{"0":{"value":"keep"}}}}]}
                 """);
         var mutation = new OperationMutation("range.paste", "sheet-1", mapper.readTree("""
-                {"sheetId":"sheet-1","targetOrigin":{"row":1,"column":1},"sourceExtent":{"rows":1,"columns":1},"clipboard":{"schema":"SparseClipboardPayload","range":{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0},"sourceExtent":{"rows":1,"columns":1},"occupiedCells":[],"rangeMetadata":{"columnWidths":[],"validations":[],"conditionalFormats":[],"notes":[],"comments":[],"hyperlinks":[]}},
+                {"sheetId":"sheet-1","targetOrigin":{"row":1,"column":1},"sourceExtent":{"rows":1,"columns":1},"clipboard":{"schema":"SparseClipboardPayload","transfer":"move","range":{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0},"sourceExtent":{"rows":1,"columns":1},"occupiedCells":[],"rangeMetadata":{"columnWidths":[],"validations":[],"conditionalFormats":[],"notes":[],"comments":[],"hyperlinks":[]}},
                  "transfer":"move","clearSource":true,"sourceRange":{"sheetId":"sheet-1","startRow":0,"endRow":100000,"startColumn":0,"endColumn":0},
                  "spec":{"content":"all","formatting":"all","metadata":{"commentsNotes":true,"validation":true,"columnWidths":false,"conditionalFormats":true,"hyperlinks":true},"operation":"none","skipBlanks":false,"transpose":false,"link":false},
                  "snapshot":{"cells":[{"row":0,"column":0},{"row":1,"column":1,"value":{"value":"move"}}]}}
@@ -194,13 +690,90 @@ class MutationDescriptorRegistryTest {
     }
 
     @Test
+    void clearContentsRemovesFormulaDefinitionProvenanceAndCachedResult() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        var snapshot = mapper.readTree("""
+                {"sheets":[{"id":"sheet-1","rowCount":1,"columnCount":1,"cells":{"0":{"0":{
+                  "value":7,"formula":"=1+6","formulaValue":7,"displayValue":"7",
+                  "formulaMetadata":{"kind":"normal","sourceFormula":"=1+6"}
+                }}}}]}
+                """);
+        var mutation = new OperationMutation("range.clear", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0},"family":"contents"}
+                """));
+
+        var next = registry.applyPublicMutations(snapshot, List.of(mutation));
+        var cell = next.path("sheets").get(0).path("cells").path("0").path("0");
+        assertTrue(cell.path("value").isNull());
+        assertTrue(cell.path("formula").isMissingNode());
+        assertTrue(cell.path("formulaValue").isMissingNode());
+        assertTrue(cell.path("formulaMetadata").isMissingNode());
+        assertTrue(cell.path("displayValue").isMissingNode());
+    }
+
+    @Test
+    void metadataOnlyClearRestorePreservesCellStorageWhenCellSnapshotIsOmitted() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        var snapshot = mapper.readTree("""
+                {"sheets":[{"id":"sheet-1","rowCount":10,"columnCount":10,"cells":{"0":{"0":{"value":"keep"}}},
+                  "hyperlinks":[],"review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}}}]}
+                """);
+        var mutation = new OperationMutation("range.clear.restore", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","family":"hyperlinks","range":{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0},
+                 "snapshot":{"notes":[],"comments":[],"hyperlinks":[{"row":0,"column":0,"hyperlink":{"id":"link","target":{"kind":"url","url":"https://example.com"}}}]}}
+                """));
+
+        var next = registry.applyPublicMutations(snapshot, List.of(mutation));
+
+        assertEquals("keep", next.path("sheets").get(0).path("cells").path("0").path("0").path("value").asText());
+        assertEquals("link", next.path("sheets").get(0).path("hyperlinks").get(0).path("hyperlink").path("id").asText());
+    }
+
+    @Test
+    void clearRestoreRejectsMissingCellSnapshotForCellClearingFamily() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        var snapshot = mapper.readTree("""
+                {"sheets":[{"id":"sheet-1","rowCount":10,"columnCount":10,"cells":{"0":{"0":{"value":"keep"}}},
+                  "hyperlinks":[],"review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}}}]}
+                """);
+        var mutation = new OperationMutation("range.clear.restore", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","family":"contents","range":{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0},
+                 "snapshot":{"notes":[],"comments":[],"hyperlinks":[]}}
+                """));
+
+        ServiceException error = assertThrows(ServiceException.class,
+                () -> registry.applyPublicMutations(snapshot, List.of(mutation)));
+
+        assertEquals("VALIDATION_ERROR", error.code());
+    }
+
+    @Test
+    void clearRestoreRejectsMissingMetadataSnapshotBeforeRemovingExistingReviewData() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        var snapshot = mapper.readTree("""
+                {"sheets":[{"id":"sheet-1","rowCount":10,"columnCount":10,"cells":{},"hyperlinks":[],
+                  "review":{"notesByCell":{"0:0":"keep"},"notesById":{"note-1":{"id":"note-1","sheetId":"sheet-1","row":0,"column":0,"content":"keep"}},
+                  "threadIdsByCell":{},"threadsById":{}}}]}
+                """);
+        var mutation = new OperationMutation("range.clear.restore", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","family":"hyperlinks","range":{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0},
+                 "snapshot":{"hyperlinks":[],"comments":[]}}
+                """));
+
+        ServiceException error = assertThrows(ServiceException.class,
+                () -> registry.applyPublicMutations(snapshot, List.of(mutation)));
+
+        assertEquals("VALIDATION_ERROR", error.code());
+    }
+
+    @Test
     void rangePasteAcceptsMetadataWhoseEveryOwnedRangeIsInsideTheTarget() throws Exception {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         var snapshot = mapper.readTree("""
                 {"sheets":[{"id":"sheet-1","rowCount":10,"columnCount":10,"cells":{},"dataValidations":[]}]}
                 """);
         var mutation = new OperationMutation("range.paste", "sheet-1", mapper.readTree("""
-                {"sheetId":"sheet-1","targetOrigin":{"row":0,"column":0},"sourceExtent":{"rows":2,"columns":1},"clipboard":{"schema":"SparseClipboardPayload","range":{"sheetId":"sheet-1","startRow":0,"endRow":1,"startColumn":0,"endColumn":0},"sourceExtent":{"rows":2,"columns":1},"occupiedCells":[],"rangeMetadata":{"columnWidths":[],"validations":[],"conditionalFormats":[],"notes":[],"comments":[],"hyperlinks":[]}},
+                {"sheetId":"sheet-1","targetOrigin":{"row":0,"column":0},"sourceExtent":{"rows":2,"columns":1},"clipboard":{"schema":"SparseClipboardPayload","transfer":"copy","range":{"sheetId":"sheet-1","startRow":0,"endRow":1,"startColumn":0,"endColumn":0},"sourceExtent":{"rows":2,"columns":1},"occupiedCells":[],"rangeMetadata":{"columnWidths":[],"validations":[],"conditionalFormats":[],"notes":[],"comments":[],"hyperlinks":[]}},
                  "transfer":"copy","clearSource":false,
                  "spec":{"content":"all","formatting":"all","metadata":{"commentsNotes":true,"validation":true,"columnWidths":false,"conditionalFormats":true,"hyperlinks":true},"operation":"none","skipBlanks":false,"transpose":false,"link":false},
                  "snapshot":{"cells":[],"validations":[{"id":"dv-1","ranges":[
@@ -224,7 +797,7 @@ class MutationDescriptorRegistryTest {
                 ]}]}
                 """);
         var mutation = new OperationMutation("range.paste", "sheet-1", mapper.readTree("""
-                {"sheetId":"sheet-1","targetOrigin":{"row":0,"column":0},"sourceExtent":{"rows":1,"columns":1},"clipboard":{"schema":"SparseClipboardPayload","range":{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0},"sourceExtent":{"rows":1,"columns":1},"occupiedCells":[],"rangeMetadata":{"columnWidths":[],"validations":[],"conditionalFormats":[],"notes":[],"comments":[],"hyperlinks":[]}},
+                {"sheetId":"sheet-1","targetOrigin":{"row":0,"column":0},"sourceExtent":{"rows":1,"columns":1},"clipboard":{"schema":"SparseClipboardPayload","transfer":"copy","range":{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0},"sourceExtent":{"rows":1,"columns":1},"occupiedCells":[],"rangeMetadata":{"columnWidths":[],"validations":[],"conditionalFormats":[],"notes":[],"comments":[],"hyperlinks":[]}},
                  "transfer":"copy","clearSource":false,
                  "spec":{"content":"all","formatting":"all","metadata":{"commentsNotes":true,"validation":true,"columnWidths":false,"conditionalFormats":true,"hyperlinks":true},"operation":"none","skipBlanks":false,"transpose":false,"link":false},
                  "snapshot":{"cells":[],"validations":[{"id":"dv-attack","ranges":[
@@ -249,7 +822,7 @@ class MutationDescriptorRegistryTest {
                 ]}]}
                 """);
         var mutation = new OperationMutation("range.paste", "sheet-1", mapper.readTree("""
-                {"sheetId":"sheet-1","targetOrigin":{"row":0,"column":0},"sourceExtent":{"rows":1,"columns":1},"clipboard":{"schema":"SparseClipboardPayload","range":{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0},"sourceExtent":{"rows":1,"columns":1},"occupiedCells":[],"rangeMetadata":{"columnWidths":[],"validations":[],"conditionalFormats":[],"notes":[],"comments":[],"hyperlinks":[]}},
+                {"sheetId":"sheet-1","targetOrigin":{"row":0,"column":0},"sourceExtent":{"rows":1,"columns":1},"clipboard":{"schema":"SparseClipboardPayload","transfer":"copy","range":{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0},"sourceExtent":{"rows":1,"columns":1},"occupiedCells":[],"rangeMetadata":{"columnWidths":[],"validations":[],"conditionalFormats":[],"notes":[],"comments":[],"hyperlinks":[]}},
                  "transfer":"copy","clearSource":false,
                  "spec":{"content":"all","formatting":"all","metadata":{"commentsNotes":true,"validation":true,"columnWidths":true,"conditionalFormats":true,"hyperlinks":true},"operation":"none","skipBlanks":false,"transpose":false,"link":false},
                  "snapshot":{"cells":[],"columnWidths":[{"column":0,"widthPx":120}]}}
@@ -297,7 +870,7 @@ class MutationDescriptorRegistryTest {
                 "table.add", "table.remove", "name.set", "name.remove", "workbook.calculation.mode.set",
                 "pageLayout.margins.set", "pageLayout.orientation.set", "pageLayout.paperSize.set", "pageLayout.pageSetupDetail.set", "pageLayout.scaleToFit.set", "pageLayout.printTitles.set", "pageLayout.printArea.set", "pageLayout.printArea.clear", "pageLayout.pageBreak.insert", "pageLayout.pageBreak.remove", "pageLayout.pageBreak.clear", "pageLayout.printGridlines.set", "pageLayout.printHeadings.set", "pageLayout.viewGridlines.set", "pageLayout.viewHeadings.set"
                 , "query.definition.replace", "query.load.range", "query.load.sheet-table", "query.load.pivot-source", "query.load.workbook-table",
-                "rows.inserted", "rows.deleted", "columns.inserted", "columns.deleted", "cells.inserted", "cells.deleted", "cells.inserted.restore", "cells.deleted.restore", "rows.permuted", "rows.visibility",
+                "rows.inserted", "rows.deleted", "columns.inserted", "columns.deleted", "cells.inserted", "cells.deleted", "cells.inserted.restore", "cells.deleted.restore", "rows.permuted", "range.move", "rows.visibility",
                 "fill.applied", "fill.restored",
                 "dataSource.add", "dataSource.update", "dataSource.remove", "dataRegion.add", "dataRegion.remove", "analysis.view.replace"
         ), Set.copyOf(registry.acceptedIds()));
@@ -574,7 +1147,11 @@ class MutationDescriptorRegistryTest {
         for (String pane : List.of(
                 "{\"kind\":\"frozen\",\"xSplit\":1,\"ySplit\":0,\"startRow\":0,\"startColumn\":1}",
                 "{\"kind\":\"frozen\",\"state\":\"split\",\"xSplit\":1,\"ySplit\":0,\"startRow\":0,\"startColumn\":1}",
-                "{\"kind\":\"split\",\"state\":\"frozen\",\"xSplit\":1,\"ySplit\":1,\"startRow\":1,\"startColumn\":1}")) {
+                "{\"kind\":\"split\",\"state\":\"frozen\",\"xSplit\":1,\"ySplit\":1,\"startRow\":1,\"startColumn\":1}",
+                "{\"kind\":\"frozen\",\"state\":\"frozen\",\"xSplit\":1.5,\"ySplit\":0,\"startRow\":0,\"startColumn\":1}",
+                "{\"kind\":\"frozen\",\"state\":\"frozen\",\"xSplit\":1,\"ySplit\":0,\"startRow\":0,\"startColumn\":16384}",
+                "{\"kind\":\"split\",\"state\":\"split\",\"xSplit\":20,\"ySplit\":10,\"startRow\":0,\"startColumn\":0,\"activePane\":\"center\"}",
+                "{\"kind\":\"frozen\",\"state\":\"frozen\",\"xSplit\":1,\"ySplit\":0,\"startRow\":0,\"startColumn\":1,\"referenceHint\":\"A1\"}")) {
             OperationMutation mutation = new OperationMutation("freeze.set", "sheet-1", mapper.readTree("{\"pane\":" + pane + "}"));
             ServiceException error = assertThrows(ServiceException.class,
                     () -> registry.applyPublicMutations(snapshot, List.of(mutation)));
@@ -586,7 +1163,7 @@ class MutationDescriptorRegistryTest {
     void rowPermutationChecksProtectedMetadataAcrossEveryColumnItRemaps() throws Exception {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         var snapshot = mapper.readTree("""
-                {"sheets":[{"id":"sheet-1","rowCount":10,"columnCount":501,"cells":{},"review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}},"protectionRules":[
+                {"sheets":[{"id":"sheet-1","name":"Data","rowCount":10,"columnCount":2,"cells":{},"review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}},"protectionRules":[
                   {"id":"lock-outside-grid","scope":"range","range":{"sheetId":"sheet-1","startRow":0,"endRow":4,"startColumn":500,"endColumn":500},"locked":true,"allow":{}}
                 ]}]}
                 """);
@@ -602,6 +1179,105 @@ class MutationDescriptorRegistryTest {
         assertEquals(500, owner.affectedRanges().getFirst().endColumn());
         var updated = owner.descriptor().apply(snapshot, mutation);
         assertEquals(5, updated.path("sheets").get(0).path("protectionRules").get(0).path("range").path("startRow").asInt());
+    }
+
+    @Test
+    void rowPermutationRemapsCrossSheetPivotAndSparklineSourcesWithoutMovingOwnerAnchors() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        JsonNode snapshot = crossSheetRowPermutationSnapshot(0, 0);
+        OperationMutation mutation = withSortContext(new OperationMutation("rows.permuted", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":0,"endRow":2,"startColumn":0,"endColumn":0},"sourceRows":[2,0,1]}
+                """)), range(0, 2, 0, 0), "worksheet", null, false, 1);
+
+        JsonNode current = registry.prepare(snapshot, mutation, WorkbookAclRole.EDITOR).descriptor().apply(snapshot, mutation);
+        JsonNode owner = current.path("sheets").get(1);
+        assertEquals(1, owner.path("sparklines").get(0).path("sourceRange").path("startRow").asInt());
+        assertEquals(0, owner.path("sparklines").get(0).path("anchor").path("row").asInt());
+        JsonNode pivot = owner.path("pivots").get(0);
+        assertEquals(1, pivot.path("source").path("ranges").get(0).path("range").path("startRow").asInt());
+        assertEquals(0, pivot.path("source").path("ranges").get(1).path("range").path("startRow").asInt());
+        assertEquals(0, pivot.path("target").path("anchor").path("row").asInt());
+        assertEquals(2, owner.path("pivots").get(1).path("source").path("range").path("startRow").asInt());
+        JsonNode untouched = current.path("sheets").get(2);
+        assertTrue(untouched.path("pivots").isMissingNode());
+        assertTrue(untouched.path("sparklines").isMissingNode());
+    }
+
+    @Test
+    void rowPermutationRejectsSplitCrossSheetPivotAndSparklineSourcesBeforeChangingSnapshot() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        ObjectNode snapshot = crossSheetRowPermutationSnapshot(0, 1);
+        OperationMutation mutation = withSortContext(new OperationMutation("rows.permuted", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":0,"endRow":3,"startColumn":0,"endColumn":0},"sourceRows":[2,0,3,1]}
+                """)), range(0, 3, 0, 0), "worksheet", null, false, 1);
+        ObjectNode beforeSparklineRejection = snapshot.deepCopy();
+
+        ServiceException sparklineError = assertThrows(ServiceException.class,
+                () -> registry.prepare(snapshot, mutation, WorkbookAclRole.EDITOR).descriptor().apply(snapshot, mutation));
+        assertEquals("VALIDATION_ERROR", sparklineError.code());
+        assertEquals(beforeSparklineRejection, snapshot);
+
+        ((ArrayNode) snapshot.path("sheets").get(1).path("sparklines")).remove(0);
+        ObjectNode beforePivotRejection = snapshot.deepCopy();
+        ServiceException pivotError = assertThrows(ServiceException.class,
+                () -> registry.prepare(snapshot, mutation, WorkbookAclRole.EDITOR).descriptor().apply(snapshot, mutation));
+        assertEquals("VALIDATION_ERROR", pivotError.code());
+        assertEquals(beforePivotRejection, snapshot);
+    }
+
+    @Test
+    void rowPermutationKeepsRuleAnchorsReportBindingsBandedRangesAndDrawingSourcesCanonical() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        JsonNode snapshot = mapper.readTree("""
+                {"definedNameModels":[],"cellStyleTemplates":[],"sheets":[
+                  {"id":"sheet-1","name":"Data","rowCount":4,"columnCount":1,"cells":{"0":{"0":{"value":null,"formula":"=A1","formulaMetadata":{"kind":"normal","sourceFormula":"=A1"}}}},"review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}},"merges":[],
+                   "conditionalFormats":[
+                     {"id":"cf-implicit","sheetId":"sheet-1","ranges":[{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":2,"endColumn":2}],"type":"highlight","operator":"formula","value1":"=A1>0"},
+                     {"id":"cf-explicit","sheetId":"sheet-1","ranges":[{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":3,"endColumn":3}],"formulaAnchor":{"sheetId":"sheet-1","row":0,"column":3},"type":"highlight","operator":"formula","value1":"=A1>0"},
+                     {"id":"cf-literal","sheetId":"sheet-1","ranges":[{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":4,"endColumn":4}],"type":"highlight","operator":"greaterThan","value1":"0"}],
+                   "dataValidations":[],"pivots":[],"sparklines":[],"drawings":[],"drawingPayloads":{},"sheetTables":[],
+                   "spillRanges":[],"protectionRules":[],"bandedRule":{"range":{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0},"firstColor":"#ffffff","secondColor":"#eeeeee"},
+                   "reportSheet":{"templateSheetId":"sheet-1","bindings":[{"cell":{"row":0,"column":5},"expression":"field-id","kind":"field"}],"pagination":{"enabled":true,"repeatHeaderRows":[0]},"renderMode":"preview","layout":{"orientation":"portrait","marginTopPx":24,"marginRightPx":24,"marginBottomPx":24,"marginLeftPx":24},"dataEntry":[]}},
+                  {"id":"sheet-2","name":"Drawing owner","rowCount":4,"columnCount":1,"cells":{},"drawingPayloads":{"camera-1":{"kind":"camera","sourceRange":{"sheetId":"sheet-1","startRow":0,"endRow":1,"startColumn":0,"endColumn":0},"refreshPolicy":"live"}}}
+                ]}
+                """);
+        ObjectNode selected = range(0, 2, 0, 0);
+        OperationMutation raw = new OperationMutation("rows.permuted", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":0,"endRow":2,"startColumn":0,"endColumn":0},"sourceRows":[2,0,1]}
+                """));
+
+        OperationMutation overstated = withSortContext(raw, selected, "worksheet", null, false, 6);
+        ServiceException extentError = assertThrows(ServiceException.class,
+                () -> registry.prepare(snapshot, overstated, WorkbookAclRole.OWNER));
+        assertEquals("VALIDATION_ERROR", extentError.code());
+
+        OperationMutation mutation = withSortContext(raw, selected, "worksheet", null, false, 5);
+        var prepared = registry.prepare(snapshot, mutation, WorkbookAclRole.OWNER);
+        var application = prepared.descriptor().applyWithPatch(snapshot, mutation);
+        JsonNode updated = application.snapshot();
+        assertTrue(application.structuralPatch() != null);
+        assertEquals("rows.permuted", application.structuralPatch().mutationId());
+        assertTrue(application.structuralPatch().formulaOwnerDeltas().stream().anyMatch(delta ->
+                "formula-cell".equals(delta.kind())
+                        && delta.beforeAddress().row() == 0
+                        && delta.afterAddress().row() == 1
+                        && "=A1".equals(delta.before().formula())
+                        && "=A2".equals(delta.after().formula())));
+        assertTrue(application.structuralPatch().formulaOwnerDeltas().stream().anyMatch(delta ->
+                "formula-rule".equals(delta.kind()) && "cf-implicit".equals(delta.ruleId())
+                        && "=A1>0".equals(delta.beforeFormula()) && "=A2>0".equals(delta.afterFormula())));
+        JsonNode dataSheet = updated.path("sheets").get(0);
+        assertEquals("=A2", dataSheet.path("cells").path("1").path("0").path("formula").asText());
+        assertEquals(1, dataSheet.path("conditionalFormats").get(0).path("formulaAnchor").path("row").asInt());
+        assertEquals("=A2>0", dataSheet.path("conditionalFormats").get(0).path("value1").asText());
+        assertEquals(1, dataSheet.path("conditionalFormats").get(1).path("formulaAnchor").path("row").asInt());
+        assertEquals("=A2>0", dataSheet.path("conditionalFormats").get(1).path("value1").asText());
+        assertTrue(dataSheet.path("conditionalFormats").get(2).path("formulaAnchor").isMissingNode());
+        assertEquals(1, dataSheet.path("bandedRule").path("range").path("startRow").asInt());
+        assertEquals(1, dataSheet.path("reportSheet").path("bindings").get(0).path("cell").path("row").asInt());
+        assertEquals(5, dataSheet.path("reportSheet").path("bindings").get(0).path("cell").path("column").asInt());
+        assertEquals(1, updated.path("sheets").get(1).path("drawingPayloads").path("camera-1").path("sourceRange").path("startRow").asInt());
+        assertEquals(2, updated.path("sheets").get(1).path("drawingPayloads").path("camera-1").path("sourceRange").path("endRow").asInt());
     }
 
     @Test
@@ -673,8 +1349,10 @@ class MutationDescriptorRegistryTest {
                 {"sheetId":"sheet-1","drawing":{"id":"camera-1","sheetId":"sheet-1","kind":"camera","payloadId":"camera-payload","anchor":{"kind":"absolute"},"transform":{"x":1,"y":2,"width":30,"height":40,"rotation":0},"zIndex":1},"payload":{"kind":"camera","sourceRange":{"sheetId":"sheet-1","startRow":0,"endRow":999,"startColumn":0,"endColumn":999},"refreshPolicy":"live"}}
                 """));
 
-        ServiceException error = assertThrows(ServiceException.class, () -> registry.prepare(snapshot, add, WorkbookAclRole.EDITOR));
+        var prepared = registry.prepare(snapshot, add, WorkbookAclRole.EDITOR);
+        ServiceException error = assertThrows(ServiceException.class, () -> prepared.descriptor().apply(snapshot, add));
         assertEquals("VALIDATION_ERROR", error.code());
+        assertEquals(0, snapshot.path("sheets").get(0).path("drawings").size());
     }
 
     @Test
@@ -1105,6 +1783,80 @@ class MutationDescriptorRegistryTest {
                 """.formatted(id, source));
     }
 
+    private ObjectNode workbookSourceRangePermutationSnapshot() throws Exception {
+        ObjectNode snapshot = (ObjectNode) mapper.readTree("""
+                {"dataModel":{"sources":[],"tables":[],"relationships":[],"views":[]},
+                 "sheets":[{"id":"sheet-1","name":"Data","rowCount":4,"columnCount":1,
+                   "cells":{"0":{"0":{"value":"first"}},"1":{"0":{"value":"second"}},"2":{"0":{"value":"third"}},"3":{"0":{"value":"fourth"}}},
+                   "pane":{"kind":"none"},"review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}},
+                   "merges":[],"conditionalFormats":[],"dataValidations":[],"pivots":[],"sparklines":[],"drawings":[],"drawingPayloads":{},"sheetTables":[],"spillRanges":[],"protectionRules":[]}]}
+                """);
+        ObjectNode dataModel = (ObjectNode) snapshot.path("dataModel");
+        ObjectNode table = ((ArrayNode) dataModel.path("tables")).addObject();
+        table.put("id", "workbook-table").put("name", "Source rows").put("sourceSheetId", "sheet-1");
+        table.putObject("sourceRange").put("sheetId", "sheet-1").put("startRow", 0).put("endRow", 2).put("startColumn", 0).put("endColumn", 0);
+        table.put("rowCount", 2).put("blockSize", 128).put("revision", 0);
+        table.putArray("fields").addObject().put("id", "value").put("name", "Value").put("ordinal", 0).put("type", "text");
+        table.putArray("blocks");
+
+        ObjectNode source = ((ArrayNode) dataModel.path("sources")).addObject();
+        source.put("schema", "DataSourceManifest").put("version", 1).put("id", "data-source").put("name", "Source rows");
+        source.put("kind", "chunked-table").put("sourceSheetId", "sheet-1");
+        source.putObject("sourceRange").put("sheetId", "sheet-1").put("startRow", 0).put("endRow", 2).put("startColumn", 0).put("endColumn", 0);
+        source.put("rowCount", 2).put("blockRowCount", 65_536).put("revision", 0);
+        source.putArray("fields").addObject().put("id", "value").put("name", "Value").put("ordinal", 0).put("type", "text");
+        source.putArray("blocks").addObject().put("id", "block-1").put("dataSourceId", "data-source")
+                .put("startRow", 0).put("rowCount", 2).put("storageKey", "block-1")
+                .put("checksum", "a".repeat(64)).put("byteLength", 1).put("encoding", "columnar-v1").put("revision", 0);
+        return snapshot;
+    }
+
+    private void addSheetTable(ObjectNode sheet, String tableId, RangeRef range) {
+        ObjectNode table = ((ArrayNode) sheet.path("sheetTables")).addObject();
+        table.put("id", tableId).put("sheetId", sheet.path("id").asText()).put("name", "LocalTable");
+        table.set("range", mapper.valueToTree(range));
+        table.put("hasHeaderRow", true).put("hasTotalRow", false).put("showBandedRows", true)
+                .put("showBandedColumns", false).put("showFirstColumn", false).put("showLastColumn", false)
+                .put("showFilterButton", true).put("autoExpand", "none");
+        table.putArray("columns").addObject().put("id", "column-1").put("name", "Value");
+    }
+
+    private ObjectNode crossSheetRowPermutationSnapshot(int sourceStartRow, int sourceEndRow) throws Exception {
+        ObjectNode snapshot = (ObjectNode) mapper.readTree("""
+                {"definedNames":{},"definedNameModels":[],"sheets":[
+                  {"id":"sheet-1","name":"Data","rowCount":4,"columnCount":2,"cells":{},"pane":{"kind":"none"},"review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}},"merges":[],"conditionalFormats":[],"dataValidations":[],"pivots":[],"sparklines":[],"drawings":[],"drawingPayloads":{},"sheetTables":[],"spillRanges":[],"protectionRules":[]},
+                  {"id":"sheet-2","name":"View","rowCount":4,"columnCount":3,"cells":{},"pane":{"kind":"none"},"review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}},"merges":[],"conditionalFormats":[],"dataValidations":[],"pivots":[],"sparklines":[],"drawings":[],"drawingPayloads":{},"sheetTables":[],"spillRanges":[],"protectionRules":[]},
+                  {"id":"sheet-3","name":"Untouched","rowCount":4,"columnCount":2,"cells":{}}
+                ]}
+                """);
+        String source = """
+                {"kind":"worksheet-ranges","ranges":[
+                  {"sourceId":"source","range":{"sheetId":"sheet-1","startRow":%d,"endRow":%d,"startColumn":0,"endColumn":0}},
+                  {"sourceId":"owner","range":{"sheetId":"sheet-2","startRow":0,"endRow":0,"startColumn":0,"endColumn":0}}
+                ],"relationships":[]}
+                """.formatted(sourceStartRow, sourceEndRow);
+        ObjectNode owner = (ObjectNode) snapshot.path("sheets").get(1);
+        ObjectNode pivot = (ObjectNode) pivotWithSource(source, "cross-sheet-pivot");
+        ObjectNode target = (ObjectNode) pivot.get("target");
+        target.put("sheetId", "sheet-2");
+        ((ObjectNode) target.get("anchor")).put("row", 0).put("column", 2);
+        ((ArrayNode) owner.path("pivots")).add(pivot);
+        ObjectNode singlePivot = (ObjectNode) pivotWithSource(
+                "{\"kind\":\"worksheet-range\",\"range\":{\"sheetId\":\"sheet-1\",\"startRow\":1,\"endRow\":1,\"startColumn\":0,\"endColumn\":0}}",
+                "cross-sheet-single-pivot");
+        ObjectNode singleTarget = (ObjectNode) singlePivot.get("target");
+        singleTarget.put("sheetId", "sheet-2");
+        ((ObjectNode) singleTarget.get("anchor")).put("row", 0).put("column", 2);
+        ((ArrayNode) owner.path("pivots")).add(singlePivot);
+
+        ObjectNode sparkline = mapper.createObjectNode();
+        sparkline.put("id", "cross-sheet-sparkline").put("sheetId", "sheet-2").put("type", "line").put("color", "#000000");
+        sparkline.putObject("anchor").put("row", 0).put("column", 1);
+        sparkline.putObject("sourceRange").put("sheetId", "sheet-1").put("startRow", sourceStartRow).put("endRow", sourceEndRow).put("startColumn", 0).put("endColumn", 0);
+        ((ArrayNode) owner.path("sparklines")).add(sparkline);
+        return snapshot;
+    }
+
     @Test
     void pivotRemovalFailsClosedWhenAChartStillReferencesThePivot() throws Exception {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
@@ -1138,6 +1890,224 @@ class MutationDescriptorRegistryTest {
     }
 
     @Test
+    void axisProtectionUsesTheRequestedDimensionBandLikeTheClient() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        JsonNode snapshot = mapper.readTree("""
+                {"sheets":[{"id":"sheet-1","rowCount":100,"columnCount":26,"cells":{},"protectionRules":[
+                  {"id":"protected-column","scope":"range","sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":0,"endRow":99,"startColumn":3,"endColumn":3},"locked":true,"allow":{}}
+                ]}]}
+                """);
+
+        OperationMutation deleteOtherColumns = new OperationMutation("columns.deleted", "sheet-1", mapper.readTree(
+                "{\"sheetId\":\"sheet-1\",\"at\":1,\"count\":2}"));
+        var prepared = registry.prepare(snapshot, deleteOtherColumns, WorkbookAclRole.EDITOR);
+        assertEquals(new RangeRef("sheet-1", 0, 99, 1, 2), prepared.affectedRanges().getFirst());
+
+        OperationMutation deleteProtectedColumn = new OperationMutation("columns.deleted", "sheet-1", mapper.readTree(
+                "{\"sheetId\":\"sheet-1\",\"at\":3,\"count\":1}"));
+        ServiceException blocked = assertThrows(ServiceException.class,
+                () -> registry.prepare(snapshot, deleteProtectedColumn, WorkbookAclRole.EDITOR));
+        assertEquals("FORBIDDEN", blocked.code());
+
+        OperationMutation insertRows = new OperationMutation("rows.inserted", "sheet-1", mapper.readTree(
+                "{\"sheetId\":\"sheet-1\",\"at\":10,\"count\":2}"));
+        assertEquals(new RangeRef("sheet-1", 10, 11, 0, 25), registry.resolveRanges(snapshot, insertRows).getFirst());
+    }
+
+    @Test
+    void axisShiftRewritesAuxiliaryFormulaOwnersAndRejectsFormulaGroups() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        ObjectNode snapshot = (ObjectNode) mapper.readTree("""
+                {"sheets":[
+                  {"id":"sheet-1","name":"Sheet1","rowCount":5,"columnCount":3,"cells":{},"pane":{"kind":"none"},"defaultRowHeightPx":20,"defaultColumnWidthPx":64,"hiddenRows":[],"hiddenColumns":[],"rowHeightsPx":{},"columnWidthsPx":{},"merges":[],"conditionalFormats":[],"dataValidations":[],"pivots":[],"sparklines":[],"drawings":[],"drawingPayloads":{},"sheetTables":[],"review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}},"spillRanges":[],"protectionRules":[]},
+                  {"id":"sheet-2","name":"Other","rowCount":5,"columnCount":3,"cells":{},"pane":{"kind":"none"},"defaultRowHeightPx":20,"defaultColumnWidthPx":64,"review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}}}
+                ]}
+                """);
+        ObjectNode firstRow = ((ObjectNode) snapshot.path("sheets").get(0).path("cells")).putObject("0");
+        ObjectNode movedCell = firstRow.putObject("0");
+        movedCell.putNull("value").put("formula", "=A1");
+        movedCell.set("formulaMetadata", mapper.readTree("""
+                {"kind":"normal","sourceFormula":"=A1"}
+                """));
+        movedCell.set("presentation", mapper.readTree("""
+                {"kind":"barcode","symbology":"qr","source":{"kind":"formula","formula":"=A1"},"parameters":{"symbology":"qr"},"options":{"foreground":"#000000","background":"#ffffff","showText":false,"labelPosition":"none","quietZone":0}}
+                """));
+        ObjectNode auxiliaryOnlyCell = firstRow.putObject("1");
+        auxiliaryOnlyCell.putNull("value");
+        auxiliaryOnlyCell.set("formulaMetadata", mapper.readTree("""
+                {"kind":"normal","sourceFormula":"=Sheet1!A1"}
+                """));
+        auxiliaryOnlyCell.set("presentation", mapper.readTree("""
+                {"kind":"barcode","symbology":"qr","source":{"kind":"formula","formula":"=Sheet1!A1"},"parameters":{"symbology":"qr"},"options":{"foreground":"#000000","background":"#ffffff","showText":false,"labelPosition":"none","quietZone":0}}
+                """));
+        ObjectNode externalFormula = ((ObjectNode) snapshot.path("sheets").get(1).path("cells")).putObject("0").putObject("0");
+        externalFormula.putNull("value").put("formula", "=Sheet1!A1");
+
+        OperationMutation insert = new OperationMutation("rows.inserted", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","at":0,"count":1}
+                """));
+        JsonNode shifted = registry.applyPublicMutations(snapshot, List.of(insert));
+        JsonNode moved = shifted.path("sheets").get(0).path("cells").path("1").path("0");
+        assertEquals("=A2", moved.path("formula").asText());
+        assertEquals("=A2", moved.path("formulaMetadata").path("sourceFormula").asText());
+        assertEquals("=A2", moved.path("presentation").path("source").path("formula").asText());
+        JsonNode auxiliaryOnly = shifted.path("sheets").get(0).path("cells").path("1").path("1");
+        assertEquals("=Sheet1!A2", auxiliaryOnly.path("formulaMetadata").path("sourceFormula").asText());
+        assertEquals("=Sheet1!A2", auxiliaryOnly.path("presentation").path("source").path("formula").asText());
+        assertEquals("=Sheet1!A2", shifted.path("sheets").get(1).path("cells").path("0").path("0").path("formula").asText());
+
+        ObjectNode groupedBandSnapshot = (ObjectNode) snapshot.deepCopy();
+        ((ObjectNode) groupedBandSnapshot.path("sheets").get(0).path("cells").path("0").path("0"))
+                .set("formulaMetadata", mapper.readTree("""
+                        {"kind":"shared","range":"A1:A2","sourceFormula":"=A1"}
+                        """));
+        JsonNode groupedBandBefore = groupedBandSnapshot.deepCopy();
+        ServiceException groupedBandRejection = assertThrows(ServiceException.class,
+                () -> registry.applyPublicMutations(groupedBandSnapshot, List.of(insert)));
+        assertEquals("UNSUPPORTED_FEATURE", groupedBandRejection.code());
+        assertEquals(groupedBandBefore, groupedBandSnapshot);
+
+        ObjectNode groupedDependentSnapshot = (ObjectNode) snapshot.deepCopy();
+        ObjectNode groupedDependent = (ObjectNode) groupedDependentSnapshot.path("sheets").get(1).path("cells").path("0").path("0");
+        groupedDependent.set("formulaMetadata", mapper.readTree("""
+                {"kind":"shared","range":"A1:A2","sourceFormula":"=Sheet1!A1"}
+                """));
+        JsonNode groupedDependentBefore = groupedDependentSnapshot.deepCopy();
+        ServiceException groupedDependentRejection = assertThrows(ServiceException.class,
+                () -> registry.applyPublicMutations(groupedDependentSnapshot, List.of(insert)));
+        assertEquals("UNSUPPORTED_FEATURE", groupedDependentRejection.code());
+        assertEquals(groupedDependentBefore, groupedDependentSnapshot);
+    }
+
+    @Test
+    void structuralAxisRewriteCoversPersistedFormulaOwnersAndRejectsRemovedTemplateAnchors() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        JsonNode snapshot = mapper.readTree("""
+                {"dataModel":{"sources":[],"tables":[],"relationships":[],"views":[
+                  {"id":"formula-view","name":"Formula View","tableId":"source-table","fields":[
+                    {"fieldId":"view-calc","caption":"View Calc","formula":"=Sheet1!A1"}]}]},
+                 "definedNames":{},"definedNameModels":[],"printDocuments":[],
+                 "cellStyleTemplates":[{"id":"formula-template","name":"Formula Template","style":{},
+                   "dataValidation":{"type":"custom","formulaAnchor":{"sheetId":"sheet-1","row":0,"column":0},
+                     "formula1":"=A1","formula2":"=B1","listSource":{"kind":"formula","formula":"=C1"}}}],
+                 "sheets":[{"id":"sheet-1","name":"Sheet1","rowCount":5,"columnCount":5,"cells":{},
+                   "pane":{"kind":"none"},"defaultRowHeightPx":20,"defaultColumnWidthPx":64,
+                   "review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}},
+                   "merges":[],"hiddenRows":[],"hiddenColumns":[],"rowHeightsPx":{},"columnWidthsPx":{},
+                   "drawings":[],"drawingPayloads":{"shape":{"kind":"shape","propertyFormula":"=A1"},
+                    "chart-1":{"kind":"chart","chartId":"chart-1","chartType":"combo","subtype":"custom-combo",
+                      "source":{"kind":"worksheet-ranges","ranges":[{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0}]},
+                      "elements":{"hiddenData":"show","titleText":{"linkedFormula":"=A1"},
+                        "legend":{"visible":true,"position":"bottom","text":{"linkedFormula":"=B1"}},
+                        "categoryAxis":{"id":"category","position":"bottom","titleText":{"linkedFormula":"=C1"}},
+                        "valueAxis":{"id":"value","position":"left","titleText":{"linkedFormula":"=D1"}},
+                        "secondaryCategoryAxis":{"id":"secondary-category","position":"top","titleText":{"linkedFormula":"=F1"}},
+                        "secondaryValueAxis":{"id":"secondary-value","position":"right","titleText":{"linkedFormula":"=G1"}},
+                        "dataTable":{"visible":true,"font":{"linkedFormula":"=E1"}}}}},
+                   "tableSheet":{"viewId":"formula-view","columns":[{"fieldId":"table-calc","caption":"Table Calc","formula":"=A1"}],"grouping":[]},
+                   "spillRanges":[],"sheetTables":[],"conditionalFormats":[],"dataValidations":[],
+                   "protectionRules":[],"outline":{"groups":[]},"sparklines":[],"pivots":[],"dataRegions":[],"hyperlinks":[]}]}
+                """);
+        OperationMutation insert = new OperationMutation("rows.inserted", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","at":0,"count":1}
+                """));
+
+        var preparedInsert = registry.prepare(snapshot, insert, WorkbookAclRole.OWNER);
+        var axisApplication = preparedInsert.descriptor().applyWithPatch(snapshot, insert);
+        JsonNode shifted = axisApplication.snapshot();
+        JsonNode sheet = shifted.path("sheets").get(0);
+        JsonNode validation = shifted.path("cellStyleTemplates").get(0).path("dataValidation");
+        assertEquals("=A2", sheet.path("tableSheet").path("columns").get(0).path("formula").asText());
+        assertEquals("=A2", sheet.path("drawingPayloads").path("shape").path("propertyFormula").asText());
+        assertEquals("=A2", sheet.path("drawingPayloads").path("chart-1").path("elements").path("titleText").path("linkedFormula").asText());
+        assertEquals("=B2", sheet.path("drawingPayloads").path("chart-1").path("elements").path("legend").path("text").path("linkedFormula").asText());
+        assertEquals("=C2", sheet.path("drawingPayloads").path("chart-1").path("elements").path("categoryAxis").path("titleText").path("linkedFormula").asText());
+        assertEquals("=D2", sheet.path("drawingPayloads").path("chart-1").path("elements").path("valueAxis").path("titleText").path("linkedFormula").asText());
+        assertEquals("=F2", sheet.path("drawingPayloads").path("chart-1").path("elements").path("secondaryCategoryAxis").path("titleText").path("linkedFormula").asText());
+        assertEquals("=G2", sheet.path("drawingPayloads").path("chart-1").path("elements").path("secondaryValueAxis").path("titleText").path("linkedFormula").asText());
+        assertEquals("=E2", sheet.path("drawingPayloads").path("chart-1").path("elements").path("dataTable").path("font").path("linkedFormula").asText());
+        var formulaObjectDeltas = axisApplication.structuralPatch().formulaOwnerDeltas().stream()
+                .filter(delta -> "formula-object".equals(delta.kind())).toList();
+        assertEquals(13, formulaObjectDeltas.size());
+        var formulaObjectPatch = new StructuralPatch(StructuralPatch.VERSION, "rows.inserted", formulaObjectDeltas, List.of(), List.of());
+        JsonNode restoredObjects = registry.applyStructuralPatch(shifted, formulaObjectPatch.inverse("rows.deleted"));
+        assertEquals("=A1", restoredObjects.path("sheets").get(0).path("tableSheet").path("columns").get(0).path("formula").asText());
+        assertEquals("=A1", restoredObjects.path("sheets").get(0).path("drawingPayloads").path("shape").path("propertyFormula").asText());
+        assertEquals("=Sheet1!A1", restoredObjects.path("dataModel").path("views").get(0).path("fields").get(0).path("formula").asText());
+        assertEquals("=A1", restoredObjects.path("cellStyleTemplates").get(0).path("dataValidation").path("formula1").asText());
+        assertEquals("=B1", restoredObjects.path("cellStyleTemplates").get(0).path("dataValidation").path("formula2").asText());
+        assertEquals("=C1", restoredObjects.path("cellStyleTemplates").get(0).path("dataValidation").path("listSource").path("formula").asText());
+        assertEquals("=A1", restoredObjects.path("sheets").get(0).path("drawingPayloads").path("chart-1")
+                .path("elements").path("titleText").path("linkedFormula").asText());
+        assertEquals("=Sheet1!A2", shifted.path("dataModel").path("views").get(0).path("fields").get(0).path("formula").asText());
+        assertEquals(1, validation.path("formulaAnchor").path("row").asInt());
+        assertEquals("=A2", validation.path("formula1").asText());
+        assertEquals("=B2", validation.path("formula2").asText());
+        assertEquals("=C2", validation.path("listSource").path("formula").asText());
+
+        OperationMutation cellShift = new OperationMutation("cells.inserted", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":1,"endRow":1,"startColumn":0,"endColumn":0},
+                 "affectedBand":{"sheetId":"sheet-1","startRow":1,"endRow":5,"startColumn":0,"endColumn":0},"operation":"insert","axis":"row"}
+                """));
+        var preparedCellShift = registry.prepare(shifted, cellShift, WorkbookAclRole.OWNER);
+        var cellShiftApplication = preparedCellShift.descriptor().applyWithPatch(shifted, cellShift);
+        JsonNode cellShifted = cellShiftApplication.snapshot();
+        assertEquals(5, cellShiftApplication.structuralPatch().formulaOwnerDeltas().stream()
+                .filter(delta -> "formula-object".equals(delta.kind())).count());
+        JsonNode shiftedSheet = cellShifted.path("sheets").get(0);
+        JsonNode shiftedValidation = cellShifted.path("cellStyleTemplates").get(0).path("dataValidation");
+        assertEquals("=A3", shiftedSheet.path("tableSheet").path("columns").get(0).path("formula").asText());
+        assertEquals("=A3", shiftedSheet.path("drawingPayloads").path("shape").path("propertyFormula").asText());
+        assertEquals("=A3", shiftedSheet.path("drawingPayloads").path("chart-1").path("elements").path("titleText").path("linkedFormula").asText());
+        assertEquals("=Sheet1!A3", cellShifted.path("dataModel").path("views").get(0).path("fields").get(0).path("formula").asText());
+        assertEquals(2, shiftedValidation.path("formulaAnchor").path("row").asInt());
+        assertEquals("=A3", shiftedValidation.path("formula1").asText());
+
+        OperationMutation move = new OperationMutation("range.move", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","sourceRange":{"sheetId":"sheet-1","startRow":2,"endRow":2,"startColumn":0,"endColumn":0},"targetOrigin":{"row":3,"column":1}}
+                """));
+        var preparedMove = registry.prepare(cellShifted, move, WorkbookAclRole.OWNER);
+        var moveApplication = preparedMove.descriptor().applyWithPatch(cellShifted, move);
+        JsonNode moved = moveApplication.snapshot();
+        assertEquals(5, moveApplication.structuralPatch().formulaOwnerDeltas().stream()
+                .filter(delta -> "formula-object".equals(delta.kind())).count());
+        JsonNode movedSheet = moved.path("sheets").get(0);
+        JsonNode movedValidation = moved.path("cellStyleTemplates").get(0).path("dataValidation");
+        assertEquals("=B4", movedSheet.path("tableSheet").path("columns").get(0).path("formula").asText());
+        assertEquals("=B4", movedSheet.path("drawingPayloads").path("shape").path("propertyFormula").asText());
+        assertEquals("=B4", movedSheet.path("drawingPayloads").path("chart-1").path("elements").path("titleText").path("linkedFormula").asText());
+        assertEquals("=Sheet1!B4", moved.path("dataModel").path("views").get(0).path("fields").get(0).path("formula").asText());
+        assertEquals(3, movedValidation.path("formulaAnchor").path("row").asInt());
+        assertEquals(1, movedValidation.path("formulaAnchor").path("column").asInt());
+        assertEquals("=B4", movedValidation.path("formula1").asText());
+        assertEquals("=B2", movedValidation.path("formula2").asText());
+        assertEquals("=C2", movedValidation.path("listSource").path("formula").asText());
+
+        ObjectNode anchoredSnapshot = (ObjectNode) snapshot.deepCopy();
+        OperationMutation deleteAnchor = new OperationMutation("rows.deleted", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","at":0,"count":1}
+                """));
+        JsonNode before = anchoredSnapshot.deepCopy();
+        ServiceException rejected = assertThrows(ServiceException.class,
+                () -> registry.applyPublicMutations(anchoredSnapshot, List.of(deleteAnchor)));
+        assertEquals("VALIDATION_ERROR", rejected.code());
+        assertEquals(before, anchoredSnapshot);
+
+        ObjectNode outOfBoundsAnchor = (ObjectNode) snapshot.deepCopy();
+        ((ObjectNode) outOfBoundsAnchor.path("cellStyleTemplates").get(0).path("dataValidation").path("formulaAnchor"))
+                .put("row", 1_048_576);
+        ServiceException invalidCoordinate = assertThrows(ServiceException.class,
+                () -> registry.applyPublicMutations(outOfBoundsAnchor, List.of(insert)));
+        assertEquals("VALIDATION_ERROR", invalidCoordinate.code());
+
+        ObjectNode nullAnchor = (ObjectNode) snapshot.deepCopy();
+        ((ObjectNode) nullAnchor.path("cellStyleTemplates").get(0).path("dataValidation")).putNull("formulaAnchor");
+        ServiceException invalidNull = assertThrows(ServiceException.class,
+                () -> registry.applyPublicMutations(nullAnchor, List.of(insert)));
+        assertEquals("VALIDATION_ERROR", invalidNull.code());
+    }
+
+    @Test
     void pivotChartCreateIsNotAWorkbookMutation() {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         ServiceException error = assertThrows(ServiceException.class, () -> registry.require("pivot.chart.create", false));
@@ -1167,8 +2137,12 @@ class MutationDescriptorRegistryTest {
     void structuralRowMutationMovesCellsMetadataAndParsedFormulaReferencesTogether() throws Exception {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         JsonNode snapshot = mapper.readTree("""
-                {"definedNames":{"Sales":"=Sheet1!A2"},"definedNameModels":[{"name":"Sales","formula":"=Sheet1!A2","scope":"workbook"}],"sheets":[
-                  {"id":"sheet-1","name":"Sheet1","rowCount":5,"columnCount":3,"cells":{"0":{"0":{"value":null,"formula":"=A2"}},"1":{"0":{"value":10}}},"pane":{"kind":"frozen","xSplit":0,"ySplit":1,"startRow":1,"startColumn":0},"defaultRowHeightPx":20,"defaultColumnWidthPx":64,"hiddenRows":[1],"rowHeightsPx":{"1":33},"merges":[],"conditionalFormats":[],"dataValidations":[],"pivots":[],"sparklines":[],"drawings":[],"drawingPayloads":{},"sheetTables":[],"review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}},"spillRanges":[],"protectionRules":[]},
+                {"definedNames":{"Sales":"=Sheet1!A2","OtherRelative":"=A2","LocalAnchor":"=A2"},"definedNameModels":[
+                  {"name":"Sales","formula":"=Sheet1!A2","scope":"workbook"},
+                  {"name":"OtherRelative","formula":"=A2","scope":"workbook","anchor":{"sheetId":"sheet-2","row":1,"column":0}},
+                  {"name":"LocalAnchor","formula":"=A2","scope":"workbook","anchor":{"sheetId":"sheet-1","row":3,"column":0}},
+                  {"name":"SheetScopedReference","formula":"=Sheet1!A2","scope":"sheet","sheetId":"sheet-2","anchor":{"sheetId":"sheet-2","row":1,"column":0}}],"sheets":[
+                  {"id":"sheet-1","name":"Sheet1","rowCount":5,"columnCount":3,"cells":{"0":{"0":{"value":null,"formula":"=A2"}},"1":{"0":{"value":10}}},"pane":{"kind":"frozen","state":"frozen","xSplit":0,"ySplit":1,"startRow":1,"startColumn":0},"defaultRowHeightPx":20,"defaultColumnWidthPx":64,"hiddenRows":[1],"rowHeightsPx":{"1":33},"merges":[],"conditionalFormats":[],"dataValidations":[],"pivots":[],"sparklines":[],"drawings":[],"drawingPayloads":{},"sheetTables":[],"review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}},"spillRanges":[],"protectionRules":[]},
                   {"id":"sheet-2","name":"Other","rowCount":5,"columnCount":3,"cells":{"0":{"0":{"value":null,"formula":"=Sheet1!A2"}}},"pane":{"kind":"none"},"defaultRowHeightPx":20,"defaultColumnWidthPx":64,"review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}}}
                 ]}
                 """);
@@ -1182,28 +2156,154 @@ class MutationDescriptorRegistryTest {
         assertEquals("=A3", current.path("sheets").get(0).path("cells").path("0").path("0").path("formula").asText());
         assertEquals("=Sheet1!A3", current.path("sheets").get(1).path("cells").path("0").path("0").path("formula").asText());
         assertEquals("=Sheet1!A3", current.path("definedNames").path("Sales").asText());
+        assertEquals("=A2", current.path("definedNames").path("OtherRelative").asText());
+        assertEquals("=A2", current.path("definedNameModels").get(1).path("formula").asText());
+        assertEquals("=A3", current.path("definedNames").path("LocalAnchor").asText());
+        assertEquals("=A3", current.path("definedNameModels").get(2).path("formula").asText());
+        assertEquals(4, current.path("definedNameModels").get(2).path("anchor").path("row").asInt());
+        assertEquals("=Sheet1!A3", current.path("definedNameModels").get(3).path("formula").asText());
+        assertEquals(1, current.path("definedNameModels").get(3).path("anchor").path("row").asInt());
         assertEquals(2, current.path("sheets").get(0).path("hiddenRows").get(0).asInt());
+
+        ObjectNode deletedAnchorSnapshot = (ObjectNode) snapshot.deepCopy();
+        OperationMutation deleteAnchorRow = new OperationMutation("rows.deleted", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","at":3,"count":1}
+                """));
+        ServiceException deletedAnchor = assertThrows(ServiceException.class,
+                () -> registry.applyPublicMutations(deletedAnchorSnapshot, List.of(deleteAnchorRow)));
+        assertEquals("VALIDATION_ERROR", deletedAnchor.code());
+        assertEquals(3, deletedAnchorSnapshot.path("definedNameModels").get(2).path("anchor").path("row").asInt());
+    }
+
+    @Test
+    void cellShiftRejectsDataOwnersBeyondExtentAndPreservesUnrelatedSources() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        for (String axis : List.of("row", "column")) for (String ownerKind : List.of("data-region", "workbook-table", "data-source")) {
+            ObjectNode snapshot = (ObjectNode) mapper.readTree("""
+                    {"definedNames":{},"definedNameModels":[],"dataModel":{"tables":[],"sources":[],"views":[],"relationships":[]},"sheets":[
+                      {"id":"sheet-1","name":"Sheet1","rowCount":8,"columnCount":8,"cells":{"2":{"2":{"value":42}}},
+                       "pane":{"kind":"none"},"review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}},
+                       "dataRegions":[],"sheetTables":[],"pivots":[]}]}
+                    """);
+            ObjectNode sheet = (ObjectNode) snapshot.path("sheets").get(0);
+            ObjectNode range = mapper.createObjectNode().put("sheetId", "sheet-1")
+                    .put("startRow", "row".equals(axis) ? 20 : 2).put("endRow", "row".equals(axis) ? 20 : 2)
+                    .put("startColumn", "column".equals(axis) ? 20 : 2).put("endColumn", "column".equals(axis) ? 20 : 2);
+            ObjectNode region = null;
+            if ("workbook-table".equals(ownerKind)) {
+                ObjectNode table = ((ArrayNode) snapshot.path("dataModel").path("tables")).addObject()
+                        .put("id", "far-table").put("name", "Far table").put("sourceSheetId", "sheet-1")
+                        .put("rowCount", 0).put("blockSize", 128).put("revision", 0);
+                table.set("sourceRange", range);
+                table.putArray("fields");
+                table.putArray("blocks");
+            } else {
+                ObjectNode source = ((ArrayNode) snapshot.path("dataModel").path("sources")).addObject()
+                        .put("schema", "DataSourceManifest").put("version", 1).put("id", "far-source").put("name", "Far source")
+                        .put("kind", "data-region".equals(ownerKind) ? "chunked-table" : "worksheet-range")
+                        .put("rowCount", 0).put("blockRowCount", 65_536).put("revision", 0);
+                source.putArray("fields").addObject().put("id", "f0").put("name", "Code").put("ordinal", 0).put("type", "text");
+                source.putArray("blocks");
+                if ("data-region".equals(ownerKind)) {
+                    region = ((ArrayNode) sheet.get("dataRegions")).addObject().put("id", "far-region")
+                            .put("sourceId", "far-source").put("headerRow", range.path("startRow").asInt()).put("revision", 0);
+                    region.set("range", range);
+                } else {
+                    source.put("sourceSheetId", "sheet-1");
+                    source.set("sourceRange", range);
+                }
+            }
+            ObjectNode params = mapper.createObjectNode().put("sheetId", "sheet-1").put("operation", "insert").put("axis", axis);
+            params.putObject("range").put("sheetId", "sheet-1").put("startRow", 2).put("endRow", 2).put("startColumn", 2).put("endColumn", 2);
+            params.putObject("affectedBand").put("sheetId", "sheet-1").put("startRow", 2).put("startColumn", 2)
+                    .put("endRow", "row".equals(axis) ? 7 : 2).put("endColumn", "column".equals(axis) ? 7 : 2);
+            OperationMutation operation = new OperationMutation("cells.inserted", "sheet-1", params);
+            JsonNode before = snapshot.deepCopy();
+            ServiceException failure = assertThrows(ServiceException.class,
+                    () -> registry.require(operation.id(), false).apply(snapshot, operation));
+            assertEquals("UNSUPPORTED_FEATURE", failure.code());
+            assertTrue(failure.getMessage().contains("cell shift intersects " + ownerKind.replace('-', ' ')));
+            assertEquals(before, snapshot);
+
+            range.put("startRow", 0).put("endRow", 0).put("startColumn", 0).put("endColumn", 0);
+            if (region != null) region.put("headerRow", 0);
+            JsonNode acceptedBefore = snapshot.deepCopy();
+            JsonNode updated = registry.require(operation.id(), false).apply(snapshot, operation);
+            assertEquals(acceptedBefore, snapshot);
+            assertEquals(snapshot.path("dataModel"), updated.path("dataModel"));
+            assertEquals(sheet.path("dataRegions"), updated.path("sheets").get(0).path("dataRegions"));
+            assertEquals(42, updated.path("sheets").get(0).path("cells")
+                    .path("row".equals(axis) ? "3" : "2").path("column".equals(axis) ? "3" : "2").path("value").asInt());
+        }
     }
 
     @Test
     void cellInsertAndRowPermutationHaveDeterministicInverseFriendlySnapshots() throws Exception {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         JsonNode snapshot = mapper.readTree("""
-                {"sheets":[{"id":"sheet-1","name":"Sheet1","rowCount":5,"columnCount":3,"cells":{"0":{"0":{"value":null,"formula":"=A1"}},"1":{"0":{"value":"drop"}}},"pane":{"kind":"none"},"defaultRowHeightPx":20,"defaultColumnWidthPx":64,"review":{"notesByCell":{"0:0":"n1"},"notesById":{"n1":{"id":"n1"}},"threadIdsByCell":{},"threadsById":{}},"merges":[],"conditionalFormats":[],"dataValidations":[],"pivots":[],"sparklines":[],"drawings":[],"drawingPayloads":{},"sheetTables":[],"spillRanges":[],"protectionRules":[]}]}
+                {"definedNames":{"OtherRelative":"=A1","LocalAnchor":"=A2"},"definedNameModels":[
+                  {"name":"OtherRelative","formula":"=A1","scope":"workbook","anchor":{"sheetId":"sheet-2","row":0,"column":0}},
+                  {"name":"SheetScopedReference","formula":"=Sheet1!A1","scope":"sheet","sheetId":"sheet-2","anchor":{"sheetId":"sheet-2","row":0,"column":0}},
+                  {"name":"LocalAnchor","formula":"=A2","scope":"workbook","anchor":{"sheetId":"sheet-1","row":1,"column":0}}],"sheets":[
+                  {"id":"sheet-1","name":"Sheet1","rowCount":5,"columnCount":3,"cells":{"0":{"0":{"value":null,"formula":"=A1","formulaValue":5,"formulaMetadata":{"kind":"normal","sourceFormula":"=A1"},"presentation":{"kind":"barcode","symbology":"qr","source":{"kind":"formula","formula":"=A1"},"parameters":{"symbology":"qr"},"options":{"foreground":"#000000","background":"#ffffff","showText":false,"labelPosition":"none","quietZone":0}}},"1":{"value":null,"formulaMetadata":{"kind":"normal","sourceFormula":"=Sheet1!A1"},"presentation":{"kind":"barcode","symbology":"qr","source":{"kind":"formula","formula":"=Sheet1!A1"},"parameters":{"symbology":"qr"},"options":{"foreground":"#000000","background":"#ffffff","showText":false,"labelPosition":"none","quietZone":0}}}},"1":{"0":{"value":"drop"}}},"pane":{"kind":"none"},"defaultRowHeightPx":20,"defaultColumnWidthPx":64,"review":{"notesByCell":{"0:0":"n1"},"notesById":{"n1":{"id":"n1"}},"threadIdsByCell":{},"threadsById":{}},"merges":[],"conditionalFormats":[],"dataValidations":[],"pivots":[],"sparklines":[],"drawings":[],"drawingPayloads":{},"sheetTables":[],"spillRanges":[],"protectionRules":[]},
+                  {"id":"sheet-2","name":"Other","rowCount":5,"columnCount":3,"cells":{"0":{"0":{"value":null,"formula":"=A1","formulaValue":6}}}}]}
                 """);
         OperationMutation shift = new OperationMutation("cells.inserted", "sheet-1", mapper.readTree("""
                 {"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0},"operation":"insert","axis":"row","affectedBand":{"sheetId":"sheet-1","startRow":0,"endRow":4,"startColumn":0,"endColumn":0}}
                 """));
         JsonNode current = registry.prepare(snapshot, shift, WorkbookAclRole.EDITOR).descriptor().apply(snapshot, shift);
         assertEquals("=A2", current.path("sheets").get(0).path("cells").path("1").path("0").path("formula").asText());
+        assertEquals("=A2", current.path("sheets").get(0).path("cells").path("1").path("0").path("formulaMetadata").path("sourceFormula").asText());
+        assertEquals("=A2", current.path("sheets").get(0).path("cells").path("1").path("0").path("presentation").path("source").path("formula").asText());
+        assertEquals("=Sheet1!A2", current.path("sheets").get(0).path("cells").path("0").path("1").path("formulaMetadata").path("sourceFormula").asText());
+        assertEquals("=Sheet1!A2", current.path("sheets").get(0).path("cells").path("0").path("1").path("presentation").path("source").path("formula").asText());
+        assertEquals("=A1", current.path("definedNames").path("OtherRelative").asText());
+        assertEquals("=A1", current.path("definedNameModels").get(0).path("formula").asText());
+        assertEquals("=Sheet1!A2", current.path("definedNameModels").get(1).path("formula").asText());
+        assertEquals("=A3", current.path("definedNames").path("LocalAnchor").asText());
+        assertEquals("=A3", current.path("definedNameModels").get(2).path("formula").asText());
+        assertEquals(2, current.path("definedNameModels").get(2).path("anchor").path("row").asInt());
         assertEquals("n1", current.path("sheets").get(0).path("review").path("notesByCell").path("1:0").asText());
 
+        ObjectNode groupedBandSnapshot = (ObjectNode) snapshot.deepCopy();
+        ((ObjectNode) groupedBandSnapshot.path("sheets").get(0).path("cells").path("0").path("0"))
+                .set("formulaMetadata", mapper.readTree("""
+                        {"kind":"shared","range":"A1:A2","sourceFormula":"=A1"}
+                        """));
+        JsonNode groupedBandBefore = groupedBandSnapshot.deepCopy();
+        ServiceException groupedBandRejection = assertThrows(ServiceException.class,
+                () -> registry.applyPublicMutations(groupedBandSnapshot, List.of(shift)));
+        assertEquals("UNSUPPORTED_FEATURE", groupedBandRejection.code());
+        assertEquals(groupedBandBefore, groupedBandSnapshot);
+
+        ObjectNode groupedDependentSnapshot = (ObjectNode) snapshot.deepCopy();
+        ObjectNode groupedDependent = (ObjectNode) groupedDependentSnapshot.path("sheets").get(0).path("cells").path("0").path("1");
+        groupedDependent.put("formula", "=Sheet1!A1");
+        groupedDependent.set("formulaMetadata", mapper.readTree("""
+                {"kind":"shared","range":"B1:B2","sourceFormula":"=Sheet1!A1"}
+                """));
+        JsonNode groupedDependentBefore = groupedDependentSnapshot.deepCopy();
+        ServiceException groupedDependentRejection = assertThrows(ServiceException.class,
+                () -> registry.applyPublicMutations(groupedDependentSnapshot, List.of(shift)));
+        assertEquals("UNSUPPORTED_FEATURE", groupedDependentRejection.code());
+        assertEquals(groupedDependentBefore, groupedDependentSnapshot);
+
+        OperationMutation deleteAnchoredCell = new OperationMutation("cells.deleted", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":2,"endRow":2,"startColumn":0,"endColumn":0},"operation":"delete","axis":"row","affectedBand":{"sheetId":"sheet-1","startRow":2,"endRow":4,"startColumn":0,"endColumn":0}}
+                """));
+        JsonNode beforeDeleteAnchoredCell = current;
+        ServiceException deletedCellAnchor = assertThrows(ServiceException.class,
+                () -> registry.applyPublicMutations(beforeDeleteAnchoredCell, List.of(deleteAnchoredCell)));
+        assertEquals("VALIDATION_ERROR", deletedCellAnchor.code());
+        assertEquals(2, current.path("definedNameModels").get(2).path("anchor").path("row").asInt());
+
         OperationMutation restore = new OperationMutation("cells.inserted.restore", "sheet-1", mapper.readTree("""
-                {"spec":{"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0},"operation":"insert","axis":"row","affectedBand":{"sheetId":"sheet-1","startRow":0,"endRow":4,"startColumn":0,"endColumn":0}},"cells":[{"row":0,"column":0,"cell":{"value":null,"formula":"=A1"}},{"row":1,"column":0,"cell":{"value":"drop"}}]}
+                {"spec":{"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0},"operation":"insert","axis":"row","affectedBand":{"sheetId":"sheet-1","startRow":0,"endRow":4,"startColumn":0,"endColumn":0}},"cells":[{"row":0,"column":0,"cell":{"value":null,"formula":"=A1","formulaValue":7,"formulaMetadata":{"kind":"normal","sourceFormula":"=A1"},"presentation":{"kind":"barcode","symbology":"qr","source":{"kind":"formula","formula":"=B1"},"parameters":{"symbology":"qr"},"options":{"foreground":"#000000","background":"#ffffff","showText":false,"labelPosition":"none","quietZone":0}}}},{"row":1,"column":0,"cell":{"value":"drop"}}]}
                 """));
         current = registry.prepare(current, restore, WorkbookAclRole.EDITOR).descriptor().apply(current, restore);
         assertEquals("=A1", current.path("sheets").get(0).path("cells").path("0").path("0").path("formula").asText());
         assertEquals("drop", current.path("sheets").get(0).path("cells").path("1").path("0").path("value").asText());
+        ((ObjectNode) current.path("sheets").get(1).path("cells").path("0").path("0")).put("formulaValue", 6);
 
         OperationMutation permutation = new OperationMutation("rows.permuted", "sheet-1", mapper.readTree("""
                 {"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":0,"endRow":1,"startColumn":0,"endColumn":0},"sourceRows":[1,0]}
@@ -1211,7 +2311,348 @@ class MutationDescriptorRegistryTest {
         permutation = withSortContext(permutation, range(0, 1, 0, 0), "worksheet", null, false, 2);
         current = registry.prepare(current, permutation, WorkbookAclRole.EDITOR).descriptor().apply(current, permutation);
         assertEquals("drop", current.path("sheets").get(0).path("cells").path("0").path("0").path("value").asText());
-        assertEquals("=A1", current.path("sheets").get(0).path("cells").path("1").path("0").path("formula").asText());
+        JsonNode movedFormula = current.path("sheets").get(0).path("cells").path("1").path("0");
+        assertEquals("=A2", movedFormula.path("formula").asText());
+        assertEquals("=A2", movedFormula.path("formulaMetadata").path("sourceFormula").asText());
+        assertEquals("=B2", movedFormula.path("presentation").path("source").path("formula").asText());
+        assertTrue(movedFormula.path("formulaValue").isMissingNode());
+        assertTrue(current.path("sheets").get(1).path("cells").path("0").path("0").path("formulaValue").isMissingNode());
+
+        OperationMutation rawInversePermutation = new OperationMutation("rows.permuted", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":0,"endRow":1,"startColumn":0,"endColumn":0},"sourceRows":[1,0]}
+                """));
+        OperationMutation inversePermutation = withSortContext(rawInversePermutation, range(0, 1, 0, 0), "worksheet", null, false, 2);
+        current = registry.prepare(current, inversePermutation, WorkbookAclRole.EDITOR).descriptor().apply(current, inversePermutation);
+        JsonNode restoredFormula = current.path("sheets").get(0).path("cells").path("0").path("0");
+        assertEquals("=A1", restoredFormula.path("formula").asText());
+        assertEquals("=A1", restoredFormula.path("formulaMetadata").path("sourceFormula").asText());
+        assertEquals("=B1", restoredFormula.path("presentation").path("source").path("formula").asText());
+    }
+
+    @Test
+    void structuralAxisAndPermutationPatchesPreserveWholeAxisWorksheetNames() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        JsonNode snapshot = mapper.readTree("""
+                {"sheets":[
+                  {"id":"sheet-1","name":"Sheet1","rowCount":4,"columnCount":2,
+                   "cells":{"0":{"0":{"value":null,"formula":"=SUM('Budget A1'!B:B)+A1"}},"1":{"0":{"value":"second"}}},
+                   "pane":{"kind":"none"},"defaultRowHeightPx":20,"defaultColumnWidthPx":64,
+                   "review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}},
+                   "merges":[],"conditionalFormats":[],"dataValidations":[],"pivots":[],"sparklines":[],
+                   "drawings":[],"drawingPayloads":{},"sheetTables":[],"spillRanges":[],"protectionRules":[]},
+                  {"id":"budget-id","name":"Budget A1","rowCount":4,"columnCount":2,"cells":{},
+                   "pane":{"kind":"none"},"defaultRowHeightPx":20,"defaultColumnWidthPx":64,
+                   "review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}}}]}
+                """);
+        JsonNode original = snapshot.deepCopy();
+        OperationMutation insertion = new OperationMutation("rows.inserted", "sheet-1",
+                mapper.readTree("""
+                        {"sheetId":"sheet-1","at":0,"count":1}
+                        """));
+        MutationApplication inserted = registry.require("rows.inserted", false).applyWithPatch(snapshot, insertion);
+        assertEquals("=SUM('Budget A1'!B:B)+A2", inserted.snapshot().path("sheets").get(0)
+                .path("cells").path("1").path("0").path("formula").asText());
+        assertEquals(1, inserted.structuralPatch().formulaOwnerDeltas().size());
+        assertEquals("=SUM('Budget A1'!B:B)+A2", inserted.structuralPatch().formulaOwnerDeltas().get(0).after().formula());
+        assertEquals(original, snapshot);
+
+        OperationMutation rawPermutation = new OperationMutation("rows.permuted", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":0,"endRow":1,"startColumn":0,"endColumn":0},"sourceRows":[1,0]}
+                """));
+        OperationMutation permutation = withSortContext(rawPermutation, range(0, 1, 0, 0), "worksheet", null, false, 1);
+        MutationApplication permuted = registry.require("rows.permuted", false).applyWithPatch(snapshot, permutation);
+        assertEquals("=SUM('Budget A1'!B:B)+A2", permuted.snapshot().path("sheets").get(0)
+                .path("cells").path("1").path("0").path("formula").asText());
+        assertEquals(1, permuted.structuralPatch().formulaOwnerDeltas().size());
+        assertEquals("=SUM('Budget A1'!B:B)+A2", permuted.structuralPatch().formulaOwnerDeltas().get(0).after().formula());
+        JsonNode restored = registry.require("rows.permuted", false).apply(permuted.snapshot(), permutation);
+        assertEquals("=SUM('Budget A1'!B:B)+A1", restored.path("sheets").get(0)
+                .path("cells").path("0").path("0").path("formula").asText());
+        assertEquals(original, snapshot);
+    }
+
+    @Test
+    void rowPermutationRejectsFormulaGroupsAndUnsupportedReferenceKindsAtomically() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        for (String formula : List.of("=A1", "=[Book]Sheet1!A1", "=SUM(Sheet1!1:3)",
+                "=SUM('[Book.xlsx]Budget A1'!B:B)", "=SUM('Budget A1'!1:3)")) {
+            ObjectNode snapshot = (ObjectNode) mapper.readTree("""
+                    {"sheets":[
+                      {"id":"sheet-1","name":"Sheet1","rowCount":4,"columnCount":2,
+                       "cells":{"0":{"0":{"value":null,"formula":"=A1","formulaValue":7}},"1":{"0":{"value":"second"}}},
+                       "pane":{"kind":"none"},"defaultRowHeightPx":20,"defaultColumnWidthPx":64,
+                       "review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}},
+                       "merges":[],"conditionalFormats":[],"dataValidations":[],"pivots":[],"sparklines":[],
+                       "drawings":[],"drawingPayloads":{},"sheetTables":[],"spillRanges":[],"protectionRules":[]}]}
+                    """);
+            ObjectNode formulaCell = (ObjectNode) snapshot.path("sheets").get(0).path("cells").path("0").path("0");
+            formulaCell.put("formula", formula);
+            if ("=A1".equals(formula)) formulaCell.set("formulaMetadata", mapper.readTree("""
+                    {"kind":"shared","range":"A1:A2","sourceFormula":"=A1"}
+                    """));
+            JsonNode before = snapshot.deepCopy();
+            OperationMutation rawPermutation = new OperationMutation("rows.permuted", "sheet-1", mapper.readTree("""
+                    {"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":0,"endRow":1,"startColumn":0,"endColumn":0},"sourceRows":[1,0]}
+                    """));
+            OperationMutation permutation = withSortContext(rawPermutation, range(0, 1, 0, 0), "worksheet", null, false, 1);
+
+            ServiceException rejection = assertThrows(ServiceException.class,
+                    () -> registry.prepare(snapshot, permutation, WorkbookAclRole.EDITOR).descriptor().apply(snapshot, permutation));
+            assertEquals("UNSUPPORTED_FEATURE", rejection.code());
+            assertEquals(before, snapshot);
+        }
+    }
+
+    @Test
+    void structuralDeletionClampsFrozenPaneAndViewportInsideDeletedInterval() throws Exception {
+        StructuralMutationDescriptor descriptor = new StructuralMutationDescriptor("rows.deleted");
+        ObjectNode snapshot = (ObjectNode) mapper.readTree("""
+                {"sheets":[{"id":"sheet-1","name":"Sheet1","rowCount":20,"columnCount":4,
+                  "cells":{},"pane":{"kind":"frozen","state":"frozen","xSplit":0,"ySplit":7,"startRow":6,"startColumn":0},
+                  "defaultRowHeightPx":20,"defaultColumnWidthPx":64,"hiddenRows":[],"hiddenColumns":[],
+                  "rowHeightsPx":{},"columnWidthsPx":{},"merges":[],"conditionalFormats":[],"dataValidations":[],
+                  "pivots":[],"sparklines":[],"drawings":[],"drawingPayloads":{},"sheetTables":[],
+                  "review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}},
+                  "spillRanges":[],"protectionRules":[],"outline":{"groups":[]}}]}
+                """);
+        OperationMutation mutation = new OperationMutation("rows.deleted", "sheet-1",
+                mapper.readTree("{\"sheetId\":\"sheet-1\",\"at\":5,\"count\":3}"));
+
+        JsonNode result = descriptor.applyWithPatch(snapshot, mutation).snapshot();
+
+        assertEquals(5, result.path("sheets").get(0).path("pane").path("ySplit").intValue());
+        assertEquals(5, result.path("sheets").get(0).path("pane").path("startRow").intValue());
+
+        ObjectNode overflow = snapshot.deepCopy();
+        ((ObjectNode) overflow.path("sheets").get(0).path("pane")).put("startRow", 1_048_575);
+        JsonNode overflowBefore = overflow.deepCopy();
+        OperationMutation insertion = new OperationMutation("rows.inserted", "sheet-1",
+                mapper.readTree("{\"sheetId\":\"sheet-1\",\"at\":0,\"count\":1}"));
+
+        ServiceException error = assertThrows(ServiceException.class,
+                () -> new StructuralMutationDescriptor("rows.inserted").applyWithPatch(overflow, insertion));
+
+        assertEquals("VALIDATION_ERROR", error.code());
+        assertEquals(overflowBefore, overflow);
+    }
+
+    @Test
+    void rowPermutationRejectsFormulaOffsetsThatWouldMakeTheInverseIrreversible() throws Exception {
+        ObjectNode snapshot = (ObjectNode) mapper.readTree("""
+                {"sheets":[
+                  {"id":"sheet-1","name":"Sheet1","rowCount":4,"columnCount":2,
+                   "cells":{"0":{"0":{"value":"first"}},"1":{"0":{"value":null,"formula":"=A1","formulaValue":7}}},
+                   "pane":{"kind":"none"},"defaultRowHeightPx":20,"defaultColumnWidthPx":64,
+                   "review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}},
+                   "merges":[],"conditionalFormats":[],"dataValidations":[],"pivots":[],"sparklines":[],
+                   "drawings":[],"drawingPayloads":{},"sheetTables":[],"spillRanges":[],"protectionRules":[]}]}
+                """);
+        JsonNode before = snapshot.deepCopy();
+        OperationMutation rawPermutation = new OperationMutation("rows.permuted", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":0,"endRow":1,"startColumn":0,"endColumn":0},"sourceRows":[1,0]}
+                """));
+        OperationMutation permutation = withSortContext(rawPermutation, range(0, 1, 0, 0), "worksheet", null, false, 1);
+
+        ServiceException rejection = assertThrows(ServiceException.class,
+                () -> new MutationDescriptorRegistry().prepare(snapshot, permutation, WorkbookAclRole.EDITOR).descriptor().apply(snapshot, permutation));
+        assertEquals("UNSUPPORTED_FEATURE", rejection.code());
+        assertEquals(before, snapshot);
+    }
+
+    @Test
+    void rowInsertMovesCameraAndScreenshotSourceRangesAcrossDrawingPayloads() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        JsonNode snapshot = mapper.readTree("""
+                {"sheets":[
+                  {"id":"sheet-1","name":"Sheet1","rowCount":5,"columnCount":3,"cells":{},"pane":{"kind":"none"},
+                   "defaultRowHeightPx":20,"defaultColumnWidthPx":64,"merges":[],"conditionalFormats":[],"dataValidations":[],
+                   "pivots":[],"sparklines":[],"drawings":[],"sheetTables":[],"review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}},
+                   "spillRanges":[],"protectionRules":[],"drawingPayloads":{
+                     "camera-1":{"kind":"camera","sourceRange":{"sheetId":"sheet-1","startRow":0,"endRow":1,"startColumn":0,"endColumn":1},"refreshPolicy":"live"},
+                     "screenshot-1":{"kind":"screenshot","sourceRange":{"sheetId":"sheet-1","startRow":2,"endRow":3,"startColumn":0,"endColumn":1},"includeGridlines":true,"capturedAt":"2026-01-01T00:00:00Z"}}},
+                  {"id":"sheet-2","name":"Other","rowCount":5,"columnCount":3,"cells":{}}
+                ]}
+                """);
+        OperationMutation insert = new OperationMutation("rows.inserted", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","at":0,"count":1}
+                """));
+
+        JsonNode current = registry.prepare(snapshot, insert, WorkbookAclRole.EDITOR).descriptor().apply(snapshot, insert);
+        JsonNode payloads = current.path("sheets").get(0).path("drawingPayloads");
+        assertEquals(1, payloads.path("camera-1").path("sourceRange").path("startRow").asInt());
+        assertEquals(2, payloads.path("camera-1").path("sourceRange").path("endRow").asInt());
+        assertEquals(3, payloads.path("screenshot-1").path("sourceRange").path("startRow").asInt());
+        assertEquals(4, payloads.path("screenshot-1").path("sourceRange").path("endRow").asInt());
+
+        OperationMutation removeCameraSource = new OperationMutation("rows.deleted", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","at":0,"count":2}
+                """));
+        ServiceException rejected = assertThrows(ServiceException.class,
+                () -> registry.applyPublicMutations(snapshot, List.of(removeCameraSource)));
+        assertEquals("VALIDATION_ERROR", rejected.code());
+    }
+
+    @Test
+    void duplicateSheetRewritesEverySheetScopedFormulaOwner() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        JsonNode snapshot = mapper.readTree("""
+                {"definedNameModels":[{"name":"LocalName","scope":"sheet","sheetId":"sheet-1","formula":"=Sheet1!A1","anchor":{"sheetId":"sheet-1","row":0,"column":0}}],
+                 "sheets":[{"id":"sheet-1","name":"Sheet1","rowCount":5,"columnCount":3,
+                  "cells":{"0":{"0":{"formula":"=Sheet1!A1","formulaMetadata":{"kind":"normal","sourceFormula":"=Sheet1!A1"},"presentation":{"kind":"barcode","source":{"kind":"formula","formula":"=Sheet1!A1"}}}}},
+                  "tableSheet":{"columns":[{"fieldId":"calculated","formula":"=Sheet1!A1"}]},
+                  "merges":[],"conditionalFormats":[{"id":"cf-1","sheetId":"sheet-1","ranges":[{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0}],"type":"highlight","operator":"formula","value1":"=Sheet1!A1"}],
+                  "dataValidations":[{"id":"dv-1","sheetId":"sheet-1","ranges":[{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0}],"type":"custom","formula1":"=Sheet1!A1","listSource":{"kind":"formula","formula":"=Sheet1!A1"}}],
+                  "pivots":[{"id":"pivot-1"}],"sparklines":[],"sparklineGroups":[],"drawings":[],"drawingGroups":[],"drawingPayloads":{"shape-1":{"kind":"shape","propertyFormula":"=Sheet1!A1"},"screenshot-1":{"kind":"screenshot","sourceRange":{"sheetId":"sheet-1","startRow":0,"endRow":1,"startColumn":0,"endColumn":1}},"timeline-1":{"kind":"timeline","pivotId":"pivot-1","connections":[{"pivotId":"pivot-1"}]}},"sheetTables":[],
+                  "spillRanges":[],"protectionRules":[],"dataRegions":[],"hyperlinks":[],
+                  "review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}}}]}
+                """);
+        OperationMutation duplicate = new OperationMutation("sheet.duplicated", "sheet-1", mapper.readTree("""
+                {"sourceSheetId":"sheet-1","newId":"sheet-2","newName":"Sheet1 Copy"}
+                """));
+
+        JsonNode current = registry.prepare(snapshot, duplicate, WorkbookAclRole.EDITOR).descriptor().apply(snapshot, duplicate);
+        JsonNode copy = current.path("sheets").get(1);
+        assertEquals("=Sheet1!A1", snapshot.path("sheets").get(0).path("conditionalFormats").get(0).path("value1").asText());
+        assertEquals("='Sheet1 Copy'!A1", copy.path("conditionalFormats").get(0).path("value1").asText());
+        assertEquals("='Sheet1 Copy'!A1", copy.path("dataValidations").get(0).path("formula1").asText());
+        assertEquals("='Sheet1 Copy'!A1", copy.path("dataValidations").get(0).path("listSource").path("formula").asText());
+        assertEquals("='Sheet1 Copy'!A1", copy.path("cells").path("0").path("0").path("formula").asText());
+        assertEquals("='Sheet1 Copy'!A1", copy.path("cells").path("0").path("0").path("formulaMetadata").path("sourceFormula").asText());
+        assertEquals("='Sheet1 Copy'!A1", copy.path("cells").path("0").path("0").path("presentation").path("source").path("formula").asText());
+        assertEquals("='Sheet1 Copy'!A1", copy.path("tableSheet").path("columns").get(0).path("formula").asText());
+        assertEquals("='Sheet1 Copy'!A1", copy.path("drawingPayloads").path("shape-1::sheet-2").path("propertyFormula").asText());
+        assertEquals("sheet-2", copy.path("drawingPayloads").path("screenshot-1::sheet-2").path("sourceRange").path("sheetId").asText());
+        assertEquals("pivot-1::sheet-2", copy.path("drawingPayloads").path("timeline-1::sheet-2").path("pivotId").asText());
+        assertEquals("pivot-1::sheet-2", copy.path("drawingPayloads").path("timeline-1::sheet-2").path("connections").get(0).path("pivotId").asText());
+        assertEquals("sheet-2", current.path("definedNameModels").get(1).path("anchor").path("sheetId").asText());
+    }
+
+    @Test
+    void rangeMoveRewritesFormulaOwnersAndRejectsOverlappingDestinations() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        JsonNode snapshot = mapper.readTree("""
+                {"dataModel":{"sources":[],"tables":[],"relationships":[],"views":[]},"definedNames":{},"definedNameModels":[],"printDocuments":[],
+                 "sheets":[{"id":"sheet-1","name":"Sheet1","rowCount":6,"columnCount":6,
+                   "cells":{"0":{"0":{"value":7},"1":{"formula":"=A1","formulaValue":99,"formulaMetadata":{"kind":"normal","sourceFormula":"=A1"},"presentation":{"kind":"barcode","symbology":"qr","source":{"kind":"formula","formula":"=A1"},"parameters":{"symbology":"qr"},"options":{"foreground":"#000000","background":"#ffffff","showText":false,"labelPosition":"none","quietZone":0}}},"4":{"formula":"=A1","formulaMetadata":{"kind":"normal","sourceFormula":"=A1"},"presentation":{"kind":"barcode","symbology":"qr","source":{"kind":"formula","formula":"=A1"},"parameters":{"symbology":"qr"},"options":{"foreground":"#000000","background":"#ffffff","showText":false,"labelPosition":"none","quietZone":0}}},"5":{"value":null,"formulaMetadata":{"kind":"normal","sourceFormula":"=A1"},"presentation":{"kind":"barcode","symbology":"qr","source":{"kind":"formula","formula":"=A1"},"parameters":{"symbology":"qr"},"options":{"foreground":"#000000","background":"#ffffff","showText":false,"labelPosition":"none","quietZone":0}}}},"2":{"3":{"value":"stale"}}},
+                   "pane":{"kind":"none"},"defaultRowHeightPx":20,"defaultColumnWidthPx":64,
+                   "review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}},
+                   "merges":[],"hiddenRows":[],"hiddenColumns":[],"rowHeightsPx":{},"columnWidthsPx":{},
+                   "drawings":[],"drawingPayloads":{},"spillRanges":[],"sheetTables":[],"conditionalFormats":[],"dataValidations":[],
+                   "protectionRules":[],"outline":{"groups":[]},"sparklines":[],"pivots":[],"dataRegions":[],"hyperlinks":[]}]}
+                """);
+        OperationMutation move = new OperationMutation("range.move", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","sourceRange":{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":1},"targetOrigin":{"row":2,"column":2}}
+                """));
+
+        var prepared = registry.prepare(snapshot, move, WorkbookAclRole.EDITOR);
+        assertEquals(2, prepared.affectedRanges().size());
+        JsonNode moved = registry.applyPublicMutations(snapshot, List.of(move));
+        JsonNode sheet = moved.path("sheets").get(0);
+        assertEquals(7, sheet.path("cells").path("2").path("2").path("value").asInt());
+        assertEquals("=A1", sheet.path("cells").path("2").path("3").path("formula").asText());
+        assertEquals("=A1", sheet.path("cells").path("2").path("3").path("formulaMetadata").path("sourceFormula").asText());
+        assertEquals("=A1", sheet.path("cells").path("2").path("3").path("presentation").path("source").path("formula").asText());
+        assertTrue(sheet.path("cells").path("2").path("3").path("formulaValue").isMissingNode());
+        assertEquals("=C3", sheet.path("cells").path("0").path("4").path("formula").asText());
+        assertEquals("=C3", sheet.path("cells").path("0").path("4").path("formulaMetadata").path("sourceFormula").asText());
+        assertEquals("=C3", sheet.path("cells").path("0").path("4").path("presentation").path("source").path("formula").asText());
+        assertEquals("=C3", sheet.path("cells").path("0").path("5").path("formulaMetadata").path("sourceFormula").asText());
+        assertEquals("=C3", sheet.path("cells").path("0").path("5").path("presentation").path("source").path("formula").asText());
+        assertTrue(sheet.path("cells").path("2").path("3").path("value").isMissingNode());
+        assertEquals(7, snapshot.path("sheets").get(0).path("cells").path("0").path("0").path("value").asInt());
+
+        OperationMutation overlap = new OperationMutation("range.move", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","sourceRange":{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0},"targetOrigin":{"row":0,"column":0}}
+                """));
+        ServiceException rejected = assertThrows(ServiceException.class, () -> registry.applyPublicMutations(snapshot, List.of(overlap)));
+        assertEquals("VALIDATION_ERROR", rejected.code());
+
+        ObjectNode groupedSourceSnapshot = (ObjectNode) snapshot.deepCopy();
+        ((ObjectNode) groupedSourceSnapshot.path("sheets").get(0).path("cells").path("0").path("0"))
+                .set("formulaMetadata", mapper.readTree("""
+                        {"kind":"shared","range":"A1:A2","sourceFormula":"=1"}
+                        """));
+        JsonNode groupedSourceBefore = groupedSourceSnapshot.deepCopy();
+        OperationMutation singleCellMove = new OperationMutation("range.move", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","sourceRange":{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0},"targetOrigin":{"row":2,"column":2}}
+                """));
+        ServiceException groupedSourceRejection = assertThrows(ServiceException.class,
+                () -> registry.applyPublicMutations(groupedSourceSnapshot, List.of(singleCellMove)));
+        assertEquals("UNSUPPORTED_FEATURE", groupedSourceRejection.code());
+        assertEquals(groupedSourceBefore, groupedSourceSnapshot);
+
+        ObjectNode groupedTargetSnapshot = (ObjectNode) snapshot.deepCopy();
+        ((ObjectNode) groupedTargetSnapshot.path("sheets").get(0).path("cells").path("2"))
+                .putObject("2").put("formula", "=1").set("formulaMetadata", mapper.readTree("""
+                        {"kind":"shared","range":"C3:C4","sourceFormula":"=1"}
+                        """));
+        JsonNode groupedTargetBefore = groupedTargetSnapshot.deepCopy();
+        ServiceException groupedTargetRejection = assertThrows(ServiceException.class,
+                () -> registry.applyPublicMutations(groupedTargetSnapshot, List.of(singleCellMove)));
+        assertEquals("UNSUPPORTED_FEATURE", groupedTargetRejection.code());
+        assertEquals(groupedTargetBefore, groupedTargetSnapshot);
+
+        ObjectNode groupedDependentSnapshot = (ObjectNode) snapshot.deepCopy();
+        ObjectNode groupedDependent = ((ObjectNode) groupedDependentSnapshot.path("sheets").get(0).path("cells").path("0"))
+                .putObject("5");
+        groupedDependent.putNull("value");
+        groupedDependent.set("formulaMetadata", mapper.readTree("""
+                {"kind":"shared","range":"F1:F2","sourceFormula":"=A1"}
+                """));
+        groupedDependent.set("presentation", mapper.readTree("""
+                {"kind":"barcode","symbology":"qr","source":{"kind":"formula","formula":"=A1"},"parameters":{"symbology":"qr"},"options":{"foreground":"#000000","background":"#ffffff","showText":false,"labelPosition":"none","quietZone":0}}
+                """));
+        JsonNode groupedDependentBefore = groupedDependentSnapshot.deepCopy();
+        ServiceException groupedDependentRejection = assertThrows(ServiceException.class,
+                () -> registry.applyPublicMutations(groupedDependentSnapshot, List.of(singleCellMove)));
+        assertEquals("UNSUPPORTED_FEATURE", groupedDependentRejection.code());
+        assertEquals(groupedDependentBefore, groupedDependentSnapshot);
+
+        ObjectNode partialRangeSnapshot = (ObjectNode) snapshot.deepCopy();
+        ((ObjectNode) partialRangeSnapshot.path("sheets").get(0).path("cells").path("0"))
+                .putObject("5").put("formula", "=SUM(A1:A4)");
+        assertThrows(ServiceException.class, () -> registry.applyPublicMutations(partialRangeSnapshot, List.of(move)));
+
+        ObjectNode wholeColumnSnapshot = (ObjectNode) snapshot.deepCopy();
+        ((ObjectNode) wholeColumnSnapshot.path("sheets").get(0).path("cells").path("0"))
+                .putObject("5").put("formula", "=SUM(A:A)");
+        assertThrows(ServiceException.class, () -> registry.applyPublicMutations(wholeColumnSnapshot, List.of(move)));
+
+        ObjectNode wholeRowSnapshot = (ObjectNode) snapshot.deepCopy();
+        ((ObjectNode) wholeRowSnapshot.path("sheets").get(0).path("cells").path("0"))
+                .putObject("5").put("formula", "=SUM(1:1)");
+        assertThrows(ServiceException.class, () -> registry.applyPublicMutations(wholeRowSnapshot, List.of(move)));
+
+        ObjectNode threeDimensionalSnapshot = (ObjectNode) snapshot.deepCopy();
+        ObjectNode firstSheet = (ObjectNode) threeDimensionalSnapshot.path("sheets").get(0);
+        ((ObjectNode) firstSheet.path("cells").path("0")).putObject("5").put("formula", "=SUM(Sheet1:Sheet2!A1)");
+        ObjectNode secondSheet = firstSheet.deepCopy();
+        secondSheet.put("id", "sheet-2");
+        secondSheet.put("name", "Sheet2");
+        ((ArrayNode) threeDimensionalSnapshot.path("sheets")).add(secondSheet);
+        assertThrows(ServiceException.class, () -> registry.applyPublicMutations(threeDimensionalSnapshot, List.of(move)));
+    }
+
+    @Test
+    void rangeMovePreservesGlobalNameReferencesRelativeToAnotherSheet() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        JsonNode snapshot = mapper.readTree("""
+                {"dataModel":{"sources":[],"tables":[],"relationships":[],"views":[]},
+                 "definedNames":{"Relative":"=A1"},
+                 "definedNameModels":[{"name":"Relative","formula":"=A1","scope":"workbook","anchor":{"sheetId":"sheet-2","row":0,"column":0}}],
+                 "sheets":[
+                   {"id":"sheet-1","name":"Sheet1","rowCount":6,"columnCount":6,"cells":{"0":{"0":{"value":7}}},"pane":{"kind":"none"},"merges":[],"hiddenRows":[],"hiddenColumns":[],"rowHeightsPx":{},"columnWidthsPx":{},"drawings":[],"drawingPayloads":{},"spillRanges":[],"sheetTables":[],"conditionalFormats":[],"dataValidations":[],"protectionRules":[],"outline":{"groups":[]},"sparklines":[],"pivots":[],"dataRegions":[],"hyperlinks":[],"review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}}},
+                   {"id":"sheet-2","name":"Sheet2","rowCount":6,"columnCount":6,"cells":{},"pane":{"kind":"none"},"merges":[],"hiddenRows":[],"hiddenColumns":[],"rowHeightsPx":{},"columnWidthsPx":{},"drawings":[],"drawingPayloads":{},"spillRanges":[],"sheetTables":[],"conditionalFormats":[],"dataValidations":[],"protectionRules":[],"outline":{"groups":[]},"sparklines":[],"pivots":[],"dataRegions":[],"hyperlinks":[],"review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}}}]}
+                """
+        );
+        OperationMutation move = new OperationMutation("range.move", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","sourceRange":{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0},"targetOrigin":{"row":2,"column":2}}
+                """));
+
+        JsonNode moved = registry.applyPublicMutations(snapshot, List.of(move));
+
+        assertEquals("=A1", moved.path("definedNames").path("Relative").asText());
+        assertEquals("=A1", moved.path("definedNameModels").get(0).path("formula").asText());
     }
 
     @Test
@@ -1277,6 +2718,264 @@ class MutationDescriptorRegistryTest {
     }
 
     @Test
+    void rowPermutationRemapsWorkbookTableAndDataSourceRanges() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        ObjectNode snapshot = workbookSourceRangePermutationSnapshot();
+        OperationMutation raw = new OperationMutation("rows.permuted", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":0,"endRow":3,"startColumn":0,"endColumn":0},"sourceRows":[3,0,1,2]}
+                """));
+        OperationMutation permutation = withSortContext(raw, range(0, 3, 0, 0), "worksheet", null, false, 0);
+
+        JsonNode current = registry.prepare(snapshot, permutation, WorkbookAclRole.EDITOR).descriptor().apply(snapshot, permutation);
+
+        assertEquals(1, current.path("dataModel").path("tables").get(0).path("sourceRange").path("startRow").asInt());
+        assertEquals(3, current.path("dataModel").path("tables").get(0).path("sourceRange").path("endRow").asInt());
+        assertEquals(1, current.path("dataModel").path("sources").get(0).path("sourceRange").path("startRow").asInt());
+        assertEquals(3, current.path("dataModel").path("sources").get(0).path("sourceRange").path("endRow").asInt());
+        assertEquals("first", current.path("sheets").get(0).path("cells").path("1").path("0").path("value").asText());
+        assertEquals("third", current.path("sheets").get(0).path("cells").path("3").path("0").path("value").asText());
+    }
+
+    @Test
+    void rowPermutationRejectsSplitWorkbookTableAndDataSourceRangesBeforeChangingSnapshot() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        OperationMutation raw = new OperationMutation("rows.permuted", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":0,"endRow":3,"startColumn":0,"endColumn":0},"sourceRows":[2,0,3,1]}
+                """));
+        OperationMutation permutation = withSortContext(raw, range(0, 3, 0, 0), "worksheet", null, false, 0);
+
+        for (String ownerKind : List.of("workbook table", "data source")) {
+            ObjectNode snapshot = workbookSourceRangePermutationSnapshot();
+            ObjectNode dataModel = (ObjectNode) snapshot.path("dataModel");
+            if (ownerKind.equals("workbook table")) ((ArrayNode) dataModel.path("sources")).removeAll();
+            else ((ArrayNode) dataModel.path("tables")).removeAll();
+            JsonNode before = snapshot.deepCopy();
+
+            ServiceException error = assertThrows(ServiceException.class,
+                    () -> registry.prepare(snapshot, permutation, WorkbookAclRole.EDITOR).descriptor().apply(snapshot, permutation));
+
+            assertEquals("VALIDATION_ERROR", error.code());
+            assertEquals(before, snapshot);
+        }
+    }
+
+    @Test
+    void axisPatchCarriesEveryShiftedRangeOwnerAndInverseRestoresGeometry() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        ObjectNode snapshot = workbookSourceRangePermutationSnapshot();
+        ObjectNode targetSheet = (ObjectNode) snapshot.path("sheets").get(0);
+        addSheetTable(targetSheet, "sheet-table-1", new RangeRef("sheet-1", 0, 2, 0, 0));
+        ObjectNode region = targetSheet.putArray("dataRegions").addObject()
+                .put("id", "region-1").put("sourceId", "data-source").put("headerRow", 0).put("revision", 0);
+        region.set("range", range(0, 2, 0, 0));
+        OperationMutation insert = new OperationMutation("rows.inserted", "sheet-1", mapper.readTree(
+                "{\"sheetId\":\"sheet-1\",\"at\":0,\"count\":1}"));
+        MutationApplication application = registry.require(insert.id(), false).applyWithPatch(snapshot, insert);
+
+        StructuralPatch patch = application.structuralPatch();
+        assertEquals(List.of("data-region", "workbook-table", "data-source", "sheet-table"),
+                patch.rangeOwnerDeltas().stream().map(StructuralPatch.RangeOwnerDelta::ownerKind).toList());
+        assertEquals(new RangeRef("sheet-1", 1, 3, 0, 0), patch.rangeOwnerDeltas().get(0).afterRange());
+        assertEquals(new RangeRef("sheet-1", 1, 3, 0, 0), patch.rangeOwnerDeltas().get(1).afterRange());
+        assertEquals(new RangeRef("sheet-1", 1, 3, 0, 0), patch.rangeOwnerDeltas().get(2).afterRange());
+        assertEquals(new RangeRef("sheet-1", 1, 3, 0, 0), patch.rangeOwnerDeltas().get(3).afterRange());
+
+        JsonNode undoneOwners = registry.applyStructuralPatch(application.snapshot(), patch.inverse("rows.deleted"));
+        assertEquals(snapshot.path("sheets").get(0).path("dataRegions"), undoneOwners.path("sheets").get(0).path("dataRegions"));
+        assertEquals(snapshot.path("dataModel"), undoneOwners.path("dataModel"));
+    }
+
+    @Test
+    void axisInsertInsideWorkbookTableFailsClosedBeforeChangingTheSnapshot() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        ObjectNode snapshot = workbookSourceRangePermutationSnapshot();
+        ((ArrayNode) snapshot.path("dataModel").path("sources")).removeAll();
+        OperationMutation insert = new OperationMutation("rows.inserted", "sheet-1", mapper.readTree(
+                "{\"sheetId\":\"sheet-1\",\"at\":1,\"count\":1}"));
+        JsonNode before = snapshot.deepCopy();
+
+        ServiceException error = assertThrows(ServiceException.class,
+                () -> registry.require(insert.id(), false).apply(snapshot, insert));
+
+        assertEquals("UNSUPPORTED_FEATURE", error.code());
+        assertTrue(error.getMessage().contains("requires a table transaction"));
+        assertEquals(before, snapshot);
+    }
+
+    @Test
+    void rowPermutationPatchCarriesDataRegionAndBackingRangeOwnerFacts() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        ObjectNode snapshot = workbookSourceRangePermutationSnapshot();
+        ObjectNode targetSheet = (ObjectNode) snapshot.path("sheets").get(0);
+        ObjectNode region = targetSheet.putArray("dataRegions").addObject()
+                .put("id", "region-1").put("sourceId", "data-source").put("headerRow", 0).put("revision", 0);
+        region.set("range", range(0, 2, 0, 0));
+        OperationMutation raw = new OperationMutation("rows.permuted", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":0,"endRow":3,"startColumn":0,"endColumn":0},"sourceRows":[3,0,1,2]}
+                """));
+        OperationMutation permutation = withSortContext(raw, range(0, 3, 0, 0), "worksheet", null, false, 0);
+
+        MutationApplication application = registry.prepare(snapshot, permutation, WorkbookAclRole.OWNER)
+                .descriptor().applyWithPatch(snapshot, permutation);
+
+        StructuralPatch patch = application.structuralPatch();
+        assertEquals(List.of("data-region", "workbook-table", "data-source"),
+                patch.rangeOwnerDeltas().stream().map(StructuralPatch.RangeOwnerDelta::ownerKind).toList());
+        assertEquals(new RangeRef("sheet-1", 0, 2, 0, 0), patch.rangeOwnerDeltas().get(0).beforeRange());
+        assertEquals(new RangeRef("sheet-1", 1, 3, 0, 0), patch.rangeOwnerDeltas().get(0).afterRange());
+        assertEquals(1, patch.rangeOwnerDeltas().get(0).afterHeaderRow());
+
+        JsonNode undoneOwners = registry.applyStructuralPatch(application.snapshot(), patch.inverse("rows.permuted"));
+        assertEquals(snapshot.path("sheets").get(0).path("dataRegions"), undoneOwners.path("sheets").get(0).path("dataRegions"));
+        assertEquals(snapshot.path("dataModel"), undoneOwners.path("dataModel"));
+    }
+
+    @Test
+    void rangeMovePatchCarriesRelocatedRangeOwnersAndInverseRestoresThem() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        ObjectNode snapshot = workbookSourceRangePermutationSnapshot();
+        ObjectNode targetSheet = (ObjectNode) snapshot.path("sheets").get(0);
+        addSheetTable(targetSheet, "sheet-table-1", new RangeRef("sheet-1", 0, 2, 0, 0));
+        ObjectNode region = targetSheet.putArray("dataRegions").addObject()
+                .put("id", "region-1").put("sourceId", "data-source").put("headerRow", 0).put("revision", 0);
+        region.set("range", range(0, 2, 0, 0));
+        OperationMutation move = new OperationMutation("range.move", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","sourceRange":{"sheetId":"sheet-1","startRow":0,"endRow":2,"startColumn":0,"endColumn":0},"targetOrigin":{"row":4,"column":0}}
+                """));
+
+        MutationApplication application = registry.require(move.id(), false).applyWithPatch(snapshot, move);
+
+        StructuralPatch patch = application.structuralPatch();
+        assertEquals(List.of("data-region", "workbook-table", "data-source", "sheet-table"),
+                patch.rangeOwnerDeltas().stream().map(StructuralPatch.RangeOwnerDelta::ownerKind).toList());
+        assertEquals(new RangeRef("sheet-1", 4, 6, 0, 0), patch.rangeOwnerDeltas().get(0).afterRange());
+        assertEquals(4, patch.rangeOwnerDeltas().get(0).afterHeaderRow());
+        assertEquals(new RangeRef("sheet-1", 4, 6, 0, 0), patch.rangeOwnerDeltas().get(3).afterRange());
+
+        JsonNode undoneOwners = registry.applyStructuralPatch(application.snapshot(), patch.inverse("range.move"));
+        assertEquals(snapshot.path("sheets").get(0).path("dataRegions"), undoneOwners.path("sheets").get(0).path("dataRegions"));
+        assertEquals(snapshot.path("dataModel"), undoneOwners.path("dataModel"));
+    }
+
+    @Test
+    void rowPermutationRewritesAnchoredRuleAndWorkbookFormulaOwners() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        JsonNode snapshot = mapper.readTree("""
+                {"definedNames":{"RelativeOwner":"=A1","OtherSheetOwner":"=A1"},
+                 "definedNameModels":[{"name":"RelativeOwner","formula":"=A1","scope":"workbook","anchor":{"sheetId":"sheet-1","row":0,"column":6}},{"name":"OtherSheetOwner","formula":"=A1","scope":"workbook","anchor":{"sheetId":"sheet-2","row":0,"column":9}}],
+                 "cellStyleTemplates":[{"id":"template-anchored","name":"Anchored validation","style":{},"dataValidation":{"type":"custom","formula1":"=A1>0","formula2":"=B1","listSource":{"kind":"formula","formula":"=C1:C2"},"formulaAnchor":{"sheetId":"sheet-1","row":0,"column":7}}},{"id":"template-other-sheet","name":"Other sheet validation","style":{},"dataValidation":{"type":"custom","formula1":"=A1>0","formulaAnchor":{"sheetId":"sheet-2","row":0,"column":10}}}],
+                 "sheets":[{"id":"sheet-1","name":"Sheet1","rowCount":4,"columnCount":2,
+                   "cells":{"0":{"0":{"value":"first"}},"1":{"0":{"value":"second"}}},"pane":{"kind":"none"},
+                   "defaultRowHeightPx":20,"defaultColumnWidthPx":64,
+                   "review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}},
+                   "merges":[],"conditionalFormats":[{"id":"cf-anchored","sheetId":"sheet-1","ranges":[{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":4,"endColumn":4}],"formulaAnchor":{"sheetId":"sheet-1","row":0,"column":4},"type":"highlight","operator":"formula","value1":"=A1>0"},{"id":"cf-implicit-anchor","sheetId":"sheet-1","ranges":[{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":8,"endColumn":8}],"type":"highlight","operator":"formula","value1":"=A1>0"}],
+                   "dataValidations":[{"id":"dv-anchored","sheetId":"sheet-1","ranges":[{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":5,"endColumn":5}],"formulaAnchor":{"sheetId":"sheet-1","row":0,"column":5},"type":"custom","formula1":"=A1>0","formula2":"=B1","listSource":{"kind":"formula","formula":"=C1:C2"}}],
+                   "pivots":[],"sparklines":[],"drawings":[],"drawingPayloads":{},"sheetTables":[],"spillRanges":[],"protectionRules":[]},
+                  {"id":"sheet-2","name":"Other sheet","rowCount":4,"columnCount":2,"cells":{},"pane":{"kind":"none"},"review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}},"merges":[],"conditionalFormats":[],"dataValidations":[],"pivots":[],"sparklines":[],"drawings":[],"drawingPayloads":{},"sheetTables":[],"spillRanges":[],"protectionRules":[]}]
+                }
+                """);
+        OperationMutation rawPermutation = new OperationMutation("rows.permuted", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":0,"endRow":1,"startColumn":0,"endColumn":0},"sourceRows":[1,0]}
+                """));
+        OperationMutation permutation = withSortContext(rawPermutation, range(0, 1, 0, 0), "worksheet", null, false, 8);
+
+        var preparation = registry.prepare(snapshot, permutation, WorkbookAclRole.EDITOR);
+        assertEquals(8, preparation.affectedRanges().getFirst().endColumn());
+        JsonNode current = preparation.descriptor().apply(snapshot, permutation);
+        JsonNode sheet = current.path("sheets").get(0);
+        assertEquals("=A2", current.path("definedNames").path("RelativeOwner").asText());
+        assertEquals("=A2", current.path("definedNameModels").get(0).path("formula").asText());
+        assertEquals(1, current.path("definedNameModels").get(0).path("anchor").path("row").asInt());
+        assertEquals("=A1", current.path("definedNames").path("OtherSheetOwner").asText());
+        assertEquals("=A1", current.path("definedNameModels").get(1).path("formula").asText());
+        assertEquals(0, current.path("definedNameModels").get(1).path("anchor").path("row").asInt());
+        assertEquals(1, sheet.path("conditionalFormats").get(0).path("formulaAnchor").path("row").asInt());
+        assertEquals("=A2>0", sheet.path("conditionalFormats").get(0).path("value1").asText());
+        assertEquals(1, sheet.path("conditionalFormats").get(1).path("formulaAnchor").path("row").asInt());
+        assertEquals("=A2>0", sheet.path("conditionalFormats").get(1).path("value1").asText());
+        assertEquals(1, sheet.path("dataValidations").get(0).path("formulaAnchor").path("row").asInt());
+        assertEquals("=A2>0", sheet.path("dataValidations").get(0).path("formula1").asText());
+        assertEquals("=B2", sheet.path("dataValidations").get(0).path("formula2").asText());
+        assertEquals("=C2:C3", sheet.path("dataValidations").get(0).path("listSource").path("formula").asText());
+        JsonNode templateValidation = current.path("cellStyleTemplates").get(0).path("dataValidation");
+        assertEquals(1, templateValidation.path("formulaAnchor").path("row").asInt());
+        assertEquals("=A2>0", templateValidation.path("formula1").asText());
+        assertEquals("=B2", templateValidation.path("formula2").asText());
+        assertEquals("=C2:C3", templateValidation.path("listSource").path("formula").asText());
+        JsonNode otherSheetTemplateValidation = current.path("cellStyleTemplates").get(1).path("dataValidation");
+        assertEquals(0, otherSheetTemplateValidation.path("formulaAnchor").path("row").asInt());
+        assertEquals("=A1>0", otherSheetTemplateValidation.path("formula1").asText());
+    }
+
+    @Test
+    void rowPermutationPreservesImplicitRuleAnchorWhenExactRangeFragmentsReorder() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        JsonNode snapshot = mapper.readTree("""
+                {"sheets":[{"id":"sheet-1","name":"Sheet1","rowCount":8,"columnCount":4,"cells":{},"pane":{"kind":"none"},
+                  "review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}},"merges":[],
+                  "conditionalFormats":[{"id":"cf-implicit-fixed-anchor","sheetId":"sheet-1","ranges":[{"sheetId":"sheet-1","startRow":2,"endRow":6,"startColumn":3,"endColumn":3}],"type":"highlight","operator":"formula","value1":"=A1>0"}],
+                  "dataValidations":[],"pivots":[],"sparklines":[],"drawings":[],"drawingPayloads":{},"sheetTables":[],"spillRanges":[],"protectionRules":[]}]}
+                """);
+        OperationMutation rawPermutation = new OperationMutation("rows.permuted", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":0,"endRow":4,"startColumn":0,"endColumn":1},"sourceRows":[3,0,2,1,4]}
+                """));
+        OperationMutation permutation = withSortContext(rawPermutation, range(0, 4, 0, 1), "worksheet", null, false, 3);
+
+        JsonNode current = registry.prepare(snapshot, permutation, WorkbookAclRole.EDITOR).descriptor().apply(snapshot, permutation);
+        JsonNode rule = current.path("sheets").get(0).path("conditionalFormats").get(0);
+
+        assertEquals(2, rule.path("formulaAnchor").path("row").asInt());
+        assertEquals("=A1>0", rule.path("value1").asText());
+    }
+
+    @Test
+    void rowPermutationRejectsInvalidAnchoredNameFormulaWithoutChangingSnapshot() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        ObjectNode snapshot = (ObjectNode) mapper.readTree("""
+                {"definedNames":{"OutOfBoundsOwner":"=A1"},
+                 "definedNameModels":[{"name":"OutOfBoundsOwner","formula":"=A1","scope":"workbook","anchor":{"sheetId":"sheet-1","row":1,"column":8}}],
+                 "sheets":[{"id":"sheet-1","name":"Sheet1","rowCount":4,"columnCount":2,
+                   "cells":{"0":{"0":{"value":"first"}},"1":{"0":{"value":"second"}}},"pane":{"kind":"none"},
+                   "review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}},
+                   "merges":[],"conditionalFormats":[],"dataValidations":[],"pivots":[],"sparklines":[],"drawings":[],"drawingPayloads":{},"sheetTables":[],"spillRanges":[],"protectionRules":[]}]}
+                """);
+        JsonNode before = snapshot.deepCopy();
+        OperationMutation rawPermutation = new OperationMutation("rows.permuted", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":0,"endRow":1,"startColumn":0,"endColumn":0},"sourceRows":[1,0]}
+                """));
+        OperationMutation permutation = withSortContext(rawPermutation, range(0, 1, 0, 0), "worksheet", null, false, 8);
+
+        ServiceException error = assertThrows(ServiceException.class,
+                () -> registry.prepare(snapshot, permutation, WorkbookAclRole.EDITOR).descriptor().apply(snapshot, permutation));
+
+        assertEquals("UNSUPPORTED_FEATURE", error.code());
+        assertEquals(before, snapshot);
+    }
+
+    @Test
+    void rowPermutationRejectsFragmentedOutlineGroupWithoutChangingSnapshot() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        ObjectNode snapshot = (ObjectNode) mapper.readTree("""
+                {"sheets":[{"id":"sheet-1","name":"Sheet1","rowCount":8,"columnCount":4,
+                  "cells":{"0":{"0":{"value":"first"}},"1":{"0":{"value":"second"}}},"pane":{"kind":"none"},
+                  "review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}},
+                  "outline":{"groups":[{"id":"group-1","axis":"row","start":0,"end":1,"level":1,"collapsed":false}]},
+                  "merges":[],"conditionalFormats":[],"dataValidations":[],"pivots":[],"sparklines":[],"drawings":[],"drawingPayloads":{},"sheetTables":[],"spillRanges":[],"protectionRules":[]}]}
+                """);
+        JsonNode before = snapshot.deepCopy();
+        OperationMutation rawPermutation = new OperationMutation("rows.permuted", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":0,"endRow":3,"startColumn":0,"endColumn":1},"sourceRows":[2,0,3,1]}
+                """));
+        OperationMutation permutation = withSortContext(rawPermutation, range(0, 3, 0, 1), "worksheet", null, false, 3);
+
+        ServiceException error = assertThrows(ServiceException.class,
+                () -> registry.prepare(snapshot, permutation, WorkbookAclRole.EDITOR).descriptor().apply(snapshot, permutation));
+
+        assertEquals("VALIDATION_ERROR", error.code());
+        assertEquals(before, snapshot);
+    }
+
+    @Test
     void rowPermutationAllowsBoundedExactMetadataFragmentation() throws Exception {
         JsonNode current = applyFragmentedMetadataPermutation(256);
 
@@ -1324,7 +3023,7 @@ class MutationDescriptorRegistryTest {
     void tableDataBodySortUsesCanonicalFormulaOrderWithoutMovingHeaderOrTableOwner() throws Exception {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         JsonNode snapshot = mapper.readTree("""
-                {"sheets":[{"id":"sheet-1","rowCount":6,"columnCount":3,
+                {"sheets":[{"id":"sheet-1","name":"SortTableSheet","rowCount":6,"columnCount":3,
                   "cells":{"0":{"0":{"value":"Calculated"},"1":{"value":"Row"}},"1":{"0":{"value":20},"1":{"value":"twenty"}},"2":{"0":{"value":5},"1":{"value":"five"}},"3":{"0":{"value":10},"1":{"value":"ten"}}},
                   "pane":{"kind":"none"},"defaultRowHeightPx":20,"defaultColumnWidthPx":64,
                   "autoFilter":null,"sheetTables":[{"id":"table-1","sheetId":"sheet-1","name":"SortTable","range":{"sheetId":"sheet-1","startRow":0,"endRow":3,"startColumn":0,"endColumn":1},"hasHeaderRow":true,"hasTotalRow":false,"showBandedRows":false,"showBandedColumns":false,"showFirstColumn":false,"showLastColumn":false,"showFilterButton":true,"autoExpand":"both","autoFilter":{"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":0,"endRow":3,"startColumn":0,"endColumn":1},"columns":{}},"columns":[{"id":"calculated","name":"Calculated"},{"id":"row","name":"Row"}]}],
@@ -1349,6 +3048,306 @@ class MutationDescriptorRegistryTest {
                 {"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":1,"endRow":3,"startColumn":0,"endColumn":1},"sourceRows":[1,1,3]}
                 """)), range(0, 3, 0, 1), "sheet-table", "table-1", true, 2);
         assertThrows(ServiceException.class, () -> registry.prepare(snapshot, duplicate, WorkbookAclRole.EDITOR).descriptor().apply(snapshot, duplicate));
+    }
+
+    @Test
+    void sheetRenameRewritesAllPersistedFormulaOwnerCategories() throws Exception {
+        ObjectNode snapshot = mapper.createObjectNode();
+        ArrayNode sheets = snapshot.putArray("sheets");
+        ObjectNode source = sheets.addObject().put("id", "source").put("name", "Source");
+        ObjectNode sourceCells = source.putObject("cells");
+        ObjectNode sourceRow = sourceCells.putObject("0");
+        ObjectNode formulaCell = sourceRow.putObject("0");
+        formulaCell.put("formula", "='Source'!A1");
+        formulaCell.putObject("formulaMetadata").put("kind", "normal").put("sourceFormula", "='Source'!A1");
+        ObjectNode barcodeCell = sourceRow.putObject("1");
+        barcodeCell.putObject("presentation").put("kind", "barcode").putObject("source")
+                .put("kind", "formula").put("formula", "='Source'!A1");
+        ObjectNode tableSheet = source.putObject("tableSheet");
+        tableSheet.putArray("columns").addObject().put("fieldId", "calculated").put("formula", "='Source'!A1");
+        ObjectNode sourceDrawings = source.putObject("drawingPayloads");
+        sourceDrawings.putObject("formula-shape").put("kind", "shape").put("propertyFormula", "='Source'!A1");
+        sourceDrawings.putObject("chart").put("kind", "chart").put("chartId", "chart")
+                .putObject("elements").put("hiddenData", "show").putObject("titleText").put("linkedFormula", "='Source'!A1");
+
+        ObjectNode external = sheets.addObject().put("id", "owner").put("name", "Owner");
+        external.putObject("cells").putObject("1").putObject("0").putObject("formulaMetadata")
+                .put("kind", "normal").put("sourceFormula", "='Source'!A1");
+        ObjectNode conditionalFormat = external.putArray("conditionalFormats").addObject()
+                .put("id", "cf").put("sheetId", "owner").put("value1", "='Source'!A1");
+        conditionalFormat.putArray("ranges").addObject().put("sheetId", "owner")
+                .put("startRow", 1).put("endRow", 1).put("startColumn", 0).put("endColumn", 0);
+        ObjectNode dataValidation = external.putArray("dataValidations").addObject().put("id", "dv").put("sheetId", "owner");
+        dataValidation.putArray("ranges").addObject().put("sheetId", "owner")
+                .put("startRow", 1).put("endRow", 1).put("startColumn", 0).put("endColumn", 0);
+        dataValidation.set("listSource", mapper.createObjectNode().put("kind", "formula").put("formula", "='Source'!A1"));
+        ObjectNode externalDrawings = external.putObject("drawingPayloads");
+        externalDrawings.putObject("external-shape").put("kind", "shape").put("propertyFormula", "='Source'!A1");
+        externalDrawings.putObject("external-chart").put("kind", "chart").put("chartId", "external-chart")
+                .putObject("elements").put("hiddenData", "show").putObject("legend").put("visible", true)
+                .put("position", "bottom").putObject("text").put("linkedFormula", "='Source'!A1");
+
+        snapshot.putArray("definedNameModels").addObject().put("name", "SourceName").put("formula", "='Source'!A1").put("scope", "workbook");
+        snapshot.putObject("definedNames").put("SourceName", "='Source'!A1");
+        snapshot.putObject("dataModel").putArray("views").addObject().put("id", "view")
+                .putArray("fields").addObject().put("fieldId", "calculated").put("formula", "='Source'!A1");
+        snapshot.putArray("cellStyleTemplates").addObject().put("id", "template").putObject("dataValidation")
+                .put("formula1", "='Source'!A1");
+
+        OperationMutation rename = new OperationMutation("sheet.rename", "source",
+                mapper.readTree("{\"sheetId\":\"source\",\"name\":\"Renamed Sheet\"}"));
+        MutationApplication application = new WorkbookStructureMutationDescriptor("sheet.rename").applyWithPatch(snapshot, rename);
+        JsonNode renamed = application.snapshot();
+        StructuralPatch patch = application.structuralPatch();
+
+        assertTrue(patch != null);
+        assertEquals("sheet.rename", patch.mutationId());
+        assertTrue(patch.formulaOwnerDeltas().stream().anyMatch(delta -> "formula-cell".equals(delta.kind())));
+        assertTrue(patch.formulaOwnerDeltas().stream().anyMatch(delta -> "formula-rule".equals(delta.kind())));
+        assertTrue(patch.formulaOwnerDeltas().stream().anyMatch(delta -> "shape-property".equals(delta.ownerKind())));
+        assertTrue(patch.formulaOwnerDeltas().stream().anyMatch(delta -> "chart-text".equals(delta.ownerKind())));
+        assertTrue(patch.formulaOwnerDeltas().stream().anyMatch(delta -> "table-sheet-column".equals(delta.ownerKind())));
+        assertTrue(patch.formulaOwnerDeltas().stream().anyMatch(delta -> "data-view-field".equals(delta.ownerKind())));
+        assertTrue(patch.formulaOwnerDeltas().stream().anyMatch(delta -> "cell-style-template".equals(delta.ownerKind())));
+        assertEquals(1, patch.definedNameOwnerDeltas().size());
+        assertEquals("Renamed Sheet", renamed.path("sheets").get(0).path("name").asText());
+        assertEquals("='Renamed Sheet'!A1", renamed.path("sheets").get(0).path("cells").path("0").path("0").path("formula").asText());
+        assertEquals("='Renamed Sheet'!A1", renamed.path("sheets").get(0).path("cells").path("0").path("0").path("formulaMetadata").path("sourceFormula").asText());
+        assertEquals("='Renamed Sheet'!A1", renamed.path("sheets").get(0).path("cells").path("0").path("1").path("presentation").path("source").path("formula").asText());
+        assertEquals("='Renamed Sheet'!A1", renamed.path("sheets").get(0).path("tableSheet").path("columns").get(0).path("formula").asText());
+        assertEquals("='Renamed Sheet'!A1", renamed.path("sheets").get(0).path("drawingPayloads").path("formula-shape").path("propertyFormula").asText());
+        assertEquals("='Renamed Sheet'!A1", renamed.path("sheets").get(0).path("drawingPayloads").path("chart").path("elements").path("titleText").path("linkedFormula").asText());
+        assertEquals("='Renamed Sheet'!A1", renamed.path("sheets").get(1).path("cells").path("1").path("0").path("formulaMetadata").path("sourceFormula").asText());
+        assertEquals("='Renamed Sheet'!A1", renamed.path("sheets").get(1).path("conditionalFormats").get(0).path("value1").asText());
+        assertEquals("='Renamed Sheet'!A1", renamed.path("sheets").get(1).path("dataValidations").get(0).path("listSource").path("formula").asText());
+        assertEquals("='Renamed Sheet'!A1", renamed.path("sheets").get(1).path("drawingPayloads").path("external-shape").path("propertyFormula").asText());
+        assertEquals("='Renamed Sheet'!A1", renamed.path("sheets").get(1).path("drawingPayloads").path("external-chart").path("elements").path("legend").path("text").path("linkedFormula").asText());
+        assertEquals("='Renamed Sheet'!A1", renamed.path("dataModel").path("views").get(0).path("fields").get(0).path("formula").asText());
+        assertEquals("='Renamed Sheet'!A1", renamed.path("cellStyleTemplates").get(0).path("dataValidation").path("formula1").asText());
+        assertEquals("='Renamed Sheet'!A1", renamed.path("definedNameModels").get(0).path("formula").asText());
+        assertEquals("='Renamed Sheet'!A1", renamed.path("definedNames").path("SourceName").asText());
+        assertEquals("='Source'!A1", snapshot.path("sheets").get(0).path("cells").path("0").path("0").path("formulaMetadata").path("sourceFormula").asText());
+
+        JsonNode patchedOwners = StructuralSnapshotReducer.applyStructuralOwnerPatch(snapshot, patch);
+        assertEquals("='Renamed Sheet'!A1", patchedOwners.path("sheets").get(0).path("cells").path("0").path("0").path("formula").asText());
+        assertEquals("='Renamed Sheet'!A1", patchedOwners.path("definedNames").path("SourceName").asText());
+    }
+
+    @Test
+    void sheetRenameRejectsFormulaRuleOwnersWithoutStableIdentityBeforeMutatingInput() throws Exception {
+        ObjectNode snapshot = mapper.createObjectNode();
+        ArrayNode sheets = snapshot.putArray("sheets");
+        sheets.addObject().put("id", "source").put("name", "Source").putObject("cells");
+        ObjectNode owner = sheets.addObject().put("id", "owner").put("name", "Owner");
+        owner.putObject("cells");
+        ObjectNode rule = owner.putArray("conditionalFormats").addObject().put("sheetId", "owner").put("value1", "='Source'!A1");
+        rule.putArray("ranges").addObject().put("sheetId", "owner")
+                .put("startRow", 0).put("endRow", 0).put("startColumn", 0).put("endColumn", 0);
+        OperationMutation rename = new OperationMutation("sheet.rename", "source",
+                mapper.readTree("{\"sheetId\":\"source\",\"name\":\"Renamed\"}"));
+
+        assertThrows(ServiceException.class,
+                () -> new WorkbookStructureMutationDescriptor("sheet.rename").applyWithPatch(snapshot, rename));
+        assertEquals("Source", snapshot.path("sheets").get(0).path("name").asText());
+        assertEquals("='Source'!A1", snapshot.path("sheets").get(1).path("conditionalFormats").get(0).path("value1").asText());
+    }
+
+    @Test
+    void sheetRenameRejectsPreservedOnlyFormulaOwnersWithoutChangingInput() throws Exception {
+        ObjectNode snapshot = mapper.createObjectNode();
+        ArrayNode sheets = snapshot.putArray("sheets");
+        ObjectNode source = sheets.addObject().put("id", "source").put("name", "Source");
+        source.putObject("cells").putObject("0").putObject("0").putObject("formulaMetadata")
+                .put("kind", "dataTable").put("preservedOnly", true).put("sourceFormula", "='Source'!A1");
+        OperationMutation rename = new OperationMutation("sheet.rename", "source",
+                mapper.readTree("{\"sheetId\":\"source\",\"name\":\"Renamed\"}"));
+
+        assertThrows(ServiceException.class, () -> new WorkbookStructureMutationDescriptor("sheet.rename").apply(snapshot, rename));
+        assertEquals("Source", snapshot.path("sheets").get(0).path("name").asText());
+        assertEquals("='Source'!A1", snapshot.path("sheets").get(0).path("cells").path("0").path("0").path("formulaMetadata").path("sourceFormula").asText());
+    }
+
+    @Test
+    void sheetRenameRejectsMalformedChartLinkedFormulaWithoutChangingInput() throws Exception {
+        ObjectNode snapshot = sheetDeletionSnapshot();
+        ObjectNode chart = sheetDeletionOwner(snapshot).putObject("drawingPayloads").putObject("chart");
+        chart.put("kind", "chart").put("chartId", "chart");
+        chart.putObject("elements").put("hiddenData", "show").putObject("titleText").put("linkedFormula", 7);
+        OperationMutation rename = new OperationMutation("sheet.rename", "source",
+                mapper.readTree("{\"sheetId\":\"source\",\"name\":\"Renamed\"}"));
+
+        assertThrows(ServiceException.class, () -> new WorkbookStructureMutationDescriptor("sheet.rename").apply(snapshot, rename));
+        assertEquals("Source", snapshot.path("sheets").get(1).path("name").asText());
+        assertEquals(7, snapshot.path("sheets").get(0).path("drawingPayloads").path("chart")
+                .path("elements").path("titleText").path("linkedFormula").asInt());
+    }
+
+    @Test
+    void sheetLifecycleMutationsRejectCaseInsensitiveNameCollisions() throws Exception {
+        ObjectNode snapshot = mapper.createObjectNode();
+        ArrayNode sheets = snapshot.putArray("sheets");
+        sheets.addObject().put("id", "sheet-1").put("name", "Sheet1").putObject("cells");
+        sheets.addObject().put("id", "sheet-2").put("name", "Sheet2").putObject("cells");
+        JsonNode before = snapshot.deepCopy();
+
+        OperationMutation rename = new OperationMutation("sheet.rename", "sheet-1",
+                mapper.readTree("{\"sheetId\":\"sheet-1\",\"name\":\"sHEET2\"}"));
+        OperationMutation add = new OperationMutation("sheet.add", "sheet-3",
+                mapper.readTree("{\"id\":\"sheet-3\",\"name\":\"SHEET2\"}"));
+        OperationMutation duplicate = new OperationMutation("sheet.duplicated", "sheet-1",
+                mapper.readTree("{\"sourceSheetId\":\"sheet-1\",\"newId\":\"sheet-3\",\"newName\":\"sheet2\"}"));
+        ObjectNode restoredSheet = mapper.createObjectNode().put("id", "sheet-3").put("name", "SHEET2")
+                .put("rowCount", 1).put("columnCount", 1);
+        restoredSheet.putObject("cells");
+        restoredSheet.putArray("merges").addObject();
+        restoredSheet.putArray("pivots");
+        restoredSheet.putArray("sparklines");
+        restoredSheet.putArray("drawings");
+        restoredSheet.putObject("drawingPayloads");
+        OperationMutation restore = new OperationMutation("sheet.restore", "sheet-3",
+                mapper.createObjectNode().set("sheet", restoredSheet));
+
+        for (OperationMutation mutation : List.of(rename, add, duplicate, restore)) {
+            assertThrows(ServiceException.class,
+                    () -> new WorkbookStructureMutationDescriptor(mutation.id()).applyWithPatch(snapshot, mutation), mutation.id());
+            assertEquals(before, snapshot, mutation.id());
+        }
+
+        OperationMutation caseOnlyRename = new OperationMutation("sheet.rename", "sheet-1",
+                mapper.readTree("{\"sheetId\":\"sheet-1\",\"name\":\"sHEET1\"}"));
+        JsonNode renamed = new WorkbookStructureMutationDescriptor("sheet.rename").applyWithPatch(snapshot, caseOnlyRename).snapshot();
+        assertEquals("sHEET1", renamed.path("sheets").get(0).path("name").asText());
+    }
+
+    @Test
+    void sheetRemovalRejectsAuxiliaryFormulaAndWorkbookReferenceOwners() {
+        ObjectNode formulaMetadata = sheetDeletionSnapshot();
+        sheetDeletionOwner(formulaMetadata).putObject("cells").putObject("0").putObject("0").putObject("formulaMetadata")
+                .put("sourceFormula", "='Source'!A1");
+
+        ObjectNode barcode = sheetDeletionSnapshot();
+        barcodeSourceCell(sheetDeletionOwner(barcode)).putObject("presentation").put("kind", "barcode")
+                .putObject("source").put("kind", "formula").put("formula", "='Source'!A1");
+
+        ObjectNode tableSheet = sheetDeletionSnapshot();
+        sheetDeletionOwner(tableSheet).putObject("tableSheet").putArray("columns").addObject()
+                .put("fieldId", "calculated").put("formula", "='Source'!A1");
+
+        ObjectNode ruleFormula = sheetDeletionSnapshot();
+        sheetDeletionOwner(ruleFormula).putArray("conditionalFormats").addObject().put("id", "cf").put("formula1", "='Source'!A1");
+
+        ObjectNode viewFormula = sheetDeletionSnapshot();
+        viewFormula.putObject("dataModel").putArray("views").addObject().put("id", "view")
+                .putArray("fields").addObject().put("fieldId", "calculated").put("formula", "='Source'!A1");
+
+        ObjectNode templateFormula = sheetDeletionSnapshot();
+        templateFormula.putArray("cellStyleTemplates").addObject().put("id", "template").putObject("dataValidation")
+                .put("formula1", "='Source'!A1");
+
+        ObjectNode drawingFormula = sheetDeletionSnapshot();
+        sheetDeletionOwner(drawingFormula).putObject("drawingPayloads").putObject("shape")
+                .put("kind", "shape").put("propertyFormula", "='Source'!A1");
+
+        ObjectNode tableRange = sheetDeletionSnapshot();
+        sheetDeletionOwner(tableRange).putObject("autoFilter").putObject("range").put("sheetId", "source");
+
+        ObjectNode queryTarget = sheetDeletionSnapshot();
+        queryTarget.putArray("queryDefinitions").addObject().put("id", "query").putObject("lastTarget").put("sheetId", "source");
+
+        ObjectNode printArea = sheetDeletionSnapshot();
+        printArea.putArray("printDocuments").addObject().put("sheetId", "owner").putArray("printAreas")
+                .addObject().put("sheetId", "source");
+
+        ObjectNode definedNameFormula = sheetDeletionSnapshot();
+        definedNameFormula.putArray("definedNameModels").addObject().put("name", "ExternalName")
+                .put("scope", "workbook").put("formula", "='Source'!A1");
+
+        ObjectNode definedNameAnchor = sheetDeletionSnapshot();
+        definedNameAnchor.putArray("definedNameModels").addObject().put("name", "RelativeName")
+                .put("scope", "workbook").put("formula", "=A1")
+                .putObject("anchor").put("sheetId", "source").put("row", 0).put("column", 0);
+
+        ObjectNode dataSource = sheetDeletionSnapshot();
+        dataSource.putObject("dataModel").putArray("sources").addObject()
+                .put("id", "source-data").put("sourceSheetId", "source");
+
+        ObjectNode templateAnchor = sheetDeletionSnapshot();
+        templateAnchor.putArray("cellStyleTemplates").addObject().put("id", "template")
+                .putObject("dataValidation").putObject("formulaAnchor").put("sheetId", "source").put("row", 0).put("column", 0);
+
+        ObjectNode reportTemplate = sheetDeletionSnapshot();
+        sheetDeletionOwner(reportTemplate).putObject("reportSheet").put("templateSheetId", "source");
+
+        ObjectNode shapeHyperlink = sheetDeletionSnapshot();
+        shapeHyperlinkOwner(shapeHyperlink).put("kind", "shape").putObject("hyperlink")
+                .put("kind", "sheet").put("sheetId", "source");
+
+        ObjectNode chartSeriesRange = sheetDeletionSnapshot();
+        ObjectNode chart = sheetDeletionOwner(chartSeriesRange).putObject("drawingPayloads").putObject("chart");
+        chart.put("kind", "chart").putObject("source").put("kind", "worksheet-ranges").putArray("ranges")
+                .addObject().put("sheetId", "owner");
+        chart.putArray("series").addObject().putObject("stockRoles").putObject("high").put("sheetId", "source");
+
+        ObjectNode chartFormula = sheetDeletionSnapshot();
+        ObjectNode formulaChart = sheetDeletionOwner(chartFormula).putObject("drawingPayloads").putObject("chart");
+        formulaChart.put("kind", "chart").putObject("source").put("kind", "worksheet-ranges").putArray("ranges");
+        formulaChart.putObject("elements").put("hiddenData", "show").putObject("titleText")
+                .put("linkedFormula", "='Source'!A1");
+
+        for (ObjectNode snapshot : List.of(formulaMetadata, barcode, tableSheet, ruleFormula, viewFormula,
+                templateFormula, drawingFormula, tableRange, queryTarget, printArea, definedNameFormula,
+                definedNameAnchor, dataSource, templateAnchor, reportTemplate, shapeHyperlink, chartSeriesRange, chartFormula)) {
+            assertSheetRemovalRejected(snapshot);
+        }
+    }
+
+    @Test
+    void sheetRemovalAllowsUnreferencedSheetAndRemovesItsScopedDocuments() throws Exception {
+        ObjectNode snapshot = sheetDeletionSnapshot();
+        snapshot.putArray("definedNameModels").addObject().put("name", "LocalName").put("scope", "sheet").put("sheetId", "source");
+        snapshot.putArray("printDocuments").addObject().put("sheetId", "source");
+        OperationMutation remove = new OperationMutation("sheet.remove", "source", mapper.createObjectNode().put("id", "source"));
+
+        JsonNode next = new WorkbookStructureMutationDescriptor("sheet.remove").apply(snapshot, remove);
+
+        assertEquals(1, next.path("sheets").size());
+        assertEquals(0, next.path("definedNameModels").size());
+        assertEquals(0, next.path("printDocuments").size());
+        assertEquals(2, snapshot.path("sheets").size());
+    }
+
+    private void assertSheetRemovalRejected(ObjectNode snapshot) {
+        OperationMutation remove = new OperationMutation("sheet.remove", "source", mapper.createObjectNode().put("id", "source"));
+        assertThrows(ServiceException.class, () -> new WorkbookStructureMutationDescriptor("sheet.remove").apply(snapshot, remove));
+        assertEquals(2, snapshot.path("sheets").size());
+    }
+
+    private ObjectNode sheetDeletionSnapshot() {
+        ObjectNode root = mapper.createObjectNode();
+        ArrayNode sheets = root.putArray("sheets");
+        ObjectNode owner = sheets.addObject().put("id", "owner").put("name", "Owner");
+        owner.putObject("cells");
+        ObjectNode source = sheets.addObject().put("id", "source").put("name", "Source");
+        source.putObject("cells");
+        source.putArray("pivots");
+        source.putArray("sheetTables");
+        source.putArray("drawings");
+        return root;
+    }
+
+    private ObjectNode sheetDeletionOwner(ObjectNode snapshot) {
+        return (ObjectNode) snapshot.path("sheets").get(0);
+    }
+
+    private ObjectNode barcodeSourceCell(ObjectNode sheet) {
+        ObjectNode cells = (ObjectNode) sheet.get("cells");
+        ObjectNode row = (ObjectNode) cells.get("0");
+        if (row == null) row = cells.putObject("0");
+        return row.putObject("0");
+    }
+
+    private ObjectNode shapeHyperlinkOwner(ObjectNode snapshot) {
+        return sheetDeletionOwner(snapshot).putObject("drawingPayloads").putObject("shape");
     }
 
     private ObjectNode drillDownDetail(String sheetId, String sourceId, int rowCount, List<String> headers) {

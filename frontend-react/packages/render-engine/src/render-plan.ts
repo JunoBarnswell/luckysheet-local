@@ -293,6 +293,30 @@ export function rangeToViewportRect(
   );
 }
 
+function intersectCellRange(left: CellRange, right: CellRange): CellRange | null {
+  const intersection = {
+    startRow: Math.max(left.startRow, right.startRow),
+    endRow: Math.min(left.endRow, right.endRow),
+    startColumn: Math.max(left.startColumn, right.startColumn),
+    endColumn: Math.min(left.endColumn, right.endColumn),
+  };
+  if (intersection.startRow > intersection.endRow || intersection.startColumn > intersection.endColumn) return null;
+  return intersection;
+}
+
+function rangeToPaneScreenRect(range: CellRange, skeleton: SheetSkeleton, pane: RenderPane): Rect | null {
+  if (!pane.visibleRange) return null;
+  const visible = intersectCellRange(range, pane.visibleRange);
+  if (!visible) return null;
+  const sheetRect = skeleton.getRangeRect(visible);
+  if (!sheetRect) return null;
+  const screenRect = translateRect(sheetRect, {
+    x: pane.screenRect.x - pane.contentOrigin.x,
+    y: pane.screenRect.y - pane.contentOrigin.y,
+  });
+  return intersectRect(screenRect, pane.screenRect);
+}
+
 function viewportChanged(previous: ViewportSnapshot | null | undefined, next: ViewportSnapshot): boolean {
   return !previous
     || previous.width !== next.width
@@ -326,8 +350,9 @@ export function calculateRenderPlan(input: RenderPlanInput): RenderPlan {
   const dirtyRanges = mergeCellRanges(input.dirtyRanges ?? []);
   const dirtyRects = mergeRects(
     dirtyRanges
-      .map((range) => rangeToViewportRect(range, input.skeleton, input.viewport))
-      .filter((rect): rect is Rect => rect !== null),
+      .flatMap((range) => panes
+        .map((pane) => rangeToPaneScreenRect(range, input.skeleton, pane))
+        .filter((rect): rect is Rect => rect !== null)),
   );
   const resized = viewportChanged(previousViewport, input.viewport);
   const redrawScroll = scrollDelta.hasDelta;

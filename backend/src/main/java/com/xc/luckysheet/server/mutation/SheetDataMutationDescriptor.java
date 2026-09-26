@@ -8,6 +8,7 @@ import com.xc.luckysheet.server.contract.AutoFilterOwnershipValidator;
 import com.xc.luckysheet.server.contract.DataRegionContextValidator;
 import com.xc.luckysheet.server.contract.OperationMutation;
 import com.xc.luckysheet.server.contract.RangeRef;
+import com.xc.luckysheet.server.contract.StructuralPatch;
 import com.xc.luckysheet.server.contract.WorkbookAclRole;
 import com.xc.luckysheet.server.service.ServiceException;
 
@@ -61,6 +62,23 @@ final class SheetDataMutationDescriptor extends CanonicalJsonMutationDescriptor 
 
     @Override
     public JsonNode apply(JsonNode snapshot, OperationMutation mutation) {
+        return applyWithPatch(snapshot, mutation).snapshot();
+    }
+
+    @Override
+    public MutationApplication applyWithPatch(JsonNode snapshot, OperationMutation mutation) {
+        JsonNode updated = applyMetadata(snapshot, mutation);
+        if (!"sheetTable.update".equals(id())) return new MutationApplication(updated, null);
+        ObjectNode params = SnapshotMutationSupport.params(mutation);
+        StructuralPatch patch = StructuralSnapshotReducer.renameSheetTableReferences(
+                snapshot, updated, mutation.sheetId(), SnapshotMutationSupport.text(params, "id"));
+        boolean hasOwnerChanges = patch != null && (!patch.formulaOwnerDeltas().isEmpty()
+                || !patch.definedNameOwnerDeltas().isEmpty() || !patch.rangeOwnerDeltas().isEmpty());
+        JsonNode transformed = hasOwnerChanges ? StructuralSnapshotReducer.applyStructuralOwnerPatch(updated, patch) : updated;
+        return new MutationApplication(transformed, patch);
+    }
+
+    private JsonNode applyMetadata(JsonNode snapshot, OperationMutation mutation) {
         ObjectNode root = SnapshotMutationSupport.root(snapshot.deepCopy());
         ObjectNode params = SnapshotMutationSupport.params(mutation);
         switch (id()) {
@@ -68,6 +86,13 @@ final class SheetDataMutationDescriptor extends CanonicalJsonMutationDescriptor 
             default -> applyToSheet(root, mutation, params);
         }
         return root;
+    }
+
+    JsonNode applyMetadataWithoutStructuralPatch(JsonNode snapshot, OperationMutation mutation) {
+        if (!"sheetTable.update".equals(id()) || !"sheetTable.update".equals(mutation.id())) {
+            throw new IllegalArgumentException("Legacy table rename replay requires sheetTable.update");
+        }
+        return applyMetadata(snapshot, mutation);
     }
 
     private void applyToSheet(ObjectNode root, OperationMutation mutation, ObjectNode params) {
@@ -103,7 +128,7 @@ final class SheetDataMutationDescriptor extends CanonicalJsonMutationDescriptor 
             case "dv.remove" -> removeRule(sheet, params, "dataValidations");
             case "banded.set" -> setBanded(root, sheet, mutation.sheetId(), params);
             case "outline.set" -> setOutline(root, sheet, mutation.sheetId(), params);
-            case "sheetTable.add", "sheetTable.update" -> upsertSheetTable(root, sheet, mutation.sheetId(), params);
+            case "sheetTable.add", "sheetTable.update" -> upsertSheetTable(root, sheet, mutation.sheetId(), params, "sheetTable.update".equals(id()));
             case "tableSheet.update" -> updateTableSheet(root, sheet, mutation.sheetId(), params);
             case "ganttSheet.update" -> updateGanttSheet(root, sheet, mutation.sheetId(), params);
             case "reportSheet.update" -> updateReportSheet(root, sheet, mutation.sheetId(), params);
@@ -274,7 +299,7 @@ final class SheetDataMutationDescriptor extends CanonicalJsonMutationDescriptor 
     private RangeRef validatedTableRange(ObjectNode root, String sheetId, ObjectNode params) {
         ObjectNode sheet = SnapshotMutationSupport.sheet(root, sheetId);
         RangeRef range = tableRange(root, sheetId, params);
-        validateSheetTable(root, sheet, sheetId, params, range);
+        validateSheetTable(root, sheet, sheetId, params, range, "sheetTable.update".equals(id()));
         return range;
     }
 
@@ -385,14 +410,33 @@ final class SheetDataMutationDescriptor extends CanonicalJsonMutationDescriptor 
         return ownRange(root, sheetId, params.get("range"));
     }
 
-    private void upsertSheetTable(ObjectNode root, ObjectNode sheet, String sheetId, ObjectNode params) {
+    private void upsertSheetTable(ObjectNode root, ObjectNode sheet, String sheetId, ObjectNode params, boolean replacingExisting) {
         RangeRef range = tableRange(root, sheetId, params);
-        validateSheetTable(root, sheet, sheetId, params, range);
+        validateSheetTable(root, sheet, sheetId, params, range, replacingExisting);
         SnapshotMutationSupport.upsertById(SnapshotMutationSupport.array(sheet, "sheetTables"), params);
     }
 
-    private void validateSheetTable(ObjectNode root, ObjectNode sheet, String sheetId, ObjectNode table, RangeRef range) {
+    private void validateSheetTable(ObjectNode root, ObjectNode sheet, String sheetId, ObjectNode table, RangeRef range, boolean replacingExisting) {
         AutoFilterOwnershipValidator.resolveOwners(sheet, sheetId);
+        String tableId = SnapshotMutationSupport.text(table, "id");
+        String tableName = SnapshotMutationSupport.text(table, "name");
+        if (!tableId.equals(tableId.trim()) || !tableName.matches("^[A-Za-z_][A-Za-z0-9_.]*$")) throw ServiceException.validation("Sheet Table identity is invalid");
+        boolean existingIdentityFound = false;
+        for (JsonNode candidateSheet : root.path("sheets")) {
+            String candidateSheetId = candidateSheet.path("id").asText();
+            for (JsonNode existing : candidateSheet.path("sheetTables")) {
+                String existingId = existing.path("id").asText();
+                if (replacingExisting && sheetId.equals(candidateSheetId) && tableId.equals(existingId)) {
+                    existingIdentityFound = true;
+                    continue;
+                }
+                if (tableId.equals(existingId)) throw ServiceException.validation("Sheet Table id already exists in workbook");
+                if (tableName.equalsIgnoreCase(existing.path("name").asText())) {
+                    throw ServiceException.validation("Sheet Table name already exists in workbook");
+                }
+            }
+        }
+        if (replacingExisting && !existingIdentityFound) throw ServiceException.notFound("Sheet Table not found: " + tableId);
         for (String key : List.of("hasHeaderRow", "hasTotalRow", "showBandedRows", "showBandedColumns", "showFirstColumn", "showLastColumn", "showFilterButton")) {
             if (!table.path(key).isBoolean()) throw ServiceException.validation("Sheet Table " + key + " must be boolean");
         }

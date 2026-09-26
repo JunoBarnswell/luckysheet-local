@@ -1,13 +1,38 @@
-import type { CellData, RangeRef, Row, WorksheetModel } from './index';
-import { cellKey } from './index';
-import type { DrawingObject, SpillRange } from './domain';
+import type { CellAddress, CellData, CellStyleTemplate, ConditionalFormatRule, DataValidationRule, RangeRef, Row, WorkbookModel, WorksheetModel } from './index';
+import { cellKey, hasFormulaGroupMetadata } from './index';
+import type { DefinedNameModel, DrawingObject, DrawingPayload, SpillRange } from './domain';
+import type { WorkbookTableModel } from './data-model';
+import type { DataSourceManifest } from './data-source';
+import type {
+  StructuralDefinedNameOwnerDelta,
+  StructuralFormulaOwnerDelta,
+  StructuralFormulaOwnerState,
+  StructuralReferenceOwnerIndex,
+} from './structural-transform';
+import { structuralRuleFormulaFields, type StructuralFormulaRule } from './structural-formula-owner';
 import { sheetRuleRegistry, type RuleTransform } from './rule-lifecycle';
+import { mapReportSheetCoordinates } from './report-sheet-transform';
+import {
+  formatFormula,
+  MAX_COLUMN_INDEX,
+  MAX_ROW_INDEX,
+  ReferenceTransformDomain,
+  offsetAst,
+  parseFormula,
+  type FormulaDefinedName,
+} from '@react-sheets/formula-engine';
 
 /** Canonical, prevalidated permutation shared by local execution and replay. */
 export interface RowPermutationPlan {
   readonly range: RangeRef;
+  readonly metadataScope: RangeRef;
   readonly sourceRows: readonly Row[];
-  readonly sourceToTarget: ReadonlyMap<Row, Row>;
+  readonly targetRowsBySource: readonly Row[];
+}
+
+export interface RowPermutationResult {
+  readonly formulaOwnerDeltas: StructuralFormulaOwnerDelta[];
+  readonly definedNameOwnerDeltas: StructuralDefinedNameOwnerDelta[];
 }
 
 const MAX_SEGMENT_CELLS = 100_000;
@@ -20,19 +45,27 @@ function normalizeRange(range: RangeRef): RangeRef {
   return { ...range, startRow: Math.min(range.startRow, range.endRow), endRow: Math.max(range.startRow, range.endRow), startColumn: Math.min(range.startColumn, range.endColumn), endColumn: Math.max(range.startColumn, range.endColumn) };
 }
 
-export function createRowPermutationPlan(range: RangeRef, sourceRows: readonly Row[]): RowPermutationPlan {
+export function createRowPermutationPlan(range: RangeRef, sourceRows: readonly Row[], affectedColumnEnd: number): RowPermutationPlan {
   const normalized = normalizeRange(range);
+  if (!Number.isSafeInteger(affectedColumnEnd) || affectedColumnEnd < normalized.endColumn || affectedColumnEnd > MAX_COLUMN_INDEX) {
+    throw new Error('Row permutation metadata extent is outside worksheet bounds');
+  }
   const expectedCount = normalized.endRow - normalized.startRow + 1;
   if (sourceRows.length !== expectedCount) throw new Error('Row permutation length does not match the range');
-  const expected = new Set<number>();
-  for (let row = normalized.startRow; row <= normalized.endRow; row += 1) expected.add(row);
-  const sourceToTarget = new Map<Row, Row>();
-  sourceRows.forEach((sourceRow, targetOffset) => {
-    if (!Number.isInteger(sourceRow) || !expected.has(sourceRow) || sourceToTarget.has(sourceRow)) throw new Error('Row permutation must contain every selected row exactly once');
-    sourceToTarget.set(sourceRow, normalized.startRow + targetOffset);
+  const targetRowsBySource = ReferenceTransformDomain.createRowPermutationMap(normalized.startRow, sourceRows);
+  const metadataScope = {
+    sheetId: normalized.sheetId,
+    startRow: normalized.startRow,
+    endRow: normalized.endRow,
+    startColumn: 0,
+    endColumn: affectedColumnEnd,
+  };
+  return Object.freeze({
+    range: Object.freeze(normalized),
+    metadataScope: Object.freeze(metadataScope),
+    sourceRows: Object.freeze([...sourceRows]),
+    targetRowsBySource,
   });
-  if (sourceToTarget.size !== expectedCount) throw new Error('Row permutation must contain every selected row exactly once');
-  return Object.freeze({ range: Object.freeze(normalized), sourceRows: Object.freeze([...sourceRows]), sourceToTarget });
 }
 
 function inRange(range: RangeRef, row: number, column: number): boolean {
@@ -53,7 +86,9 @@ function rangesIntersect(a: RangeRef, b: RangeRef): boolean {
   return a.sheetId === b.sheetId && a.startRow <= b.endRow && b.startRow <= a.endRow && a.startColumn <= b.endColumn && b.startColumn <= a.endColumn;
 }
 
-function remapRow(row: number, plan: RowPermutationPlan): number { return plan.sourceToTarget.get(row) ?? row; }
+function remapRow(row: number, plan: RowPermutationPlan): number {
+  return ReferenceTransformDomain.mapPermutationIndex(row, plan.range.startRow, plan.targetRowsBySource);
+}
 
 function cloneRange(range: RangeRef, startRow: number, endRow: number, startColumn = range.startColumn, endColumn = range.endColumn): RangeRef {
   return { ...range, startRow, endRow, startColumn, endColumn };
@@ -87,9 +122,9 @@ function mergeExactSegments(segments: RangeRef[]): RangeRef[] {
 }
 
 /** Exact disjoint rectangle cover. It never uses min/max over non-contiguous rows. */
-function remapRangeExact(range: RangeRef, plan: RowPermutationPlan): RangeRef[] {
-  if (range.sheetId !== plan.range.sheetId || !rangesIntersect(range, plan.range)) return [structuredClone(range)];
-  const selected = plan.range;
+function remapRangeExact(range: RangeRef, plan: RowPermutationPlan, scope = plan.range): RangeRef[] {
+  if (range.sheetId !== scope.sheetId || !rangesIntersect(range, scope)) return [structuredClone(range)];
+  const selected = scope;
   const firstRow = Math.max(range.startRow, selected.startRow);
   const lastRow = Math.min(range.endRow, selected.endRow);
   const firstColumn = Math.max(range.startColumn, selected.startColumn);
@@ -99,8 +134,8 @@ function remapRangeExact(range: RangeRef, plan: RowPermutationPlan): RangeRef[] 
   if (lastRow < range.endRow) result.push(cloneRange(range, lastRow + 1, range.endRow));
   if (range.startColumn < firstColumn) result.push(cloneRange(range, firstRow, lastRow, range.startColumn, firstColumn - 1));
   if (lastColumn < range.endColumn) result.push(cloneRange(range, firstRow, lastRow, lastColumn + 1, range.endColumn));
-  const area = (lastRow - firstRow + 1) * (lastColumn - firstColumn + 1);
-  if (!Number.isSafeInteger(area) || area > MAX_SEGMENT_CELLS) throw new Error('Row permutation metadata range cannot be represented exactly within the bounded plan');
+  const affectedCells = (lastRow - firstRow + 1) * (lastColumn - firstColumn + 1);
+  if (!Number.isSafeInteger(affectedCells) || affectedCells > MAX_SEGMENT_CELLS) throw new Error('Row permutation metadata range cannot be represented exactly within the bounded plan');
   const rows = new Map<number, [number, number]>();
   for (let row = firstRow; row <= lastRow; row += 1) rows.set(remapRow(row, plan), [firstColumn, lastColumn]);
   const orderedRows = [...rows.keys()].sort((a, b) => a - b);
@@ -120,16 +155,18 @@ function remapRangeExact(range: RangeRef, plan: RowPermutationPlan): RangeRef[] 
 
 function ruleTransformForPlan(plan: RowPermutationPlan): RuleTransform {
   return {
-    mapRange: (range) => remapRangeExact(range, plan),
+    mapRange: (range) => remapRangeExact(range, plan, plan.metadataScope),
     mapAddress: (address) => ({
       ...address,
-      row: inRange(plan.range, address.row, address.column) ? remapRow(address.row, plan) : address.row,
+      row: address.sheetId === plan.metadataScope.sheetId && inRange(plan.metadataScope, address.row, address.column)
+        ? remapRow(address.row, plan)
+        : address.row,
     }),
   };
 }
 
-function remapSingleRange(owner: string, range: RangeRef, plan: RowPermutationPlan): RangeRef {
-  const segments = remapRangeExact(range, plan);
+function remapSingleRange(owner: string, range: RangeRef, plan: RowPermutationPlan, scope = plan.range): RangeRef {
+  const segments = remapRangeExact(range, plan, scope);
   if (segments.length !== 1) throw new Error(`Sort cannot exactly remap ${owner} into a single range`);
   return segments[0]!;
 }
@@ -165,10 +202,283 @@ function remapCellMap<T>(source: ReadonlyMap<string, T>, plan: RowPermutationPla
   return next;
 }
 
+function resolveRowPermutationDefinedNames(
+  workbook: WorkbookModel,
+  range: RangeRef,
+  referenceOwners: Pick<StructuralReferenceOwnerIndex, 'getDefinedNamesAnchoredInRange'>,
+): DefinedNameModel[] {
+  const sheet = workbook.getSheet(range.sheetId);
+  return referenceOwners.getDefinedNamesAnchoredInRange(sheet.id, {
+    startRow: range.startRow,
+    endRow: range.endRow,
+    startColumn: 0,
+    endColumn: MAX_COLUMN_INDEX,
+  }).map((owner) => {
+    const name = workbook.getDefinedNameExact(owner.name, owner.scope, owner.sheetId);
+    if (!name) {
+      throw new Error(`STRUCTURAL_REFERENCE_INDEX_INVARIANT: defined-name anchor owner ${owner.scope}:${owner.sheetId ?? '*'}:${owner.name} is missing from the workbook`);
+    }
+    if (!name.anchor || name.anchor.sheetId !== sheet.id
+      || name.anchor.row < range.startRow || name.anchor.row > range.endRow
+      || name.anchor.column < 0 || name.anchor.column > MAX_COLUMN_INDEX) {
+      throw new Error(`STRUCTURAL_REFERENCE_INDEX_INVARIANT: defined-name anchor owner ${owner.scope}:${owner.sheetId ?? '*'}:${owner.name} does not match its indexed position`);
+    }
+    if (!Number.isSafeInteger(name.anchor.row) || name.anchor.row < 0 || name.anchor.row > MAX_ROW_INDEX
+      || !Number.isSafeInteger(name.anchor.column) || name.anchor.column < 0 || name.anchor.column > MAX_COLUMN_INDEX) {
+      throw new Error('Row permutation formula anchor is outside worksheet bounds');
+    }
+    return name;
+  });
+}
+
+function rowPermutationAffectedColumnEndFromNames(
+  workbook: WorkbookModel,
+  range: RangeRef,
+  definedNames: readonly DefinedNameModel[],
+): number {
+  const sheet = workbook.getSheet(range.sheetId);
+  let end = sheetRuleRegistry.affectedColumnEnd(sheet, range.endColumn);
+  const includeAnchor = (anchor: CellAddress | undefined): void => {
+    if (!anchor || anchor.sheetId !== sheet.id) return;
+    if (!Number.isSafeInteger(anchor.row) || anchor.row < 0 || anchor.row > MAX_ROW_INDEX
+      || !Number.isSafeInteger(anchor.column) || anchor.column < 0 || anchor.column > MAX_COLUMN_INDEX) {
+      throw new Error('Row permutation formula anchor is outside worksheet bounds');
+    }
+    if (anchor.row >= range.startRow && anchor.row <= range.endRow) {
+      end = Math.max(end, anchor.column);
+    }
+  };
+  for (const rule of [...sheet.conditionalFormats, ...sheet.dataValidations]) includeAnchor(rule.formulaAnchor);
+  for (const name of definedNames) includeAnchor(name.anchor);
+  for (const template of workbook.cellStyleTemplates.values()) includeAnchor(template.dataValidation?.formulaAnchor);
+  for (const binding of sheet.reportSheet?.bindings ?? []) {
+    const { row, column } = binding.cell;
+    if (!Number.isSafeInteger(row) || row < 0 || row > MAX_ROW_INDEX
+      || !Number.isSafeInteger(column) || column < 0 || column > MAX_COLUMN_INDEX) {
+      throw new Error('Row permutation report binding is outside worksheet bounds');
+    }
+    if (row >= range.startRow && row <= range.endRow) end = Math.max(end, column);
+  }
+  return end;
+}
+
+export function rowPermutationAffectedColumnEnd(
+  workbook: WorkbookModel,
+  range: RangeRef,
+  referenceOwners: Pick<StructuralReferenceOwnerIndex, 'getDefinedNamesAnchoredInRange'>,
+): number {
+  return rowPermutationAffectedColumnEndFromNames(
+    workbook,
+    range,
+    resolveRowPermutationDefinedNames(workbook, range, referenceOwners),
+  );
+}
+
+type PermutationFormulaFields = {
+  operator?: string;
+  value1?: string | number;
+  value2?: string | number;
+  type?: string;
+  formula1?: string;
+  formula2?: string;
+  listSource?: DataValidationRule['listSource'];
+};
+
+function offsetPermutationFormula(formula: string, rowDelta: number, owner: string): string {
+  try {
+    const hasPrefix = formula.startsWith('=');
+    const ast = parseFormula(hasPrefix ? formula : `=${formula}`);
+    if (containsUnsupportedRowOffsetReference(ast)) {
+      throw new Error(`UNSUPPORTED_STRUCTURAL_REFERENCE: row sort cannot safely offset an external-workbook or whole-row reference in ${owner}`);
+    }
+    const shifted = offsetAst(ast, rowDelta, 0);
+    if (countInvalidReferenceNodes(shifted) > countInvalidReferenceNodes(ast)) {
+      throw new Error(`UNSUPPORTED_STRUCTURAL_REFERENCE: row sort would move a formula reference outside worksheet bounds in ${owner}`);
+    }
+    const formatted = formatFormula(shifted);
+    return hasPrefix ? formatted : formatted.slice(1);
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith('UNSUPPORTED_STRUCTURAL_REFERENCE:')) throw error;
+    throw new Error(`UNSUPPORTED_STRUCTURAL_REFERENCE: row sort cannot parse and safely offset formula in ${owner}`);
+  }
+}
+
+function offsetPermutationFormulaFields(owner: PermutationFormulaFields, rowDelta: number, identity: string): void {
+  const remap = (formula: string): string => offsetPermutationFormula(formula, rowDelta, identity);
+  const formulaOperator = owner.operator === 'formula';
+  if (typeof owner.value1 === 'string' && (formulaOperator || owner.value1.trim().startsWith('='))) owner.value1 = remap(owner.value1);
+  else {
+    if (typeof owner.value1 === 'string' && owner.value1.trim().startsWith('=')) owner.value1 = remap(owner.value1);
+    if (typeof owner.value2 === 'string' && owner.value2.trim().startsWith('=')) owner.value2 = remap(owner.value2);
+  }
+  if (typeof owner.formula1 === 'string' && owner.formula1
+    && (owner.formula1.trim().startsWith('=') || owner.operator === 'formula' || owner.type === 'custom')) {
+    owner.formula1 = remap(owner.formula1);
+  }
+  if (typeof owner.formula2 === 'string' && owner.formula2
+    && (owner.formula2.trim().startsWith('=') || owner.type === 'custom')) {
+    owner.formula2 = remap(owner.formula2);
+  }
+  if (owner.listSource?.kind === 'formula') owner.listSource.formula = remap(owner.listSource.formula);
+}
+
+function hasPermutationFormulaOwner(owner: PermutationFormulaFields, isDataValidation: boolean): boolean {
+  const formulaOperator = owner.operator === 'formula';
+  const customValidation = isDataValidation && owner.type === 'custom';
+  return (typeof owner.value1 === 'string' && (formulaOperator || owner.value1.trim().startsWith('=')))
+    || (typeof owner.value2 === 'string' && owner.value2.trim().startsWith('='))
+    || (typeof owner.formula1 === 'string' && owner.formula1.length > 0
+      && (owner.formula1.trim().startsWith('=') || formulaOperator || customValidation))
+    || (typeof owner.formula2 === 'string' && owner.formula2.length > 0
+      && (owner.formula2.trim().startsWith('=') || customValidation))
+    || (isDataValidation && owner.listSource?.kind === 'formula');
+}
+
+function remapRuleForPermutation<T extends ConditionalFormatRule | DataValidationRule>(rule: T, transform: RuleTransform, plan: RowPermutationPlan, changesRows: boolean, isDataValidation: boolean): T {
+  const next = sheetRuleRegistry.transform(rule, transform);
+  const firstRange = rule.ranges[0];
+  if (!firstRange && !rule.formulaAnchor) throw new Error(`Row permutation rule ${rule.id} has no formula anchor`);
+  const oldAnchor = rule.formulaAnchor ?? { sheetId: firstRange!.sheetId, row: firstRange!.startRow, column: firstRange!.startColumn };
+  const mappedAnchor = transform.mapAddress(oldAnchor);
+  const rowDelta = mappedAnchor.row - oldAnchor.row;
+  const hasFormulaOwner = hasPermutationFormulaOwner(rule, isDataValidation);
+  if (rule.formulaAnchor === undefined && hasFormulaOwner && changesRows && oldAnchor.sheetId === plan.metadataScope.sheetId
+    && inRange(plan.metadataScope, oldAnchor.row, oldAnchor.column)) {
+    next.formulaAnchor = mappedAnchor;
+  }
+  if (rowDelta !== 0) {
+    if (rule.formulaAnchor !== undefined || hasFormulaOwner) next.formulaAnchor = mappedAnchor;
+    if (hasFormulaOwner) offsetPermutationFormulaFields(next, rowDelta, `rule ${rule.id}`);
+  }
+  return next;
+}
+
+function sameRange(left: RangeRef, right: RangeRef): boolean {
+  return left.sheetId === right.sheetId
+    && left.startRow === right.startRow && left.endRow === right.endRow
+    && left.startColumn === right.startColumn && left.endColumn === right.endColumn;
+}
+
+function remapPayloadRange(range: RangeRef, owner: string, plan: RowPermutationPlan): RangeRef {
+  if (range.sheetId !== plan.range.sheetId || !rangesIntersect(range, plan.range)) return range;
+  const mapped = remapSingleRange(owner, range, plan);
+  return sameRange(range, mapped) ? range : mapped;
+}
+
+function drawingPayloadIntersectsPermutation(payload: DrawingPayload, plan: RowPermutationPlan): boolean {
+  const intersects = (range: RangeRef | undefined): boolean => Boolean(range && rangesIntersect(range, plan.range));
+  if (payload.kind === 'camera' || payload.kind === 'screenshot') return intersects(payload.sourceRange);
+  if (payload.kind === 'form-control') {
+    return Boolean('cellLink' in payload && payload.cellLink && payload.cellLink.sheetId === plan.range.sheetId
+      && inRange(plan.range, payload.cellLink.row, payload.cellLink.column))
+      || ('inputRange' in payload && intersects(payload.inputRange));
+  }
+  if (payload.kind !== 'chart') return false;
+  if ((payload.source.kind === 'worksheet-ranges' && payload.source.ranges.some(intersects))
+    || (payload.source.kind === 'report-range' && intersects(payload.source.range))
+    || intersects(payload.categoryRange)) return true;
+  for (const series of payload.series ?? []) {
+    if ([series.range, series.xRange, series.yRange, series.sizeRange, series.categoryRange,
+      series.stockRoles?.open, series.stockRoles?.high, series.stockRoles?.low, series.stockRoles?.close,
+      series.stockRoles?.volume, series.dataLabels?.valuesFromCells,
+      series.errorBars?.plusRange, series.errorBars?.minusRange].some(intersects)) return true;
+  }
+  return false;
+}
+
+function remapDrawingPayload(payload: DrawingPayload, payloadId: string, plan: RowPermutationPlan): DrawingPayload {
+  if (!drawingPayloadIntersectsPermutation(payload, plan)) return payload;
+  const next = structuredClone(payload);
+  let changed = false;
+  const mapRange = (range: RangeRef, owner: string): RangeRef => {
+    const mapped = remapPayloadRange(range, owner, plan);
+    changed ||= mapped !== range;
+    return mapped;
+  };
+
+  if (next.kind === 'camera' || next.kind === 'screenshot') {
+    next.sourceRange = mapRange(next.sourceRange, `${next.kind} source ${payloadId}`);
+  } else if (next.kind === 'chart') {
+    if (next.source.kind === 'worksheet-ranges') {
+      next.source.ranges = next.source.ranges.map((range, index) => mapRange(range, `chart ${payloadId} source ${index}`));
+    } else if (next.source.kind === 'report-range') {
+      next.source.range = mapRange(next.source.range, `chart ${payloadId} report source`);
+    }
+    if (next.categoryRange) next.categoryRange = mapRange(next.categoryRange, `chart ${payloadId} category`);
+    for (const [seriesIndex, series] of (next.series ?? []).entries()) {
+      for (const field of ['range', 'xRange', 'yRange', 'sizeRange', 'categoryRange'] as const) {
+        const range = series[field];
+        if (range) series[field] = mapRange(range, `chart ${payloadId} series ${seriesIndex} ${field}`);
+      }
+      if (series.stockRoles) {
+        for (const field of ['open', 'high', 'low', 'close', 'volume'] as const) {
+          const range = series.stockRoles[field];
+          if (range) series.stockRoles[field] = mapRange(range, `chart ${payloadId} series ${seriesIndex} stock ${field}`);
+        }
+      }
+      if (series.dataLabels?.valuesFromCells) {
+        series.dataLabels.valuesFromCells = mapRange(series.dataLabels.valuesFromCells, `chart ${payloadId} series ${seriesIndex} data labels`);
+      }
+      if (series.errorBars?.plusRange) {
+        series.errorBars.plusRange = mapRange(series.errorBars.plusRange, `chart ${payloadId} series ${seriesIndex} error-bar plus`);
+      }
+      if (series.errorBars?.minusRange) {
+        series.errorBars.minusRange = mapRange(series.errorBars.minusRange, `chart ${payloadId} series ${seriesIndex} error-bar minus`);
+      }
+    }
+  } else if (next.kind === 'form-control') {
+    if ('cellLink' in next && next.cellLink?.sheetId === plan.range.sheetId
+      && inRange(plan.range, next.cellLink.row, next.cellLink.column)) {
+      const row = remapRow(next.cellLink.row, plan);
+      if (row !== next.cellLink.row) {
+        next.cellLink.row = row;
+        changed = true;
+      }
+    }
+    if ('inputRange' in next) next.inputRange = mapRange(next.inputRange, `form-control ${payloadId} input`);
+  }
+
+  return changed ? next : payload;
+}
+
+interface RowPermutationOwnerChanges {
+  readonly conditionalFormats: ConditionalFormatRule[];
+  readonly dataValidations: DataValidationRule[];
+  readonly definedNames: Array<{ entry: DefinedNameModel; formula: string; anchor: DefinedNameModel['anchor'] }>;
+  readonly templates: CellStyleTemplate[];
+  readonly workbookTableSourceRanges: Array<{ owner: WorkbookTableModel; sourceRange: RangeRef }>;
+  readonly dataSourceRanges: Array<{ owner: DataSourceManifest; sourceRange: RangeRef }>;
+  readonly drawingPayloads: Array<{ owner: WorksheetModel; payloads: Map<string, DrawingPayload> }>;
+  readonly reportSheet?: WorksheetModel['reportSheet'];
+}
+
 /** Validate all owners before the first cell changes. */
-export function validatePermutationMetadata(sheet: WorksheetModel, plan: RowPermutationPlan): void {
+export function validatePermutationMetadata(
+  workbook: WorkbookModel,
+  plan: RowPermutationPlan,
+  referenceOwners: Pick<StructuralReferenceOwnerIndex, 'getDefinedNamesAnchoredInRange'>,
+): RowPermutationOwnerChanges {
+  const sheet = workbook.getSheet(plan.range.sheetId);
+  const worksheetOwners = workbook.getSheets();
   const range = plan.range;
-  if (range.sheetId !== sheet.id || range.endRow >= sheet.rowCount || range.endColumn >= sheet.columnCount) throw new Error('Row permutation range is outside worksheet bounds');
+  if (range.endRow >= sheet.rowCount || range.endColumn >= sheet.columnCount) throw new Error('Row permutation range is outside worksheet bounds');
+  if (plan.metadataScope.sheetId !== range.sheetId || plan.metadataScope.startColumn !== 0 || plan.metadataScope.startRow !== range.startRow
+    || plan.metadataScope.endRow !== range.endRow || plan.metadataScope.endColumn > MAX_COLUMN_INDEX) {
+    throw new Error('Row permutation metadata scope does not match its canonical owners');
+  }
+  const indexedDefinedNames = resolveRowPermutationDefinedNames(workbook, range, referenceOwners);
+  if (plan.metadataScope.endColumn !== rowPermutationAffectedColumnEndFromNames(workbook, range, indexedDefinedNames)) {
+    throw new Error('Row permutation metadata scope does not match its canonical owners');
+  }
+  const changesRows = plan.sourceRows.some((sourceRow, targetOffset) => sourceRow !== range.startRow + targetOffset);
+  if (changesRows) {
+    sheet.cells.forEachInRows(new Set(plan.sourceRows), (cell, row, column) => {
+      if (column < range.startColumn || column > range.endColumn) return;
+      if (hasFormulaGroupMetadata(cell)) {
+        throw new Error(`UNSUPPORTED_STRUCTURAL_REFERENCE: row sort cannot remap formula-group metadata at ${sheet.id}!${row}:${column}`);
+      }
+    });
+  }
   // Detect cell-owner collisions before any cell record is cleared. Notes and
   // hyperlinks are single-owner maps, so a collision is an atomic rejection.
   sheet.review.validateRemapCoordinates((row, column) => ({ row: inRange(plan.range, row, column) ? remapRow(row, plan) : row, column }));
@@ -186,41 +496,148 @@ export function validatePermutationMetadata(sheet: WorksheetModel, plan: RowPerm
     }
     if (table.autoFilter && !isTableBodyPermutation(table, range)) remapSingleRange(`table ${table.id} filter`, table.autoFilter.range, plan);
   }
-  for (const group of sheet.outline?.groups ?? []) if (group.axis === 'row' && group.start <= range.endRow && group.end >= range.startRow && !(group.start >= range.startRow && group.end <= range.endRow)) throw new Error('Sort cannot partially intersect an outline group');
+  for (const group of sheet.outline?.groups ?? []) {
+    if (group.axis !== 'row' || group.start > range.endRow || group.end < range.startRow) continue;
+    if (group.start < range.startRow || group.end > range.endRow) throw new Error('Sort cannot partially intersect an outline group');
+    const groupRange = { sheetId: sheet.id, startRow: group.start, endRow: group.end, startColumn: range.startColumn, endColumn: range.endColumn };
+    if (remapRangeExact(groupRange, plan).length !== 1) throw new Error('Sort cannot exactly remap an outline group');
+  }
   for (const drawing of sheet.drawings) remapDrawingAnchor(drawing, plan);
-  for (const sparkline of sheet.sparklines) remapSingleRange(`sparkline ${sparkline.id}`, sparkline.sourceRange, plan);
+  for (const owner of worksheetOwners) {
+    for (const sparkline of owner.sparklines) if (rangesIntersect(sparkline.sourceRange, range)) remapSingleRange(`sparkline ${sparkline.id}`, sparkline.sourceRange, plan);
+    for (const pivot of owner.pivots) {
+      if (pivot.source.kind === 'worksheet-range' && rangesIntersect(pivot.source.range, range)) remapSingleRange(`pivot ${pivot.id} source`, pivot.source.range, plan);
+      if (pivot.source.kind === 'worksheet-ranges') for (const source of pivot.source.ranges) if (rangesIntersect(source.range, range)) remapSingleRange(`pivot ${pivot.id} source`, source.range, plan);
+    }
+  }
   for (const spill of sheet.spillRanges) remapSpill(spill, plan);
   const ruleTransform = ruleTransformForPlan(plan);
-  for (const rule of [...sheet.conditionalFormats, ...sheet.dataValidations]) sheetRuleRegistry.transform(rule, ruleTransform);
+  const conditionalFormats = sheet.conditionalFormats.map((rule) => remapRuleForPermutation(rule, ruleTransform, plan, changesRows, false));
+  const dataValidations = sheet.dataValidations.map((rule) => remapRuleForPermutation(rule, ruleTransform, plan, changesRows, true));
   if (sheet.autoFilter) remapSingleRange('auto filter', sheet.autoFilter.range, plan);
-  for (const pivot of sheet.pivots) {
-    if (pivot.source.kind === 'worksheet-range') remapSingleRange(`pivot ${pivot.id} source`, pivot.source.range, plan);
-    if (pivot.source.kind === 'worksheet-ranges') for (const source of pivot.source.ranges) remapSingleRange(`pivot ${pivot.id} source`, source.range, plan);
-  }
-  for (const rule of sheet.protectionRules) if (rule.range) remapSingleRange(`protection ${rule.id}`, rule.range, plan);
+  for (const rule of sheet.protectionRules) if (rule.range) remapSingleRange(`protection ${rule.id}`, rule.range, plan, plan.metadataScope);
   if (sheet.bandedRule) remapSingleRange('banded rule', sheet.bandedRule.range, plan);
+  const definedNames = indexedDefinedNames.flatMap((entry) => {
+    const anchor = entry.anchor!;
+    if (!inRange(plan.metadataScope, anchor.row, anchor.column)) return [];
+    const mappedAnchor = { ...anchor, row: remapRow(anchor.row, plan) };
+    const rowDelta = mappedAnchor.row - anchor.row;
+    return rowDelta === 0 ? [] : [{ entry, formula: offsetPermutationFormula(entry.formula, rowDelta, `defined name ${entry.name}`), anchor: mappedAnchor }];
+  });
+  const templates = [...workbook.cellStyleTemplates.values()].flatMap((template) => {
+    const validation = template.dataValidation;
+    const anchor = validation?.formulaAnchor;
+    if (!validation || !anchor || anchor.sheetId !== sheet.id || !inRange(plan.metadataScope, anchor.row, anchor.column)) return [];
+    const mappedAnchor = { ...anchor, row: remapRow(anchor.row, plan) };
+    const rowDelta = mappedAnchor.row - anchor.row;
+    if (rowDelta === 0) return [];
+    const next = structuredClone(template);
+    next.dataValidation!.formulaAnchor = mappedAnchor;
+    offsetPermutationFormulaFields(next.dataValidation!, rowDelta, `cell-style template ${template.id}`);
+    return [next];
+  });
+  const workbookTableSourceRanges = [...workbook.dataModel.tables.values()].flatMap((owner) => {
+    const sourceRange = owner.sourceRange;
+    if (!sourceRange || sourceRange.sheetId !== sheet.id || !rangesIntersect(sourceRange, range)) return [];
+    const mapped = remapSingleRange(`workbook table ${owner.id} source`, sourceRange, plan);
+    return sameRange(sourceRange, mapped) ? [] : [{ owner, sourceRange: mapped }];
+  });
+  const dataSourceRanges = [...workbook.dataModel.sources.values()].flatMap((owner) => {
+    const sourceRange = owner.sourceRange;
+    if (!sourceRange || sourceRange.sheetId !== sheet.id || !rangesIntersect(sourceRange, range)) return [];
+    const mapped = remapSingleRange(`data source ${owner.id} source`, sourceRange, plan);
+    return sameRange(sourceRange, mapped) ? [] : [{ owner, sourceRange: mapped }];
+  });
+  const drawingPayloads = worksheetOwners.flatMap((owner) => {
+    let mapped: Map<string, DrawingPayload> | undefined;
+    for (const [payloadId, payload] of owner.drawingPayloads) {
+      const next = remapDrawingPayload(payload, payloadId, plan);
+      if (next === payload) continue;
+      mapped ??= new Map(owner.drawingPayloads);
+      mapped.set(payloadId, next);
+    }
+    return mapped ? [{ owner, payloads: mapped }] : [];
+  });
+  const reportSheet = sheet.reportSheet
+    ? mapReportSheetCoordinates(
+      sheet.reportSheet,
+      (cell) => inRange(plan.metadataScope, cell.row, cell.column)
+        ? { ...cell, row: remapRow(cell.row, plan) }
+        : { ...cell },
+      (row) => row >= plan.range.startRow && row <= plan.range.endRow ? remapRow(row, plan) : row,
+      'row-permutation',
+    )
+    : undefined;
+  return {
+    conditionalFormats,
+    dataValidations,
+    definedNames,
+    templates,
+    workbookTableSourceRanges,
+    dataSourceRanges,
+    drawingPayloads,
+    reportSheet,
+  };
 }
 
-export function applyRowPermutation(sheet: WorksheetModel, plan: RowPermutationPlan): void {
-  validatePermutationMetadata(sheet, plan);
+export function applyRowPermutation(
+  workbook: WorkbookModel,
+  plan: RowPermutationPlan,
+  referenceOwners: Pick<StructuralReferenceOwnerIndex, 'getDefinedNamesAnchoredInRange'>,
+): RowPermutationResult {
+  const sheet = workbook.getSheet(plan.range.sheetId);
+  const worksheetOwners = workbook.getSheets();
+  const ownerChanges = validatePermutationMetadata(workbook, plan, referenceOwners);
   const { range, sourceRows } = plan;
+  const ruleFormulaOwnerDeltas = [
+    ...permutationRuleFormulaDeltas(sheet.conditionalFormats, ownerChanges.conditionalFormats, 'conditional-format'),
+    ...permutationRuleFormulaDeltas(sheet.dataValidations, ownerChanges.dataValidations, 'data-validation'),
+  ];
+  const formulaOwnerDeltas: StructuralFormulaOwnerDelta[] = [];
   const cellsByRow = new Map<number, Array<{ column: number; cell: CellData }>>();
-  for (let row = range.startRow; row <= range.endRow; row += 1) {
-    const entries: Array<{ column: number; cell: CellData }> = [];
-    sheet.cells.forEach((cell, cellRow, column) => { if (cellRow === row && column >= range.startColumn && column <= range.endColumn) entries.push({ column, cell: structuredClone(cell) }); });
+  sheet.cells.forEachInRows(new Set(sourceRows), (cell, row, column) => {
+    if (column < range.startColumn || column > range.endColumn) return;
+    if (row < range.startRow || row > range.endRow) throw new Error(`ROW_PERMUTATION_INVARIANT: cell owner row ${row} is outside its source map`);
+    const targetRow = remapRow(row, plan);
+    const rowDelta = targetRow - row;
+    const nextCell = rowDelta === 0 ? structuredClone(cell) : remapPermutedFormulaOwner(cell, rowDelta, sheet.id, row, column);
+    const before = permutationFormulaOwnerState(cell);
+    const after = permutationFormulaOwnerState(nextCell);
+    if (targetRow !== row && hasFormulaOwnerState(before)) {
+      formulaOwnerDeltas.push({
+        kind: 'formula-cell',
+        beforeAddress: { sheetId: sheet.id, row, column },
+        afterAddress: { sheetId: sheet.id, row: targetRow, column },
+        before,
+        after,
+      });
+    }
+    const entries = cellsByRow.get(row) ?? [];
+    entries.push({ column, cell: nextCell });
     cellsByRow.set(row, entries);
-  }
-  for (let row = range.startRow; row <= range.endRow; row += 1) for (let column = range.startColumn; column <= range.endColumn; column += 1) sheet.cells.delete(row, column);
+  });
+  for (const [row, entries] of cellsByRow) for (const entry of entries) sheet.cells.delete(row, entry.column);
   sourceRows.forEach((sourceRow, targetOffset) => { for (const entry of cellsByRow.get(sourceRow) ?? []) sheet.cells.set(range.startRow + targetOffset, entry.column, entry.cell); });
 
   sheet.review.remapCoordinates((row, column) => ({ row: inRange(plan.range, row, column) ? remapRow(row, plan) : row, column }));
   const hyperlinks = remapCellMap(sheet.hyperlinks, plan); sheet.hyperlinks.clear(); for (const [key, value] of hyperlinks) sheet.hyperlinks.set(key, value);
   for (const drawing of sheet.drawings) Object.assign(drawing, remapDrawingAnchor(drawing, plan));
-  for (const sparkline of sheet.sparklines) { sparkline.sourceRange = remapSingleRange(`sparkline ${sparkline.id}`, sparkline.sourceRange, plan); if (inRange(range, sparkline.anchor.row, sparkline.anchor.column)) sparkline.anchor.row = remapRow(sparkline.anchor.row, plan); }
+  for (const owner of worksheetOwners) {
+    for (const sparkline of owner.sparklines) {
+      if (rangesIntersect(sparkline.sourceRange, range)) sparkline.sourceRange = remapSingleRange(`sparkline ${sparkline.id}`, sparkline.sourceRange, plan);
+      if (owner.id === sheet.id && inRange(range, sparkline.anchor.row, sparkline.anchor.column)) sparkline.anchor.row = remapRow(sparkline.anchor.row, plan);
+    }
+    for (const pivot of owner.pivots) {
+      if (pivot.source.kind === 'worksheet-range' && rangesIntersect(pivot.source.range, range)) pivot.source.range = remapSingleRange(`pivot ${pivot.id} source`, pivot.source.range, plan);
+      if (pivot.source.kind === 'worksheet-ranges') for (const source of pivot.source.ranges) if (rangesIntersect(source.range, range)) source.range = remapSingleRange(`pivot ${pivot.id} source`, source.range, plan);
+      if (pivot.target.sheetId === sheet.id && inRange(range, pivot.target.anchor.row, pivot.target.anchor.column)) pivot.target.anchor.row = remapRow(pivot.target.anchor.row, plan);
+    }
+  }
+  for (const change of ownerChanges.workbookTableSourceRanges) change.owner.sourceRange = change.sourceRange;
+  for (const change of ownerChanges.dataSourceRanges) change.owner.sourceRange = change.sourceRange;
   sheet.spillRanges.splice(0, sheet.spillRanges.length, ...sheet.spillRanges.map((spill) => remapSpill(spill, plan)));
-  const ruleTransform = ruleTransformForPlan(plan);
-  sheet.conditionalFormats.splice(0, sheet.conditionalFormats.length, ...sheet.conditionalFormats.map((rule) => sheetRuleRegistry.transform(rule, ruleTransform)));
-  sheet.dataValidations.splice(0, sheet.dataValidations.length, ...sheet.dataValidations.map((rule) => sheetRuleRegistry.transform(rule, ruleTransform)));
+  sheet.conditionalFormats.splice(0, sheet.conditionalFormats.length, ...ownerChanges.conditionalFormats);
+  sheet.dataValidations.splice(0, sheet.dataValidations.length, ...ownerChanges.dataValidations);
   if (sheet.autoFilter) sheet.autoFilter.range = remapSingleRange('auto filter', sheet.autoFilter.range, plan);
   for (const table of sheet.sheetTables) {
     const bodyPermutation = isTableBodyPermutation(table, range);
@@ -229,9 +646,134 @@ export function applyRowPermutation(sheet: WorksheetModel, plan: RowPermutationP
       if (table.autoFilter) table.autoFilter.range = remapSingleRange(`table ${table.id} filter`, table.autoFilter.range, plan);
     }
   }
-  for (const pivot of sheet.pivots) { if (pivot.source.kind === 'worksheet-range') pivot.source.range = remapSingleRange(`pivot ${pivot.id} source`, pivot.source.range, plan); if (pivot.source.kind === 'worksheet-ranges') for (const source of pivot.source.ranges) source.range = remapSingleRange(`pivot ${pivot.id} source`, source.range, plan); if (pivot.target.sheetId === sheet.id && inRange(range, pivot.target.anchor.row, pivot.target.anchor.column)) pivot.target.anchor.row = remapRow(pivot.target.anchor.row, plan); }
   for (const merge of sheet.merges) { merge.range = remapSingleRange('merge', merge.range, plan); if (inRange(range, merge.anchor.row, merge.anchor.column)) merge.anchor.row = remapRow(merge.anchor.row, plan); }
   for (const group of sheet.outline?.groups ?? []) if (group.axis === 'row' && group.start >= range.startRow && group.end <= range.endRow) { const mapped = remapRangeExact({ sheetId: sheet.id, startRow: group.start, endRow: group.end, startColumn: range.startColumn, endColumn: range.endColumn }, plan); if (mapped.length !== 1) throw new Error('Sort cannot exactly remap outline group'); group.start = mapped[0]!.startRow; group.end = mapped[0]!.endRow; }
-  for (const rule of sheet.protectionRules) if (rule.range) rule.range = remapSingleRange(`protection ${rule.id}`, rule.range, plan);
+  for (const rule of sheet.protectionRules) if (rule.range) rule.range = remapSingleRange(`protection ${rule.id}`, rule.range, plan, plan.metadataScope);
   if (sheet.bandedRule) sheet.bandedRule.range = remapSingleRange('banded rule', sheet.bandedRule.range, plan);
+  for (const change of ownerChanges.definedNames) {
+    workbook.setDefinedName({ ...change.entry, formula: change.formula, anchor: change.anchor });
+  }
+  for (const template of ownerChanges.templates) workbook.cellStyleTemplates.set(template.id, template);
+  for (const update of ownerChanges.drawingPayloads) {
+    update.owner.drawingPayloads.clear();
+    for (const [payloadId, payload] of update.payloads) update.owner.drawingPayloads.set(payloadId, payload);
+  }
+  if (ownerChanges.reportSheet) sheet.reportSheet = ownerChanges.reportSheet;
+  formulaOwnerDeltas.push(...ruleFormulaOwnerDeltas);
+  return {
+    formulaOwnerDeltas,
+    definedNameOwnerDeltas: ownerChanges.definedNames.map(createPermutationDefinedNameDelta),
+  };
+}
+
+function createPermutationDefinedNameDelta(
+  change: RowPermutationOwnerChanges['definedNames'][number],
+): StructuralDefinedNameOwnerDelta {
+  const before: FormulaDefinedName = {
+    name: change.entry.name,
+    formula: change.entry.formula,
+    scope: change.entry.scope,
+    ...(change.entry.sheetId ? { sheetId: change.entry.sheetId } : {}),
+    ...(change.entry.anchor ? { anchor: structuredClone(change.entry.anchor) } : {}),
+  };
+  const after: FormulaDefinedName = {
+    ...before,
+    formula: change.formula,
+    ...(change.anchor ? { anchor: structuredClone(change.anchor) } : { anchor: undefined }),
+  };
+  return {
+    owner: {
+      scope: change.entry.scope,
+      name: change.entry.name,
+      ...(change.entry.sheetId ? { sheetId: change.entry.sheetId } : {}),
+    },
+    before,
+    after,
+  };
+}
+
+function permutationRuleFormulaDeltas<T extends StructuralFormulaRule>(
+  beforeRules: readonly T[],
+  afterRules: readonly T[],
+  ruleKind: 'conditional-format' | 'data-validation',
+): StructuralFormulaOwnerDelta[] {
+  const beforeIdCounts = new Map<string, number>();
+  for (const rule of beforeRules) beforeIdCounts.set(rule.id, (beforeIdCounts.get(rule.id) ?? 0) + 1);
+  const deltas: StructuralFormulaOwnerDelta[] = [];
+  for (const before of beforeRules) {
+    const beforeFormulas = structuralRuleFormulaFields(before);
+    if (beforeFormulas.size === 0) continue;
+    const matches = afterRules.filter((candidate) => candidate.id === before.id && candidate.sheetId === before.sheetId);
+    if (beforeIdCounts.get(before.id) !== 1 || matches.length !== 1 || !before.id.trim()) {
+      throw new Error(`STRUCTURAL_PATCH_INVARIANT: formula rule identity ${before.sheetId}:${before.id} is not unique`);
+    }
+    const after = matches[0]!;
+    const afterFormulas = structuralRuleFormulaFields(after);
+    for (const [field, beforeFormula] of beforeFormulas) {
+      const afterFormula = afterFormulas.get(field);
+      if (afterFormula === undefined) {
+        throw new Error(`STRUCTURAL_PATCH_INVARIANT: formula rule owner ${before.sheetId}:${before.id}.${field} disappeared`);
+      }
+      if (afterFormula !== beforeFormula) {
+        deltas.push({
+          kind: 'formula-rule',
+          sheetId: before.sheetId,
+          ruleKind,
+          ruleId: before.id,
+          field,
+          beforeFormula,
+          afterFormula,
+          beforeRanges: structuredClone(before.ranges),
+          afterRanges: structuredClone(after.ranges),
+        });
+      }
+    }
+  }
+  return deltas;
+}
+
+function permutationFormulaOwnerState(cell: CellData): StructuralFormulaOwnerState {
+  return {
+    formula: cell.formula ?? null,
+    sourceFormula: cell.formulaMetadata?.sourceFormula ?? null,
+    barcodeFormula: cell.presentation?.kind === 'barcode' && cell.presentation.source.kind === 'formula'
+      ? cell.presentation.source.formula
+      : null,
+  };
+}
+
+function hasFormulaOwnerState(state: StructuralFormulaOwnerState): boolean {
+  return state.formula !== null || state.sourceFormula !== null || state.barcodeFormula !== null;
+}
+
+function remapPermutedFormulaOwner(cell: CellData, rowDelta: number, sheetId: string, row: number, column: number): CellData {
+  const next = structuredClone(cell);
+  const remap = (formula: string): string => offsetPermutationFormula(formula, rowDelta, `${sheetId}!${row}:${column}`);
+  if (next.formula !== undefined) {
+    next.formula = remap(next.formula);
+    delete next.formulaValue;
+  }
+  if (next.formulaMetadata?.sourceFormula !== undefined) {
+    next.formulaMetadata = { ...next.formulaMetadata, sourceFormula: remap(next.formulaMetadata.sourceFormula) };
+  }
+  if (next.presentation?.kind === 'barcode' && next.presentation.source.kind === 'formula') {
+    next.presentation = { ...next.presentation, source: { ...next.presentation.source, formula: remap(next.presentation.source.formula) } };
+  }
+  return next;
+}
+
+function containsUnsupportedRowOffsetReference(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some(containsUnsupportedRowOffsetReference);
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as { readonly type?: unknown };
+  if (candidate.type === 'external-reference' || candidate.type === 'whole-row-reference') return true;
+  return Object.values(value).some(containsUnsupportedRowOffsetReference);
+}
+
+function countInvalidReferenceNodes(value: unknown): number {
+  if (Array.isArray(value)) return value.reduce((count, child) => count + countInvalidReferenceNodes(child), 0);
+  if (!value || typeof value !== 'object') return 0;
+  const candidate = value as { readonly type?: unknown };
+  const ownInvalidReference = candidate.type === 'invalid-reference' ? 1 : 0;
+  return ownInvalidReference + Object.values(value).reduce<number>((count, child) => count + countInvalidReferenceNodes(child), 0);
 }

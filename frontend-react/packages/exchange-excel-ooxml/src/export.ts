@@ -7,7 +7,7 @@ import { createNativeDocumentArtifact, nativeSnapshotHash, verifyNativeDocumentA
 import { NativeDocumentError } from './native-document-error';
 import { scanFormulaPreserveIssues, scanSnapshotFeatures } from './feature-scan';
 import type { NativeDocumentExportOptions, NativeDocumentExportResult, NativeDocumentArtifact, OpcPackageGraph } from './types';
-import { capabilityFor, detectWorksheetCapabilities } from './capability-manifest';
+import { capabilityFor, detectWorkbookCapabilities, detectWorksheetCapabilities } from './capability-manifest';
 
 export interface NativeDocumentExportRequest {
   snapshot: WorkbookSnapshot;
@@ -21,20 +21,47 @@ export interface NativeDocumentExportRequest {
 /** Export an OOXML document and generate its Compatibility Report. */
 export async function exportOoxmlDocument(request: NativeDocumentExportRequest): Promise<NativeDocumentExportResult> {
   if (request.artifact) await verifyNativeDocumentArtifact(request.artifact);
-  if (request.artifact
-    && request.artifact.nativeGraph.kind === 'opc'
-    && !request.artifact.nativeGraph.package.nativePivotGraph
-    && request.artifact.fileName === request.fileName
-    && request.artifact.sourceSnapshotHash === nativeSnapshotHash(request.snapshot)) {
+  const artifact = request.artifact;
+  const sourcePackage = artifact?.nativeGraph.kind === 'opc' ? artifact.nativeGraph.package : undefined;
+  if (artifact
+    && sourcePackage
+    && artifact.fileName === request.fileName
+    && artifact.sourceSnapshotHash === await nativeSnapshotHash(request.snapshot)
+    && artifact.compatibility.exportLevel === request.options.compatibilityTarget
+    && artifact.compatibility.dateSystem === (request.options.dateSystem ?? sourcePackage.dateSystem)
+    && request.options.includeCachedValues !== false
+    && !(request.options.preserveMacros === false && hasMacroParts(sourcePackage))
+    && request.options.assetBytes === undefined
+    && request.options.limits === undefined) {
     return {
       taskId: `export-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      report: structuredClone(request.artifact.compatibility),
-      buffer: request.artifact.sourceBytes.slice(0),
+      report: structuredClone(artifact.compatibility),
+      buffer: artifact.sourceBytes.slice(0),
       fileName: request.fileName,
-      artifact: request.artifact,
+      artifact,
     };
   }
-  const sourcePackage = request.artifact?.nativeGraph.kind === 'opc' ? request.artifact.nativeGraph.package : undefined;
+  const sourceWorksheetDetections = sourcePackage ? detectWorksheetCapabilities(sourcePackage.parts, sourcePackage) : [];
+  const sourceWorkbookDetections = sourcePackage ? detectWorkbookCapabilities(sourcePackage.parts, sourcePackage) : [];
+  const sourcePackageDetections = [...sourceWorksheetDetections, ...sourceWorkbookDetections];
+  const unsafeSourceFeature = sourcePackageDetections.find((detection) => [
+    'unknown-worksheet-node', 'unknown-workbook-node', 'unknown-extension', 'extended-validation', 'extended-conditional-format',
+  ].includes(detection.feature));
+  const preservedOnlyChart = sourcePackage?.nativeChartGraph?.charts.find((chart) => !chart.editable)?.chartPart;
+  const indexedChartParts = new Set(sourcePackage?.nativeChartGraph?.charts.map((chart) => chart.chartPart) ?? []);
+  const unindexedOpaqueChart = sourcePackage
+    ? Object.keys(sourcePackage.opaqueParts).find((part) => part.toLowerCase().includes('/charts/') && !indexedChartParts.has(part))
+    : undefined;
+  const chartWithoutCanonicalOwner = preservedOnlyChart ?? unindexedOpaqueChart;
+  if (sourcePackage && (unsafeSourceFeature || chartWithoutCanonicalOwner)) {
+    throw new NativeDocumentError({
+      code: 'NATIVE_DOCUMENT_UNCHANGED_SAVE_REQUIRED',
+      message: 'The source contains an unsupported workbook/worksheet feature or chart without a canonical reference owner; regenerating could discard it or leave references stale.',
+      format: sourcePackage.format,
+      location: unsafeSourceFeature?.location ?? chartWithoutCanonicalOwner,
+      recovery: 'Keep the original package unchanged, or explicitly convert/remove the unsupported feature before exporting.',
+    });
+  }
   const targetFormat = ooxmlTargetFormat(request.fileName, sourcePackage);
   if (sourcePackage && targetFormat && targetFormat.variant !== sourcePackage.format.variant && hasMacroParts(sourcePackage) && !macroVariant(targetFormat.variant)) {
     throw new NativeDocumentError({ code: 'NATIVE_DOCUMENT_UNSUPPORTED', message: `Save As ${targetFormat.variant} would discard the source macro project`, format: targetFormat, recovery: 'Choose a macro-enabled target or explicitly remove the macro project in a dedicated conversion workflow.' });
@@ -44,7 +71,7 @@ export async function exportOoxmlDocument(request: NativeDocumentExportRequest):
   // Report the package that was actually emitted. This prevents a deleted
   // native Pivot/Slicer/Timeline from being reported as preserved merely
   // because its source package contained the old opaque part.
-  const emittedPackage = loadOpcPackageGraph(buffer, {}, request.fileName).packageGraph;
+  const emittedPackage = loadOpcPackageGraph(buffer, request.options.limits, request.fileName).packageGraph;
   const emittedFileName = fileNameForFormat(request.fileName, emittedPackage.format.variant);
   const snapshotFeatureSet = new Set(scanSnapshotFeatures(request.snapshot));
   const packageFeatureSet = new Set(detectPackageFeatures(emittedPackage));
@@ -54,8 +81,8 @@ export async function exportOoxmlDocument(request: NativeDocumentExportRequest):
   const snapshotFeatures = [...snapshotFeatureSet];
   const packageFeatures = [...packageFeatureSet];
   const emittedWorksheetDetections = detectWorksheetCapabilities(emittedPackage.parts, emittedPackage);
-  const sourceWorksheetDetections = sourcePackage ? detectWorksheetCapabilities(sourcePackage.parts, sourcePackage) : [];
-  const detectedFeatures = [...new Set([...packageFeatures, ...snapshotFeatures, ...emittedWorksheetDetections.map((entry) => entry.feature), ...sourceWorksheetDetections.map((entry) => entry.feature), ...preservedNativeChartDetections.map((entry) => entry.feature)])];
+  const emittedWorkbookDetections = detectWorkbookCapabilities(emittedPackage.parts, emittedPackage);
+  const detectedFeatures = [...new Set([...packageFeatures, ...snapshotFeatures, ...emittedWorksheetDetections.map((entry) => entry.feature), ...sourcePackageDetections.map((entry) => entry.feature), ...emittedWorkbookDetections.map((entry) => entry.feature), ...preservedNativeChartDetections.map((entry) => entry.feature)])];
   const nativeStatus = nativePivotFeatureStatus(request.snapshot, emittedPackage.nativePivotGraph);
   const preservedFeatures = sourcePackage ? new Set(Object.keys(sourcePackage.opaqueParts).flatMap((name) => {
     const lower = name.toLowerCase();
@@ -86,7 +113,7 @@ export async function exportOoxmlDocument(request: NativeDocumentExportRequest):
     importLevel: request.options.compatibilityTarget,
     exportLevel: request.options.compatibilityTarget,
     dateSystem,
-    detectedFeatures: [...detectedFeatures, ...emittedWorksheetDetections, ...sourceWorksheetDetections, ...preservedNativeChartDetections],
+    detectedFeatures: [...detectedFeatures, ...emittedWorksheetDetections, ...sourcePackageDetections, ...emittedWorkbookDetections, ...preservedNativeChartDetections],
     preservedFeatures,
     editableFeatures,
     unsupportedFeatures,

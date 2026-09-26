@@ -1,8 +1,9 @@
-import { clearFormulaProvenance, type AutoFilterModel, type RangeRef, type SheetTableModel } from '@react-sheets/core-model';
+import { CALCULATION_CONTEXT_EFFECTS, clearFormulaProvenance, planSheetTableRename, type AutoFilterModel, type RangeRef, type SheetTableModel, type StructuralRangeOwnerDelta } from '@react-sheets/core-model';
 import type { CommandRuntime } from '@react-sheets/command-runtime';
 import {
   planTotalRowToggle,
   snapshotTotalRowCells,
+  assertWorkbookSheetTableIdentityAvailable,
   validateFilterOwnership,
   validateSheetTableModel,
 } from './sheet-table-features';
@@ -42,6 +43,33 @@ function tableRange(value: SheetTableModel): RangeRef[] {
   return [structuredClone(value.range)];
 }
 
+function sheetTableRangeDelta(previous: SheetTableModel, next: SheetTableModel): StructuralRangeOwnerDelta[] {
+  const before = previous.range;
+  const after = next.range;
+  if (before.sheetId === after.sheetId && before.startRow === after.startRow && before.endRow === after.endRow
+    && before.startColumn === after.startColumn && before.endColumn === after.endColumn) return [];
+  return [{ ownerKind: 'sheet-table', sheetId: previous.sheetId, ownerId: previous.id,
+    before: structuredClone(before), after: structuredClone(after) }];
+}
+
+function sheetTableUpdateEffect(effect: unknown, deltas: readonly StructuralRangeOwnerDelta[]): unknown {
+  if (deltas.length === 0) return effect;
+  const structuralEffect = effect && typeof effect === 'object' ? effect as Record<string, unknown> : {};
+  const existingDeltas = Array.isArray(structuralEffect.rangeOwnerDeltas)
+    ? structuralEffect.rangeOwnerDeltas as StructuralRangeOwnerDelta[]
+    : [];
+  return {
+    ...structuralEffect,
+    kind: 'structural-transform',
+    removedCells: Array.isArray(structuralEffect.removedCells) ? structuralEffect.removedCells : [],
+    clearInputRanges: Array.isArray(structuralEffect.clearInputRanges) ? structuralEffect.clearInputRanges : [],
+    populateInputRanges: Array.isArray(structuralEffect.populateInputRanges) ? structuralEffect.populateInputRanges : [],
+    rewrittenFormulaOwners: Array.isArray(structuralEffect.rewrittenFormulaOwners) ? structuralEffect.rewrittenFormulaOwners : [],
+    rangeOwnerDeltas: [...existingDeltas, ...deltas],
+    calculationContextEffect: CALCULATION_CONTEXT_EFFECTS.syncTables,
+  };
+}
+
 interface TableAutoFilterParams {
   sheetId: string;
   tableId: string;
@@ -68,9 +96,7 @@ export function registerSheetTableCommands(runtime: CommandRuntime): void {
       if (!isSheetTable(item.params)) throw new Error('Invalid sheetTable.add mutation payload');
       const sheet = context.workbook.getSheet(item.params.sheetId);
       const table = validateSheetTableModel(item.params, sheet);
-      if (sheet.sheetTables.some((entry) => entry.id === table.id || entry.name.toLocaleLowerCase() === table.name.toLocaleLowerCase())) {
-        throw new Error(`Sheet Table already exists: ${table.name}`);
-      }
+      assertWorkbookSheetTableIdentityAvailable(context.workbook, table);
       if (sheet.sheetTables.some((entry) => entry.range.startRow <= table.range.endRow
         && entry.range.endRow >= table.range.startRow && entry.range.startColumn <= table.range.endColumn
         && entry.range.endColumn >= table.range.startColumn)) throw new Error('Sheet Tables cannot overlap');
@@ -80,6 +106,8 @@ export function registerSheetTableCommands(runtime: CommandRuntime): void {
       schema: { name: 'SheetTableModel', validate: isSheetTable },
       permission: { capability: 'sheet.table.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: tableRange, mode: 'exact' },
+      historyRebase: { kind: 'invalidate', reason: 'sheet table geometry and structured references have no canonical history transform' },
+      calculationContextEffect: CALCULATION_CONTEXT_EFFECTS.syncTables,
       inverseIds: ['sheetTable.remove'],
     },
   });
@@ -114,6 +142,8 @@ export function registerSheetTableCommands(runtime: CommandRuntime): void {
       schema: { name: 'SheetTableRemove', validate: isSheetTableRemove },
       permission: { capability: 'sheet.table.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: removedTableRange, mode: 'exact' },
+      historyRebase: { kind: 'invalidate', reason: 'sheet table geometry and structured references have no canonical history transform' },
+      calculationContextEffect: CALCULATION_CONTEXT_EFFECTS.syncTables,
       inverseIds: ['sheetTable.add'],
     },
   });
@@ -125,17 +155,24 @@ export function registerSheetTableCommands(runtime: CommandRuntime): void {
       const table = validateSheetTableModel(item.params, sheet);
       const index = sheet.sheetTables.findIndex((entry) => entry.id === table.id);
       if (index < 0) throw new Error(`Sheet Table not found: ${table.id}`);
+      assertWorkbookSheetTableIdentityAvailable(context.workbook, table, true);
       if (sheet.sheetTables.some((entry) => entry.id !== table.id
         && entry.range.startRow <= table.range.endRow && entry.range.endRow >= table.range.startRow
         && entry.range.startColumn <= table.range.endColumn && entry.range.endColumn >= table.range.startColumn)) {
         throw new Error('Sheet Tables cannot overlap');
       }
+      const rangeOwnerDeltas = sheetTableRangeDelta(sheet.sheetTables[index]!, table);
       sheet.sheetTables[index] = structuredClone(table);
+      return sheetTableUpdateEffect({
+        kind: 'structural-transform', removedCells: [], clearInputRanges: [], populateInputRanges: [], rewrittenFormulaOwners: [],
+      }, rangeOwnerDeltas);
     },
     metadata: {
       schema: { name: 'SheetTableModel', validate: isSheetTable },
       permission: { capability: 'sheet.table.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: tableRange, mode: 'exact' },
+      historyRebase: { kind: 'invalidate', reason: 'sheet table geometry and structured references have no canonical history transform' },
+      calculationContextEffect: CALCULATION_CONTEXT_EFFECTS.syncTables,
       inverseIds: ['sheetTable.update'],
     },
   });
@@ -145,9 +182,7 @@ export function registerSheetTableCommands(runtime: CommandRuntime): void {
     execute: (params, context) => {
       const sheet = context.workbook.getSheet(params.sheetId);
       const table = validateSheetTableModel(params, sheet);
-      if (sheet.sheetTables.some((entry) => entry.id === table.id || entry.name.toLocaleLowerCase() === table.name.toLocaleLowerCase())) {
-        throw new Error(`Sheet Table already exists: ${table.name}`);
-      }
+      assertWorkbookSheetTableIdentityAvailable(context.workbook, table);
       const intersects = (left: RangeRef, right: RangeRef): boolean => left.startRow <= right.endRow
         && left.endRow >= right.startRow && left.startColumn <= right.endColumn && left.endColumn >= right.startColumn;
       if (sheet.sheetTables.some((entry) => intersects(entry.range, table.range))) throw new Error('Sheet Tables cannot overlap');
@@ -175,11 +210,16 @@ export function registerSheetTableCommands(runtime: CommandRuntime): void {
       if (index < 0) throw new Error(`Sheet Table not found: ${params.id}`);
       const previous = structuredClone(sheet.sheetTables[index]!);
       const next = validateSheetTableModel(params, sheet);
+      assertWorkbookSheetTableIdentityAvailable(context.workbook, next, true);
       const overlaps = sheet.sheetTables.some((entry) => entry.id !== next.id
         && entry.range.startRow <= next.range.endRow && entry.range.endRow >= next.range.startRow
         && entry.range.startColumn <= next.range.endColumn && entry.range.endColumn >= next.range.startColumn);
       if (overlaps) throw new Error('Sheet Tables cannot overlap');
       const affectedRanges = [structuredClone(next.range)];
+      const rangeOwnerDeltas = sheetTableRangeDelta(previous, next);
+      const tableRename = previous.name === next.name
+        ? undefined
+        : planSheetTableRename(context.workbook, previous.id, next.name);
       context.applyMutation({
         id: 'sheetTable.update',
         unitId: context.workbook.unitId,
@@ -187,7 +227,11 @@ export function registerSheetTableCommands(runtime: CommandRuntime): void {
         params: next,
         affectedRanges,
         inverse: [{ id: 'sheetTable.update', unitId: context.workbook.unitId, sheetId: params.sheetId, params: previous, affectedRanges: [structuredClone(previous.range)] }],
-        apply: () => { sheet.sheetTables[index] = structuredClone(next); },
+        apply: () => {
+          const effect = tableRename?.apply();
+          sheet.sheetTables[index] = structuredClone(next);
+          return sheetTableUpdateEffect(effect, rangeOwnerDeltas);
+        },
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },

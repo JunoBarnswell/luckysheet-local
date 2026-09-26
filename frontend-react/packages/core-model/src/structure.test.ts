@@ -1,6 +1,92 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { CellMatrix, StructuralTransform, WorkbookModel } from './index';
+import { collectFormulaDependencies, collectFormulaReferenceNodes, MAX_COLUMN_INDEX, MAX_ROW_INDEX, parseFormula, RangeIndex } from '@react-sheets/formula-engine';
+import { planSheetIdentityTransform, structuralRuleFormulaFields, StructuralTransform as CoreStructuralTransform, WorkbookModel, type StructuralFormulaRule, type StructuralTransformParams } from './index';
+import type { ReportSheetDefinition } from './data-model';
+
+const StructuralTransform = {
+  apply(workbook: WorkbookModel, params: StructuralTransformParams) {
+    const sheetOrder = workbook.sheetOrder.map((id) => ({ id, name: workbook.getSheet(id).name }));
+    const index = new RangeIndex(sheetOrder);
+    for (const sheet of workbook.getSheets()) {
+      sheet.cells.forEach((cell, row, column) => {
+        if (cell.formula === undefined) return;
+        const owner = { sheetId: sheet.id, row, column };
+        try {
+          const formula = cell.formula.trimStart().startsWith('=') ? cell.formula : `=${cell.formula}`;
+          index.set(owner, collectFormulaDependencies(parseFormula(formula), owner, { sheetOrder }));
+        } catch {
+          index.set(owner, [], true);
+        }
+      });
+    }
+    for (const entry of workbook.definedNameModels) {
+      const owner = { scope: entry.scope, name: entry.name, ...(entry.sheetId ? { sheetId: entry.sheetId } : {}) };
+      const context = entry.anchor ?? (entry.scope === 'sheet' ? { sheetId: entry.sheetId!, row: 0, column: 0 } : undefined);
+      try {
+        const formula = entry.formula.trimStart().startsWith('=') ? entry.formula : `=${entry.formula}`;
+        index.setDefinedNameReference(owner, collectFormulaReferenceNodes(parseFormula(formula)), context, entry.anchor);
+      } catch {
+        index.setDefinedNameReference(owner, [], context, entry.anchor, 'invalid-formula');
+      }
+    }
+    for (const sheet of workbook.getSheets()) {
+      for (const [ruleKind, rules] of [
+        ['conditional-format', sheet.conditionalFormats],
+        ['data-validation', sheet.dataValidations],
+      ] as const) {
+        const idCounts = new Map<string, number>();
+        for (const rule of rules) if (typeof rule.id === 'string') idCounts.set(rule.id, (idCounts.get(rule.id) ?? 0) + 1);
+        for (const [ruleIndex, rawRule] of rules.entries()) {
+          const rule = rawRule as StructuralFormulaRule;
+          const ranges = Array.isArray(rule.ranges) ? rule.ranges : [];
+          const ruleId = typeof rule.id === 'string' ? rule.id : '';
+          const validIdentity = rule.sheetId === sheet.id
+            && ruleId.trim().length > 0
+            && !ruleId.includes('\u0000')
+            && idCounts.get(ruleId) === 1;
+          const validRanges = ranges.length > 0 && ranges.every((range) => typeof range === 'object' && range !== null
+            && range.sheetId === sheet.id
+            && Number.isSafeInteger(range.startRow) && range.startRow >= 0 && range.startRow <= MAX_ROW_INDEX
+            && Number.isSafeInteger(range.endRow) && range.endRow >= range.startRow && range.endRow <= MAX_ROW_INDEX
+            && Number.isSafeInteger(range.startColumn) && range.startColumn >= 0 && range.startColumn <= MAX_COLUMN_INDEX
+            && Number.isSafeInteger(range.endColumn) && range.endColumn >= range.startColumn && range.endColumn <= MAX_COLUMN_INDEX);
+          const firstRange = ranges[0] && typeof ranges[0] === 'object' ? ranges[0] : undefined;
+          const context = rule.formulaAnchor ?? (firstRange ? {
+            sheetId: firstRange.sheetId,
+            row: firstRange.startRow,
+            column: firstRange.startColumn,
+          } : { sheetId: sheet.id, row: 0, column: 0 });
+          for (const [field, formula] of structuralRuleFormulaFields(rule)) {
+            const owner = {
+              sheetId: sheet.id,
+              ruleKind,
+              ruleId: ruleId.trim() && !ruleId.includes('\u0000') ? ruleId : `\u0000invalid-rule-${ruleIndex}`,
+              field,
+            };
+            let failure: 'invalid-formula' | 'unresolved-context' | 'invalid-reference' | 'invalid-owner' | 'invalid-range' | undefined;
+            if (!validIdentity) failure = 'invalid-owner';
+            else if (!validRanges) failure = 'invalid-range';
+            else if (!workbook.sheetOrder.includes(context.sheetId)
+              || !Number.isSafeInteger(context.row) || context.row < 0 || context.row > MAX_ROW_INDEX
+              || !Number.isSafeInteger(context.column) || context.column < 0 || context.column > MAX_COLUMN_INDEX) {
+              failure = 'unresolved-context';
+            }
+            try {
+              if (failure) throw new Error('Formula-rule owner cannot be indexed');
+              const normalized = formula.trimStart().startsWith('=') ? formula : `=${formula}`;
+              index.setFormulaRuleReference(owner, collectFormulaReferenceNodes(parseFormula(normalized)), context);
+            } catch {
+              failure ??= 'invalid-formula';
+              index.setFormulaRuleReference(owner, [], { sheetId: sheet.id, row: 0, column: 0 }, failure);
+            }
+          }
+        }
+      }
+    }
+    return CoreStructuralTransform.apply(workbook, params, index);
+  },
+};
 
 function seedWorkbook(): { workbook: WorkbookModel; sheetId: string } {
   const workbook = new WorkbookModel('unit-test', 'Structural');
@@ -11,16 +97,46 @@ function seedWorkbook(): { workbook: WorkbookModel; sheetId: string } {
   return { workbook, sheetId: sheet.id };
 }
 
+function reportDefinition(
+  sheetId: string,
+  cells: readonly { row: number; column: number }[],
+  repeatHeaderRows: number[] = [],
+): ReportSheetDefinition {
+  return {
+    templateSheetId: sheetId,
+    bindings: cells.map((cell) => ({ cell: { ...cell }, expression: 'field-id', kind: 'field' as const })),
+    pagination: { enabled: true, rowsPerPage: 20, repeatHeaderRows },
+    renderMode: 'preview',
+    layout: { orientation: 'portrait', marginTopPx: 0, marginRightPx: 0, marginBottomPx: 0, marginLeftPx: 0 },
+    dataEntry: [],
+  };
+}
+
 describe('structural operations', () => {
-  it('shiftRows moves cells below the insertion point', () => {
-    const matrix = new CellMatrix();
+  it('canonical row edits move cells below the insertion point', () => {
+    const workbook = new WorkbookModel('unit-row-movement', 'Row movement');
+    const sheet = workbook.getSheet('sheet-1');
+    const matrix = sheet.cells;
     matrix.set(0, 0, { value: 'top' });
     matrix.set(5, 1, { value: 'bottom' });
-    matrix.shiftRows(3, 2, 1);
+    StructuralTransform.apply(workbook, { kind: 'insert-rows', sheetId: sheet.id, at: 3, count: 2 });
     assert.equal(matrix.get(0, 0)?.value, 'top');
     assert.equal(matrix.get(7, 1)?.value, 'bottom');
-    matrix.shiftRows(3, 2, -1);
+    StructuralTransform.apply(workbook, { kind: 'delete-rows', sheetId: sheet.id, at: 3, count: 2 });
     assert.equal(matrix.get(5, 1)?.value, 'bottom');
+  });
+
+  it('axis shifts hydrate deferred sparse cells before reading row buckets', () => {
+    const workbook = new WorkbookModel('unit-deferred-axis-movement', 'Deferred axis movement');
+    const sheet = workbook.getSheet('sheet-1');
+    const matrix = sheet.cells;
+    matrix.deferJSON({ '5': { '1': { value: 'row' }, '4': { value: 'column' } } });
+    const index = new RangeIndex([{ id: sheet.id, name: sheet.name }]);
+    assert.equal(matrix.isHydrated, false);
+    CoreStructuralTransform.apply(workbook, { kind: 'insert-rows', sheetId: sheet.id, at: 3, count: 2 }, index);
+    assert.equal(matrix.get(7, 1)?.value, 'row');
+    CoreStructuralTransform.apply(workbook, { kind: 'insert-columns', sheetId: sheet.id, at: 3, count: 2 }, index);
+    assert.equal(matrix.get(7, 6)?.value, 'column');
   });
 
   it('StructuralTransform insertRows keeps merges and freeze consistent', () => {
@@ -34,6 +150,154 @@ describe('structural operations', () => {
     assert.equal(sheet.merges[0]!.range.startRow, 5);
     assert.equal(sheet.pane.kind === 'frozen' ? sheet.pane.ySplit : 0, 5);
     assert.equal(sheet.rowCount, 1003);
+  });
+
+  it('maps pane boundaries through deletion and rejects coordinate overflow before mutation', () => {
+    const { workbook } = seedWorkbook();
+    const sheet = workbook.getSheet('s1');
+    sheet.pane = { kind: 'frozen', xSplit: 0, ySplit: 7, startRow: 6, startColumn: 0, state: 'frozen' };
+
+    StructuralTransform.apply(workbook, { kind: 'delete-rows', sheetId: sheet.id, at: 5, count: 3 });
+
+    assert.equal(sheet.pane.kind === 'frozen' ? sheet.pane.ySplit : -1, 5);
+    assert.equal(sheet.pane.kind === 'frozen' ? sheet.pane.startRow : -1, 5);
+
+    const overflow = seedWorkbook();
+    const overflowSheet = overflow.workbook.getSheet('s1');
+    overflowSheet.pane = {
+      kind: 'frozen', xSplit: 0, ySplit: 0, startRow: MAX_ROW_INDEX, startColumn: 0, state: 'frozen',
+    };
+    const before = overflow.workbook.snapshot();
+
+    assert.throws(
+      () => StructuralTransform.apply(overflow.workbook, { kind: 'insert-rows', sheetId: overflowSheet.id, at: 0, count: 1 }),
+      /UNSUPPORTED_STRUCTURAL_REFERENCE: pane startRow exceeds worksheet bounds after structural transform/,
+    );
+    assert.deepEqual(overflow.workbook.snapshot(), before);
+
+    const invalidOtherAxis = seedWorkbook();
+    const invalidSheet = invalidOtherAxis.workbook.getSheet('s1');
+    invalidSheet.pane = {
+      kind: 'frozen', xSplit: 0, ySplit: 1.5, startRow: 0, startColumn: 0, state: 'frozen',
+    };
+    const invalidBefore = invalidOtherAxis.workbook.snapshot();
+    assert.throws(
+      () => StructuralTransform.apply(invalidOtherAxis.workbook, {
+        kind: 'insert-columns', sheetId: invalidSheet.id, at: 0, count: 1,
+      }),
+      /UNSUPPORTED_STRUCTURAL_REFERENCE: pane ySplit is invalid/,
+    );
+    assert.deepEqual(invalidOtherAxis.workbook.snapshot(), invalidBefore);
+  });
+
+  it('rewrites indexed defined-name references and moves their anchors incrementally', () => {
+    const { workbook, sheetId } = seedWorkbook();
+    workbook.setDefinedName({
+      name: 'ScopedRange',
+      formula: '=A2',
+      scope: 'sheet',
+      sheetId,
+      anchor: { sheetId, row: 5, column: 0 },
+    });
+
+    const result = StructuralTransform.apply(workbook, { kind: 'insert-rows', sheetId, at: 1, count: 1 });
+
+    const name = workbook.getDefinedNameExact('ScopedRange', 'sheet', sheetId);
+    assert.equal(name?.formula, '=A3');
+    assert.equal(name?.anchor?.row, 6);
+    assert.equal(result.definedNameOwnerDeltas?.length, 1);
+  });
+
+  it('rejects contextless workbook-name references before mutating a structural edit', () => {
+    const { workbook, sheetId } = seedWorkbook();
+    workbook.setDefinedName({ name: 'Contextual', formula: '=A1', scope: 'workbook' });
+    const before = workbook.snapshot();
+
+    assert.throws(
+      () => StructuralTransform.apply(workbook, { kind: 'insert-rows', sheetId, at: 0, count: 1 }),
+      /does not have a stable worksheet context/,
+    );
+    assert.deepEqual(workbook.snapshot(), before);
+  });
+
+  it('rewrites conditional-format and validation formula owners through the structural reference index', () => {
+    const workbook = new WorkbookModel('unit-rule-formula-structure', 'Rule Formula Structure');
+    const sheet = workbook.getSheet('sheet-1');
+    const range = { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 };
+    sheet.conditionalFormats.push({
+      id: 'cf-1', sheetId: sheet.id, ranges: [structuredClone(range)],
+      type: 'highlight', operator: 'formula', value1: '=A6',
+    });
+    sheet.dataValidations.push({
+      id: 'dv-1', sheetId: sheet.id, ranges: [structuredClone(range)],
+      type: 'custom', formula1: '=A6',
+    });
+
+    const result = StructuralTransform.apply(workbook, { kind: 'insert-rows', sheetId: sheet.id, at: 5, count: 1 });
+
+    assert.equal(sheet.conditionalFormats[0]?.value1, '=A7');
+    assert.equal(sheet.dataValidations[0]?.formula1, '=A7');
+    assert.deepEqual(result.formulaOwnerDeltas?.filter((delta) => delta.kind === 'formula-rule').map((delta) =>
+      delta.kind === 'formula-rule' ? [delta.ruleKind, delta.ruleId, delta.field, delta.beforeFormula, delta.afterFormula] : []), [
+      ['conditional-format', 'cf-1', 'value1', '=A6', '=A7'],
+      ['data-validation', 'dv-1', 'formula1', '=A6', '=A7'],
+    ]);
+  });
+
+  it('cell-shift rewrites rule formulas referencing cells moved beyond the selected range', () => {
+    const workbook = new WorkbookModel('unit-rule-formula-cell-shift', 'Rule Formula Cell Shift');
+    const sheet = workbook.getSheet('sheet-1');
+    sheet.dataValidations.push({
+      id: 'dv-cell-shift', sheetId: sheet.id,
+      ranges: [{ sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }],
+      type: 'custom', formula1: '=A10',
+    });
+
+    const result = StructuralTransform.apply(workbook, {
+      kind: 'cell-shift', sheetId: sheet.id,
+      sourceRange: { sheetId: sheet.id, startRow: 1, endRow: 1, startColumn: 0, endColumn: 0 },
+      operation: 'insert', axis: 'row',
+    });
+
+    assert.equal(sheet.dataValidations[0]?.formula1, '=A11');
+    assert.equal(result.formulaOwnerDeltas?.some((delta) => delta.kind === 'formula-rule'
+      && delta.ruleId === 'dv-cell-shift' && delta.beforeFormula === '=A10' && delta.afterFormula === '=A11'), true);
+  });
+
+  it('rejects an unparseable rule formula before changing worksheet coordinates', () => {
+    const workbook = new WorkbookModel('unit-invalid-rule-formula', 'Invalid Rule Formula');
+    const sheet = workbook.getSheet('sheet-1');
+    sheet.dataValidations.push({
+      id: 'dv-invalid', sheetId: sheet.id,
+      ranges: [{ sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }],
+      type: 'custom', formula1: '=A1+',
+    });
+    const before = workbook.snapshot();
+
+    assert.throws(
+      () => StructuralTransform.apply(workbook, { kind: 'insert-rows', sheetId: sheet.id, at: 0, count: 1 }),
+      /UNSUPPORTED_STRUCTURAL_REFERENCE: data-validation .*contains a formula that cannot be parsed/,
+    );
+    assert.deepEqual(workbook.snapshot(), before);
+  });
+
+  it('rejects a formula rule without applies-to ranges before moving cells', () => {
+    const workbook = new WorkbookModel('unit-empty-rule-range', 'Empty Rule Range');
+    const sheet = workbook.getSheet('sheet-1');
+    sheet.cells.set(0, 0, { value: 'source' });
+    sheet.dataValidations.push({
+      id: 'dv-empty-range', sheetId: sheet.id, ranges: [],
+      formulaAnchor: { sheetId: sheet.id, row: 0, column: 0 },
+      type: 'custom', formula1: '=A1',
+    });
+    const before = workbook.snapshot();
+
+    assert.throws(() => StructuralTransform.apply(workbook, {
+      kind: 'move-range', sheetId: sheet.id,
+      sourceRange: { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 },
+      targetOrigin: { row: 2, column: 2 },
+    }), /UNSUPPORTED_STRUCTURAL_REFERENCE: data-validation .*invalid or empty applies-to range/);
+    assert.deepEqual(workbook.snapshot(), before);
   });
 
   it('StructuralTransform deleteRows removes region and returns extracted cells for undo', () => {
@@ -60,6 +324,50 @@ describe('structural operations', () => {
     assert.ok(!sheet.hiddenColumns.has(3));
   });
 
+  it('column insertion before a Sheet Table preserves its column schema', () => {
+    const { workbook } = seedWorkbook();
+    const sheet = workbook.getSheet('s1');
+    sheet.sheetTables.push({
+      id: 'table-1', sheetId: sheet.id, name: 'Table1',
+      range: { sheetId: sheet.id, startRow: 0, endRow: 2, startColumn: 1, endColumn: 2 },
+      hasHeaderRow: true, hasTotalRow: false, showBandedRows: true, showBandedColumns: false,
+      showFirstColumn: false, showLastColumn: false, showFilterButton: false, autoExpand: 'none',
+      columns: [{ id: 'column-1', name: 'A' }, { id: 'column-2', name: 'B' }],
+    });
+
+    StructuralTransform.apply(workbook, { kind: 'insert-columns', sheetId: sheet.id, at: 1, count: 1 });
+    StructuralTransform.apply(workbook, { kind: 'insert-columns', sheetId: sheet.id, at: 4, count: 1 });
+
+    assert.equal(sheet.sheetTables[0]!.range.startColumn, 2);
+    assert.equal(sheet.sheetTables[0]!.range.endColumn, 3);
+    assert.equal(sheet.sheetTables[0]!.columns.length, 2);
+  });
+
+  it('rejects column insertion inside a Sheet Table before changing workbook state', () => {
+    const { workbook } = seedWorkbook();
+    const sheet = workbook.getSheet('s1');
+    sheet.cells.set(4, 4, { value: 'tail' });
+    sheet.sheetTables.push({
+      id: 'table-1', sheetId: sheet.id, name: 'Table1',
+      range: { sheetId: sheet.id, startRow: 0, endRow: 2, startColumn: 1, endColumn: 2 },
+      hasHeaderRow: true, hasTotalRow: false, showBandedRows: true, showBandedColumns: false,
+      showFirstColumn: false, showLastColumn: false, showFilterButton: false, autoExpand: 'none',
+      columns: [{ id: 'column-1', name: 'A' }, { id: 'column-2', name: 'B' }],
+    });
+    const columnCount = sheet.columnCount;
+
+    assert.throws(() => StructuralTransform.apply(workbook, {
+      kind: 'insert-columns', sheetId: sheet.id, at: 2, count: 1,
+    }), /UNSUPPORTED_FEATURE: inserting a worksheet column inside Sheet Table table-1/);
+
+    assert.equal(sheet.columnCount, columnCount);
+    assert.equal(sheet.cells.get(4, 4)?.value, 'tail');
+    assert.deepEqual(sheet.sheetTables[0]!.range, {
+      sheetId: sheet.id, startRow: 0, endRow: 2, startColumn: 1, endColumn: 2,
+    });
+    assert.equal(sheet.sheetTables[0]!.columns.length, 2);
+  });
+
   it('structural formula rewrite uses AST references, including absolute and quoted refs', () => {
     const workbook = new WorkbookModel('unit-formula-structure', 'Structural Formula');
     const sheet = workbook.getSheet('sheet-1');
@@ -69,6 +377,358 @@ describe('structural operations', () => {
     StructuralTransform.apply(workbook, { kind: 'insert-rows', sheetId: sheet.id, at: 0, count: 1 });
 
     assert.equal(sheet.cells.get(6, 0)?.formula, "=SUM($A$2,'Input Sheet'!$B$2,A2)+\"A1\"");
+  });
+
+  it('returns reversible formula-owner state when deleting a referenced row', () => {
+    const workbook = new WorkbookModel('unit-formula-owner-delta', 'Formula Owner Delta');
+    const sheet = workbook.getSheet('sheet-1');
+    sheet.cells.set(1, 0, { value: 7 });
+    sheet.cells.set(0, 1, { value: null, formula: '=A2*2' });
+
+    const result = StructuralTransform.apply(workbook, { kind: 'delete-rows', sheetId: sheet.id, at: 1, count: 1 });
+    const delta = result.formulaOwnerDeltas?.find((entry) => entry.kind === 'formula-cell'
+      && entry.beforeAddress.row === 0 && entry.beforeAddress.column === 1);
+
+    assert.ok(delta);
+    if (delta.kind !== 'formula-cell') throw new Error('Expected a formula-cell structural delta');
+    assert.deepEqual(delta.beforeAddress, { sheetId: sheet.id, row: 0, column: 1 });
+    assert.deepEqual(delta.afterAddress, { sheetId: sheet.id, row: 0, column: 1 });
+    assert.equal(delta.before.formula, '=A2*2');
+    assert.equal(delta.after.formula, '=#REF!*2');
+    assert.equal(sheet.cells.get(0, 1)?.formula, delta.after.formula);
+  });
+
+  it('maps report binding and repeated-header row owners on axis insertion and rejects deleting a binding anchor', () => {
+    const { workbook } = seedWorkbook();
+    const sheet = workbook.getSheet('s1');
+    sheet.reportSheet = reportDefinition(sheet.id, [{ row: 2, column: 0 }], [0, 2]);
+
+    StructuralTransform.apply(workbook, { kind: 'insert-rows', sheetId: sheet.id, at: 2, count: 1 });
+
+    assert.deepEqual(sheet.reportSheet?.bindings[0]?.cell, { row: 3, column: 0 });
+    assert.deepEqual(sheet.reportSheet?.pagination.repeatHeaderRows, [0, 3]);
+
+    const before = structuredClone(sheet.reportSheet);
+    const value = sheet.cells.get(3, 0);
+    assert.throws(() => StructuralTransform.apply(workbook, {
+      kind: 'delete-rows', sheetId: sheet.id, at: 3, count: 1,
+    }), /removes report binding/);
+    assert.deepEqual(sheet.reportSheet, before);
+    assert.equal(sheet.cells.get(3, 0), value);
+  });
+
+  it('maps report binding anchors before cell-shift mutation and rejects removal', () => {
+    const { workbook } = seedWorkbook();
+    const sheet = workbook.getSheet('s1');
+    sheet.reportSheet = reportDefinition(sheet.id, [{ row: 3, column: 1 }]);
+
+    StructuralTransform.apply(workbook, {
+      kind: 'cell-shift', sheetId: sheet.id,
+      sourceRange: { sheetId: sheet.id, startRow: 1, endRow: 1, startColumn: 1, endColumn: 1 },
+      operation: 'insert', axis: 'row',
+    });
+    assert.deepEqual(sheet.reportSheet?.bindings[0]?.cell, { row: 4, column: 1 });
+
+    sheet.reportSheet = reportDefinition(sheet.id, [{ row: 1, column: 1 }]);
+    sheet.cells.set(1, 1, { value: 'must remain' });
+    sheet.review.setNote(3, 1, { id: 'report-rejection-note', author: 'user', text: 'keep', createdAt: 'now', visible: true });
+    const before = structuredClone(sheet.reportSheet);
+    const snapshotBefore = workbook.snapshot();
+    assert.throws(() => StructuralTransform.apply(workbook, {
+      kind: 'cell-shift', sheetId: sheet.id,
+      sourceRange: { sheetId: sheet.id, startRow: 1, endRow: 1, startColumn: 1, endColumn: 1 },
+      operation: 'delete', axis: 'row',
+    }), /removes report binding/);
+    assert.deepEqual(sheet.reportSheet, before);
+    assert.equal(sheet.cells.get(1, 1)?.value, 'must remain');
+    assert.deepEqual(workbook.snapshot(), snapshotBefore);
+  });
+
+  it('moves report bindings with source cells and rejects overwriting a destination binding', () => {
+    const { workbook } = seedWorkbook();
+    const sheet = workbook.getSheet('s1');
+    sheet.cells.set(0, 0, { value: 'source' });
+    sheet.reportSheet = reportDefinition(sheet.id, [{ row: 0, column: 0 }]);
+
+    StructuralTransform.apply(workbook, {
+      kind: 'move-range', sheetId: sheet.id,
+      sourceRange: { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 },
+      targetOrigin: { row: 2, column: 2 },
+    });
+    assert.deepEqual(sheet.reportSheet?.bindings[0]?.cell, { row: 2, column: 2 });
+
+    sheet.cells.set(3, 3, { value: 'another source' });
+    sheet.reportSheet = reportDefinition(sheet.id, [{ row: 4, column: 4 }]);
+    const before = structuredClone(sheet.reportSheet);
+    assert.throws(() => StructuralTransform.apply(workbook, {
+      kind: 'move-range', sheetId: sheet.id,
+      sourceRange: { sheetId: sheet.id, startRow: 3, endRow: 3, startColumn: 3, endColumn: 3 },
+      targetOrigin: { row: 4, column: 4 },
+    }), /report binding.*overwritten/);
+    assert.deepEqual(sheet.reportSheet, before);
+    assert.equal(sheet.cells.get(3, 3)?.value, 'another source');
+  });
+
+  it('rewrites persisted non-cell formula owners and their template anchors on axis edits', () => {
+    const workbook = new WorkbookModel('unit-persisted-formula-owners', 'Persisted Formula Owners');
+    const sheet = workbook.getSheet('sheet-1');
+    sheet.name = 'Input Sheet';
+    sheet.tableSheet = {
+      viewId: 'formula-view',
+      columns: [{ fieldId: 'table-calc', caption: 'Table Calc', formula: '=A1' }],
+      grouping: [],
+    };
+    sheet.drawingPayloads.set('formula-shape', {
+      kind: 'shape', type: 'rectangle', fill: '#ffffff', stroke: '#000000', propertyFormula: '=A1',
+    });
+    workbook.dataModel.views.set('formula-view', {
+      id: 'formula-view', name: 'Formula View', tableId: 'source-table',
+      fields: [{ fieldId: 'view-calc', caption: 'View Calc', formula: "='Input Sheet'!A1" }],
+    });
+    workbook.setCellStyleTemplate({
+      id: 'formula-template', name: 'Formula Template', style: {},
+      dataValidation: {
+        type: 'custom',
+        formulaAnchor: { sheetId: sheet.id, row: 0, column: 0 },
+        formula1: '=A1',
+        formula2: '=B1',
+        listSource: { kind: 'formula', formula: '=C1' },
+      },
+    });
+
+    const formulaObjectKinds = (result: ReturnType<typeof StructuralTransform.apply>) =>
+      (result.formulaOwnerDeltas ?? []).flatMap((delta) => delta.kind === 'formula-object' ? [delta.ownerKind] : []).sort();
+    const expectedAxisFormulaObjectKinds = [
+      'cell-style-template', 'cell-style-template', 'cell-style-template',
+      'data-view-field', 'shape-property', 'table-sheet-column',
+    ].sort();
+    const axisResult = StructuralTransform.apply(workbook, { kind: 'insert-rows', sheetId: sheet.id, at: 0, count: 1 });
+    assert.deepEqual(formulaObjectKinds(axisResult), expectedAxisFormulaObjectKinds);
+
+    assert.equal(sheet.tableSheet?.columns[0]?.formula, '=A2');
+    assert.equal((sheet.drawingPayloads.get('formula-shape') as { propertyFormula?: string }).propertyFormula, '=A2');
+    assert.equal(workbook.dataModel.views.get('formula-view')?.fields[0]?.formula, "='Input Sheet'!A2");
+    const validation = workbook.cellStyleTemplates.get('formula-template')?.dataValidation;
+    assert.equal(validation?.formulaAnchor?.row, 1);
+    assert.equal(validation?.formula1, '=A2');
+    assert.equal(validation?.formula2, '=B2');
+
+    const cellShiftResult = StructuralTransform.apply(workbook, {
+      kind: 'cell-shift', sheetId: sheet.id,
+      sourceRange: { sheetId: sheet.id, startRow: 1, endRow: 1, startColumn: 0, endColumn: 0 },
+      operation: 'insert', axis: 'row',
+    });
+    assert.deepEqual(formulaObjectKinds(cellShiftResult), [
+      'data-view-field', 'shape-property', 'table-sheet-column', 'cell-style-template',
+    ].sort());
+    assert.equal(sheet.tableSheet?.columns[0]?.formula, '=A3');
+    assert.equal((sheet.drawingPayloads.get('formula-shape') as { propertyFormula?: string }).propertyFormula, '=A3');
+    assert.equal(workbook.dataModel.views.get('formula-view')?.fields[0]?.formula, "='Input Sheet'!A3");
+    assert.equal(validation?.formulaAnchor?.row, 2);
+    assert.equal(validation?.formula1, '=A3');
+
+    const moveResult = StructuralTransform.apply(workbook, {
+      kind: 'move-range', sheetId: sheet.id,
+      sourceRange: { sheetId: sheet.id, startRow: 2, endRow: 2, startColumn: 0, endColumn: 0 },
+      targetOrigin: { row: 3, column: 1 },
+    });
+    assert.deepEqual(formulaObjectKinds(moveResult), [
+      'data-view-field', 'shape-property', 'table-sheet-column', 'cell-style-template',
+    ].sort());
+    assert.equal(sheet.tableSheet?.columns[0]?.formula, '=B4');
+    assert.equal((sheet.drawingPayloads.get('formula-shape') as { propertyFormula?: string }).propertyFormula, '=B4');
+    assert.equal(workbook.dataModel.views.get('formula-view')?.fields[0]?.formula, "='Input Sheet'!B4");
+    assert.deepEqual(validation?.formulaAnchor, { sheetId: sheet.id, row: 3, column: 1 });
+    assert.equal(validation?.formula1, '=B4');
+    assert.equal(validation?.formula2, '=B2');
+    assert.equal(validation?.listSource?.kind === 'formula' ? validation.listSource.formula : undefined, '=C2');
+  });
+
+  it('rejects deletion of an anchored style-template formula before changing coordinates', () => {
+    const workbook = new WorkbookModel('unit-template-anchor-rejection', 'Template Anchor Rejection');
+    const sheet = workbook.getSheet('sheet-1');
+    sheet.cells.set(2, 0, { value: 'preserved' });
+    workbook.setCellStyleTemplate({
+      id: 'formula-template', name: 'Formula Template', style: {},
+      dataValidation: {
+        type: 'custom',
+        formulaAnchor: { sheetId: sheet.id, row: 0, column: 0 },
+        formula1: '=A1',
+      },
+    });
+    const rowCount = sheet.rowCount;
+
+    assert.throws(
+      () => StructuralTransform.apply(workbook, { kind: 'delete-rows', sheetId: sheet.id, at: 0, count: 1 }),
+      /removes cell-style-template:formula-template formula anchor/,
+    );
+    assert.equal(sheet.cells.get(2, 0)?.value, 'preserved');
+    assert.equal(sheet.rowCount, rowCount);
+    assert.equal(workbook.cellStyleTemplates.get('formula-template')?.dataValidation?.formulaAnchor?.row, 0);
+  });
+
+  it('rejects invalid persisted style-template formula anchors before structural mutation', () => {
+    for (const formulaAnchor of [
+      null,
+      { sheetId: 'missing-sheet', row: 0, column: 0 },
+      { sheetId: 'sheet-1', row: 1_048_576, column: 0 },
+    ]) {
+      const workbook = new WorkbookModel('unit-invalid-template-anchor', 'Invalid Template Anchor');
+      const sheet = workbook.getSheet('sheet-1');
+      sheet.cells.set(2, 0, { value: 'preserved' });
+      workbook.setCellStyleTemplate({
+        id: 'formula-template', name: 'Formula Template', style: {},
+        dataValidation: { type: 'custom', formulaAnchor: formulaAnchor as { sheetId: string; row: number; column: number }, formula1: '=A1' },
+      });
+      const rowCount = sheet.rowCount;
+
+      assert.throws(
+        () => StructuralTransform.apply(workbook, { kind: 'insert-rows', sheetId: sheet.id, at: 0, count: 1 }),
+        /STRUCTURAL_REFERENCE_OWNER_INVALID: cell-style-template:formula-template formula anchor is invalid/,
+      );
+      assert.equal(sheet.cells.get(2, 0)?.value, 'preserved');
+      assert.equal(sheet.rowCount, rowCount);
+    }
+  });
+
+  it('keeps imported OOXML formula provenance aligned with structural reference rewrites', () => {
+    const workbook = new WorkbookModel('unit-formula-provenance-structure', 'Formula Provenance Structure');
+    const sheet = workbook.getSheet('sheet-1');
+    sheet.cells.set(4, 1, {
+      value: null,
+      formula: '=SUM(A1:A1)',
+      formulaMetadata: { kind: 'normal', sourceFormula: '=_xlfn.SUM(A1:A1)' },
+    });
+
+    StructuralTransform.apply(workbook, { kind: 'insert-rows', sheetId: sheet.id, at: 0, count: 1 });
+
+    assert.equal(sheet.cells.get(5, 1)?.formula, '=SUM(A2:A2)');
+    assert.equal(sheet.cells.get(5, 1)?.formulaMetadata?.sourceFormula, '=_XLFN.SUM(A2:A2)');
+  });
+
+  it('rewrites provenance-only and barcode formula owners at the same cell address', () => {
+    const workbook = new WorkbookModel('unit-auxiliary-formula-owners', 'Auxiliary Formula Owners');
+    const sheet = workbook.getSheet('sheet-1');
+    const owner = { sheetId: sheet.id, row: 4, column: 1 };
+    const sheetOrder = workbook.sheetOrder.map((id) => ({ id, name: workbook.getSheet(id).name }));
+    sheet.cells.set(owner.row, owner.column, {
+      value: null,
+      formulaMetadata: { kind: 'normal', sourceFormula: '=A1' },
+      presentation: {
+        kind: 'barcode',
+        symbology: 'qr',
+        source: { kind: 'formula', formula: '=A1' },
+        parameters: { symbology: 'qr' },
+        options: { foreground: '#000000', background: '#ffffff', showText: true, labelPosition: 'below', quietZone: 2 },
+      },
+    });
+    const index = new RangeIndex(sheetOrder);
+    for (const [sourceId, formula] of [
+      ['structural:formula-provenance', '=A1'],
+      ['structural:barcode', '=A1'],
+    ] as const) {
+      index.setStructuralReference(owner, sourceId, collectFormulaDependencies(parseFormula(formula), owner, { sheetOrder }));
+    }
+
+    CoreStructuralTransform.apply(workbook, { kind: 'insert-rows', sheetId: sheet.id, at: 0, count: 1 }, index);
+
+    const moved = sheet.cells.get(owner.row + 1, owner.column);
+    assert.equal(moved?.formulaMetadata?.sourceFormula, '=A2');
+    assert.equal(moved?.presentation?.kind === 'barcode' && moved.presentation.source.kind === 'formula' ? moved.presentation.source.formula : undefined, '=A2');
+  });
+
+  it('rejects preserved-only auxiliary formulas before changing worksheet coordinates', () => {
+    const workbook = new WorkbookModel('unit-preserved-only-auxiliary-formula', 'Preserved Formula Owner');
+    const sheet = workbook.getSheet('sheet-1');
+    const owner = { sheetId: sheet.id, row: 4, column: 1 };
+    const sheetOrder = workbook.sheetOrder.map((id) => ({ id, name: workbook.getSheet(id).name }));
+    sheet.cells.set(owner.row, owner.column, {
+      value: null,
+      formulaMetadata: { kind: 'array', preservedOnly: true, sourceFormula: '=A1' },
+    });
+    const index = new RangeIndex(sheetOrder);
+    index.setStructuralReference(owner, 'structural:formula-provenance', collectFormulaDependencies(parseFormula('=A1'), owner, { sheetOrder }));
+    const originalRowCount = sheet.rowCount;
+
+    assert.throws(
+      () => CoreStructuralTransform.apply(workbook, { kind: 'insert-rows', sheetId: sheet.id, at: 0, count: 1 }, index),
+      /formula group.*requires an explicit formula-group transform/,
+    );
+    assert.equal(sheet.cells.get(owner.row, owner.column)?.formulaMetadata?.sourceFormula, '=A1');
+    assert.equal(sheet.cells.get(owner.row + 1, owner.column), undefined);
+    assert.equal(sheet.rowCount, originalRowCount);
+  });
+
+  it('keeps OOXML formula provenance aligned through cell-shift rewrites', () => {
+    const workbook = new WorkbookModel('unit-cell-shift-formula-provenance', 'Cell Shift Formula Provenance');
+    const sheet = workbook.getSheet('sheet-1');
+    sheet.cells.set(1, 1, {
+      value: null,
+      formula: '=SUM(A1:A1)',
+      formulaMetadata: { kind: 'normal', sourceFormula: '=_xlfn.SUM(A1:A1)' },
+    });
+
+    StructuralTransform.apply(workbook, {
+      kind: 'cell-shift',
+      sheetId: sheet.id,
+      sourceRange: { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 2 },
+      operation: 'insert',
+      axis: 'row',
+    });
+
+    assert.equal(sheet.cells.get(2, 1)?.formula, '=SUM(A2:A2)');
+    assert.equal(sheet.cells.get(2, 1)?.formulaMetadata?.sourceFormula, '=_XLFN.SUM(A2:A2)');
+  });
+
+  it('preserves moved formula provenance and rewrites external formula owners', () => {
+    const workbook = new WorkbookModel('unit-move-formula-provenance', 'Move Formula Provenance');
+    const sheet = workbook.getSheet('sheet-1');
+    sheet.cells.set(0, 0, { value: 7 });
+    sheet.cells.set(0, 1, {
+      value: null,
+      formula: '=SUM(A1:A1)',
+      formulaMetadata: { kind: 'normal', sourceFormula: '=_xlfn.SUM(A1:A1)' },
+    });
+    sheet.cells.set(4, 3, {
+      value: null,
+      formula: '=SUM(A1:A1)',
+      formulaMetadata: { kind: 'normal', sourceFormula: '=_xlfn.SUM(A1:A1)' },
+    });
+
+    StructuralTransform.apply(workbook, {
+      kind: 'move-range',
+      sheetId: sheet.id,
+      sourceRange: { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 1 },
+      targetOrigin: { row: 2, column: 2 },
+    });
+
+    assert.equal(sheet.cells.get(2, 3)?.formula, '=SUM(A1:A1)');
+    assert.equal(sheet.cells.get(2, 3)?.formulaMetadata?.sourceFormula, '=_xlfn.SUM(A1:A1)');
+    assert.equal(sheet.cells.get(4, 3)?.formula, '=SUM(C3:C3)');
+    assert.equal(sheet.cells.get(4, 3)?.formulaMetadata?.sourceFormula, '=_XLFN.SUM(C3:C3)');
+  });
+
+  it('rejects structural edits that would invalidate OOXML formula-group ownership before mutation', () => {
+    const workbook = new WorkbookModel('unit-formula-group-structure', 'Formula Group Structure');
+    const sheet = workbook.getSheet('sheet-1');
+    sheet.cells.set(4, 0, {
+      value: null,
+      formula: '=1',
+      formulaMetadata: { kind: 'shared', sharedIndex: 3, sharedMaster: true, range: 'A5:A6' },
+    });
+
+    assert.throws(
+      () => StructuralTransform.apply(workbook, { kind: 'insert-rows', sheetId: sheet.id, at: 0, count: 1 }),
+      /formula metadata.*requires an explicit formula-group operation/,
+    );
+    assert.throws(() => StructuralTransform.apply(workbook, {
+      kind: 'move-range',
+      sheetId: sheet.id,
+      sourceRange: { sheetId: sheet.id, startRow: 4, endRow: 4, startColumn: 0, endColumn: 0 },
+      targetOrigin: { row: 6, column: 2 },
+    }), /formula metadata.*requires an explicit formula-group operation/);
+    assert.equal(sheet.cells.get(4, 0)?.formula, '=1');
+    assert.equal(sheet.cells.get(4, 0)?.formulaMetadata?.range, 'A5:A6');
   });
 
   it('cell-shift insert moves the complete affected band by the selection extent', () => {
@@ -152,10 +812,19 @@ describe('structural operations', () => {
       source: { kind: 'worksheet-ranges', ranges: [{ sheetId: sheet.id, startRow: 1, endRow: 3, startColumn: 0, endColumn: 1 }] },
       categoryRange: { sheetId: sheet.id, startRow: 1, endRow: 3, startColumn: 0, endColumn: 0 },
       series: [{ name: 'Sales', range: { sheetId: sheet.id, startRow: 1, endRow: 3, startColumn: 1, endColumn: 1 } }],
-      elements: { hiddenData: 'show' },
+      elements: {
+        hiddenData: 'show',
+        titleText: { linkedFormula: '=A2' },
+        legend: { visible: true, position: 'bottom', text: { linkedFormula: '=B2' } },
+        categoryAxis: { id: 'category', position: 'bottom', titleText: { linkedFormula: '=C2' } },
+        valueAxis: { id: 'value', position: 'left', titleText: { linkedFormula: '=D2' } },
+        secondaryCategoryAxis: { id: 'secondary-category', position: 'top', titleText: { linkedFormula: '=F2' } },
+        secondaryValueAxis: { id: 'secondary-value', position: 'right', titleText: { linkedFormula: '=G2' } },
+        dataTable: { visible: true, font: { linkedFormula: '=E2' } },
+      },
     });
 
-    StructuralTransform.apply(workbook, { kind: 'insert-rows', sheetId: sheet.id, at: 1, count: 2 });
+    const result = StructuralTransform.apply(workbook, { kind: 'insert-rows', sheetId: sheet.id, at: 1, count: 2 });
 
     const payload = sheet.drawingPayloads.get('chart-1');
     assert.equal(payload?.kind, 'chart');
@@ -165,7 +834,61 @@ describe('structural operations', () => {
     assert.deepEqual(payload.source.kind === 'worksheet-ranges' ? payload.source.ranges[0] : undefined, { sheetId: sheet.id, startRow: 3, endRow: 5, startColumn: 0, endColumn: 1 });
     assert.deepEqual(payload.categoryRange, { sheetId: sheet.id, startRow: 3, endRow: 5, startColumn: 0, endColumn: 0 });
     assert.deepEqual(payload.series?.[0]?.range, { sheetId: sheet.id, startRow: 3, endRow: 5, startColumn: 1, endColumn: 1 });
+    assert.equal(payload.elements.titleText?.linkedFormula, '=A4');
+    assert.equal(payload.elements.legend?.text?.linkedFormula, '=B4');
+    assert.equal(payload.elements.categoryAxis?.titleText?.linkedFormula, '=C4');
+    assert.equal(payload.elements.valueAxis?.titleText?.linkedFormula, '=D4');
+    assert.equal(payload.elements.secondaryCategoryAxis?.titleText?.linkedFormula, '=F4');
+    assert.equal(payload.elements.secondaryValueAxis?.titleText?.linkedFormula, '=G4');
+    assert.equal(payload.elements.dataTable?.font?.linkedFormula, '=E4');
+    assert.equal(result.formulaOwnerDeltas?.filter((delta) => delta.kind === 'formula-object').length, 7);
     assert.equal(sheet.drawings.filter((drawing) => drawing.kind === 'chart').length, 1);
+  });
+
+  it('sheet identity transforms rewrite, duplicate, and reject chart linked-formula references', () => {
+    const workbook = new WorkbookModel('unit-chart-linked-formula', 'Chart Linked Formula');
+    const source = workbook.getSheet('sheet-1');
+    const owner = workbook.addSheet('sheet-2', 'Chart Owner');
+    owner.drawingPayloads.set('chart-1', {
+      kind: 'chart',
+      chartId: 'chart-1',
+      chartType: 'line',
+      subtype: 'line',
+      source: { kind: 'worksheet-ranges', ranges: [{ sheetId: source.id, startRow: 0, endRow: 2, startColumn: 0, endColumn: 0 }] },
+      elements: { hiddenData: 'show', titleText: { linkedFormula: "='Sheet1'!$A$1" } },
+    });
+
+    const rename = planSheetIdentityTransform(workbook, {
+      kind: 'rename', sourceSheetId: source.id, sourceName: 'Sheet1', targetName: 'Renamed',
+    }).apply();
+    const renamed = owner.drawingPayloads.get('chart-1');
+    assert.equal(renamed?.kind, 'chart');
+    if (renamed?.kind !== 'chart') throw new Error('Expected chart payload after rename');
+    assert.equal(renamed.elements.titleText?.linkedFormula, "=Renamed!$A$1");
+    assert.equal(rename?.formulaOwnerDeltas?.some((delta) => delta.kind === 'formula-object'), true);
+
+    const duplicateWorkbook = new WorkbookModel('unit-chart-duplicate-formula', 'Chart Duplicate Formula');
+    const duplicateSource = duplicateWorkbook.getSheet('sheet-1');
+    duplicateSource.drawingPayloads.set('chart-1', {
+      kind: 'chart',
+      chartId: 'chart-1',
+      chartType: 'line',
+      subtype: 'line',
+      source: { kind: 'worksheet-ranges', ranges: [{ sheetId: duplicateSource.id, startRow: 0, endRow: 2, startColumn: 0, endColumn: 0 }] },
+      elements: { hiddenData: 'show', titleText: { linkedFormula: "='Sheet1'!$A$1" } },
+    });
+    planSheetIdentityTransform(duplicateWorkbook, {
+      kind: 'duplicate', sourceSheetId: duplicateSource.id, sourceName: 'Sheet1',
+      targetSheetId: 'sheet-copy', targetName: 'Sheet1 Copy',
+    }).apply();
+    const copied = duplicateWorkbook.getSheet('sheet-copy').drawingPayloads.get('chart-1::sheet-copy');
+    assert.equal(copied?.kind, 'chart');
+    if (copied?.kind !== 'chart') throw new Error('Expected duplicated chart payload');
+    assert.equal(copied.elements.titleText?.linkedFormula, "='Sheet1 Copy'!$A$1");
+
+    assert.throws(() => planSheetIdentityTransform(workbook, {
+      kind: 'delete', sourceSheetId: source.id, sourceName: 'Renamed',
+    }), /Cannot delete sheet/);
   });
 
   it('structural transforms keep sheet-backed workbook table sources aligned', () => {
@@ -183,7 +906,10 @@ describe('structural operations', () => {
       revision: 0,
     });
 
-    StructuralTransform.apply(workbook, { kind: 'insert-rows', sheetId: sheet.id, at: 1, count: 2 });
+    const tableOwner = workbook.getTable('table-1');
+    const blocks = tableOwner.blocks;
+    const fields = tableOwner.fields;
+    const result = StructuralTransform.apply(workbook, { kind: 'insert-rows', sheetId: sheet.id, at: 1, count: 2 });
     assert.deepEqual(workbook.getTable('table-1').sourceRange, {
       sheetId: sheet.id,
       startRow: 3,
@@ -191,22 +917,103 @@ describe('structural operations', () => {
       startColumn: 2,
       endColumn: 4,
     });
+    assert.equal(workbook.getTable('table-1'), tableOwner);
+    assert.equal(tableOwner.blocks, blocks);
+    assert.equal(tableOwner.fields, fields);
+    assert.deepEqual(result.rangeOwnerDeltas, [{
+      ownerKind: 'workbook-table', ownerId: 'table-1',
+      before: { sheetId: sheet.id, startRow: 1, endRow: 4, startColumn: 2, endColumn: 4 },
+      after: { sheetId: sheet.id, startRow: 3, endRow: 6, startColumn: 2, endColumn: 4 },
+    }]);
 
+    const beforeRejectedDelete = workbook.snapshot();
     assert.throws(
       () => StructuralTransform.apply(workbook, { kind: 'delete-rows', sheetId: sheet.id, at: 3, count: 1 }),
       /workbook table table-1 requires an explicit table operation/,
     );
+    assert.deepEqual(workbook.snapshot(), beforeRejectedDelete);
+    const unchangedRange = tableOwner.sourceRange;
+    const unchanged = StructuralTransform.apply(workbook, { kind: 'insert-rows', sheetId: sheet.id, at: 20, count: 1 });
+    assert.deepEqual(unchanged.rangeOwnerDeltas, []);
+    assert.equal(tableOwner.sourceRange, unchangedRange);
   });
 
-  it('move-range clears stale destinations, offsets formulas, and rewrites external references', () => {
+  it('rejects row and column insertion inside a workbook table before changing workbook state', () => {
+    for (const axis of ['row', 'column'] as const) {
+      const workbook = new WorkbookModel(`unit-workbook-table-insert-${axis}`, 'Workbook Table Insert');
+      const sheet = workbook.getSheet('sheet-1');
+      workbook.addTable({
+        id: 'table-1', name: 'Sales', sourceSheetId: sheet.id,
+        sourceRange: { sheetId: sheet.id, startRow: 1, endRow: 4, startColumn: 1, endColumn: 3 },
+        rowCount: 3, fields: [], blockSize: 128, blocks: [], revision: 0,
+      });
+      sheet.cells.set(6, 5, { value: 'tail' });
+      const before = workbook.snapshot();
+
+      assert.throws(() => StructuralTransform.apply(workbook, {
+        kind: axis === 'row' ? 'insert-rows' : 'insert-columns', sheetId: sheet.id, at: 2, count: 1,
+      }), /UNSUPPORTED_FEATURE: structural edit intersects workbook table table-1 and requires a table transaction/);
+
+      assert.deepEqual(workbook.snapshot(), before);
+    }
+  });
+
+  it('rejects ambiguous range-owner identities before an axis transform writes any state', () => {
+    for (const ownerKind of ['data-region', 'workbook-table', 'data-source'] as const) {
+      const workbook = new WorkbookModel(`unit-range-identity-${ownerKind}`, 'Range identity');
+      const sheet = workbook.getSheet('sheet-1');
+      const range = { sheetId: sheet.id, startRow: 5, endRow: 5, startColumn: 2, endColumn: 2 };
+      workbook.addTable({ id: 'range-table', name: 'Range table', sourceSheetId: sheet.id, sourceRange: range,
+        rowCount: 0, fields: [], blockSize: 128, blocks: [], revision: 0 });
+      workbook.addDataSource({
+        schema: 'DataSourceManifest', version: 1, id: 'range-source', name: 'Range source', kind: 'worksheet-range',
+        sourceSheetId: sheet.id, sourceRange: range, rowCount: 0,
+        fields: [{ id: 'f0', name: 'Code', ordinal: 0, type: 'text' }],
+        blockRowCount: 65_536, blocks: [], revision: 0,
+      });
+      sheet.addDataRegion({ id: 'range-region', sourceId: 'range-source', range, headerRow: 5, revision: 0 });
+      sheet.cells.set(6, 2, { value: 42 });
+      const source = workbook.dataModel.sources.get('range-source');
+      const region = sheet.dataRegions[0];
+      assert.ok(source && region);
+      if (ownerKind === 'data-region') region.id = '';
+      else if (ownerKind === 'workbook-table') workbook.getTable('range-table').id = 'mismatched-table';
+      else source.id = 'mismatched-source';
+      const before = workbook.snapshot();
+      const usedRangeBefore = sheet.usedRange;
+
+      assert.throws(() => StructuralTransform.apply(workbook, {
+        kind: 'insert-rows', sheetId: sheet.id, at: 1, count: 1,
+      }), /STRUCTURAL_PATCH_INVARIANT: .* has an invalid owner identity/);
+      assert.deepEqual(workbook.snapshot(), before);
+      assert.deepEqual(sheet.usedRange, usedRangeBefore);
+    }
+  });
+
+  it('move-range clears stale destinations, preserves moved formulas, and rewrites external references', () => {
     const workbook = new WorkbookModel('unit-move-range', 'Move Range');
     const sheet = workbook.getSheet('sheet-1');
     sheet.cells.set(0, 0, { value: 7 });
-    sheet.cells.set(0, 1, { value: null, formula: '=A1' });
+    sheet.cells.set(0, 1, { value: null, formula: '=A1', formulaValue: 7 });
     sheet.cells.set(2, 3, { value: 'stale' });
     sheet.cells.set(0, 3, { value: null, formula: '=A1' });
+    sheet.sheetTables.push({
+      id: 'move-table', sheetId: sheet.id, name: 'MoveTable',
+      range: { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 1 },
+      hasHeaderRow: true, hasTotalRow: false, showBandedRows: true, showBandedColumns: false,
+      showFirstColumn: false, showLastColumn: false, showFilterButton: true, autoExpand: 'none',
+      columns: [{ id: 'move-a', name: 'A' }, { id: 'move-b', name: 'B' }],
+    });
+    sheet.drawingPayloads.set('chart-move', {
+      kind: 'chart',
+      chartId: 'chart-move',
+      chartType: 'line',
+      subtype: 'line',
+      source: { kind: 'worksheet-ranges', ranges: [{ sheetId: sheet.id, startRow: 5, endRow: 6, startColumn: 0, endColumn: 0 }] },
+      elements: { hiddenData: 'show', titleText: { linkedFormula: '=A1' } },
+    });
 
-    StructuralTransform.apply(workbook, {
+    const result = StructuralTransform.apply(workbook, {
       kind: 'move-range',
       sheetId: sheet.id,
       sourceRange: { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 1 },
@@ -214,9 +1021,100 @@ describe('structural operations', () => {
     });
 
     assert.equal(sheet.cells.get(2, 2)?.value, 7);
-    assert.equal(sheet.cells.get(2, 3)?.formula, '=C3');
+    assert.equal(sheet.cells.get(2, 3)?.formula, '=A1');
+    assert.equal(sheet.cells.get(2, 3)?.formulaValue, undefined);
     assert.equal(sheet.cells.get(0, 0), undefined);
     assert.equal(sheet.cells.get(0, 3)?.formula, '=C3');
+    const chart = sheet.drawingPayloads.get('chart-move');
+    assert.equal(chart?.kind, 'chart');
+    if (chart?.kind !== 'chart') throw new Error('Expected chart payload after move');
+    assert.equal(chart.elements.titleText?.linkedFormula, '=C3');
+    assert.equal(result.formulaOwnerDeltas?.some((delta) => delta.kind === 'formula-object'), true);
+    assert.deepEqual(result.rangeOwnerDeltas, [{
+      ownerKind: 'sheet-table', sheetId: sheet.id, ownerId: 'move-table',
+      before: { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 1 },
+      after: { sheetId: sheet.id, startRow: 2, endRow: 2, startColumn: 2, endColumn: 3 },
+    }]);
+  });
+
+  it('rewrites rule formulas and hyperlink addresses on other worksheets when a referenced range moves', () => {
+    const workbook = new WorkbookModel('unit-move-metadata-references', 'Move Metadata References');
+    const sheet = workbook.getSheet('sheet-1');
+    const other = workbook.addSheet('sheet-2', 'Other');
+    other.conditionalFormats.push({
+      id: 'cf-1', sheetId: other.id,
+      ranges: [{ sheetId: other.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }],
+      type: 'highlight', operator: 'formula', value1: '=Sheet1!A1',
+    });
+    other.dataValidations.push({
+      id: 'dv-1', sheetId: other.id,
+      ranges: [{ sheetId: other.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }],
+      type: 'custom', formula1: '=Sheet1!A1',
+    });
+    other.hyperlinks.set('0:0', {
+      id: 'link-1', target: { kind: 'sheet', sheetId: sheet.id, address: 'A1' },
+    });
+
+    const result = StructuralTransform.apply(workbook, {
+      kind: 'move-range', sheetId: sheet.id,
+      sourceRange: { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 },
+      targetOrigin: { row: 2, column: 2 },
+    });
+
+    assert.equal(other.conditionalFormats[0]?.value1, '=Sheet1!C3');
+    assert.equal(other.dataValidations[0]?.formula1, '=Sheet1!C3');
+    assert.deepEqual(result.formulaOwnerDeltas?.filter((delta) => delta.kind === 'formula-rule').map((delta) =>
+      delta.kind === 'formula-rule' ? [delta.ruleId, delta.beforeFormula, delta.afterFormula] : []), [
+      ['cf-1', '=Sheet1!A1', '=Sheet1!C3'],
+      ['dv-1', '=Sheet1!A1', '=Sheet1!C3'],
+    ]);
+    const target = other.hyperlinks.get('0:0')?.target;
+    assert.equal(target?.kind === 'sheet' ? target.address : undefined, 'C3');
+  });
+
+  it('indexes moved rule formulas and records their applies-to range transition', () => {
+    const workbook = new WorkbookModel('unit-move-indexed-rule', 'Move Indexed Rule');
+    const sheet = workbook.getSheet('sheet-1');
+    sheet.conditionalFormats.push({
+      id: 'cf-source', sheetId: sheet.id,
+      ranges: [{ sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }],
+      type: 'highlight', operator: 'formula', value1: '=A1',
+    });
+
+    const result = StructuralTransform.apply(workbook, {
+      kind: 'move-range', sheetId: sheet.id,
+      sourceRange: { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 },
+      targetOrigin: { row: 2, column: 2 },
+    });
+
+    assert.equal(sheet.conditionalFormats[0]?.value1, '=C3');
+    assert.deepEqual(result.formulaOwnerDeltas?.find((delta) => delta.kind === 'formula-rule' && delta.ruleId === 'cf-source'), {
+      kind: 'formula-rule',
+      sheetId: sheet.id,
+      ruleKind: 'conditional-format',
+      ruleId: 'cf-source',
+      field: 'value1',
+      beforeFormula: '=A1',
+      afterFormula: '=C3',
+      beforeRanges: [{ sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }],
+      afterRanges: [{ sheetId: sheet.id, startRow: 2, endRow: 2, startColumn: 2, endColumn: 2 }],
+    });
+  });
+
+  it('rejects moving over destination-anchored hyperlinks without mutating either range', () => {
+    const workbook = new WorkbookModel('unit-move-hyperlink-reject', 'Move Hyperlink Reject');
+    const sheet = workbook.getSheet('sheet-1');
+    sheet.cells.set(0, 0, { value: 'source' });
+    sheet.hyperlinks.set('1:1', { id: 'destination-link', target: { kind: 'url', url: 'https://example.com' } });
+
+    assert.throws(() => StructuralTransform.apply(workbook, {
+      kind: 'move-range',
+      sheetId: sheet.id,
+      sourceRange: { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 },
+      targetOrigin: { row: 1, column: 1 },
+    }), /hyperlink 1:1 would be overwritten at the target/);
+    assert.equal(sheet.cells.get(0, 0)?.value, 'source');
+    assert.equal(sheet.hyperlinks.has('1:1'), true);
   });
 
   it('rejects a cell shift that would silently drop an anchored object', () => {
@@ -243,6 +1141,22 @@ describe('structural operations', () => {
     }), /outside worksheet bounds|discard data/);
     assert.equal(sheet.cells.get(1, 0)?.value, 'keep');
     assert.equal(sheet.drawings[0]?.anchor.row, 1);
+  });
+
+  it('preflights cross-sheet owners without reading unrelated worksheet metadata', () => {
+    const workbook = new WorkbookModel('unit-structural-owner-preflight-scope', 'Structural owner preflight scope');
+    const target = workbook.getSheet('sheet-1');
+    target.rowCount = 4;
+    target.columnCount = 2;
+    const owner = workbook.addSheet('owner-sheet', 'Owner sheet', 4, 2);
+    Object.defineProperty(owner, 'drawings', {
+      configurable: true,
+      get() { throw new Error('Unrelated drawing anchors must not be cloned for reference-owner preflight'); },
+    });
+
+    StructuralTransform.apply(workbook, { kind: 'insert-rows', sheetId: target.id, at: 1, count: 1 });
+
+    assert.equal(target.rowCount, 5);
   });
 
   it('moves complete data regions when rows are inserted before them and keeps manifest coordinates aligned', () => {
@@ -277,9 +1191,50 @@ describe('structural operations', () => {
       headerRow: 5,
       revision: 0,
     });
+    sheet.sheetTables.push({
+      id: 'structure-sheet-table', sheetId: sheet.id, name: 'StructureTable',
+      range: { sheetId: sheet.id, startRow: 15, endRow: 17, startColumn: 2, endColumn: 3 },
+      hasHeaderRow: true, hasTotalRow: false, showBandedRows: true, showBandedColumns: false,
+      showFirstColumn: false, showLastColumn: false, showFilterButton: true, autoExpand: 'none',
+      columns: [{ id: 'column-code', name: 'Code' }, { id: 'column-value', name: 'Value' }],
+    });
     sheet.cells.set(6, 2, { value: 999, style: { bold: true } });
 
-    StructuralTransform.apply(workbook, { kind: 'insert-rows', sheetId: sheet.id, at: 2, count: 2 });
+    const sourceOwner = workbook.dataModel.sources.get(sourceId);
+    assert.ok(sourceOwner);
+    const sourceReadSnapshot = workbook.getDataSource(sourceId);
+    const blocks = sourceOwner.blocks;
+    const fields = sourceOwner.fields;
+    const result = StructuralTransform.apply(workbook, { kind: 'insert-rows', sheetId: sheet.id, at: 2, count: 2 });
+    assert.deepEqual(result.rangeOwnerDeltas, [
+      {
+        ownerKind: 'data-region', sheetId: sheet.id, regionId: 'structure-region',
+        before: { range: { sheetId: sheet.id, startRow: 5, endRow: 7, startColumn: 2, endColumn: 3 }, headerRow: 5 },
+        after: { range: { sheetId: sheet.id, startRow: 7, endRow: 9, startColumn: 2, endColumn: 3 }, headerRow: 7 },
+      },
+      {
+        ownerKind: 'data-source', ownerId: sourceId,
+        before: { sheetId: sheet.id, startRow: 5, endRow: 7, startColumn: 2, endColumn: 3 },
+        after: { sheetId: sheet.id, startRow: 7, endRow: 9, startColumn: 2, endColumn: 3 },
+      },
+      {
+        ownerKind: 'sheet-table', sheetId: sheet.id, ownerId: 'structure-sheet-table',
+        before: { sheetId: sheet.id, startRow: 15, endRow: 17, startColumn: 2, endColumn: 3 },
+        after: { sheetId: sheet.id, startRow: 17, endRow: 19, startColumn: 2, endColumn: 3 },
+      },
+    ]);
+    assert.equal(workbook.dataModel.sources.get(sourceId), sourceOwner);
+    assert.equal(sourceOwner.blocks, blocks);
+    assert.equal(sourceOwner.fields, fields);
+    assert.equal(sourceReadSnapshot.sourceRange?.startRow, 5, 'public data source reads must remain detached');
+    assert.ok(result.rangeOwnerDeltas);
+    const serializedDeltas = JSON.stringify(result.rangeOwnerDeltas);
+    assert.deepEqual(JSON.parse(serializedDeltas), result.rangeOwnerDeltas);
+    assert.ok(Object.isFrozen(result.rangeOwnerDeltas));
+    for (const delta of result.rangeOwnerDeltas) {
+      assert.ok(Object.isFrozen(delta) && Object.isFrozen(delta.before) && Object.isFrozen(delta.after));
+      if (delta.ownerKind === 'data-region') assert.ok(Object.isFrozen(delta.before.range) && Object.isFrozen(delta.after.range));
+    }
 
     assert.deepEqual(sheet.dataRegions[0]?.range, {
       sheetId: sheet.id, startRow: 7, endRow: 9, startColumn: 2, endColumn: 3,
@@ -288,7 +1243,283 @@ describe('structural operations', () => {
     assert.deepEqual(workbook.getDataSource(sourceId).sourceRange, {
       sheetId: sheet.id, startRow: 7, endRow: 9, startColumn: 2, endColumn: 3,
     });
+    assert.deepEqual(sheet.sheetTables[0]?.range, {
+      sheetId: sheet.id, startRow: 17, endRow: 19, startColumn: 2, endColumn: 3,
+    });
     assert.equal(sheet.cells.get(8, 2)?.value, 999);
+    assert.deepEqual(sheet.usedRange, {
+      sheetId: sheet.id, startRow: 7, endRow: 9, startColumn: 2, endColumn: 3,
+    });
+
+    StructuralTransform.apply(workbook, { kind: 'delete-rows', sheetId: sheet.id, at: 2, count: 2 });
+    assert.deepEqual(sheet.usedRange, {
+      sheetId: sheet.id, startRow: 5, endRow: 7, startColumn: 2, endColumn: 3,
+    });
+    assert.equal(sheet.cells.get(6, 2)?.value, 999);
+    StructuralTransform.apply(workbook, { kind: 'insert-columns', sheetId: sheet.id, at: 1, count: 2 });
+    assert.deepEqual(sheet.usedRange, {
+      sheetId: sheet.id, startRow: 5, endRow: 7, startColumn: 4, endColumn: 5,
+    });
+    StructuralTransform.apply(workbook, { kind: 'delete-columns', sheetId: sheet.id, at: 1, count: 2 });
+    assert.deepEqual(sheet.usedRange, {
+      sheetId: sheet.id, startRow: 5, endRow: 7, startColumn: 2, endColumn: 3,
+    });
+    assert.equal(JSON.stringify(result.rangeOwnerDeltas), serializedDeltas, 'later live edits must not alter captured range facts');
+    assert.equal(sourceOwner.blocks, blocks);
+  });
+
+  it('applies planned axis metadata once and keeps unaffected cross-sheet owner identities', () => {
+    const workbook = new WorkbookModel('unit-axis-metadata-plan', 'Axis metadata plan');
+    const target = workbook.getSheet('sheet-1');
+    const owner = workbook.addSheet('reference-owner', 'Reference owner', 20, 10);
+    target.cells.set(3, 1, { value: 42 });
+    target.hiddenRows.add(3);
+    target.rowHeightsPx[3] = 36;
+    target.pane = { kind: 'frozen', state: 'frozen', xSplit: 0, ySplit: 2, startRow: 2, startColumn: 0 };
+    target.review.setNote(3, 1, { id: 'plan-note', author: 'user', text: 'note', createdAt: 'now', visible: true });
+    owner.sparklines.push(
+      { id: 'affected', sheetId: owner.id, anchor: { row: 0, column: 5 }, type: 'line', color: '#000',
+        sourceRange: { sheetId: target.id, startRow: 3, endRow: 4, startColumn: 0, endColumn: 0 } },
+      { id: 'unaffected', sheetId: owner.id, anchor: { row: 1, column: 5 }, type: 'line', color: '#000',
+        sourceRange: { sheetId: owner.id, startRow: 3, endRow: 4, startColumn: 0, endColumn: 0 } },
+    );
+    owner.hyperlinks.set('0:0', { id: 'affected-link', target: { kind: 'sheet', sheetId: target.id, row: 4, column: 1 } });
+    owner.hyperlinks.set('0:1', { id: 'unaffected-link', target: { kind: 'sheet', sheetId: owner.id, row: 4, column: 1 } });
+    const unaffectedSparkline = owner.sparklines[1];
+    const unaffectedHyperlink = owner.hyperlinks.get('0:1');
+    const sparklineCollection = owner.sparklines;
+    const hyperlinkCollection = owner.hyperlinks;
+    const widths = target.columnWidthsPx;
+    const before = workbook.snapshot();
+
+    StructuralTransform.apply(workbook, { kind: 'insert-rows', sheetId: target.id, at: 1, count: 2 });
+
+    assert.equal(target.cells.get(5, 1)?.value, 42);
+    assert.deepEqual([...target.hiddenRows], [5]);
+    assert.deepEqual(target.rowHeightsPx, { 5: 36 });
+    assert.deepEqual(target.pane, { kind: 'frozen', state: 'frozen', xSplit: 0, ySplit: 4, startRow: 4, startColumn: 0 });
+    assert.equal(target.review.getNoteAt(5, 1)?.id, 'plan-note');
+    assert.equal(target.review.hasNoteAt(3, 1), false);
+    assert.deepEqual(owner.sparklines[0]?.sourceRange, {
+      sheetId: target.id, startRow: 5, endRow: 6, startColumn: 0, endColumn: 0,
+    });
+    assert.deepEqual(owner.sparklines[0]?.anchor, { row: 0, column: 5 });
+    assert.deepEqual(owner.hyperlinks.get('0:0')?.target, { kind: 'sheet', sheetId: target.id, row: 6, column: 1 });
+    assert.equal(owner.sparklines[1], unaffectedSparkline);
+    assert.equal(owner.hyperlinks.get('0:1'), unaffectedHyperlink);
+    assert.equal(owner.sparklines, sparklineCollection);
+    assert.equal(owner.hyperlinks, hyperlinkCollection);
+    assert.equal(target.columnWidthsPx, widths);
+    StructuralTransform.apply(workbook, { kind: 'delete-rows', sheetId: target.id, at: 1, count: 2 });
+    assert.deepEqual(workbook.snapshot(), before);
+  });
+
+  it('applies cell-shift metadata once with canonical sheet ids and preserves unrelated owners', () => {
+    for (const axis of ['row', 'column'] as const) {
+      const workbook = new WorkbookModel(`unit-cell-plan-${axis}`, 'Cell metadata plan');
+      const target = workbook.getSheet('sheet-1');
+      target.rowCount = 12;
+      target.columnCount = 12;
+      // Formula qualifiers resolve names before ids; a canonical RangeRef must not.
+      const owner = workbook.addSheet('reference-owner', target.id, 12, 12);
+      const range = { sheetId: target.id, startRow: 4, endRow: 4, startColumn: 4, endColumn: 4 };
+      const afterRow = axis === 'row' ? 5 : 4;
+      const afterColumn = axis === 'column' ? 5 : 4;
+      const afterRange = { sheetId: target.id, startRow: afterRow, endRow: afterRow, startColumn: afterColumn, endColumn: afterColumn };
+      const selection = axis === 'row'
+        ? { sheetId: target.id, startRow: 2, endRow: 2, startColumn: 4, endColumn: 4 }
+        : { sheetId: target.id, startRow: 4, endRow: 4, startColumn: 2, endColumn: 2 };
+      target.cells.set(4, 4, { value: 42 });
+      target.review.setNote(4, 4, { id: 'cell-plan-note', author: 'user', text: 'note', createdAt: 'now', visible: true });
+      target.reportSheet = reportDefinition(target.id, [{ row: 4, column: 4 }]);
+      target.dataValidations.push({ id: 'cell-plan-rule', sheetId: target.id, type: 'custom', formula1: '=E5',
+        ranges: [{ ...range }], formulaAnchor: { sheetId: target.id, row: 4, column: 4 } });
+      owner.sparklines.push(
+        { id: 'affected-cell-plan', sheetId: owner.id, anchor: { row: 0, column: 0 }, type: 'line', color: '#000', sourceRange: { ...range } },
+        { id: 'unaffected-cell-plan', sheetId: owner.id, anchor: { row: 0, column: 1 }, type: 'line', color: '#000',
+          sourceRange: { ...range, sheetId: owner.id } },
+      );
+      owner.hyperlinks.set('0:0', { id: 'cell-plan-link', target: { kind: 'sheet', sheetId: target.id, row: 4, column: 4 } });
+      owner.drawingPayloads.set('cell-plan-chart', { kind: 'chart', chartId: 'cell-plan-chart', chartType: 'column', subtype: 'clustered',
+        source: { kind: 'worksheet-ranges', ranges: [{ ...range }] }, elements: { hiddenData: 'show' } });
+      const sourceRange = { sheetId: target.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 };
+      workbook.addDataSource({ schema: 'DataSourceManifest', version: 1, id: 'unrelated-source', name: 'Unrelated source',
+        kind: 'worksheet-range', sourceSheetId: target.id, sourceRange, rowCount: 0,
+        fields: [{ id: 'f0', name: 'Code', ordinal: 0, type: 'text' }], blockRowCount: 65_536, blocks: [], revision: 0 });
+      const source = workbook.dataModel.sources.get('unrelated-source');
+      assert.ok(source);
+      const sourceFields = source.fields;
+      const sourceBlocks = source.blocks;
+      const sourceCoordinates = source.sourceRange;
+      const unchangedSparkline = owner.sparklines[1];
+      const rules = target.dataValidations;
+      const sparklines = owner.sparklines;
+      const hyperlinks = owner.hyperlinks;
+      const before = workbook.snapshot();
+
+      StructuralTransform.apply(workbook, { kind: 'cell-shift', sheetId: target.id, sourceRange: selection, operation: 'insert', axis });
+
+      assert.equal(target.cells.get(afterRow, afterColumn)?.value, 42);
+      assert.equal(target.cells.get(4, 4), undefined);
+      assert.equal(target.review.getNoteAt(afterRow, afterColumn)?.id, 'cell-plan-note');
+      assert.deepEqual(target.reportSheet?.bindings[0]?.cell, { row: afterRow, column: afterColumn });
+      assert.deepEqual(target.dataValidations[0]?.ranges, [afterRange]);
+      assert.deepEqual(target.dataValidations[0]?.formulaAnchor, { sheetId: target.id, row: afterRow, column: afterColumn });
+      assert.equal(target.dataValidations[0]?.formula1, axis === 'row' ? '=E6' : '=F5');
+      assert.deepEqual(owner.sparklines[0]?.sourceRange, afterRange);
+      assert.equal(owner.sparklines[1], unchangedSparkline);
+      assert.deepEqual(owner.hyperlinks.get('0:0')?.target, { kind: 'sheet', sheetId: target.id, row: afterRow, column: afterColumn });
+      const chart = owner.drawingPayloads.get('cell-plan-chart');
+      assert.ok(chart?.kind === 'chart' && chart.source.kind === 'worksheet-ranges');
+      assert.deepEqual(chart.source.ranges, [afterRange]);
+      assert.equal(target.dataValidations, rules);
+      assert.equal(owner.sparklines, sparklines);
+      assert.equal(owner.hyperlinks, hyperlinks);
+      assert.equal(workbook.dataModel.sources.get('unrelated-source'), source);
+      assert.equal(source.fields, sourceFields);
+      assert.equal(source.blocks, sourceBlocks);
+      assert.equal(source.sourceRange, sourceCoordinates);
+
+      StructuralTransform.apply(workbook, { kind: 'cell-shift', sheetId: target.id, sourceRange: selection, operation: 'delete', axis });
+      assert.deepEqual(workbook.snapshot(), before);
+    }
+  });
+
+  it('rejects non-contiguous print ranges before committing cell-shift metadata', () => {
+    const workbook = new WorkbookModel('unit-cell-plan-print-rejection', 'Cell plan print rejection');
+    const sheet = workbook.getSheet('sheet-1');
+    sheet.cells.set(3, 4, { value: 42 });
+    sheet.review.setNote(3, 4, { id: 'print-rejection-note', author: 'user', text: 'keep', createdAt: 'now', visible: true });
+    workbook.printDocuments.set(sheet.id, {
+      schema: 'PrintDocument', unitId: workbook.unitId, sheetId: sheet.id,
+      pageSetup: { paperSize: 'a4', orientation: 'portrait', margins: { top: 1, right: 1, bottom: 1, left: 1, header: 0, footer: 0 },
+        scale: 100, printGridlines: false, printHeadings: false, centerHorizontally: false, centerVertically: false },
+      printAreas: [{ sheetId: sheet.id, range: { sheetId: sheet.id, startRow: 3, endRow: 3, startColumn: 3, endColumn: 5 } }],
+      pageBreaks: [],
+    });
+    const operation = { kind: 'cell-shift', sheetId: sheet.id, operation: 'insert', axis: 'row',
+      sourceRange: { sheetId: sheet.id, startRow: 1, endRow: 1, startColumn: 4, endColumn: 4 } } as const;
+    const before = workbook.snapshot();
+    assert.throws(() => StructuralTransform.apply(workbook, operation), /UNSUPPORTED_FEATURE: cell shift makes this formula range non-contiguous/);
+    assert.deepEqual(workbook.snapshot(), before);
+    const document = workbook.printDocuments.get(sheet.id);
+    assert.ok(document);
+    document.printAreas = [{ sheetId: sheet.id, range: { sheetId: sheet.id, startRow: 3, endRow: 3, startColumn: 4, endColumn: 4 } }];
+    StructuralTransform.apply(workbook, operation);
+    assert.equal(sheet.cells.get(4, 4)?.value, 42);
+    assert.equal(sheet.review.getNoteAt(4, 4)?.id, 'print-rejection-note');
+    assert.equal(workbook.printDocuments.get(sheet.id)?.printAreas[0]?.range.startRow, 4);
+  });
+
+  it('rejects block-backed owners in the shifted tail beyond materialized worksheet bounds', () => {
+    for (const axis of ['row', 'column'] as const) for (const ownerKind of ['data-region', 'workbook-table', 'data-source'] as const) {
+      const workbook = new WorkbookModel(`unit-lazy-tail-${axis}-${ownerKind}`, 'Lazy structural tail');
+      const sheet = workbook.getSheet('sheet-1');
+      sheet.rowCount = 8;
+      sheet.columnCount = 8;
+      sheet.cells.set(2, 2, { value: 42 });
+      const range = axis === 'row'
+        ? { sheetId: sheet.id, startRow: 20, endRow: 20, startColumn: 2, endColumn: 2 }
+        : { sheetId: sheet.id, startRow: 2, endRow: 2, startColumn: 20, endColumn: 20 };
+      if (ownerKind === 'workbook-table') {
+        workbook.addTable({ id: 'far-table', name: 'Far table', sourceSheetId: sheet.id, sourceRange: range,
+          rowCount: 0, fields: [], blockSize: 128, blocks: [], revision: 0 });
+      } else {
+        workbook.addDataSource({ schema: 'DataSourceManifest', version: 1, id: 'far-source', name: 'Far source',
+          kind: 'worksheet-range', sourceSheetId: sheet.id, sourceRange: range, rowCount: 0,
+          fields: [{ id: 'f0', name: 'Code', ordinal: 0, type: 'text' }], blockRowCount: 65_536, blocks: [], revision: 0 });
+        if (ownerKind === 'data-region') sheet.addDataRegion({ id: 'far-region', sourceId: 'far-source', range,
+          headerRow: range.startRow, revision: 0 });
+      }
+      const before = workbook.snapshot();
+      const failure = ownerKind === 'data-region' ? /Cannot shift cells across data region far-region/
+        : ownerKind === 'workbook-table' ? /UNSUPPORTED_FEATURE: cell shift intersects workbook table far-table/
+          : /UNSUPPORTED_FEATURE: cell shift intersects data source far-source/;
+      assert.throws(() => StructuralTransform.apply(workbook, { kind: 'cell-shift', sheetId: sheet.id,
+        sourceRange: { sheetId: sheet.id, startRow: 2, endRow: 2, startColumn: 2, endColumn: 2 }, operation: 'insert', axis }), failure);
+      assert.deepEqual(workbook.snapshot(), before);
+    }
+  });
+
+  it('commits empty metadata collections without replacing their canonical containers', () => {
+    const workbook = new WorkbookModel('unit-empty-metadata-plan', 'Empty metadata plan');
+    const sheet = workbook.getSheet('sheet-1');
+    sheet.hiddenRows.add(1);
+    sheet.rowHeightsPx[1] = 30;
+    sheet.hiddenColumns.add(1);
+    sheet.columnWidthsPx[1] = 90;
+    const hiddenRows = sheet.hiddenRows;
+    const heights = sheet.rowHeightsPx;
+    StructuralTransform.apply(workbook, { kind: 'delete-rows', sheetId: sheet.id, at: 1, count: 1 });
+    StructuralTransform.apply(workbook, { kind: 'delete-columns', sheetId: sheet.id, at: 1, count: 1 });
+    assert.equal(sheet.hiddenRows, hiddenRows);
+    assert.equal(sheet.rowHeightsPx, heights);
+    assert.equal(sheet.hiddenRows.size, 0);
+    assert.equal(sheet.hiddenColumns.size, 0);
+    assert.deepEqual(sheet.rowHeightsPx, {});
+    assert.deepEqual(sheet.columnWidthsPx, {});
+  });
+
+  it('rejects a late metadata planning failure without committing earlier cells or owners', () => {
+    const workbook = new WorkbookModel('unit-axis-plan-rejection', 'Axis plan rejection');
+    const sheet = workbook.getSheet('sheet-1');
+    sheet.cells.set(3, 1, { value: 'unchanged' });
+    sheet.hiddenRows.add(3);
+    sheet.review.setNote(3, 1, { id: 'late-note', author: 'user', text: 'note', createdAt: 'now', visible: true });
+    workbook.printDocuments.set(sheet.id, {
+      schema: 'PrintDocument', unitId: workbook.unitId, sheetId: sheet.id,
+      pageSetup: {
+        paperSize: 'a4', orientation: 'portrait', margins: { top: 1, right: 1, bottom: 1, left: 1, header: 0, footer: 0 },
+        scale: 100, printGridlines: false, printHeadings: false, centerHorizontally: false, centerVertically: false,
+      },
+      printAreas: [{ sheetId: sheet.id, range: { sheetId: sheet.id, startRow: 3, endRow: 4, startColumn: 0, endColumn: 2 } }],
+      pageBreaks: [{ sheetId: sheet.id, row: MAX_ROW_INDEX }],
+    });
+    const before = workbook.snapshot();
+
+    assert.throws(() => StructuralTransform.apply(workbook, {
+      kind: 'insert-rows', sheetId: sheet.id, at: 1, count: 1,
+    }), /UNSUPPORTED_STRUCTURAL_REFERENCE: row coordinate .* exceeds worksheet bounds/);
+    assert.deepEqual(workbook.snapshot(), before);
+
+    workbook.printDocuments.get(sheet.id)!.pageBreaks = [{ sheetId: sheet.id, row: 5 }];
+    StructuralTransform.apply(workbook, { kind: 'insert-rows', sheetId: sheet.id, at: 1, count: 1 });
+    assert.equal(sheet.cells.get(4, 1)?.value, 'unchanged');
+    assert.equal(sheet.review.getNoteAt(4, 1)?.id, 'late-note');
+    assert.equal(workbook.printDocuments.get(sheet.id)?.printAreas[0]?.range.startRow, 4);
+    assert.equal(workbook.printDocuments.get(sheet.id)?.pageBreaks[0]?.row, 6);
+  });
+
+  it('rejects block-backed projection overflow before cells, metadata, or bounds index change', () => {
+    for (const axis of ['row', 'column'] as const) {
+      const workbook = new WorkbookModel(`unit-region-${axis}-overflow`, 'Region overflow');
+      const sheet = workbook.getSheet('sheet-1');
+      sheet.rowCount = 8;
+      sheet.columnCount = 8;
+      sheet.cells.set(3, 1, { value: 'preserve' });
+      workbook.addDataSource({
+        schema: 'DataSourceManifest', version: 1, id: 'block-source', name: 'Block source', kind: 'chunked-table',
+        rowCount: 2, fields: [
+          { id: 'f0', name: 'Code', ordinal: 0, type: 'text' },
+          { id: 'f1', name: 'Value', ordinal: 1, type: 'number' },
+        ],
+        blockRowCount: 65_536, revision: 0,
+        blocks: [{ id: 'overflow-block', dataSourceId: 'block-source', startRow: 0, rowCount: 2,
+          storageKey: 'overflow-block', checksum: 'a'.repeat(64), byteLength: 1, encoding: 'columnar-v1', revision: 0 }],
+      });
+      const range = axis === 'row'
+        ? { sheetId: sheet.id, startRow: MAX_ROW_INDEX - 2, endRow: MAX_ROW_INDEX, startColumn: 1, endColumn: 2 }
+        : { sheetId: sheet.id, startRow: 2, endRow: 4, startColumn: MAX_COLUMN_INDEX - 1, endColumn: MAX_COLUMN_INDEX };
+      sheet.addDataRegion({ id: 'edge-region', sourceId: 'block-source', range, headerRow: range.startRow, revision: 0 });
+      const before = workbook.snapshot();
+      const usedRangeBefore = sheet.usedRange;
+
+      assert.throws(() => StructuralTransform.apply(workbook, {
+        kind: axis === 'row' ? 'insert-rows' : 'insert-columns', sheetId: sheet.id, at: 1, count: 1,
+      }), /UNSUPPORTED_STRUCTURAL_REFERENCE: (row|column) interval exceeds worksheet bounds/);
+      assert.deepEqual(workbook.snapshot(), before);
+      assert.deepEqual(sheet.usedRange, usedRangeBefore);
+    }
   });
 
   it('rejects row or column edits that intersect a block-backed region until a block transaction is supplied', () => {

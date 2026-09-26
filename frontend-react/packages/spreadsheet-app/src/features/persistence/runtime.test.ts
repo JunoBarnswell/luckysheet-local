@@ -2,10 +2,61 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { WorkbookModel } from '@react-sheets/core-model';
 import { ApiRequestError } from '@react-sheets/protocol';
-import { createSpreadsheetRuntime, startCollaborationSession, startPersistenceSession } from '../../runtime';
-import { WorkspacePersistence } from './storage';
+import {
+  createSpreadsheetRuntime,
+  isLocalSnapshotCheckpointDue,
+  startCollaborationSession,
+  startPersistenceSession,
+} from '../../runtime';
+import { buildWorkspaceRecord, OperationJournalStore, WorkspacePersistence } from './storage';
 
 describe('local workspace runtime persistence', () => {
+  it('schedules a full local snapshot every fifty local revisions', () => {
+    assert.equal(isLocalSnapshotCheckpointDue(49, 0), false);
+    assert.equal(isLocalSnapshotCheckpointDue(50, 0), true);
+    assert.equal(isLocalSnapshotCheckpointDue(75, 50), false);
+  });
+
+  it('rebases a completed snapshot without discarding operations appended while it was writing', () => {
+    const unitId = 'checkpoint-journal-race';
+    const model = new WorkbookModel(unitId, 'Checkpoint journal race');
+    const sheetId = model.primarySheetId;
+    const makeOperation = (operationId: string, clientSequence: number) => ({
+      schema: 'OperationEnvelope' as const,
+      operationId,
+      unitId,
+      clientSessionId: 'session-1',
+      clientSequence,
+      baseRevision: 0,
+      mutations: [{ id: 'cell.set', sheetId, params: { sheetId, row: 0, column: 0, value: operationId } }],
+      createdAt: '2026-09-25T00:00:00.000Z',
+    });
+    const first = makeOperation('op-1', 1);
+    const later = makeOperation('op-2', 2);
+    const store = new OperationJournalStore();
+    store.write(unitId, [first], 1, 0);
+    const checkpoint = buildWorkspaceRecord({
+      unitId,
+      snapshot: model.snapshot(),
+      localRevision: 50,
+      serverRevision: 0,
+      syncMode: 'local-only',
+      operations: [first],
+      nextClientSequence: 1,
+    });
+
+    store.write(unitId, [first, later], 2, 0);
+    const rebased = store.adoptSnapshotCheckpoint(unitId, checkpoint.pending);
+
+    assert.deepEqual(rebased.operations.map((operation) => operation.operationId), ['op-1', 'op-2']);
+    assert.equal(rebased.nextClientSequence, 2);
+    assert.equal(rebased.snapshotRevision, 50);
+
+    store.write(unitId, [first, later], 2, 51);
+    assert.throws(() => store.adoptSnapshotCheckpoint(unitId, checkpoint.pending), /STALE_SNAPSHOT_CHECKPOINT/);
+    assert.equal(store.read(unitId)?.snapshotRevision, 51);
+  });
+
   it('restores local-only workspaces without invoking API or collaboration transport', async () => {
     const runtime = createSpreadsheetRuntime({
       localOnly: true,
@@ -28,7 +79,7 @@ describe('local workspace runtime persistence', () => {
     assert.equal(runtime.workspaceRecord?.syncMode, 'local-only');
   });
 
-  it('checkpoints the canonical snapshot after each root transaction', async () => {
+  it('checkpoints the canonical snapshot when explicitly requested after a root transaction', async () => {
     const runtime = createSpreadsheetRuntime({
       localOnly: true,
     });

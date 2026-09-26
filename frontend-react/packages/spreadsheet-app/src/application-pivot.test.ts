@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { createPivotMemberKey, type PivotModel } from '@react-sheets/core-model';
 import { WorkbookSession } from './workbook-session';
+import { createRemoteReadySessionFixture } from './session-test-fixtures';
 import { createInlineJsonQuery } from './features/query';
 import { InlinePivotTaskPort, type PivotTaskPort } from './features/pivot/task-port';
 import { clearPivotResultCache } from './features/pivot/engine';
@@ -74,7 +75,7 @@ async function waitForPivotResult(app: WorkbookSession, pivotId: string): Promis
 }
 
 it('loads and refreshes a cross-sheet PivotChart dependency without projecting unrelated sheets', async () => {
-  const app = new WorkbookSession();
+  const app = createRemoteReadySessionFixture();
   try {
     const { sheetId, pivot } = seed(app);
     await app.addPivot(pivot);
@@ -181,7 +182,7 @@ describe('WorkbookSession PivotTable integration', () => {
   });
 
   it('creates a new worksheet and PivotTable as one history entry', async () => {
-    const app = new WorkbookSession();
+    const app = createRemoteReadySessionFixture();
     const { sheetId } = seed(app);
     app.runCommand('selection.set', {
       sheetId,
@@ -285,7 +286,7 @@ describe('WorkbookSession PivotTable integration', () => {
   });
 
   it('drillDownPivot creates a detail worksheet through the canonical command', async () => {
-    const app = new WorkbookSession();
+    const app = createRemoteReadySessionFixture();
     const { sheetId, pivot } = seed(app);
     pivot.id = 'pivot-drill';
     await app.addPivot(pivot);
@@ -299,7 +300,7 @@ describe('WorkbookSession PivotTable integration', () => {
   });
 
   it('drillDownPivot grows the detail worksheet for more than the default row extent', async () => {
-    const app = new WorkbookSession();
+    const app = createRemoteReadySessionFixture();
     const { sheetId, pivot } = seed(app);
     pivot.id = 'pivot-drill-large';
     if (pivot.source.kind !== 'worksheet-range') throw new Error('Expected a single worksheet Pivot source');
@@ -360,7 +361,7 @@ describe('WorkbookSession PivotTable integration', () => {
   });
 
   it('refreshes only linked PivotTables across different target sheets', async () => {
-    const app = new WorkbookSession();
+    const app = createRemoteReadySessionFixture();
     const { sheetId, pivot } = seed(app);
     pivot.id = 'pivot-linked-primary';
     await app.addPivot(pivot);
@@ -447,7 +448,7 @@ describe('WorkbookSession PivotTable integration', () => {
   });
 
   it('keeps an explicit block-backed worksheet source on the DataSource Pivot path', async () => {
-    const app = new WorkbookSession();
+    const app = createRemoteReadySessionFixture();
     await app.loadQuery(createInlineJsonQuery('pivot-block-source', 'Pivot block source', [
       { ID: 'A', Amount: 1 },
       { ID: 'B', Amount: 2 },
@@ -504,7 +505,7 @@ describe('WorkbookSession PivotTable integration', () => {
   });
 
   it('loads DataSource Pivot field members only when a picker requests them', async () => {
-    const app = new WorkbookSession();
+    const app = createRemoteReadySessionFixture();
     await app.loadQuery(createInlineJsonQuery('pivot-lazy-members', 'Pivot lazy members', [
       { Region: 'East', Amount: 10 },
       { Region: 'West', Amount: 20 },
@@ -528,7 +529,7 @@ describe('WorkbookSession PivotTable integration', () => {
   });
 
   it('creates a DataSource Pivot timeline from Query date fields', async () => {
-    const app = new WorkbookSession();
+    const app = createRemoteReadySessionFixture();
     await app.loadQuery(createInlineJsonQuery('pivot-date-block-source', 'Pivot date blocks', [
       { PostedAt: '2026-08-25T00:00:00', Amount: 10 },
       { PostedAt: '2026-08-25T12:00:00', Amount: 20 },

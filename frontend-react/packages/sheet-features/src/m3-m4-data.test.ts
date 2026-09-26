@@ -40,6 +40,12 @@ test('sorting uses resolved formula results, keeps stable ties, and replays/undo
       [{ formula: '=B4+10', value: null }, { value: 'third' }],
     ],
   });
+  sheet.cells.set(1, 0, { ...sheet.cells.get(1, 0)!, formulaValue: 11 });
+  sheet.cells.set(2, 0, { ...sheet.cells.get(2, 0)!, formulaValue: 22 });
+  sheet.cells.set(3, 0, { ...sheet.cells.get(3, 0)!, formulaValue: 33 });
+  const primarySheetReference = sheet.name.replaceAll("'", "''");
+  const dependentSheet = workbook.addSheet('sheet-2', 'Dependent');
+  dependentSheet.cells.set(0, 0, { value: null, formula: `='${primarySheetReference}'!A2`, formulaValue: 99 });
   const beforeSort = workbook.snapshot();
   const formulaResults = new Map([[1, 20], [2, 5], [3, 5]]);
   commands.setCellValueResolver((_currentSheet, row, column) => column === 0 ? formulaResults.get(row) ?? null : undefined);
@@ -58,6 +64,11 @@ test('sorting uses resolved formula results, keeps stable ties, and replays/undo
   assert.equal(sheet.cells.get(1, 1)?.value, 'second');
   assert.equal(sheet.cells.get(2, 1)?.value, 'third');
   assert.equal(sheet.cells.get(3, 1)?.value, 'first');
+  assert.equal(sheet.cells.get(3, 0)?.formula, '=B4+10');
+  assert.equal(sheet.cells.get(1, 0)?.formulaValue, undefined);
+  assert.equal(sheet.cells.get(2, 0)?.formulaValue, undefined);
+  assert.equal(sheet.cells.get(3, 0)?.formulaValue, undefined);
+  assert.equal(dependentSheet.cells.get(0, 0)?.formulaValue, undefined);
 
   const remoteWorkbook = WorkbookModel.fromSnapshot(beforeSort);
   const remoteCommands = new CommandRuntime(remoteWorkbook);
@@ -71,9 +82,11 @@ test('sorting uses resolved formula results, keeps stable ties, and replays/undo
   assert.equal(sheet.cells.get(1, 1)?.value, 'first');
   assert.equal(sheet.cells.get(2, 1)?.value, 'second');
   assert.equal(sheet.cells.get(3, 1)?.value, 'third');
+  assert.equal(sheet.cells.get(1, 0)?.formula, '=B2+10');
   assert.equal(commands.redo(), true);
   assert.equal(sheet.cells.get(1, 1)?.value, 'second');
   assert.equal(sheet.cells.get(3, 1)?.value, 'first');
+  assert.equal(sheet.cells.get(3, 0)?.formula, '=B4+10');
 });
 
 test('sort keys retain canonical typed formula results and reject unresolved values', () => {
@@ -624,6 +637,62 @@ test('Validation supports custom AST, formula-backed list, time/date, multi-sele
   assert.equal(validateDataInput(sheet, 0, 3, '25:30').blocking, true);
 });
 
+test('conditional formatting and validation resolve qualified same-sheet names to canonical IDs', () => {
+  const { workbook } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, { value: 'Allowed' });
+  const formula = `=${sheet.name}!A1="Allowed"`;
+  sheet.conditionalFormats.push({
+    id: 'qualified-cf',
+    sheetId: sheet.id,
+    ranges: [{ sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 1, endColumn: 1 }],
+    type: 'highlight',
+    operator: 'formula',
+    value1: formula,
+    priority: 1,
+    style: { background: '#abcdef' },
+  });
+  assert.deepEqual(computeConditionalOverlays(sheet).get('0:1')?.style, { background: '#abcdef' });
+
+  const validation = normalizeDataValidationRule({
+    id: 'qualified-validation',
+    sheetId: sheet.id,
+    ranges: [{ sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 2, endColumn: 2 }],
+    type: 'custom',
+    formula1: formula,
+  });
+  sheet.dataValidations.push(validation);
+  assert.equal(validateDataInput(sheet, 0, 2, 'candidate').valid, true);
+});
+
+test('unresolved formula-backed validation lists never become literal options or allow arbitrary values', () => {
+  const { workbook } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  for (const [id, formula] of [
+    ['unresolved-list', '=MissingSheet!A1:A2'],
+    ['unprefixed-unresolved-list', 'MissingSheet!A1:A2'],
+  ] as const) {
+    const rule = normalizeDataValidationRule({
+      id,
+      sheetId: sheet.id,
+      ranges: [{ sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }],
+      type: 'list',
+      listSource: { kind: 'formula', formula },
+    });
+    sheet.dataValidations.push(rule);
+
+    assert.equal(validationList(rule, sheet), undefined);
+    assert.deepEqual(validateDataInput(sheet, 0, 0, 'arbitrary'), {
+      valid: false,
+      blocking: true,
+      message: '列表来源不可用',
+      ruleId: id,
+      alertStyle: 'stop',
+    });
+    sheet.dataValidations.pop();
+  }
+});
+
 test('Text Columns, Split and Flip are one undoable transaction and clear stale output', () => {
   const { workbook, commands } = runtime();
   const sheet = workbook.getSheet(workbook.primarySheetId);
@@ -645,4 +714,274 @@ test('Text Columns, Split and Flip are one undoable transaction and clear stale 
   sheet.cells.set(0, 1, { value: 'b' });
   commands.execute('matrix.flip', { sheetId: sheet.id, range: { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 1 }, direction: 'horizontal' });
   assert.equal(sheet.cells.get(0, 0)?.value, 'b');
+});
+
+test('matrix flip remaps barcode formula references with the transformed cell coordinates', () => {
+  const { workbook, commands } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, {
+    value: null,
+    presentation: {
+      kind: 'barcode',
+      symbology: 'qr',
+      source: { kind: 'formula', formula: '=B1' },
+      parameters: { symbology: 'qr' },
+      options: { foreground: '#000000', background: '#ffffff', showText: true, labelPosition: 'below', quietZone: 2 },
+    },
+  });
+  sheet.cells.set(0, 1, { value: 'other' });
+
+  commands.execute('matrix.flip', {
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 1 },
+    direction: 'horizontal',
+  });
+
+  const flippedPresentation = sheet.cells.get(0, 1)?.presentation;
+  assert.equal(flippedPresentation?.kind === 'barcode' && flippedPresentation.source.kind === 'formula' ? flippedPresentation.source.formula : undefined, '=A1');
+});
+
+test('matrix flip shifts relative references outside the transformed cells with the formula owner', () => {
+  const { workbook, commands } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, { value: 'left' });
+  sheet.cells.set(0, 1, { value: null, formula: '=D1+$D$1' });
+
+  commands.execute('matrix.flip', {
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 1 },
+    direction: 'horizontal',
+  });
+
+  assert.equal(sheet.cells.get(0, 0)?.formula, '=C1+$D$1');
+});
+
+test('matrix transforms reject block-backed data regions before writing cells', () => {
+  const { workbook, commands } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.addDataRegion({
+    id: 'matrix-region',
+    sourceId: 'source-1',
+    range: { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 1, endColumn: 1 },
+    headerRow: 0,
+    revision: 0,
+  });
+  sheet.cells.set(2, 0, { value: 'unchanged' });
+  const before = workbook.snapshot();
+
+  assert.throws(() => commands.execute('matrix.transpose', {
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 1, startColumn: 0, endColumn: 0 },
+  }), /data-region/);
+  assert.deepEqual(workbook.snapshot(), before);
+});
+
+test('matrix transpose rejects a spill projection intersecting its expanded target', () => {
+  const { workbook, commands } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, { value: null, formula: '=SEQUENCE(1,2)' });
+  sheet.cells.set(1, 0, { value: 'bottom' });
+  sheet.spillRanges.push({
+    sheetId: sheet.id,
+    anchor: { row: 0, column: 0 },
+    range: { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 1 },
+    values: [[1, 2]],
+    state: 'ok',
+  });
+  const before = workbook.snapshot();
+
+  assert.throws(() => commands.execute('matrix.transpose', {
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 1, startColumn: 0, endColumn: 0 },
+  }), /dynamic-array spill range/);
+  assert.deepEqual(workbook.snapshot(), before);
+});
+
+test('matrix transforms reject invalid source coordinates before clearing any cells', () => {
+  const { workbook, commands } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, { value: 'keep' });
+  const before = workbook.snapshot();
+
+  assert.throws(() => commands.execute('matrix.transpose', {
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: -1, endRow: 0, startColumn: 0, endColumn: 0 },
+  }), /source range is outside worksheet bounds/);
+  assert.deepEqual(workbook.snapshot(), before);
+});
+
+test('matrix transforms reject hyperlink owners rather than leaving anchors behind', () => {
+  const { workbook, commands } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, { value: 'left' });
+  sheet.cells.set(0, 1, { value: 'right' });
+  sheet.hyperlinks.set('0:0', { id: 'matrix-link', target: { kind: 'url', url: 'https://example.com' } });
+  const before = workbook.snapshot();
+
+  assert.throws(() => commands.execute('matrix.flip', {
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 1 },
+    direction: 'horizontal',
+  }), /hyperlink anchors/);
+  assert.deepEqual(workbook.snapshot(), before);
+});
+
+test('matrix transform checks review, drawing, and sparkline anchors by both coordinates', () => {
+  const { workbook, commands } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, { value: 'selected' });
+  sheet.review.setNote(0, 1, { id: 'outside-note', author: 'u', text: 'outside', createdAt: '2026-01-01', visible: true });
+  sheet.review.addThread({ id: 'outside-thread', sheetId: sheet.id, row: 0, column: 1, author: 'u', text: 'outside', createdAt: '2026-01-01', replies: [] });
+  sheet.drawings.push({ id: 'outside-drawing', sheetId: sheet.id, kind: 'shape', anchor: { kind: 'one-cell', row: 0, column: 1 }, transform: { x: 0, y: 0, width: 10, height: 10 }, zIndex: 0, payloadId: 'p1' });
+  sheet.sparklines.push({ id: 'outside-sparkline', sheetId: sheet.id, anchor: { row: 0, column: 1 }, sourceRange: { sheetId: sheet.id, startRow: 1, endRow: 1, startColumn: 0, endColumn: 1 }, type: 'line', color: '#000000' });
+
+  commands.execute('matrix.transpose', {
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 },
+  });
+
+  assert.equal(sheet.cells.get(0, 0)?.value, 'selected');
+  assert.equal(sheet.review.getNoteAt(0, 1)?.text, 'outside');
+});
+
+test('matrix transpose rejects owners in the expanded target range before writing cells', () => {
+  for (const owner of ['note', 'thread', 'drawing', 'sparkline'] as const) {
+    const { workbook, commands } = runtime();
+    const sheet = workbook.getSheet(workbook.primarySheetId);
+    sheet.cells.set(0, 0, { value: 'top' });
+    sheet.cells.set(1, 0, { value: 'bottom' });
+    if (owner === 'note') sheet.review.setNote(0, 1, { id: 'target-note', author: 'u', text: 'target', createdAt: '2026-01-01', visible: true });
+    if (owner === 'thread') sheet.review.addThread({ id: 'target-thread', sheetId: sheet.id, row: 0, column: 1, author: 'u', text: 'target', createdAt: '2026-01-01', replies: [] });
+    if (owner === 'drawing') sheet.drawings.push({ id: 'target-drawing', sheetId: sheet.id, kind: 'shape', anchor: { kind: 'one-cell', row: 0, column: 1 }, transform: { x: 0, y: 0, width: 10, height: 10 }, zIndex: 0, payloadId: 'p1' });
+    if (owner === 'sparkline') sheet.sparklines.push({ id: 'target-sparkline', sheetId: sheet.id, anchor: { row: 0, column: 1 }, sourceRange: { sheetId: sheet.id, startRow: 1, endRow: 1, startColumn: 0, endColumn: 1 }, type: 'line', color: '#000000' });
+    const before = workbook.snapshot();
+
+    assert.throws(() => commands.execute('matrix.transpose', {
+      sheetId: sheet.id,
+      range: { sheetId: sheet.id, startRow: 0, endRow: 1, startColumn: 0, endColumn: 0 },
+    }), /drawing anchors|review objects|sparklines/);
+    assert.deepEqual(workbook.snapshot(), before);
+  }
+});
+
+test('matrix flip keeps OOXML source formula provenance aligned with the canonical formula', () => {
+  const { workbook, commands } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, {
+    value: null,
+    formula: '=B1',
+    formulaMetadata: { kind: 'normal', sourceFormula: '=B1' },
+  });
+  sheet.cells.set(0, 1, { value: 'other' });
+  const before = workbook.snapshot();
+
+  commands.execute('matrix.flip', {
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 1 },
+    direction: 'horizontal',
+  });
+
+  const movedFormula = sheet.cells.get(0, 1);
+  assert.equal(movedFormula?.formula, '=A1');
+  assert.equal(movedFormula?.formulaMetadata?.sourceFormula, '=A1');
+
+  const remoteWorkbook = WorkbookModel.fromSnapshot(before);
+  const remoteCommands = new CommandRuntime(remoteWorkbook);
+  registerSheetCommands(remoteCommands);
+  remoteCommands.applyRemoteMutations(commands.getUndoEntries().at(-1)!.redo);
+  assert.deepEqual(remoteWorkbook.snapshot().sheets.find((candidate) => candidate.id === sheet.id)?.cells,
+    workbook.snapshot().sheets.find((candidate) => candidate.id === sheet.id)?.cells);
+});
+
+test('matrix transpose rejects a preserved-only metadata formula owner atomically', () => {
+  const { workbook, commands } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, {
+    value: null,
+    formulaMetadata: { kind: 'normal', preservedOnly: true, reason: 'unsupported formula', sourceFormula: '=B1' },
+  });
+  sheet.cells.set(0, 1, { value: 'other' });
+
+  assert.throws(() => commands.execute('matrix.transpose', {
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 1, startColumn: 0, endColumn: 1 },
+  }), /UNSUPPORTED_MATRIX_FORMULA_GROUP/);
+
+  assert.equal(sheet.cells.get(0, 0)?.formulaMetadata?.sourceFormula, '=B1');
+  assert.equal(sheet.cells.get(0, 1)?.value, 'other');
+});
+
+test('matrix transpose clears formula cache and provenance from source slots outside the target', () => {
+  const { workbook, commands } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, {
+    value: null,
+    formula: '=A2',
+    formulaValue: 11,
+    formulaMetadata: { kind: 'normal', sourceFormula: '=A2' },
+  });
+  sheet.cells.set(1, 0, {
+    value: null,
+    formula: '=A1',
+    formulaValue: 22,
+    formulaMetadata: { kind: 'normal', sourceFormula: '=A1' },
+  });
+  const before = workbook.snapshot();
+
+  commands.execute('matrix.transpose', {
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 1, startColumn: 0, endColumn: 0 },
+  });
+
+  assert.equal(sheet.cells.get(0, 1)?.formula, '=A1');
+  assert.equal(sheet.cells.get(0, 1)?.formulaValue, undefined);
+  assert.equal(sheet.cells.get(0, 1)?.displayValue, undefined);
+  assert.equal(sheet.cells.get(0, 1)?.formulaMetadata?.sourceFormula, '=A1');
+  assert.equal(sheet.cells.get(1, 0)?.formula, undefined);
+  assert.equal(sheet.cells.get(1, 0)?.formulaValue, undefined);
+  assert.equal(sheet.cells.get(1, 0)?.formulaMetadata, undefined);
+
+  const remoteWorkbook = WorkbookModel.fromSnapshot(before);
+  const remoteCommands = new CommandRuntime(remoteWorkbook);
+  registerSheetCommands(remoteCommands);
+  remoteCommands.applyRemoteMutations(commands.getUndoEntries().at(-1)!.redo);
+  assert.deepEqual(remoteWorkbook.snapshot().sheets.find((candidate) => candidate.id === sheet.id)?.cells,
+    workbook.snapshot().sheets.find((candidate) => candidate.id === sheet.id)?.cells);
+});
+
+test('matrix transpose preserves occupied cells in the corner outside source and target', () => {
+  const { workbook, commands } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, { value: 'top' });
+  sheet.cells.set(1, 0, { value: 'bottom' });
+  sheet.cells.set(1, 1, { value: 'outside both ranges' });
+
+  commands.execute('matrix.transpose', {
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 1, startColumn: 0, endColumn: 0 },
+  });
+
+  assert.equal(sheet.cells.get(0, 0)?.value, 'top');
+  assert.equal(sheet.cells.get(0, 1)?.value, 'bottom');
+  assert.equal(sheet.cells.get(1, 1)?.value, 'outside both ranges');
+});
+
+test('matrix flip rejects formula-group ownership changes before changing any cells', () => {
+  const { workbook, commands } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, {
+    value: null,
+    formula: '=Z100',
+    formulaMetadata: { kind: 'shared', range: 'A1:B1', sourceFormula: '=Z100' },
+  });
+  sheet.cells.set(0, 1, { value: 'other' });
+
+  assert.throws(() => commands.execute('matrix.flip', {
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 1 },
+    direction: 'horizontal',
+  }), /UNSUPPORTED_MATRIX_FORMULA_GROUP/);
+  assert.equal(sheet.cells.get(0, 0)?.formula, '=Z100');
+  assert.equal(sheet.cells.get(0, 0)?.formulaMetadata?.sourceFormula, '=Z100');
+  assert.equal(sheet.cells.get(0, 1)?.value, 'other');
 });

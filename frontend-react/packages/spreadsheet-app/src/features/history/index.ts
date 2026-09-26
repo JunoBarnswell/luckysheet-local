@@ -1,6 +1,7 @@
 import { pivotSourceIdentity, WorkbookModel, type PivotResultTree, type WorkbookSnapshot } from '@react-sheets/core-model';
 import type { CommandRegistry, CommandResult } from '@react-sheets/command-runtime';
 import { FormulaEngine, type SheetTableRef } from '@react-sheets/formula-engine';
+import { createSpillEnvironment } from '../../formula-spill-sync';
 import { preparePivotTaskDescriptor, preparePivotTaskInputAsync } from '../pivot/engine';
 import { InlinePivotTaskPort, type PivotTaskPort } from '../pivot/task-port';
 import { createPivotCalculateRequest, createPivotSourceRegisterRequest, createPivotSourceReleaseRequest, type PivotTaskError } from '../pivot/task-protocol';
@@ -159,7 +160,7 @@ function applyRestoredWorkbook(target: WorkbookModel, snapshot: WorkbookSnapshot
   target.dataModel.sources.clear();
   target.dataModel.relationships.clear();
   target.dataModel.views.clear();
-  target.definedNameModels.splice(0, target.definedNameModels.length, ...structuredClone(restored.definedNameModels));
+  target.replaceDefinedNames(restored.definedNameModels);
   target.name = restored.name;
   target.sheetOrder = [...restored.sheetOrder];
   // `definedNameModels` is the canonical store; the workbook-scoped formula
@@ -210,7 +211,7 @@ function pivotCacheKey(revision: number, pivotId: string): string {
 }
 
 async function hydratePreviewFormula(workbook: WorkbookModel): Promise<FormulaEngine> {
-  const engine = new FormulaEngine({ defaultSheetId: workbook.primarySheetId });
+  const engine = new FormulaEngine({ defaultSheetId: workbook.primarySheetId, sheetOrder: workbook.sheetOrder.map((id) => ({ id, name: workbook.getSheet(id).name })) });
   engine.setRecalculationMode('manual');
   engine.setDefinedNameModels(workbook.definedNameModels);
   const tableRefs: SheetTableRef[] = workbook.getSheets().flatMap((sheet) => sheet.sheetTables.map((table) => ({
@@ -224,11 +225,7 @@ async function hydratePreviewFormula(workbook: WorkbookModel): Promise<FormulaEn
   })));
   engine.setSheetTables(tableRefs);
   for (const sheet of workbook.getSheets()) {
-    engine.setSpillEnvironment(sheet.id, {
-      rowCount: sheet.rowCount,
-      columnCount: sheet.columnCount,
-      isOccupied: (row, column) => sheet.cells.get(row, column) !== undefined,
-    });
+    engine.setSpillEnvironment(sheet.id, createSpillEnvironment(sheet));
     sheet.cells.forEach((cell, row, column) => {
       const address = { sheetId: sheet.id, row, column };
       if (cell.formula !== undefined) engine.setFormula(address, cell.formula);

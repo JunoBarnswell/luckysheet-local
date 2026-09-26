@@ -5,11 +5,10 @@ import type {
   OperationEnvelope,
   OperationIntent,
 } from '@react-sheets/protocol';
-import { validateOperationEnvelope } from '@react-sheets/protocol';
+import { requiresStructuralPatch, validateOperationEnvelope, validateStructuralPatch } from '@react-sheets/protocol';
 import { classifyMutation, committedMutationToClassified } from './operation-types';
 import { rebaseAgainstHistory } from './ot-rebase';
 import { OfflineQueue } from './offline-queue';
-import { CollaborativeUndoStack } from './collaborative-undo';
 import { PresenceStore } from './presence';
 
 export interface CollaborationSessionOptions {
@@ -27,13 +26,68 @@ interface AckWaiter {
   reject: (cause: unknown) => void;
 }
 
-const LOCAL_UNDO_KEY = 'local';
+function assertStructuralPatch(value: unknown, mutationId: string): void {
+  validateStructuralPatch(value, mutationId);
+}
+
+type StructuralImpactRange = NonNullable<CommittedOperationEnvelope['mutations'][number]['structuralImpactRanges']>[number];
+
+function structuralPatchImpactRanges(
+  patch: NonNullable<CommittedOperationEnvelope['mutations'][number]['structuralPatch']>,
+): StructuralImpactRange[] {
+  const ranges = new Map<string, StructuralImpactRange>();
+  for (const delta of patch.formulaOwnerDeltas) {
+    const deltaRanges: StructuralImpactRange[] = delta.kind === 'formula-cell'
+      ? [delta.beforeAddress, delta.afterAddress].map((address) => ({
+        sheetId: address.sheetId,
+        startRow: address.row,
+        endRow: address.row,
+        startColumn: address.column,
+        endColumn: address.column,
+      }))
+      : delta.kind === 'formula-rule' ? [...delta.beforeRanges, ...delta.afterRanges] : [];
+    for (const range of deltaRanges) {
+      ranges.set(JSON.stringify([range.sheetId, range.startRow, range.endRow, range.startColumn, range.endColumn]), range);
+    }
+  }
+  for (const delta of patch.rangeOwnerDeltas) {
+    const deltaRanges: StructuralImpactRange[] = delta.ownerKind === 'data-region'
+      ? [delta.before.range, delta.after.range]
+      : [delta.before, delta.after];
+    for (const range of deltaRanges) {
+      ranges.set(JSON.stringify([range.sheetId, range.startRow, range.endRow, range.startColumn, range.endColumn]), range);
+    }
+  }
+  return [...ranges.values()];
+}
+
+function sameRange(left: StructuralImpactRange, right: StructuralImpactRange | undefined): boolean {
+  return right !== undefined
+    && left.sheetId === right.sheetId
+    && left.startRow === right.startRow && left.endRow === right.endRow
+    && left.startColumn === right.startColumn && left.endColumn === right.endColumn;
+}
+
+function committedMutationInfos(operation: CommittedOperationEnvelope): MutationInfo[] {
+  return operation.mutations.map((mutation) => ({
+    id: mutation.id,
+    unitId: operation.unitId,
+    sheetId: mutation.sheetId,
+    params: mutation.params,
+    affectedRanges: [...mutation.affectedRanges],
+    ...(mutation.structuralImpactRanges?.length ? { structuralImpactRanges: [...mutation.structuralImpactRanges] } : {}),
+    ...(mutation.structuralPatch ? {
+      structuralFormulaOwnerDeltas: structuredClone(mutation.structuralPatch.formulaOwnerDeltas),
+      structuralDefinedNameOwnerDeltas: structuredClone(mutation.structuralPatch.definedNameOwnerDeltas),
+      structuralRangeOwnerDeltas: structuredClone(mutation.structuralPatch.rangeOwnerDeltas),
+    } : {}),
+  }));
+}
 
 /** 协同会话 — single operation envelope + OT rebase + ACK-gated offline queue. */
 export class CollaborationSession {
   readonly presence = new PresenceStore();
   readonly offlineQueue: OfflineQueue;
-  readonly collaborativeUndo = new CollaborativeUndoStack();
 
   private runtime: CommandRuntime;
   private send?: (operation: OperationEnvelope) => boolean | Promise<boolean | number>;
@@ -116,7 +170,7 @@ export class CollaborationSession {
       mutation.id,
       mutation.params,
       mutation.sheetId,
-      [...mutation.affectedRanges],
+      [...mutation.affectedRanges, ...(mutation.structuralImpactRanges ?? [])],
     )));
     this.offlineQueue.enqueue(operation);
     return operation;
@@ -143,8 +197,28 @@ export class CollaborationSession {
     this.assertCommittedOperation(operation);
     if (operation.unitId !== this.runtime.workbook.unitId) throw new Error('Remote operation belongs to another workbook');
     if (!Number.isSafeInteger(operation.revision) || operation.revision < 1) throw new Error('Remote operation revision is invalid');
+    const pendingLocal = this.offlineQueue.getPendingOperation(operation.operationId);
+    if (pendingLocal && !this.committedOperationIds.has(operation.operationId)) {
+      const requested = pendingLocal;
+      const committedMutations = operation.mutations.map(({ id, sheetId, params }) => ({ id, sheetId, params }));
+      if (operation.origin !== 'client'
+        || operation.clientSessionId !== requested.clientSessionId
+        || operation.clientSequence !== requested.clientSequence
+        || operation.baseRevision !== requested.baseRevision
+        || operation.unitId !== requested.unitId
+        || JSON.stringify(committedMutations) !== JSON.stringify(requested.mutations)
+        || JSON.stringify(operation.intent ?? null) !== JSON.stringify(requested.intent ?? null)) {
+        throw new Error('Committed operation does not match the pending local operation');
+      }
+    }
     if (this.committedOperationIds.has(operation.operationId)) {
+      this.applyValidatedStructuralPatches(operation);
       this.baseRevision = Math.max(this.baseRevision, operation.revision);
+      return;
+    }
+    if (pendingLocal) {
+      this.applyValidatedStructuralPatches(operation);
+      this.acknowledge(operation.operationId, operation.revision);
       return;
     }
     const incoming = operation.mutations.map((mutation) => committedMutationToClassified(mutation));
@@ -155,6 +229,12 @@ export class CollaborationSession {
       sheetId: mutation.sheetId,
       params: mutation.params,
       affectedRanges: [...mutation.affectedRanges],
+      ...(mutation.structuralImpactRanges?.length ? { structuralImpactRanges: [...mutation.structuralImpactRanges] } : {}),
+      ...(mutation.structuralPatch ? {
+        structuralFormulaOwnerDeltas: structuredClone(mutation.structuralPatch.formulaOwnerDeltas),
+        structuralDefinedNameOwnerDeltas: structuredClone(mutation.structuralPatch.definedNameOwnerDeltas),
+        structuralRangeOwnerDeltas: structuredClone(mutation.structuralPatch.rangeOwnerDeltas),
+      } : {}),
     })), { operationId: operation.operationId, baseRevision: operation.baseRevision, revision: operation.revision });
     this.committedOperationIds.add(operation.operationId);
     for (const classified of incoming) {
@@ -165,6 +245,21 @@ export class CollaborationSession {
     this.rebaseQueuedOperations(this.baseRevision);
   }
 
+  /** Apply server-owned structural facts before making a local operation terminal. */
+  applyCommittedStructuralPatches(operation: CommittedOperationEnvelope): void {
+    this.assertCommittedOperation(operation);
+    if (operation.unitId !== this.runtime.workbook.unitId) throw new Error('Committed operation belongs to another workbook');
+    this.applyValidatedStructuralPatches(operation);
+  }
+
+  private applyValidatedStructuralPatches(operation: CommittedOperationEnvelope): void {
+    this.runtime.applyCommittedStructuralPatches(
+      operation.operationId,
+      committedMutationInfos(operation),
+      operation.revision,
+    );
+  }
+
   /** ACK is the only normal path that removes an operation from the queue. */
   acknowledge(operationId: string, revision: number): boolean {
     if (!Number.isSafeInteger(revision) || revision < 1) throw new Error('ACK revision is invalid');
@@ -172,8 +267,7 @@ export class CollaborationSession {
       this.baseRevision = Math.max(this.baseRevision, revision);
       return false;
     }
-    if (!this.localClassified.has(operationId)
-      && !this.offlineQueue.getPending().some((entry) => entry.operation.operationId === operationId)) {
+    if (!this.localClassified.has(operationId) && !this.offlineQueue.hasPendingOperation(operationId)) {
       return false;
     }
     const local = this.localClassified.get(operationId);
@@ -215,7 +309,11 @@ export class CollaborationSession {
     history: readonly ReturnType<typeof classifyMutation>[] = this.committedMutations,
   ) {
     const pending = classifyMutation(mutationId, params, sheetId, [...affectedRanges]);
-    return rebaseAgainstHistory(pending, [...history]);
+    return rebaseAgainstHistory(pending, [...history], { sheetOrder: this.currentSheetOrder() });
+  }
+
+  private currentSheetOrder(): readonly { readonly id: string; readonly name: string }[] {
+    return this.runtime.workbook.sheetOrder.map((id) => ({ id, name: this.runtime.workbook.getSheet(id).name }));
   }
 
   recordCommittedMutations(mutations: Array<{ id: string; params: unknown; sheetId: string; affectedRanges: MutationInfo['affectedRanges'] }>): void {
@@ -233,11 +331,13 @@ export class CollaborationSession {
   loadCommittedHistory(operations: readonly CommittedOperationEnvelope[]): void {
     const ordered = [...operations].sort((left, right) => left.revision - right.revision);
     for (const operation of ordered) this.assertCommittedOperation(operation);
+    const pendingOperationIds = new Set(this.offlineQueue.getPendingOperationIds());
+    const acknowledgedPending: string[] = [];
     for (const operation of ordered) {
       if (operation.unitId !== this.runtime.workbook.unitId || this.committedOperationIds.has(operation.operationId)) continue;
-      if (this.offlineQueue.getPending().some((entry) => entry.operation.operationId === operation.operationId)) {
+      if (pendingOperationIds.delete(operation.operationId)) {
         this.localClassified.delete(operation.operationId);
-        this.offlineQueue.acknowledge(operation.operationId);
+        acknowledgedPending.push(operation.operationId);
       }
       this.committedOperationIds.add(operation.operationId);
       for (const mutation of operation.mutations) {
@@ -247,6 +347,7 @@ export class CollaborationSession {
       }
       this.baseRevision = Math.max(this.baseRevision, operation.revision);
     }
+    this.offlineQueue.acknowledgeMany(acknowledgedPending);
     // Hydration already contains these revisions. Replaying their transforms
     // would move pending addresses a second time and create false conflicts.
     this.rebasedRemoteCount = this.remoteMutations.length;
@@ -254,31 +355,15 @@ export class CollaborationSession {
 
   /** Return pending intent for runtime hydration without exposing queue state. */
   getPendingOperations(): readonly OperationEnvelope[] {
-    return this.offlineQueue.getPending().map((entry) => structuredClone(entry.operation));
+    return this.offlineQueue.getPending().map((entry) => entry.operation);
   }
 
   /** Explicitly discard the local journal; rejected operations are never
    * removed implicitly by transport failures. */
   clearPending(): void {
-    for (const entry of this.offlineQueue.getPending()) {
-      this.offlineQueue.discard(entry.operation.operationId);
-      this.localClassified.delete(entry.operation.operationId);
-    }
-    this.collaborativeUndo.clear(LOCAL_UNDO_KEY);
-  }
-
-  recordLocalUndo(entry: { operationId: string; undoMutations: MutationInfo[] }): void {
-    this.collaborativeUndo.push(LOCAL_UNDO_KEY, {
-      operationId: entry.operationId,
-      actorId: LOCAL_UNDO_KEY,
-      undoMutations: entry.undoMutations,
-      timestamp: Date.now(),
-    });
-  }
-
-  undoOwnLast(): MutationInfo[] | undefined {
-    const entry = this.collaborativeUndo.pop(LOCAL_UNDO_KEY);
-    return entry ? this.collaborativeUndo.createCompensatingCommand(entry) : undefined;
+    const operationIds = this.offlineQueue.getPendingOperationIds();
+    this.offlineQueue.discardMany(operationIds);
+    for (const operationId of operationIds) this.localClassified.delete(operationId);
   }
 
   private async flushOperation(operation: OperationEnvelope): Promise<number> {
@@ -345,6 +430,21 @@ export class CollaborationSession {
     if (Number.isNaN(Date.parse(operation.createdAt)) || Number.isNaN(Date.parse(operation.committedAt))) {
       throw new Error('Committed operation timestamps are invalid');
     }
+    for (const mutation of operation.mutations) {
+      if (mutation.structuralPatch === undefined && requiresStructuralPatch(mutation.id)) {
+        throw new Error(`Committed mutation ${mutation.id} requires a server-derived StructuralPatch`);
+      }
+      if (mutation.structuralPatch !== undefined) {
+        assertStructuralPatch(mutation.structuralPatch, mutation.id);
+        const expectedImpact = structuralPatchImpactRanges(mutation.structuralPatch);
+        const actualImpact = mutation.structuralImpactRanges ?? [];
+        if (expectedImpact.length !== actualImpact.length || expectedImpact.some((range, index) => !sameRange(range, actualImpact[index]))) {
+          throw new Error('Committed structural patch impact ranges are inconsistent');
+        }
+      } else if ((mutation.structuralImpactRanges?.length ?? 0) > 0) {
+        throw new Error('Committed structural impact ranges require a structural patch');
+      }
+    }
     const request = validateOperationEnvelope({
       schema: operation.schema,
       operationId: operation.operationId,
@@ -367,16 +467,20 @@ export class CollaborationSession {
   }
 
   private assertPendingCanRebase(committed: readonly ReturnType<typeof classifyMutation>[]): void {
-    for (const entry of this.offlineQueue.getPending()) {
-      const current = this.localClassified.get(entry.operation.operationId) ?? this.classifyEnvelope(entry.operation);
+    for (const operationId of this.offlineQueue.getPendingOperationIds()) {
+      const operation = this.localClassified.has(operationId)
+        ? undefined
+        : this.offlineQueue.getPendingOperation(operationId);
+      const current = this.localClassified.get(operationId) ?? (operation ? this.classifyEnvelope(operation) : undefined);
+      if (!current) throw new Error(`PENDING_CLASSIFICATION_MISSING: ${operationId}`);
       for (const mutation of current) {
         for (const other of committed) for (const left of mutation.affectedRanges) for (const right of other.affectedRanges) {
           if (left.sheetId === right.sheetId && left.startRow <= right.endRow && left.endRow >= right.startRow
             && left.startColumn <= right.endColumn && left.endColumn >= right.startColumn) {
-            throw new Error(`COLLABORATION_CONFLICT: ${entry.operation.operationId} 的目标已被其他用户修改，草稿已保留`);
+            throw new Error(`COLLABORATION_CONFLICT: ${operationId} 的目标已被其他用户修改，草稿已保留`);
           }
         }
-        rebaseAgainstHistory(mutation, [...committed]);
+        rebaseAgainstHistory(mutation, [...committed], { sheetOrder: this.currentSheetOrder() });
       }
     }
   }

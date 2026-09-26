@@ -1,10 +1,10 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Box, Button, CheckToggle, FileButton, Inline, Panel, PanelBody, PanelFooter, PanelHeader, PanelTitle, Select, Stack, Text, TextInput } from '@react-sheets/ui-system';
-import { buildExplicitChartSeries, CHART_SUBTYPES_BY_TYPE, chartStackingForSubtype, defaultChartSubtype, resolveWorksheetChartRanges, type ChartAxisModel, type ChartDrawingPayload, type DrawingObject, type DrawingPayload, type FormulaValue, type RangeRef } from '@react-sheets/core-model';
+import { buildExplicitChartSeries, CHART_SUBTYPES_BY_TYPE, chartStackingForSubtype, defaultChartSubtype, resolveWorksheetChartRanges, type ChartAxisModel, type ChartDrawingPayload, type ChartHistogramOptions, type DrawingObject, type DrawingPayload, type FormulaValue, type RangeRef } from '@react-sheets/core-model';
 import type { CommandDescriptor } from '@react-sheets/command-runtime';
 import { parseGeoJsonMapResource, type ChartElementSelection } from '@react-sheets/spreadsheet-app';
 import { chartLabels, chartSubtypeLabels, chartTypes } from '../chart/chart-labels';
-import { chartEditorDraft, chartPayloadFromDraft, chartSeriesDraft, chartSourcePayloadFromDraft, parseChartRange, retargetChartDraft, type ChartEditorDraft } from '../chart/chart-editor-state';
+import { chartEditorDraft, chartHistogramOptionsForMode, chartHistogramOptionsWithNumber, chartPayloadFromDraft, chartSeriesDraft, chartSourcePayloadFromDraft, parseChartRange, retargetChartDraft, type ChartEditorDraft } from '../chart/chart-editor-state';
 import { ChartSeriesEditor } from '../chart/ChartSeriesEditor';
 
 export interface ChartPanelProps {
@@ -127,6 +127,9 @@ export function ChartPanel({ sheetId, drawings, drawingPayloads, selectedDrawing
   };
   const updatePayload = (patch: Partial<ChartDrawingPayload>) => edit(value => ({ ...value, value: { ...value.value, ...patch } }));
   const updateElements = (patch: Partial<ChartDrawingPayload['elements']>) => edit(value => ({ ...value, value: { ...value.value, elements: { ...value.value.elements, ...patch } } }));
+  const histogramOptions = payload?.histogramOptions ?? { mode: 'automatic' as const };
+  const updateHistogramMode = (mode: ChartHistogramOptions['mode']) => edit(value => ({ ...value, value: { ...value.value, histogramOptions: chartHistogramOptionsForMode(value.value.histogramOptions, mode) } }));
+  const updateHistogramNumber = (key: 'binWidth' | 'binCount' | 'underflow' | 'overflow', text: string) => edit(value => ({ ...value, value: { ...value.value, histogramOptions: chartHistogramOptionsWithNumber(value.value.histogramOptions ?? { mode: 'automatic' }, key, text) } }));
   const cancel = () => {
     if (!id) return;
     setDrafts(all => { const next = { ...all }; delete next[id]; return next; });
@@ -179,6 +182,16 @@ export function ChartPanel({ sheetId, drawings, drawingPayloads, selectedDrawing
                 setMessage(null);
               }).catch((error) => { if (selectedChartIdRef.current === targetChartId && mapImportRef.current === request) { mapImportRef.current = undefined; setMessage(error instanceof Error ? error.message : 'GeoJSON 地图资源无效'); } });
             }}>导入 GeoJSON</FileButton>
+          </Group> : null}
+          {payload.chartType === 'histogram' || payload.chartType === 'pareto' ? <Group title="直方图分箱" open>
+            <Field label="分箱模式"><Select aria-label="直方图分箱模式" value={histogramOptions.mode} onChange={event => updateHistogramMode(event.target.value as ChartHistogramOptions['mode'])}><option value="automatic">自动分箱</option><option value="by-category">按类别汇总</option><option value="bin-width">按分箱宽度</option><option value="bin-count">按分箱数量</option></Select></Field>
+            {histogramOptions.mode === 'bin-width' ? <Field label="分箱宽度"><TextInput aria-label="直方图分箱宽度" type="number" min="0" step="any" value={histogramOptions.binWidth ?? ''} onChange={event => updateHistogramNumber('binWidth', event.target.value)} /></Field> : null}
+            {histogramOptions.mode === 'bin-count' ? <Field label="分箱数量（包含下溢／上溢箱）"><TextInput aria-label="直方图分箱数量" type="number" min="1" step="1" value={histogramOptions.binCount ?? ''} onChange={event => updateHistogramNumber('binCount', event.target.value)} /></Field> : null}
+            {histogramOptions.mode !== 'by-category' ? <Box className="grid grid-cols-2 gap-2">
+              <Field label="下溢阈值（≤）"><TextInput aria-label="直方图下溢阈值" type="number" step="any" placeholder="可选" value={histogramOptions.underflow ?? ''} onChange={event => updateHistogramNumber('underflow', event.target.value)} /></Field>
+              <Field label="上溢阈值（>）"><TextInput aria-label="直方图上溢阈值" type="number" step="any" placeholder="可选" value={histogramOptions.overflow ?? ''} onChange={event => updateHistogramNumber('overflow', event.target.value)} /></Field>
+            </Box> : null}
+            <Text size="xs" tone="muted">普通分箱按（下界，上界］计数；按类别模式会合并同名类别并求和。</Text>
           </Group> : null}
           {payload.source.kind === 'worksheet-ranges' ? <Field label="数据区域（多个区域用分号分隔）"><TextInput aria-label="图表数据区域" value={draft.sourceRanges} onChange={event => edit(value => ({ ...value, sourceRanges: event.target.value }))} /></Field>
             : payload.source.kind === 'report-range' ? <Field label="报表数据区域"><TextInput aria-label="图表数据区域" value={draft.sourceRanges} onChange={event => edit(value => ({ ...value, sourceRanges: event.target.value }))} /></Field>

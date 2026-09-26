@@ -426,7 +426,7 @@ export function getStablePivotFieldId(source: PivotSource, range: RangeRef, ordi
 }
 
 function createPivotFormulaEngine(workbook: WorkbookModel): FormulaEngine {
-  const engine = new FormulaEngine({ defaultSheetId: workbook.primarySheetId, recalculationMode: 'manual' });
+  const engine = new FormulaEngine({ defaultSheetId: workbook.primarySheetId, sheetOrder: workbook.sheetOrder.map((id) => ({ id, name: workbook.getSheet(id).name })), recalculationMode: 'manual' });
   engine.setDefinedNameModels(workbook.definedNameModels);
   configureWorkbookSpillEnvironments(engine, workbook);
   syncWorkbookSheetTables(engine, workbook);

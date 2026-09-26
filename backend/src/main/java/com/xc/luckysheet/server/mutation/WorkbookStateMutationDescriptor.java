@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.xc.luckysheet.server.contract.OperationMutation;
 import com.xc.luckysheet.server.contract.RangeRef;
+import com.xc.luckysheet.server.contract.WorkbookSnapshotValidator;
 import com.xc.luckysheet.server.contract.WorkbookAclRole;
 import com.xc.luckysheet.server.service.ServiceException;
 
@@ -105,20 +106,24 @@ final class WorkbookStateMutationDescriptor extends CanonicalJsonMutationDescrip
 
     private void setName(ObjectNode root, ObjectNode params) {
         ObjectNode model = SnapshotMutationSupport.requiredObject(params, "model");
+        java.util.Set<String> sheetIds = new java.util.HashSet<>();
+        for (JsonNode sheet : SnapshotMutationSupport.sheets(root)) {
+            if (sheet.path("id").isTextual()) sheetIds.add(sheet.path("id").asText());
+        }
+        WorkbookSnapshotValidator.requireCanonicalDefinedNameModel(model, sheetIds);
         String name = SnapshotMutationSupport.text(model, "name");
         String formula = SnapshotMutationSupport.text(model, "formula");
         String scope = SnapshotMutationSupport.text(model, "scope");
-        if (!scope.equals("workbook") && !scope.equals("sheet")) throw ServiceException.validation("Defined name scope is invalid");
         String sheetId = SnapshotMutationSupport.optionalText(model, "sheetId");
-        if (scope.equals("sheet") && (sheetId == null || sheetId.isBlank())) throw ServiceException.validation("Sheet-scoped name requires sheetId");
-        if (sheetId != null) SnapshotMutationSupport.sheet(root, sheetId);
-        if (name.length() > 255 || formula.length() > 32_767) throw ServiceException.validation("Defined name is too large");
         ArrayNode models = SnapshotMutationSupport.array(root, "definedNameModels");
         int existing = nameIndex(models, name, scope, sheetId);
         if (existing >= 0) models.set(existing, model.deepCopy());
         else models.add(model.deepCopy());
-        ObjectNode legacyFormulaView = SnapshotMutationSupport.object(root, "definedNames");
-        if (scope.equals("workbook")) legacyFormulaView.put(name, formula);
+        if (scope.equals("workbook")) {
+            ObjectNode formulaView = SnapshotMutationSupport.object(root, "definedNames");
+            removeProjectedWorkbookName(formulaView, name);
+            formulaView.put(name, formula);
+        }
     }
 
     private void removeName(ObjectNode root, ObjectNode params) {
@@ -131,7 +136,7 @@ final class WorkbookStateMutationDescriptor extends CanonicalJsonMutationDescrip
         int index = nameIndex(models, name, scope, sheetId);
         if (index < 0) throw ServiceException.notFound("Defined name not found: " + name);
         models.remove(index);
-        if (scope.equals("workbook")) SnapshotMutationSupport.object(root, "definedNames").remove(name);
+        if (scope.equals("workbook")) removeProjectedWorkbookName(SnapshotMutationSupport.object(root, "definedNames"), name);
     }
 
     private void setCalculationMode(ObjectNode root, ObjectNode params) {
@@ -292,16 +297,26 @@ final class WorkbookStateMutationDescriptor extends CanonicalJsonMutationDescrip
     }
 
     private int nameIndex(ArrayNode models, String name, String scope, String sheetId) {
+        int match = -1;
         for (int index = 0; index < models.size(); index++) {
             JsonNode model = models.get(index);
             if (model.isObject()
                     && name.equalsIgnoreCase(model.path("name").asText())
                     && scope.equals(model.path("scope").asText())
                     && java.util.Objects.equals(sheetId, model.path("sheetId").isMissingNode() ? null : model.path("sheetId").asText())) {
-                return index;
+                if (match >= 0) throw ServiceException.validation("Defined-name owner identity is duplicated: " + scope + ":" + name);
+                match = index;
             }
         }
-        return -1;
+        return match;
+    }
+
+    private void removeProjectedWorkbookName(ObjectNode projection, String name) {
+        List<String> matchingKeys = new java.util.ArrayList<>();
+        projection.fieldNames().forEachRemaining(key -> {
+            if (key.equalsIgnoreCase(name)) matchingKeys.add(key);
+        });
+        matchingKeys.forEach(projection::remove);
     }
 
     private void validatePageBreak(JsonNode pageBreak, String sheetId) {

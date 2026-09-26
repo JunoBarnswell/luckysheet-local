@@ -27,22 +27,29 @@ export function normalizeDefinedNameModel(input: DefinedNameModel): DefinedNameM
   if (!/^[A-Za-z_\\][A-Za-z0-9_.]*$/.test(name)) {
     throw new Error(`Invalid defined name: ${input.name}`);
   }
-  if (input.scope === 'sheet' && !input.sheetId) {
+  if (input.scope !== 'workbook' && input.scope !== 'sheet') throw new Error(`Invalid defined name scope: ${String(input.scope)}`);
+  const sheetId = input.sheetId?.trim();
+  if (input.scope === 'sheet' && !sheetId) {
     throw new Error(`Sheet-scoped defined name ${name} requires a sheetId`);
   }
   if (input.scope === 'workbook' && input.sheetId !== undefined) {
     throw new Error(`Workbook-scoped defined name ${name} cannot specify sheetId`);
   }
-  if (input.anchor && (!input.anchor.sheetId || !Number.isSafeInteger(input.anchor.row) || input.anchor.row < 0 || !Number.isSafeInteger(input.anchor.column) || input.anchor.column < 0)) {
+  if (name.length > 255) throw new Error(`Defined name ${name} is too large`);
+  if (input.anchor && (!input.anchor.sheetId?.trim() || input.anchor.sheetId !== input.anchor.sheetId.trim()
+    || !Number.isSafeInteger(input.anchor.row) || input.anchor.row < 0 || input.anchor.row > 1_048_575
+    || !Number.isSafeInteger(input.anchor.column) || input.anchor.column < 0 || input.anchor.column > 16_383)) {
     throw new Error(`Defined name ${name} has an invalid anchor`);
   }
   const formula = input.formula.trim();
-  if (!formula) throw new Error(`Defined name ${name} requires a formula`);
+  if (!formula || formula.length > 32_767) throw new Error(`Defined name ${name} requires a formula within the canonical size limit`);
+  if (input.hidden !== undefined && typeof input.hidden !== 'boolean') throw new Error(`Defined name ${name} hidden flag is invalid`);
+  if (input.comment !== undefined && typeof input.comment !== 'string') throw new Error(`Defined name ${name} comment is invalid`);
   return {
     name,
     formula,
     scope: input.scope,
-    ...(input.sheetId ? { sheetId: input.sheetId } : {}),
+    ...(sheetId ? { sheetId } : {}),
     ...(input.anchor ? { anchor: structuredClone(input.anchor) } : {}),
     ...(input.hidden === undefined ? {} : { hidden: input.hidden }),
     ...(input.comment === undefined ? {} : { comment: input.comment }),
@@ -870,6 +877,15 @@ export interface ChartTextModel {
   alignment?: 'left' | 'center' | 'right';
 }
 
+export type ChartTextFormulaField =
+  | 'titleText.linkedFormula'
+  | 'legend.text.linkedFormula'
+  | 'categoryAxis.titleText.linkedFormula'
+  | 'valueAxis.titleText.linkedFormula'
+  | 'secondaryCategoryAxis.titleText.linkedFormula'
+  | 'secondaryValueAxis.titleText.linkedFormula'
+  | 'dataTable.font.linkedFormula';
+
 export interface ChartAxisModel {
   id: string;
   position: ChartAxisPosition;
@@ -1010,6 +1026,31 @@ export interface ChartHistogramOptions {
   binCount?: number;
   overflow?: number;
   underflow?: number;
+}
+
+/** Runtime guard shared by chart mutation, snapshot, and layout boundaries. */
+export function isChartHistogramOptions(value: unknown): value is ChartHistogramOptions {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const options = value as Record<string, unknown>;
+  const has = (key: string) => Object.prototype.hasOwnProperty.call(options, key);
+  if (Object.keys(options).some((key) => !['mode', 'binWidth', 'binCount', 'overflow', 'underflow'].includes(key))) return false;
+  if (!has('mode') || (options.mode !== 'automatic' && options.mode !== 'by-category' && options.mode !== 'bin-width' && options.mode !== 'bin-count')) return false;
+
+  const hasWidth = has('binWidth');
+  const hasCount = has('binCount');
+  const hasOverflow = has('overflow');
+  const hasUnderflow = has('underflow');
+  if (hasOverflow && (typeof options.overflow !== 'number' || !Number.isFinite(options.overflow))) return false;
+  if (hasUnderflow && (typeof options.underflow !== 'number' || !Number.isFinite(options.underflow))) return false;
+  if (hasOverflow && hasUnderflow && (options.underflow as number) > (options.overflow as number)) return false;
+
+  if (options.mode === 'by-category') return !hasWidth && !hasCount && !hasOverflow && !hasUnderflow;
+  if (options.mode === 'automatic') return !hasWidth && !hasCount;
+  if (options.mode === 'bin-width') {
+    return hasWidth && !hasCount && typeof options.binWidth === 'number' && Number.isFinite(options.binWidth) && options.binWidth > 0;
+  }
+  if (hasWidth || !hasCount || typeof options.binCount !== 'number' || !Number.isSafeInteger(options.binCount) || options.binCount < 1) return false;
+  return options.binCount >= Number(hasUnderflow) + Number(hasOverflow);
 }
 
 export interface ChartBoxWhiskerOptions {
