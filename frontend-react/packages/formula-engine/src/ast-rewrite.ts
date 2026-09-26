@@ -336,7 +336,8 @@ function rangeTargetsSheet(
   const endTargets = referenceTargetsSheet(end.sheetId, context);
   if (!startTargets && !endTargets) return false;
   if (startTargets !== endTargets) {
-    throw new Error('UNSUPPORTED_STRUCTURAL_REFERENCE: structural transform cannot rewrite a partially qualified range');
+    const operation = context.cellShift ? 'cell shift' : 'structural transform';
+    throw new Error(`UNSUPPORTED_STRUCTURAL_REFERENCE: ${operation} cannot rewrite a partially qualified range`);
   }
   return true;
 }

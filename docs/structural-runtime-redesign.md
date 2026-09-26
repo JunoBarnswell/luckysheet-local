@@ -1670,4 +1670,6 @@ Six non-overlapping static review passes confirmed two independent performance r
 
 修复：TS 分别解析范围端点归属；双端均非目标保持不变，双端均目标继续变换，单端命中则以 Java 相同 typed reason 拒绝。共享向量（version 5）覆盖 axis 与 cell-shift 的拒绝、合法映射和非目标保持。按单一根因计 **1 项**，没有将两个调用分支或多个向量重复计数。
 
+CI 随后暴露 Java 侧另一个阻断该拒绝路径的解析缺陷：3D 预扫描把 `A1:'Budget A1'!B2` 中的单元格端点 `A1` 当作工作表名，先抛出无关的 `3D reference boundary is unresolved`。现有结构扫描在判断 `Sheet1:Sheet2!A1` 前先排除可解析为 cell-address 且紧邻 `:` 的 token；真实 3D 检查保留，范围由对应 owner transformer 精确拒绝。单元格带移动的共享向量同时断言其独立的 typed reason。此为同一部分限定范围解析根因的 Java 前置扫描表现，不另计一次。
+
 本轮仅静态审查、diff 与共享 JSON 结构校验；新增 TypeScript/Java 测试未运行。唯一 Java planner、完整稀疏 patch、全部 metadata owner、真实浏览器/OOXML/Excel 与性能验收仍未完成。

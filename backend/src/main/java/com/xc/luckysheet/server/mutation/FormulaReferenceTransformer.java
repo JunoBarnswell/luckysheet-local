@@ -281,7 +281,8 @@ final class FormulaReferenceTransformer {
                 index = first.afterPrefix() + 1;
                 continue;
             }
-            if (first != null && first.afterPrefix() < formula.length() && formula.charAt(first.afterPrefix()) == ':') {
+            if (first != null && first.afterPrefix() < formula.length() && formula.charAt(first.afterPrefix()) == ':'
+                    && !isUnqualifiedCellRangeStart(formula, index, first)) {
                 int secondStart = first.afterPrefix() + 1;
                 SheetPrefix second = secondStart < formula.length() ? parseSheetPrefix(formula, secondStart) : null;
                 if (second != null && second.afterPrefix() < formula.length() && formula.charAt(second.afterPrefix()) == '!') {
@@ -326,6 +327,12 @@ final class FormulaReferenceTransformer {
             if (sheets.get(index).id().equals(id)) return index;
         }
         return -1;
+    }
+
+    private static boolean isUnqualifiedCellRangeStart(String formula, int start, SheetPrefix prefix) {
+        if (prefix == null || prefix.afterPrefix() >= formula.length() || formula.charAt(prefix.afterPrefix()) != ':') return false;
+        ParsedCell cell = parseCell(formula, start, null, null);
+        return cell != null && cell.endIndex() == prefix.afterPrefix();
     }
 
     private static void assertMovedWholeAxisReferences(
@@ -383,7 +390,8 @@ final class FormulaReferenceTransformer {
         int coordinateStart = -1;
         if (first.name().contains(":") && first.afterPrefix() < formula.length() && formula.charAt(first.afterPrefix()) == '!') {
             coordinateStart = first.afterPrefix() + 1;
-        } else if (first.afterPrefix() < formula.length() && formula.charAt(first.afterPrefix()) == ':') {
+        } else if (first.afterPrefix() < formula.length() && formula.charAt(first.afterPrefix()) == ':'
+                && !isUnqualifiedCellRangeStart(formula, index, first)) {
             int secondStart = first.afterPrefix() + 1;
             SheetPrefix second = secondStart < formula.length() ? parseSheetPrefix(formula, secondStart) : null;
             if (second != null && second.afterPrefix() < formula.length() && formula.charAt(second.afterPrefix()) == '!') {
@@ -894,7 +902,8 @@ final class FormulaReferenceTransformer {
                     && first.afterPrefix() < formula.length() && formula.charAt(first.afterPrefix()) == '!') {
                 throw ServiceException.unsupportedFeature("UNSUPPORTED_FEATURE: quoted 3-D references require an ordered worksheet transform");
             }
-            if (first != null && first.afterPrefix() < formula.length() && formula.charAt(first.afterPrefix()) == ':') {
+            if (first != null && first.afterPrefix() < formula.length() && formula.charAt(first.afterPrefix()) == ':'
+                    && !isUnqualifiedCellRangeStart(formula, index, first)) {
                 int secondStart = first.afterPrefix() + 1;
                 SheetPrefix second = secondStart < formula.length() ? parseSheetPrefix(formula, secondStart) : null;
                 if (second != null && second.afterPrefix() < formula.length() && formula.charAt(second.afterPrefix()) == '!') {
