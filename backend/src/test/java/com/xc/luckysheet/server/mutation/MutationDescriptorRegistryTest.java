@@ -2914,19 +2914,33 @@ class MutationDescriptorRegistryTest {
         assertEquals(0, nameDelta.before().anchor().row());
         assertEquals("=A2", nameDelta.after().formula());
         assertEquals(1, nameDelta.after().anchor().row());
-        JsonNode patched = registry.applyStructuralPatch(snapshot, patch);
+        JsonNode patched = registry.applyStructuralPatch(current, patch);
         assertEquals(current.path("definedNameModels"), patched.path("definedNameModels"));
         assertEquals(current.path("definedNames"), patched.path("definedNames"));
 
-        JsonNode restored = registry.applyStructuralPatch(current, patch.inverse("rows.permuted"));
+        OperationMutation inverseRawPermutation = new OperationMutation("rows.permuted", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":0,"endRow":1,"startColumn":0,"endColumn":0},"sourceRows":[1,0]}
+                """));
+        OperationMutation inversePermutation = withSortContext(
+                inverseRawPermutation, range(0, 1, 0, 0), "worksheet", null, false, 8);
+        var inversePreparation = registry.prepare(current, inversePermutation, WorkbookAclRole.EDITOR);
+        MutationApplication inverseApplication = inversePreparation.descriptor().applyWithPatch(current, inversePermutation);
+        JsonNode restored = inverseApplication.snapshot();
+        StructuralPatch inversePatch = inverseApplication.structuralPatch();
+        assertEquals(1, inversePatch.definedNameOwnerDeltas().size());
+        assertEquals("=A2", inversePatch.definedNameOwnerDeltas().getFirst().before().formula());
+        assertEquals("=A1", inversePatch.definedNameOwnerDeltas().getFirst().after().formula());
         assertEquals(snapshot.path("definedNameModels"), restored.path("definedNameModels"));
         assertEquals(snapshot.path("definedNames"), restored.path("definedNames"));
+        JsonNode verifiedRestore = registry.applyStructuralPatch(restored, inversePatch);
+        assertEquals(restored.path("definedNameModels"), verifiedRestore.path("definedNameModels"));
+        assertEquals(restored.path("definedNames"), verifiedRestore.path("definedNames"));
 
         ObjectNode tampered = (ObjectNode) current.deepCopy();
         ((ObjectNode) tampered.path("definedNameModels").get(0)).put("formula", "=A3");
         JsonNode beforeRejectedReplay = tampered.deepCopy();
         ServiceException error = assertThrows(ServiceException.class,
-                () -> registry.applyStructuralPatch(tampered, patch.inverse("rows.permuted")));
+                () -> registry.applyStructuralPatch(tampered, patch));
         assertTrue(error.getMessage().contains("STRUCTURAL_PATCH_PRECONDITION: defined-name owner changed"));
         assertEquals(beforeRejectedReplay, tampered);
     }
