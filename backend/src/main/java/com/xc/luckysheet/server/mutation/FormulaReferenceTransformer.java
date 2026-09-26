@@ -803,6 +803,7 @@ final class FormulaReferenceTransformer {
             throw ServiceException.unavailable("UNSUPPORTED_FEATURE: cell shift moves a reference outside worksheet "
                     + (axis == Axis.ROW ? "row" : "column") + " bounds");
         }
+        if (mapped.row() == reference.row() && mapped.column() == reference.column()) return reference;
         return reference.withCoordinates(mapped.row(), mapped.column());
     }
 
