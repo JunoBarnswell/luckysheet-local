@@ -22,5 +22,23 @@
     { "id": "column-delete-after", "axis": "column", "start": 2, "end": 5, "at": 6, "count": 2, "operation": "delete", "expected": { "kind": "mapped", "start": 2, "end": 5 } },
     { "id": "row-insert-at-limit", "axis": "row", "start": 1048575, "end": 1048575, "at": 1048575, "count": 1, "operation": "insert", "expected": { "kind": "out-of-bounds", "start": 1048576, "end": 1048576 } },
     { "id": "column-delete-reversed-input", "axis": "column", "start": 7, "end": 2, "at": 4, "count": 2, "operation": "delete", "expected": { "kind": "mapped", "start": 2, "end": 5 } }
+  ],
+  "formulaSheetOrder": [
+    { "id": "local-id", "name": "Local" },
+    { "id": "budget-id", "name": "Budget A1" },
+    { "id": "other-id", "name": "Other" },
+    { "id": "boolean-id", "name": "TRUE" }
+  ],
+  "formulaAxes": [
+    { "id": "quoted-whole-column-qualifier-is-not-a-cell", "formula": "=SUM('Budget A1'!B:B)+A1", "ownerSheetId": "local-id", "targetSheetId": "local-id", "axis": "row", "at": 0, "count": 1, "operation": "insert", "expected": "=SUM('Budget A1'!B:B)+A2" },
+    { "id": "qualified-whole-row-insert", "formula": "=SUM('Budget A1'!1:2)", "ownerSheetId": "local-id", "targetSheetId": "budget-id", "axis": "row", "at": 0, "count": 1, "operation": "insert", "expected": "=SUM('Budget A1'!2:3)" },
+    { "id": "qualified-whole-row-delete-complete-token", "formula": "=SUM('Budget A1'!$2:$2)", "ownerSheetId": "local-id", "targetSheetId": "budget-id", "axis": "row", "at": 1, "count": 1, "operation": "delete", "expected": "=SUM(#REF!)" },
+    { "id": "qualified-whole-column-overflow-complete-token", "formula": "=SUM('Budget A1'!XFD:XFD)", "ownerSheetId": "local-id", "targetSheetId": "budget-id", "axis": "column", "at": 16383, "count": 1, "operation": "insert", "expected": "=SUM(#REF!)" },
+    { "id": "reversed-whole-column-absolute-endpoints", "formula": "=SUM($D:B)", "ownerSheetId": "local-id", "targetSheetId": "local-id", "axis": "column", "at": 1, "count": 1, "operation": "insert", "expected": "=SUM(C:$E)" },
+    { "id": "reversed-whole-row-absolute-endpoints", "formula": "=SUM(5:$2)", "ownerSheetId": "local-id", "targetSheetId": "local-id", "axis": "row", "at": 1, "count": 2, "operation": "insert", "expected": "=SUM($4:7)" },
+    { "id": "whole-axis-text-literal-preservation", "formula": "=\"Budget A1!B:B\"&SUM('Budget A1'!B:B)", "ownerSheetId": "local-id", "targetSheetId": "local-id", "axis": "row", "at": 0, "count": 1, "operation": "insert", "expected": "=\"Budget A1!B:B\"&SUM('Budget A1'!B:B)" },
+    { "id": "external-whole-axis-preservation", "formula": "=SUM([Book.xlsx]Other!A:A)+A1", "ownerSheetId": "local-id", "targetSheetId": "local-id", "axis": "row", "at": 0, "count": 1, "operation": "insert", "expected": "=SUM([Book.xlsx]Other!A:A)+A2" },
+    { "id": "three-dimensional-whole-axis-outside-target", "formula": "=SUM('Budget A1':Other!A:A)+A1", "ownerSheetId": "local-id", "targetSheetId": "local-id", "axis": "row", "at": 0, "count": 1, "operation": "insert", "expected": "=SUM('Budget A1':Other!A:A)+A2" },
+    { "id": "boolean-worksheet-qualifier-and-literal", "formula": "=SUM(TRUE!A:A)+TRUE", "ownerSheetId": "local-id", "targetSheetId": "boolean-id", "axis": "column", "at": 0, "count": 1, "operation": "insert", "expected": "=SUM(TRUE!B:B)+TRUE" }
   ]
 }

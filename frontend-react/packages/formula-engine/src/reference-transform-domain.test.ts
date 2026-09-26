@@ -2,6 +2,10 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { MAX_COLUMN_INDEX, MAX_ROW_INDEX, ReferenceTransformDomain } from './reference-transform-domain';
+import { mapAstStructuralReferences } from './ast-rewrite';
+import { formatFormula } from './ast-format';
+import { parseFormula } from './parser';
+import { FormulaSyntaxError } from './errors';
 
 interface SharedReferenceTransformVectors {
   readonly schema: string;
@@ -24,6 +28,18 @@ interface SharedReferenceTransformVectors {
     readonly count: number;
     readonly operation: 'insert' | 'delete';
     readonly expected: { readonly kind: string; readonly start?: number; readonly end?: number };
+  }[];
+  readonly formulaSheetOrder: readonly { readonly id: string; readonly name: string }[];
+  readonly formulaAxes: readonly {
+    readonly id: string;
+    readonly formula: string;
+    readonly ownerSheetId: string;
+    readonly targetSheetId: string;
+    readonly axis: 'row' | 'column';
+    readonly at: number;
+    readonly count: number;
+    readonly operation: 'insert' | 'delete';
+    readonly expected: string;
   }[];
 }
 
@@ -87,4 +103,46 @@ test('matches the shared TypeScript and Java structural-mapping vectors', () => 
       vector.id,
     );
   }
+});
+
+test('matches the shared TypeScript and Java formula-axis vectors', () => {
+  assert.ok(sharedVectors.formulaAxes.length > 0);
+  for (const vector of sharedVectors.formulaAxes) {
+    const owner = sharedVectors.formulaSheetOrder.find((sheet) => sheet.id === vector.ownerSheetId);
+    const target = sharedVectors.formulaSheetOrder.find((sheet) => sheet.id === vector.targetSheetId);
+    assert.ok(owner, `${vector.id}: missing formula owner`);
+    assert.ok(target, `${vector.id}: missing target worksheet`);
+    const actual = mapAstStructuralReferences(parseFormula(vector.formula), {
+      ownerSheetId: owner.id,
+      targetSheetId: target.id,
+      targetSheetName: target.name,
+      sheetOrder: sharedVectors.formulaSheetOrder,
+      shift: { axis: vector.axis, at: vector.at, count: vector.count, op: vector.operation },
+    });
+    assert.equal(formatFormula(actual), vector.expected, vector.id);
+  }
+});
+
+test('reference parser rejects incomplete reference syntax without swallowing it as a name', () => {
+  assert.equal(formatFormula(parseFormula('=Revenue+1')), '=Revenue+1');
+  for (const formula of ['=A:', '=A1:', '=Sheet1!', '=A1:bad_name']) {
+    assert.throws(() => parseFormula(formula), /reference endpoint|Expected/);
+  }
+});
+
+test('whole-axis parser accepts Excel limits and rejects endpoints outside the reference domain', () => {
+  assert.equal(formatFormula(parseFormula('=SUM($XFD:XFD,$1048576:1048576)')), '=SUM($XFD:XFD,$1048576:1048576)');
+  for (const formula of ['=SUM(XFE:XFE)', '=SUM(A:XFE)', '=SUM(1048577:1048577)', '=SUM(1:$1048577)', '=SUM(0:1)', '=SUM(Revenue:Other)']) {
+    assert.throws(() => parseFormula(formula), FormulaSyntaxError);
+  }
+});
+
+test('quoted 3D whole-axis references reject an edit inside their worksheet span', () => {
+  assert.throws(() => mapAstStructuralReferences(parseFormula("=SUM('Budget A1':Other!A:A)"), {
+    ownerSheetId: 'local-id',
+    targetSheetId: 'budget-id',
+    targetSheetName: 'Budget A1',
+    sheetOrder: sharedVectors.formulaSheetOrder,
+    shift: { axis: 'row', at: 0, count: 1, op: 'insert' },
+  }), /cannot rewrite one sheet inside a 3D reference/);
 });

@@ -61,8 +61,36 @@ class FormulaReferenceTransformerTest {
     }
 
     @Test
-    void moveOffsetHonorsAbsoluteMarkers() {
-        assertEquals("=C3+$B$1+E$1+$D3", FormulaReferenceTransformer.offset("=A1+$B$1+C$1+$D1", 2, 2));
+    void rowPermutationOffsetsReferencesWithoutRewritingWholeColumnSheetNames() {
+        String formula = "=SUM('Budget A1'!B:B)+A1+$B$1+C$1+$D1";
+        FormulaReferenceTransformer.assertRowOffsetSupported(formula);
+        assertEquals("=SUM('Budget A1'!B:B)+A3+$B$1+C$1+$D3",
+                FormulaReferenceTransformer.offsetForPermutation(formula, 2));
+    }
+
+    @Test
+    void axisTransformPreservesQuotedExternalWholeAxisReferences() {
+        String formula = "=SUM('[Book.xlsx]Budget A1'!B:B)+A1";
+        assertEquals("=SUM('[Book.xlsx]Budget A1'!B:B)+A2", FormulaReferenceTransformer.remapAxis(
+                formula, sheet, sheet, FormulaReferenceTransformer.Axis.ROW, 0, 1,
+                FormulaReferenceTransformer.Direction.INSERT));
+        assertThrows(ServiceException.class, () -> FormulaReferenceTransformer.assertRowOffsetSupported(formula));
+        assertThrows(ServiceException.class, () -> FormulaReferenceTransformer.assertRowOffsetSupported("=SUM('Budget A1'!1:1)"));
+    }
+
+    @Test
+    void renameAndDeleteConsumeCompleteQualifiedWholeAxisReferences() {
+        String formula = "=SUM('Budget A1'!$B:$C)+SUM(Other!1:2)";
+        assertEquals("=SUM('Current Report'!$B:$C)+SUM(Other!1:2)",
+                FormulaReferenceTransformer.renameSheet(formula, "Budget A1", "Current Report"));
+        assertEquals("=SUM(#REF!)+SUM(Other!1:2)",
+                FormulaReferenceTransformer.invalidateSheet(formula, "budget-id", "Budget A1"));
+    }
+
+    @Test
+    void canonicalWholeAxisReferencesRetainEndpointAbsoluteMarkers() {
+        assertEquals("=SUM(B:$D,$2:5)",
+                FormulaReferenceTransformer.canonicalizeFormulaReferences("=SUM($D:B,5:$2)"));
     }
 
     @Test

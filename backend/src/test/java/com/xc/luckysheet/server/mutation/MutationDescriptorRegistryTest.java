@@ -2110,9 +2110,52 @@ class MutationDescriptorRegistryTest {
     }
 
     @Test
+    void structuralAxisAndPermutationPatchesPreserveWholeAxisWorksheetNames() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        JsonNode snapshot = mapper.readTree("""
+                {"sheets":[
+                  {"id":"sheet-1","name":"Sheet1","rowCount":4,"columnCount":2,
+                   "cells":{"0":{"0":{"value":null,"formula":"=SUM('Budget A1'!B:B)+A1"}},"1":{"0":{"value":"second"}}},
+                   "pane":{"kind":"none"},"defaultRowHeightPx":20,"defaultColumnWidthPx":64,
+                   "review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}},
+                   "merges":[],"conditionalFormats":[],"dataValidations":[],"pivots":[],"sparklines":[],
+                   "drawings":[],"drawingPayloads":{},"sheetTables":[],"spillRanges":[],"protectionRules":[]},
+                  {"id":"budget-id","name":"Budget A1","rowCount":4,"columnCount":2,"cells":{},
+                   "pane":{"kind":"none"},"defaultRowHeightPx":20,"defaultColumnWidthPx":64,
+                   "review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}}}]}
+                """);
+        JsonNode original = snapshot.deepCopy();
+        OperationMutation insertion = new OperationMutation("rows.inserted", "sheet-1",
+                mapper.readTree("""
+                        {"sheetId":"sheet-1","at":0,"count":1}
+                        """));
+        MutationApplication inserted = registry.require("rows.inserted", false).applyWithPatch(snapshot, insertion);
+        assertEquals("=SUM('Budget A1'!B:B)+A2", inserted.snapshot().path("sheets").get(0)
+                .path("cells").path("1").path("0").path("formula").asText());
+        assertEquals(1, inserted.structuralPatch().formulaOwnerDeltas().size());
+        assertEquals("=SUM('Budget A1'!B:B)+A2", inserted.structuralPatch().formulaOwnerDeltas().get(0).after().formula());
+        assertEquals(original, snapshot);
+
+        OperationMutation rawPermutation = new OperationMutation("rows.permuted", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":0,"endRow":1,"startColumn":0,"endColumn":0},"sourceRows":[1,0]}
+                """));
+        OperationMutation permutation = withSortContext(rawPermutation, range(0, 1, 0, 0), "worksheet", null, false, 1);
+        MutationApplication permuted = registry.require("rows.permuted", false).applyWithPatch(snapshot, permutation);
+        assertEquals("=SUM('Budget A1'!B:B)+A2", permuted.snapshot().path("sheets").get(0)
+                .path("cells").path("1").path("0").path("formula").asText());
+        assertEquals(1, permuted.structuralPatch().formulaOwnerDeltas().size());
+        assertEquals("=SUM('Budget A1'!B:B)+A2", permuted.structuralPatch().formulaOwnerDeltas().get(0).after().formula());
+        JsonNode restored = registry.require("rows.permuted", false).apply(permuted.snapshot(), permutation);
+        assertEquals("=SUM('Budget A1'!B:B)+A1", restored.path("sheets").get(0)
+                .path("cells").path("0").path("0").path("formula").asText());
+        assertEquals(original, snapshot);
+    }
+
+    @Test
     void rowPermutationRejectsFormulaGroupsAndUnsupportedReferenceKindsAtomically() throws Exception {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
-        for (String formula : List.of("=A1", "=[Book]Sheet1!A1", "=SUM(Sheet1!1:3)")) {
+        for (String formula : List.of("=A1", "=[Book]Sheet1!A1", "=SUM(Sheet1!1:3)",
+                "=SUM('[Book.xlsx]Budget A1'!B:B)", "=SUM('Budget A1'!1:3)")) {
             ObjectNode snapshot = (ObjectNode) mapper.readTree("""
                     {"sheets":[
                       {"id":"sheet-1","name":"Sheet1","rowCount":4,"columnCount":2,

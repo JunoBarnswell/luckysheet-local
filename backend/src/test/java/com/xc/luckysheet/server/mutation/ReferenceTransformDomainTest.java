@@ -6,11 +6,14 @@ import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class ReferenceTransformDomainTest {
     @Test
@@ -101,5 +104,31 @@ class ReferenceTransformDomainTest {
             case "column" -> ReferenceTransformDomain.MAX_COLUMN_INDEX;
             default -> throw new IllegalArgumentException("Shared reference vector axis is invalid");
         };
+    }
+
+    @Test
+    void matchesTheSharedTypeScriptAndJavaFormulaAxisVectors() throws IOException {
+        try (InputStream vectorsStream = getClass().getResourceAsStream("/reference-transform-vectors.json")) {
+            assertNotNull(vectorsStream);
+            JsonNode vectors = new ObjectMapper().readTree(vectorsStream);
+            List<FormulaReferenceTransformer.SheetIdentity> sheetOrder = new ArrayList<>();
+            for (JsonNode sheet : vectors.path("formulaSheetOrder")) {
+                sheetOrder.add(new FormulaReferenceTransformer.SheetIdentity(sheet.path("id").asText(), sheet.path("name").asText()));
+            }
+            assertTrue(vectors.path("formulaAxes").isArray() && !vectors.path("formulaAxes").isEmpty());
+            for (JsonNode vector : vectors.path("formulaAxes")) {
+                FormulaReferenceTransformer.SheetIdentity owner = sheetOrder.stream()
+                        .filter(sheet -> sheet.id().equals(vector.path("ownerSheetId").asText())).findFirst().orElseThrow();
+                FormulaReferenceTransformer.SheetIdentity target = sheetOrder.stream()
+                        .filter(sheet -> sheet.id().equals(vector.path("targetSheetId").asText())).findFirst().orElseThrow();
+                String actual = FormulaReferenceTransformer.remapAxis(
+                        vector.path("formula").asText(), owner, target,
+                        FormulaReferenceTransformer.Axis.valueOf(vector.path("axis").asText().toUpperCase(Locale.ROOT)),
+                        vector.path("at").asInt(), vector.path("count").asInt(),
+                        FormulaReferenceTransformer.Direction.valueOf(vector.path("operation").asText().toUpperCase(Locale.ROOT)),
+                        sheetOrder);
+                assertEquals(vector.path("expected").asText(), actual, vector.path("id").asText());
+            }
+        }
     }
 }

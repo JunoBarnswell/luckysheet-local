@@ -133,7 +133,7 @@ function offsetRuleFormulas(rule: SheetRule, rowOffset: number, columnOffset: nu
   for (const [field, formula] of formulaFields) {
     const shifted = offsetRuleFormula(formula, rowOffset, columnOffset, rule.id, field);
     if (field === 'listSource.formula') {
-      if (rule.listSource?.kind !== 'formula') throw new Error(`STRUCTURAL_REFERENCE_INDEX_INVARIANT: ${rule.id}.${field} is missing`);
+      if (isConditionalFormat(rule) || rule.listSource?.kind !== 'formula') throw new Error(`STRUCTURAL_REFERENCE_INDEX_INVARIANT: ${rule.id}.${field} is missing`);
       rule.listSource = { ...rule.listSource, formula: shifted };
     } else {
       mutableRule[field] = shifted;

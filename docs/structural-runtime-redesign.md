@@ -1236,3 +1236,20 @@ PR 上两个 `canonical-build` job 使用相同 head，前端依赖安装与前�
 第九个补充交叉核对确认第 16 个独立问题：动态数组 spill child 不占据 `CellMatrix`，矩阵转置的目标空格检查无法发现该 owner，可能把写入落到溢出投影并破坏数组结果。现矩阵操作在变更前检查源区与目标区是否相交任一 spill range，并 fail-close；新增目标扩展区命中 spill projection 的原子拒绝回归测试源码。仍未运行测试、构建、lint 或 UI。
 
 第十个补充交叉核对确认第 17 个独立问题：复制规则覆盖区的子区间时，原 formula anchor 可能位于剪贴板 source 之外；把该 anchor 的相对坐标直接映射到 target 会造成公式少偏移被裁剪距离（例如从 A5 复制规则到 C5 却仍引用 C1）。现将规则 anchor 落在实际复制交集的目标坐标，并从原公式 anchor 精确平移公式 AST；新增 CF/DV 子区间复制源码断言公式和 anchor。仍未运行测试、构建、lint 或 UI。
+
+### 六轮静态复核 — 完整整轴引用与跨端公式契约（2026-09-26）
+
+**边界与方案**：本轮限于 formula parser、Java formula reference transformer、既有规则复制类型边界及这些路径的回归源码。整行/整列引用必须作为含工作表限定符的完整 token 进入变换；共享点/区间向量扩展到完整公式，以同时约束 TS AST 和 Java 服务端实现。Java 删除“先改 A1、再扫整轴”的旧路径，在同一个扫描器中分派完整 A1/整轴引用；不增加兼容桥或第二套读写状态。事务、权限、快照版本与 StructuralPatch v3 字段不变，没有持久化迁移。
+
+六个独立复核视角与证据：
+
+1. **解析入口**：`parseReference`、3D 与外部引用三个入口都用 `check('colon')` 判断当前端点 token，而非下一 token，因此 `A:A`/`1:1` 的首端点未被允许进入 whole-axis 分支。上一节“whole-axis AST 虽可解析”的结论不准确；本轮追到真实入口后修正为 `checkNext`，并使用 canonical reference domain 限制整轴端点，避免把 `Revenue:Other` 或越界端点误当有效轴范围。
+2. **失败与限定符分派**：标识符解析曾在引用语法已消费后吞掉异常并退回 name，`A:` 因而可能被截断为 `A`；现在仅未进入引用语法的单独标识符可作为 name。另确认字符串/布尔常量分派先于工作表限定符，导致 `'Budget A1':Other!A:A` 与 `TRUE!A:A` 无法进入正确分支；现在有效限定符先进入引用解析，普通字符串与 `TRUE` 常量保持原语义。这是两个根因。
+3. **Java 完整 token 所有权**：旧 A1 扫描器不能消费 `'Budget A1'!B:B`，随后会扫描并改写工作表名内部的 `A1`。受影响入口包括轴变换与 row-permutation offset。新扫描器一次消费限定符和整轴 body；外部引用/字符串仍保持完整，rename/delete 也复用此入口。删除重复整轴扫描、未被生产调用的通用 `offset` 及其 forwarding overloads。
+4. **输出坐标与绝对标记**：旧 Java 整轴删除/溢出只替换 body，可能留下 `'Budget A1'!#REF!`，与 TS 的完整 `#REF!` 不一致；现在替换完整 token。反向轴范围的输出又与 TS 正序 AST 不同；现在按端点一起移动 `$` 标记并统一顺序，canonicalization 使用相同 renderer。这是两个根因，不按行/列和不同限定符重复计数。
+5. **服务器 patch、逆向与拒绝边界**：沿 `rows.inserted`、`rows.permuted` 的 descriptor/reducer 追到 formulaOwnerDelta、canonical inverse 比对与 replay。新增源码用例断言完整限定符、公式 owner 新地址、patch formula、置换回放恢复与输入快照不变；保留对 whole-row/external row-offset 的 fail-close，并补充带 cell-like 工作表名的拒绝用例，不扩大排序支持范围。
+6. **验收源码与已有门禁反馈**：`reference-transform-vectors.json` 新增 10 个完整公式向量，TS 与 Java 都读取同一份输入和期望值，覆盖限定符、反向端点、删除/溢出、字符串、外部/3D 与布尔工作表名。另读取上一个 head `6c14437e` 已有的远端 CI（run `36198413697`）：唯一已报告的构建错误为 `rule-lifecycle.ts` 在 `SheetRule` union 上直接访问 `listSource`（TS2339）；现通过已有 conditional-format 类型判别先排除非 validation owner，再写回 formula list source。未执行或重跑任何本地测试/构建。
+
+本轮确认并修复 **7 个独立问题**；坐标上界为解析入口修正后的附加拒绝约束，不另凑问题数。成功/拒绝回归测试源码已补充，但没有执行，不能把静态推导当成测试通过。验收仅包括六轮源码复核、共享 JSON 语法读取及 `git diff --check`；本地 tests/build/lint/typecheck/UI 均未运行。上一 head 的 CI 失败是已知事实，本轮 head 的自动 CI 结果须单独记录，不能沿用旧成功记录。
+
+**剩余工作与回退**：这只是跨端公式语义收敛的一步；完整无副作用 `CanonicalStructuralPlanner`、typed metadata ReferenceIndex、全量可逆 StructuralPatch、OT/OOXML opaque-owner 参与仍未完成。PR 继续 draft，不宣称通过浏览器或原生 Excel 互操作验收。回退需整体 revert 本轮 production、共享向量和回归源码的提交；不需要数据降级迁移。
