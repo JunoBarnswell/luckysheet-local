@@ -1545,3 +1545,8 @@ Six non-overlapping static review passes confirmed two independent performance r
 
 - PR CI `36259308993` 的 frontend build/typecheck 完成后，在 Java compile 报 `StructuralSnapshotReducer.applyRangeOwnerDeltas` 重复声明 `tablesById`。外层是 workbook-table identity map，内层是按 sheet 建立的 Sheet Table map；Java 不允许内层局部变量遮蔽同方法已声明变量。
 - 将内层索引明确命名为 `sheetTablesById`，仅消除局部变量冲突，不改变索引目标、owner 身份或查找逻辑。修正待新 PR CI 复核；本地未运行 Java build/test。
+
+### CI correction — valid Java text-block delimiters in undo test
+
+- 随后的 PR CI `36259534120` 越过该 production compile error，发现 `WorkbookOperationServiceTest` 三处将 JSON 紧贴 `"""` 开始符；Java text block 开始符必须后接行终止符，因此 test source 无法编译。
+- 将三处 fixture 改为常规多行 text block。只修正 Java 21 语法，不改变用例数据或断言；本地仍未运行 Java test/build，待新的 PR CI 复核。

@@ -57,7 +57,9 @@ class WorkbookOperationServiceTest {
     void structuralUndoRejectsReusedInversesAndMutationsOutsideAnAllStructuralTarget() throws Exception {
         Instant committedAt = Instant.parse("2026-09-27T00:00:00Z");
         OperationMutation insertion = new OperationMutation("rows.inserted", "sheet-1",
-                mapper.readTree("""{"at":2,"count":1}"""));
+                mapper.readTree("""
+                        {"at":2,"count":1}
+                        """));
         StructuralPatch patch = new StructuralPatch(StructuralPatch.VERSION, "rows.inserted", List.of(), List.of(), List.of());
         OperationEnvelope targetRequest = new OperationEnvelope("test-session", OperationEnvelope.SCHEMA,
                 "structural-target", "book-1", 1, 0, List.of(insertion), committedAt);
@@ -65,9 +67,13 @@ class WorkbookOperationServiceTest {
         CommittedOperationEnvelope target = CommittedOperationEnvelope.from(targetRequest, "actor-1", 1, committedAt,
                 List.of(committedInsertion));
         OperationMutation deletion = new OperationMutation("rows.deleted", "sheet-1",
-                mapper.readTree("""{"at":2,"count":1}"""));
+                mapper.readTree("""
+                        {"at":2,"count":1}
+                        """));
         OperationMutation unrelated = new OperationMutation("cell.set", "sheet-1",
-                mapper.readTree("""{"row":0,"column":0,"value":"extra"}"""));
+                mapper.readTree("""
+                        {"row":0,"column":0,"value":"extra"}
+                        """));
         OperationEnvelope withExtraMutation = new OperationEnvelope("test-session", OperationEnvelope.SCHEMA,
                 "structural-undo-extra", "book-1", 2, 1, List.of(deletion, unrelated), committedAt);
 
