@@ -531,4 +531,32 @@ describe('WorkbookSession formula integration', () => {
     assert.equal(app['runtime'].model.getSheet(sheetId).spillRanges[0]?.state, 'ok');
     assert.equal(cellValue(app, 0, 1), '2');
   });
+
+  it('recalculates an existing spill when a structural edit shifts a merge onto it', async () => {
+    const app = createRemoteReadySessionFixture();
+    const sheetId = app.getActiveSheetId();
+    try {
+      app.runCommand('sheet.cell.set', {
+        sheetId, row: 0, column: 0, value: { formula: '=SEQUENCE(1,2)', value: null },
+      });
+      await app.waitForFormulaCalculation();
+      assert.equal(app['runtime'].model.getSheet(sheetId).spillRanges[0]?.state, 'ok');
+
+      app.runCommand('sheet.merge.set', {
+        sheetId,
+        range: { sheetId, startRow: 0, endRow: 0, startColumn: 2, endColumn: 3 },
+      });
+      await app.waitForFormulaCalculation();
+      app.runCommand('sheet.columns.delete', { sheetId, at: 1, count: 1 });
+      await app.waitForFormulaCalculation();
+
+      const sheet = app['runtime'].model.getSheet(sheetId);
+      assert.deepEqual(sheet.merges[0]?.range, {
+        sheetId, startRow: 0, endRow: 0, startColumn: 1, endColumn: 2,
+      });
+      assert.equal(sheet.spillRanges[0]?.state, 'blocked');
+    } finally {
+      app.dispose();
+    }
+  });
 });

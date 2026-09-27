@@ -964,7 +964,7 @@ export function attachCoreListeners(runtime: SpreadsheetRuntime): void {
       } else if (calculationContextEffect?.action === 'sync-tables') {
         syncWorkbookSheetTables(runtime.formula, runtime.model, false);
       }
-      // Merge/table geometry is not a cell-input delta: refresh its spill snapshot and queue only overlapping spill anchors.
+      // Geometry can change directly (merge/table) or as a side effect of a structural transform.
       const spillBlockerGeometryRanges = mutation.id === 'merge.set' || mutation.id === 'merge.remove'
         || mutation.id === 'sheetTable.add' || mutation.id === 'sheetTable.remove'
         ? mutation.affectedRanges.filter((range) => range.sheetId === mutation.sheetId)
@@ -973,7 +973,9 @@ export function attachCoreListeners(runtime: SpreadsheetRuntime): void {
             .flatMap((delta) => delta.ownerKind === 'sheet-table' && delta.sheetId === mutation.sheetId
               ? [delta.before, delta.after]
               : [])
-          : [];
+          : structuralEffect
+            ? mutation.affectedRanges.filter((range) => range.sheetId === mutation.sheetId)
+            : [];
       const spillBlockerGeometryChanged = spillBlockerGeometryRanges.length > 0;
       if (spillBlockerGeometryChanged) {
         if (!structuralEffect && !rebuildsCalculationContext) {
