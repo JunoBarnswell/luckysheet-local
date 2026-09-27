@@ -8,8 +8,10 @@ import com.xc.luckysheet.server.contract.RangeRef;
 import com.xc.luckysheet.server.service.ServiceException;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.function.Function;
 
@@ -78,29 +80,74 @@ final class SheetRuleLifecycle {
             throw ServiceException.validation(property + " must be an array");
         }
         ArrayNode current = existing != null && existing.isArray() ? (ArrayNode) existing : JsonNodeFactory.instance.arrayNode();
-        Set<JsonNode> currentRules = new HashSet<>(current.size());
-        for (JsonNode rule : current) currentRules.add(rule);
-        Set<JsonNode> proposedRules = new HashSet<>(proposed.size());
-        Set<String> proposedIds = new HashSet<>(proposed.size());
+        Map<String, JsonNode> currentRules = indexRulesById(current, property);
+        Map<String, JsonNode> proposedRules = new HashMap<>(Math.max(16, proposed.size()));
         for (JsonNode rule : proposed) {
             if (!rule.isObject()) throw ServiceException.validation(property + " rule must be an object");
             ObjectNode ruleObject = (ObjectNode) rule;
             validateRule(root, sheetId, ruleObject, property);
-            if (!proposedIds.add(SnapshotMutationSupport.text(ruleObject, "id"))) {
+            String id = SnapshotMutationSupport.text(ruleObject, "id");
+            if (proposedRules.putIfAbsent(id, rule) != null) {
                 throw ServiceException.validation(property + " rule identity is duplicated");
             }
-            proposedRules.add(rule);
         }
-        for (JsonNode rule : current) {
-            if (!ownerIsContained(root, sheetId, rule, allowedRanges) && !proposedRules.contains(rule)) {
+        for (Map.Entry<String, JsonNode> entry : currentRules.entrySet()) {
+            JsonNode proposedRule = proposedRules.remove(entry.getKey());
+            ObjectNode currentOutside = ruleOutsideAllowedRanges(root, sheetId, entry.getValue(), allowedRanges, property);
+            if (proposedRule == null) {
+                if (!currentOutside.path("ranges").isEmpty()) {
+                    throw ServiceException.validation("Paste snapshot changes an unrelated " + property + " rule");
+                }
+            } else if (!currentOutside.equals(ruleOutsideAllowedRanges(root, sheetId, proposedRule, allowedRanges, property))) {
                 throw ServiceException.validation("Paste snapshot changes an unrelated " + property + " rule");
             }
         }
-        for (JsonNode rule : proposed) {
-            if (!ownerIsContained(root, sheetId, rule, allowedRanges) && !currentRules.contains(rule)) {
+        for (JsonNode rule : proposedRules.values()) {
+            if (!ruleOutsideAllowedRanges(root, sheetId, rule, allowedRanges, property).path("ranges").isEmpty()) {
                 throw ServiceException.validation("Paste snapshot adds an unrelated " + property + " rule");
             }
         }
+    }
+
+    private static Map<String, JsonNode> indexRulesById(JsonNode rules, String property) {
+        Map<String, JsonNode> indexed = new HashMap<>(Math.max(16, rules.size()));
+        for (JsonNode rule : rules) {
+            if (!rule.isObject()) throw ServiceException.validation(property + " rule must be an object");
+            String id = SnapshotMutationSupport.text(rule, "id");
+            if (indexed.putIfAbsent(id, rule) != null) {
+                throw ServiceException.validation(property + " rule identity is duplicated");
+            }
+        }
+        return indexed;
+    }
+
+    private static ObjectNode ruleOutsideAllowedRanges(
+            ObjectNode root,
+            String sheetId,
+            JsonNode rule,
+            List<RangeRef> allowedRanges,
+            String property
+    ) {
+        if (!rule.isObject()) throw ServiceException.validation(property + " rule must be an object");
+        JsonNode ranges = rule.get("ranges");
+        if (ranges == null || !ranges.isArray() || ranges.isEmpty()) {
+            throw ServiceException.validation(property + " rule ranges must be a non-empty array");
+        }
+        ArrayNode outsideRanges = JsonNodeFactory.instance.arrayNode();
+        for (JsonNode candidate : ranges) {
+            RangeRef source = SnapshotMutationSupport.range(root, candidate);
+            if (!sheetId.equals(source.sheetId())) throw ServiceException.validation(property + " rule targets another sheet");
+            List<RangeRef> remaining = new ArrayList<>(List.of(source));
+            for (RangeRef allowed : allowedRanges) {
+                List<RangeRef> next = new ArrayList<>();
+                for (RangeRef fragment : remaining) next.addAll(subtract(fragment, allowed));
+                remaining = next;
+            }
+            for (RangeRef range : remaining) outsideRanges.add(rangeNode(range));
+        }
+        ObjectNode projected = (ObjectNode) rule.deepCopy();
+        projected.set("ranges", outsideRanges);
+        return projected;
     }
 
     static int affectedColumnEnd(ObjectNode root, ObjectNode sheet, int baseline, int startRow, int endRow) {
@@ -222,20 +269,6 @@ final class SheetRuleLifecycle {
                 || raw.path("row").asInt(-1) < 0 || raw.path("column").asInt(-1) < 0) {
             throw ServiceException.validation("Sheet rule formula anchor is invalid");
         }
-    }
-
-    private static boolean ownerIsContained(ObjectNode root, String sheetId, JsonNode rule, List<RangeRef> allowedRanges) {
-        if (!rule.isObject()) throw ServiceException.validation("Paste owner rule must be an object");
-        JsonNode ranges = rule.get("ranges");
-        if (ranges == null || !ranges.isArray() || ranges.isEmpty()) throw ServiceException.validation("Paste owner rule ranges are required");
-        for (JsonNode value : ranges) {
-            RangeRef range = SnapshotMutationSupport.range(root, value);
-            if (!sheetId.equals(range.sheetId())) throw ServiceException.validation("Paste owner rule targets another sheet");
-            if (allowedRanges.stream().noneMatch(allowed -> allowed.sheetId().equals(range.sheetId())
-                    && allowed.startRow() <= range.startRow() && allowed.endRow() >= range.endRow()
-                    && allowed.startColumn() <= range.startColumn() && allowed.endColumn() >= range.endColumn())) return false;
-        }
-        return true;
     }
 
     private static List<RangeRef> subtract(RangeRef source, RangeRef clear) {

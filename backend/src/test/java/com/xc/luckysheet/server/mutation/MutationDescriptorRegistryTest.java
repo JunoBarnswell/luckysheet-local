@@ -814,6 +814,61 @@ class MutationDescriptorRegistryTest {
     }
 
     @Test
+    void rangePasteAllowsCroppingOnlyTheIntersectingPartOfExistingRules() throws Exception {
+        ObjectNode root = (ObjectNode) mapper.readTree("""
+                {"sheets":[{"id":"sheet-1","rowCount":10,"columnCount":10,
+                  "dataValidations":[{"id":"dv-spanning","sheetId":"sheet-1","type":"whole","ranges":[
+                    {"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":4}
+                  ]}],
+                  "conditionalFormats":[{"id":"cf-spanning","sheetId":"sheet-1","ranges":[
+                    {"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":4}
+                  ]}]}]}
+                """);
+        ObjectNode sheet = (ObjectNode) root.path("sheets").get(0);
+        var croppedValidation = mapper.readTree("""
+                [{"id":"dv-spanning","sheetId":"sheet-1","type":"whole","ranges":[
+                  {"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":1},
+                  {"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":3,"endColumn":4}
+                ]}]
+                """);
+        var croppedConditionalFormat = mapper.readTree("""
+                [{"id":"cf-spanning","sheetId":"sheet-1","ranges":[
+                  {"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":1},
+                  {"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":3,"endColumn":4}
+                ]}]
+                """);
+        List<RangeRef> allowed = List.of(new RangeRef("sheet-1", 0, 0, 2, 2));
+
+        assertDoesNotThrow(() -> SheetRuleLifecycle.validateSnapshot(root, sheet, "sheet-1", "dataValidations", croppedValidation, allowed));
+        assertDoesNotThrow(() -> SheetRuleLifecycle.validateSnapshot(root, sheet, "sheet-1", "conditionalFormats", croppedConditionalFormat, allowed));
+    }
+
+    @Test
+    void rangePasteRejectsChangingTheUncoveredFragmentOfAnExistingRule() throws Exception {
+        ObjectNode root = (ObjectNode) mapper.readTree("""
+                {"sheets":[{"id":"sheet-1","rowCount":10,"columnCount":10,
+                  "dataValidations":[{"id":"dv-spanning","sheetId":"sheet-1","type":"whole","ranges":[
+                    {"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":4}
+                  ]}]}]}
+                """);
+        ObjectNode sheet = (ObjectNode) root.path("sheets").get(0);
+        var alteredOutsideFragment = mapper.readTree("""
+                [{"id":"dv-spanning","sheetId":"sheet-1","type":"whole","ranges":[
+                  {"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0},
+                  {"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":3,"endColumn":4}
+                ]}]
+                """);
+        JsonNode before = root.deepCopy();
+
+        ServiceException error = assertThrows(ServiceException.class,
+                () -> SheetRuleLifecycle.validateSnapshot(root, sheet, "sheet-1", "dataValidations", alteredOutsideFragment,
+                        List.of(new RangeRef("sheet-1", 0, 0, 2, 2))));
+
+        assertEquals("VALIDATION_ERROR", error.code());
+        assertEquals(before, root);
+    }
+
+    @Test
     void rangePasteRejectsMalformedRuleStateInsteadOfReplacingItAsEmpty() {
         ObjectNode root = mapper.createObjectNode();
         ObjectNode sheet = root.putArray("sheets").addObject();

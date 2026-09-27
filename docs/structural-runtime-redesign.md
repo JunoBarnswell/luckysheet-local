@@ -1785,3 +1785,13 @@ Repeatable history migration 将旧 v1-v5 patch 先投影回旧 formula-owner �
 六轮静态自审依次复核：①列举所有相关异步入口和手工加载点；②验证命令注册、服务在线与角色/保护授权均早于读取准备；③核对四类参数预检在 Session 与 reducer 共用且值依赖检查仍留在执行端；④按实际 row/column 验证 Split Column region 命中；⑤核对 stale range identity 与剪贴板跨表边界；⑥追踪嵌套源范围保护与拒绝后的无加载/无持久化副作用，并复查有效路径二次授权。新增了 dispatcher、权限、目标 region 和保护范围回归源码，**未执行**。
 
 本 follow-up 只修复上述五个根因，不冒称达到“每轮至少 30 个真实问题”的审查规模，也不把共享预检缺口按四个命令重复计数。Subtotal 输出大小仍依赖已加载数据中的实际分组；交替重复行仍可能产生大量独立 row-delete 变换；完整 Java 唯一 planner、owner-complete StructuralPatch、性能实测与 Excel 互操作仍未完成。本轮没有运行测试、构建、浏览器或 Excel。
+
+### 2026-09-27 paste rule scope follow-up
+
+静态追踪 `sheet.range.paste` 的完整 CF/DV 路径，确认一项服务端拒绝合法输入的问题：前端 `SheetRuleRegistry.cropRules` 会从既有规则中裁掉粘贴目标内的部分，并保留目标外的剩余 range fragments；Java `SheetRuleLifecycle.validateSnapshot` 原先只有在规则的**所有** ranges 都完全落入 allowed ranges 时才允许变化，否则要求 proposed rule 与 current rule 整体相等。因此一个跨越目标边界的既有规则被正确裁剪后，服务端会错误拒绝 paste。
+
+修复按稳定 rule ID 建立 current/proposed 索引，并逐条移除 allowed ranges 后比较完整规则投影：目标外任何 range 或公式/其它 rule 字段变动仍 fail-close；目标内裁剪、删除和新增规则可正常通过。重复 ID 在 current/proposed 任一侧都拒绝。目标/源允许范围数量固定为最多两个，额外验证按规则数与 range 数线性执行，不恢复旧的 current/proposed 双向嵌套成员扫描。
+
+六个静态复核视角分别核对：① TS crop 与 Java validator 的同一用户操作前后链；② rule ID 稳定身份与重复 ID 拒绝；③ 多 ranges 的逐段几何裁剪与 target/source allowed 顺序；④ 目标外 range、formula 与其它字段的严格保留；⑤ validate 失败前不修改原快照；⑥ 按规则/range 数线性比较，且没有扩大服务端授权范围。新增 Java 回归源码覆盖跨目标规则被裁剪时的 CF/DV 成功路径，以及目标外片段被缩短时的拒绝和原快照不变。
+
+本 follow-up 仅确认并修复 **1 个**独立根因，未达到“每轮至少 30 个真实问题”的审查规模；不把 CF 与 DV 两种同一共享 validator 行为重复计数。它也没有改变 paste after-snapshot 仍由客户端规划并提交、`range.paste` 尚无 StructuralPatch、Java 尚未成为唯一 planner 的架构事实。按当前阶段要求，仅做静态审查，新增测试源码未执行；全目标及最终实测仍开放。
