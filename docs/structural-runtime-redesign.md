@@ -2061,3 +2061,13 @@ wire 与提交端也不能直接把 Java 规划出的不同结果送回：`Opera
 六轮静态自审：①从 filter normalizer 和消费者确认 columns key/value 都是绝对列坐标，而非仅展示 label；②确认 range、sortState.ref、条件 ref、columns key/value 用同一 column delta 变换；③核对插入前序列、筛选器局部轴变换、历史参数重基、undo 与 redo 的方向和状态；④检查 worksheet AutoFilter 和嵌套 Sheet Table AutoFilter 共享同一 typed payload 可识别形状；⑤未知字段/opaque XML 不被通用递归篡改，而是只失效不可安全变换的 history，不回滚远端 revision；⑥工作量随 filter columns 与 sort criteria 数量增长，不扫描 cells/workbook，其他 mutation payload 和公式处理入口不变。
 
 本轮确认并处理 **1 个新根因**，未达到每轮至少 30 个真实问题；没有按 key/value、worksheet/Table、undo/redo 的多个表现重复计数。只做静态审查、加回归源码并运行 `git diff --check`；未运行本地测试/build/typecheck/browser/Excel/benchmark。Java 唯一结构 planner、owner-complete patch 与最终实测仍未完成。
+
+### 2026-09-28 continuation — reject noncanonical ranges in AutoFilter history
+
+沿同一 undo/rebase 链另确认 **1 个独立 payload-integrity 缺口**：`sheet.autoFilter.set` 的 owner validator 只规范化主 `filter.range`，而 `sortState` 被整体 `structuredClone`；通用 `isValidRangeRef` 只检查五个必需字段，不拒绝额外字段；`transformRange` 用 spread 保留这些字段。因此带额外坐标字段的 sort reference 能进入历史，并在标准坐标被移动后仍携带旧坐标。它不同于 columns 数字 map key 漏重键：前者是嵌套 RangeRef 的未知坐标数据未被 fail-close。
+
+history AutoFilter 专用变换现要求主 range、sortState.ref 及每个 condition.ref 恰好使用 canonical RangeRef 字段；同表遇到额外字段即判为不安全并失效该 history entry，不篡改远端已提交状态；其他 sheet 的 AutoFilter 在目标 sheet delta 下仍原样保留。新增拒绝路径源码用带额外 `column` 字段的 sort ref 验证历史 fail-close。
+
+六轮静态自审：①确认 set-owner 验证会规范化主 range，但 sortState 走 clone 路径；②确认通用 RangeRef predicate 允许 excess fields、`transformRange` spread 保留；③确认只对 delta 目标 sheet 的 payload 执行 exact-shape 限制；④分别检查 sortState.ref 与 conditions[].ref，不遗漏嵌套路径；⑤确认测试覆盖 history invalidation 和活动筛选器不存在时远端结构状态保持；⑥检查运行成本仅与 AutoFilter 列条目/排序条件数成正比，不扫描工作表 cells 或 workbook。
+
+本轮新增确认并处理 **1 个独立数据完整性问题**；与上一轮 AutoFilter map-key 根因分开计数，但总数仍远低于用户希望的 30 个独立问题，不用畸形字段的多个位置凑数。仅静态检查与 `git diff --check`，未本地运行测试/typecheck/build/browser/Excel/benchmark；最新远程 CI 只覆盖上一 head，当前改动需等待推送后的 CI。Java 唯一规划权、完整 StructuralPatch、全 owner 覆盖及最终实测仍未完成。

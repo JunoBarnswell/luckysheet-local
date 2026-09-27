@@ -912,11 +912,21 @@ function isFormulaSourceKey(key: string): boolean {
     || normalized.endsWith('formula');
 }
 
+function isSupportedAutoFilterRangeRef(value: unknown): value is RangeRef {
+  return isValidRangeRef(value)
+    && Object.keys(value).every((key) => key === 'sheetId'
+      || key === 'startRow'
+      || key === 'endRow'
+      || key === 'startColumn'
+      || key === 'endColumn');
+}
+
 function transformAutoFilterModel(value: Record<string, unknown>, delta: StructuralDelta): TransformValueResult | undefined {
   if (typeof value.sheetId !== 'string' || !isValidRangeRef(value.range) || !isRecord(value.columns)) return undefined;
   const filter = value as unknown as AutoFilterModel;
   if (filter.range.sheetId !== filter.sheetId) return { value, safe: false };
   if (filter.sheetId !== delta.sheetId) return { value: structuredClone(filter), safe: true };
+  if (!isSupportedAutoFilterRangeRef(value.range)) return { value, safe: false };
   if (Object.keys(value).some((key) => !['sheetId', 'range', 'columns', 'sortState', 'preservedXml'].includes(key))
     || (filter.preservedXml !== undefined && filter.preservedXml !== null)) {
     return { value, safe: false };
@@ -941,7 +951,7 @@ function transformAutoFilterModel(value: Record<string, unknown>, delta: Structu
 
   let sortState = filter.sortState;
   if (sortState !== undefined) {
-    if (!isRecord(sortState) || !isValidRangeRef(sortState.ref) || !Array.isArray(sortState.conditions)
+    if (!isRecord(sortState) || !isSupportedAutoFilterRangeRef(sortState.ref) || !Array.isArray(sortState.conditions)
       || Object.keys(sortState).some((key) => !['ref', 'conditions'].includes(key))) {
       return { value, safe: false };
     }
@@ -949,7 +959,7 @@ function transformAutoFilterModel(value: Record<string, unknown>, delta: Structu
     if (!ref) return { value, safe: false };
     const conditions: SortStateModel['conditions'] = [];
     for (const condition of sortState.conditions) {
-      if (!isRecord(condition) || !isValidRangeRef(condition.ref)
+      if (!isRecord(condition) || !isSupportedAutoFilterRangeRef(condition.ref)
         || Object.keys(condition).some((key) => !['ref', 'descending', 'customList'].includes(key))) {
         return { value, safe: false };
       }

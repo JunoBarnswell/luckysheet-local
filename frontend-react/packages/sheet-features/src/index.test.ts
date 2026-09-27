@@ -1813,6 +1813,39 @@ test('remote axis history invalidates AutoFilter undo carrying opaque preserved 
   assert.equal(sheet.autoFilter, undefined);
 });
 
+test('remote axis history invalidates AutoFilter undo carrying noncanonical sort-reference coordinates', () => {
+  const workbook = new WorkbookModel('unit-autofilter-sort-ref-history', 'AutoFilter sort reference history');
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  const range = { sheetId: sheet.id, startRow: 0, endRow: 5, startColumn: 2, endColumn: 4 };
+  const noncanonicalSortRef = { ...range, column: 2 };
+  runtime.execute('sheet.autoFilter.set', {
+    sheetId: sheet.id,
+    autoFilter: {
+      sheetId: sheet.id,
+      range,
+      columns: { 2: { column: 2, showButton: true, hiddenButton: false } },
+      sortState: { ref: noncanonicalSortRef, conditions: [] },
+    },
+  });
+  runtime.clearHistory();
+  runtime.execute('sheet.autoFilter.remove', { sheetId: sheet.id });
+
+  runtime.applyRemoteMutations([{
+    id: 'columns.inserted',
+    unitId: workbook.unitId,
+    sheetId: sheet.id,
+    params: { sheetId: sheet.id, at: 0, count: 1 },
+    affectedRanges: [{ sheetId: sheet.id, startRow: 0, endRow: sheet.rowCount - 1, startColumn: 0, endColumn: 0 }],
+  }], { revision: 1 });
+
+  assert.equal(runtime.getHistoryDepth().undo, 0);
+  assert.equal(runtime.getInvalidHistoryEntries().length, 1);
+  assert.equal(runtime.undo(), false);
+  assert.equal(sheet.autoFilter, undefined);
+});
+
 test('sheet.freeze.set enforces the canonical pane contract before recording local history', () => {
   const workbook = new WorkbookModel('unit-freeze-pane-contract', 'Freeze Pane Contract');
   const runtime = new CommandRuntime(workbook);
