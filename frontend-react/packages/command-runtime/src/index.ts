@@ -1412,15 +1412,12 @@ export class CommandRuntime {
     const patched = items.filter((item) => item.structuralFormulaOwnerDeltas !== undefined
       || item.structuralDefinedNameOwnerDeltas !== undefined
       || item.structuralRangeOwnerDeltas !== undefined);
-    if (patched.length > 0) preflightCommittedStructuralPatches(this.workbook, patched);
-
     const entry = [...this.undoStack, ...this.redoStack].find((candidate) => candidate.operationId === operationId);
+    const formulaReconciliation = entry ? reconcileCommittedStructuralFormulaPatches(entry, items) : undefined;
+    const patchesToApply = formulaReconciliation?.patchItems ?? patched;
+    if (patchesToApply.length > 0) preflightCommittedStructuralPatches(this.workbook, patchesToApply);
+
     if (entry) {
-      const local = entry.inversePlan.filter((mutation) => mutation.id !== 'sheet.rename')
-        .flatMap((mutation) => mutation.structuralFormulaOwnerDeltas ?? []);
-      const authoritative = patched.filter((item) => item.id !== 'sheet.rename')
-        .flatMap((item) => item.structuralFormulaOwnerDeltas ?? []);
-      const ordered = (deltas: readonly StructuralFormulaOwnerDelta[]) => deltas.map((delta) => JSON.stringify(delta)).sort();
       const localNames = entry.inversePlan.filter((mutation) => mutation.id !== 'sheet.rename')
         .flatMap((mutation) => mutation.structuralDefinedNameOwnerDeltas ?? []);
       const authoritativeNames = patched.filter((item) => item.id !== 'sheet.rename')
@@ -1431,10 +1428,9 @@ export class CommandRuntime {
       const authoritativeRanges = patched.filter((item) => item.id !== 'sheet.rename')
         .flatMap((item) => item.structuralRangeOwnerDeltas ?? []);
       const orderedRanges = (deltas: readonly StructuralRangeOwnerDelta[]) => deltas.map((delta) => JSON.stringify(delta)).sort();
-      const formulaMismatch = JSON.stringify(ordered(local)) !== JSON.stringify(ordered(authoritative));
       const definedNameMismatch = JSON.stringify(orderedNames(localNames)) !== JSON.stringify(orderedNames(authoritativeNames));
       const rangeMismatch = JSON.stringify(orderedRanges(localRanges)) !== JSON.stringify(orderedRanges(authoritativeRanges));
-      if (formulaMismatch || definedNameMismatch || rangeMismatch) {
+      if (definedNameMismatch || rangeMismatch) {
         throw new Error('STRUCTURAL_PATCH_MISMATCH: server-derived owner facts differ from local history; operation remains unacknowledged and the workbook must be reloaded');
       }
 
@@ -1463,8 +1459,11 @@ export class CommandRuntime {
       return;
     }
 
-    for (const item of patched) {
+    for (let index = 0; index < patchesToApply.length; index += 1) {
+      const item = patchesToApply[index]!;
+      const committed = patched[index]!;
       const formulaDeltas = item.structuralFormulaOwnerDeltas ?? [];
+      const committedFormulaDeltas = committed.structuralFormulaOwnerDeltas ?? [];
       const definedNameDeltas = item.structuralDefinedNameOwnerDeltas ?? [];
       const rangeDeltas = item.structuralRangeOwnerDeltas ?? [];
       if (formulaDeltas.length === 0 && definedNameDeltas.length === 0 && rangeDeltas.length === 0) continue;
@@ -1476,15 +1475,16 @@ export class CommandRuntime {
         removedCells: [],
         clearInputRanges: [],
         populateInputRanges: [],
-        rewrittenFormulaOwners: formulaDeltas.flatMap((delta) => delta.kind === 'formula-cell' ? [delta.afterAddress] : []),
-        formulaOwnerDeltas: formulaDeltas,
+        rewrittenFormulaOwners: committedFormulaDeltas.flatMap((delta) => delta.kind === 'formula-cell' ? [delta.afterAddress] : []),
+        formulaOwnerDeltas: committedFormulaDeltas,
         definedNameOwnerDeltas: definedNameDeltas,
         rangeOwnerDeltas: rangeDeltas,
       };
-      for (const listener of this.mutationListeners) listener(item, 'remote', effect);
+      for (const listener of this.mutationListeners) listener(committed, 'remote', effect);
     }
 
     if (entry) {
+      replaceHistoryFormulaOwnerDeltas(entry, formulaReconciliation!.authoritativeDeltas);
       const forwardRenames = entry.forwardMutations.filter((mutation) => mutation.id === 'sheet.rename');
       const inverseRenames = entry.inversePlan.filter((mutation) => mutation.id === 'sheet.rename');
       const committedRenames = items.filter((item) => item.id === 'sheet.rename');
@@ -1897,6 +1897,176 @@ function formulaOwnerPatchKey(delta: StructuralFormulaOwnerDelta): string {
     case 'table-sheet-column': return JSON.stringify([delta.kind, delta.ownerKind, delta.sheetId, delta.fieldId]);
     case 'data-view-field': return JSON.stringify([delta.kind, delta.ownerKind, delta.viewId, delta.fieldId]);
     case 'cell-style-template': return JSON.stringify([delta.kind, delta.ownerKind, delta.templateId, delta.field]);
+  }
+}
+
+interface CommittedStructuralFormulaReconciliation {
+  readonly patchItems: MutationInfo[];
+  readonly authoritativeDeltas: StructuralFormulaOwnerDelta[];
+}
+
+function sameFormulaSerialization(left: string | null, right: string | null): boolean {
+  if (left === right) return true;
+  if (left === null || right === null) return false;
+  try {
+    return formatFormula(parseFormula(left)) === formatFormula(parseFormula(right));
+  } catch {
+    return false;
+  }
+}
+
+function sameFormulaOwnerStateSemantically(left: StructuralFormulaOwnerState, right: StructuralFormulaOwnerState): boolean {
+  return sameFormulaSerialization(left.formula, right.formula)
+    && sameFormulaSerialization(left.sourceFormula, right.sourceFormula)
+    && sameFormulaSerialization(left.barcodeFormula, right.barcodeFormula);
+}
+
+function sameCommittedFormulaOwnerDelta(
+  local: StructuralFormulaOwnerDelta,
+  committed: StructuralFormulaOwnerDelta,
+): boolean {
+  if (local.kind !== committed.kind || formulaOwnerPatchKey(local) !== formulaOwnerPatchKey(committed)) return false;
+  if (local.kind === 'formula-cell' && committed.kind === 'formula-cell') {
+    return JSON.stringify(local.beforeAddress) === JSON.stringify(committed.beforeAddress)
+      && JSON.stringify(local.afterAddress) === JSON.stringify(committed.afterAddress)
+      && local.before.formula === committed.before.formula
+      && local.before.sourceFormula === committed.before.sourceFormula
+      && local.before.barcodeFormula === committed.before.barcodeFormula
+      && sameFormulaOwnerStateSemantically(local.after, committed.after);
+  }
+  if (local.kind === 'formula-rule' && committed.kind === 'formula-rule') {
+    return local.beforeFormula === committed.beforeFormula
+      && JSON.stringify(local.beforeRanges) === JSON.stringify(committed.beforeRanges)
+      && JSON.stringify(local.afterRanges) === JSON.stringify(committed.afterRanges)
+      && sameFormulaSerialization(local.afterFormula, committed.afterFormula);
+  }
+  if (local.kind === 'formula-rule-anchor' && committed.kind === 'formula-rule-anchor') {
+    return JSON.stringify(local.beforeAddress) === JSON.stringify(committed.beforeAddress)
+      && JSON.stringify(local.afterAddress) === JSON.stringify(committed.afterAddress);
+  }
+  if (local.kind === 'formula-object' && committed.kind === 'formula-object') {
+    return local.beforeFormula === committed.beforeFormula
+      && sameFormulaSerialization(local.afterFormula, committed.afterFormula);
+  }
+  return false;
+}
+
+function formulaOwnerDeltaBaseKey(delta: StructuralFormulaOwnerDelta): string {
+  const identity = formulaOwnerPatchKey(delta);
+  if (delta.kind === 'formula-cell') {
+    return JSON.stringify([identity,
+      [delta.beforeAddress.sheetId, delta.beforeAddress.row, delta.beforeAddress.column],
+      [delta.afterAddress.sheetId, delta.afterAddress.row, delta.afterAddress.column],
+      delta.before.formula, delta.before.sourceFormula, delta.before.barcodeFormula]);
+  }
+  if (delta.kind === 'formula-rule') {
+    return JSON.stringify([identity, delta.beforeFormula, delta.beforeRanges, delta.afterRanges]);
+  }
+  if (delta.kind === 'formula-rule-anchor') {
+    return JSON.stringify([identity, delta.beforeAddress, delta.afterAddress]);
+  }
+  return JSON.stringify([identity, delta.beforeFormula]);
+}
+
+function groupFormulaOwnerDeltas(
+  deltas: readonly StructuralFormulaOwnerDelta[],
+): Map<string, StructuralFormulaOwnerDelta[]> {
+  const groups = new Map<string, StructuralFormulaOwnerDelta[]>();
+  for (const delta of deltas) {
+    const key = formulaOwnerDeltaBaseKey(delta);
+    const group = groups.get(key);
+    if (group) group.push(delta);
+    else groups.set(key, [delta]);
+  }
+  return groups;
+}
+
+function hasMatchingFormulaOwnerDelta(
+  groups: ReadonlyMap<string, readonly StructuralFormulaOwnerDelta[]>,
+  candidate: StructuralFormulaOwnerDelta,
+): boolean {
+  return groups.get(formulaOwnerDeltaBaseKey(candidate))
+    ?.some((delta) => sameCommittedFormulaOwnerDelta(delta, candidate)) ?? false;
+}
+
+function rebaseCommittedFormulaOwnerDelta(
+  local: StructuralFormulaOwnerDelta,
+  committed: StructuralFormulaOwnerDelta,
+): StructuralFormulaOwnerDelta {
+  if (local.kind === 'formula-cell' && committed.kind === 'formula-cell') {
+    return {
+      ...committed,
+      beforeAddress: { ...committed.afterAddress },
+      before: structuredClone(local.after),
+    };
+  }
+  if (local.kind === 'formula-rule' && committed.kind === 'formula-rule') {
+    return {
+      ...committed,
+      beforeFormula: local.afterFormula,
+      beforeRanges: structuredClone(committed.afterRanges),
+    };
+  }
+  if (local.kind === 'formula-object' && committed.kind === 'formula-object') {
+    return { ...committed, beforeFormula: local.afterFormula };
+  }
+  return structuredClone(committed);
+}
+
+function reconcileCommittedStructuralFormulaPatches(
+  entry: HistoryEntry,
+  items: readonly MutationInfo[],
+): CommittedStructuralFormulaReconciliation {
+  const localDeltas = entry.inversePlan.flatMap((mutation) => mutation.structuralFormulaOwnerDeltas ?? []);
+  const unmatchedLocal = groupFormulaOwnerDeltas(localDeltas);
+  let unmatchedLocalCount = localDeltas.length;
+  const authoritativeDeltas: StructuralFormulaOwnerDelta[] = [];
+  const patchItems = items.filter((item) => item.structuralFormulaOwnerDeltas !== undefined
+    || item.structuralDefinedNameOwnerDeltas !== undefined
+    || item.structuralRangeOwnerDeltas !== undefined).map((item) => {
+    if (item.structuralFormulaOwnerDeltas === undefined) return item;
+    const formulaDeltas = item.structuralFormulaOwnerDeltas.map((committed) => {
+      const group = unmatchedLocal.get(formulaOwnerDeltaBaseKey(committed));
+      const localIndex = group?.findIndex((local) => sameCommittedFormulaOwnerDelta(local, committed)) ?? -1;
+      if (localIndex < 0) {
+        throw new Error('STRUCTURAL_PATCH_MISMATCH: server formula-owner facts differ in owner identity, before state, or formula semantics; operation remains unacknowledged and the workbook must be reloaded');
+      }
+      const [local] = group!.splice(localIndex, 1);
+      unmatchedLocalCount -= 1;
+      authoritativeDeltas.push(committed);
+      return rebaseCommittedFormulaOwnerDelta(local!, committed);
+    });
+    return { ...item, structuralFormulaOwnerDeltas: formulaDeltas };
+  });
+  if (unmatchedLocalCount > 0) {
+    throw new Error('STRUCTURAL_PATCH_MISMATCH: local formula-owner facts are missing from the server commit; operation remains unacknowledged and the workbook must be reloaded');
+  }
+  const authoritativeGroups = groupFormulaOwnerDeltas(authoritativeDeltas);
+  for (const mutation of [...entry.forwardMutations, ...entry.inversePlan]) {
+    for (const local of mutation.structuralFormulaOwnerDeltas ?? []) {
+      if (!hasMatchingFormulaOwnerDelta(authoritativeGroups, local)) {
+        throw new Error('STRUCTURAL_PATCH_MISMATCH: committed formula-owner facts cannot be adopted by undo/redo history; operation remains unacknowledged and the workbook must be reloaded');
+      }
+    }
+  }
+  return { patchItems, authoritativeDeltas };
+}
+
+function replaceHistoryFormulaOwnerDeltas(
+  entry: HistoryEntry,
+  authoritativeDeltas: readonly StructuralFormulaOwnerDelta[],
+): void {
+  const authoritativeGroups = groupFormulaOwnerDeltas(authoritativeDeltas);
+  for (const mutation of [...entry.forwardMutations, ...entry.inversePlan]) {
+    if (mutation.structuralFormulaOwnerDeltas === undefined) continue;
+    mutation.structuralFormulaOwnerDeltas = mutation.structuralFormulaOwnerDeltas.map((local) => {
+      const committed = authoritativeGroups.get(formulaOwnerDeltaBaseKey(local))
+        ?.find((candidate) => sameCommittedFormulaOwnerDelta(local, candidate));
+      if (!committed) {
+        throw new Error('STRUCTURAL_PATCH_MISMATCH: committed formula-owner facts cannot be adopted by undo/redo history');
+      }
+      return structuredClone(committed);
+    });
   }
 }
 

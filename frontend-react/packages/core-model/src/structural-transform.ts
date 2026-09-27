@@ -18,6 +18,7 @@ import {
   rewriteFormulaTableReferences,
   ReferenceTransformDomain,
   type CellShiftReferenceTransform,
+  type FormulaAst,
   type StructuralShift,
   type DefinedNameReferenceOwnerIdentity,
   type FormulaReferenceNode,
@@ -1899,13 +1900,94 @@ function applyMovedFormulaRewritePlan(workbook: WorkbookModel, plan: MovedFormul
 function transformFormula(formula: string, transform: (ast: ReturnType<typeof parseFormula>) => ReturnType<typeof parseFormula>): string {
   const hasFormulaPrefix = formula.trim().startsWith('=');
   try {
-    const formatted = formatFormula(transform(parseFormula(hasFormulaPrefix ? formula : `=${formula}`)));
+    const source = hasFormulaPrefix ? formula : `=${formula}`;
+    const ast = parseFormula(source);
+    const transformed = transform(ast);
+    if (sameStructuralFormulaAst(ast, transformed)) return formula;
+    const formatted = formatFormula(transformed);
     return hasFormulaPrefix ? formatted : formatted.replace(/^=/, '');
   } catch (error) {
     if (error instanceof Error && /^(UNSUPPORTED_FEATURE|UNSUPPORTED_STRUCTURAL_REFERENCE|STRUCTURAL_PATCH_INVARIANT):/.test(error.message)) {
       throw error;
     }
     throw new Error(`Formula transformation failed: ${formula}`, { cause: error as Error });
+  }
+}
+
+function sameStructuralFormulaAst(left: FormulaAst, right: FormulaAst): boolean {
+  if (left.type !== right.type || left.parenthesized !== right.parenthesized) return false;
+  switch (left.type) {
+    case 'number-literal': return left.value === (right as typeof left).value;
+    case 'string-literal': return left.value === (right as typeof left).value;
+    case 'boolean-literal': return left.value === (right as typeof left).value;
+    case 'cell-reference': {
+      const reference = (right as typeof left).reference;
+      return left.reference.sheetId === reference.sheetId
+        && left.reference.row === reference.row
+        && left.reference.column === reference.column
+        && left.reference.absoluteRow === reference.absoluteRow
+        && left.reference.absoluteColumn === reference.absoluteColumn;
+    }
+    case 'invalid-reference': return left.code === (right as typeof left).code;
+    case 'range-reference': {
+      const other = right as typeof left;
+      return sameStructuralFormulaAst(left.start, other.start) && sameStructuralFormulaAst(left.end, other.end);
+    }
+    case 'whole-column-reference': {
+      const other = right as typeof left;
+      return left.sheetId === other.sheetId && left.startColumn === other.startColumn && left.endColumn === other.endColumn
+        && left.absoluteStartColumn === other.absoluteStartColumn && left.absoluteEndColumn === other.absoluteEndColumn;
+    }
+    case 'whole-row-reference': {
+      const other = right as typeof left;
+      return left.sheetId === other.sheetId && left.startRow === other.startRow && left.endRow === other.endRow
+        && left.absoluteStartRow === other.absoluteStartRow && left.absoluteEndRow === other.absoluteEndRow;
+    }
+    case 'spill-reference': return sameStructuralFormulaAst(left.operand, (right as typeof left).operand);
+    case 'reference-union': {
+      const references = (right as typeof left).references;
+      return left.references.length === references.length
+        && left.references.every((reference, index) => sameStructuralFormulaAst(reference, references[index]!));
+    }
+    case 'reference-intersection': {
+      const other = right as typeof left;
+      return sameStructuralFormulaAst(left.left, other.left) && sameStructuralFormulaAst(left.right, other.right);
+    }
+    case 'sheet-range-reference': {
+      const other = right as typeof left;
+      return left.qualifier.startSheetId === other.qualifier.startSheetId
+        && left.qualifier.endSheetId === other.qualifier.endSheetId
+        && sameStructuralFormulaAst(left.reference, other.reference);
+    }
+    case 'external-reference': {
+      const other = right as typeof left;
+      return left.qualifier.workbookId === other.qualifier.workbookId
+        && left.qualifier.sheetId === other.qualifier.sheetId
+        && sameStructuralFormulaAst(left.reference, other.reference);
+    }
+    case 'name-reference': return left.name === (right as typeof left).name;
+    case 'table-reference': {
+      const other = right as typeof left;
+      return left.tableName === other.tableName && left.specifier === other.specifier
+        && left.columnName === other.columnName && left.columnEndName === other.columnEndName
+        && left.thisRow === other.thisRow;
+    }
+    case 'unary-expression': {
+      const other = right as typeof left;
+      return left.operator === other.operator && sameStructuralFormulaAst(left.operand, other.operand);
+    }
+    case 'binary-expression': {
+      const other = right as typeof left;
+      return left.operator === other.operator
+        && sameStructuralFormulaAst(left.left, other.left)
+        && sameStructuralFormulaAst(left.right, other.right);
+    }
+    case 'function-call': {
+      const arguments_ = (right as typeof left).arguments;
+      return left.name === (right as typeof left).name && left.arguments.length === arguments_.length
+        && left.arguments.every((argument, index) => sameStructuralFormulaAst(argument, arguments_[index]!));
+    }
+    default: return false;
   }
 }
 
@@ -2615,7 +2697,11 @@ function assertStructuralFormulaRoundTrip(
 }
 
 function sameStructuralFormula(left: string, right: string): boolean {
-  const canonicalFormula = (formula: string): string => transformFormula(formula, (ast) => ast);
+  const canonicalFormula = (formula: string): string => {
+    const hasFormulaPrefix = formula.trim().startsWith('=');
+    const formatted = formatFormula(parseFormula(hasFormulaPrefix ? formula : `=${formula}`));
+    return hasFormulaPrefix ? formatted : formatted.replace(/^=/, '');
+  };
   return canonicalFormula(left) === canonicalFormula(right);
 }
 

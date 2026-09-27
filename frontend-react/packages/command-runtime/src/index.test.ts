@@ -285,6 +285,75 @@ test('CommandRuntime replays formula owner history without hydrating deferred ce
   assert.equal(deferredCells['0']?.['0']?.formula, '=Sales[Amount]');
 });
 
+test('CommandRuntime reconciles syntax-equivalent committed formula text into workbook and history', () => {
+  const workbook = new WorkbookModel('unit-formula-serialization-reconciliation', 'Formula Serialization Reconciliation');
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  const address = { sheetId: sheet.id, row: 0, column: 0 };
+  const beforeFormula = "=sum( 'Sheet1'!a1 , 1 )";
+  const localAfterFormula = '=SUM(Sheet1!A2,1)';
+  const serverAfterFormula = "=sum( 'Sheet1'!A2 , 1 )";
+  sheet.cells.set(0, 0, { value: null, formula: beforeFormula });
+  const localDelta: StructuralFormulaOwnerDelta = {
+    kind: 'formula-cell', beforeAddress: address, afterAddress: address,
+    before: { formula: beforeFormula, sourceFormula: null, barcodeFormula: null },
+    after: { formula: localAfterFormula, sourceFormula: null, barcodeFormula: null },
+  };
+  const committedDelta: StructuralFormulaOwnerDelta = {
+    ...localDelta,
+    after: { formula: serverAfterFormula, sourceFormula: null, barcodeFormula: null },
+  };
+  const runtime = new CommandRuntime(workbook);
+  const metadata = (name: string, inverseId: string) => ({
+    schema: { name, validate: (value: unknown) => !!value && typeof value === 'object' },
+    permission: { capability: 'test.formula.write' },
+    affectedRanges: { resolve: () => [] },
+    inversePolicy: { allowedMutationIds: [inverseId], minCount: 1 },
+  });
+  runtime.registry.registerMutation({ id: 'formula.serialization.transform', handler: () => undefined,
+    metadata: metadata('FormulaSerializationTransform', 'formula.serialization.restore') });
+  runtime.registry.registerMutation({ id: 'formula.serialization.restore', handler: () => undefined,
+    metadata: metadata('FormulaSerializationRestore', 'formula.serialization.transform') });
+  runtime.registry.registerCommand({
+    id: 'formula.serialization.transform',
+    execute: (_params, context) => {
+      context.applyMutation({
+        id: 'formula.serialization.transform', unitId: workbook.unitId, sheetId: sheet.id,
+        params: {}, affectedRanges: [],
+        inverse: [{ id: 'formula.serialization.restore', unitId: workbook.unitId, sheetId: sheet.id, params: {}, affectedRanges: [] }],
+        apply: () => {
+          const current = sheet.cells.getFormulaOwnerWithoutHydration(0, 0)!;
+          sheet.cells.replaceFormulaOwnerWithoutHydration(0, 0, { ...current, formula: localAfterFormula });
+          return { formulaOwnerDeltas: [localDelta] };
+        },
+      });
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges: [] };
+    },
+  });
+
+  const operation = runtime.execute('formula.serialization.transform', {});
+  runtime.applyCommittedStructuralPatches(operation.operationId, [{
+    id: 'formula.serialization.transform', unitId: workbook.unitId, sheetId: sheet.id, params: {}, affectedRanges: [],
+    structuralFormulaOwnerDeltas: [committedDelta],
+  }], 1);
+
+  assert.equal(sheet.cells.getWithoutHydration(0, 0)?.formula, serverAfterFormula);
+  assert.equal(runtime.getUndoEntries()[0]?.forwardMutations[0]?.structuralFormulaOwnerDeltas?.[0]?.kind, 'formula-cell');
+  const historyDelta = runtime.getUndoEntries()[0]?.forwardMutations[0]?.structuralFormulaOwnerDeltas?.[0];
+  assert.equal(historyDelta?.kind === 'formula-cell' ? historyDelta.after.formula : undefined, serverAfterFormula);
+  assert.throws(() => runtime.applyCommittedStructuralPatches(operation.operationId, [{
+    id: 'formula.serialization.transform', unitId: workbook.unitId, sheetId: sheet.id, params: {}, affectedRanges: [],
+    structuralFormulaOwnerDeltas: [{
+      ...committedDelta,
+      after: { formula: '=Sheet1!A3', sourceFormula: null, barcodeFormula: null },
+    }],
+  }], 2), /STRUCTURAL_PATCH_MISMATCH/);
+  assert.equal(sheet.cells.getWithoutHydration(0, 0)?.formula, serverAfterFormula);
+  assert.equal(runtime.undo(), true);
+  assert.equal(sheet.cells.getWithoutHydration(0, 0)?.formula, beforeFormula);
+  assert.equal(runtime.redo(), true);
+  assert.equal(sheet.cells.getWithoutHydration(0, 0)?.formula, serverAfterFormula);
+});
+
 test('CommandRuntime records and guards defined-name owner patches in history', () => {
   const workbook = new WorkbookModel('unit-defined-name-history', 'Defined Name History');
   const sheetId = workbook.primarySheetId;

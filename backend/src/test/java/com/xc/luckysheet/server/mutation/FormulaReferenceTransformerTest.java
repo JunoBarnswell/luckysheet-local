@@ -165,13 +165,27 @@ class FormulaReferenceTransformerTest {
     @Test
     void structuralRewriteRespectsUnicodeSheetNamesAndIdentifierBoundaries() {
         FormulaReferenceTransformer.SheetIdentity sales = new FormulaReferenceTransformer.SheetIdentity("sales-id", "销售");
-        String formula = "=销售!A1+其他!A1+A1变量+A1.name+A1$part+A1𐐀+A١+A$١";
+        String formula = "=销售!A1+其他!A1+'Sheet1'!A1+'123Sheet'!A1+A1变量+A1.name+A1$part+A1𐐀+A١+A$١";
 
-        assertEquals("=销售!A2+其他!A1+A1变量+A1.name+A1$part+A1𐐀+A١+A$١",
+        assertEquals("=销售!A2+其他!A1+'Sheet1'!A1+'123Sheet'!A1+A1变量+A1.name+A1$part+A1𐐀+A١+A$١",
                 FormulaReferenceTransformer.remapAxis(formula, sales, sales,
                         FormulaReferenceTransformer.Axis.ROW, 0, 1,
                         FormulaReferenceTransformer.Direction.INSERT));
         assertEquals("='New Name'!A1", FormulaReferenceTransformer.renameSheet("=销售!A1", "销售", "New Name"));
+        assertEquals("=sheet1!A1", FormulaReferenceTransformer.renameSheet("='Sheet1'!A1", "Sheet1", "sheet1"));
+    }
+
+    @Test
+    void structuralRewritePreservesUnchangedFormulaTextAndOnlyRendersChangedReferences() {
+        FormulaReferenceTransformer.SheetIdentity sheet = new FormulaReferenceTransformer.SheetIdentity("sheet-1", "Sheet1");
+        String formula = "=sum( 'Sheet1'!a1 , 1 )";
+
+        assertEquals(formula, FormulaReferenceTransformer.remapAxis(formula, sheet, sheet,
+                FormulaReferenceTransformer.Axis.ROW, 10, 1,
+                FormulaReferenceTransformer.Direction.INSERT));
+        assertEquals("=sum( 'Sheet1'!A2 , 1 )", FormulaReferenceTransformer.remapAxis(formula, sheet, sheet,
+                FormulaReferenceTransformer.Axis.ROW, 0, 1,
+                FormulaReferenceTransformer.Direction.INSERT));
     }
 
     @Test

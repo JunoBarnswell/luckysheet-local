@@ -23,6 +23,25 @@ const operations: readonly { name: string; params: StructuralTransformParams; af
 ];
 
 describe('prepared structural formula writes', () => {
+  it('does not rewrite source formatting when canonical reference semantics are unchanged', () => {
+    const workbook = new WorkbookModel('formula-noop-serialization', 'Formula No-op Serialization');
+    const target = workbook.getSheet(sheetId);
+    const ownerSheet = workbook.addSheet('formula-owner', 'Formula Owner');
+    const formula = "=sum( 'Sheet1'!a1 , #REF! )";
+    const owner = { sheetId: ownerSheet.id, row: 0, column: 0 };
+    ownerSheet.cells.set(owner.row, owner.column, { value: null, formula });
+    const sheetOrder = workbook.sheetOrder.map((id) => ({ id, name: workbook.getSheet(id).name }));
+    const index = new RangeIndex(sheetOrder);
+    index.set(owner, collectFormulaDependencies(parseFormula(formula), owner, { sheetOrder }), true);
+
+    const result = StructuralTransform.apply(workbook, {
+      kind: 'insert-rows', sheetId: target.id, at: 10, count: 1,
+    }, index);
+
+    assert.equal(ownerSheet.cells.getWithoutHydration(owner.row, owner.column)?.formula, formula);
+    assert.equal(result.formulaOwnerDeltas?.length ?? 0, 0);
+  });
+
   it('keeps sparse target cells deferred through axis, cell-shift and move transforms', () => {
     for (const { name, params, row, column } of operations) {
       const workbook = new WorkbookModel(`sparse-structural-${name}`, 'Sparse structural transform');

@@ -301,7 +301,7 @@ test('reference parser rejects incomplete reference syntax without swallowing it
 });
 
 test('structural rewrite respects Unicode sheet names and identifier boundaries', () => {
-  const formula = parseFormula('=销售!A1+其他!A1+A1变量+A1.name+A1$part+A1𐐀+A١+A$١');
+  const formula = parseFormula("=销售!A1+其他!A1+'Sheet1'!A1+'123Sheet'!A1+A1变量+A1.name+A1$part+A1𐐀+A١+A$١");
   const rewritten = formatFormula(mapAstStructuralReferences(formula, {
     shift: { axis: 'row', at: 0, count: 1, op: 'insert' },
     ownerSheetId: 'sales-id',
@@ -310,10 +310,12 @@ test('structural rewrite respects Unicode sheet names and identifier boundaries'
     sheetOrder: [
       { id: 'sales-id', name: '销售' },
       { id: 'other-id', name: '其他' },
+      { id: 'sheet-1', name: 'Sheet1' },
+      { id: 'numeric-id', name: '123Sheet' },
     ],
   }));
 
-  assert.equal(rewritten, "='销售'!A2+'其他'!A1+A1变量+A1.name+A1$part+A1𐐀+A١+A$١");
+  assert.equal(rewritten, "='销售'!A2+'其他'!A1+Sheet1!A1+'123Sheet'!A1+A1变量+A1.name+A1$part+A1𐐀+A١+A$١");
 });
 
 test('whole-axis parser accepts Excel limits and rejects endpoints outside the reference domain', () => {

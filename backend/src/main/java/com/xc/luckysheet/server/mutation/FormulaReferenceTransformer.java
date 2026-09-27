@@ -5,6 +5,7 @@ import com.xc.luckysheet.server.service.ServiceException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Objects;
 import java.util.TreeSet;
 
 /**
@@ -533,6 +534,11 @@ final class FormulaReferenceTransformer {
 
     private static String rewrite(String formula, ReferenceMapper mapper, ReferenceRangeMapper rangeMapper,
             boolean preserveThreeDimensionalReferences, WholeAxisMapper wholeAxisMapper) {
+        return rewrite(formula, mapper, rangeMapper, preserveThreeDimensionalReferences, wholeAxisMapper, false);
+    }
+
+    private static String rewrite(String formula, ReferenceMapper mapper, ReferenceRangeMapper rangeMapper,
+            boolean preserveThreeDimensionalReferences, WholeAxisMapper wholeAxisMapper, boolean renderUnchangedReferences) {
         if (formula == null) return null;
         StringBuilder output = new StringBuilder(formula.length());
         int index = 0;
@@ -608,11 +614,17 @@ final class FormulaReferenceTransformer {
                     : rangeMapper.map(parsed);
             if (mappedRange.handled()) {
                 if (mappedRange.start() == null || mappedRange.end() == null) output.append("#REF!");
+                else if (!renderUnchangedReferences
+                        && Objects.equals(parsed.start(), mappedRange.start())
+                        && Objects.equals(parsed.end(), mappedRange.end())) output.append(formula, index, parsed.endIndex());
                 else output.append(render(parsed, mappedRange.start(), mappedRange.end()));
             } else {
                 Reference start = mapper.map(parsed.start());
                 Reference end = parsed.end() == null ? null : mapper.map(parsed.end());
                 if (start == null || (parsed.end() != null && end == null)) output.append("#REF!");
+                else if (!renderUnchangedReferences
+                        && Objects.equals(parsed.start(), start)
+                        && Objects.equals(parsed.end(), end)) output.append(formula, index, parsed.endIndex());
                 else output.append(render(parsed, start, end));
             }
             index = parsed.endIndex();
@@ -625,7 +637,7 @@ final class FormulaReferenceTransformer {
                 parsed -> RangeMapping.handled(parsed.start(), parsed.end()), true,
                 (reference, prefix) -> (prefix == null ? "" : prefix.raw() + "!")
                         + renderWholeAxisReference(formula, reference,
-                        new int[]{Math.min(reference.start(), reference.end()), Math.max(reference.start(), reference.end())}));
+                        new int[]{Math.min(reference.start(), reference.end()), Math.max(reference.start(), reference.end())}), true);
     }
 
     private static String renderWholeAxisReference(String formula, WholeAxisReference reference, int[] interval) {
@@ -1131,7 +1143,8 @@ final class FormulaReferenceTransformer {
     private static String renderReference(Reference reference, String originalSheetName, String originalPrefix) {
         StringBuilder output = new StringBuilder();
         if (reference.sheetName() != null) {
-            if (sameName(reference.sheetName(), originalSheetName == null ? reference.sheetName() : originalSheetName) && originalPrefix != null) output.append(originalPrefix).append('!');
+            if (reference.sheetName().equals(originalSheetName == null ? reference.sheetName() : originalSheetName)
+                    && originalPrefix != null) output.append(originalPrefix).append('!');
             else output.append(renderSheetName(reference.sheetName())).append('!');
         }
         if (reference.absoluteColumn()) output.append('$');
@@ -1152,12 +1165,10 @@ final class FormulaReferenceTransformer {
 
     private static String renderSheetName(String name) {
         boolean simple = !name.isEmpty();
-        for (int index = 0; index < name.length(); index++) {
+        if (simple && !isAsciiLetter(name.charAt(0)) && name.charAt(0) != '_') simple = false;
+        for (int index = 1; simple && index < name.length(); index++) {
             char current = name.charAt(index);
-            if (!isAsciiLetter(current) && !Character.isDigit(current) && current != '_' && current != '.') {
-                simple = false;
-                break;
-            }
+            if (!isAsciiLetter(current) && !isAsciiDigit(current) && current != '_' && current != '.') simple = false;
         }
         return simple ? name : "'" + name.replace("'", "''") + "'";
     }
