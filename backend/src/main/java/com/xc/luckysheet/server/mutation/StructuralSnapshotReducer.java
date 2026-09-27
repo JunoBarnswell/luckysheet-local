@@ -11,6 +11,7 @@ import com.xc.luckysheet.server.contract.WorkbookSnapshotValidator;
 import com.xc.luckysheet.server.service.ServiceException;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -51,6 +52,8 @@ final class StructuralSnapshotReducer {
     private record FormulaChange(String before, String after) {
         boolean changed() { return before != null && after != null && !before.equals(after); }
     }
+
+    private record OutlineRowGroup(int start, int end) { }
 
     private record RangeOwnerSnapshot(String ownerKind, String sheetId, String regionId,
             String ownerId, RangeRef range, Integer headerRow, List<RangeRef> ownerRanges, List<RangeRef> ranges) {
@@ -1531,6 +1534,7 @@ final class StructuralSnapshotReducer {
         if (sourceRows.size() != expected) throw ServiceException.validation("Row permutation length does not match range");
         validatePermutationPreservation(sheet, selected);
         int[] targetRowsBySource = validatePermutation(selected, (ArrayNode) sourceRows);
+        validateSortRowVisibilityAndOutlineOrder(sheet, selected, targetRowsBySource);
         rejectMovedFormulaGroups(sheet, selected, targetRowsBySource);
         validatePermutationMetadataExact(root, sheet, selected, metadataScope, targetRowsBySource);
         ObjectNode reportSheetAfter = mapReportSheetCoordinates(sheet,
@@ -3909,6 +3913,83 @@ final class StructuralSnapshotReducer {
         }
     }
 
+    private static void validateSortRowVisibilityAndOutlineOrder(ObjectNode sheet, RangeRef range, int[] targetRowsBySource) {
+        List<OutlineRowGroup> outerGroups = outerRowOutlineGroups(sheet, range);
+        boolean hasMultiRowOutlineUnit = outerGroups.stream().anyMatch(group -> group.end() > group.start());
+        for (OutlineRowGroup group : outerGroups) {
+            int targetStart = targetRowsBySource[group.start() - range.startRow()];
+            for (int sourceRow = group.start(); sourceRow <= group.end(); sourceRow++) {
+                int offset = sourceRow - range.startRow();
+                if (targetRowsBySource[offset] != targetStart + sourceRow - group.start()) {
+                    throw ServiceException.validation("Row permutation cannot reorder rows within an outline group");
+                }
+            }
+        }
+
+        JsonNode hiddenRows = sheet.get("hiddenRows");
+        if (hiddenRows == null) return;
+        if (!hiddenRows.isArray()) throw ServiceException.validation("hiddenRows must be an array");
+        for (JsonNode rawRow : hiddenRows) {
+            if (!rawRow.isIntegralNumber() || !rawRow.canConvertToInt()) {
+                throw ServiceException.validation("hiddenRows contains an invalid row index");
+            }
+            int hiddenRow = rawRow.intValue();
+            if (hiddenRow < range.startRow() || hiddenRow > range.endRow()) continue;
+            if (hasMultiRowOutlineUnit) {
+                throw ServiceException.unsupportedFeature("UNSUPPORTED_FEATURE: sorting a multi-row outline group together with separately hidden rows is unsupported");
+            }
+            int offset = hiddenRow - range.startRow();
+            if (targetRowsBySource[offset] != hiddenRow) {
+                throw ServiceException.validation("Row permutation cannot move a hidden row");
+            }
+        }
+    }
+
+    private static List<OutlineRowGroup> outerRowOutlineGroups(ObjectNode sheet, RangeRef range) {
+        JsonNode outline = sheet.get("outline");
+        if (outline == null || outline.isNull()) return List.of();
+        if (!outline.isObject() || !outline.path("groups").isArray()) throw ServiceException.validation("Worksheet outline groups must be an array");
+
+        List<OutlineRowGroup> groups = new ArrayList<>();
+        for (JsonNode rawGroup : outline.path("groups")) {
+            if (!rawGroup.isObject()) throw ServiceException.validation("Outline group must be an object");
+            if (!"row".equals(rawGroup.path("axis").asText())) continue;
+            JsonNode startNode = rawGroup.get("start");
+            JsonNode endNode = rawGroup.get("end");
+            if (startNode == null || !startNode.isIntegralNumber() || !startNode.canConvertToInt()
+                    || endNode == null || !endNode.isIntegralNumber() || !endNode.canConvertToInt()) {
+                throw ServiceException.validation("Outline group row bounds are invalid");
+            }
+            int groupStart = startNode.intValue();
+            int groupEnd = endNode.intValue();
+            if (groupStart < 0 || groupEnd < groupStart || groupEnd > SnapshotMutationSupport.MAX_ROW) {
+                throw ServiceException.validation("Outline group row bounds are invalid");
+            }
+            if (groupStart > range.endRow() || groupEnd < range.startRow()) continue;
+            if (groupStart < range.startRow() || groupEnd > range.endRow()) {
+                throw ServiceException.unsupportedFeature("UNSUPPORTED_FEATURE: row permutation must contain each outline group in full");
+            }
+            groups.add(new OutlineRowGroup(groupStart, groupEnd));
+        }
+        groups.sort(Comparator.comparingInt(OutlineRowGroup::start)
+                .thenComparing(Comparator.comparingInt(OutlineRowGroup::end).reversed()));
+        List<OutlineRowGroup> outerGroups = new ArrayList<>();
+        List<OutlineRowGroup> stack = new ArrayList<>();
+        for (OutlineRowGroup group : groups) {
+            while (!stack.isEmpty() && group.start() > stack.getLast().end()) stack.removeLast();
+            if (!stack.isEmpty()) {
+                OutlineRowGroup parent = stack.getLast();
+                if (group.end() > parent.end() || (group.start() == parent.start() && group.end() == parent.end())) {
+                    throw ServiceException.validation("Worksheet outline groups overlap without a valid nesting order");
+                }
+            } else {
+                outerGroups.add(group);
+            }
+            stack.add(group);
+        }
+        return outerGroups;
+    }
+
     private static void validatePermutationPreservation(ObjectNode sheet, RangeRef range) {
         for (JsonNode merge : SnapshotMutationSupport.array(sheet, "merges")) {
             JsonNode mergeRange = merge.get("range");
@@ -3935,7 +4016,7 @@ final class StructuralSnapshotReducer {
                 if (!"row".equals(group.path("axis").asText())) continue;
                 boolean intersects = group.path("start").asInt() <= range.endRow() && group.path("end").asInt() >= range.startRow();
                 if (intersects && !(group.path("start").asInt() >= range.startRow() && group.path("end").asInt() <= range.endRow())) {
-                    throw ServiceException.validation("Row permutation partially intersects an outline group");
+                    throw ServiceException.unsupportedFeature("UNSUPPORTED_FEATURE: row permutation partially intersects an outline group");
                 }
             }
         }

@@ -3385,6 +3385,89 @@ class MutationDescriptorRegistryTest {
     }
 
     @Test
+    void rowPermutationKeepsManuallyHiddenRowsFixedAndRejectsMovingThem() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        ObjectNode snapshot = (ObjectNode) mapper.readTree("""
+                {"sheets":[{"id":"sheet-1","name":"Sheet1","rowCount":5,"columnCount":1,
+                  "cells":{"1":{"0":{"value":"C"}},"2":{"0":{"value":"B"}},"3":{"0":{"value":"A"}}},
+                  "hiddenRows":[2],"pane":{"kind":"none"},
+                  "review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}},
+                  "merges":[],"conditionalFormats":[],"dataValidations":[],"pivots":[],"sparklines":[],
+                  "drawings":[],"drawingPayloads":{},"sheetTables":[],"spillRanges":[],"protectionRules":[]}]}
+                """);
+        OperationMutation valid = withSortContext(new OperationMutation("rows.permuted", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":1,"endRow":3,"startColumn":0,"endColumn":0},"sourceRows":[3,2,1]}
+                """)), range(0, 3, 0, 0), "worksheet", null, true, 0);
+
+        JsonNode current = registry.prepare(snapshot, valid, WorkbookAclRole.EDITOR).descriptor().apply(snapshot, valid);
+        JsonNode sheet = current.path("sheets").get(0);
+        assertEquals("A", sheet.path("cells").path("1").path("0").path("value").asText());
+        assertEquals("B", sheet.path("cells").path("2").path("0").path("value").asText());
+        assertEquals("C", sheet.path("cells").path("3").path("0").path("value").asText());
+        assertEquals(2, sheet.path("hiddenRows").get(0).asInt());
+
+        JsonNode beforeRejected = current.deepCopy();
+        OperationMutation movedHiddenRow = withSortContext(new OperationMutation("rows.permuted", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":1,"endRow":3,"startColumn":0,"endColumn":0},"sourceRows":[2,1,3]}
+                """)), range(0, 3, 0, 0), "worksheet", null, true, 0);
+        ServiceException error = assertThrows(ServiceException.class,
+                () -> registry.prepare(current, movedHiddenRow, WorkbookAclRole.EDITOR).descriptor().apply(current, movedHiddenRow));
+
+        assertEquals("VALIDATION_ERROR", error.code());
+        assertEquals(beforeRejected, current);
+
+    }
+
+    @Test
+    void rowPermutationMovesOutlineGroupsAsUnitsAndRejectsInternalReordering() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        ObjectNode snapshot = (ObjectNode) mapper.readTree("""
+                {"sheets":[{"id":"sheet-1","name":"Sheet1","rowCount":6,"columnCount":1,
+                  "cells":{"1":{"0":{"value":"B"}},"2":{"0":{"value":"B detail"}},
+                           "3":{"0":{"value":"A"}},"4":{"0":{"value":"A detail"}}},
+                  "outline":{"groups":[{"id":"group-b","axis":"row","start":1,"end":2,"level":1,"collapsed":true},
+                                       {"id":"group-a","axis":"row","start":3,"end":4,"level":1,"collapsed":true}]},
+                  "pane":{"kind":"none"},"review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}},
+                  "merges":[],"conditionalFormats":[],"dataValidations":[],"pivots":[],"sparklines":[],
+                  "drawings":[],"drawingPayloads":{},"sheetTables":[],"spillRanges":[],"protectionRules":[]}]}
+                """);
+        OperationMutation grouped = withSortContext(new OperationMutation("rows.permuted", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":1,"endRow":4,"startColumn":0,"endColumn":0},"sourceRows":[3,4,1,2]}
+                """)), range(0, 4, 0, 0), "worksheet", null, true, 0);
+
+        JsonNode current = registry.prepare(snapshot, grouped, WorkbookAclRole.EDITOR).descriptor().apply(snapshot, grouped);
+        JsonNode sheet = current.path("sheets").get(0);
+        assertEquals("A", sheet.path("cells").path("1").path("0").path("value").asText());
+        assertEquals("A detail", sheet.path("cells").path("2").path("0").path("value").asText());
+        assertEquals("B", sheet.path("cells").path("3").path("0").path("value").asText());
+        assertEquals("B detail", sheet.path("cells").path("4").path("0").path("value").asText());
+        assertEquals(3, sheet.path("outline").path("groups").get(0).path("start").asInt());
+        assertEquals(1, sheet.path("outline").path("groups").get(1).path("start").asInt());
+
+        JsonNode beforeRejected = current.deepCopy();
+        OperationMutation reorderedWithinGroup = withSortContext(new OperationMutation("rows.permuted", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":1,"endRow":4,"startColumn":0,"endColumn":0},"sourceRows":[2,1,3,4]}
+                """)), range(0, 4, 0, 0), "worksheet", null, true, 0);
+        ServiceException error = assertThrows(ServiceException.class,
+                () -> registry.prepare(current, reorderedWithinGroup, WorkbookAclRole.EDITOR).descriptor().apply(current, reorderedWithinGroup));
+
+        assertEquals("VALIDATION_ERROR", error.code());
+        assertEquals(beforeRejected, current);
+
+        ObjectNode mixedSnapshot = (ObjectNode) current.deepCopy();
+        ((ObjectNode) mixedSnapshot.path("sheets").get(0)).putArray("hiddenRows").add(2).add(5);
+        OperationMutation mixedHiddenAndOutline = withSortContext(new OperationMutation("rows.permuted", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":1,"endRow":5,"startColumn":0,"endColumn":0},"sourceRows":[3,4,1,2,5]}
+                """)), range(0, 5, 0, 0), "worksheet", null, true, 0);
+        JsonNode beforeMixedRejected = mixedSnapshot.deepCopy();
+        ServiceException mixedError = assertThrows(ServiceException.class,
+                () -> registry.prepare(mixedSnapshot, mixedHiddenAndOutline, WorkbookAclRole.EDITOR).descriptor().apply(mixedSnapshot, mixedHiddenAndOutline));
+
+        assertEquals("UNSUPPORTED_FEATURE", mixedError.code());
+        assertEquals(beforeMixedRejected, mixedSnapshot);
+    }
+
+    @Test
     void rowPermutationRejectsExcessiveExactMetadataFragmentation() throws Exception {
         ServiceException error = assertThrows(ServiceException.class, () -> applyFragmentedMetadataPermutation(257));
 

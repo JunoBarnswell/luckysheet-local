@@ -16,7 +16,7 @@ import type {
 } from "@react-sheets/core-model";
 import { MAX_CHANGED_CELLS, MAX_SHEET_COLUMN_COUNT, MAX_SHEET_ROW_COUNT, clearFormulaProvenance, hasFormulaGroupMetadata, StructuralTransform, applyRowPermutation, columnLabel, createRowPermutationPlan, isDynamicFilterType, resolveFilterCellValue, rowPermutationAffectedColumnEnd, sheetRuleRegistry } from "@react-sheets/core-model";
 import { canonicalExcelDateDayOfWeek, canonicalExcelDateFromParts, canonicalExcelDateFromUtcDate, canonicalExcelDateFromValue, canonicalExcelDateToUtcDate, shiftCanonicalExcelDate, type CanonicalExcelDate, type CanonicalExcelDateParts } from '@react-sheets/formula-engine';
-import { compareWorkbookValues, MAX_COLUMN_INDEX } from '@react-sheets/formula-engine';
+import { compareWorkbookValues, MAX_COLUMN_INDEX, type WorkbookCollationContext } from '@react-sheets/formula-engine';
 import { clearCellContents } from './clear-planner';
 import { resolveAutoFilters } from './sheet-table-features';
 import { assertDataRegionContextMatches, resolveDataRegionContext, type DataRegionContext } from './data-region-context';
@@ -97,6 +97,34 @@ function rowPermutationCalculationEffect(
     definedNameOwnerDeltas: ownerChanges.definedNameOwnerDeltas,
     rangeOwnerDeltas: ownerChanges.rangeOwnerDeltas,
   };
+}
+
+function assertRowPermutationVisibilityAndOutlines(
+  sheet: WorksheetModel,
+  plan: ReturnType<typeof createRowPermutationPlan>,
+): void {
+  const { range, targetRowsBySource } = plan;
+  const outerGroups = resolveOuterRowOutlineGroups(sheet, range.startRow, range.endRow);
+  const hasMultiRowOutlineUnit = outerGroups.some((group) => group.end > group.start);
+  for (const group of outerGroups) {
+    const targetStart = targetRowsBySource[group.start - range.startRow]!;
+    for (let sourceRow = group.start; sourceRow <= group.end; sourceRow += 1) {
+      const sourceOffset = sourceRow - range.startRow;
+      if (targetRowsBySource[sourceOffset] !== targetStart + sourceRow - group.start) {
+        throw new Error('Row permutation cannot reorder rows within an outline group');
+      }
+    }
+  }
+  for (const hiddenRow of sheet.hiddenRows) {
+    if (hiddenRow < range.startRow || hiddenRow > range.endRow) continue;
+    const offset = hiddenRow - range.startRow;
+    if (hasMultiRowOutlineUnit) {
+      throw new Error('UNSUPPORTED_FEATURE: sorting a multi-row outline group together with separately hidden rows is unsupported');
+    }
+    if (targetRowsBySource[offset] !== hiddenRow) {
+      throw new Error('Row permutation cannot move a hidden row');
+    }
+  }
 }
 
 function assertRangeWithinSheet(sheet: WorksheetModel, range: RangeRef, operation: string): void {
@@ -1713,8 +1741,12 @@ function normalizeSortCellValue(value: unknown): SortCellValue {
   throw new Error(`Sort key has unsupported resolved value type: ${typeof value}`);
 }
 
-export function compareSortValues(left: SortCellValue, right: SortCellValue): number {
-  return compareWorkbookValues(left, right);
+export function compareSortValues(
+  left: SortCellValue,
+  right: SortCellValue,
+  collationContext?: WorkbookCollationContext,
+): number {
+  return compareWorkbookValues(left, right, collationContext);
 }
 
 export function resolveSortCellValue(
@@ -1726,16 +1758,50 @@ export function resolveSortCellValue(
   const resolved = resolver?.(sheet, row, column);
   if (resolved !== undefined) return normalizeSortCellValue(resolved);
   const cell = sheet.cells.getWithoutHydration(row, column);
-  if (cell?.formula !== undefined && cell.formulaValue === undefined) {
-    throw new Error(`Sort formula result unavailable at ${sheet.id}!${row}:${column}`);
+  if (cell?.formula !== undefined) {
+    if (cell.formulaValue === undefined) throw new Error(`Sort formula result unavailable at ${sheet.id}!${row}:${column}`);
+    return normalizeSortCellValue(cell.formulaValue);
   }
   return normalizeSortCellValue(cell?.formulaValue ?? cell?.value ?? null);
+}
+
+function resolveOuterRowOutlineGroups(sheet: WorksheetModel, startRow: number, endRow: number) {
+  const rowGroups = (sheet.outline?.groups ?? []).filter((group) => group.axis === 'row');
+  for (const group of rowGroups) {
+    if (!Number.isSafeInteger(group.start) || !Number.isSafeInteger(group.end)
+      || group.start < 0 || group.end < group.start || group.end >= MAX_SHEET_ROW_COUNT) {
+      throw new Error('Worksheet outline group row bounds are invalid');
+    }
+  }
+  const groups = rowGroups
+    .filter((group) => group.start <= endRow && group.end >= startRow)
+    .slice()
+    .sort((left, right) => left.start - right.start || right.end - left.end);
+  const outerGroups: typeof groups = [];
+  const stack: typeof groups = [];
+  for (const group of groups) {
+    if (group.start < startRow || group.end > endRow) {
+      throw new Error('UNSUPPORTED_FEATURE: sort range must contain each intersecting outline group in full');
+    }
+    while (stack.length > 0 && group.start > stack[stack.length - 1]!.end) stack.pop();
+    const parent = stack[stack.length - 1];
+    if (parent) {
+      if (group.end > parent.end || (group.start === parent.start && group.end === parent.end)) {
+        throw new Error('Worksheet outline groups overlap without a valid nesting order');
+      }
+    } else {
+      outerGroups.push(group);
+    }
+    stack.push(group);
+  }
+  return outerGroups;
 }
 
 function sortedSourceRows(
   sheet: WorksheetModel,
   params: DataSortParams,
   resolver?: (sheet: WorksheetModel, row: number, column: number) => unknown,
+  collationContext?: WorkbookCollationContext,
 ): number[] {
   const range = normalizeRangeRef(params.range);
   const startRow = (params.hasHeader ?? false) ? range.startRow + 1 : range.startRow;
@@ -1749,21 +1815,84 @@ function sortedSourceRows(
     criterionColumns.add(criterion.column);
   }
   if (startRow > range.endRow) return [];
-  const rows = Array.from({ length: range.endRow - startRow + 1 }, (_, offset) => startRow + offset);
-  // Stable least-significant-key-first passes preserve multi-key ordering while
-  // resolving each row/key once. Keep only one key vector live at a time.
-  const keys = new Array<SortCellValue>(rows.length);
+  const rowCount = range.endRow - startRow + 1;
+  const outerGroups = resolveOuterRowOutlineGroups(sheet, startRow, range.endRow);
+  const hasMultiRowOutlineUnit = outerGroups.some((group) => group.end > group.start);
+  const fixedHiddenRows = new Set<number>();
+  for (const row of sheet.hiddenRows) {
+    if (row >= startRow && row <= range.endRow) fixedHiddenRows.add(row);
+  }
+  if (hasMultiRowOutlineUnit && fixedHiddenRows.size > 0) {
+    throw new Error('UNSUPPORTED_FEATURE: sorting a multi-row outline group together with separately hidden rows is unsupported');
+  }
+
+  const sourceRows = Array.from({ length: rowCount }, (_, offset) => startRow + offset);
+  if (!hasMultiRowOutlineUnit) {
+    if (fixedHiddenRows.size === 0) {
+      const keys = new Array<SortCellValue>(rowCount);
+      for (let criterionIndex = params.criteria.length - 1; criterionIndex >= 0; criterionIndex -= 1) {
+        const criterion = params.criteria[criterionIndex]!;
+        for (let offset = 0; offset < rowCount; offset += 1) {
+          keys[offset] = resolveSortCellValue(sheet, startRow + offset, criterion.column, resolver);
+        }
+        sourceRows.sort((leftRow, rightRow) => {
+          const result = compareSortValues(keys[leftRow - startRow]!, keys[rightRow - startRow]!, collationContext);
+          return criterion.ascending ? result : -result;
+        });
+      }
+      return sourceRows;
+    }
+
+    const sortableOffsets: number[] = [];
+    for (let offset = 0; offset < rowCount; offset += 1) {
+      if (!fixedHiddenRows.has(startRow + offset)) sortableOffsets.push(offset);
+    }
+    const keys = new Array<SortCellValue>(rowCount);
+    for (let criterionIndex = params.criteria.length - 1; criterionIndex >= 0; criterionIndex -= 1) {
+      const criterion = params.criteria[criterionIndex]!;
+      for (const offset of sortableOffsets) {
+        keys[offset] = resolveSortCellValue(sheet, startRow + offset, criterion.column, resolver);
+      }
+      sortableOffsets.sort((leftOffset, rightOffset) => {
+        const result = compareSortValues(keys[leftOffset]!, keys[rightOffset]!, collationContext);
+        return criterion.ascending ? result : -result;
+      });
+    }
+    let sourceIndex = 0;
+    for (let targetOffset = 0; targetOffset < rowCount; targetOffset += 1) {
+      if (fixedHiddenRows.has(startRow + targetOffset)) continue;
+      sourceRows[targetOffset] = startRow + sortableOffsets[sourceIndex++]!;
+    }
+    return sourceRows;
+  }
+
+  const groupEndsByStart = new Map<number, number>();
+  for (const group of outerGroups) groupEndsByStart.set(group.start - startRow, group.end - startRow);
+  const unitStarts: number[] = [];
+  for (let offset = 0; offset < rowCount;) {
+    unitStarts.push(offset);
+    offset = (groupEndsByStart.get(offset) ?? offset) + 1;
+  }
+  const keys = new Array<SortCellValue>(rowCount);
   for (let criterionIndex = params.criteria.length - 1; criterionIndex >= 0; criterionIndex -= 1) {
     const criterion = params.criteria[criterionIndex]!;
-    for (let offset = 0; offset < rows.length; offset += 1) {
+    for (const offset of unitStarts) {
       keys[offset] = resolveSortCellValue(sheet, startRow + offset, criterion.column, resolver);
     }
-    rows.sort((leftRow, rightRow) => {
-      const result = compareSortValues(keys[leftRow - startRow]!, keys[rightRow - startRow]!);
+    unitStarts.sort((leftOffset, rightOffset) => {
+      const result = compareSortValues(keys[leftOffset]!, keys[rightOffset]!, collationContext);
       return criterion.ascending ? result : -result;
     });
   }
-  return rows;
+  let targetOffset = 0;
+  for (const unitStart of unitStarts) {
+    const unitEnd = groupEndsByStart.get(unitStart) ?? unitStart;
+    for (let sourceOffset = unitStart; sourceOffset <= unitEnd; sourceOffset += 1) {
+      sourceRows[targetOffset] = startRow + sourceOffset;
+      targetOffset += 1;
+    }
+  }
+  return sourceRows;
 }
 
 function selectedRange(params: { sheetId: string; range: RangeRef }): RangeRef {
@@ -1994,9 +2123,11 @@ export function registerDataToolCommands(runtime: CommandRuntime): void {
       const params = item.params;
       const range = params.range;
       const sheet = context.workbook.getSheet(params.sheetId);
+      const plan = createRowPermutationPlan(range, params.sourceRows, params.affectedColumnEnd);
+      assertRowPermutationVisibilityAndOutlines(sheet, plan);
       const ownerChanges = applyRowPermutation(
         context.workbook,
-        createRowPermutationPlan(range, params.sourceRows, params.affectedColumnEnd),
+        plan,
         context.structuralReferenceOwners,
       );
       setAppliedSortState(sheet, params.sortState);
@@ -2039,7 +2170,12 @@ export function registerDataToolCommands(runtime: CommandRuntime): void {
       }
       assertNoDataRegionIntersection(sheet, range, 'Sort');
       if (params.criteria.length === 0) return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
-      const sourceRows = sortedSourceRows(sheet, { ...params, range, hasHeader }, context.resolveCellValue);
+      const sourceRows = sortedSourceRows(
+        sheet,
+        { ...params, range, hasHeader },
+        context.resolveCellValue,
+        context.workbook.collationContext,
+      );
       if (sourceRows.length <= 1 || sourceRows.every((row, offset) => row === range.startRow + (hasHeader ? 1 : 0) + offset)) {
         return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
       }

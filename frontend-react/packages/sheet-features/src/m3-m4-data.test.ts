@@ -127,6 +127,106 @@ test('worksheet sorting honors an explicit header override while Sheet Table hea
   assert.deepEqual([0, 1, 2].map((row) => tableSheet.cells.get(row, 0)?.value), before);
 });
 
+test('sorting leaves manually hidden rows at their original row while sorting visible rows across them', () => {
+  const { workbook, commands } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, { value: 'Key' });
+  sheet.cells.set(1, 0, { value: 'C' });
+  sheet.cells.set(2, 0, { value: 'B' });
+  sheet.cells.set(3, 0, { value: 'A' });
+  sheet.hiddenRows.add(2);
+
+  commands.execute('data.sort.rows', {
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 3, startColumn: 0, endColumn: 0 },
+    criteria: [{ column: 0, ascending: true }],
+    hasHeader: true,
+  });
+
+  assert.deepEqual([1, 2, 3].map((row) => sheet.cells.get(row, 0)?.value), ['A', 'B', 'C']);
+  assert.deepEqual([...sheet.hiddenRows], [2]);
+  assert.deepEqual((commands.getUndoEntries().at(-1)?.redo[0]?.params as { sourceRows: number[] }).sourceRows, [3, 2, 1]);
+});
+
+test('sorting honors workbook custom-list order', () => {
+  const { workbook, commands } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  workbook.collationContext = { ...workbook.collationContext, customLists: [['Z', 'A']] };
+  sheet.cells.set(0, 0, { value: 'Order' });
+  sheet.cells.set(1, 0, { value: 'A' });
+  sheet.cells.set(2, 0, { value: 'Z' });
+
+  commands.execute('data.sort.rows', {
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 2, startColumn: 0, endColumn: 0 },
+    criteria: [{ column: 0, ascending: true }],
+    hasHeader: true,
+  });
+
+  assert.deepEqual([1, 2].map((row) => sheet.cells.get(row, 0)?.value), ['Z', 'A']);
+});
+
+test('sorting moves worksheet outline groups as stable units', () => {
+  const { workbook, commands } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, { value: 'Key' });
+  sheet.cells.set(1, 0, { value: 'B' });
+  sheet.cells.set(2, 0, { value: 'B detail' });
+  sheet.cells.set(3, 0, { value: 'A' });
+  sheet.cells.set(4, 0, { value: 'A detail' });
+  sheet.outline = { groups: [
+    { id: 'group-b', axis: 'row', start: 1, end: 2, level: 1, collapsed: true },
+    { id: 'group-a', axis: 'row', start: 3, end: 4, level: 1, collapsed: true },
+  ] };
+
+  commands.execute('data.sort.rows', {
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 4, startColumn: 0, endColumn: 0 },
+    criteria: [{ column: 0, ascending: true }],
+    hasHeader: true,
+  });
+
+  assert.deepEqual([1, 2, 3, 4].map((row) => sheet.cells.get(row, 0)?.value), ['A', 'A detail', 'B', 'B detail']);
+  assert.deepEqual(sheet.outline.groups.map(({ id, start, end }) => [id, start, end]), [
+    ['group-b', 3, 4],
+    ['group-a', 1, 2],
+  ]);
+});
+
+test('sorting fails closed when a multi-row outline group shares the range with manually hidden rows', () => {
+  const { workbook, commands } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  for (const [row, value] of [[0, 'Key'], [1, 'B'], [2, 'B detail'], [3, 'hidden'], [4, 'A'], [5, 'A detail']] as const) {
+    sheet.cells.set(row, 0, { value });
+  }
+  sheet.hiddenRows.add(3);
+  sheet.outline = { groups: [
+    { id: 'group-b', axis: 'row', start: 1, end: 2, level: 1, collapsed: true },
+    { id: 'group-a', axis: 'row', start: 4, end: 5, level: 1, collapsed: true },
+  ] };
+  const before = [1, 2, 3, 4, 5].map((row) => sheet.cells.get(row, 0)?.value);
+
+  assert.throws(() => commands.execute('data.sort.rows', {
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 5, startColumn: 0, endColumn: 0 },
+    criteria: [{ column: 0, ascending: true }],
+    hasHeader: true,
+  }), /multi-row outline group together with separately hidden rows is unsupported/);
+  assert.deepEqual([1, 2, 3, 4, 5].map((row) => sheet.cells.get(row, 0)?.value), before);
+  assert.deepEqual([...sheet.hiddenRows], [3]);
+
+  sheet.hiddenRows.clear();
+  sheet.hiddenRows.add(2);
+  assert.throws(() => commands.execute('data.sort.rows', {
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 5, startColumn: 0, endColumn: 0 },
+    criteria: [{ column: 0, ascending: true }],
+    hasHeader: true,
+  }), /multi-row outline group together with separately hidden rows is unsupported/);
+  assert.deepEqual([1, 2, 3, 4, 5].map((row) => sheet.cells.get(row, 0)?.value), before);
+  assert.deepEqual([...sheet.hiddenRows], [2]);
+});
+
 test('sort keys retain canonical typed formula results and reject unresolved values', () => {
   const { workbook } = runtime();
   const sheet = workbook.getSheet(workbook.primarySheetId);
@@ -134,6 +234,8 @@ test('sort keys retain canonical typed formula results and reject unresolved val
   assert.equal(resolveSortCellValue(sheet, 1, 0), 2);
   sheet.cells.set(2, 0, { formula: '=A1', value: null });
   assert.throws(() => resolveSortCellValue(sheet, 2, 0), /formula result unavailable/);
+  sheet.cells.set(3, 0, { formula: '=A1', value: 'stale', formulaValue: null });
+  assert.equal(resolveSortCellValue(sheet, 3, 0), null);
   assert.equal(compareSortValues(2, 10) < 0, true);
   assert.equal(compareSortValues(true, 'true') > 0, true);
   assert.equal(compareSortValues(createFormulaError('#N/A', 'missing'), null) < 0, true);
@@ -211,6 +313,55 @@ test('rows.permuted rejects a tampered duplicate source order before changing ce
       sourceRows: [1, 1],
     },
     affectedRanges: [{ sheetId: sheet.id, startRow: 1, endRow: 2, startColumn: 0, endColumn: 16_383 }],
+  }]), /Invalid mutation history/);
+  assert.deepEqual(workbook.snapshot().sheets.find((candidate) => candidate.id === sheet.id)?.cells,
+    before.sheets.find((candidate) => candidate.id === sheet.id)?.cells);
+});
+
+test('rows.permuted rejects moving a manually hidden row before changing cells', () => {
+  const { workbook, commands } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(1, 0, { value: 'C' });
+  sheet.cells.set(2, 0, { value: 'B' });
+  sheet.cells.set(3, 0, { value: 'A' });
+  sheet.hiddenRows.add(2);
+  const before = workbook.snapshot();
+
+  assert.throws(() => commands.applyRemoteMutations([{
+    id: 'rows.permuted',
+    unitId: workbook.unitId,
+    sheetId: sheet.id,
+    params: {
+      sheetId: sheet.id,
+      range: { sheetId: sheet.id, startRow: 1, endRow: 3, startColumn: 0, endColumn: 0 },
+      sourceRows: [2, 1, 3],
+      affectedColumnEnd: 0,
+    },
+    affectedRanges: [{ sheetId: sheet.id, startRow: 1, endRow: 3, startColumn: 0, endColumn: 0 }],
+  }]), /Invalid mutation history/);
+  assert.deepEqual(workbook.snapshot().sheets.find((candidate) => candidate.id === sheet.id)?.cells,
+    before.sheets.find((candidate) => candidate.id === sheet.id)?.cells);
+});
+
+test('rows.permuted rejects reordering rows inside an outline group before changing cells', () => {
+  const { workbook, commands } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(1, 0, { value: 'Summary' });
+  sheet.cells.set(2, 0, { value: 'Detail' });
+  sheet.outline = { groups: [{ id: 'group-1', axis: 'row', start: 1, end: 2, level: 1, collapsed: true }] };
+  const before = workbook.snapshot();
+
+  assert.throws(() => commands.applyRemoteMutations([{
+    id: 'rows.permuted',
+    unitId: workbook.unitId,
+    sheetId: sheet.id,
+    params: {
+      sheetId: sheet.id,
+      range: { sheetId: sheet.id, startRow: 1, endRow: 2, startColumn: 0, endColumn: 0 },
+      sourceRows: [2, 1],
+      affectedColumnEnd: 0,
+    },
+    affectedRanges: [{ sheetId: sheet.id, startRow: 1, endRow: 2, startColumn: 0, endColumn: 0 }],
   }]), /Invalid mutation history/);
   assert.deepEqual(workbook.snapshot().sheets.find((candidate) => candidate.id === sheet.id)?.cells,
     before.sheets.find((candidate) => candidate.id === sheet.id)?.cells);

@@ -1938,3 +1938,13 @@ head `6d23407f` 的自动 Maven 门禁报告 12 个测试条目（4 failures、8
 六轮静态复核分别核对：① dialog 每次打开和活动区域变化时的默认值重置；② session 的范围、准则列界限和 worksheet/Table header 来源；③ command planner 在写入前拒绝 Table 冲突且不把 worksheet inference 当强制约束；④ row-permutation mutation 对 hasHeader、完整上下文和 undo/redo 参数的传递；⑤ Java 校验 owner 后，仅对 canonical Table header 执行相等性验证并拒绝非 boolean；⑥新增回归源码覆盖双向 worksheet override、Table 拒绝和拒绝前数据不变。
 
 本 follow-up 只确认并修复 **1 个根因**，没有达到用户要求的每轮至少 30 个真实问题，不用 UI、TS、Java 三处同一契约缺陷重复计数。只做静态检查并新增测试源码；按当前要求未运行本地测试、typecheck、build、浏览器、Excel 或 benchmark。服务端排序规划权、owner-complete StructuralPatch、完整互操作及性能实测仍未完成。
+
+### 2026-09-27 sort visibility, outline, and collation follow-up
+
+沿 worksheet/Table sort → `sourceRows` → `rows.permuted` → Java reducer 静态追踪，并对照 [Microsoft Support：Sort data in a range or table in Excel](https://support.microsoft.com/en-us/excel/sort-data-in-a-range-or-table-in-excel)，确认并修复四个独立语义根因：普通隐藏行此前被当作普通数据行搬动；大纲行逐行排序会拆散明细组，而 Excel 应按最高层分组整体排序；排序比较器没有收到 workbook-owned collation，因此 comparator 已实现的自定义列表、类型顺序、空值/大小写/重音/数值文本选项不生效；无 resolver 的公式排序把合法空公式结果经 `??` 误判为缺值并回退到可能过期的 cell value。普通行现只排序可见源行并把结果写入原可见目标槽；大纲折叠隐藏行是独立 projection，顶层组以组首行作为 sort key，组内行序保持不变，嵌套组随外层块移动。微软文档说明按最高层组排序，但没有规定组内哪个值作 sort key；此处按当前 `OutlineGroup` 模型（组首为 summary row）选择组首值，是待桌面 Excel 实测确认的实现推断。Java 和客户端 mutation replay 都校验手动隐藏行固定性、大纲组完整性和组内相对次序。自定义比较调用传入当前 workbook 的 collation context。静态自审另确认 `WorkbookCollationContext.cultureId` 尚未被 formula-engine text comparator 使用，locale-specific Excel 排序仍是未修复项。普通手动隐藏行可固定地参与无多行大纲组的可见槽排序；若同一范围同时含多行大纲组与任一手动隐藏行（无论在组内外），规划器以 `UNSUPPORTED_FEATURE` fail-close；复杂混合槽组装仍需进一步对照桌面 Excel，不能宣称已兼容。
+
+新增 TS 与 Java 回归源码分别覆盖：隐藏槽跨越排序、组块排序/组内次序、工作簿 custom-list 次序、公式结果 null 不回退到旧值，以及被篡改 mutation 移动隐藏行或反转组内行时拒绝且不改快照。静态审阅确认无大纲的常规排序仍复用一个行向量和一个 key vector；隐藏行路径保留稀疏可见 offset，outline 路径用组首 offset 与单 key vector，不构造 row×criteria 矩阵，也不为每行创建 sort-unit 对象。
+
+六轮自审：①微软普通隐藏行与 outline 分组例外的适用边界；②`sourceRows` target→source、`targetRowsBySource` source→target、逆排列及隐藏状态 remap 方向；③嵌套/相邻/部分重叠 outline range 的排序和 fail-close；④客户端本地执行、undo/redo/远端回放与 Java reducer 的同一拒绝语义；⑤可见行、outline unit、单 key vector 的峰值内存与稳定多键比较；⑥公式结果 `null`/`undefined` 区分、WorkbookCollation 参数贯通、custom-list 次序、cultureId 未消费的剩余缺陷与拒绝前快照不变。
+
+本 follow-up 修复 **4 个独立根因**，未达到“每轮至少 30 个真实问题”的广域审查规模，不将 TS/Java 两侧的同一不变量重复计数。按当前要求只静态审查并补充测试源码；没有运行本地测试、typecheck、build、浏览器、Excel 或 benchmark。cultureId/区域排序、手动隐藏行与 outline 混合组、Java 唯一规划 authority、owner-complete StructuralPatch、真实 Excel 互操作及性能验收仍未完成；同一草稿 PR 继续保持 open。
