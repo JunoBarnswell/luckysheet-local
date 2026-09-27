@@ -5,6 +5,8 @@ import { WorkbookModel } from '@react-sheets/core-model';
 import { createCellSetMutationParams, createPasteSpecialSpec } from '@react-sheets/sheet-features';
 import { registerSpreadsheetFeatures } from './feature-registry';
 import { DrawingRuntime } from './features/drawing';
+import { hydrateRuntime } from './runtime';
+import { createRemoteReadySessionFixture } from './session-test-fixtures';
 import { WorkbookSession } from './workbook-session';
 import { CollaborationSession } from './collaboration/collaboration-session';
 import { classifyMutation } from './collaboration/operation-types';
@@ -116,6 +118,80 @@ describe('WorkbookSession collaboration integration', () => {
     });
     assert.equal(workbook.getSheet('sheet-1').cells.get(0, 0)?.value, 'remote');
     assert.equal(runtime.undo(), false);
+  });
+
+  it('replays an authoritative sheet-rename patch without rebuilding the formula engine', async () => {
+    const app = createRemoteReadySessionFixture();
+    try {
+      const runtime = app['runtime'];
+      const source = runtime.model.getSheet(runtime.model.primarySheetId);
+      source.name = 'Source';
+      source.cells.set(0, 0, { value: 42 });
+      const owner = runtime.model.addSheet('formula-owner', 'Formula Owner');
+      const beforeFormula = "='Source'!A1";
+      const afterFormula = "='Renamed'!A1";
+      owner.cells.set(0, 0, { value: null, formula: beforeFormula });
+      const sourceSheetId = source.id;
+      const ownerSheetId = owner.id;
+      hydrateRuntime(runtime, { snapshot: runtime.model.snapshot(), revision: 0 });
+      await app.waitForFormulaCalculation();
+      const formulaEngine = runtime.formula;
+      const collaboration = new CollaborationSession(runtime.commands, { clientSessionId: 'fixture-session' });
+      runtime.collaboration = collaboration;
+      const hydratedSource = runtime.model.getSheet(sourceSheetId);
+      const hydratedOwner = runtime.model.getSheet(ownerSheetId);
+
+      const ownerAddress = { sheetId: hydratedOwner.id, row: 0, column: 0 };
+      const formulaOwnerDelta = {
+        kind: 'formula-cell' as const,
+        beforeAddress: ownerAddress,
+        afterAddress: ownerAddress,
+        before: { formula: beforeFormula, sourceFormula: null, barcodeFormula: null },
+        after: { formula: afterFormula, sourceFormula: null, barcodeFormula: null },
+      };
+      collaboration.applyRemote({
+        schema: 'OperationEnvelope',
+        clientSessionId: 'fixture-session',
+        operationId: 'remote-sheet-rename',
+        unitId: runtime.model.unitId,
+        actorId: 'actor-2',
+        origin: 'client',
+        clientSequence: 1,
+        baseRevision: 0,
+        revision: 1,
+        createdAt: new Date().toISOString(),
+        committedAt: new Date().toISOString(),
+        mutations: [{
+          id: 'sheet.rename',
+          sheetId: hydratedSource.id,
+          params: { sheetId: hydratedSource.id, name: 'Renamed' },
+          affectedRanges: [],
+          structuralImpactRanges: [{
+            sheetId: hydratedOwner.id,
+            startRow: 0,
+            endRow: 0,
+            startColumn: 0,
+            endColumn: 0,
+          }],
+          structuralPatch: {
+            version: 9,
+            mutationId: 'sheet.rename',
+            formulaOwnerDeltas: [formulaOwnerDelta],
+            definedNameOwnerDeltas: [],
+            rangeOwnerDeltas: [],
+          },
+        }],
+      });
+      await app.waitForFormulaCalculation();
+
+      assert.equal(hydratedSource.name, 'Renamed');
+      assert.equal(hydratedOwner.cells.get(0, 0)?.formula, afterFormula);
+      assert.equal(runtime.formula, formulaEngine);
+      assert.equal(runtime.formula.getCellResult({ sheetId: hydratedOwner.id, row: 0, column: 0 })?.value, 42);
+      assert.equal(runtime.commands.getHistoryDepth().undo, 0);
+    } finally {
+      app.dispose();
+    }
   });
 
   it('applies committed structural owner patches before acknowledging local operations', () => {
