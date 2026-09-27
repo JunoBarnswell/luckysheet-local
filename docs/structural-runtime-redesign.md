@@ -2070,4 +2070,14 @@ history AutoFilter 专用变换现要求主 range、sortState.ref 及每个 cond
 
 六轮静态自审：①确认 set-owner 验证会规范化主 range，但 sortState 走 clone 路径；②确认通用 RangeRef predicate 允许 excess fields、`transformRange` spread 保留；③确认只对 delta 目标 sheet 的 payload 执行 exact-shape 限制；④分别检查 sortState.ref 与 conditions[].ref，不遗漏嵌套路径；⑤确认测试覆盖 history invalidation 和活动筛选器不存在时远端结构状态保持；⑥检查运行成本仅与 AutoFilter 列条目/排序条件数成正比，不扫描工作表 cells 或 workbook。
 
-本轮新增确认并处理 **1 个独立数据完整性问题**；与上一轮 AutoFilter map-key 根因分开计数，但总数仍远低于用户希望的 30 个独立问题，不用畸形字段的多个位置凑数。仅静态检查与 `git diff --check`，未本地运行测试/typecheck/build/browser/Excel/benchmark；最新远程 CI 只覆盖上一 head，当前改动需等待推送后的 CI。Java 唯一规划权、完整 StructuralPatch、全 owner 覆盖及最终实测仍未完成。
+本轮新增确认并处理 **1 个独立数据完整性问题**；与上一轮 AutoFilter map-key 根因分开计数，但总数仍远低于用户希望的 30 个独立问题，不用畸形字段的多个位置凑数。仅静态检查与 `git diff --check`，未本地运行测试/typecheck/build/browser/Excel/benchmark；head `ceb46694` 两条远程 `canonical-build` 检查均通过（run `36348273119`、`36348276089`）。Java 唯一规划权、完整 StructuralPatch、全 owner 覆盖及最终实测仍未完成。
+
+### 2026-09-28 continuation — replay observer failure is outside preflight
+
+继续追踪远端批次/undo/redo 的 commit 顺序，确认一个跨重放入口的 atomicity 根因，暂不以局部补丁掩盖：`preflightHistory` 只在 `WorkbookModel.fromSnapshot` 克隆上执行 mutation handlers，不运行 host mutation listeners；真实 `applyHistory` 则在每个 handler 已修改 live model 并应用 owner deltas 后同步调用 listener。若 observer 在某项 mutation 上抛错，远端批次会在后续 mutation、history rebase 和 `currentRevision` 更新前中止；undo/redo 也在模型已被部分重放、但 history stack 尚未移动时抛错。应用层 `attachCoreListeners` 本身在重放同步公式、引用或 projection 时含有同步失败路径。更外层 `CollaborationSession` 只有在 `applyRemoteMutations` 返回后才登记 operationId/baseRevision，因此异常会使已经部分写入的已提交操作看似未应用并可能被重复重放。当前 `MutationInfo` 不携带反向 payload，`WorkbookModel` 也没有保留既有实例引用的全模型 restore/commit API，因此不能安全地在此处临时套 inverse 或替换 workbook 实例。
+
+有界方案：把 replay 改为一个 host-visible transaction，先在隔离模型上生成有序 canonical StructuralPatch 与 Calculation/Projection effects；由 host 对 live model 和所有派生消费者执行 prepare，再一次提交。模型/派生 prepare 失败时不得推进 revision、历史栈或发布任一项；commit 后 observer 错误必须作为带 operation/revision 的明确 post-commit failure 上报，并阻止重放方误将已提交批次当作未提交而重复应用。需要同时收敛 undo、redo、remote replay，不另造只覆盖协同的第二套 patch path。
+
+六轮静态自审：①核对 `preflightHistory` 的克隆 runtime 没有继承 host mutation listeners；②核对 live handler 和 owner-delta 写入先于 mutation listener；③核对 undo/redo 的栈迁移晚于整个 `applyHistory` 返回；④核对 remote 的 history transform、runtime revision 更新晚于整个 `applyHistory` 返回，且 session operationId/baseRevision 登记更晚；⑤检查应用层 core listener 同步修改公式运行时、可见性与数据内容，而非纯日志 observer；⑥确认 `MutationInfo` 无 inverse、`WorkbookModel` 无保留身份的整本恢复 API，当前无安全回滚原语，不先写虚假的 snapshot rollback。
+
+此为**已证实、尚未修复**的一个 replay transaction 问题；与 AutoFilter 的两个 history payload 完整性问题不同，不计入已修复项。下一 vertical slice 必须把 staged replay/commit contract 与 Canonical StructuralPatch 一起设计和实现，并为 observer failure、第二项 mutation reject、undo/redo 与 remote revision 加成功/拒绝路径源码覆盖。最新 `ceb46694` 的 AutoFilter 修复 CI 已通过；本段只作静态审计，无本地或远程运行测试。全目标仍未完成。
