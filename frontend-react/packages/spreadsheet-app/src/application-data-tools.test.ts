@@ -46,6 +46,107 @@ describe('WorkbookSession data tools integration', () => {
     assert.equal(sheet.cells.get(1, 2)?.value, '3');
   });
 
+  it('preflights data-tool inputs before dispatch materializes intersecting regions', async () => {
+    const cases: Array<{ commandId: string; params: (sheetId: string) => Record<string, unknown>; region: (sheetId: string) => { startRow: number; endRow: number; startColumn: number; endColumn: number } }> = [
+      {
+        commandId: 'data.textToColumns',
+        params: (sheetId) => ({ sheetId, range: { sheetId, startRow: 0, endRow: 50_000, startColumn: 0, endColumn: 0 }, delimiter: ',', maxColumns: 2 }),
+        region: (sheetId) => ({ startRow: 0, endRow: 50_000, startColumn: 0, endColumn: 0 }),
+      },
+      {
+        commandId: 'data.removeDuplicates',
+        params: (sheetId) => ({ sheetId, range: { sheetId, startRow: 0, endRow: 4, startColumn: 0, endColumn: 1 }, columns: [2] }),
+        region: () => ({ startRow: 0, endRow: 4, startColumn: 0, endColumn: 1 }),
+      },
+      {
+        commandId: 'data.subtotal',
+        params: (sheetId) => ({ sheetId, range: { sheetId, startRow: 0, endRow: 4, startColumn: 0, endColumn: 1 }, groupColumn: 2, valueColumn: 1, functionName: 'SUM' }),
+        region: () => ({ startRow: 0, endRow: 4, startColumn: 0, endColumn: 1 }),
+      },
+      {
+        commandId: 'data.splitColumn',
+        params: (sheetId) => ({ sheetId, row: 0, column: 0, delimiter: '', maxColumns: 4 }),
+        region: () => ({ startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }),
+      },
+    ];
+
+    for (const [index, entry] of cases.entries()) {
+      const app = new WorkbookSession();
+      const sheetId = app.getActiveSheetId();
+      const sheet = app['runtime'].model.getSheet(sheetId);
+      if (entry.commandId === 'data.textToColumns') sheet.rowCount = 50_001;
+      sheet.addDataRegion({
+        id: `preflight-region-${index}`,
+        sourceId: `unloaded-source-${index}`,
+        range: { sheetId, ...entry.region(sheetId) },
+        headerRow: 0,
+        revision: 0,
+      });
+      let materializationCalls = 0;
+      app['materializeDataRegions'] = async () => { materializationCalls += 1; };
+
+      const result = await app.dispatch({ commandId: entry.commandId, params: entry.params(sheetId) });
+
+      assert.equal(result.status, 'rejected', entry.commandId);
+      if (result.status === 'rejected') assert.equal(result.error.code, 'COMMAND_REJECTED');
+      assert.equal(materializationCalls, 0, entry.commandId);
+    }
+  });
+
+  it('materializes the addressed cell region for splitColumn, not the current selection region', async () => {
+    const app = new WorkbookSession();
+    const sheetId = app.getActiveSheetId();
+    app['runtime'].model.getSheet(sheetId).addDataRegion({
+      id: 'split-target-region',
+      sourceId: 'unloaded-split-source',
+      range: { sheetId, startRow: 8, endRow: 8, startColumn: 3, endColumn: 3 },
+      headerRow: 8,
+      revision: 0,
+    });
+    selectRange(app, 0, 0, 0, 0);
+    const materializedRegionIds: string[] = [];
+    app['materializeDataRegions'] = async (regions) => {
+      materializedRegionIds.push(...regions.map((region) => region.id));
+    };
+
+    const result = await app.dispatch({
+      commandId: 'data.splitColumn',
+      params: { sheetId, row: 8, column: 3, delimiter: ',', maxColumns: 4 },
+    });
+
+    assert.equal(result.status, 'committed');
+    assert.deepEqual(materializedRegionIds, ['split-target-region']);
+  });
+
+  it('canonicalizes a command range to its sheet before matching lazy data regions', async () => {
+    const app = new WorkbookSession();
+    const sheetId = app.getActiveSheetId();
+    app['runtime'].model.getSheet(sheetId).addDataRegion({
+      id: 'canonical-range-region',
+      sourceId: 'unloaded-canonical-range-source',
+      range: { sheetId, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 },
+      headerRow: 0,
+      revision: 0,
+    });
+    const materializedRegionIds: string[] = [];
+    app['materializeDataRegions'] = async (regions) => {
+      materializedRegionIds.push(...regions.map((region) => region.id));
+    };
+
+    const result = await app.dispatch({
+      commandId: 'data.textToColumns',
+      params: {
+        sheetId,
+        range: { sheetId: 'stale-selection-sheet', startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 },
+        delimiter: ',',
+        maxColumns: 2,
+      },
+    });
+
+    assert.equal(result.status, 'committed');
+    assert.deepEqual(materializedRegionIds, ['canonical-range-region']);
+  });
+
   it('removeDuplicatesFromSelection keeps unique rows', () => {
     const app = new WorkbookSession();
     const sheetId = app.getActiveSheetId();

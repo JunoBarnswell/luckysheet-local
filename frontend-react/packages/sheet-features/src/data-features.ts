@@ -1567,6 +1567,106 @@ export interface TextToColumnsParams {
   maxColumns?: number;
 }
 
+export function preflightTextToColumns(workbook: WorkbookModel, params: TextToColumnsParams): {
+  sheet: WorksheetModel;
+  range: RangeRef;
+  clearRange: RangeRef;
+  maxColumns: number;
+} {
+  if (typeof params.delimiter !== 'string' || params.delimiter.length === 0) throw new Error('Text to Columns delimiter is required');
+  const sheet = workbook.getSheet(params.sheetId);
+  const range = selectedRange(params);
+  assertRangeWithinSheet(sheet, range, 'Text to Columns source');
+  if (range.startColumn !== range.endColumn) throw new Error('Text to Columns requires exactly one source column');
+  const requestedMaxColumns = params.maxColumns ?? 8;
+  if (!Number.isSafeInteger(requestedMaxColumns) || requestedMaxColumns < 1) throw new Error('Text to Columns maxColumns must be a positive safe integer');
+  const maxColumns = Math.max(2, requestedMaxColumns);
+  if (range.startColumn + maxColumns > MAX_SHEET_COLUMN_COUNT) throw new Error('Text to Columns exceeds worksheet bounds');
+  const clearRange: RangeRef = {
+    sheetId: params.sheetId,
+    startRow: range.startRow,
+    endRow: range.endRow,
+    startColumn: range.startColumn,
+    endColumn: range.startColumn + maxColumns - 1,
+  };
+  assertBoundedMutationArea(clearRange, 'Text to Columns');
+  return { sheet, range, clearRange, maxColumns };
+}
+
+function preflightRemoveDuplicates(workbook: WorkbookModel, params: RemoveDuplicatesParams): void {
+  const sheet = workbook.getSheet(params.sheetId);
+  const range = selectedRange(params);
+  assertRangeWithinSheet(sheet, range, 'Remove Duplicates');
+  if (!Array.isArray(params.columns) || params.columns.length === 0
+    || params.columns.some((column) => !Number.isSafeInteger(column) || column < range.startColumn || column > range.endColumn)
+    || new Set(params.columns).size !== params.columns.length) {
+    throw new Error('Remove Duplicates columns must be inside the selected range');
+  }
+  if (params.hasHeader !== undefined && typeof params.hasHeader !== 'boolean') {
+    throw new Error('Remove Duplicates hasHeader must be a boolean');
+  }
+}
+
+function preflightSubtotal(workbook: WorkbookModel, params: SubtotalParams): void {
+  if (!['SUM', 'COUNT', 'AVERAGE'].includes(params.functionName)) throw new Error('Unsupported Subtotal function');
+  const sheet = workbook.getSheet(params.sheetId);
+  const range = selectedRange(params);
+  assertRangeWithinSheet(sheet, range, 'Subtotal');
+  if (!Number.isSafeInteger(params.groupColumn) || params.groupColumn < range.startColumn || params.groupColumn > range.endColumn) {
+    throw new Error('Subtotal group column is outside the range');
+  }
+  if (!Number.isSafeInteger(params.valueColumn) || params.valueColumn < range.startColumn || params.valueColumn > range.endColumn) {
+    throw new Error('Subtotal value column is outside the range');
+  }
+}
+
+function preflightSplitColumn(workbook: WorkbookModel, params: SplitColumnParams): void {
+  workbook.getSheet(params.sheetId);
+  if (!Number.isSafeInteger(params.row) || !Number.isSafeInteger(params.column)
+    || params.row < 0 || params.row >= MAX_SHEET_ROW_COUNT || params.column < 0 || params.column >= MAX_SHEET_COLUMN_COUNT) {
+    throw new Error('Split Column source cell is outside worksheet bounds');
+  }
+  if (typeof params.delimiter !== 'string' || params.delimiter.length === 0) throw new Error('Split Column delimiter is required');
+  const requestedMaxColumns = params.maxColumns ?? 4;
+  if (!Number.isSafeInteger(requestedMaxColumns) || requestedMaxColumns < 1) throw new Error('Split Column maxColumns must be a positive safe integer');
+  const maxColumns = Math.max(2, requestedMaxColumns);
+  if (params.column + maxColumns > MAX_SHEET_COLUMN_COUNT) throw new Error('Split Column exceeds worksheet bounds');
+  assertBoundedMutationArea({
+    sheetId: params.sheetId,
+    startRow: params.row,
+    endRow: params.row,
+    startColumn: params.column,
+    endColumn: params.column + maxColumns - 1,
+  }, 'Split Column');
+}
+
+export function preflightDataToolCommand(workbook: WorkbookModel, commandId: string, params: unknown): void {
+  switch (commandId) {
+    case 'data.textToColumns':
+      preflightTextToColumns(workbook, params as TextToColumnsParams);
+      return;
+    case 'data.removeDuplicates':
+      preflightRemoveDuplicates(workbook, params as RemoveDuplicatesParams);
+      return;
+    case 'data.subtotal':
+      preflightSubtotal(workbook, params as SubtotalParams);
+      return;
+    case 'data.splitColumn':
+      preflightSplitColumn(workbook, params as SplitColumnParams);
+      return;
+    default:
+      return;
+  }
+}
+
+interface SplitColumnParams {
+  sheetId: string;
+  row: number;
+  column: number;
+  delimiter: string;
+  maxColumns?: number;
+}
+
 export interface RemoveDuplicatesParams {
   sheetId: string;
   range: RangeRef;
@@ -2012,23 +2112,7 @@ export function registerDataToolCommands(runtime: CommandRuntime): void {
   runtime.registry.registerCommand<TextToColumnsParams>({
     id: 'data.textToColumns',
     execute: (params, context) => {
-      if (typeof params.delimiter !== 'string' || params.delimiter.length === 0) throw new Error('Text to Columns delimiter is required');
-      const sheet = context.workbook.getSheet(params.sheetId);
-      const range = selectedRange(params);
-      assertRangeWithinSheet(sheet, range, 'Text to Columns source');
-      if (range.startColumn !== range.endColumn) throw new Error('Text to Columns requires exactly one source column');
-      const requestedMaxColumns = params.maxColumns ?? 8;
-      if (!Number.isSafeInteger(requestedMaxColumns) || requestedMaxColumns < 1) throw new Error('Text to Columns maxColumns must be a positive safe integer');
-      const maxColumns = Math.max(2, requestedMaxColumns);
-      if (range.startColumn + maxColumns > MAX_SHEET_COLUMN_COUNT) throw new Error('Text to Columns exceeds worksheet bounds');
-      const clearRange: RangeRef = {
-        sheetId: params.sheetId,
-        startRow: range.startRow,
-        endRow: range.endRow,
-        startColumn: range.startColumn,
-        endColumn: range.startColumn + maxColumns - 1,
-      };
-      assertBoundedMutationArea(clearRange, 'Text to Columns');
+      const { sheet, range, clearRange, maxColumns } = preflightTextToColumns(context.workbook, params);
       const values: CellData[][] = [];
       for (let row = range.startRow; row <= range.endRow; row++) {
         const cell = sheet.cells.get(row, range.startColumn);
@@ -2051,17 +2135,9 @@ export function registerDataToolCommands(runtime: CommandRuntime): void {
   runtime.registry.registerCommand<RemoveDuplicatesParams>({
     id: 'data.removeDuplicates',
     execute: (params, context) => {
+      preflightRemoveDuplicates(context.workbook, params);
       const sheet = context.workbook.getSheet(params.sheetId);
       const range = selectedRange(params);
-      assertRangeWithinSheet(sheet, range, 'Remove Duplicates');
-      if (!Array.isArray(params.columns) || params.columns.length === 0
-        || params.columns.some((column) => !Number.isSafeInteger(column) || column < range.startColumn || column > range.endColumn)
-        || new Set(params.columns).size !== params.columns.length) {
-        throw new Error('Remove Duplicates columns must be inside the selected range');
-      }
-      if (params.hasHeader !== undefined && typeof params.hasHeader !== 'boolean') {
-        throw new Error('Remove Duplicates hasHeader must be a boolean');
-      }
       const startRow = params.hasHeader ? range.startRow + 1 : range.startRow;
       const seen = new Set<string>();
       const duplicateRows: number[] = [];
@@ -2098,10 +2174,9 @@ export function registerDataToolCommands(runtime: CommandRuntime): void {
   runtime.registry.registerCommand<SubtotalParams>({
     id: 'data.subtotal',
     execute: (params, context) => {
-      if (!['SUM', 'COUNT', 'AVERAGE'].includes(params.functionName)) throw new Error('Unsupported Subtotal function');
+      preflightSubtotal(context.workbook, params);
       const sheet = context.workbook.getSheet(params.sheetId);
       const range = selectedRange(params);
-      assertRangeWithinSheet(sheet, range, 'Subtotal');
       const groups = contiguousGroups(sheet, { ...params, range }, context.resolveCellValue);
       if (groups.length === 0) return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
       const summaryRange: RangeRef = {
@@ -2181,21 +2256,15 @@ export function registerDataToolCommands(runtime: CommandRuntime): void {
     },
   });
 
-  runtime.registry.registerCommand<{ sheetId: string; row: number; column: number; delimiter: string; maxColumns?: number }>({
+  runtime.registry.registerCommand<SplitColumnParams>({
     id: 'data.splitColumn',
     execute: (params, context) => {
+      preflightSplitColumn(context.workbook, params);
       const sheet = context.workbook.getSheet(params.sheetId);
-      if (!Number.isSafeInteger(params.row) || !Number.isSafeInteger(params.column)
-        || params.row < 0 || params.row >= MAX_SHEET_ROW_COUNT || params.column < 0 || params.column >= MAX_SHEET_COLUMN_COUNT) {
-        throw new Error('Split Column source cell is outside worksheet bounds');
-      }
-      if (typeof params.delimiter !== 'string' || params.delimiter.length === 0) throw new Error('Split Column delimiter is required');
       const requestedMaxColumns = params.maxColumns ?? 4;
-      if (!Number.isSafeInteger(requestedMaxColumns) || requestedMaxColumns < 1) throw new Error('Split Column maxColumns must be a positive safe integer');
       const cell = sheet.cells.get(params.row, params.column);
       const text = cellStorageText(cell, resolvedDataCellValue(sheet, params.row, params.column, context.resolveCellValue, 'Split Column'));
       const maxColumns = Math.max(2, requestedMaxColumns);
-      if (params.column + maxColumns > MAX_SHEET_COLUMN_COUNT) throw new Error('Split Column exceeds worksheet bounds');
       const parts = text.split(params.delimiter, maxColumns + 1);
       if (parts.length > maxColumns) throw new Error('Split Column output exceeds the configured column limit');
       if (parts.length <= 1 && parts[0] === text) return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };

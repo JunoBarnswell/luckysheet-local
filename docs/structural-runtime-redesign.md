@@ -1777,3 +1777,11 @@ Repeatable history migration 将旧 v1-v5 patch 先投影回旧 formula-owner �
 修复将 occupied-cell 快照改为 range iterator、只清理已持久化 cell、用共享生成契约 `MAX_CHANGED_CELLS` 同步 TS/Java 上限；密集变换在构造矩阵或执行结构写入前拒绝超限；split 最多只解析上限加一个 token，并在发现溢出时不写入；Subtotal outline 合并为一次 mutation。新增 TypeScript 回归源码覆盖键碰撞/类型、解析结果、未解析公式拒绝、输出截断、网格 extent 增长、超限前置拒绝及 block-backed 排序 header 拒绝。
 
 仍有经本轮追踪确认但未在此切片修复的架构项：`WorkbookSession.executeCommandAfterMaterialization` 在命令级前置校验前会完整 materialize 相交 data region；交替重复行会被拆成大量独立 rows.deleted 结构变换；Subtotal 缓存值未复用公式引擎的 filter visibility/nested-subtotal/error 投影；更大的 Java 唯一 planner 与 owner-complete StructuralPatch 迁移仍未完成。以上不计作已修复。本轮仅做静态阅读、生成契约与 `git diff --check`；未运行测试、构建、浏览器、性能测量或 Excel 互操作，目标继续开放。
+
+### Materialization preflight follow-up
+
+沿上一节未加载数据的边界继续复核后，确认并修复了三个独立问题：一是 Text-to-Columns 的前置拒绝只在专用 Session helper 中运行，通用 `dispatch()` 仍会先加载整块数据；同时 Remove Duplicates、Subtotal、Split Column 的纯参数/坐标拒绝也发生在 materialize 之后。现在四个工具在两个异步入口共享同一预检，命令执行端复用相同规则。二是 Split Column 只传 row/column，region 解析器却只看 range 类字段，因而退回当前选择区域；现在按实际目标单元格定位数据块。三是这些命令以顶层 `sheetId` 为实际访问对象，但 region 命中原先保留 `range.sheetId`；旧选择身份会漏掉同坐标目标块。常规命令范围现按顶层 sheet 绑定，同时剪贴板的跨表源范围不被重写。
+
+六轮静态自审依次复核：①专用 helper 的调用顺序；②公共 dispatch 是否绕过预检；③输入校验是否由命令与 Session 共用；④Split Column 的参数形状与 region 几何是否一致；⑤range identity、命令 sheet 及剪贴板跨表源的边界；⑥拒绝路径是否在加载前返回且不产生命令 mutation，以及有效请求是否仍只在目标 region materialize 后读取值并 fail-close。新增对应的应用层回归源码，**未执行**。
+
+本 follow-up 只修复上述三个边界问题，不冒称达到“每轮至少 30 个真实问题”的审查规模，也不把一个共享预检缺口按四个命令重复计数。Subtotal 的输出大小仍依赖已加载数据中的实际分组；交替重复行仍可能产生大量独立 row-delete 变换；完整 Java 唯一 planner、owner-complete StructuralPatch、性能实测与 Excel 互操作仍未完成。本轮没有运行测试、构建、浏览器或 Excel。

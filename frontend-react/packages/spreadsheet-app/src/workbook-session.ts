@@ -129,6 +129,7 @@ import {
   type CellInputSourceKind,
   type FormatPainterStylePattern,
   isCellEntryError,
+  preflightDataToolCommand,
 } from '@react-sheets/sheet-features';
 import { compareWorkbookValues, isSpillChild, type CanonicalExcelDateParts, type ExcelDateSystem, type RecalculationMode } from '@react-sheets/formula-engine';
 import {
@@ -1562,6 +1563,7 @@ export class WorkbookSession {
     }
     try {
       const resolved = this.resolveCommandContext(descriptor.commandId, descriptor.params);
+      preflightDataToolCommand(this.runtime.model, descriptor.commandId, resolved);
       const regions = this.dataRegionsRequiredForCommand(descriptor.commandId, resolved);
       if (regions.length > 0 && descriptor.commandId === 'sheet.autoFilter.sort') {
         return this.dispatchDataRegionAutoFilterSort(resolved, regions);
@@ -1942,6 +1944,7 @@ export class WorkbookSession {
   private async executeCommandAfterMaterialization(commandId: string, params: unknown): Promise<CommandResult> {
     if (this.phase !== 'ready') throw new Error('Workbook is not ready');
     const resolved = this.resolveCommandContext(commandId, params);
+    preflightDataToolCommand(this.runtime.model, commandId, resolved);
     const regions = this.dataRegionsRequiredForCommand(commandId, resolved);
     if (regions.length > 0) await this.materializeDataRegions(regions);
     return this.runCommand(commandId, resolved);
@@ -1988,15 +1991,27 @@ export class WorkbookSession {
     const sheetId = typeof input.sheetId === 'string' ? input.sheetId : this.activeSheetId;
     const sheet = this.runtime.model.getSheet(sheetId);
     const ranges: RangeRef[] = [];
-    const appendRange = (candidate: unknown) => {
+    const appendRange = (candidate: unknown, bindToCommandSheet = false) => {
       if (!candidate || typeof candidate !== 'object') return;
       const range = candidate as RangeRef;
       if (typeof range.sheetId === 'string' && Number.isInteger(range.startRow) && Number.isInteger(range.endRow)
-        && Number.isInteger(range.startColumn) && Number.isInteger(range.endColumn)) ranges.push(range);
+        && Number.isInteger(range.startColumn) && Number.isInteger(range.endColumn)) {
+        ranges.push(bindToCommandSheet ? { ...range, sheetId } : range);
+      }
     };
-    appendRange(input.range);
-    appendRange(input.sourceRange);
-    appendRange(input.targetRange);
+    appendRange(input.range, true);
+    appendRange(input.sourceRange, true);
+    appendRange(input.targetRange, true);
+    if (commandId === 'data.splitColumn'
+      && Number.isSafeInteger(input.row) && Number.isSafeInteger(input.column)) {
+      appendRange({
+        sheetId,
+        startRow: input.row,
+        endRow: input.row,
+        startColumn: input.column,
+        endColumn: input.column,
+      });
+    }
     if (input.targetOrigin && typeof input.targetOrigin === 'object' && !Array.isArray(input.targetOrigin)) {
       const origin = input.targetOrigin as { row?: unknown; column?: unknown };
       const clipboard = input.clipboard && typeof input.clipboard === 'object' && !Array.isArray(input.clipboard)
@@ -2025,10 +2040,10 @@ export class WorkbookSession {
         }
       }
     }
-    if (Array.isArray(input.ranges)) input.ranges.forEach(appendRange);
-    if (input.filter && typeof input.filter === 'object') appendRange((input.filter as { range?: unknown }).range);
+    if (Array.isArray(input.ranges)) input.ranges.forEach((range) => appendRange(range, true));
+    if (input.filter && typeof input.filter === 'object') appendRange((input.filter as { range?: unknown }).range, true);
     if (input.rule && typeof input.rule === 'object' && Array.isArray((input.rule as { ranges?: unknown[] }).ranges)) {
-      (input.rule as { ranges: unknown[] }).ranges.forEach(appendRange);
+      (input.rule as { ranges: unknown[] }).ranges.forEach((range) => appendRange(range, true));
     }
     if (ranges.length === 0) ranges.push(this.getCurrentRegion());
     return sheet.dataRegions.filter((region) => ranges.some((range) => rangesIntersect(range, region.range)));
