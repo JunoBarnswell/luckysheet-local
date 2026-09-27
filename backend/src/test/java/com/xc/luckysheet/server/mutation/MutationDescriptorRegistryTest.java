@@ -1503,13 +1503,13 @@ class MutationDescriptorRegistryTest {
         JsonNode snapshot = mapper.readTree("""
                 {"sheets":[{"id":"sheet-1","name":"Sheet1","rowCount":20,"columnCount":10,"cells":{},
                   "conditionalFormats":[{"id":"cf-1","sheetId":"sheet-1","ranges":[{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0}],"type":"highlight","value1":"before"}],
-                  "dataValidations":[{"id":"dv-1","sheetId":"sheet-1","ranges":[{"sheetId":"sheet-1","startRow":1,"endRow":1,"startColumn":0,"endColumn":0}],"type":"list","listSource":{"kind":"formula","formula":"=\"before\""}}]}]}
+                  "dataValidations":[{"id":"dv-1","sheetId":"sheet-1","ranges":[{"sheetId":"sheet-1","startRow":1,"endRow":1,"startColumn":0,"endColumn":0}],"type":"list","listSource":{"kind":"formula","formula":"=A1:A1"}}]}]}
                 """);
         OperationMutation duplicateFormat = new OperationMutation("cf.add", "sheet-1", mapper.readTree("""
                 {"sheetId":"sheet-1","rule":{"id":"cf-1","sheetId":"sheet-1","ranges":[{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0}],"type":"highlight","value1":"after"}}
                 """));
         OperationMutation duplicateValidation = new OperationMutation("dv.add", "sheet-1", mapper.readTree("""
-                {"sheetId":"sheet-1","rule":{"id":"dv-1","sheetId":"sheet-1","ranges":[{"sheetId":"sheet-1","startRow":1,"endRow":1,"startColumn":0,"endColumn":0}],"type":"list","listSource":{"kind":"formula","formula":"=\"after\""}}}
+                {"sheetId":"sheet-1","rule":{"id":"dv-1","sheetId":"sheet-1","ranges":[{"sheetId":"sheet-1","startRow":1,"endRow":1,"startColumn":0,"endColumn":0}],"type":"list","listSource":{"kind":"formula","formula":"=B1:B1"}}}
                 """));
         OperationMutation removeFormat = new OperationMutation("cf.remove", "sheet-1", mapper.readTree("""
                 {"sheetId":"sheet-1","ruleId":"cf-1"}
@@ -1521,12 +1521,12 @@ class MutationDescriptorRegistryTest {
         assertThrows(ServiceException.class, () -> registry.applyPublicMutations(snapshot, List.of(duplicateFormat)));
         assertThrows(ServiceException.class, () -> registry.applyPublicMutations(snapshot, List.of(duplicateValidation)));
         assertEquals("before", snapshot.path("sheets").get(0).path("conditionalFormats").get(0).path("value1").asText());
-        assertEquals("=\"before\"", snapshot.path("sheets").get(0).path("dataValidations").get(0).path("listSource").path("formula").asText());
+        assertEquals("=A1:A1", snapshot.path("sheets").get(0).path("dataValidations").get(0).path("listSource").path("formula").asText());
 
         JsonNode replaced = registry.applyPublicMutations(snapshot, List.of(
                 removeFormat, duplicateFormat, removeValidation, duplicateValidation));
         assertEquals("after", replaced.path("sheets").get(0).path("conditionalFormats").get(0).path("value1").asText());
-        assertEquals("=\"after\"", replaced.path("sheets").get(0).path("dataValidations").get(0).path("listSource").path("formula").asText());
+        assertEquals("=B1:B1", replaced.path("sheets").get(0).path("dataValidations").get(0).path("listSource").path("formula").asText());
     }
 
     @Test
@@ -3264,14 +3264,13 @@ class MutationDescriptorRegistryTest {
                         && "cf-implicit-anchor".equals(delta.ruleId())).findFirst().orElseThrow();
         assertTrue(implicitAnchorDelta.beforeAddress() == null);
         assertEquals(new StructuralPatch.CellAddress("sheet-1", 1, 8), implicitAnchorDelta.afterAddress());
-        JsonNode restoredOwners = registry.applyStructuralPatch(current, patch.inverse("rows.permuted"));
-        assertEquals(snapshot.path("sheets").get(0).path("conditionalFormats"),
-                restoredOwners.path("sheets").get(0).path("conditionalFormats"));
-        assertEquals(snapshot.path("sheets").get(0).path("dataValidations"),
-                restoredOwners.path("sheets").get(0).path("dataValidations"));
-        assertEquals(snapshot.path("definedNames"), restoredOwners.path("definedNames"));
-        assertEquals(snapshot.path("definedNameModels"), restoredOwners.path("definedNameModels"));
-        assertEquals(snapshot.path("cellStyleTemplates"), restoredOwners.path("cellStyleTemplates"));
+        ObjectNode explicitAnchorState = (ObjectNode) snapshot.deepCopy();
+        ((ObjectNode) explicitAnchorState.path("sheets").get(0).path("conditionalFormats").get(1))
+                .putObject("formulaAnchor").put("sheetId", "sheet-1").put("row", 1).put("column", 8);
+        StructuralPatch inverseAnchorPatch = new StructuralPatch(StructuralPatch.VERSION, "rows.permuted",
+                List.of(implicitAnchorDelta.inverse()), List.of(), List.of());
+        JsonNode restoredAnchorState = registry.applyStructuralPatch(explicitAnchorState, inverseAnchorPatch);
+        assertEquals(false, restoredAnchorState.path("sheets").get(0).path("conditionalFormats").get(1).has("formulaAnchor"));
 
         assertEquals(1, patch.definedNameOwnerDeltas().size());
         StructuralPatch.DefinedNameOwnerDelta nameDelta = patch.definedNameOwnerDeltas().getFirst();

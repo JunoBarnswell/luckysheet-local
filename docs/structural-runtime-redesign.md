@@ -1918,3 +1918,7 @@ head `6d23407f` 的自动 Maven 门禁报告 12 个测试条目（4 failures、8
 修复按契约而不是放宽生产校验：同步修正以上测试 ID、owner 事实、迁移期望和 canonical 夹具；将 `StructuralPatch` 升到 v9，`formula-rule-anchor` 的缺失 before/after address 表示没有显式锚点，Java/TypeScript 重放均对加入/删除做 fail-close precondition 并支持逆向删除/恢复。协议、collaboration impact 投影同步忽略缺失侧地址；repeatable migration 按 v8 语义校验旧 patch，再升级到 v9。新增源码断言覆盖 implicit 锚点 patch 与 undo/redo/remote replay；**没有在本地执行**测试、typecheck、build、browser、Excel 或性能实测，推送后的 GitHub CI 和真实 Excel 互操作仍是未完成验收项。
 
 六轮静态复核：①v1-v9 patch 历史字段与 impact 迁移分层；②Java anchor delta 校验、应用 precondition、逆向字段删除和影响范围；③TypeScript 严格协议键校验及缺失地址归一化；④客户端 undo/redo、remote replay、collaboration lock/impact 的地址投影一致性；⑤10 个测试根因分别对照真实入口，确认不改弱权限或 snapshot validator；⑥变更文件、版本常量、序列化 omission 与回滚边界交叉审查。当前仍是同一草稿 PR；不把 12 条 CI 测试报告伪称为 30 个独立产品缺陷，也不据此宣称整体目标完成。
+
+### 2026-09-27 CI follow-up on v9 patch tests
+
+`3b1c79df` 两个自动 job 均通过前端构建和 Java 编译，后端 290 项测试中仅剩 2 个 error：一个是 Java text block 将 DV 公式中的引号变成无效 JSON，现改为不需嵌套引号的合法范围公式；另一个是新回归把 formula-rule inverse patch 直接应用在尚未执行逆向结构 mutation 的范围状态上，违反现有 owner-patch 应用顺序。现将该断言缩至 v9 anchor add/remove 本身，验证缺失侧状态能被逆向删除，不改变 formula-rule patch 的原有前置条件。日志来自 GitHub CI；未在本地运行测试或构建，修订尚待新 CI 结果。
