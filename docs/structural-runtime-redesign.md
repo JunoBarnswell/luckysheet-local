@@ -1948,3 +1948,24 @@ head `6d23407f` 的自动 Maven 门禁报告 12 个测试条目（4 failures、8
 六轮自审：①微软普通隐藏行与 outline 分组例外的适用边界；②`sourceRows` target→source、`targetRowsBySource` source→target、逆排列及隐藏状态 remap 方向；③嵌套/相邻/部分重叠 outline range 的排序和 fail-close；④客户端本地执行、undo/redo/远端回放与 Java reducer 的同一拒绝语义；⑤可见行、outline unit、单 key vector 的峰值内存与稳定多键比较；⑥公式结果 `null`/`undefined` 区分、WorkbookCollation 参数贯通、custom-list 次序、cultureId 未消费的剩余缺陷与拒绝前快照不变。
 
 本 follow-up 修复 **4 个独立根因**，未达到“每轮至少 30 个真实问题”的广域审查规模，不将 TS/Java 两侧的同一不变量重复计数。按当前要求只静态审查并补充测试源码；没有运行本地测试、typecheck、build、浏览器、Excel 或 benchmark。cultureId/区域排序、手动隐藏行与 outline 混合组、Java 唯一规划 authority、owner-complete StructuralPatch、真实 Excel 互操作及性能验收仍未完成；同一草稿 PR 继续保持 open。
+
+### 2026-09-27 Java structural planner ownership audit
+
+本轮只沿结构排序的真实提交链静态审查，没有新增运行时代码，也没有把同一“客户端持有排序结果”根因拆成 30 个问题：
+
+1. `WorkbookSession` 在 mutation guard / command authorization 中调用 `assertServerStructuralPlannerReady`，作用仅是拒绝服务离线状态；没有发送 intent 或调用规划端点。
+2. `SERVER_STRUCTURAL_PLANNER_MUTATIONS` 在 TS/Java 生成契约中只作为分类表；Java `requiresServerStructuralPlanner` 没有生产调用方，不能据此推断服务端实际规划了 operation。
+3. `data.sort.rows` 在 TS 侧执行 `sortedSourceRows`，构造 `sourceRows`、逆排列、受影响范围和 sort state，然后立即 `context.applyMutation`。
+4. 前端 `Operation.execute` / `WorkbookSession.runCommand` 是同步命令链，普通调用在收到服务端结果前已修改本地模型；当前 ACK 只推进 revision，不回放一个服务端重规划的结果。
+5. 操作 envelope 持久化的是最终 `rows.permuted.sourceRows`，Java `StructuralMutationDescriptor` 将其直接传入 `StructuralSnapshotReducer.permuteRows`；Java 不根据 criteria 求序。
+6. `WorkbookOperationService` 把请求 mutation 写入 committed envelope；前端 `assertOperationResultMatches` 又要求请求和响应 mutation 完全一致。故即使服务端临时算出另一排列，现有幂等恢复、广播和 ACK 契约也不能将它作为 canonical 结果替换客户端排列。
+7. Java 代码树只有 `FormulaReferenceTransformer`，没有与前端公式运行时对应的公式求值器；排序用的实时公式值与 `WorkbookCollationContext` 均来自 TS。仅把比较器搬进 Java、读取可能陈旧的 `formulaValue`，不能证明与用户当前计算状态等价。
+8. 排序 mutation replay/undo/redo、离线恢复与历史均重放保存的排列，而不是原始 sort intent；它们是上述所有权缺失向下游传播的独立状态边界，不能在迁移中遗漏。
+
+**解决方案边界（实施前设计）**：结构命令提交改为“revision-bound intent → Java 在同一事务内计算完整 canonical mutation 与 StructuralPatch → 持久化并广播 canonical 结果 → 客户端应用服务端结果一次”。不得采用先 GET 计划、再无条件 POST 的竞态两阶段；若分阶段准备，commit 必须校验计划绑定的 revision、intent digest 与授权主体。恢复/幂等需要保留原始 intent 身份或摘要，同时把 committed mutation 明确作为服务端产物，不能再用现有“请求与结果 mutations 必须相同”的断言。客户端本地规划器及其回放路径须在同次 clean-break 删除，而不是保留双算比较。
+
+实施顺序限定为：①列齐所有 `SERVER_STRUCTURAL_PLANNER_COMMANDS` 对应的命令、操作参数、权限、保护、影响范围和本地状态消费者，建立一个服务器原子提交/结果回放入口；②将所有结构操作迁到该入口，并使 offline recovery / WebSocket / checkpoint / undo-redo 仅持有 canonical intent/result；③扩展 `StructuralPatch` 至完整 owner 增删和精确 before/after，由同一结果驱动公式、名称、CF/DV、表、图表及其它 range owner；④为依赖计算值的排序建立 Java 可证明新鲜的计算结果/排序语义（公式值、culture、custom list、空白和错误值），否则按 `UNSUPPORTED_FEATURE` fail-close，不能回退使用旧缓存；⑤在明确 migration boundary 升级 operation journal、历史及快照，验证旧版本记录后移除旧排列型写入路径。
+
+**六轮静态自审**：①服务可用性 gate 是否被误称为服务端 planner；②同步命令、本地乐观应用和提交时序；③客户端排列在 Java apply、幂等记录和广播中的权威性；④公式值与文化排序是否能由 Java 现有数据证明；⑤pending/outbox、重复提交、历史回放与 undo 是否会重复或改写结构效果；⑥原子 revision、权限/保护、完整 owner patch、迁移/回滚及未知 OOXML 保真边界。六轮均指向同一跨层缺口，未作为重复问题计数。
+
+本轮发现的是一个已被源码调用链证实的架构根因及上述 8 个不同层面的违反点；仍未达到用户要求的每轮至少 30 个独立真实问题，也没有声称修复完成。由于“Java 单一规划权”需要同时改动同步命令、operation identity/idempotency、服务端事务、collaboration replay、history 和计算值所有权，本轮先固定有界设计与验收边界，没有引入不能端到端接通的 planner DTO/占位端点。没有运行任何本地测试、构建、typecheck、浏览器或 Excel 实测；下一实现步仍属于同一 PR #345。
