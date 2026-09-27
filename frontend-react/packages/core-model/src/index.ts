@@ -614,6 +614,7 @@ export {
   migrateStoredWorkbookSnapshot,
   assertCanonicalWorkbookHyperlinks,
   assertCanonicalWorkbookSnapshot,
+  MAX_CHANGED_CELLS,
   MAX_DRAWING_SOURCE_CELLS,
   type WorkbookSnapshot,
   type WorkbookDimensionMetrics,

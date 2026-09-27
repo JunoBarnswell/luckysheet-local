@@ -51,7 +51,7 @@ export interface WorkbookSnapshot {
   sheets: SheetSnapshot[];
 }
 
-export { MAX_DRAWING_SOURCE_CELLS } from './generated-workbook-limits';
+export { MAX_CHANGED_CELLS, MAX_DRAWING_SOURCE_CELLS } from './generated-workbook-limits';
 
 export interface WorkbookDimensionMetrics {
   normalFontFamily: string;

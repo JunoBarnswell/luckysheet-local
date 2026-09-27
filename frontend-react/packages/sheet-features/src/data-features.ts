@@ -14,7 +14,7 @@ import type {
   WorkbookModel,
   WorksheetModel,
 } from "@react-sheets/core-model";
-import { clearFormulaProvenance, hasFormulaGroupMetadata, StructuralTransform, applyRowPermutation, columnLabel, createRowPermutationPlan, isDynamicFilterType, resolveFilterCellValue, rowPermutationAffectedColumnEnd, sheetRuleRegistry } from "@react-sheets/core-model";
+import { MAX_CHANGED_CELLS, MAX_SHEET_COLUMN_COUNT, MAX_SHEET_ROW_COUNT, clearFormulaProvenance, hasFormulaGroupMetadata, StructuralTransform, applyRowPermutation, columnLabel, createRowPermutationPlan, isDynamicFilterType, resolveFilterCellValue, rowPermutationAffectedColumnEnd, sheetRuleRegistry } from "@react-sheets/core-model";
 import { canonicalExcelDateDayOfWeek, canonicalExcelDateFromParts, canonicalExcelDateFromUtcDate, canonicalExcelDateFromValue, canonicalExcelDateToUtcDate, shiftCanonicalExcelDate, type CanonicalExcelDate, type CanonicalExcelDateParts } from '@react-sheets/formula-engine';
 import { compareWorkbookValues, MAX_COLUMN_INDEX } from '@react-sheets/formula-engine';
 import { clearCellContents } from './clear-planner';
@@ -98,6 +98,16 @@ function rowPermutationCalculationEffect(
   };
 }
 
+function assertRangeWithinSheet(sheet: WorksheetModel, range: RangeRef, operation: string): void {
+  if (range.sheetId !== sheet.id
+    || ![range.startRow, range.endRow, range.startColumn, range.endColumn].every(Number.isSafeInteger)
+    || range.startRow < 0 || range.startColumn < 0
+    || range.endRow < range.startRow || range.endColumn < range.startColumn
+    || range.endRow >= MAX_SHEET_ROW_COUNT || range.endColumn >= MAX_SHEET_COLUMN_COUNT) {
+    throw new Error(`${operation} range is outside worksheet bounds`);
+  }
+}
+
 function isRowsPermutedMutation(value: unknown): value is RowsPermutedMutationParams {
   if (!value || typeof value !== 'object') return false;
   const params = value as Record<string, unknown>;
@@ -142,22 +152,21 @@ function cellRange(sheetId: string, row: number, column: number): RangeRef {
   return { sheetId, startRow: row, endRow: row, startColumn: column, endColumn: column };
 }
 
-function snapshotCells(sheet: WorksheetModel, range: RangeRef): Array<{ row: number; column: number; previous?: CellData }> {
-  const result: Array<{ row: number; column: number; previous?: CellData }> = [];
-  for (let row = range.startRow; row <= range.endRow; row += 1) {
-    for (let column = range.startColumn; column <= range.endColumn; column += 1) {
-      result.push({ row, column, previous: structuredClone(sheet.cells.get(row, column)) });
-    }
-  }
+function snapshotOccupiedCells(sheet: WorksheetModel, range: RangeRef): Array<{ row: number; column: number; previous: CellData }> {
+  const result: Array<{ row: number; column: number; previous: CellData }> = [];
+  sheet.cells.forEachInRange(range.startRow, range.endRow, range.startColumn, range.endColumn,
+    (cell, row, column) => result.push({ row, column, previous: structuredClone(cell) }));
   return result;
 }
 
-function snapshotOccupiedCells(sheet: WorksheetModel, range: RangeRef): Array<{ row: number; column: number; previous: CellData }> {
-  const result: Array<{ row: number; column: number; previous: CellData }> = [];
-  sheet.cells.forEach((cell, row, column) => {
-    if (inRange(range, row, column)) result.push({ row, column, previous: structuredClone(cell) });
-  });
-  return result;
+function assertBoundedMutationArea(range: RangeRef, operation: string): void {
+  const rows = range.endRow - range.startRow + 1;
+  const columns = range.endColumn - range.startColumn + 1;
+  const cells = rows * columns;
+  if (!Number.isSafeInteger(rows) || !Number.isSafeInteger(columns)
+    || rows < 1 || columns < 1 || !Number.isSafeInteger(cells) || cells > MAX_CHANGED_CELLS) {
+    throw new Error(`${operation} exceeds the ${MAX_CHANGED_CELLS}-cell mutation limit`);
+  }
 }
 
 function applyRangeValues(
@@ -172,17 +181,27 @@ function applyRangeValues(
 ): void {
   const { formulaProvenance = 'clear', ...mutationParams } = params;
   const sheet = context.workbook.getSheet(params.sheetId);
+  let maxColumns = 0;
+  let changedCells = 0;
+  for (const row of params.values) {
+    maxColumns = Math.max(maxColumns, row.length);
+    changedCells += row.length;
+    if (!Number.isSafeInteger(changedCells) || changedCells > MAX_CHANGED_CELLS) {
+      throw new Error(`Range values exceed the ${MAX_CHANGED_CELLS}-cell mutation limit`);
+    }
+  }
   const range: RangeRef = {
     sheetId: params.sheetId,
     startRow: params.startRow,
     endRow: params.startRow + Math.max(0, params.values.length - 1),
     startColumn: params.startColumn,
-    endColumn: params.startColumn + Math.max(0, Math.max(0, ...params.values.map((line) => line.length)) - 1),
+    endColumn: params.startColumn + Math.max(0, maxColumns - 1),
   };
+  assertRangeWithinSheet(sheet, range, 'Range values');
+  const previous = snapshotOccupiedCells(sheet, range);
   const values = formulaProvenance === 'preserve'
     ? params.values
     : params.values.map((row) => row.map((value) => value ? clearFormulaProvenance(value) : value));
-  const previous = snapshotCells(sheet, range);
   const affectedRanges = [range];
   context.applyMutation({
     id: 'range.set',
@@ -213,7 +232,9 @@ function applyRangeValues(
 
 function clearRangeContents(context: CommandContext, range: RangeRef): void {
   const sheet = context.workbook.getSheet(range.sheetId);
-  const previous = snapshotCells(sheet, range);
+  assertRangeWithinSheet(sheet, range, 'Range clear');
+  assertBoundedMutationArea(range, 'Range clear');
+  const previous = snapshotOccupiedCells(sheet, range);
   const affectedRanges = [structuredClone(range)];
   context.applyMutation({
     id: 'range.clear',
@@ -228,15 +249,13 @@ function clearRangeContents(context: CommandContext, range: RangeRef): void {
       params: { sheetId: range.sheetId, row: entry.row, column: entry.column, previous: entry.previous },
       affectedRanges: [cellRange(range.sheetId, entry.row, entry.column)],
     })),
-    apply: () => {
-      for (let row = range.startRow; row <= range.endRow; row += 1) {
-        for (let column = range.startColumn; column <= range.endColumn; column += 1) {
-          const current = sheet.cells.get(row, column);
-          if (!current) continue;
-          sheet.cells.set(row, column, clearCellContents(current));
-        }
-      }
-    },
+    apply: () => sheet.cells.forEachInRange(
+      range.startRow,
+      range.endRow,
+      range.startColumn,
+      range.endColumn,
+      (current, row, column) => sheet.cells.set(row, column, clearCellContents(current)),
+    ),
   });
 }
 
@@ -370,8 +389,32 @@ function cellText(resolved: FilterCellValue | undefined): string {
   return resolved?.text ?? '';
 }
 
-function cellStorageText(cell: CellData | undefined): string {
-  return resolveFilterCellValue(cell).text;
+function cellStorageText(cell: CellData | undefined, evaluated?: unknown): string {
+  return resolveFilterCellValue(cell, evaluated).text;
+}
+
+function duplicateCellIdentity(cell: CellData | undefined, evaluated?: unknown): readonly unknown[] {
+  const resolved = resolveFilterCellValue(cell, evaluated);
+  if (resolved.errorCode !== undefined) return ['error', resolved.errorCode];
+  if (resolved.value === null || resolved.value === '') return ['blank'];
+  if (typeof resolved.value === 'number' && !Number.isFinite(resolved.value)) return ['number', String(resolved.value)];
+  return [typeof resolved.value, resolved.value];
+}
+
+function resolvedDataCellValue(
+  sheet: WorksheetModel,
+  row: number,
+  column: number,
+  resolver: ((sheet: WorksheetModel, row: number, column: number) => unknown) | undefined,
+  operation: string,
+): unknown {
+  const cell = sheet.cells.get(row, column);
+  const evaluated = resolver?.(sheet, row, column);
+  if (cell && (cell.formula !== undefined || cell.formulaMetadata?.sourceFormula !== undefined)
+    && evaluated === undefined && cell.formulaValue === undefined) {
+    throw new Error(`${operation} formula result unavailable at ${sheet.id}!${row}:${column}`);
+  }
+  return evaluated;
 }
 
 /** Formula/spill/data-block results arrive through this typed carrier only. */
@@ -397,12 +440,9 @@ function canonicalFilterDate(resolved: FilterCellValue | undefined, dateSystem: 
   return null;
 }
 
-function numericOf(cell: CellData | undefined): number | undefined {
-  const text = cellStorageText(cell);
-  if (!text) return undefined;
-  const cleaned = text.replace(/[$,%\s]/g, "");
-  const numeric = Number(cleaned);
-  return Number.isFinite(numeric) ? numeric : undefined;
+function numericOf(cell: CellData | undefined, evaluated?: unknown): number | undefined {
+  const value = resolveFilterCellValue(cell, evaluated).value;
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }
 
 function hexToRgb(color: string): [number, number, number] {
@@ -1594,12 +1634,16 @@ function sortedSourceRows(
 ): number[] {
   const range = normalizeRangeRef(params.range);
   const startRow = (params.hasHeader ?? false) ? range.startRow + 1 : range.startRow;
-  if (startRow > range.endRow) return [];
+  const criterionColumns = new Set<number>();
   for (const criterion of params.criteria) {
-    if (!Number.isInteger(criterion.column) || criterion.column < range.startColumn || criterion.column > range.endColumn) {
+    if (!Number.isSafeInteger(criterion.column) || criterion.column < range.startColumn || criterion.column > range.endColumn) {
       throw new Error('Sort criterion is outside the selected range');
     }
+    if (typeof criterion.ascending !== 'boolean') throw new Error('Sort direction must be a boolean');
+    if (criterionColumns.has(criterion.column)) throw new Error('Sort criteria cannot repeat a column');
+    criterionColumns.add(criterion.column);
   }
+  if (startRow > range.endRow) return [];
   const rows = Array.from({ length: range.endRow - startRow + 1 }, (_, offset) => startRow + offset);
   rows.sort((leftRow, rightRow) => {
     for (const criterion of params.criteria) {
@@ -1626,7 +1670,7 @@ function assertNoDataRegionIntersection(sheet: WorksheetModel, range: RangeRef, 
 }
 
 function subtotalFormula(functionName: SubtotalParams['functionName'], column: number, startRow: number, endRow: number): string {
-  const code = functionName === 'SUM' ? 9 : functionName === 'COUNT' ? 3 : 1;
+  const code = functionName === 'SUM' ? 9 : functionName === 'COUNT' ? 2 : 1;
   return `=SUBTOTAL(${code},${columnLabel(column)}${startRow + 1}:${columnLabel(column)}${endRow + 1})`;
 }
 
@@ -1723,14 +1767,18 @@ function executeMatrixTransform(
   transpose: boolean,
 ): ReturnType<CommandRuntime['execute']> {
   const sheet = runtime.workbook.getSheet(params.sheetId);
+  if (!transpose && params.direction !== 'horizontal' && params.direction !== 'vertical') {
+    throw new Error('Matrix flip direction must be horizontal or vertical');
+  }
   const range = normalizeRangeRef({ ...params.range, sheetId: params.sheetId });
   if (![range.startRow, range.endRow, range.startColumn, range.endColumn].every(Number.isSafeInteger)
-    || range.startRow < 0 || range.startColumn < 0 || range.endRow >= sheet.rowCount || range.endColumn >= sheet.columnCount) {
+    || range.startRow < 0 || range.startColumn < 0 || range.endRow >= MAX_SHEET_ROW_COUNT || range.endColumn >= MAX_SHEET_COLUMN_COUNT) {
     throw new Error('Matrix source range is outside worksheet bounds');
   }
+  assertBoundedMutationArea(range, transpose ? 'Matrix transpose' : 'Matrix flip');
   const target = matrixTargetRange(range, transpose);
   if (![target.startRow, target.endRow, target.startColumn, target.endColumn].every(Number.isSafeInteger)
-    || target.startRow < 0 || target.startColumn < 0 || target.endRow >= sheet.rowCount || target.endColumn >= sheet.columnCount) {
+    || target.startRow < 0 || target.startColumn < 0 || target.endRow >= MAX_SHEET_ROW_COUNT || target.endColumn >= MAX_SHEET_COLUMN_COUNT) {
     throw new Error('Matrix target range is outside worksheet bounds');
   }
   assertMatrixTransformSupported(sheet, range, target);
@@ -1803,16 +1851,22 @@ function executeMatrixTransform(
   return { operationId: context.operationId, mutationCount: 2, affectedRanges: [clearRange, target] };
 }
 
-function contiguousGroups(sheet: WorksheetModel, params: SubtotalParams): Array<{ start: number; end: number; key: string }> {
+function contiguousGroups(
+  sheet: WorksheetModel,
+  params: SubtotalParams,
+  resolver?: (sheet: WorksheetModel, row: number, column: number) => unknown,
+): Array<{ start: number; end: number; key: string }> {
   const range = normalizeRangeRef(params.range);
-  if (params.groupColumn < range.startColumn || params.groupColumn > range.endColumn) throw new Error('Subtotal group column is outside the range');
-  if (params.valueColumn < range.startColumn || params.valueColumn > range.endColumn) throw new Error('Subtotal value column is outside the range');
+  if (!Number.isSafeInteger(params.groupColumn) || params.groupColumn < range.startColumn || params.groupColumn > range.endColumn) throw new Error('Subtotal group column is outside the range');
+  if (!Number.isSafeInteger(params.valueColumn) || params.valueColumn < range.startColumn || params.valueColumn > range.endColumn) throw new Error('Subtotal value column is outside the range');
   const groups: Array<{ start: number; end: number; key: string }> = [];
   let start = range.startRow + 1;
   if (start > range.endRow) return groups;
-  let key = cellStorageText(sheet.cells.get(start, params.groupColumn));
+  let key = cellStorageText(sheet.cells.get(start, params.groupColumn), resolvedDataCellValue(sheet, start, params.groupColumn, resolver, 'Subtotal'));
   for (let row = start + 1; row <= range.endRow + 1; row += 1) {
-    const next = row <= range.endRow ? cellStorageText(sheet.cells.get(row, params.groupColumn)) : undefined;
+    const next = row <= range.endRow
+      ? cellStorageText(sheet.cells.get(row, params.groupColumn), resolvedDataCellValue(sheet, row, params.groupColumn, resolver, 'Subtotal'))
+      : undefined;
     if (next !== key) {
       groups.push({ start, end: row - 1, key });
       if (next !== undefined) {
@@ -1852,8 +1906,11 @@ export function registerDataToolCommands(runtime: CommandRuntime): void {
   runtime.registry.registerCommand<DataSortParams>({
     id: 'data.sort.rows',
     execute: (params, context) => {
+      if (!Array.isArray(params.criteria)) throw new Error('Sort criteria must be an array');
+      if (params.hasHeader !== undefined && typeof params.hasHeader !== 'boolean') throw new Error('Sort hasHeader must be a boolean');
       const requestedRange = selectedRange(params);
       const sheet = context.workbook.getSheet(params.sheetId);
+      assertRangeWithinSheet(sheet, requestedRange, 'Sort');
       const regionContext = params.dataRegionContext ?? resolveDataRegionContext(context.workbook, {
         selection: requestedRange,
         activeRow: requestedRange.startRow,
@@ -1955,32 +2012,39 @@ export function registerDataToolCommands(runtime: CommandRuntime): void {
   runtime.registry.registerCommand<TextToColumnsParams>({
     id: 'data.textToColumns',
     execute: (params, context) => {
-      if (!params.delimiter) throw new Error('Text to Columns delimiter is required');
+      if (typeof params.delimiter !== 'string' || params.delimiter.length === 0) throw new Error('Text to Columns delimiter is required');
       const sheet = context.workbook.getSheet(params.sheetId);
-      const range = normalizeRangeRef(params.range);
-      const maxColumns = Math.max(2, params.maxColumns ?? 8);
-      if (range.startColumn + maxColumns > sheet.columnCount) throw new Error('Text to Columns exceeds worksheet bounds');
-      const values: CellData[][] = [];
-      for (let row = range.startRow; row <= range.endRow; row++) {
-        const cell = sheet.cells.get(row, range.startColumn);
-        const text = cell?.value == null ? '' : String(cell.value);
-        const parts = text.split(params.delimiter).slice(0, maxColumns);
-        values.push(parts.map((part) => ({ value: part })));
-      }
-      clearRangeContents(context, {
+      const range = selectedRange(params);
+      assertRangeWithinSheet(sheet, range, 'Text to Columns source');
+      if (range.startColumn !== range.endColumn) throw new Error('Text to Columns requires exactly one source column');
+      const requestedMaxColumns = params.maxColumns ?? 8;
+      if (!Number.isSafeInteger(requestedMaxColumns) || requestedMaxColumns < 1) throw new Error('Text to Columns maxColumns must be a positive safe integer');
+      const maxColumns = Math.max(2, requestedMaxColumns);
+      if (range.startColumn + maxColumns > MAX_SHEET_COLUMN_COUNT) throw new Error('Text to Columns exceeds worksheet bounds');
+      const clearRange: RangeRef = {
         sheetId: params.sheetId,
         startRow: range.startRow,
         endRow: range.endRow,
         startColumn: range.startColumn,
         endColumn: range.startColumn + maxColumns - 1,
-      });
+      };
+      assertBoundedMutationArea(clearRange, 'Text to Columns');
+      const values: CellData[][] = [];
+      for (let row = range.startRow; row <= range.endRow; row++) {
+        const cell = sheet.cells.get(row, range.startColumn);
+        const text = cellStorageText(cell, resolvedDataCellValue(sheet, row, range.startColumn, context.resolveCellValue, 'Text to Columns'));
+        const parts = text.split(params.delimiter, maxColumns + 1);
+        if (parts.length > maxColumns) throw new Error('Text to Columns output exceeds the configured column limit');
+        values.push(parts.map((part) => ({ value: part })));
+      }
+      clearRangeContents(context, clearRange);
       applyRangeValues(context, {
         sheetId: params.sheetId,
         startRow: range.startRow,
         startColumn: range.startColumn,
         values,
       });
-      return { operationId: context.operationId, mutationCount: 2, affectedRanges: [range] };
+      return { operationId: context.operationId, mutationCount: 2, affectedRanges: [clearRange] };
     },
   });
 
@@ -1989,14 +2053,24 @@ export function registerDataToolCommands(runtime: CommandRuntime): void {
     execute: (params, context) => {
       const sheet = context.workbook.getSheet(params.sheetId);
       const range = selectedRange(params);
-      if (params.columns.length === 0 || params.columns.some((column) => column < range.startColumn || column > range.endColumn)) {
+      assertRangeWithinSheet(sheet, range, 'Remove Duplicates');
+      if (!Array.isArray(params.columns) || params.columns.length === 0
+        || params.columns.some((column) => !Number.isSafeInteger(column) || column < range.startColumn || column > range.endColumn)
+        || new Set(params.columns).size !== params.columns.length) {
         throw new Error('Remove Duplicates columns must be inside the selected range');
+      }
+      if (params.hasHeader !== undefined && typeof params.hasHeader !== 'boolean') {
+        throw new Error('Remove Duplicates hasHeader must be a boolean');
       }
       const startRow = params.hasHeader ? range.startRow + 1 : range.startRow;
       const seen = new Set<string>();
       const duplicateRows: number[] = [];
       for (let row = startRow; row <= range.endRow; row++) {
-        const key = params.columns.map((column) => cellStorageText(sheet.cells.get(row, column))).join('\u0001');
+        const key = JSON.stringify(params.columns.map((column) => {
+          const cell = sheet.cells.get(row, column);
+          const value = resolvedDataCellValue(sheet, row, column, context.resolveCellValue, 'Remove Duplicates');
+          return duplicateCellIdentity(cell, value);
+        }));
         if (seen.has(key)) { duplicateRows.push(row); continue; }
         seen.add(key);
       }
@@ -2027,8 +2101,18 @@ export function registerDataToolCommands(runtime: CommandRuntime): void {
       if (!['SUM', 'COUNT', 'AVERAGE'].includes(params.functionName)) throw new Error('Unsupported Subtotal function');
       const sheet = context.workbook.getSheet(params.sheetId);
       const range = selectedRange(params);
-      const groups = contiguousGroups(sheet, { ...params, range });
+      assertRangeWithinSheet(sheet, range, 'Subtotal');
+      const groups = contiguousGroups(sheet, { ...params, range }, context.resolveCellValue);
       if (groups.length === 0) return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
+      const summaryRange: RangeRef = {
+        sheetId: params.sheetId,
+        startRow: range.endRow + 2,
+        endRow: range.endRow + 2 + groups.length,
+        startColumn: range.startColumn,
+        endColumn: range.endColumn,
+      };
+      assertRangeWithinSheet(sheet, summaryRange, 'Subtotal output');
+      assertBoundedMutationArea(summaryRange, 'Subtotal output');
       let mutationCount = 0;
       const targetRow = range.endRow + 2;
       const summaryEnd = targetRow + groups.length;
@@ -2053,16 +2137,23 @@ export function registerDataToolCommands(runtime: CommandRuntime): void {
       values.push(header);
       for (const group of groups) {
         const rowValues: CellData[] = [];
-        const numbers: number[] = [];
+        let sum = 0;
+        let count = 0;
         for (let row = group.start; row <= group.end; row += 1) {
-          const numeric = numericOf(sheet.cells.get(row, params.valueColumn));
-          if (numeric !== undefined) numbers.push(numeric);
+          const numeric = numericOf(
+            sheet.cells.get(row, params.valueColumn),
+            resolvedDataCellValue(sheet, row, params.valueColumn, context.resolveCellValue, 'Subtotal'),
+          );
+          if (numeric !== undefined) {
+            sum += numeric;
+            count += 1;
+          }
         }
         const cachedValue = params.functionName === 'SUM'
-          ? numbers.reduce((sum, value) => sum + value, 0)
+          ? sum
           : params.functionName === 'COUNT'
-            ? numbers.length
-            : numbers.length > 0 ? numbers.reduce((sum, value) => sum + value, 0) / numbers.length : null;
+            ? count
+            : count > 0 ? sum / count : null;
         for (let column = range.startColumn; column <= range.endColumn; column += 1) {
           if (column === params.groupColumn) rowValues.push({ value: group.key, style: { bold: true } });
           else if (column === params.valueColumn) rowValues.push({ value: cachedValue, formula: subtotalFormula(params.functionName, params.valueColumn, group.start, group.end), style: { bold: true } });
@@ -2078,13 +2169,14 @@ export function registerDataToolCommands(runtime: CommandRuntime): void {
       });
       mutationCount += 1;
       const affectedRanges: RangeRef[] = [structuredClone(range), { sheetId: params.sheetId, startRow: targetRow, endRow: targetRow + groups.length, startColumn: range.startColumn, endColumn: range.endColumn }];
+      const sheetOutline = sheet.outline ? structuredClone(sheet.outline) : { groups: [] };
+      const nextOutline = structuredClone(sheetOutline);
       for (const group of groups) {
-        const sheetOutline = sheet.outline ? structuredClone(sheet.outline) : { groups: [] };
-        const nextOutline = structuredClone(sheetOutline);
         nextOutline.groups.push({ id: `subtotal-${context.operationId}-${group.start}-${group.end}`, axis: 'row', start: group.start, end: group.end, level: 1, collapsed: false });
-        applyOutline(context, params.sheetId, nextOutline, sheetOutline, [{ sheetId: params.sheetId, startRow: group.start, endRow: group.end, startColumn: range.startColumn, endColumn: range.endColumn }]);
-        mutationCount += 1;
       }
+      applyOutline(context, params.sheetId, nextOutline, sheetOutline,
+        groups.map((group) => ({ sheetId: params.sheetId, startRow: group.start, endRow: group.end, startColumn: range.startColumn, endColumn: range.endColumn })));
+      mutationCount += 1;
       return { operationId: context.operationId, mutationCount, affectedRanges };
     },
   });
@@ -2093,11 +2185,19 @@ export function registerDataToolCommands(runtime: CommandRuntime): void {
     id: 'data.splitColumn',
     execute: (params, context) => {
       const sheet = context.workbook.getSheet(params.sheetId);
+      if (!Number.isSafeInteger(params.row) || !Number.isSafeInteger(params.column)
+        || params.row < 0 || params.row >= MAX_SHEET_ROW_COUNT || params.column < 0 || params.column >= MAX_SHEET_COLUMN_COUNT) {
+        throw new Error('Split Column source cell is outside worksheet bounds');
+      }
+      if (typeof params.delimiter !== 'string' || params.delimiter.length === 0) throw new Error('Split Column delimiter is required');
+      const requestedMaxColumns = params.maxColumns ?? 4;
+      if (!Number.isSafeInteger(requestedMaxColumns) || requestedMaxColumns < 1) throw new Error('Split Column maxColumns must be a positive safe integer');
       const cell = sheet.cells.get(params.row, params.column);
-      const text = cell?.value == null ? '' : String(cell.value);
-      const maxColumns = Math.max(2, params.maxColumns ?? 4);
-      if (params.column + maxColumns > sheet.columnCount) throw new Error('Split Column exceeds worksheet bounds');
-      const parts = text.split(params.delimiter).slice(0, maxColumns);
+      const text = cellStorageText(cell, resolvedDataCellValue(sheet, params.row, params.column, context.resolveCellValue, 'Split Column'));
+      const maxColumns = Math.max(2, requestedMaxColumns);
+      if (params.column + maxColumns > MAX_SHEET_COLUMN_COUNT) throw new Error('Split Column exceeds worksheet bounds');
+      const parts = text.split(params.delimiter, maxColumns + 1);
+      if (parts.length > maxColumns) throw new Error('Split Column output exceeds the configured column limit');
       if (parts.length <= 1 && parts[0] === text) return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
       const values = [parts.map((part) => ({ value: coerceDataText(part, cell), style: cell?.style ? structuredClone(cell.style) : undefined }))];
       const range: RangeRef = { sheetId: params.sheetId, startRow: params.row, endRow: params.row, startColumn: params.column, endColumn: params.column + maxColumns - 1 };

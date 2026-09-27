@@ -1859,7 +1859,10 @@ export class WorkbookSession {
     if (criteria.length === 0) {
       return null;
     }
-    const hasHeader = input.hasHeader !== false;
+    if (input.hasHeader !== undefined && typeof input.hasHeader !== 'boolean') {
+      throw new Error('Block-backed sort hasHeader must be a boolean');
+    }
+    const hasHeader = input.hasHeader ?? true;
     if (!hasHeader || region.headerRow !== region.range.startRow) {
       throw new Error(`Block-backed sort requires a header row at the start of data region ${region.id}`);
     }
@@ -6204,7 +6207,7 @@ export class WorkbookSession {
   async splitByDelimiter(delimiter: string): Promise<void> {
     const sel = this.selectionService.getState();
     const sheet = this.getSelectedSheet();
-    await this.executeCommandAfterMaterialization('data.splitColumn', { sheetId: this.activeSheetId, row: sel.activeCell.row, column: sel.activeCell.column, delimiter, maxColumns: Math.min(sheet.columnCount - sel.activeCell.column - 1, 8) });
+    await this.executeCommandAfterMaterialization('data.splitColumn', { sheetId: this.activeSheetId, row: sel.activeCell.row, column: sel.activeCell.column, delimiter, maxColumns: Math.min(MAX_SHEET_COLUMN_COUNT - sel.activeCell.column, 8) });
   }
 
   copy(): Promise<ClipboardExecutionOutcome> {

@@ -1762,3 +1762,18 @@ Repeatable history migration 将旧 v1-v5 patch 先投影回旧 formula-owner �
 六项自审分别核对：hash/equals 保持原有 JSON 结构相等语义；重复值仍按成员存在性处理、重复身份另外拒绝；current 缺失/null 仍按可选空 owner 处理而错误类型拒绝；规则 range 与目标 sheet 由同一生命周期验证；reducer 只在 detached/owned snapshot 上重挂接节点且错误路径仍先完成边界检查；4,096 条规则回归构造及损坏/非法输入拒绝用例覆盖成功与拒绝边界。仅作静态审查和 `git diff --check`，未运行测试、构建、浏览器或 Excel。
 
 此 follow-up 仍只是有限修复，**没有达到用户要求的每轮至少 30 个真实问题**。paste 客户端仍提交 `snapshot` after-state、没有进入 owner-complete StructuralPatch；排序仍由客户端给出 `sourceRows`；TS 结构预检仍深拷贝全工作簿引用 metadata 并 stringify 比较；Java 仍全量扫描结构公式 owner，这些是独立待办，不能用本轮性能修复抵销。
+
+### 2026-09-27 six-pass review — data transformation value, bounds, and memory
+
+按六个独立视角完成静态复核，本轮确认并修复 **42 个可分别触发或观察到的问题**；相同底层校验器跨公共命令的失败路径按操作行为记录，不把单一 owner 数量或断言凑成问题：
+
+1. **去重键/值语义**：分隔符拼接造成 tuple 碰撞；字符串投影把数字与文本、错误值与空白混为一类；公式结果只读旧缓存；无公式结果时静默按空白去重；列选择未验证数组/整数/重复列；`hasHeader` 未验证布尔类型。
+2. **公式结果来源**：Text-to-Columns、Split Column、Subtotal 分组、Subtotal 数值各自绕过当前公式解析结果；这些路径在公式缓存缺失时还会按空白继续覆盖或生成错误汇总。现在统一读 `CommandContext.resolveCellValue`，只有结果和缓存都缺失时才 fail-close。
+3. **输入与影响范围**：矩阵翻转把非法方向误作纵向；Text-to-Columns 接受多列选择却只处理首列、使用不匹配的 range sheet identity、少报输出影响范围、接受非法 delimiter/maxColumns、截断超限 token 且先构造全量 split 结果；Split Column 对坐标/delimiter/maxColumns 缺少边界验证，并有同样的 token 截断与全量 split 分配；Subtotal 接受小数分组/值列；普通排序接受错误 `hasHeader`/criteria 形状/ascending 类型；block-backed 排序把非布尔 `hasHeader` 当真。
+4. **Excel 聚合语义**：Subtotal 的 `COUNT` 发出 `SUBTOTAL(3)`（COUNTA）而不是 `SUBTOTAL(2)`（COUNT）；缓存计算把文本数字强制转成数值，与公式引擎的 range aggregate 行为不同；数值临时数组只用于求和/计数；每个 group 都深拷贝增长中的 Outline 并独立记 mutation，最坏产生二次复制/历史体积。
+5. **历史与稀疏性能**：range.set 与 range.clear 的 inverse 为空单元分配快照；clear 对矩形逐坐标扫描；删除行快照遍历整张工作表而非目标范围；range.set 用大参数展开计算最大行宽；矩阵/分列与 Subtotal 输出未在分配/插入前执行同一 cell limit。
+6. **跨层契约与网格边界**：100,000 cell 上限曾在 TS/Java 分别硬编码；范围校验把当前 materialized extent 错当 Excel 网格上限；末列分列 UI 按当前 extent 计算可用列；公式 split 未把 configured output limit 传给 `split`；拆分超出配置的 token 会被静默丢弃。
+
+修复将 occupied-cell 快照改为 range iterator、只清理已持久化 cell、用共享生成契约 `MAX_CHANGED_CELLS` 同步 TS/Java 上限；密集变换在构造矩阵或执行结构写入前拒绝超限；split 最多只解析上限加一个 token，并在发现溢出时不写入；Subtotal outline 合并为一次 mutation。新增 TypeScript 回归源码覆盖键碰撞/类型、解析结果、未解析公式拒绝、输出截断、网格 extent 增长、超限前置拒绝及 block-backed 排序 header 拒绝。
+
+仍有经本轮追踪确认但未在此切片修复的架构项：`WorkbookSession.executeCommandAfterMaterialization` 在命令级前置校验前会完整 materialize 相交 data region；交替重复行会被拆成大量独立 rows.deleted 结构变换；Subtotal 缓存值未复用公式引擎的 filter visibility/nested-subtotal/error 投影；更大的 Java 唯一 planner 与 owner-complete StructuralPatch 迁移仍未完成。以上不计作已修复。本轮仅做静态阅读、生成契约与 `git diff --check`；未运行测试、构建、浏览器、性能测量或 Excel 互操作，目标继续开放。

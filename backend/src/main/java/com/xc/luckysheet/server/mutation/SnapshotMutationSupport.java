@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.xc.luckysheet.server.contract.GeneratedWorkbookContract;
 import com.xc.luckysheet.server.contract.OperationMutation;
 import com.xc.luckysheet.server.contract.RangeRef;
 import com.xc.luckysheet.server.service.ServiceException;
@@ -17,7 +18,7 @@ import java.util.Set;
 final class SnapshotMutationSupport {
     static final int MAX_ROW = 1_048_575;
     static final int MAX_COLUMN = 16_383;
-    static final int MAX_CHANGED_CELLS = 100_000;
+    static final int MAX_CHANGED_CELLS = GeneratedWorkbookContract.MAX_CHANGED_CELLS;
 
     private SnapshotMutationSupport() {
     }

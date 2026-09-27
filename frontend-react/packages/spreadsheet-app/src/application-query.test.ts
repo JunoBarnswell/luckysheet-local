@@ -183,6 +183,32 @@ describe('WorkbookSession query integration', () => {
     assert.deepEqual(sourceAfter.sortState?.criteria, [{ fieldId: sourceAfter.fields[0]!.id, ascending: true }]);
   });
 
+  it('rejects a non-boolean header flag before virtually sorting a block-backed source', async () => {
+    const app = new WorkbookSession();
+    await app.loadQuery(createInlineJsonQuery('invalid-header-sort-query', 'Invalid header sort', [
+      { Key: 'b', Value: 2 },
+      { Key: 'a', Value: 1 },
+    ]));
+    const sheetId = app.getActiveSheetId();
+    const region = app['runtime'].model.getSheet(sheetId).dataRegions[0]!;
+    const sourceBefore = app['runtime'].model.getDataSource(region.sourceId);
+
+    const result = await app.dispatch({
+      commandId: 'data.sort.rows',
+      params: {
+        sheetId,
+        range: region.range,
+        criteria: [{ column: region.range.startColumn, ascending: true }],
+        hasHeader: 'false',
+      },
+    });
+
+    assert.equal(result.status, 'rejected');
+    const sourceAfter = app['runtime'].model.getDataSource(region.sourceId);
+    assert.deepEqual(sourceAfter.rowOrder, sourceBefore.rowOrder);
+    assert.deepEqual(sourceAfter.sortState, sourceBefore.sortState);
+  });
+
   it('keeps the current logical order for equal keys in a block-backed stable sort', async () => {
     const app = new WorkbookSession();
     await app.loadQuery(createInlineJsonQuery('stable-sort-query', 'Stable sort', [

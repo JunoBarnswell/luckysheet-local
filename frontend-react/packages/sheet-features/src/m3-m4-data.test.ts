@@ -132,6 +132,265 @@ test('rows.permuted rejects a tampered duplicate source order before changing ce
     before.sheets.find((candidate) => candidate.id === sheet.id)?.cells);
 });
 
+test('remove duplicates keeps delimiter-bearing tuples distinct and rejects invalid columns', () => {
+  const { workbook, commands } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, { value: 'left\u0001middle' });
+  sheet.cells.set(0, 1, { value: 'right' });
+  sheet.cells.set(1, 0, { value: 'left' });
+  sheet.cells.set(1, 1, { value: 'middle\u0001right' });
+
+  commands.execute('data.removeDuplicates', {
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 1, startColumn: 0, endColumn: 1 },
+    columns: [0, 1],
+  });
+
+  assert.equal(sheet.cells.get(1, 0)?.value, 'left');
+  assert.equal(sheet.cells.get(1, 1)?.value, 'middle\u0001right');
+  assert.throws(() => commands.execute('data.removeDuplicates', {
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 1, startColumn: 0, endColumn: 1 },
+    columns: [0.5],
+  }), /columns must be inside the selected range/);
+  assert.throws(() => commands.execute('data.removeDuplicates', {
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 1, startColumn: 0, endColumn: 1 },
+    columns: [0, 0],
+  }), /columns must be inside the selected range/);
+  assert.equal(sheet.cells.get(1, 0)?.value, 'left');
+});
+
+test('remove duplicates preserves distinct typed scalar and formula-error values', () => {
+  const { workbook, commands } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, { value: 1 });
+  sheet.cells.set(1, 0, { value: '1' });
+  sheet.cells.set(2, 0, { value: null, formula: '=NA()', formulaValue: createFormulaError('#N/A', 'first error') });
+  sheet.cells.set(3, 0, { value: null, formula: '=VALUE("x")', formulaValue: createFormulaError('#VALUE!', 'second error') });
+
+  const result = commands.execute('data.removeDuplicates', {
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 3, startColumn: 0, endColumn: 0 },
+    columns: [0],
+    hasHeader: false,
+  });
+
+  assert.equal(result.mutationCount, 0);
+  assert.equal(sheet.cells.get(0, 0)?.value, 1);
+  assert.equal(sheet.cells.get(1, 0)?.value, '1');
+  assert.equal(sheet.cells.get(2, 0)?.formulaValue && typeof sheet.cells.get(2, 0)?.formulaValue, 'object');
+  assert.equal(sheet.cells.get(3, 0)?.formulaValue && typeof sheet.cells.get(3, 0)?.formulaValue, 'object');
+});
+
+test('matrix flip rejects an unknown direction without remapping formula references', () => {
+  const { workbook, commands } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, { value: null, formula: '=B1' });
+  sheet.cells.set(0, 1, { value: 7 });
+  const before = workbook.snapshot();
+
+  assert.throws(() => commands.execute('matrix.flip', {
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 1 },
+    direction: 'diagonal',
+  }), /direction must be horizontal or vertical/);
+  assert.deepEqual(workbook.snapshot(), before);
+});
+
+test('matrix and text-column dense preflights reject oversized ranges before allocating their matrices', () => {
+  const { workbook, commands } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.rowCount = 13_000;
+  sheet.columnCount = 1_000;
+  sheet.cells.set(0, 0, { value: 'unchanged' });
+  const before = workbook.snapshot();
+
+  assert.throws(() => commands.execute('matrix.transpose', {
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 100, startColumn: 0, endColumn: 999 },
+  }), /100000-cell mutation limit/);
+  assert.throws(() => commands.execute('data.textToColumns', {
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 12_500, startColumn: 0, endColumn: 0 },
+    delimiter: ',',
+    maxColumns: 8,
+  }), /100000-cell mutation limit/);
+  assert.deepEqual(workbook.snapshot(), before);
+});
+
+test('subtotal rejects fractional grouping columns before writing summary rows', () => {
+  const { workbook, commands } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, { value: 'Group' });
+  sheet.cells.set(1, 0, { value: 'A' });
+  const before = workbook.snapshot();
+
+  assert.throws(() => commands.execute('data.subtotal', {
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 1, startColumn: 0, endColumn: 1 },
+    groupColumn: 0.5,
+    valueColumn: 1,
+    functionName: 'SUM',
+  }), /group column is outside the range/);
+  assert.deepEqual(workbook.snapshot(), before);
+});
+
+test('Subtotal COUNT counts numeric cells and emits the Excel COUNT aggregate code', () => {
+  const { workbook, commands } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, { value: 'Group' });
+  sheet.cells.set(0, 1, { value: 'Amount' });
+  sheet.cells.set(1, 0, { value: 'A' });
+  sheet.cells.set(1, 1, { value: 5 });
+  sheet.cells.set(2, 0, { value: 'A' });
+  sheet.cells.set(2, 1, { value: '7' });
+
+  commands.execute('data.subtotal', {
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 2, startColumn: 0, endColumn: 1 },
+    groupColumn: 0,
+    valueColumn: 1,
+    functionName: 'COUNT',
+  });
+
+  assert.equal(sheet.cells.get(5, 1)?.value, 1);
+  assert.equal(sheet.cells.get(5, 1)?.formula, '=SUBTOTAL(2,B2:B3)');
+});
+
+test('remove duplicates compares current resolved formula values', () => {
+  const { workbook, commands } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, { value: null, formula: '="first"' });
+  sheet.cells.set(1, 0, { value: null, formula: '="second"' });
+  sheet.cells.set(2, 0, { value: 'survivor' });
+  commands.setCellValueResolver((_currentSheet, row, column) => column === 0 && row < 2 ? 'same-result' : undefined);
+
+  commands.execute('data.removeDuplicates', {
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 1, startColumn: 0, endColumn: 0 },
+    columns: [0],
+    hasHeader: false,
+  });
+
+  assert.equal(sheet.cells.get(0, 0)?.formula, '="first"');
+  assert.equal(sheet.cells.get(1, 0)?.value, 'survivor');
+});
+
+test('text-to-columns and subtotal consume current resolved formula values', () => {
+  const { workbook, commands } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, { value: null, formula: '="unused"' });
+  commands.setCellValueResolver((_currentSheet, row, column) => row === 0 && column === 0 ? 'left,right' : undefined);
+  commands.execute('data.textToColumns', {
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 },
+    delimiter: ',',
+    maxColumns: 2,
+  });
+  assert.equal(sheet.cells.get(0, 0)?.value, 'left');
+  assert.equal(sheet.cells.get(0, 1)?.value, 'right');
+
+  sheet.cells.set(1, 0, { value: 'Group' });
+  sheet.cells.set(1, 1, { value: 'Amount' });
+  sheet.cells.set(2, 0, { value: null, formula: '="A"' });
+  sheet.cells.set(2, 1, { value: null, formula: '=5' });
+  sheet.cells.set(3, 0, { value: null, formula: '="A"' });
+  sheet.cells.set(3, 1, { value: null, formula: '=7' });
+  commands.setCellValueResolver((_currentSheet, row, column) => {
+    if (row === 2 && column === 0 || row === 3 && column === 0) return 'A';
+    if (row === 2 && column === 1) return 5;
+    if (row === 3 && column === 1) return 7;
+    return undefined;
+  });
+  commands.execute('data.subtotal', {
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 1, endRow: 3, startColumn: 0, endColumn: 1 },
+    groupColumn: 0,
+    valueColumn: 1,
+    functionName: 'SUM',
+  });
+  assert.equal(sheet.cells.get(6, 1)?.value, 12);
+});
+
+test('formula-backed data transforms reject unresolved inputs before changing the workbook', () => {
+  const { workbook, commands } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, { value: null, formula: '=A2' });
+  sheet.cells.set(1, 0, { value: null, formula: '=A1' });
+  const before = workbook.snapshot();
+
+  assert.throws(() => commands.execute('data.textToColumns', {
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 },
+    delimiter: ',',
+    maxColumns: 2,
+  }), /formula result unavailable/);
+  assert.deepEqual(workbook.snapshot(), before);
+  assert.throws(() => commands.execute('data.removeDuplicates', {
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 1, startColumn: 0, endColumn: 0 },
+    columns: [0],
+    hasHeader: false,
+  }), /formula result unavailable/);
+  assert.deepEqual(workbook.snapshot(), before);
+  assert.throws(() => commands.execute('data.subtotal', {
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 1, startColumn: 0, endColumn: 0 },
+    groupColumn: 0,
+    valueColumn: 0,
+    functionName: 'SUM',
+  }), /formula result unavailable/);
+  assert.deepEqual(workbook.snapshot(), before);
+});
+
+test('split commands reject output truncation and malformed limits without clearing source cells', () => {
+  const { workbook, commands } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, { value: 'first,second,third' });
+  sheet.cells.set(0, 1, { value: 'keep' });
+  const before = workbook.snapshot();
+
+  assert.throws(() => commands.execute('data.textToColumns', {
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 },
+    delimiter: ',',
+    maxColumns: 2,
+  }), /output exceeds the configured column limit/);
+  assert.throws(() => commands.execute('data.splitColumn', {
+    sheetId: sheet.id,
+    row: 0,
+    column: 0,
+    delimiter: ',',
+    maxColumns: 2,
+  }), /output exceeds the configured column limit/);
+  assert.throws(() => commands.execute('data.splitColumn', {
+    sheetId: sheet.id,
+    row: 0,
+    column: 0,
+    delimiter: ',',
+    maxColumns: 1.5,
+  }), /maxColumns must be a positive safe integer/);
+  assert.deepEqual(workbook.snapshot(), before);
+});
+
+test('column splitting grows the allocated extent without treating it as the Excel grid edge', () => {
+  const { workbook, commands } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 25, { value: 'left,right' });
+
+  commands.execute('data.textToColumns', {
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 25, endColumn: 25 },
+    delimiter: ',',
+    maxColumns: 2,
+  });
+
+  assert.equal(sheet.cells.get(0, 25)?.value, 'left');
+  assert.equal(sheet.cells.get(0, 26)?.value, 'right');
+  assert.equal(sheet.columnCount, 27);
+});
+
 test('Home, worksheet AutoFilter, and table sorting share the resolved-value owner', () => {
   const seed = (): { workbook: WorkbookModel; commands: CommandRuntime } => {
     const next = runtime();
@@ -700,9 +959,11 @@ test('Text Columns, Split and Flip are one undoable transaction and clear stale 
   sheet.cells.set(0, 2, { value: 'stale' });
   let commandEvents = 0;
   commands.onCommand(() => { commandEvents += 1; });
-  const textResult = commands.execute('data.textToColumns', { sheetId: sheet.id, range: { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }, delimiter: ',', maxColumns: 3 });
+  const textResult = commands.execute('data.textToColumns', { sheetId: sheet.id, range: { sheetId: 'stale-selection-sheet', startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }, delimiter: ',', maxColumns: 3 });
   assert.equal(commandEvents, 1);
   assert.equal(textResult.mutationCount, 2);
+  assert.deepEqual(textResult.affectedRanges, [{ sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 2 }]);
+  assert.equal(commands.getUndoEntries().at(-1)?.inversePlan.length, 4, 'history stores the two occupied preimages, not every cell in the output rectangle');
   assert.equal(sheet.cells.get(0, 2)?.value, null);
   commands.undo();
   assert.equal(sheet.cells.get(0, 0)?.value, 'a,b');
