@@ -1385,7 +1385,7 @@ test('remote revision validation rejects before applying a mutation', () => {
   assert.equal(workbook.getSheet('sheet-1').cells.get(3, 4), undefined);
 });
 
-test('remote structural history resolves formula sheet names before colliding IDs', () => {
+test('remote structural history preserves unchanged payloads and resolves formula sheet names before colliding IDs', () => {
   const workbook = new WorkbookModel('unit-sheet-name-rebase', 'Sheet name rebase');
   workbook.addSheet('End', 'Target');
   workbook.addSheet('end-id', 'End');
@@ -1448,8 +1448,14 @@ test('remote structural history resolves formula sheet names before colliding ID
     },
   });
 
-  const localParams = { row: 0, column: 0, value: 'local', formula: '=End!A1' };
+  const localPayload = { values: Array.from({ length: 64 }, (_, index) => ({ value: `item-${index}` })) };
+  const localParams = { row: 0, column: 0, value: 'local', formula: '=End!A1', payload: localPayload };
   runtime.execute('cell.set', localParams);
+  const historyParams = runtime.getUndoEntries()[0]?.forwardMutations[0]?.params as typeof localParams | undefined;
+  assert.notEqual(historyParams, localParams);
+  assert.notEqual(historyParams?.payload, localPayload);
+  localPayload.values[0]!.value = 'changed-after-dispatch';
+  assert.equal(historyParams?.payload.values[0]!.value, 'item-0');
   runtime.applyRemoteMutations([{
     id: 'rows.inserted',
     unitId: workbook.unitId,
@@ -1458,8 +1464,48 @@ test('remote structural history resolves formula sheet names before colliding ID
     affectedRanges: [],
   }]);
 
-  const forward = runtime.getUndoEntries()[0]?.forwardMutations[0]?.params as { formula?: string } | undefined;
+  const forward = runtime.getUndoEntries()[0]?.forwardMutations[0]?.params as typeof localParams | undefined;
   assert.equal(forward?.formula, '=End!A1');
+  assert.equal(forward, historyParams);
+  assert.equal(forward?.payload, historyParams?.payload);
+});
+
+test('CommandRuntime rejects an uncloneable mutation payload before applying it', () => {
+  const workbook = new WorkbookModel('unit-uncloneable-mutation', 'Uncloneable mutation');
+  const runtime = new CommandRuntime(workbook);
+  let applyCalled = false;
+  runtime.registry.registerMutation({ id: 'cell.set', handler: () => undefined, metadata: cellSetMetadata });
+  runtime.registry.registerMutation({ id: 'cell.restore', handler: () => undefined, metadata: cellRestoreMetadata });
+  runtime.registry.registerCommand({
+    id: 'cell.set',
+    execute: (_params: unknown, context) => {
+      const affectedRanges = cellRange({ row: 0, column: 0 });
+      context.applyMutation({
+        id: 'cell.set',
+        unitId: workbook.unitId,
+        sheetId: 'sheet-1',
+        params: { row: 0, column: 0, value: 'not-applied', payload: () => undefined },
+        affectedRanges,
+        inverse: [{
+          id: 'cell.restore',
+          unitId: workbook.unitId,
+          sheetId: 'sheet-1',
+          params: { row: 0, column: 0, previous: undefined },
+          affectedRanges,
+        }],
+        apply: () => {
+          applyCalled = true;
+          workbook.getSheet('sheet-1').cells.set(0, 0, { value: 'not-applied' });
+        },
+      });
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges };
+    },
+  });
+
+  assert.throws(() => runtime.execute('cell.set', {}));
+  assert.equal(applyCalled, false);
+  assert.equal(workbook.getSheet('sheet-1').cells.get(0, 0), undefined);
+  assert.equal(runtime.getHistoryDepth().undo, 0);
 });
 
 test('CommandRuntime rejects an unregistered mutation before touching the workbook', () => {

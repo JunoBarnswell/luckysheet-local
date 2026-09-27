@@ -2110,3 +2110,13 @@ history AutoFilter 专用变换现要求主 range、sortState.ref 及每个 cond
 六轮自审：①预检 mutation 只写入 staged map，原 payload 不会被部分变换；②相关目标 payload 仍执行完整既有移动/边界拒绝逻辑；③不相关 payload 保持同一对象身份，不受一个 sheet 的结构编辑影响；④Map key 顺序仍纳入比较，避免改变原来的序列化次序契约；⑤未知嵌套引用字段只会触发保守克隆，不会被删除或改写；⑥新增回归源码覆盖成功移动与删除冲突拒绝，并核对两条路径都不会修改原始 payload。
 
 本轮确认并修复 **1 个独立性能根因**，未达到每轮至少 30 个独立问题目标，不将多个 payload 消费者重复计数。仅静态审查；新增的回归测试源码未执行，未运行测试、typecheck、build、浏览器、Excel 或 benchmark。Java 权威规划、owner index、完整 patch 和最终实测仍未完成。
+
+### 2026-09-28 continuation — own mutation history facts and share unchanged rebase payloads
+
+沿本地命令 → `CommandRuntime.applyMutation` → history/collaboration payload → 远端结构操作重基链，确认 **1 个独立历史完整性根因**：`MutationInfo.params` 和 `affectedRanges` 直接引用 mutation 调用方对象，inverse 仅浅复制；调用方或 apply callback 后续改写这些对象会改变已记录的撤销/重放事实。相同重基还会为每个未变更数组/对象无条件重建整棵 payload，放大大粘贴/元数据在多个远端结构操作下的临时分配。
+
+修复在任何 mutation apply callback 触碰工作簿前深拷贝 params、affectedRanges 与 inverse facts；不可克隆的 wire payload 在 apply 前失败。重基仅在坐标/公式/子节点实际变化时复制数组或对象，未变化的 history-owned 子树复用原身份；坐标或公式变换语义、删除相交时的 fail-close 保持不变。新增回归源码验证调用方后续改写不污染 history、拒绝不可克隆 payload 不执行 apply，以及结构重基保留未变更 owned payload 身份。仍需线性扫描 payload 来发现引用，所以这只降低分配，不声称降低其遍历复杂度或已有性能基准。
+
+六轮静态自审：①确认 params、ranges、inverse 全在 apply callback 前快照，克隆失败路径在 live workbook 写入前停止；②同 sheet 坐标和 formula 子节点变化只写入 shallow clone，不回写历史基线；③删除命中的坐标/范围仍走既有拒绝路径，不因 COW 变成静默丢弃；④数组首个变更前不分配，发生变更后保留顺序并追加所有后续映射值；⑤公式文本变化仍删除同对象的 formulaValue/displayValue，未变化公式保留原值；⑥确认调用边界已经取得独立快照，未变化引用共享只发生在该 owned snapshot 内；检查本次没有扩展到 server planner、wire schema 或持久化契约。
+
+本轮确认并修复 **1 个真实根因**；copy-on-write 是其重基分配优化，不另计问题，也未达到每轮至少 30 个独立问题目标。仅静态审查与 `git diff --check`；新增测试源码未执行，未运行测试、typecheck、build、浏览器、Excel 或 benchmark。初查 `ReferenceTransformDomain` 上限校验的候选经复核已由现有 `Number.isSafeInteger(maximum)` 处理，未修改或计数。Java 唯一规划权、完整 StructuralPatch、staged replay transaction 与最终实测仍未完成。

@@ -862,7 +862,7 @@ function transformRange(range: RangeRef, delta: StructuralDelta): RangeRef | und
   if (!isValidRangeRef(range)
     || range.startRow < 0 || range.endRow < range.startRow || range.endRow > MAX_ROW_INDEX
     || range.startColumn < 0 || range.endColumn < range.startColumn || range.endColumn > MAX_COLUMN_INDEX) return undefined;
-  if (range.sheetId !== delta.sheetId) return structuredClone(range);
+  if (range.sheetId !== delta.sheetId) return range;
   const start = delta.axis === 'row' ? range.startRow : range.startColumn;
   const end = delta.axis === 'row' ? range.endRow : range.endColumn;
   if (delta.direction === -1) {
@@ -872,6 +872,7 @@ function transformRange(range: RangeRef, delta: StructuralDelta): RangeRef | und
   const nextStart = transformIndex(start, delta);
   const nextEnd = transformIndex(end, delta);
   if (nextStart === undefined || nextEnd === undefined) return undefined;
+  if (nextStart === start && nextEnd === end) return range;
   const mappedStart = nextStart;
   const mappedEnd = nextEnd;
   return delta.axis === 'row'
@@ -925,7 +926,7 @@ function transformAutoFilterModel(value: Record<string, unknown>, delta: Structu
   if (typeof value.sheetId !== 'string' || !isValidRangeRef(value.range) || !isRecord(value.columns)) return undefined;
   const filter = value as unknown as AutoFilterModel;
   if (filter.range.sheetId !== filter.sheetId) return { value, safe: false };
-  if (filter.sheetId !== delta.sheetId) return { value: structuredClone(filter), safe: true };
+  if (filter.sheetId !== delta.sheetId) return { value, safe: true };
   if (!isSupportedAutoFilterRangeRef(value.range)) return { value, safe: false };
   if (Object.keys(value).some((key) => !['sheetId', 'range', 'columns', 'sortState', 'preservedXml'].includes(key))
     || (filter.preservedXml !== undefined && filter.preservedXml !== null)) {
@@ -995,19 +996,26 @@ function transformPayload(
     }
   }
   if (Array.isArray(value)) {
-    const values: unknown[] = [];
-    for (const item of value) {
+    let values: unknown[] | undefined;
+    for (let index = 0; index < value.length; index += 1) {
+      const item = value[index];
+      let nextItem: unknown;
       if (ownerSheetId === delta.sheetId && typeof item === 'number' && isCoordinateListKey(keyHint, delta.axis)) {
         const mapped = transformIndex(item, delta);
         if (mapped === undefined) return { value, safe: false };
-        values.push(mapped);
-        continue;
+        nextItem = mapped;
+      } else {
+        const transformed = transformPayload(item, delta, id, sheetOrder, keyHint, ownerSheetId);
+        if (!transformed.safe) return transformed;
+        nextItem = transformed.value;
       }
-      const transformed = transformPayload(item, delta, id, sheetOrder, keyHint, ownerSheetId);
-      if (!transformed.safe) return transformed;
-      values.push(transformed.value);
+      if (values) values.push(nextItem);
+      else if (nextItem !== item) {
+        values = value.slice(0, index);
+        values.push(nextItem);
+      }
     }
-    return { value: values, safe: true };
+    return { value: values ?? value, safe: true };
   }
   if (!isRecord(value)) return { value, safe: true };
   const valueSheetId = typeof value.sheetId === 'string'
@@ -1020,32 +1028,42 @@ function transformPayload(
   const autoFilter = transformAutoFilterModel(value, delta);
   if (autoFilter) return autoFilter;
 
-  const result: Record<string, unknown> = {};
   const structuralAxis = mutationAxis(id);
+  let transformedObject: Record<string, unknown> | undefined;
   let formulaChanged = false;
   for (const [key, child] of Object.entries(value)) {
     if (valueSheetId === delta.sheetId && isCoordinateKey(key, delta.axis) && typeof child === 'number') {
       const mapped = transformIndex(child, delta);
       if (mapped === undefined) return { value, safe: false };
-      result[key] = mapped;
+      if (mapped !== child) {
+        transformedObject ??= { ...value };
+        transformedObject[key] = mapped;
+      }
       continue;
     }
     if (valueSheetId === delta.sheetId && key === 'at' && typeof child === 'number' && (structuralAxis === delta.axis || 'count' in value)) {
       const mapped = transformIndex(child, delta);
       if (mapped === undefined) return { value, safe: false };
-      result[key] = mapped;
+      if (mapped !== child) {
+        transformedObject ??= { ...value };
+        transformedObject[key] = mapped;
+      }
       continue;
     }
     const transformed = transformPayload(child, delta, id, sheetOrder, key, valueSheetId);
     if (!transformed.safe) return transformed;
-    result[key] = transformed.value;
+    if (transformed.value !== child) {
+      transformedObject ??= { ...value };
+      transformedObject[key] = transformed.value;
+    }
     if (isFormulaSourceKey(key) && typeof child === 'string' && transformed.value !== child) formulaChanged = true;
   }
   if (formulaChanged) {
-    delete result.formulaValue;
-    delete result.displayValue;
+    transformedObject ??= { ...value };
+    delete transformedObject.formulaValue;
+    delete transformedObject.displayValue;
   }
-  return { value: result, safe: true };
+  return { value: transformedObject ?? value, safe: true };
 }
 
 function transformMutation(
@@ -1324,6 +1342,11 @@ export class CommandRuntime {
         // execution and every replay path fail closed on protocol drift.
         this.registry.assertMutation(mutation);
         this.mutationGuard?.(mutation, 'command');
+        // History, collaboration, and replay outlive the caller's command objects.
+        // Own the wire facts before the apply callback can mutate either side.
+        const paramsSnapshot = structuredClone(mutation.params);
+        const affectedRangesSnapshot = structuredClone(mutation.affectedRanges);
+        const inverseSnapshots = mutation.inverse.map((item) => structuredClone(item));
         const effect = mutation.apply(context) ?? this.registry.getMutationMetadata(mutation.id).calculationContextEffect;
         const formulaOwnerDeltas = isRecord(effect) && Array.isArray(effect.formulaOwnerDeltas)
           ? effect.formulaOwnerDeltas as StructuralFormulaOwnerDelta[]
@@ -1349,8 +1372,8 @@ export class CommandRuntime {
           id: mutation.id,
           unitId: mutation.unitId,
           sheetId: mutation.sheetId,
-          params: mutation.params,
-          affectedRanges: mutation.affectedRanges,
+          params: paramsSnapshot,
+          affectedRanges: affectedRangesSnapshot,
           ...(formulaOwnerDeltas.length > 0
             ? { structuralFormulaOwnerDeltas: structuredClone(formulaOwnerDeltas) }
             : {}),
@@ -1366,7 +1389,7 @@ export class CommandRuntime {
           ...(mutation.permission ? { permission: structuredClone(mutation.permission) } : {}),
         };
         mutations.push(info);
-        const inverse = mutation.inverse.map((item, index) => ({
+        const inverse = inverseSnapshots.map((item, index) => ({
           ...item,
           ...(index === 0 && formulaOwnerDeltas.length > 0
             ? { structuralFormulaOwnerDeltas: structuredClone(formulaOwnerDeltas) }
@@ -1381,7 +1404,7 @@ export class CommandRuntime {
         this.activeEntry?.inversePlan.unshift(...inverse);
         this.activeEntry?.forwardMutations.push(info);
         if (this.activeEntry) {
-          this.activeEntry.affectedRanges.push(...mutation.affectedRanges.map((range) => structuredClone(range)));
+          this.activeEntry.affectedRanges.push(...affectedRangesSnapshot.map((range) => structuredClone(range)));
           this.activeEntry.affectedRanges.push(...structuralImpactRanges.map((range) => structuredClone(range)));
         }
 
