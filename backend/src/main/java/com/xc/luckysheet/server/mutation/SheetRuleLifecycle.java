@@ -8,6 +8,7 @@ import com.xc.luckysheet.server.contract.RangeRef;
 import com.xc.luckysheet.server.service.ServiceException;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.function.Function;
@@ -73,14 +74,30 @@ final class SheetRuleLifecycle {
     static void validateSnapshot(ObjectNode root, ObjectNode sheet, String sheetId, String property, JsonNode proposed, List<RangeRef> allowedRanges) {
         if (proposed == null || !proposed.isArray()) throw ServiceException.validation("Paste snapshot " + property + " must be an array");
         JsonNode existing = sheet.get(property);
+        if (existing != null && !existing.isNull() && !existing.isArray()) {
+            throw ServiceException.validation(property + " must be an array");
+        }
         ArrayNode current = existing != null && existing.isArray() ? (ArrayNode) existing : JsonNodeFactory.instance.arrayNode();
+        Set<JsonNode> currentRules = new HashSet<>(current.size());
+        for (JsonNode rule : current) currentRules.add(rule);
+        Set<JsonNode> proposedRules = new HashSet<>(proposed.size());
+        Set<String> proposedIds = new HashSet<>(proposed.size());
+        for (JsonNode rule : proposed) {
+            if (!rule.isObject()) throw ServiceException.validation(property + " rule must be an object");
+            ObjectNode ruleObject = (ObjectNode) rule;
+            validateRule(root, sheetId, ruleObject, property);
+            if (!proposedIds.add(SnapshotMutationSupport.text(ruleObject, "id"))) {
+                throw ServiceException.validation(property + " rule identity is duplicated");
+            }
+            proposedRules.add(rule);
+        }
         for (JsonNode rule : current) {
-            if (!ownerIsContained(root, sheetId, rule, allowedRanges) && !containsJson(proposed, rule)) {
+            if (!ownerIsContained(root, sheetId, rule, allowedRanges) && !proposedRules.contains(rule)) {
                 throw ServiceException.validation("Paste snapshot changes an unrelated " + property + " rule");
             }
         }
         for (JsonNode rule : proposed) {
-            if (!ownerIsContained(root, sheetId, rule, allowedRanges) && !containsJson(current, rule)) {
+            if (!ownerIsContained(root, sheetId, rule, allowedRanges) && !currentRules.contains(rule)) {
                 throw ServiceException.validation("Paste snapshot adds an unrelated " + property + " rule");
             }
         }
@@ -219,12 +236,6 @@ final class SheetRuleLifecycle {
                     && allowed.startColumn() <= range.startColumn() && allowed.endColumn() >= range.endColumn())) return false;
         }
         return true;
-    }
-
-    private static boolean containsJson(JsonNode array, JsonNode candidate) {
-        if (array == null || !array.isArray()) return false;
-        for (JsonNode value : array) if (value.equals(candidate)) return true;
-        return false;
     }
 
     private static List<RangeRef> subtract(RangeRef source, RangeRef clear) {

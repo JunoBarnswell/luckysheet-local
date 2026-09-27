@@ -1486,7 +1486,9 @@ final class StructuralSnapshotReducer {
                     throw ServiceException.validation("Structural mutation moves a cell outside worksheet bounds");
                 }
                 ObjectNode rowTarget = next.with(Integer.toString(nextRow));
-                rowTarget.set(Integer.toString(nextColumn), columnEntry.getValue().deepCopy());
+                // The reducer owns this detached snapshot. Transfer the node instead of
+                // duplicating every cell payload while constructing its new coordinates.
+                rowTarget.set(Integer.toString(nextColumn), columnEntry.getValue());
             }
         }
         sheet.set("cells", next);

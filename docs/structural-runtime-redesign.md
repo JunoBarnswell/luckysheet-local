@@ -1754,3 +1754,11 @@ Repeatable history migration 将旧 v1-v5 patch 先投影回旧 formula-owner �
 本轮确认 **2 个独立架构问题**：① server-planner 声明与客户端生成并提交 after snapshot 相矛盾；② `range.paste` 没有进入 StructuralPatch，owner membership 与 reference 前后事实缺失。它们不是按规则字段拆分计数。**尚未达到每轮至少 30 个真实问题**，也未达到完整结构审查范围。
 
 方案约束：完整 owner patch 必须表达稳定身份下的 owner 增删与精确 before/after（包括 CF/DV、formula anchor、list source、单元格和其它 paste metadata），由 Java 根据规范化 intent 生成；客户端不得把 after snapshot 当授权写入事实。统一 schema 升版和 migration 必须验证既有历史，再由同一 server patch 驱动 apply/inverse、undo、collaboration、impact 与 persistence。不能先发布仅覆盖现有规则几何的中间版本，因为 paste 的 owner membership 会再次迫使 wire schema 扩展。此处只记录静态证据与设计边界，未修改实现、未运行本地测试或其它门禁。
+
+### 2026-09-27 six-view follow-up — paste rule validation cost and reducer cell copies
+
+六个视角复核后，确认并修复 4 个独立缺陷：① paste 规则保留检查对 current/proposed 两个数组双向嵌套扫描，`R` 条规则最坏 O(R²)；现在用结构相等的 `JsonNode` hash 集合做期望 O(R) 成员检查。② 服务端把已存在但非数组的 CF/DV 状态当成空数组，paste 可覆盖损坏状态；现在 fail-close。③ paste 新规则绕过共享 `SheetRuleLifecycle.validateRule`，接受普通 upsert 会拒绝的缺失身份/非法 range 形状；现在校验规则并拒绝重复 rule ID。④ Java 轴位移已在拥有的隔离 snapshot 上建新坐标树，却又为每个单元格 payload 执行 `deepCopy`；现在将节点从旧树转移到新树，避免高数据量工作表中一份完整 cell payload 的额外复制。
+
+六项自审分别核对：hash/equals 保持原有 JSON 结构相等语义；重复值仍按成员存在性处理、重复身份另外拒绝；current 缺失/null 仍按可选空 owner 处理而错误类型拒绝；规则 range 与目标 sheet 由同一生命周期验证；reducer 只在 detached/owned snapshot 上重挂接节点且错误路径仍先完成边界检查；4,096 条规则回归构造及损坏/非法输入拒绝用例覆盖成功与拒绝边界。仅作静态审查和 `git diff --check`，未运行测试、构建、浏览器或 Excel。
+
+此 follow-up 仍只是有限修复，**没有达到用户要求的每轮至少 30 个真实问题**。paste 客户端仍提交 `snapshot` after-state、没有进入 owner-complete StructuralPatch；排序仍由客户端给出 `sourceRows`；TS 结构预检仍深拷贝全工作簿引用 metadata 并 stringify 比较；Java 仍全量扫描结构公式 owner，这些是独立待办，不能用本轮性能修复抵销。

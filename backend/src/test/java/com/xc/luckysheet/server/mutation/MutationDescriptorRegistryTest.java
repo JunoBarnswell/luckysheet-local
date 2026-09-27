@@ -776,7 +776,7 @@ class MutationDescriptorRegistryTest {
                 {"sheetId":"sheet-1","targetOrigin":{"row":0,"column":0},"sourceExtent":{"rows":2,"columns":1},"clipboard":{"schema":"SparseClipboardPayload","transfer":"copy","range":{"sheetId":"sheet-1","startRow":0,"endRow":1,"startColumn":0,"endColumn":0},"sourceExtent":{"rows":2,"columns":1},"occupiedCells":[],"rangeMetadata":{"columnWidths":[],"validations":[],"conditionalFormats":[],"notes":[],"comments":[],"hyperlinks":[]}},
                  "transfer":"copy","clearSource":false,
                  "spec":{"content":"all","formatting":"all","metadata":{"commentsNotes":true,"validation":true,"columnWidths":false,"conditionalFormats":true,"hyperlinks":true},"operation":"none","skipBlanks":false,"transpose":false,"link":false},
-                 "snapshot":{"cells":[],"validations":[{"id":"dv-1","ranges":[
+                 "snapshot":{"cells":[],"validations":[{"id":"dv-1","sheetId":"sheet-1","type":"whole","ranges":[
                    {"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0},
                    {"sheetId":"sheet-1","startRow":1,"endRow":1,"startColumn":0,"endColumn":0}
                  ]}]}}
@@ -800,7 +800,7 @@ class MutationDescriptorRegistryTest {
                 {"sheetId":"sheet-1","targetOrigin":{"row":0,"column":0},"sourceExtent":{"rows":1,"columns":1},"clipboard":{"schema":"SparseClipboardPayload","transfer":"copy","range":{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0},"sourceExtent":{"rows":1,"columns":1},"occupiedCells":[],"rangeMetadata":{"columnWidths":[],"validations":[],"conditionalFormats":[],"notes":[],"comments":[],"hyperlinks":[]}},
                  "transfer":"copy","clearSource":false,
                  "spec":{"content":"all","formatting":"all","metadata":{"commentsNotes":true,"validation":true,"columnWidths":false,"conditionalFormats":true,"hyperlinks":true},"operation":"none","skipBlanks":false,"transpose":false,"link":false},
-                 "snapshot":{"cells":[],"validations":[{"id":"dv-attack","ranges":[
+                 "snapshot":{"cells":[],"validations":[{"id":"dv-attack","sheetId":"sheet-1","type":"whole","ranges":[
                    {"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0},
                    {"sheetId":"sheet-1","startRow":4,"endRow":4,"startColumn":4,"endColumn":4}
                  ]}]}}
@@ -811,6 +811,49 @@ class MutationDescriptorRegistryTest {
 
         assertEquals("VALIDATION_ERROR", error.code());
         assertEquals(0, snapshot.path("sheets").get(0).path("dataValidations").size());
+    }
+
+    @Test
+    void rangePasteRejectsMalformedRuleStateInsteadOfReplacingItAsEmpty() {
+        ObjectNode root = mapper.createObjectNode();
+        ObjectNode sheet = root.putArray("sheets").addObject();
+        sheet.put("id", "sheet-1");
+        sheet.put("dataValidations", "corrupt");
+
+        ServiceException corruptState = assertThrows(ServiceException.class,
+                () -> SheetRuleLifecycle.validateSnapshot(root, sheet, "sheet-1", "dataValidations",
+                        mapper.createArrayNode(), List.of(new RangeRef("sheet-1", 0, 0, 0, 0))));
+        assertEquals("VALIDATION_ERROR", corruptState.code());
+
+        sheet.set("dataValidations", mapper.createArrayNode());
+        var malformedRule = mapper.createArrayNode().addObject();
+        malformedRule.putArray("ranges").addObject()
+                .put("sheetId", "sheet-1").put("startRow", 0).put("endRow", 0)
+                .put("startColumn", 0).put("endColumn", 0);
+        ServiceException invalidRule = assertThrows(ServiceException.class,
+                () -> SheetRuleLifecycle.validateSnapshot(root, sheet, "sheet-1", "dataValidations",
+                        malformedRule, List.of(new RangeRef("sheet-1", 0, 0, 0, 0))));
+        assertEquals("VALIDATION_ERROR", invalidRule.code());
+    }
+
+    @Test
+    void rangePasteValidatesLargeRuleCollectionsWithoutQuadraticMembershipScans() {
+        ObjectNode root = mapper.createObjectNode();
+        ObjectNode sheet = root.putArray("sheets").addObject();
+        sheet.put("id", "sheet-1");
+        ArrayNode current = sheet.putArray("dataValidations");
+        ArrayNode proposed = mapper.createArrayNode();
+        for (int index = 0; index < 4096; index++) {
+            ObjectNode rule = current.addObject();
+            rule.put("id", "dv-" + index).put("sheetId", "sheet-1").put("type", "whole");
+            rule.putArray("ranges").addObject()
+                    .put("sheetId", "sheet-1").put("startRow", index + 1).put("endRow", index + 1)
+                    .put("startColumn", 0).put("endColumn", 0);
+            proposed.add(rule.deepCopy());
+        }
+
+        assertDoesNotThrow(() -> SheetRuleLifecycle.validateSnapshot(root, sheet, "sheet-1", "dataValidations",
+                proposed, List.of(new RangeRef("sheet-1", 0, 0, 0, 0))));
     }
 
     @Test
