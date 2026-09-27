@@ -7,6 +7,7 @@ import {
   encodeOperationMessage,
   AuthenticationRequiredError,
   WorkbookApiClient,
+  CollabSocketClient,
   validateHistoryRestoreRequest,
   validateOperationEnvelope,
   validateUserPreferences,
@@ -44,6 +45,53 @@ test('server structural planner classification is explicit and excludes ordinary
 test('WebSocket presence messages round-trip without becoming a mutation transport', () => {
   const message = { type: 'cursor.updated' as const, unitId: 'unit-1', state: { row: 2, column: 4, sheetId: 'sheet-1' } };
   assert.deepEqual(decodeMessage(encodeMessage(message)), message);
+});
+
+test('CollabSocketClient reconnects for authoritative resynchronization', async () => {
+  class TestSocket {
+    readyState = 0;
+    onopen: ((event: Event) => void) | null = null;
+    onmessage: ((event: MessageEvent) => void) | null = null;
+    onclose: ((event: CloseEvent) => void) | null = null;
+    onerror: ((event: Event) => void) | null = null;
+    open(): void {
+      this.readyState = 1;
+      this.onopen?.({} as Event);
+    }
+    close(): void {
+      this.readyState = 3;
+      this.onclose?.({} as CloseEvent);
+    }
+    send(): void { }
+  }
+  const sockets: TestSocket[] = [];
+  const client = new CollabSocketClient('ws://localhost/ws', {
+    reconnectBaseDelayMs: 0,
+    reconnectMaxDelayMs: 0,
+    webSocketFactory: () => {
+      const socket = new TestSocket();
+      sockets.push(socket);
+      return socket as unknown as WebSocket;
+    },
+  });
+  const nextTask = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+  client.open();
+  await nextTask();
+  assert.equal(sockets.length, 1);
+  sockets[0]!.open();
+  assert.equal(client.status, 'open');
+
+  client.requestResynchronization();
+  await nextTask();
+  assert.equal(sockets.length, 2);
+  sockets[1]!.open();
+  client.requestResynchronization();
+  await nextTask();
+  assert.equal(sockets.length, 3);
+  sockets[2]!.open();
+  client.markSynchronized();
+  client.close();
 });
 
 test('OperationEnvelope excludes client actor and affected ranges', () => {

@@ -3110,6 +3110,21 @@ export class CollabSocketClient {
     return () => this.protocolErrorListeners.delete(listener);
   }
 
+  /** Force a fresh collaboration connection when the revision stream needs snapshot resynchronization. */
+  requestResynchronization(): void {
+    if (this.closedByUser) return;
+    if (this.socket) {
+      this.socket.close();
+      return;
+    }
+    this.scheduleReconnect();
+  }
+
+  /** Reset exponential backoff only after the application has hydrated and replayed the server snapshot. */
+  markSynchronized(): void {
+    this.reconnectAttempt = 0;
+  }
+
   private async connect(): Promise<void> {
     this.connecting = true;
     this.emitStatus('connecting');
@@ -3135,7 +3150,6 @@ export class CollabSocketClient {
     this.connecting = false;
 
     socket.onopen = () => {
-      this.reconnectAttempt = 0;
       this.emitStatus('open');
     };
 

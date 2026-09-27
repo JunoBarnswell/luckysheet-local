@@ -1442,6 +1442,7 @@ export function startCollaborationSession(
       if (synchronizing) { deferredMessages.push(message); return; }
       if (runtime.disposed) return;
       if (message.type === 'revision.created') {
+        if (synchronizationFailed) return;
         if (message.payload.unitId !== runtime.model.unitId || message.revision <= runtime.remoteRevision) return;
         if (runtime.ownOperationIds.has(message.payload.operationId)) return;
         try { runtime.collaboration?.applyRemote(message.payload); }
@@ -1451,6 +1452,7 @@ export function startCollaborationSession(
           runtime.collaboration?.offlineQueue.setOnline(false);
           runtime.handlers.onSaveState?.('conflict');
           runtime.handlers.onNotice?.(error instanceof Error ? error.message : '远端变更与本地草稿冲突');
+          client.requestResynchronization();
           return;
         }
         runtime.remoteRevision = Math.max(runtime.remoteRevision, message.revision);
@@ -1504,12 +1506,15 @@ export function startCollaborationSession(
         synchronizing = false;
         for (const message of deferredMessages.splice(0)) applyRemote(message);
         if (synchronizationFailed) return;
+        client.markSynchronized();
         runtime.remoteConnected = true;
         runtime.collaboration?.offlineQueue.setOnline(true);
         runtime.handlers.onMutationsApplied?.();
         runtime.handlers.onSaveState?.(runtime.collaboration?.getPendingOperations().length ? 'saving' : 'saved');
       })().catch((error: Error) => {
+        if (!active || runtime.disposed) return;
         synchronizing = false;
+        synchronizationFailed = true;
         runtime.remoteConnected = false;
         runtime.handlers.onSaveState?.('conflict');
         runtime.handlers.onNotice?.(error.message);

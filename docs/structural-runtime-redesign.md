@@ -2011,3 +2011,13 @@ wire 与提交端也不能直接把 Java 规划出的不同结果送回：`Opera
 本轮六轮静态自审：①确认 TS AST 对照只抑制未变化文本的格式差异，不吞掉 `#REF!`、边界错误或真实坐标变化；②确认 Java no-op token 保留不改变显式 canonicalization 与 whole-axis renderer；③核对 formula cell 的 formula/sourceFormula/barcodeFormula、地址及规则/对象 owner 都先校验 base，再允许 canonical AST 相等；④核对即使文字等价，ACK 仍应用服务端原文而不留下客户端格式；⑤沿提交、preflight、listener、forward history、inverse history、undo/redo检查同一 owner patch 的方向；⑥确认不等语义、缺失 delta、额外 delta、不同文本解析失败仍可观察地拒绝且失败发生在 workbook 写入前。
 
 本轮只确认并处理 **1 个新根因**，尚未达到用户希望的每轮至少 30 个真实问题；不把格式样例、owner 类型和调用点虚增计数。只做静态源码审查、编辑及回归源码补充，未运行测试、构建、typecheck、浏览器、Excel 或性能实测。Java 唯一结构规划权、完整可逆 patch 与最终互操作验收仍未完成。
+
+### 2026-09-28 continuation — failed revision stream must resynchronize before accepting more events
+
+沿 WebSocket `revision.created` → `CollaborationSession.applyRemote` → `CommandRuntime.applyRemoteMutations` → snapshot/historical replay 复核发现 **1 个独立 fail-close 根因**：单个远端 operation 的应用失败会置 `synchronizationFailed` 并停用在线编辑，但同一已打开 socket 的后续 revision 没检查该锁存位，仍可能越过缺失的 revision 应用到旧模型；REST 快照/历史同步失败也没有置锁存位。仅把错误记为 conflict 因而不能防止后续 revision 继续扩大分叉。
+
+修复在 revision dispatch 入口先拒绝锁存后的事件；远端 replay 失败时停用离线队列并请求一次 WebSocket 重连，重连后复用既有 `getSnapshot → hydrateRuntime → loadHistoryAndReplayPending` 权威恢复流程。若权威 bootstrap/history 本身失败，则只锁存并保持只读，避免待提交草稿与新 revision 冲突时反复拉取同一快照。重连次数只在快照和历史完整同步、延期 revision 全部处理后清零，避免 TCP/WebSocket 已 open 但应用仍无法同步时错误重置指数退避。dispose 后的异步同步失败不再启动重连。补充 `CollabSocketClient` 可注入 socket 的 reconnect 源码回归；按要求没有在本地运行测试或构建。
+
+六轮静态复核：①单个 revision 失败后同连接后续 revision 在 revision guard 被忽略；②同步期间延期事件仍先排队，失败后 drain 中剩余事件也受同一 guard 阻止；③snapshot/access/history/recovery journal 任一 bootstrap error 都置锁存并停用编辑；④新 socket open 后锁存仅在 snapshot hydration/replay 前为同步流程复位，消息仍延期；⑤只有权威快照、历史、pending replay 和延期 revision 成功后才 mark synchronized 并清除退避；⑥用户 dispose/close 后不会因迟到的 REST reject 再连接，正常网络 close 仍沿原自动退避链路；重复的 pending-revision conflict 不会触发无界主动重连。此次只计 1 个新根因，仍低于每轮至少 30 项诉求；未将 socket、REST、deferred queue 分别重复计数。
+
+未运行测试、build、typecheck、浏览器、Excel 或性能实测；`git diff --check` 与最终 PR CI 状态须在提交阶段另行记录。该同步修复不代表 owner-complete patch、Java 唯一结构规划权或整体 structural acceptance 已完成；PR #345 继续保持 draft。
