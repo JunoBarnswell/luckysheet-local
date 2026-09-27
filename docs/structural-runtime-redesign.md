@@ -1969,3 +1969,11 @@ head `6d23407f` 的自动 Maven 门禁报告 12 个测试条目（4 failures、8
 **六轮静态自审**：①服务可用性 gate 是否被误称为服务端 planner；②同步命令、本地乐观应用和提交时序；③客户端排列在 Java apply、幂等记录和广播中的权威性；④公式值与文化排序是否能由 Java 现有数据证明；⑤pending/outbox、重复提交、历史回放与 undo 是否会重复或改写结构效果；⑥原子 revision、权限/保护、完整 owner patch、迁移/回滚及未知 OOXML 保真边界。六轮均指向同一跨层缺口，未作为重复问题计数。
 
 本轮发现的是一个已被源码调用链证实的架构根因及上述 8 个不同层面的违反点；仍未达到用户要求的每轮至少 30 个独立真实问题，也没有声称修复完成。由于“Java 单一规划权”需要同时改动同步命令、operation identity/idempotency、服务端事务、collaboration replay、history 和计算值所有权，本轮先固定有界设计与验收边界，没有引入不能端到端接通的 planner DTO/占位端点。没有运行任何本地测试、构建、typecheck、浏览器或 Excel 实测；下一实现步仍属于同一 PR #345。
+
+### 2026-09-27 workbook collation correctness follow-up
+
+沿 `WorkbookCollationContext` → `compareWorkbookValues` → `compareWorkbookText` → dynamic-array sort/lookup 与 worksheet row-sort comparer 追踪，修复三个直接影响 Excel 文本排序的独立缺陷：`cultureId` 之前从未参与文本比较；numeric-text 模式把任意长度的数字段转成 IEEE-754 `Number`，会令超过安全整数精度的不同字符串比较相等；accent-insensitive normalization 只剥除 U+0300–U+036F，漏掉其它 Unicode combining-mark blocks。现按 workbook culture 建立对应 sensitivity 的 `Intl.Collator`，以 context-keyed `WeakMap` 缓存 comparer（不在 O(N log N) 比较循环中重复创建 ICU collator；无全局强引用）；`invariant` 文化保留既有 ordinal 路径；numeric-text 数字段改为去前导零后比较长度和字典序，避免精度折叠；Invariant accent folding 使用 Unicode `\p{M}` mark 类。
+
+新增 `collation.test.ts` 源码覆盖 Swedish/English locale 顺序、case/accent sensitivity、custom list 与 numeric-text 选项、超过 2^53 的数字串、invariant ordinal 兼容和扩展组合附加符号。六轮静态自审：①locale ID 到 collator 构造及非法 culture fail-close；②四种 case/accent sensitivity 映射；③locale-aware custom-list 等价键和 rank 稳定性；④numeric-text 前缀/数字段/后缀及前导零和长数字精度；⑤WeakMap 生命周期、上下文配置变动签名和 comparator 热路径分配；⑥Invariant 兼容、Unicode mark 覆盖及公式函数共享 comparator 的影响范围。
+
+本修复只让当前 TypeScript collation owner 消费 workbook `cultureId`，**不**证明不同浏览器 ICU 与未来 Java comparer 逐项一致；Java 唯一规划权/统一 collation vectors 仍未实现。新增测试源码未执行，本轮未运行本地测试、typecheck、build、浏览器或 Excel；只执行 `git diff --check`。本轮完成 3 个独立 correctness 根因，仍未达到用户要求的 30 个问题/轮，整体结构主链和大范围静态审计继续未完成。
