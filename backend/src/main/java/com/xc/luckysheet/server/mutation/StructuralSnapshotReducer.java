@@ -2876,8 +2876,8 @@ final class StructuralSnapshotReducer {
         SnapshotMutationSupport.validateKnownKeys(anchor, Set.of("sheetId", "row", "column"),
                 "Structural formula rule anchor");
         String anchorSheetId = SnapshotMutationSupport.text(anchor, "sheetId");
-        int row = boundedValue(anchor, "row", SnapshotMutationSupport.MAX_ROW);
-        int column = boundedValue(anchor, "column", SnapshotMutationSupport.MAX_COLUMN);
+        int row = integer(anchor.get("row"), "Structural formula rule anchor row", SnapshotMutationSupport.MAX_ROW);
+        int column = integer(anchor.get("column"), "Structural formula rule anchor column", SnapshotMutationSupport.MAX_COLUMN);
         SnapshotMutationSupport.sheet(root, anchorSheetId);
         return new StructuralPatch.CellAddress(anchorSheetId, row, column);
     }

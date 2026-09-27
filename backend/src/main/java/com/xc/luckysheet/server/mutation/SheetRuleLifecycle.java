@@ -286,6 +286,10 @@ final class SheetRuleLifecycle {
     }
 
     private static ObjectNode requireRule(JsonNode raw, String label) {
+        return requireObject(raw, label);
+    }
+
+    private static ObjectNode requireObject(JsonNode raw, String label) {
         if (raw == null || !raw.isObject()) throw ServiceException.validation(label + " must be an object");
         return (ObjectNode) raw;
     }
