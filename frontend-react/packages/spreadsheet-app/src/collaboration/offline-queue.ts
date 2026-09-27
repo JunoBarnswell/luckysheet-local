@@ -33,7 +33,7 @@ function validateOperation(operation: unknown): OperationEnvelope {
  * remain visible and block later operations until an explicit discard.
  */
 export class OfflineQueue {
-  private readonly queue: QueuedOperation[] = [];
+  private queue: QueuedOperation[] = [];
   private state: OfflineQueueState = 'idle';
   private readonly maxRetries: number;
   private readonly flush?: (operation: OperationEnvelope) => Promise<number>;
@@ -212,9 +212,9 @@ export class OfflineQueue {
         rejection: previous?.status === 'rejected' ? previous.rejection : undefined,
       });
     }
-    this.queue.length = 0;
-    this.queue.push(...rewritten);
-    this.persistQueue();
+    // Commit the durable image before swapping the in-memory queue reference.
+    this.persist?.(rewritten.map((item) => structuredClone(item.operation)));
+    this.queue = rewritten;
   }
 
   async flushAll(): Promise<{ flushed: number; failed: number }> {

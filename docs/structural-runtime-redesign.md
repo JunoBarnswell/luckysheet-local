@@ -2128,3 +2128,13 @@ history AutoFilter 专用变换现要求主 range、sortState.ref 及每个 cond
 修正为复制 inverse 外层记录与小型 affected-range 数组，保留命令交接的 nested inverse payload；Mutation 契约明确 command 在 `applyMutation` 后不得再改写 inverse，写回模型的 owner handler 负责复制。forward params/ranges 仍在 apply 前独立快照。六轮复核：①定位现有测试的 identity assertion；②确认 `snapshotCellRegion` 提供 detached cell object；③确认 axis transform 将 cell 从 live matrix 移除；④确认 restore handler 在写回时复制 cell 和 nested style；⑤确认 inverse 外层/ranges 快照不重复拷贝 cell payload，forward caller-isolation 仍在；⑥核对改动不扩展到 operation wire 与持久化版本。
 
 此为 `30005996` 引入的 **1 个已修正回归**，归属同一 mutation history ownership 主题，不作为新的业务根因重复计数。只做静态复核与 `git diff --check`；该测试源码以及全部本地测试、typecheck、build、browser、Excel、benchmark 均未执行。PR 自动 `canonical-build` 当时在运行；未据此声称通过。
+
+### 2026-09-28 continuation — stage collaboration rebase state at the journal boundary
+
+静态追踪 `applyRemote` → `rebaseQueuedOperations` → `OfflineQueue.rewrite` 发现 **2 个独立的协同状态一致性根因**：①远端提交到达时若本地队列为空，重基函数提前返回但不推进 `rebasedRemoteCount`；之后才创建的本地操作便会把创建前已经应用的远端结构变更再次重基，产生坐标双移。②队列重写期间逐条先更新 `localClassified`，而 `OfflineQueue.rewrite` 先替换内存队列再调用 durable `persist`；后续重基或 journal 写入失败会留下分类缓存、内存队列与已持久化 journal 三方不一致，后续 revision 可能重复变换。
+
+修复把空队列的重基游标推进到已应用远端历史末尾；有待处理操作时，先暂存所有重基分类并构建候选 queue image，先持久化候选 journal，持久化成功后才替换内存 queue、分类缓存和历史游标。新增源码回归覆盖“远端结构提交早于本地编辑”和“journal 写入失败后再收到结构提交”；并修正相邻旧 fixture，使其携带协议要求的 server-derived v9 StructuralPatch。持久化失败仍会让已经应用的远端 operation 通过既有错误/同步恢复路径报告失败；本改动保证本地待处理意图不被半提交或二次重基，不宣称跨内存 workbook、projection 与 storage 的完整原子事务。
+
+六轮静态自审：①无 pending 时游标只越过已完成应用的 remoteMutations；②本地操作在此前远端变更后创建时，后续只重基新提交；③重基中途抛错时分类缓存与 queue 均保留旧态；④journal persist 拒绝时 queue splice 不发生，分类缓存与游标不前移；⑤persist 成功后按顺序提交 queue、分类与游标，且不可重写的 in-flight operation 保持原请求；⑥remote revision 已落地但 journal 写入失败时，既有同步 fail-close 能看到原错，后续恢复前不会将已改写半态冒充成功。初步差异检查无空白错误；回归源码未运行，不报告测试通过。
+
+本轮确认并修复 **2 个真实根因**，仍未达到每轮 30 个独立问题的目标；不把“空队列游标”和“非空队列部分写入”拆成更多调用点计数。未运行测试、typecheck、build、浏览器、Excel 或性能实测。Java 唯一结构规划权、完整可逆 StructuralPatch、跨 participants 的 staged replay 与最终实测仍未完成；PR #345 继续保持 draft。

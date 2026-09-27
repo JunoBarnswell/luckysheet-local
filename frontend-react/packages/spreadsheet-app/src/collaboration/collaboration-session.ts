@@ -499,8 +499,13 @@ export class CollaborationSession {
 
   private rebaseQueuedOperations(revision: number): void {
     const queued = this.offlineQueue.getPending();
-    if (queued.length === 0) return;
+    if (queued.length === 0) {
+      // A future local edit starts from the workbook after this entire remote history.
+      this.rebasedRemoteCount = this.remoteMutations.length;
+      return;
+    }
     const rewritten: OperationEnvelope[] = [];
+    const rebasedClassifications = new Map<string, ReturnType<typeof classifyMutation>[]>();
     for (let index = 0; index < queued.length; index += 1) {
       const queuedOperation = queued[index]!.operation;
       if (!this.offlineQueue.canRewrite(queuedOperation.operationId)) {
@@ -516,7 +521,7 @@ export class CollaborationSession {
         mutation.affectedRanges,
         newRemoteHistory,
       ).rebased);
-      this.localClassified.set(queuedOperation.operationId, rebased);
+      rebasedClassifications.set(queuedOperation.operationId, rebased);
       rewritten.push({
         ...structuredClone(queuedOperation),
         baseRevision: revision + index,
@@ -526,7 +531,10 @@ export class CollaborationSession {
         })),
       });
     }
-    this.rebasedRemoteCount = this.remoteMutations.length;
     this.offlineQueue.rewrite(rewritten);
+    for (const [operationId, mutations] of rebasedClassifications) {
+      this.localClassified.set(operationId, mutations);
+    }
+    this.rebasedRemoteCount = this.remoteMutations.length;
   }
 }
