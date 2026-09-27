@@ -16,7 +16,7 @@ import {
   DataSourceContentQuery,
   type DataBlockReader,
 } from './content-query';
-import { dataSourceCellPatchIdentity, resolveCanonicalDataSourceRegion } from './canonical-region';
+import { dataSourceCellPatchIdentity, resolveCanonicalDataSourceRegion, sameCanonicalDataSourceManifest } from './canonical-region';
 import {
   applyDataRegionMaterialization,
   migrateDataRegionCellPatches,
@@ -77,6 +77,16 @@ function manifest(sourceId: string, rowCount: number, blocks: DataBlockRef[]): D
     revision: 0,
   };
 }
+
+test('canonical data-source equality compares row order and sort criteria directly', () => {
+  const source = manifest(nextSourceId(), 2, []);
+  assert.equal(sameCanonicalDataSourceManifest(source, structuredClone(source)), true);
+  assert.equal(sameCanonicalDataSourceManifest(source, { ...source, rowOrder: [1, 0] }), false);
+  assert.equal(sameCanonicalDataSourceManifest(source, {
+    ...source,
+    sortState: { criteria: [{ fieldId: fields[0]!.id, ascending: true }] },
+  }), false);
+});
 
 test('canonical data-source region rejects a reader with same revision but different metadata', async () => {
   const sourceId = nextSourceId();

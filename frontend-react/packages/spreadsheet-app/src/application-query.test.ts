@@ -156,6 +156,60 @@ describe('WorkbookSession query integration', () => {
     assert.deepEqual(loaded.value?.map((row) => row[0]), ['a', 'b']);
   });
 
+  it('does not persist an identity row order when a sorted block source only changes sort state', async () => {
+    const app = new WorkbookSession();
+    await app.loadQuery(createInlineJsonQuery('already-sorted-query', 'Already sorted', [
+      { Key: 'a', Value: 1 },
+      { Key: 'b', Value: 2 },
+    ]));
+    const sheetId = app.getActiveSheetId();
+    const region = app['runtime'].model.getSheet(sheetId).dataRegions[0]!;
+    const sourceBefore = app['runtime'].model.getDataSource(region.sourceId);
+    assert.equal(sourceBefore.rowOrder, undefined);
+
+    const result = await app.dispatch({
+      commandId: 'data.sort.rows',
+      params: {
+        sheetId,
+        range: region.range,
+        criteria: [{ column: region.range.startColumn, ascending: true }],
+        hasHeader: true,
+      },
+    });
+
+    assert.equal(result.status, 'committed');
+    const sourceAfter = app['runtime'].model.getDataSource(region.sourceId);
+    assert.equal(sourceAfter.rowOrder, undefined);
+    assert.deepEqual(sourceAfter.sortState?.criteria, [{ fieldId: sourceAfter.fields[0]!.id, ascending: true }]);
+  });
+
+  it('keeps the current logical order for equal keys in a block-backed stable sort', async () => {
+    const app = new WorkbookSession();
+    await app.loadQuery(createInlineJsonQuery('stable-sort-query', 'Stable sort', [
+      { Key: 'b', Value: 'first' },
+      { Key: 'a', Value: 'middle' },
+      { Key: 'b', Value: 'last' },
+    ]));
+    const sheetId = app.getActiveSheetId();
+    const region = app['runtime'].model.getSheet(sheetId).dataRegions[0]!;
+
+    const result = await app.dispatch({
+      commandId: 'data.sort.rows',
+      params: {
+        sheetId,
+        range: region.range,
+        criteria: [{ column: region.range.startColumn, ascending: true }],
+        hasHeader: true,
+      },
+    });
+
+    assert.equal(result.status, 'committed');
+    const source = app['runtime'].model.getDataSource(region.sourceId);
+    assert.deepEqual(source.rowOrder, [1, 0, 2]);
+    const loaded = await app['runtime'].dataContent.get(source.id)!.getRows(0, source.rowCount);
+    assert.deepEqual(loaded.value?.map((row) => row[1]), ['middle', 'first', 'last']);
+  });
+
   it('anchors the AutoFilter sort context to the full region after selecting a filter column', async () => {
     const app = new WorkbookSession();
     await app.loadQuery(createInlineJsonQuery('filter-sort-column-query', 'Filter sort column', [

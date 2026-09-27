@@ -82,9 +82,44 @@ export function canonicalDataSourceManifestIdentity(manifest: DataSourceManifest
   };
 }
 
-function sameManifest(left: DataSourceManifest, right: DataSourceManifest): boolean {
-  return JSON.stringify(canonicalDataSourceManifestIdentity(left))
-    === JSON.stringify(canonicalDataSourceManifestIdentity(right));
+export function sameCanonicalDataSourceManifest(left: DataSourceManifest, right: DataSourceManifest): boolean {
+  if (left.schema !== right.schema || left.version !== right.version || left.id !== right.id
+    || left.name !== right.name || left.kind !== right.kind || left.sourceSheetId !== right.sourceSheetId
+    || left.rowCount !== right.rowCount || left.blockRowCount !== right.blockRowCount || left.revision !== right.revision) {
+    return false;
+  }
+  if (left.sourceRange === undefined ? right.sourceRange !== undefined
+    : right.sourceRange === undefined || !sameRange(left.sourceRange, right.sourceRange)) return false;
+  if (left.fields.length !== right.fields.length || left.blocks.length !== right.blocks.length) return false;
+  for (let index = 0; index < left.fields.length; index += 1) {
+    const a = left.fields[index]!;
+    const b = right.fields[index]!;
+    if (a.id !== b.id || a.name !== b.name || a.ordinal !== b.ordinal || a.type !== b.type) return false;
+  }
+  for (let index = 0; index < left.blocks.length; index += 1) {
+    const a = left.blocks[index]!;
+    const b = right.blocks[index]!;
+    if (a.id !== b.id || a.dataSourceId !== b.dataSourceId || a.startRow !== b.startRow
+      || a.rowCount !== b.rowCount || a.storageKey !== b.storageKey || a.checksum !== b.checksum
+      || a.byteLength !== b.byteLength || a.encoding !== b.encoding || a.revision !== b.revision) return false;
+  }
+  if (left.rowOrder === undefined ? right.rowOrder !== undefined
+    : right.rowOrder === undefined || left.rowOrder.length !== right.rowOrder.length) return false;
+  if (left.rowOrder && right.rowOrder) {
+    for (let index = 0; index < left.rowOrder.length; index += 1) {
+      if (left.rowOrder[index] !== right.rowOrder[index]) return false;
+    }
+  }
+  if (left.sortState === undefined ? right.sortState !== undefined
+    : right.sortState === undefined || left.sortState.criteria.length !== right.sortState.criteria.length) return false;
+  if (left.sortState && right.sortState) {
+    for (let index = 0; index < left.sortState.criteria.length; index += 1) {
+      const a = left.sortState.criteria[index]!;
+      const b = right.sortState.criteria[index]!;
+      if (a.fieldId !== b.fieldId || a.ascending !== b.ascending) return false;
+    }
+  }
+  return true;
 }
 
 /**
@@ -116,7 +151,7 @@ export function resolveCanonicalDataSourceRegion(
     || bodyRows !== manifest.rowCount || width !== manifest.fields.length) {
     throw new Error(`Data source ${sourceId} has inconsistent manifest and sheet-region metadata`);
   }
-  if (query !== undefined && !sameManifest(manifest, query.manifest)) {
+  if (query !== undefined && !sameCanonicalDataSourceManifest(manifest, query.manifest)) {
     throw new Error(`Data source ${sourceId} content reader does not match its canonical manifest`);
   }
   return { manifest, sheet, region };

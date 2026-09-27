@@ -1722,3 +1722,13 @@ CI 随后暴露 Java 侧另一个阻断该拒绝路径的解析缺陷：3D 预�
 **修复方案**：在同一 PR 中完成 StructuralPatch v6 的 typed metadata/reference owner facts；逐 owner-kind 定义稳定 key 与精确状态（含缺失/存在），首批覆盖 axis insert/delete、cell shift、move-range 和 row permutation 会实际改动的 chart/pivot/sparkline/drawing、filter/layout、anchor 与其它持久坐标所有者。Java 各 mapper 在首次写入前记录 owner before-state、完成映射后生成 after-state；同一 patch 驱动 Java replay/inverse、TS ACK/history/remote application 和影响范围。chart series、pivot source 等没有稳定子 owner ID 的 canonical 输入必须在结构写入前 fail-close，或在显式迁移中赋予持久 ID，不能退回数组位置猜测。v6 migration 必须校验 checkpoint checksum 与连续 revision，重放旧 intent、核验 v5 owner facts，再原子重写 operation log、pending outbox 与 canonical checkpoints；任一历史无法重放就返回 workbook/revision 并停止，不伪造 owner facts。
 
 本轮没有把同一缺失 patch 根因按图表字段、owner 类型或 mutation 数量凑成 30 项；因此**尚未达到用户要求的每轮至少 30 个真实问题**，不能宣称该批审查或整改完成。六个视角已确认的是一个跨层架构缺口，而不是六个不同缺陷。当前仅完成源码静态核查与方案收敛，未运行测试、构建、浏览器或 Excel；下一步实施 v6 owner-complete patch/migration，再做静态自审和最终实测。
+
+### 2026-09-27 six-view review — block-backed sort memory amplification
+
+静态追踪 `dispatchDataRegionSort` → `prepareDataRegionSort` → `dataSource.update` 时，确认并修复 6 个随数据行数线性放大的临时/持久内存成本：`getDataSource` 已返回隔离副本但调用方再次深拷贝；排序额外保留 `Uint32Array` 位置表和整份排序副本；隐式 identity 顺序即使无移动也会分配；只改 sort state 也会保存整份 identity `rowOrder`；异步加载前后的精确 manifest 比较通过复制范围身份数组和 JSON 字符串实现。
+
+修复后，排序在私有 manifest 副本上比较相邻逻辑行，只在检测到逆序时才生成 identity 映射并原地稳定排序；相等 key 保持当前逻辑行顺序。manifest 一致性改为逐字段、逐 block、逐 rowOrder 和 sort criteria 精确比较，不产生行数级身份副本或字符串。多关键字 criteria 的优先级、标题行边界和排序比较器均未改变；Excel 多层排序仍按用户指定的关键字顺序应用（[Microsoft Excel sort documentation](https://support.microsoft.com/en-US/Excel/sort-data-in-a-range-or-table-in-excel)）。
+
+六个静态复核视角：① `WorkbookModel.getDataSource` 的隔离副本所有权；② ES2022 稳定排序对相等键次序的保持；③ 相邻逆序检测与多关键字比较的同一 comparator；④ 已排序和空数据情况下不物化 identity 数组；⑤ state-only 更新保留已有 rowOrder 或不新建 identity 映射；⑥ 缺块/异步期间 manifest 被改写时仍按完整字段 fail-close。新增源码回归覆盖 state-only、稳定 tie 顺序、rowOrder 与 sortState 的 manifest 差异；按用户当前阶段要求未运行测试、构建、浏览器或 Excel。
+
+尚未修复的相邻架构问题：精确虚拟排序仍调用 `ensureAllBlocksLoaded` 并在前端计算 rowOrder；普通 `rows.permuted` 仍把客户端 `sourceRows` 当作提交事实，Java 只重放。当前优化不宣称解决整块加载、Java 单一 planner 或大数据实测。本轮确认和修复 6 个独立线性内存成本，**仍未达到每轮至少 30 个真实问题的要求**；不把这些成本重复包装成结构完整性缺陷计数。

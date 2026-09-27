@@ -216,8 +216,8 @@ import {
 } from './features/pivot-controls';
 import {
   applyCellPatch,
-  canonicalDataSourceManifestIdentity,
   dataSourceCellPatchIdentity,
+  sameCanonicalDataSourceManifest,
   prepareDataRegionMaterialization,
   computeColumnarBlockChecksum,
   createWorkbookCellResolver,
@@ -1638,14 +1638,14 @@ export class WorkbookSession {
 
   private assertDataSourceOperationCurrent(
     sourceId: string,
-    manifestIdentity: string,
+    manifestAtStart: DataSourceManifest,
     query: object,
     region: SheetDataRegion,
   ): void {
     const current = this.runtime.model.getDataSource(sourceId);
     const currentRegion = this.runtime.model.getSheet(region.range.sheetId).dataRegions.find((candidate) => candidate.id === region.id);
     if (this.runtime.dataContent.get(sourceId) !== query
-      || JSON.stringify(canonicalDataSourceManifestIdentity(current)) !== manifestIdentity
+      || !sameCanonicalDataSourceManifest(current, manifestAtStart)
       || !currentRegion
       || currentRegion.sourceId !== region.sourceId
       || currentRegion.revision !== region.revision
@@ -1674,7 +1674,7 @@ export class WorkbookSession {
         const manifest = this.runtime.model.getDataSource(region.sourceId);
         const query = this.runtime.dataContent.get(manifest.id);
         if (!query) throw new Error(`Data source ${manifest.id} is unavailable; cannot filter block-backed data`);
-        return { region: structuredClone(region), manifest, query, identity: JSON.stringify(canonicalDataSourceManifestIdentity(manifest)) };
+        return { region: structuredClone(region), manifest, query };
       });
       const sourceLoads = [...new Map(snapshots.map((snapshot) => [snapshot.manifest.id, snapshot])).values()];
       await Promise.all(sourceLoads.map(async ({ manifest, query }) => {
@@ -1684,7 +1684,7 @@ export class WorkbookSession {
         }
       }));
       for (const snapshot of snapshots) {
-        this.assertDataSourceOperationCurrent(snapshot.manifest.id, snapshot.identity, snapshot.query, snapshot.region);
+        this.assertDataSourceOperationCurrent(snapshot.manifest.id, snapshot.manifest, snapshot.query, snapshot.region);
       }
       const result = this.runCommand(commandId, params);
       return { status: 'committed', result };
@@ -1830,7 +1830,9 @@ export class WorkbookSession {
       throw new Error(`Sort range must cover the complete data region ${region.id}`);
     }
 
-    const manifest = structuredClone(this.runtime.model.getDataSource(region.sourceId));
+    // getDataSource already returns an isolated clone. Cloning it again doubles
+    // the rowOrder allocation for large, virtually-sorted sources.
+    const manifest = this.runtime.model.getDataSource(region.sourceId);
     let criteria: Array<{ column: number; ascending: boolean }>;
     if (commandId === 'data.sort.quick') {
       if (!Number.isSafeInteger(input.sortColumn)
@@ -1868,14 +1870,13 @@ export class WorkbookSession {
     if (dataSourceCellPatchIdentity(canonical).length > 0) {
       throw new Error(`Data source ${manifest.id} cannot be virtually sorted while value or formula CellPatch overlays exist`);
     }
-    const manifestIdentity = JSON.stringify(canonicalDataSourceManifestIdentity(manifest));
     const loaded = await query.ensureAllBlocksLoaded();
     if (loaded.availability !== 'ready') {
       throw new Error(loaded.error ?? `Data source ${manifest.id} could not be fully loaded for sorting`);
     }
-    this.assertDataSourceOperationCurrent(manifest.id, manifestIdentity, query, region);
-    const currentOrder = manifest.rowOrder ?? Array.from({ length: manifest.rowCount }, (_unused, index) => index);
-    if (currentOrder.length !== manifest.rowCount) {
+    this.assertDataSourceOperationCurrent(manifest.id, manifest, query, region);
+    const currentOrder = manifest.rowOrder;
+    if (currentOrder !== undefined && currentOrder.length !== manifest.rowCount) {
       throw new Error(`Data source ${manifest.id} rowOrder does not match rowCount`);
     }
     const width = manifest.fields.length;
@@ -1888,10 +1889,7 @@ export class WorkbookSession {
       criterionColumns.add(criterion.column);
     }
 
-    const previousPosition = new Uint32Array(manifest.rowCount);
-    for (let logicalRow = 0; logicalRow < currentOrder.length; logicalRow += 1) previousPosition[currentOrder[logicalRow]!] = logicalRow;
-    const sortedOrder = [...currentOrder];
-    sortedOrder.sort((leftPhysicalRow, rightPhysicalRow) => {
+    const compareRows = (leftPhysicalRow: number, rightPhysicalRow: number): number => {
       const leftRow = query.getLoadedPhysicalRow(leftPhysicalRow);
       const rightRow = query.getLoadedPhysicalRow(rightPhysicalRow);
       if (!leftRow || !rightRow) throw new Error(`Data source ${manifest.id} rowOrder references a missing row`);
@@ -1900,20 +1898,35 @@ export class WorkbookSession {
         const comparison = compareWorkbookValues(leftRow[column] ?? null, rightRow[column] ?? null);
         if (comparison !== 0) return criterion.ascending ? comparison : -comparison;
       }
-      return previousPosition[leftPhysicalRow]! - previousPosition[rightPhysicalRow]!;
-    });
+      return 0;
+    };
+    // ES2022 Array#sort is stable, so equal keys retain the current logical
+    // order without an additional rowCount-sized position table. An implicit
+    // identity order is generated only when rows actually need to move.
+    let orderChanged = false;
+    const physicalRowAt = (logicalRow: number): number => currentOrder?.[logicalRow] ?? logicalRow;
+    for (let logicalRow = 1; logicalRow < manifest.rowCount; logicalRow += 1) {
+      if (compareRows(physicalRowAt(logicalRow - 1), physicalRowAt(logicalRow)) > 0) {
+        orderChanged = true;
+        break;
+      }
+    }
+    let sortedOrder: number[] | undefined;
+    if (orderChanged) {
+      sortedOrder = currentOrder ?? Array.from({ length: manifest.rowCount }, (_unused, index) => index);
+      sortedOrder.sort(compareRows);
+    }
     const sortState = {
       criteria: criteria.map((criterion) => ({
         fieldId: manifest.fields[criterion.column - region.range.startColumn]!.id,
         ascending: criterion.ascending,
       })),
     };
-    const orderChanged = sortedOrder.some((physicalRow, index) => physicalRow !== currentOrder[index]);
     const stateChanged = JSON.stringify(sortState) !== JSON.stringify(manifest.sortState);
     if (!orderChanged && !stateChanged) return null;
     return {
       ...manifest,
-      rowOrder: sortedOrder,
+      ...(sortedOrder === undefined ? {} : { rowOrder: sortedOrder }),
       sortState,
     };
   }
