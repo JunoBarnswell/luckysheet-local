@@ -219,7 +219,7 @@ describe('WorkbookSession collaboration integration', () => {
     try {
       const sheetId = runtime.model.primarySheetId;
       const params = { sheetId, at: 0, count: 1 };
-      const affectedRanges = runtime.commands.registry.getMutationMetadata('rows.inserted').affectedRanges.resolve(params);
+      const affectedRanges = [...runtime.commands.registry.getMutationMetadata('rows.inserted').affectedRanges.resolve(params)];
       const mutation = { id: 'rows.inserted', unitId: runtime.model.unitId, sheetId, params, affectedRanges };
       const collaboration = new CollaborationSession(runtime.commands, { clientSessionId: 'snapshot-recovery-session' });
       runtime.collaboration = collaboration;
