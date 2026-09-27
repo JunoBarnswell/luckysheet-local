@@ -358,6 +358,66 @@ describe('WorkbookSession formula integration', () => {
     ]);
   });
 
+  it('recalculates spills when sheet-table and merge blockers change geometry', async () => {
+    const app = createRemoteReadySessionFixture();
+    const sheetId = app.getActiveSheetId();
+    const sheet = app['runtime'].model.getSheet(sheetId);
+    const table = {
+      id: 'spill-blocker',
+      sheetId,
+      name: 'SpillBlocker',
+      range: { sheetId, startRow: 0, endRow: 0, startColumn: 1, endColumn: 1 },
+      hasHeaderRow: false,
+      hasTotalRow: false,
+      showBandedRows: false,
+      showBandedColumns: false,
+      showFirstColumn: false,
+      showLastColumn: false,
+      showFilterButton: false,
+      autoExpand: 'none' as const,
+      columns: [{ id: 'value', name: 'Value' }],
+    };
+
+    try {
+      app.runCommand('sheet.cell.set', { sheetId, row: 0, column: 0, value: { formula: '=SEQUENCE(1,3)', value: null } });
+      await app.waitForFormulaCalculation();
+      assert.equal(sheet.spillRanges[0]?.state, 'ok');
+
+      app.runCommand('sheetTable.add', table);
+      await app.waitForFormulaCalculation();
+      assert.equal(sheet.spillRanges[0]?.state, 'blocked');
+
+      app.runCommand('sheetTable.update', {
+        ...table,
+        range: { ...table.range, startColumn: 3, endColumn: 3 },
+      });
+      await app.waitForFormulaCalculation();
+      assert.equal(sheet.spillRanges[0]?.state, 'ok');
+
+      app.runCommand('sheetTable.update', {
+        ...table,
+        range: { ...table.range, startColumn: 2, endColumn: 2 },
+      });
+      await app.waitForFormulaCalculation();
+      assert.equal(sheet.spillRanges[0]?.state, 'blocked');
+
+      app.runCommand('sheetTable.remove', { sheetId, tableId: table.id });
+      await app.waitForFormulaCalculation();
+      assert.equal(sheet.spillRanges[0]?.state, 'ok');
+
+      const mergeRange = { sheetId, startRow: 0, endRow: 0, startColumn: 1, endColumn: 2 };
+      app.runCommand('sheet.merge.set', { sheetId, range: mergeRange });
+      await app.waitForFormulaCalculation();
+      assert.equal(sheet.spillRanges[0]?.state, 'blocked');
+
+      app.runCommand('sheet.merge.remove', { sheetId, range: mergeRange });
+      await app.waitForFormulaCalculation();
+      assert.equal(sheet.spillRanges[0]?.state, 'ok');
+    } finally {
+      app.dispose();
+    }
+  });
+
   it('synchronizes formulas after range paste and cell insert shifts', async () => {
     const app = createRemoteReadySessionFixture();
     const sheetId = app.getActiveSheetId();

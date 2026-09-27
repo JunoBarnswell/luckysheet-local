@@ -84,6 +84,19 @@ test('FormulaEngine tracks spill ranges and child values', () => {
   assert.equal(engine.getCellValue({ sheetId: 'Sheet1', row: 1, column: 1 }), 4);
 });
 
+test('blocker geometry invalidation queues only intersecting spill anchors', () => {
+  const engine = new FormulaEngine({ defaultSheetId: 'Sheet1' });
+  engine.setSpillEnvironment('Sheet1', { rowCount: 20, columnCount: 10, isOccupied: () => false });
+  engine.setFormula('A1', '=SEQUENCE(1,3)');
+  engine.setFormula('A5', '=SEQUENCE(1,3)');
+  engine.setRecalculationMode('manual');
+
+  const roots = engine.notifySpillBlockersChanged('Sheet1', [{ startRow: 0, endRow: 0, startColumn: 1, endColumn: 1 }]);
+
+  assert.deepEqual(roots, [{ sheetId: 'Sheet1', row: 0, column: 0 }]);
+  assert.deepEqual(engine.getPendingRecalculationRoots(), roots);
+});
+
 test('FormulaEngine returns #SPILL! when spill area is blocked', () => {
   const engine = new FormulaEngine({ defaultSheetId: 'Sheet1' });
   engine.setValue('B1', 'blocker');

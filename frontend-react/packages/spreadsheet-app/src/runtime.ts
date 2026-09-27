@@ -964,8 +964,35 @@ export function attachCoreListeners(runtime: SpreadsheetRuntime): void {
       } else if (calculationContextEffect?.action === 'sync-tables') {
         syncWorkbookSheetTables(runtime.formula, runtime.model, false);
       }
+      // Merge/table geometry is not a cell-input delta: refresh its spill snapshot and queue only overlapping spill anchors.
+      const spillBlockerGeometryRanges = mutation.id === 'merge.set' || mutation.id === 'merge.remove'
+        || mutation.id === 'sheetTable.add' || mutation.id === 'sheetTable.remove'
+        ? mutation.affectedRanges.filter((range) => range.sheetId === mutation.sheetId)
+        : mutation.id === 'sheetTable.update'
+          ? (structuralEffect?.rangeOwnerDeltas ?? [])
+            .filter((delta) => delta.ownerKind === 'sheet-table' && delta.sheetId === mutation.sheetId)
+            .flatMap((delta) => [delta.before, delta.after])
+          : [];
+      const spillBlockerGeometryChanged = spillBlockerGeometryRanges.length > 0;
+      if (spillBlockerGeometryChanged) {
+        if (!structuralEffect && !rebuildsCalculationContext) {
+          configureFormulaSpillEnvironment(runtime.formula, runtime.model.getSheet(mutation.sheetId));
+        }
+        runtime.formula.notifySpillBlockersChanged(mutation.sheetId, spillBlockerGeometryRanges.map((range) => ({
+          startRow: range.startRow,
+          endRow: range.endRow,
+          startColumn: range.startColumn,
+          endColumn: range.endColumn,
+        })));
+      }
       if (changesVisibilityProjection && !rebuildsCalculationContext && !structuralEffect) {
         runtime.formula.notifyVisibilityChanged();
+      }
+      if (spillBlockerGeometryChanged) {
+        structuralRoots = [...new Map([
+          ...(structuralRoots ?? []),
+          ...runtime.formula.getPendingRecalculationRoots(),
+        ].map((address) => [typeof address === 'string' ? address : `${address.sheetId}:${address.row}:${address.column}`, address])).values()];
       }
       // CommandRuntime invokes listeners after the mutation handler.  Throwing
       // here still causes the command transaction to run its inverse, so a
@@ -994,7 +1021,7 @@ export function attachCoreListeners(runtime: SpreadsheetRuntime): void {
         || mutation.id === 'pivot.drilldown.add' || mutation.id === 'pivot.drilldown.remove') {
         initializeDataContent(runtime);
       }
-      if (FORMULA_SYNC_MUTATIONS.has(mutation.id) || calculationContextEffect !== undefined) {
+      if (FORMULA_SYNC_MUTATIONS.has(mutation.id) || calculationContextEffect !== undefined || spillBlockerGeometryChanged) {
         const isDirectCellWrite = DIRECT_CELL_WRITE_MUTATIONS.has(mutation.id);
         const roots = rebuildsCalculationContext
           ? undefined

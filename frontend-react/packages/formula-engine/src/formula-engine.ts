@@ -573,6 +573,26 @@ export class FormulaEngine {
     this.markCalculationStateChanged();
   }
 
+  /** Queue existing spill anchors whose candidate ranges intersect changed blocker geometry. */
+  notifySpillBlockersChanged(sheetId: string, ranges: readonly SpillBlockerRange[]): readonly CellAddress[] {
+    if (ranges.length === 0) return [];
+    const affected = new Map<string, CellAddress>();
+    for (const spill of this.spills.values()) {
+      if (spill.sheetId !== sheetId || !ranges.some((range) =>
+        spill.range.startRow <= range.endRow && range.startRow <= spill.range.endRow
+        && spill.range.startColumn <= range.endColumn && range.startColumn <= spill.range.endColumn)) continue;
+      const address = { sheetId, row: spill.anchor.row, column: spill.anchor.column };
+      const key = cellAddressKey(address);
+      if (this.cells.get(key)?.formula === undefined) continue;
+      affected.set(key, address);
+    }
+    if (affected.size === 0) return [];
+    for (const key of affected.keys()) this.pendingRecalculationRoots.add(key);
+    this.calculationContextGeneration += 1;
+    this.markCalculationStateChanged();
+    return [...affected.values()].sort(compareCellAddresses);
+  }
+
   /**
    * Creates the actual browser Worker transport when one is available. Node
    * and other non-browser hosts retain the explicit inline implementation.
