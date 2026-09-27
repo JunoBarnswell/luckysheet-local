@@ -1922,3 +1922,11 @@ head `6d23407f` 的自动 Maven 门禁报告 12 个测试条目（4 failures、8
 ### 2026-09-27 CI follow-up on v9 patch tests
 
 `3b1c79df` 两个自动 job 均通过前端构建和 Java 编译，后端 290 项测试中仅剩 2 个 error：一个是 Java text block 将 DV 公式中的引号变成无效 JSON，现改为不需嵌套引号的合法范围公式；另一个是新回归把 formula-rule inverse patch 直接应用在尚未执行逆向结构 mutation 的范围状态上，违反现有 owner-patch 应用顺序。现将该断言缩至 v9 anchor add/remove 本身，验证缺失侧状态能被逆向删除，不改变 formula-rule patch 的原有前置条件。日志来自 GitHub CI；未在本地运行测试或构建，修订尚待新 CI 结果。
+
+### 2026-09-27 sort key projection follow-up
+
+沿排序 → 公式结果解析 → 行置换链静态复核确认两个独立性能根因：比较器每次比较都重新调用公式/单元格 resolver，使 R 行、K 个排序键的解析调用随比较次数增长至 O(K·R·log R)；`resolveSortCellValue` 又在询问计算 resolver 前调用 `CellMatrix.get`，所以即使存在权威计算结果，也会读取/逐格物化延迟单元格。现改为按低优先级到高优先级进行稳定排序，每个 key vector 逐行解析一次并复用；仅保留一个 O(R) key vector。先读取 resolver；若未提供结果，再用 `getWithoutHydration` 读取持久单元格，保留未解析公式拒绝和标量类型校验。
+
+新增源码回归覆盖 resolver 覆盖持久值、deferred read 不推进 CellMatrix revision、两键升降序及每行每键只解析一次。六轮静态自审分别核对：①稳定多轮排序与字典序等价；②降序只反转非零比较结果，原始顺序继续承担最终稳定 tie-break；③公式 resolver 的 `undefined` 才回退到持久状态，合法 `null`、零和错误值保持既有语义；④延迟读取路径不触发单格 materialization；⑤暂存内存为行序与单一键向量 O(R)，不随 K 形成矩阵；⑥`sourceRows`、逆排列/history/remote mutation wire shape 未变。
+
+本 follow-up 只修复上述两个性能根因，未达到“每轮至少 30 个真实问题”的广域审查规模，不将一次比较中的重复调用拆分计数。最重要的架构缺口仍在：客户端 `data.sort.rows` 仍计算并发送 `sourceRows`，Java 只校验排列和执行；`StructuralPatch v9` 仍不是 cell/metadata owner-complete patch，remote replay 仍可重算 intent。只静态审查并新增测试源码；没有运行本地测试、typecheck、build、浏览器、Excel 或性能实测。

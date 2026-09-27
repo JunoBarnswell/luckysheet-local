@@ -1723,9 +1723,9 @@ export function resolveSortCellValue(
   column: number,
   resolver?: (sheet: WorksheetModel, row: number, column: number) => unknown,
 ): SortCellValue {
-  const cell = sheet.cells.get(row, column);
   const resolved = resolver?.(sheet, row, column);
   if (resolved !== undefined) return normalizeSortCellValue(resolved);
+  const cell = sheet.cells.getWithoutHydration(row, column);
   if (cell?.formula !== undefined && cell.formulaValue === undefined) {
     throw new Error(`Sort formula result unavailable at ${sheet.id}!${row}:${column}`);
   }
@@ -1750,16 +1750,19 @@ function sortedSourceRows(
   }
   if (startRow > range.endRow) return [];
   const rows = Array.from({ length: range.endRow - startRow + 1 }, (_, offset) => startRow + offset);
-  rows.sort((leftRow, rightRow) => {
-    for (const criterion of params.criteria) {
-      const result = compareSortValues(
-        resolveSortCellValue(sheet, leftRow, criterion.column, resolver),
-        resolveSortCellValue(sheet, rightRow, criterion.column, resolver),
-      );
-      if (result !== 0) return criterion.ascending ? result : -result;
+  // Stable least-significant-key-first passes preserve multi-key ordering while
+  // resolving each row/key once. Keep only one key vector live at a time.
+  const keys = new Array<SortCellValue>(rows.length);
+  for (let criterionIndex = params.criteria.length - 1; criterionIndex >= 0; criterionIndex -= 1) {
+    const criterion = params.criteria[criterionIndex]!;
+    for (let offset = 0; offset < rows.length; offset += 1) {
+      keys[offset] = resolveSortCellValue(sheet, startRow + offset, criterion.column, resolver);
     }
-    return leftRow - rightRow;
-  });
+    rows.sort((leftRow, rightRow) => {
+      const result = compareSortValues(keys[leftRow - startRow]!, keys[rightRow - startRow]!);
+      return criterion.ascending ? result : -result;
+    });
+  }
   return rows;
 }
 

@@ -111,6 +111,52 @@ test('sort keys retain canonical typed formula results and reject unresolved val
   );
 });
 
+test('sort key reads do not materialize deferred cells or inspect storage when a calculation value is available', () => {
+  const { workbook } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.deferJSON({ '2': { '3': { value: 'stored' } } });
+  const revision = sheet.cells.revision;
+
+  assert.equal(resolveSortCellValue(sheet, 2, 3), 'stored');
+  assert.equal(sheet.cells.revision, revision);
+  assert.equal(sheet.cells.isHydrated, false);
+  assert.equal(resolveSortCellValue(sheet, 2, 3, () => 'calculated'), 'calculated');
+  assert.equal(sheet.cells.revision, revision);
+});
+
+test('multi-key sort resolves each key once per row and retains stable lexicographic order', () => {
+  const { workbook, commands } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.deferJSON({
+    '0': { '0': { value: 'Primary' }, '1': { value: 'Secondary' } },
+    '1': { '0': { value: 2 }, '1': { value: 1 } },
+    '2': { '0': { value: 1 }, '1': { value: 3 } },
+    '3': { '0': { value: 1 }, '1': { value: 2 } },
+  });
+  const resolvedValues = new Map([
+    ['1:0', 2], ['1:1', 1],
+    ['2:0', 1], ['2:1', 3],
+    ['3:0', 1], ['3:1', 2],
+  ]);
+  const calls = new Map<number, number>();
+  commands.setCellValueResolver((_currentSheet, row, column) => {
+    calls.set(column, (calls.get(column) ?? 0) + 1);
+    return resolvedValues.get(`${row}:${column}`);
+  });
+
+  commands.execute('data.sort.rows', {
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 3, startColumn: 0, endColumn: 1 },
+    criteria: [{ column: 0, ascending: true }, { column: 1, ascending: false }],
+    hasHeader: true,
+  });
+
+  const sortEntry = commands.getUndoEntries().at(-1)!;
+  assert.deepEqual((sortEntry.redo[0]?.params as { sourceRows: number[] }).sourceRows, [2, 3, 1]);
+  assert.deepEqual([...calls.entries()].sort(([left], [right]) => left - right), [[0, 3], [1, 3]]);
+  assert.equal(sheet.cells.isHydrated, false);
+});
+
 test('rows.permuted rejects a tampered duplicate source order before changing cells', () => {
   const { workbook, commands } = runtime();
   const sheet = workbook.getSheet(workbook.primarySheetId);
