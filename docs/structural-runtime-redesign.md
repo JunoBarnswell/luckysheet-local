@@ -2099,3 +2099,14 @@ history AutoFilter 专用变换现要求主 range、sortState.ref 及每个 cond
 七轮静态复核：①错误类型仅匹配 `MutationRecoveryRequiredError`，普通拒绝不触发重连；②`runCommand` 仍向调用方保留原异常；③Undo/Redo 捕获恢复型异常后不执行“成功”UI收尾；④`undoToHistoryIndex` 中止后续历史步骤并立即退出；⑤在线 socket 的 resynchronization 会关闭连接并走现有 snapshot hydration，新 runtime 清除 fail-stop；⑥同一 runtime 锁会重复抛出同一错误对象，`WeakSet` 让后续命令不重复关闭 socket/通知，hydrate 后的新 runtime 可处理新的恢复错误；⑦离线 session 不伪称能服务端恢复，而提示重新加载，恢复提示只调用 `notify`，不触发 `refresh/syncPersistenceMeta` 的整本快照序列化。
 
 本轮确认并修复 **1 个真实恢复路由问题**，仍未达到用户希望的每轮 30 个独立问题；不把四个入口重复计数。只进行静态源码复核和必要 diff 检查，未运行测试、构建、typecheck、浏览器、Excel 或性能实测；完整 staged replay transaction、Java 唯一规划权与最终验收仍未完成。
+
+
+### 2026-09-28 continuation — structural drawing payload copy-on-write
+
+静态性能审查确认一个真实分配热点：每次轴结构预检都会为目标工作表及所有其他工作表深拷贝完整 `drawingPayloads` map；随后 metadata 等价判断又将整张 map JSON 序列化，即使其中图表/绘图都不引用被编辑的工作表。该成本随所有工作表的绘图 payload 总量增长，并制造与变更无关的临时对象峰值。
+
+现在预检阶段共享只读 payload；只有递归发现 payload 含目标 `sheetId` 时，才在变换前克隆该 payload，之后照常执行既有 range/cell-link 变换。map 比较加入 identity 快路径并逐项保留原 key 顺序，未变更 payload 不再 JSON 序列化。递归扫描覆盖对象、数组、Map、Set，并用 visited set 防止循环引用；未知 payload 没有匹配引用时保持原始内容与身份。查找仍需扫描现有 payload 集合，故当前只消除无关克隆/序列化，尚未实现 owner index 的 affected-only 查询或基准证明。
+
+六轮自审：①预检 mutation 只写入 staged map，原 payload 不会被部分变换；②相关目标 payload 仍执行完整既有移动/边界拒绝逻辑；③不相关 payload 保持同一对象身份，不受一个 sheet 的结构编辑影响；④Map key 顺序仍纳入比较，避免改变原来的序列化次序契约；⑤未知嵌套引用字段只会触发保守克隆，不会被删除或改写；⑥新增回归源码覆盖成功移动与删除冲突拒绝，并核对两条路径都不会修改原始 payload。
+
+本轮确认并修复 **1 个独立性能根因**，未达到每轮至少 30 个独立问题目标，不将多个 payload 消费者重复计数。仅静态审查；新增的回归测试源码未执行，未运行测试、typecheck、build、浏览器、Excel 或 benchmark。Java 权威规划、owner index、完整 patch 和最终实测仍未完成。

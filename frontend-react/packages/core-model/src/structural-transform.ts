@@ -1141,7 +1141,7 @@ function cloneStructuralMetadataSheet(sheet: WorksheetModel): WorksheetModel {
   staged.dataValidations.push(...structuredClone(sheet.dataValidations));
   staged.sheetTables.push(...structuredClone(sheet.sheetTables));
   staged.drawings.push(...structuredClone(sheet.drawings));
-  for (const [key, payload] of sheet.drawingPayloads) staged.drawingPayloads.set(key, structuredClone(payload));
+  for (const [key, payload] of sheet.drawingPayloads) staged.drawingPayloads.set(key, payload);
   for (const [key, hyperlink] of sheet.hyperlinks) staged.hyperlinks.set(key, structuredClone(hyperlink));
   staged.spillRanges.push(...structuredClone(sheet.spillRanges));
   staged.protectionRules.push(...structuredClone(sheet.protectionRules));
@@ -1168,7 +1168,7 @@ function cloneStructuralReferenceOwnerSheet(sheet: WorksheetModel): WorksheetMod
   staged.sparklines.push(...structuredClone(sheet.sparklines));
   staged.conditionalFormats.push(...structuredClone(sheet.conditionalFormats));
   staged.dataValidations.push(...structuredClone(sheet.dataValidations));
-  for (const [key, payload] of sheet.drawingPayloads) staged.drawingPayloads.set(key, structuredClone(payload));
+  for (const [key, payload] of sheet.drawingPayloads) staged.drawingPayloads.set(key, payload);
   for (const [key, hyperlink] of sheet.hyperlinks) staged.hyperlinks.set(key, structuredClone(hyperlink));
   return staged;
 }
@@ -1427,6 +1427,19 @@ function applyStructuralMetadataPlan(workbook: WorkbookModel, targetSheetId: str
 
 /** Compare canonical metadata during planning only, never after live cells move. */
 function sameStructuralMetadata(before: unknown, after: unknown): boolean {
+  if (before === after) return true;
+  if (before instanceof Map && after instanceof Map) {
+    if (before.size !== after.size) return false;
+    const left = before.entries();
+    const right = after.entries();
+    while (true) {
+      const leftEntry = left.next();
+      const rightEntry = right.next();
+      if (leftEntry.done || rightEntry.done) return leftEntry.done === rightEntry.done;
+      if (leftEntry.value[0] !== rightEntry.value[0]
+        || !sameStructuralMetadata(leftEntry.value[1], rightEntry.value[1])) return false;
+    }
+  }
   const snapshotValue = (value: unknown): unknown => value instanceof Map || value instanceof Set ? [...value] : value;
   try {
     return JSON.stringify(snapshotValue(before)) === JSON.stringify(snapshotValue(after));
@@ -2231,7 +2244,10 @@ function shiftDrawingPayloadReferences(
   direction: 1 | -1,
   targetSheetId: string = sheet.id,
 ): void {
-  for (const [payloadId, payload] of sheet.drawingPayloads) {
+  for (const [payloadId, originalPayload] of sheet.drawingPayloads) {
+    if (!hasStructuralSheetReference(originalPayload, targetSheetId)) continue;
+    const payload = structuredClone(originalPayload);
+    sheet.drawingPayloads.set(payloadId, payload);
     if (payload.kind === 'camera' || payload.kind === 'screenshot') {
       if (payload.sourceRange.sheetId === targetSheetId
         && !shiftRangeRef(payload.sourceRange, axis, at, count, direction)) {
@@ -2270,6 +2286,28 @@ function shiftDrawingPayloadReferences(
       }
     }
   }
+}
+
+/** Only reference-bearing drawing payloads need a staged copy for this axis. */
+function hasStructuralSheetReference(value: unknown, targetSheetId: string): boolean {
+  const pending: unknown[] = [value];
+  const visited = new Set<object>();
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (!current || typeof current !== 'object' || visited.has(current)) continue;
+    visited.add(current);
+    if (current instanceof Map) {
+      for (const [key, entry] of current) pending.push(key, entry);
+      continue;
+    }
+    if (current instanceof Set) {
+      for (const entry of current) pending.push(entry);
+      continue;
+    }
+    if (!Array.isArray(current) && 'sheetId' in current && current.sheetId === targetSheetId) return true;
+    for (const entry of Object.values(current)) pending.push(entry);
+  }
+  return false;
 }
 
 function shiftDrawings(sheet: WorksheetModel, axis: 'row' | 'column', at: number, count: number, direction: 1 | -1): void {

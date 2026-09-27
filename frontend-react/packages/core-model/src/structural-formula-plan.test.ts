@@ -224,4 +224,76 @@ describe('prepared structural formula writes', () => {
     assert.deepEqual(result.formulaOwnerDeltas, []);
     assert.deepEqual(result.rewrittenFormulaOwners, []);
   });
+
+  it('stages only drawing payloads that reference the structurally edited worksheet', () => {
+    const workbook = new WorkbookModel('structural-drawing-copy-on-write', 'Structural drawing copy on write');
+    const target = workbook.getSheet(sheetId);
+    const owner = workbook.addSheet('sheet-2', 'Chart owner');
+    const targetChart = {
+      kind: 'chart' as const,
+      chartId: 'target-chart',
+      chartType: 'line' as const,
+      subtype: 'line' as const,
+      source: { kind: 'worksheet-ranges' as const, ranges: [
+        { sheetId: target.id, startRow: 4, endRow: 8, startColumn: 0, endColumn: 1 },
+      ] },
+      elements: { hiddenData: 'show' as const },
+    };
+    const localChart = {
+      kind: 'chart' as const,
+      chartId: 'local-chart',
+      chartType: 'line' as const,
+      subtype: 'line' as const,
+      source: { kind: 'worksheet-ranges' as const, ranges: [
+        { sheetId: owner.id, startRow: 1, endRow: 2, startColumn: 0, endColumn: 1 },
+      ] },
+      elements: { hiddenData: 'show' as const },
+    };
+    owner.drawingPayloads.set(targetChart.chartId, targetChart);
+    owner.drawingPayloads.set(localChart.chartId, localChart);
+    const sheetOrder = workbook.sheetOrder.map((id) => ({ id, name: workbook.getSheet(id).name }));
+    const index = new RangeIndex(sheetOrder);
+
+    StructuralTransform.apply(workbook, { kind: 'insert-rows', sheetId: target.id, at: 3, count: 1 }, index);
+
+    const shiftedChart = owner.drawingPayloads.get(targetChart.chartId);
+    assert.notEqual(shiftedChart, targetChart);
+    assert.equal(shiftedChart?.kind, 'chart');
+    if (shiftedChart?.kind !== 'chart' || shiftedChart.source.kind !== 'worksheet-ranges') {
+      throw new Error('Expected a worksheet-range chart after structural edit');
+    }
+    assert.deepEqual(shiftedChart.source.ranges[0], {
+      sheetId: target.id, startRow: 5, endRow: 9, startColumn: 0, endColumn: 1,
+    });
+    assert.deepEqual(targetChart.source.ranges[0], {
+      sheetId: target.id, startRow: 4, endRow: 8, startColumn: 0, endColumn: 1,
+    });
+    assert.equal(owner.drawingPayloads.get(localChart.chartId), localChart);
+
+    const rejectedWorkbook = new WorkbookModel('structural-drawing-copy-on-write-rejection', 'Structural drawing rejection');
+    const rejectedTarget = rejectedWorkbook.getSheet(sheetId);
+    const rejectedOwner = rejectedWorkbook.addSheet('sheet-2', 'Chart owner');
+    const rejectedChart = {
+      kind: 'chart' as const,
+      chartId: 'deleted-source-chart',
+      chartType: 'line' as const,
+      subtype: 'line' as const,
+      source: { kind: 'worksheet-ranges' as const, ranges: [
+        { sheetId: rejectedTarget.id, startRow: 4, endRow: 4, startColumn: 0, endColumn: 0 },
+      ] },
+      elements: { hiddenData: 'show' as const },
+    };
+    rejectedOwner.drawingPayloads.set(rejectedChart.chartId, rejectedChart);
+    const rejectedIndex = new RangeIndex(rejectedWorkbook.sheetOrder.map((id) => ({
+      id, name: rejectedWorkbook.getSheet(id).name,
+    })));
+
+    assert.throws(() => StructuralTransform.apply(rejectedWorkbook, {
+      kind: 'delete-rows', sheetId: rejectedTarget.id, at: 4, count: 1,
+    }, rejectedIndex));
+    assert.equal(rejectedOwner.drawingPayloads.get(rejectedChart.chartId), rejectedChart);
+    assert.deepEqual(rejectedChart.source.ranges[0], {
+      sheetId: rejectedTarget.id, startRow: 4, endRow: 4, startColumn: 0, endColumn: 0,
+    });
+  });
 });
