@@ -1739,3 +1739,18 @@ Repeatable history migration 将旧 v1-v5 patch 先投影回旧 formula-owner �
 六个静态复核视角：① `WorkbookModel.getDataSource` 的隔离副本所有权；② ES2022 稳定排序对相等键次序的保持；③ 相邻逆序检测与多关键字比较的同一 comparator；④ 已排序和空数据情况下不物化 identity 数组；⑤ state-only 更新保留已有 rowOrder 或不新建 identity 映射；⑥ 缺块/异步期间 manifest 被改写时仍按完整字段 fail-close。新增源码回归覆盖 state-only、稳定 tie 顺序、rowOrder 与 sortState 的 manifest 差异；按用户当前阶段要求未运行测试、构建、浏览器或 Excel。
 
 尚未修复的相邻架构问题：精确虚拟排序仍调用 `ensureAllBlocksLoaded` 并在前端计算 rowOrder；普通 `rows.permuted` 仍把客户端 `sourceRows` 当作提交事实，Java 只重放。当前优化不宣称解决整块加载、Java 单一 planner 或大数据实测。本轮确认和修复 6 个独立线性内存成本，**仍未达到每轮至少 30 个真实问题的要求**；不把这些成本重复包装成结构完整性缺陷计数。
+
+### 2026-09-27 six-view static review — paste planner and structural patch boundary
+
+沿 `sheet.range.paste` → `range.paste` → operation log → replay 核对服务端规划权与引用 owner 事实：
+
+1. **公共能力声明**：generated contract 将 `range.paste` 列入 `SERVER_STRUCTURAL_PLANNER_MUTATIONS`，前端也会在调用前要求 planner service 可用；这建立了服务端规划器的产品契约。
+2. **前端生成事实**：`sheet-features/editing/index.ts` 在执行前计算 `PasteSnapshot after`（含剪贴单元格、规则、范围与其它 metadata），并把它作为 `range.paste` mutation 的 `params.snapshot` 发送；客户端仍持有最终写入状态的规划权。
+3. **服务端消费路径**：`MutationDescriptorRegistry.CellDescriptor.apply` 将 `range.paste` 路由到 `applyPaste`，后者读取 `params.snapshot`，以目标范围约束后调用 `applyPasteSnapshot`；validation/conditional-format 数组经 `SheetRuleLifecycle.validateSnapshot` 检查后仍由服务端直接写入。该验证限制未授权范围，但不从 clipboard intent 重新规划 after state。
+4. **协议事实面**：`STRUCTURAL_PATCH_MUTATIONS` 不含 `range.paste`，故 paste 生成的规则新增、裁剪、公式或 list-source owner 变化不在版本化 StructuralPatch 中；operation history 只保留客户端提供的 paste snapshot before/after。
+5. **拒绝与 rebase 复核**：server 的 `validateSnapshot` 对 allowed range 外的既有规则要求精确保留；OT rebase 的通用递归会映射 snapshot 内的 `RangeRef` 与公式字符串，再专门映射 rule `formulaAnchor`。因此本轮没有把“OT 完全漏掉规则几何/公式重映射”误报为缺陷；真实缺口是 planner 和 owner facts 的权威来源，而非这些字段完全没有坐标变换。
+6. **历史/远端语义**：`range.paste` 的 inverse 仍以 before snapshot 作为下一次 mutation 的写入输入；它没有 Java 生成的逆 owner patch，因此 ACK、undo 和 remote replay 无法核对同一份 server-derived owner 前后态。
+
+本轮确认 **2 个独立架构问题**：① server-planner 声明与客户端生成并提交 after snapshot 相矛盾；② `range.paste` 没有进入 StructuralPatch，owner membership 与 reference 前后事实缺失。它们不是按规则字段拆分计数。**尚未达到每轮至少 30 个真实问题**，也未达到完整结构审查范围。
+
+方案约束：完整 owner patch 必须表达稳定身份下的 owner 增删与精确 before/after（包括 CF/DV、formula anchor、list source、单元格和其它 paste metadata），由 Java 根据规范化 intent 生成；客户端不得把 after snapshot 当授权写入事实。统一 schema 升版和 migration 必须验证既有历史，再由同一 server patch 驱动 apply/inverse、undo、collaboration、impact 与 persistence。不能先发布仅覆盖现有规则几何的中间版本，因为 paste 的 owner membership 会再次迫使 wire schema 扩展。此处只记录静态证据与设计边界，未修改实现、未运行本地测试或其它门禁。
