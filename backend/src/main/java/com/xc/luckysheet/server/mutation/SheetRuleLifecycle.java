@@ -113,7 +113,7 @@ final class SheetRuleLifecycle {
         Map<String, JsonNode> indexed = new HashMap<>(Math.max(16, rules.size()));
         for (JsonNode rule : rules) {
             if (!rule.isObject()) throw ServiceException.validation(property + " rule must be an object");
-            String id = SnapshotMutationSupport.text(rule, "id");
+            String id = SnapshotMutationSupport.text((ObjectNode) rule, "id");
             if (indexed.putIfAbsent(id, rule) != null) {
                 throw ServiceException.validation(property + " rule identity is duplicated");
             }
