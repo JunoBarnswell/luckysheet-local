@@ -91,7 +91,7 @@ export interface OperationIntent {
 
 /** Server-derived reference-owner effects for one committed structural mutation. */
 export interface StructuralPatch {
-  version: 8;
+  version: 9;
   mutationId: string;
   formulaOwnerDeltas: StructuralFormulaOwnerDelta[];
   definedNameOwnerDeltas: StructuralDefinedNameOwnerDelta[];
@@ -1021,7 +1021,7 @@ export function validateDataSourceMutationParams(
 export function validateStructuralPatch(value: unknown, mutationId: string): StructuralPatch {
   const patch = requireRecord(value, 'Committed structural patch');
   validateExactKeys(patch, ['version', 'mutationId', 'formulaOwnerDeltas', 'definedNameOwnerDeltas', 'rangeOwnerDeltas'], 'Committed structural patch');
-  if (patch.version !== 8 || patch.mutationId !== mutationId || !Array.isArray(patch.formulaOwnerDeltas)
+  if (patch.version !== 9 || patch.mutationId !== mutationId || !Array.isArray(patch.formulaOwnerDeltas)
     || !Array.isArray(patch.definedNameOwnerDeltas) || !Array.isArray(patch.rangeOwnerDeltas)) {
     throw new Error('Committed structural patch header is invalid');
   }
@@ -1078,14 +1078,24 @@ export function validateStructuralPatch(value: unknown, mutationId: string): Str
       };
     }
     if (delta.kind === 'formula-rule-anchor') {
-      validateExactKeys(delta, ['kind', 'sheetId', 'ruleKind', 'ruleId', 'beforeAddress', 'afterAddress'], label);
+      const anchorKeys = ['kind', 'sheetId', 'ruleKind', 'ruleId'];
+      if (Object.prototype.hasOwnProperty.call(delta, 'beforeAddress')) anchorKeys.push('beforeAddress');
+      if (Object.prototype.hasOwnProperty.call(delta, 'afterAddress')) anchorKeys.push('afterAddress');
+      validateExactKeys(delta, anchorKeys, label);
       if (!isNonEmptyString(delta.sheetId) || !isNonEmptyString(delta.ruleId)
         || !['conditional-format', 'data-validation'].includes(String(delta.ruleKind))) {
         throw new Error(`${label} formula-rule anchor owner is invalid`);
       }
-      const beforeAddress = address(delta.beforeAddress, `${label} beforeAddress`);
-      const afterAddress = address(delta.afterAddress, `${label} afterAddress`);
-      if (beforeAddress.sheetId === afterAddress.sheetId
+      const optionalAddress = (rawAddress: unknown, addressLabel: string) => rawAddress === undefined || rawAddress === null
+        ? undefined
+        : address(rawAddress, addressLabel);
+      const beforeAddress = optionalAddress(delta.beforeAddress, `${label} beforeAddress`);
+      const afterAddress = optionalAddress(delta.afterAddress, `${label} afterAddress`);
+      if (beforeAddress === undefined && afterAddress === undefined) {
+        throw new Error(`${label} formula-rule anchor owner must change an explicit anchor state`);
+      }
+      if (beforeAddress !== undefined && afterAddress !== undefined
+        && beforeAddress.sheetId === afterAddress.sheetId
         && beforeAddress.row === afterAddress.row && beforeAddress.column === afterAddress.column) {
         throw new Error(`${label} formula-rule anchor owner state is unchanged`);
       }
@@ -1393,7 +1403,7 @@ export function validateStructuralPatch(value: unknown, mutationId: string): Str
     if (rangeOwnerKeys.has(key)) throw new Error('Committed structural patch contains duplicate range-owner deltas');
     rangeOwnerKeys.add(key);
   }
-  return { version: 8, mutationId, formulaOwnerDeltas, definedNameOwnerDeltas, rangeOwnerDeltas };
+  return { version: 9, mutationId, formulaOwnerDeltas, definedNameOwnerDeltas, rangeOwnerDeltas };
 }
 
 /** Validate the shared dashboard state before it enters a recovery journal. */
@@ -2905,9 +2915,9 @@ function validateCommittedOperationEnvelope(value: unknown): CommittedOperationE
     if (structuralPatch !== undefined) {
       const formulaImpact = structuralPatch.formulaOwnerDeltas.flatMap((delta) => delta.kind === 'formula-cell'
         || delta.kind === 'formula-rule-anchor'
-        ? [delta.beforeAddress, delta.afterAddress].map((address) => ({
+        ? [delta.beforeAddress, delta.afterAddress].flatMap((address) => address ? [{
           sheetId: address.sheetId, startRow: address.row, endRow: address.row, startColumn: address.column, endColumn: address.column,
-        }))
+        }] : [])
         : delta.kind === 'formula-rule' ? [...delta.beforeRanges, ...delta.afterRanges] : []);
       const rangeOwnerImpact = structuralPatch.rangeOwnerDeltas.flatMap(structuralRangeOwnerAffectedRanges);
       const expectedImpact = [...formulaImpact, ...rangeOwnerImpact];

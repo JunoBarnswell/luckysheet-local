@@ -805,10 +805,14 @@ final class StructuralSnapshotReducer {
         }
         ObjectNode rule = matches.getFirst();
         StructuralPatch.CellAddress current = ruleFormulaAnchor(root, rule, delta.sheetId(), delta.ruleKind(), delta.ruleId());
-        if (delta.afterAddress().equals(current)) return;
-        if (!delta.beforeAddress().equals(current)) {
+        if (Objects.equals(delta.afterAddress(), current)) return;
+        if (!Objects.equals(delta.beforeAddress(), current)) {
             throw ServiceException.conflict("STRUCTURAL_PATCH_PRECONDITION: formula rule anchor "
                     + delta.sheetId() + ":" + delta.ruleId() + " changed since the structural operation");
+        }
+        if (delta.afterAddress() == null) {
+            rule.remove("formulaAnchor");
+            return;
         }
         ObjectNode anchor = JsonNodeFactory.instance.objectNode();
         anchor.put("sheetId", delta.afterAddress().sheetId());
@@ -2855,10 +2859,6 @@ final class StructuralSnapshotReducer {
                 }
             }
             if (!Objects.equals(snapshot.formulaAnchor(), afterAnchor)) {
-                if (snapshot.formulaAnchor() == null || afterAnchor == null) {
-                    throw ServiceException.conflict("STRUCTURAL_PATCH_INVARIANT: formula rule anchor cannot be added or removed: "
-                            + snapshot.sheetId() + ":" + snapshot.ruleId());
-                }
                 formulaOwnerDeltas.add(StructuralPatch.FormulaOwnerDelta.formulaRuleAnchor(
                         snapshot.sheetId(), snapshot.ruleKind(), snapshot.ruleId(), snapshot.formulaAnchor(), afterAnchor));
             }

@@ -108,8 +108,11 @@ class StructuralPatchV2MigrationTest {
         assertEquals(mapper.valueToTree(registry.structuralImpactRanges(currentPatch)),
                 v6Envelope.path("mutations").get(0).get("structuralImpactRanges"));
 
-        StructuralPatch preV8 = new StructuralPatch(StructuralPatch.VERSION, currentPatch.mutationId(), List.of(),
-                currentPatch.definedNameOwnerDeltas(), currentPatch.rangeOwnerDeltas());
+        StructuralPatch preV8 = new StructuralPatch(StructuralPatch.VERSION, currentPatch.mutationId(),
+                currentPatch.formulaOwnerDeltas().stream()
+                        .filter(delta -> !"formula-rule-anchor".equals(delta.kind())).toList(),
+                currentPatch.definedNameOwnerDeltas(), currentPatch.rangeOwnerDeltas().stream()
+                        .filter(delta -> !List.of("conditional-format", "data-validation").contains(delta.ownerKind())).toList());
         ObjectNode v7Envelope = rawEnvelope(7, currentPatch, registry.structuralImpactRanges(preV8));
         new V4__TestMigration().rewriteMutationPatches(v7Envelope, operation(),
                 List.of(Optional.of(currentPatch)), registry, "unit-1", 1);
@@ -119,6 +122,22 @@ class StructuralPatchV2MigrationTest {
         new V4__TestMigration().rewriteMutationPatches(v8Envelope, operation(),
                 List.of(Optional.of(currentPatch)), registry, "unit-1", 1);
         assertEquals(mapper.valueToTree(currentPatch), v8Envelope.path("mutations").get(0).get("structuralPatch"));
+
+        StructuralPatch implicitAnchorPatch = new StructuralPatch(StructuralPatch.VERSION, "rows.inserted",
+                List.of(StructuralPatch.FormulaOwnerDelta.formulaRuleAnchor("sheet-1", "data-validation", "validation-1",
+                        null, new StructuralPatch.CellAddress("sheet-1", 1, 0))), List.of(), List.of());
+        StructuralPatch preV9 = new StructuralPatch(StructuralPatch.VERSION, implicitAnchorPatch.mutationId(),
+                List.of(), List.of(), List.of());
+        ObjectNode v8ImplicitAnchorEnvelope = rawEnvelope(8, implicitAnchorPatch, registry.structuralImpactRanges(preV9));
+        new V4__TestMigration().rewriteMutationPatches(v8ImplicitAnchorEnvelope, operation(),
+                List.of(Optional.of(implicitAnchorPatch)), registry, "unit-1", 1);
+        assertEquals(mapper.valueToTree(implicitAnchorPatch),
+                v8ImplicitAnchorEnvelope.path("mutations").get(0).get("structuralPatch"));
+
+        ObjectNode v9Envelope = rawEnvelope(9, implicitAnchorPatch, registry.structuralImpactRanges(implicitAnchorPatch));
+        new V4__TestMigration().rewriteMutationPatches(v9Envelope, operation(),
+                List.of(Optional.of(implicitAnchorPatch)), registry, "unit-1", 1);
+        assertEquals(mapper.valueToTree(implicitAnchorPatch), v9Envelope.path("mutations").get(0).get("structuralPatch"));
     }
 
     @Test
@@ -146,6 +165,14 @@ class StructuralPatchV2MigrationTest {
     private ObjectNode rawEnvelope(int version, StructuralPatch currentPatch, List<RangeRef> impact) {
         ObjectNode legacyPatch = (ObjectNode) mapper.valueToTree(currentPatch);
         legacyPatch.put("version", version);
+        if (version < 9) {
+            ArrayNode priorFormulaOwners = mapper.createArrayNode();
+            for (JsonNode delta : legacyPatch.path("formulaOwnerDeltas")) {
+                if (!"formula-rule-anchor".equals(delta.path("kind").asText())
+                        || delta.hasNonNull("beforeAddress") && delta.hasNonNull("afterAddress")) priorFormulaOwners.add(delta.deepCopy());
+            }
+            legacyPatch.set("formulaOwnerDeltas", priorFormulaOwners);
+        }
         if (version < 8) {
             ArrayNode priorFormulaOwners = mapper.createArrayNode();
             for (JsonNode delta : legacyPatch.path("formulaOwnerDeltas")) {

@@ -404,6 +404,12 @@ test('CommandRuntime adopts committed sheet-rename owner facts for undo history'
   const beforeFormula = "='Source'!A1";
   const afterFormula = "='Renamed'!A1";
   owner.cells.set(0, 0, { value: '', formula: beforeFormula });
+  const formulaRange = { sheetId: owner.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 };
+  const anchorRange = { sheetId: owner.id, startRow: 1, endRow: 1, startColumn: 1, endColumn: 1 };
+  owner.conditionalFormats.push({
+    id: 'cf-implicit-anchor', sheetId: owner.id, ranges: [formulaRange],
+    type: 'highlight', operator: 'formula', value1: '=A1>0',
+  });
   const runtime = new CommandRuntime(workbook);
   const metadata = {
     schema: {
@@ -446,7 +452,6 @@ test('CommandRuntime adopts committed sheet-rename owner facts for undo history'
   });
 
   const operation = runtime.execute('sheet.rename', { sheetId: source.id, name: 'Renamed' });
-  const formulaRange = { sheetId: owner.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 };
   const delta: StructuralFormulaOwnerDelta = {
     kind: 'formula-cell',
     beforeAddress: { sheetId: owner.id, row: 0, column: 0 },
@@ -454,22 +459,28 @@ test('CommandRuntime adopts committed sheet-rename owner facts for undo history'
     before: { formula: beforeFormula, sourceFormula: null, barcodeFormula: null },
     after: { formula: afterFormula, sourceFormula: null, barcodeFormula: null },
   };
+  const anchorDelta: StructuralFormulaOwnerDelta = {
+    kind: 'formula-rule-anchor', sheetId: owner.id, ruleKind: 'conditional-format', ruleId: 'cf-implicit-anchor',
+    beforeAddress: undefined,
+    afterAddress: { sheetId: owner.id, row: 1, column: 1 },
+  };
   runtime.applyCommittedStructuralPatches(operation.operationId, [{
     id: 'sheet.rename',
     unitId: workbook.unitId,
     sheetId: source.id,
     params: { sheetId: source.id, name: 'Renamed' },
     affectedRanges: [],
-    structuralFormulaOwnerDeltas: [delta],
+    structuralFormulaOwnerDeltas: [delta, anchorDelta],
     structuralDefinedNameOwnerDeltas: [],
     structuralRangeOwnerDeltas: [],
-    structuralImpactRanges: [formulaRange],
+    structuralImpactRanges: [formulaRange, anchorRange],
   }], 1);
 
-  assert.deepEqual(runtime.getUndoEntries()[0]?.inversePlan[0]?.structuralFormulaOwnerDeltas, [delta]);
-  assert.deepEqual(runtime.getUndoEntries()[0]?.affectedRanges, [formulaRange]);
+  assert.deepEqual(runtime.getUndoEntries()[0]?.inversePlan[0]?.structuralFormulaOwnerDeltas, [delta, anchorDelta]);
+  assert.deepEqual(runtime.getUndoEntries()[0]?.affectedRanges, [formulaRange, anchorRange]);
   assert.equal(runtime.undo(), true);
   assert.equal(workbook.getSheet(owner.id).cells.getWithoutHydration(0, 0)?.formula, beforeFormula);
+  assert.equal(workbook.getSheet(owner.id).conditionalFormats[0]?.formulaAnchor, undefined);
 
   const remoteWorkbook = WorkbookModel.fromSnapshot(workbook.snapshot());
   const remoteRuntime = new CommandRuntime(remoteWorkbook, runtime.registry);
@@ -479,13 +490,16 @@ test('CommandRuntime adopts committed sheet-rename owner facts for undo history'
     sheetId: source.id,
     params: { sheetId: source.id, name: 'Renamed' },
     affectedRanges: [],
-    structuralFormulaOwnerDeltas: [delta],
+    structuralFormulaOwnerDeltas: [delta, anchorDelta],
     structuralDefinedNameOwnerDeltas: [],
     structuralRangeOwnerDeltas: [],
-    structuralImpactRanges: [formulaRange],
+    structuralImpactRanges: [formulaRange, anchorRange],
   }]);
   assert.equal(remoteWorkbook.getSheet(source.id).name, 'Renamed');
   assert.equal(remoteWorkbook.getSheet(owner.id).cells.getWithoutHydration(0, 0)?.formula, afterFormula);
+  assert.deepEqual(remoteWorkbook.getSheet(owner.id).conditionalFormats[0]?.formulaAnchor, anchorDelta.afterAddress);
+  assert.equal(runtime.redo(), true);
+  assert.deepEqual(workbook.getSheet(owner.id).conditionalFormats[0]?.formulaAnchor, anchorDelta.afterAddress);
 });
 
 test('CommandRuntime replays exact structural range-owner facts through undo and redo', () => {

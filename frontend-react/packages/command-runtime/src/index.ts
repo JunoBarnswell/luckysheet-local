@@ -1783,13 +1783,13 @@ function formulaOwnerDeltasRanges(deltas: readonly StructuralFormulaOwnerDelta[]
     const affected = delta.kind === 'formula-rule'
       ? [...delta.beforeRanges, ...delta.afterRanges]
       : delta.kind === 'formula-cell' || delta.kind === 'formula-rule-anchor'
-        ? [delta.beforeAddress, delta.afterAddress].map((address) => ({
+        ? [delta.beforeAddress, delta.afterAddress].flatMap((address) => address ? [{
           sheetId: address.sheetId,
           startRow: address.row,
           endRow: address.row,
           startColumn: address.column,
           endColumn: address.column,
-        }))
+        }] : [])
         : [];
     for (const range of affected) {
       ranges.set(JSON.stringify([range.sheetId, range.startRow, range.endRow, range.startColumn, range.endColumn]), structuredClone(range));
@@ -1989,7 +1989,10 @@ function preflightCommittedStructuralPatches(workbook: WorkbookModel, items: rea
           && !sameFormulaAnchorAddress(state.address, delta.beforeAddress)) {
           throw new Error(`STRUCTURAL_PATCH_PRECONDITION: formula rule anchor ${delta.sheetId}:${delta.ruleId} changed since the structural operation`);
         }
-        formulaStates.set(key, { kind: 'formula-rule-anchor', address: { ...delta.afterAddress } });
+        formulaStates.set(key, {
+          kind: 'formula-rule-anchor',
+          address: delta.afterAddress ? { ...delta.afterAddress } : undefined,
+        });
         continue;
       }
       if (state.kind !== 'formula-object') throw new Error('STRUCTURAL_PATCH_INVARIANT: formula-object owner key collision');
@@ -2654,7 +2657,8 @@ function applyFormulaOwnerDelta(
     if (!sameFormulaAnchorAddress(current, expected)) {
       throw new Error(`STRUCTURAL_PATCH_PRECONDITION: formula rule anchor ${delta.sheetId}:${delta.ruleId} changed since the structural operation`);
     }
-    rule.formulaAnchor = { ...target };
+    if (target === undefined) delete rule.formulaAnchor;
+    else rule.formulaAnchor = { ...target };
     return;
   }
   const address = direction === 'undo' ? delta.beforeAddress : delta.afterAddress;

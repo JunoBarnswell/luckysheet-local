@@ -80,13 +80,14 @@ export interface StructuralFormulaRuleFormulaOwnerDelta {
   readonly afterRanges: readonly RangeRef[];
 }
 
+/** Undefined address sides encode an implicit, non-persisted formula anchor in patch v9. */
 export interface StructuralFormulaRuleAnchorOwnerDelta {
   readonly kind: 'formula-rule-anchor';
   readonly sheetId: string;
   readonly ruleKind: 'conditional-format' | 'data-validation';
   readonly ruleId: string;
-  readonly beforeAddress: CellAddress;
-  readonly afterAddress: CellAddress;
+  readonly beforeAddress: CellAddress | undefined;
+  readonly afterAddress: CellAddress | undefined;
 }
 
 export type StructuralFormulaRuleOwnerDelta = StructuralFormulaRuleFormulaOwnerDelta | StructuralFormulaRuleAnchorOwnerDelta;

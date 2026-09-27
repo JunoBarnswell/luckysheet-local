@@ -282,11 +282,12 @@ public class MutationDescriptorRegistry {
             return ranges;
         }
         if ("formula-object".equals(delta.kind())) return List.of();
-        var beforeAddress = delta.beforeAddress();
-        var afterAddress = delta.afterAddress();
-        return List.of(
-                cellRange(beforeAddress.sheetId(), beforeAddress.row(), beforeAddress.column()),
-                cellRange(afterAddress.sheetId(), afterAddress.row(), afterAddress.column()));
+        List<RangeRef> ranges = new ArrayList<>(2);
+        StructuralPatch.CellAddress beforeAddress = delta.beforeAddress();
+        StructuralPatch.CellAddress afterAddress = delta.afterAddress();
+        if (beforeAddress != null) ranges.add(cellRange(beforeAddress.sheetId(), beforeAddress.row(), beforeAddress.column()));
+        if (afterAddress != null) ranges.add(cellRange(afterAddress.sheetId(), afterAddress.row(), afterAddress.column()));
+        return List.copyOf(ranges);
     }
 
     public JsonNode applyPublicMutations(JsonNode snapshot, List<OperationMutation> mutations) {

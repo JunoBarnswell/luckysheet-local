@@ -858,7 +858,7 @@ class MutationDescriptorRegistryTest {
     void rangePasteAcceptsMetadataWhoseEveryOwnedRangeIsInsideTheTarget() throws Exception {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         var snapshot = mapper.readTree("""
-                {"sheets":[{"id":"sheet-1","rowCount":10,"columnCount":10,"cells":{},"dataValidations":[]}]}
+                {"sheets":[{"id":"sheet-1","rowCount":10,"columnCount":10,"cells":{},"pane":{"kind":"none"},"review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}},"dataValidations":[]}]}
                 """);
         var mutation = new OperationMutation("range.paste", "sheet-1", mapper.readTree("""
                 {"sheetId":"sheet-1","targetOrigin":{"row":0,"column":0},"sourceExtent":{"rows":2,"columns":1},"clipboard":{"schema":"SparseClipboardPayload","transfer":"copy","range":{"sheetId":"sheet-1","startRow":0,"endRow":1,"startColumn":0,"endColumn":0},"sourceExtent":{"rows":2,"columns":1},"occupiedCells":[],"rangeMetadata":{"columnWidths":[],"validations":[],"conditionalFormats":[],"notes":[],"comments":[],"hyperlinks":[]}},
@@ -880,9 +880,7 @@ class MutationDescriptorRegistryTest {
     void rangePasteRejectsMetadataRuleThatMixesTargetAndUnrelatedRanges() throws Exception {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         var snapshot = mapper.readTree("""
-                {"sheets":[{"id":"sheet-1","rowCount":10,"columnCount":10,"cells":{},"dataValidations":[],"protectionRules":[
-                  {"id":"lock-e5","scope":"range","range":{"sheetId":"sheet-1","startRow":4,"endRow":4,"startColumn":4,"endColumn":4},"locked":true,"allow":{}}
-                ]}]}
+                {"sheets":[{"id":"sheet-1","rowCount":10,"columnCount":10,"cells":{},"pane":{"kind":"none"},"review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}},"dataValidations":[],"protectionRules":[]}]}
                 """);
         var mutation = new OperationMutation("range.paste", "sheet-1", mapper.readTree("""
                 {"sheetId":"sheet-1","targetOrigin":{"row":0,"column":0},"sourceExtent":{"rows":1,"columns":1},"clipboard":{"schema":"SparseClipboardPayload","transfer":"copy","range":{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0},"sourceExtent":{"rows":1,"columns":1},"occupiedCells":[],"rangeMetadata":{"columnWidths":[],"validations":[],"conditionalFormats":[],"notes":[],"comments":[],"hyperlinks":[]}},
@@ -1048,7 +1046,7 @@ class MutationDescriptorRegistryTest {
                 "sheet.reordered",
                 "row.hidden", "row.unhidden", "rows.unhidden.all", "rows.hidden.restore",
                 "column.hidden", "column.unhidden", "columns.unhidden.all", "columns.hidden.restore",
-                "autoFilter.set", "autoFilter.remove", "cf.add", "cf.remove", "cf.clear", "cf.reorder", "dv.add", "dv.remove", "banded.set", "outline.set",
+                "autoFilter.set", "autoFilter.remove", "cf.add", "cf.remove", "cf.clear", "cf.reorder", "cf.update", "dv.add", "dv.remove", "banded.set", "outline.set",
                 "sheetTable.add", "sheetTable.remove", "sheetTable.update", "sheetTable.autoFilter.set", "tableSheet.update", "ganttSheet.update", "reportSheet.update",
                 "drawing.add", "drawing.remove", "drawing.transform", "drawing.transform.batch", "drawing.anchor", "drawing.payload.update", "drawing.zorder", "drawing.zorder.restore", "drawing.visibility.set", "drawing.rename",
                 "pivot.add", "pivot.remove", "pivot.update", "pivot.refresh", "pivot.drilldown.add", "pivot.drilldown.remove",
@@ -1505,13 +1503,13 @@ class MutationDescriptorRegistryTest {
         JsonNode snapshot = mapper.readTree("""
                 {"sheets":[{"id":"sheet-1","name":"Sheet1","rowCount":20,"columnCount":10,"cells":{},
                   "conditionalFormats":[{"id":"cf-1","sheetId":"sheet-1","ranges":[{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0}],"type":"highlight","value1":"before"}],
-                  "dataValidations":[{"id":"dv-1","sheetId":"sheet-1","ranges":[{"sheetId":"sheet-1","startRow":1,"endRow":1,"startColumn":0,"endColumn":0}],"type":"list","listSource":{"kind":"values","values":["before"]}}]}]}
+                  "dataValidations":[{"id":"dv-1","sheetId":"sheet-1","ranges":[{"sheetId":"sheet-1","startRow":1,"endRow":1,"startColumn":0,"endColumn":0}],"type":"list","listSource":{"kind":"formula","formula":"=\"before\""}}]}]}
                 """);
         OperationMutation duplicateFormat = new OperationMutation("cf.add", "sheet-1", mapper.readTree("""
                 {"sheetId":"sheet-1","rule":{"id":"cf-1","sheetId":"sheet-1","ranges":[{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0}],"type":"highlight","value1":"after"}}
                 """));
         OperationMutation duplicateValidation = new OperationMutation("dv.add", "sheet-1", mapper.readTree("""
-                {"sheetId":"sheet-1","rule":{"id":"dv-1","sheetId":"sheet-1","ranges":[{"sheetId":"sheet-1","startRow":1,"endRow":1,"startColumn":0,"endColumn":0}],"type":"list","listSource":{"kind":"values","values":["after"]}}}
+                {"sheetId":"sheet-1","rule":{"id":"dv-1","sheetId":"sheet-1","ranges":[{"sheetId":"sheet-1","startRow":1,"endRow":1,"startColumn":0,"endColumn":0}],"type":"list","listSource":{"kind":"formula","formula":"=\"after\""}}}
                 """));
         OperationMutation removeFormat = new OperationMutation("cf.remove", "sheet-1", mapper.readTree("""
                 {"sheetId":"sheet-1","ruleId":"cf-1"}
@@ -1523,12 +1521,12 @@ class MutationDescriptorRegistryTest {
         assertThrows(ServiceException.class, () -> registry.applyPublicMutations(snapshot, List.of(duplicateFormat)));
         assertThrows(ServiceException.class, () -> registry.applyPublicMutations(snapshot, List.of(duplicateValidation)));
         assertEquals("before", snapshot.path("sheets").get(0).path("conditionalFormats").get(0).path("value1").asText());
-        assertEquals("before", snapshot.path("sheets").get(0).path("dataValidations").get(0).path("listSource").path("values").get(0).asText());
+        assertEquals("=\"before\"", snapshot.path("sheets").get(0).path("dataValidations").get(0).path("listSource").path("formula").asText());
 
         JsonNode replaced = registry.applyPublicMutations(snapshot, List.of(
                 removeFormat, duplicateFormat, removeValidation, duplicateValidation));
         assertEquals("after", replaced.path("sheets").get(0).path("conditionalFormats").get(0).path("value1").asText());
-        assertEquals("after", replaced.path("sheets").get(0).path("dataValidations").get(0).path("listSource").path("values").get(0).asText());
+        assertEquals("=\"after\"", replaced.path("sheets").get(0).path("dataValidations").get(0).path("listSource").path("formula").asText());
     }
 
     @Test
@@ -1553,7 +1551,7 @@ class MutationDescriptorRegistryTest {
                 {"sheetId":"sheet-1","ruleId":"dv-duplicate"}
                 """));
 
-        assertThrows(ServiceException.class, () -> registry.applyPublicMutations(snapshot, List.of(clear)));
+        assertThrows(ServiceException.class, () -> registry.prepare(snapshot, clear, WorkbookAclRole.OWNER));
         assertThrows(ServiceException.class, () -> registry.applyPublicMutations(snapshot, List.of(removeFormat)));
         assertThrows(ServiceException.class, () -> registry.applyPublicMutations(snapshot, List.of(removeValidation)));
         assertEquals(2, snapshot.path("sheets").get(0).path("conditionalFormats").size());
@@ -3087,9 +3085,13 @@ class MutationDescriptorRegistryTest {
                 patch.rangeOwnerDeltas().stream().map(StructuralPatch.RangeOwnerDelta::ownerKind).toList());
         assertEquals(new RangeRef("sheet-1", 0, 2, 0, 0), patch.rangeOwnerDeltas().get(0).beforeRange());
         assertEquals(new RangeRef("sheet-1", 1, 3, 0, 0), patch.rangeOwnerDeltas().get(0).afterRange());
-        assertEquals(List.of(new RangeRef("sheet-2", 0, 0, 0, 0)), patch.rangeOwnerDeltas().get(0).beforeOwnerRanges());
-        assertEquals(List.of(new RangeRef("sheet-2", 0, 0, 0, 0)), patch.rangeOwnerDeltas().get(0).afterOwnerRanges());
         assertEquals(1, patch.rangeOwnerDeltas().get(0).afterHeaderRow());
+        assertEquals("workbook-table", patch.rangeOwnerDeltas().get(1).ownerKind());
+        assertEquals(new RangeRef("sheet-1", 0, 2, 0, 0), patch.rangeOwnerDeltas().get(1).beforeRange());
+        assertEquals(new RangeRef("sheet-1", 1, 3, 0, 0), patch.rangeOwnerDeltas().get(1).afterRange());
+        assertEquals("data-source", patch.rangeOwnerDeltas().get(2).ownerKind());
+        assertEquals(new RangeRef("sheet-1", 0, 2, 0, 0), patch.rangeOwnerDeltas().get(2).beforeRange());
+        assertEquals(new RangeRef("sheet-1", 1, 3, 0, 0), patch.rangeOwnerDeltas().get(2).afterRange());
 
         JsonNode undoneOwners = registry.applyStructuralPatch(application.snapshot(), patch.inverse("rows.permuted"));
         assertEquals(snapshot.path("sheets").get(0).path("dataRegions"), undoneOwners.path("sheets").get(0).path("dataRegions"));
@@ -3110,19 +3112,22 @@ class MutationDescriptorRegistryTest {
                 .descriptor().applyWithPatch(snapshot, permutation);
 
         StructuralPatch patch = application.structuralPatch();
-        assertEquals(1, patch.rangeOwnerDeltas().size());
-        assertEquals("validation-list-source", patch.rangeOwnerDeltas().get(0).ownerKind());
-        assertEquals("sheet-2", patch.rangeOwnerDeltas().get(0).sheetId());
-        assertEquals(new RangeRef("sheet-1", 0, 2, 0, 0), patch.rangeOwnerDeltas().get(0).beforeRange());
-        assertEquals(new RangeRef("sheet-1", 1, 3, 0, 0), patch.rangeOwnerDeltas().get(0).afterRange());
-        assertEquals(List.of(new RangeRef("sheet-2", 0, 0, 0, 0)), patch.rangeOwnerDeltas().get(0).beforeOwnerRanges());
-        assertEquals(List.of(new RangeRef("sheet-2", 0, 0, 0, 0)), patch.rangeOwnerDeltas().get(0).afterOwnerRanges());
+        assertEquals(3, patch.rangeOwnerDeltas().size());
+        assertEquals(Set.of("workbook-table", "data-source", "validation-list-source"),
+                patch.rangeOwnerDeltas().stream().map(StructuralPatch.RangeOwnerDelta::ownerKind).collect(java.util.stream.Collectors.toSet()));
+        StructuralPatch.RangeOwnerDelta validationSourceDelta = patch.rangeOwnerDeltas().stream()
+                .filter(delta -> "validation-list-source".equals(delta.ownerKind())).findFirst().orElseThrow();
+        assertEquals("sheet-2", validationSourceDelta.sheetId());
+        assertEquals(new RangeRef("sheet-1", 0, 2, 0, 0), validationSourceDelta.beforeRange());
+        assertEquals(new RangeRef("sheet-1", 1, 3, 0, 0), validationSourceDelta.afterRange());
+        assertEquals(List.of(new RangeRef("sheet-2", 0, 0, 0, 0)), validationSourceDelta.beforeOwnerRanges());
+        assertEquals(List.of(new RangeRef("sheet-2", 0, 0, 0, 0)), validationSourceDelta.afterOwnerRanges());
         JsonNode updatedOwnerSheet = application.snapshot().path("sheets").get(1);
         assertEquals(new RangeRef("sheet-1", 1, 3, 0, 0), SnapshotMutationSupport.range(
                 (ObjectNode) application.snapshot(), updatedOwnerSheet.path("dataValidations").get(0).path("listSource").path("range")));
-
         JsonNode undoneOwners = registry.applyStructuralPatch(application.snapshot(), patch.inverse("rows.permuted"));
         assertEquals(snapshot.path("sheets").get(1).path("dataValidations"), undoneOwners.path("sheets").get(1).path("dataValidations"));
+        assertEquals(snapshot.path("dataModel"), undoneOwners.path("dataModel"));
 
         ObjectNode rejected = workbookSourceRangePermutationSnapshot();
         addCrossSheetValidationOwner(rejected, 0, 2);
@@ -3142,8 +3147,8 @@ class MutationDescriptorRegistryTest {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         ObjectNode snapshot = (ObjectNode) mapper.readTree("""
                 {"sheets":[
-                  {"id":"sheet-1","name":"Source","rowCount":20,"columnCount":10,"cells":{}},
-                  {"id":"sheet-2","name":"Owner","rowCount":20,"columnCount":10,"cells":{},
+                  {"id":"sheet-1","name":"Source","rowCount":20,"columnCount":10,"cells":{},"pane":{"kind":"none"},"review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}}},
+                  {"id":"sheet-2","name":"Owner","rowCount":20,"columnCount":10,"cells":{},"pane":{"kind":"none"},"review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}},
                    "dataValidations":[{"id":"cross-sheet-list","sheetId":"sheet-2","type":"list",
                      "ranges":[{"sheetId":"sheet-2","startRow":0,"endRow":0,"startColumn":0,"endColumn":0}],
                      "listSource":{"kind":"range","range":{"sheetId":"sheet-1","startRow":2,"endRow":4,"startColumn":0,"endColumn":0}}}]}
@@ -3254,6 +3259,19 @@ class MutationDescriptorRegistryTest {
         JsonNode otherSheetTemplateValidation = current.path("cellStyleTemplates").get(1).path("dataValidation");
         assertEquals(0, otherSheetTemplateValidation.path("formulaAnchor").path("row").asInt());
         assertEquals("=A1>0", otherSheetTemplateValidation.path("formula1").asText());
+        StructuralPatch.FormulaOwnerDelta implicitAnchorDelta = patch.formulaOwnerDeltas().stream()
+                .filter(delta -> "formula-rule-anchor".equals(delta.kind())
+                        && "cf-implicit-anchor".equals(delta.ruleId())).findFirst().orElseThrow();
+        assertTrue(implicitAnchorDelta.beforeAddress() == null);
+        assertEquals(new StructuralPatch.CellAddress("sheet-1", 1, 8), implicitAnchorDelta.afterAddress());
+        JsonNode restoredOwners = registry.applyStructuralPatch(current, patch.inverse("rows.permuted"));
+        assertEquals(snapshot.path("sheets").get(0).path("conditionalFormats"),
+                restoredOwners.path("sheets").get(0).path("conditionalFormats"));
+        assertEquals(snapshot.path("sheets").get(0).path("dataValidations"),
+                restoredOwners.path("sheets").get(0).path("dataValidations"));
+        assertEquals(snapshot.path("definedNames"), restoredOwners.path("definedNames"));
+        assertEquals(snapshot.path("definedNameModels"), restoredOwners.path("definedNameModels"));
+        assertEquals(snapshot.path("cellStyleTemplates"), restoredOwners.path("cellStyleTemplates"));
 
         assertEquals(1, patch.definedNameOwnerDeltas().size());
         StructuralPatch.DefinedNameOwnerDelta nameDelta = patch.definedNameOwnerDeltas().getFirst();

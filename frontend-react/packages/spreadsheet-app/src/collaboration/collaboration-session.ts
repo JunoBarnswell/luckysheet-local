@@ -39,13 +39,13 @@ function structuralPatchImpactRanges(
   const ranges = new Map<string, StructuralImpactRange>();
   for (const delta of patch.formulaOwnerDeltas) {
     const deltaRanges: StructuralImpactRange[] = delta.kind === 'formula-cell' || delta.kind === 'formula-rule-anchor'
-      ? [delta.beforeAddress, delta.afterAddress].map((address) => ({
+      ? [delta.beforeAddress, delta.afterAddress].flatMap((address) => address ? [{
         sheetId: address.sheetId,
         startRow: address.row,
         endRow: address.row,
         startColumn: address.column,
         endColumn: address.column,
-      }))
+      }] : [])
       : delta.kind === 'formula-rule' ? [...delta.beforeRanges, ...delta.afterRanges] : [];
     for (const range of deltaRanges) {
       ranges.set(JSON.stringify([range.sheetId, range.startRow, range.endRow, range.startColumn, range.endColumn]), range);

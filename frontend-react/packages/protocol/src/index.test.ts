@@ -79,7 +79,7 @@ test('committed structural patches and impact ranges survive collaboration decod
   const ruleRangeBefore = { sheetId: 'sheet-1', startRow: 20, endRow: 22, startColumn: 3, endColumn: 4 };
   const ruleRangeAfter = { ...ruleRangeBefore, startRow: 21, endRow: 23 };
   const patch = {
-    version: 8 as const,
+    version: 9 as const,
     mutationId: 'rows.deleted',
     formulaOwnerDeltas: [{
       kind: 'formula-cell' as const,
@@ -166,7 +166,7 @@ test('committed structural patches and impact ranges survive collaboration decod
   })), /requires a server-derived StructuralPatch/);
 });
 
-test('StructuralPatch v8 validates exact range-owner facts and rejects incomplete geometry', () => {
+test('StructuralPatch v9 validates exact range-owner facts and rejects incomplete geometry', () => {
   const range = { sheetId: 'sheet-1', startRow: 5, endRow: 7, startColumn: 1, endColumn: 3 };
   const shifted = { ...range, startRow: 6, endRow: 8 };
   const dataRegion = {
@@ -186,7 +186,7 @@ test('StructuralPatch v8 validates exact range-owner facts and rejects incomplet
     beforeOwnerRanges: [validationOwnerRange], afterOwnerRanges: [validationOwnerRangeAfter],
   };
   const patch = {
-    version: 8,
+    version: 9,
     mutationId: 'rows.inserted',
     formulaOwnerDeltas: [],
     definedNameOwnerDeltas: [],
@@ -253,7 +253,7 @@ test('StructuralPatch v8 validates exact range-owner facts and rejects incomplet
   assert.throws(() => validateStructuralPatch({ ...patch, rangeOwnerDeltas: [{ ...table, unexpected: true }] }, 'rows.inserted'), /Unexpected fields/);
 });
 
-test('StructuralPatch v8 carries formula-rule range-only changes and rejects empty deltas', () => {
+test('StructuralPatch v9 carries formula-rule range-only changes and rejects empty deltas', () => {
   const beforeRange = { sheetId: 'sheet-1', startRow: 1, endRow: 3, startColumn: 0, endColumn: 2 };
   const afterRange = { ...beforeRange, startRow: 2, endRow: 4 };
   const delta = {
@@ -261,7 +261,7 @@ test('StructuralPatch v8 carries formula-rule range-only changes and rejects emp
     beforeFormula: '=TRUE', afterFormula: '=TRUE', beforeRanges: [beforeRange], afterRanges: [afterRange],
   };
   const patch = {
-    version: 8, mutationId: 'rows.inserted', formulaOwnerDeltas: [delta], definedNameOwnerDeltas: [], rangeOwnerDeltas: [],
+    version: 9, mutationId: 'rows.inserted', formulaOwnerDeltas: [delta], definedNameOwnerDeltas: [], rangeOwnerDeltas: [],
   };
 
   assert.deepEqual(validateStructuralPatch(patch, 'rows.inserted').formulaOwnerDeltas, [delta]);
@@ -271,11 +271,11 @@ test('StructuralPatch v8 carries formula-rule range-only changes and rejects emp
   }, 'rows.inserted'), /formula-rule owner state is unchanged/);
 });
 
-test('StructuralPatch v8 carries conditional-format and data-validation range-only owners', () => {
+test('StructuralPatch v9 carries conditional-format and data-validation range-only owners', () => {
   const before = [{ sheetId: 'sheet-1', startRow: 1, endRow: 2, startColumn: 0, endColumn: 3 }];
   const after = [{ ...before[0]!, startRow: 2, endRow: 3 }];
   const patch = {
-    version: 8,
+    version: 9,
     mutationId: 'rows.inserted',
     formulaOwnerDeltas: [],
     definedNameOwnerDeltas: [],
@@ -302,7 +302,7 @@ test('StructuralPatch v8 carries conditional-format and data-validation range-on
   }, 'rows.inserted'), /duplicates range state/);
 });
 
-test('StructuralPatch v8 carries reversible formula-rule anchors and rejects ambiguous owner facts', () => {
+test('StructuralPatch v9 carries reversible formula-rule anchors and rejects ambiguous owner facts', () => {
   const delta = {
     kind: 'formula-rule-anchor',
     sheetId: 'sheet-1',
@@ -312,7 +312,7 @@ test('StructuralPatch v8 carries reversible formula-rule anchors and rejects amb
     afterAddress: { sheetId: 'sheet-1', row: 5, column: 2 },
   };
   const patch = {
-    version: 8,
+    version: 9,
     mutationId: 'rows.inserted',
     formulaOwnerDeltas: [delta],
     definedNameOwnerDeltas: [],
@@ -328,17 +328,45 @@ test('StructuralPatch v8 carries reversible formula-rule anchors and rejects amb
     ...patch,
     formulaOwnerDeltas: [delta, delta],
   }, 'rows.inserted'), /duplicate formula owner/);
+  const materialized = validateStructuralPatch({
+    ...patch,
+    formulaOwnerDeltas: [{
+      kind: 'formula-rule-anchor', sheetId: 'sheet-1', ruleKind: 'data-validation', ruleId: 'dv-1',
+      afterAddress: delta.afterAddress,
+    }],
+  }, 'rows.inserted').formulaOwnerDeltas[0];
+  assert.equal(materialized?.kind, 'formula-rule-anchor');
+  if (materialized?.kind === 'formula-rule-anchor') {
+    assert.equal(materialized.beforeAddress, undefined);
+    assert.deepEqual(materialized.afterAddress, delta.afterAddress);
+  }
+  const removed = validateStructuralPatch({
+    ...patch,
+    formulaOwnerDeltas: [{
+      kind: 'formula-rule-anchor', sheetId: 'sheet-1', ruleKind: 'data-validation', ruleId: 'dv-1',
+      beforeAddress: delta.beforeAddress,
+    }],
+  }, 'rows.inserted').formulaOwnerDeltas[0];
+  assert.equal(removed?.kind, 'formula-rule-anchor');
+  if (removed?.kind === 'formula-rule-anchor') {
+    assert.deepEqual(removed.beforeAddress, delta.beforeAddress);
+    assert.equal(removed.afterAddress, undefined);
+  }
+  assert.throws(() => validateStructuralPatch({
+    ...patch,
+    formulaOwnerDeltas: [{ kind: 'formula-rule-anchor', sheetId: 'sheet-1', ruleKind: 'data-validation', ruleId: 'dv-1' }],
+  }, 'rows.inserted'), /change an explicit anchor state/);
 });
 
 test('committed row-permutation structural patches are accepted by the protocol', () => {
   assert.deepEqual(validateStructuralPatch({
-    version: 8,
+    version: 9,
     mutationId: 'rows.permuted',
     formulaOwnerDeltas: [],
     definedNameOwnerDeltas: [],
     rangeOwnerDeltas: [],
   }, 'rows.permuted'), {
-    version: 8,
+    version: 9,
     mutationId: 'rows.permuted',
     formulaOwnerDeltas: [],
     definedNameOwnerDeltas: [],
@@ -348,7 +376,7 @@ test('committed row-permutation structural patches are accepted by the protocol'
 
 test('committed worksheet-rename structural patches are accepted by the protocol', () => {
   const patch = {
-    version: 8,
+    version: 9,
     mutationId: 'sheet.rename',
     formulaOwnerDeltas: [],
     definedNameOwnerDeltas: [],
@@ -365,16 +393,16 @@ test('Sheet Table rename patches accept every canonical formula-object owner and
     { kind: 'formula-object', ownerKind: 'data-view-field', viewId: 'view-1', fieldId: 'field-1', beforeFormula: '=Sales[Amount]', afterFormula: '=Orders[Amount]' },
     { kind: 'formula-object', ownerKind: 'cell-style-template', templateId: 'template-1', field: 'formula1', beforeFormula: '=Sales[Amount]', afterFormula: '=Orders[Amount]' },
   ];
-  const patch = { version: 8, mutationId: 'sheetTable.update', formulaOwnerDeltas, definedNameOwnerDeltas: [], rangeOwnerDeltas: [] };
+  const patch = { version: 9, mutationId: 'sheetTable.update', formulaOwnerDeltas, definedNameOwnerDeltas: [], rangeOwnerDeltas: [] };
   assert.equal(validateStructuralPatch(patch, 'sheetTable.update').formulaOwnerDeltas.length, formulaOwnerDeltas.length);
   assert.deepEqual(validateStructuralPatch({
-    version: 8,
+    version: 9,
     mutationId: 'sheetTable.update',
     formulaOwnerDeltas: [],
     definedNameOwnerDeltas: [],
     rangeOwnerDeltas: [],
   }, 'sheetTable.update'), {
-    version: 8,
+    version: 9,
     mutationId: 'sheetTable.update',
     formulaOwnerDeltas: [],
     definedNameOwnerDeltas: [],
@@ -393,7 +421,7 @@ test('defined-name structural patches reject identity drift, duplicate owners, a
     before: { name: 'LocalName', formula: '=A1', scope: 'sheet', sheetId: 'sheet-1' },
     after: { name: 'LocalName', formula: '=A2', scope: 'sheet', sheetId: 'sheet-1' },
   };
-  const patch = { version: 8, mutationId: 'rows.inserted', formulaOwnerDeltas: [], definedNameOwnerDeltas: [delta], rangeOwnerDeltas: [] };
+  const patch = { version: 9, mutationId: 'rows.inserted', formulaOwnerDeltas: [], definedNameOwnerDeltas: [delta], rangeOwnerDeltas: [] };
   assert.equal(validateStructuralPatch(patch, 'rows.inserted').definedNameOwnerDeltas.length, 1);
   assert.throws(() => validateStructuralPatch({ version: 1, mutationId: 'rows.inserted', formulaOwnerDeltas: [] }, 'rows.inserted'));
   assert.throws(() => validateStructuralPatch({ ...patch, definedNameOwnerDeltas: [delta, delta] }, 'rows.inserted'), /duplicate defined-name owner/);

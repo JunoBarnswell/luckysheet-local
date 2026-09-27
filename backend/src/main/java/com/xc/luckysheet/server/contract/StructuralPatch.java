@@ -22,7 +22,7 @@ public record StructuralPatch(
         @JsonProperty("definedNameOwnerDeltas") List<DefinedNameOwnerDelta> definedNameOwnerDeltas,
         @JsonProperty("rangeOwnerDeltas") List<RangeOwnerDelta> rangeOwnerDeltas
 ) {
-    public static final int VERSION = 8;
+    public static final int VERSION = 9;
 
     public record FormulaOwnerKey(String kind, String sheetId, Integer row, Integer column,
             String ruleKind, String ruleId, String field, String ownerKind, String ownerId,
@@ -429,6 +429,7 @@ public record StructuralPatch(
     @JsonInclude(JsonInclude.Include.NON_NULL)
     public record FormulaOwnerDelta(
             @JsonProperty("kind") String kind,
+            // Null encodes an absent explicit formulaAnchor side in v9 anchor deltas.
             @JsonProperty("beforeAddress") CellAddress beforeAddress,
             @JsonProperty("afterAddress") CellAddress afterAddress,
             @JsonProperty("before") FormulaOwnerState before,
@@ -457,13 +458,15 @@ public record StructuralPatch(
                     throw new IllegalArgumentException("StructuralPatch formula-cell owner delta is incomplete or mixed with rule state");
                 }
             } else if ("formula-rule-anchor".equals(kind)) {
-                if (beforeAddress == null || afterAddress == null || before != null || after != null
+                if ((beforeAddress == null && afterAddress == null) || before != null || after != null
                         || sheetId == null || sheetId.isBlank() || ruleId == null || ruleId.isBlank()
                         || ruleKind == null || !List.of("conditional-format", "data-validation").contains(ruleKind)
                         || field != null || beforeFormula != null || afterFormula != null
                         || beforeRanges != null || afterRanges != null
                         || ownerKind != null || ownerId != null || fieldId != null || viewId != null || templateId != null
-                        || !validAddress(beforeAddress) || !validAddress(afterAddress) || beforeAddress.equals(afterAddress)) {
+                        || beforeAddress != null && !validAddress(beforeAddress)
+                        || afterAddress != null && !validAddress(afterAddress)
+                        || beforeAddress != null && beforeAddress.equals(afterAddress)) {
                     throw new IllegalArgumentException("StructuralPatch formula-rule anchor owner delta is incomplete or invalid");
                 }
             } else if ("formula-rule".equals(kind)) {
