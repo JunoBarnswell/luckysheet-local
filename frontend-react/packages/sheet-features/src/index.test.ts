@@ -1742,6 +1742,76 @@ test('axis deletion retains sparse cell objects for history and clones only when
   }
 });
 
+test('remote column insertion rebases worksheet AutoFilter keys with their column addresses for undo and redo', () => {
+  const workbook = new WorkbookModel('unit-autofilter-history-rebase', 'AutoFilter history rebase');
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  runtime.execute('sheet.autoFilter.set', {
+    sheetId: sheet.id,
+    autoFilter: {
+      sheetId: sheet.id,
+      range: { sheetId: sheet.id, startRow: 0, endRow: 5, startColumn: 2, endColumn: 4 },
+      columns: { 2: { column: 2, showButton: true, hiddenButton: false } },
+      sortState: {
+        ref: { sheetId: sheet.id, startRow: 0, endRow: 5, startColumn: 2, endColumn: 4 },
+        conditions: [{ ref: { sheetId: sheet.id, startRow: 0, endRow: 5, startColumn: 2, endColumn: 2 }, descending: false }],
+      },
+    },
+  });
+
+  runtime.applyRemoteMutations([{
+    id: 'columns.inserted',
+    unitId: workbook.unitId,
+    sheetId: sheet.id,
+    params: { sheetId: sheet.id, at: 0, count: 1 },
+    affectedRanges: [{ sheetId: sheet.id, startRow: 0, endRow: sheet.rowCount - 1, startColumn: 0, endColumn: 0 }],
+  }], { revision: 1 });
+  assert.equal(sheet.autoFilter?.range.startColumn, 3);
+  assert.deepEqual(Object.keys(sheet.autoFilter!.columns), ['3']);
+  assert.equal(sheet.autoFilter!.columns[3]?.column, 3);
+  assert.equal(sheet.autoFilter!.sortState?.conditions[0]?.ref.startColumn, 3);
+
+  assert.equal(runtime.undo(), true);
+  assert.equal(sheet.autoFilter, undefined);
+  assert.equal(runtime.redo(), true);
+  assert.equal(sheet.autoFilter?.range.startColumn, 3);
+  assert.deepEqual(Object.keys(sheet.autoFilter!.columns), ['3']);
+  assert.equal(sheet.autoFilter!.columns[3]?.column, 3);
+  assert.equal(sheet.autoFilter!.sortState?.conditions[0]?.ref.startColumn, 3);
+});
+
+test('remote axis history invalidates AutoFilter undo carrying opaque preserved XML', () => {
+  const workbook = new WorkbookModel('unit-autofilter-opaque-history', 'AutoFilter opaque history');
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  runtime.execute('sheet.autoFilter.set', {
+    sheetId: sheet.id,
+    autoFilter: {
+      sheetId: sheet.id,
+      range: { sheetId: sheet.id, startRow: 0, endRow: 5, startColumn: 2, endColumn: 4 },
+      columns: { 2: { column: 2, showButton: true, hiddenButton: false } },
+      preservedXml: { opaqueColumnExtension: { column: 2 } },
+    },
+  });
+  runtime.clearHistory();
+  runtime.execute('sheet.autoFilter.remove', { sheetId: sheet.id });
+
+  runtime.applyRemoteMutations([{
+    id: 'columns.inserted',
+    unitId: workbook.unitId,
+    sheetId: sheet.id,
+    params: { sheetId: sheet.id, at: 0, count: 1 },
+    affectedRanges: [{ sheetId: sheet.id, startRow: 0, endRow: sheet.rowCount - 1, startColumn: 0, endColumn: 0 }],
+  }], { revision: 1 });
+
+  assert.equal(runtime.getHistoryDepth().undo, 0);
+  assert.equal(runtime.getInvalidHistoryEntries().length, 1);
+  assert.equal(runtime.undo(), false);
+  assert.equal(sheet.autoFilter, undefined);
+});
+
 test('sheet.freeze.set enforces the canonical pane contract before recording local history', () => {
   const workbook = new WorkbookModel('unit-freeze-pane-contract', 'Freeze Pane Contract');
   const runtime = new CommandRuntime(workbook);

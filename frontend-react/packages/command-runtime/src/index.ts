@@ -1,4 +1,4 @@
-import { WorkbookModel, isWorkbookCalculationContextEffect, normalizeCellDataForStorage, normalizeDefinedNameModel, readChartTextFormula, structuralRangeOwnerAffectedRanges, structuralRuleFormulaFields, writeChartTextFormula, type CellData, type ConditionalFormatRule, type DataSourceManifest, type DataValidationRule, type ProtectionAction, type RangeRef, type StructuralDefinedNameOwnerDelta, type StructuralFormulaOwnerDelta, type StructuralFormulaOwnerState, type StructuralFormulaRule, type StructuralRangeOwnerDelta, type StructuralReferenceOwnerIndex, type WorkbookCalculationContextEffect, type WorkbookTableModel, type WorksheetModel } from '@react-sheets/core-model';
+import { WorkbookModel, isWorkbookCalculationContextEffect, normalizeCellDataForStorage, normalizeDefinedNameModel, readChartTextFormula, structuralRangeOwnerAffectedRanges, structuralRuleFormulaFields, writeChartTextFormula, type AutoFilterModel, type CellData, type ConditionalFormatRule, type DataSourceManifest, type DataValidationRule, type ProtectionAction, type RangeRef, type SortStateModel, type StructuralDefinedNameOwnerDelta, type StructuralFormulaOwnerDelta, type StructuralFormulaOwnerState, type StructuralFormulaRule, type StructuralRangeOwnerDelta, type StructuralReferenceOwnerIndex, type WorkbookCalculationContextEffect, type WorkbookTableModel, type WorksheetModel } from '@react-sheets/core-model';
 import { collectFormulaDependencies, collectFormulaReferenceNodes, formatFormula, mapAstStructuralReferences, parseFormula, RangeIndex, ReferenceTransformDomain, MAX_COLUMN_INDEX, MAX_ROW_INDEX, type FormulaRuleReferenceFailureReason, type FormulaRuleReferenceOwnerIdentity } from '@react-sheets/formula-engine';
 
 export interface MutationInfo<P = unknown> {
@@ -912,6 +912,56 @@ function isFormulaSourceKey(key: string): boolean {
     || normalized.endsWith('formula');
 }
 
+function transformAutoFilterModel(value: Record<string, unknown>, delta: StructuralDelta): TransformValueResult | undefined {
+  if (typeof value.sheetId !== 'string' || !isValidRangeRef(value.range) || !isRecord(value.columns)) return undefined;
+  const filter = value as unknown as AutoFilterModel;
+  if (filter.range.sheetId !== filter.sheetId) return { value, safe: false };
+  if (filter.sheetId !== delta.sheetId) return { value: structuredClone(filter), safe: true };
+  if (Object.keys(value).some((key) => !['sheetId', 'range', 'columns', 'sortState', 'preservedXml'].includes(key))
+    || (filter.preservedXml !== undefined && filter.preservedXml !== null)) {
+    return { value, safe: false };
+  }
+
+  const range = transformRange(filter.range, delta);
+  if (!range) return { value, safe: false };
+  const columns: AutoFilterModel['columns'] = {};
+  for (const [key, column] of Object.entries(filter.columns)) {
+    const index = Number(key);
+    if (!Number.isSafeInteger(index) || String(index) !== key || !isRecord(column) || column.column !== index
+      || Object.keys(column).some((field) => !['column', 'criterion', 'showButton', 'hiddenButton', 'preservedXml'].includes(field))
+      || (column.preservedXml !== undefined && column.preservedXml !== null)) {
+      return { value, safe: false };
+    }
+    const mapped = delta.axis === 'column' ? transformIndex(index, delta) : index;
+    if (mapped === undefined || mapped < range.startColumn || mapped > range.endColumn || columns[mapped] !== undefined) {
+      return { value, safe: false };
+    }
+    columns[mapped] = { ...column, column: mapped } as AutoFilterModel['columns'][number];
+  }
+
+  let sortState = filter.sortState;
+  if (sortState !== undefined) {
+    if (!isRecord(sortState) || !isValidRangeRef(sortState.ref) || !Array.isArray(sortState.conditions)
+      || Object.keys(sortState).some((key) => !['ref', 'conditions'].includes(key))) {
+      return { value, safe: false };
+    }
+    const ref = transformRange(sortState.ref, delta);
+    if (!ref) return { value, safe: false };
+    const conditions: SortStateModel['conditions'] = [];
+    for (const condition of sortState.conditions) {
+      if (!isRecord(condition) || !isValidRangeRef(condition.ref)
+        || Object.keys(condition).some((key) => !['ref', 'descending', 'customList'].includes(key))) {
+        return { value, safe: false };
+      }
+      const conditionRef = transformRange(condition.ref, delta);
+      if (!conditionRef) return { value, safe: false };
+      conditions.push({ ...condition, ref: conditionRef } as SortStateModel['conditions'][number]);
+    }
+    sortState = { ...sortState, ref, conditions };
+  }
+  return { value: { ...filter, range, columns, sortState }, safe: true };
+}
+
 function transformPayload(
   value: unknown,
   delta: StructuralDelta,
@@ -957,6 +1007,8 @@ function transformPayload(
     const mapped = transformRange(value, delta);
     return mapped ? { value: mapped, safe: true } : { value, safe: false };
   }
+  const autoFilter = transformAutoFilterModel(value, delta);
+  if (autoFilter) return autoFilter;
 
   const result: Record<string, unknown> = {};
   const structuralAxis = mutationAxis(id);

@@ -2051,3 +2051,13 @@ wire 与提交端也不能直接把 Java 规划出的不同结果送回：`Opera
 六轮静态自审：①确认快照调用仅服务整行/整列删除，变换会摘除被删 band 内全部稀疏 cells；②检查 `CellMatrix.delete` 的 hydrated 删除与 deferred overlay 删除路径，不会将移除对象写回活动矩阵；③确认 `cell.restore` 是本地 undo、事务回滚及远端重放共用入口，均在 `set` 前复制；④保留 `StructuralTransformResult.removedCells` 的 detached-copy 公共语义，避免把本地 history 优化扩展成跨调用方别名变化；⑤redo 仍重放原 delete mutation，history-held old value 不被恢复后的 cell 写入修改；⑥区分峰值与总量：只消除 history 侧的重复深拷贝，`planStructuralCells` 的 removed-result 副本、第二次稀疏遍历、每 cell inverse mutation 包装、undo 序列化数据及恢复时复制仍存在，不能声称已解决批量 StructuralPatch 或 undo 网络成本。
 
 本轮确认并修复 **1 个根因**，未达到每轮至少 30 个独立真实问题的目标；不把一份快照在本地历史、恢复及协同传输的多个消费者重复计数。只做静态审查和添加回归源码；没有运行测试、typecheck、build、浏览器、Excel 或性能基准。Java 服务端唯一规划权、owner-complete 可逆 patch、批量 history 表示和最终实测仍未完成。
+
+### 2026-09-28 continuation — typed AutoFilter coordinate-map rebase
+
+沿远端插列 → `CommandRuntime.transformHistoryAgainstRemote` → `transformPayload` → `autoFilter.set` undo/redo 检查确认 **1 个独立协同正确性问题**：`AutoFilterModel.columns` 是以绝对工作表列号为 key 的 `Record<Column, AutoFilterColumn>`，每个 value 又重复该 `column`；递归键名转换只改 value 的 `column`，不改数字 record key。对筛选器先执行 remove、再收到位于其左侧的远端 column insert 后，undo inverse 中出现 key/value 不一致的 AutoFilter，`normalizeAutoFilterModel` 拒绝恢复，用户无法 undo。`sortState` 的 range 引用也需要与同一列映射保持一致。
+
+修复在 history payload 递归之前识别并按完整 AutoFilter 类型整体转换：同步映射范围、sortState 的 ref/条件范围、columns 数字 key 和 value.column；不递归猜测 criterion 等非坐标 payload。遇到未知字段或 `preservedXml` 等不透明同表负载时，拒绝重基并让该 history entry 失效，保留远端已提交状态及原始 opaque 数据。新增行源码覆盖工作表 AutoFilter 的远端插列 + undo/redo key-value 一致性，以及 opaque preserved XML 下 history fail-close。
+
+六轮静态自审：①从 filter normalizer 和消费者确认 columns key/value 都是绝对列坐标，而非仅展示 label；②确认 range、sortState.ref、条件 ref、columns key/value 用同一 column delta 变换；③核对插入前序列、筛选器局部轴变换、历史参数重基、undo 与 redo 的方向和状态；④检查 worksheet AutoFilter 和嵌套 Sheet Table AutoFilter 共享同一 typed payload 可识别形状；⑤未知字段/opaque XML 不被通用递归篡改，而是只失效不可安全变换的 history，不回滚远端 revision；⑥工作量随 filter columns 与 sort criteria 数量增长，不扫描 cells/workbook，其他 mutation payload 和公式处理入口不变。
+
+本轮确认并处理 **1 个新根因**，未达到每轮至少 30 个真实问题；没有按 key/value、worksheet/Table、undo/redo 的多个表现重复计数。只做静态审查、加回归源码并运行 `git diff --check`；未运行本地测试/build/typecheck/browser/Excel/benchmark。Java 唯一结构 planner、owner-complete patch 与最终实测仍未完成。
