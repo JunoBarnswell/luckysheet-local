@@ -143,7 +143,7 @@ test('CommandRuntime executes a registered command and tracks history', () => {
   unsubscribe();
 });
 
-test('CommandRuntime blocks replay after a post-mutation participant failure until snapshot recovery', () => {
+test('CommandRuntime finishes committed replay before fail-stopping on a participant failure', () => {
   const registerCellSet = (runtime: CommandRuntime) => runtime.registry.registerMutation({
     id: 'cell.set',
     handler: (item, context) => {
@@ -163,8 +163,11 @@ test('CommandRuntime blocks replay after a post-mutation participant failure unt
   const workbook = new WorkbookModel('unit-replay-recovery', 'Replay Recovery');
   const runtime = new CommandRuntime(workbook);
   registerCellSet(runtime);
-  runtime.onMutation((_mutation, source) => {
-    if (source === 'remote') throw new Error('derived projection synchronization failed');
+  const observedRemoteRows: number[] = [];
+  runtime.onMutation((mutation, source) => {
+    if (source !== 'remote') return;
+    observedRemoteRows.push((mutation.params as { row: number }).row);
+    throw new Error('derived projection synchronization failed');
   });
 
   const incoming = remoteMutation(workbook.unitId, 'committed');
@@ -180,14 +183,15 @@ test('CommandRuntime blocks replay after a post-mutation participant failure unt
       && error.message.includes('derived projection synchronization failed'),
   );
   assert.equal(workbook.getSheet('sheet-1').cells.get(2, 3)?.value, 'committed');
-  assert.equal(workbook.getSheet('sheet-1').cells.get(3, 4), undefined);
+  assert.equal(workbook.getSheet('sheet-1').cells.get(3, 4)?.value, 'must-wait-for-resync');
+  assert.deepEqual(observedRemoteRows, [2, 3]);
   assert.equal(runtime.isMutationRecoveryRequired, true);
-  const partiallyAppliedSnapshot = workbook.snapshot();
+  const recoveredSnapshot = workbook.snapshot();
   assert.throws(
     () => runtime.applyRemoteMutations([incoming, laterMutation], { revision: 1 }),
     (error: unknown) => error instanceof MutationRecoveryRequiredError && error.code === 'MUTATION_RECOVERY_REQUIRED',
   );
-  assert.deepEqual(workbook.snapshot(), partiallyAppliedSnapshot);
+  assert.deepEqual(workbook.snapshot(), recoveredSnapshot);
 
   const healthyWorkbook = new WorkbookModel('unit-replay-healthy', 'Replay Healthy');
   const healthyRuntime = new CommandRuntime(healthyWorkbook);
@@ -200,6 +204,92 @@ test('CommandRuntime blocks replay after a post-mutation participant failure unt
   healthyRuntime.applyRemoteMutations([remoteMutation(healthyWorkbook.unitId, 'accepted')], { revision: 1 });
   assert.equal(healthyWorkbook.getSheet('sheet-1').cells.get(2, 3)?.value, 'accepted');
   assert.equal(healthyRuntime.isMutationRecoveryRequired, false);
+});
+
+test('CommandRuntime advances undo history before fail-stopping on a replay observer failure', () => {
+  const workbook = new WorkbookModel('unit-undo-observer-recovery', 'Undo Observer Recovery');
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  const runtime = new CommandRuntime(workbook);
+  runtime.registry.registerMutation({
+    id: 'cell.set',
+    handler: (item, context) => {
+      const params = item.params as { row: number; column: number; value: string };
+      context.workbook.getSheet(item.sheetId).cells.set(params.row, params.column, { value: params.value });
+    },
+    metadata: cellSetMetadata,
+  });
+  runtime.registry.registerMutation({
+    id: 'cell.restore',
+    handler: (item, context) => {
+      const params = item.params as { row: number; column: number; previous?: { value: string } };
+      const cells = context.workbook.getSheet(item.sheetId).cells;
+      if (params.previous) cells.set(params.row, params.column, params.previous);
+      else cells.delete(params.row, params.column);
+    },
+    metadata: cellRestoreMetadata,
+  });
+  runtime.registry.registerCommand({
+    id: 'cell.set',
+    execute: (params: { row: number; column: number; value: string }, context) => {
+      const previous = sheet.cells.get(params.row, params.column);
+      const affectedRanges = cellRange({ ...params, sheetId: sheet.id });
+      context.applyMutation({
+        id: 'cell.set', unitId: workbook.unitId, sheetId: sheet.id, params, affectedRanges,
+        inverse: [{
+          id: 'cell.restore', unitId: workbook.unitId, sheetId: sheet.id,
+          params: { row: params.row, column: params.column, previous }, affectedRanges,
+        }],
+        apply: () => sheet.cells.set(params.row, params.column, { value: params.value }),
+      });
+      return { operationId: context.operationId, mutationCount: 1, affectedRanges };
+    },
+  });
+
+  const replayNotifications: string[] = [];
+  runtime.onMutation((_mutation, source) => {
+    if (source === 'undo') throw new Error('undo projection synchronization failed');
+  });
+  runtime.onHistoryReplay((source) => replayNotifications.push(source));
+  runtime.execute('cell.set', { row: 1, column: 1, value: 'A' });
+
+  assert.throws(() => runtime.undo(), (error: unknown) => error instanceof MutationRecoveryRequiredError
+    && error.message.includes('undo projection synchronization failed'));
+  assert.equal(sheet.cells.get(1, 1), undefined);
+  assert.deepEqual(runtime.getHistoryDepth(), { undo: 0, redo: 1 });
+  assert.deepEqual(replayNotifications, ['undo']);
+  assert.equal(runtime.isMutationRecoveryRequired, true);
+});
+
+test('CommandRuntime applies every committed owner patch before fail-stopping on observer failure', () => {
+  const workbook = new WorkbookModel('unit-committed-patch-observer-recovery', 'Committed Patch Observer Recovery');
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  const formulas = ['=A1', '=B1'];
+  const deltas: StructuralFormulaOwnerDelta[] = formulas.map((formula, row) => ({
+    kind: 'formula-cell',
+    beforeAddress: { sheetId: sheet.id, row, column: 0 },
+    afterAddress: { sheetId: sheet.id, row, column: 0 },
+    before: { formula, sourceFormula: null, barcodeFormula: null },
+    after: { formula: `${formula}+1`, sourceFormula: null, barcodeFormula: null },
+  }));
+  formulas.forEach((formula, row) => sheet.cells.set(row, 0, { value: null, formula }));
+  const runtime = new CommandRuntime(workbook);
+  const observedOwners: number[] = [];
+  runtime.onMutation((mutation, source) => {
+    if (source !== 'remote') return;
+    observedOwners.push((mutation.structuralFormulaOwnerDeltas?.[0] as Extract<StructuralFormulaOwnerDelta, { kind: 'formula-cell' }>).afterAddress.row);
+    throw new Error('committed projection synchronization failed');
+  });
+  const mutations: MutationInfo[] = deltas.map((delta) => ({
+    id: 'rows.inserted', unitId: workbook.unitId, sheetId: sheet.id,
+    params: { at: 0, count: 1 }, affectedRanges: [], structuralFormulaOwnerDeltas: [delta],
+  }));
+
+  assert.throws(() => runtime.applyCommittedStructuralPatches('server-operation', mutations, 3),
+    (error: unknown) => error instanceof MutationRecoveryRequiredError
+      && error.message.includes('committed projection synchronization failed'));
+  assert.deepEqual(formulas.map((_formula, row) => sheet.cells.get(row, 0)?.formula), ['=A1+1', '=B1+1']);
+  assert.deepEqual(observedOwners, [0, 1]);
+  assert.equal(runtime.isMutationRecoveryRequired, true);
 });
 
 test('CommandRuntime restores chart linked formulas through local history', () => {

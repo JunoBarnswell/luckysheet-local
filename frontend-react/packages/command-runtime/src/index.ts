@@ -1481,14 +1481,18 @@ export class CommandRuntime {
     if (!entry) return false;
     if (entry.status !== 'active') return false;
     this.preflightHistory(entry.inversePlan, 'undo');
-    this.applyHistory(entry.inversePlan, 'undo');
+    const observerFailures: unknown[] = [];
+    this.applyHistory(entry.inversePlan, 'undo', true, observerFailures);
     this.undoStack.pop();
     this.redoStack.push(entry);
-    try {
-      for (const listener of this.historyReplayListeners) listener('undo', entry);
-    } catch (error) {
-      throw this.requireMutationRecovery(error);
+    for (const listener of this.historyReplayListeners) {
+      try {
+        listener('undo', entry);
+      } catch (error) {
+        if (observerFailures.length === 0) observerFailures.push(error);
+      }
     }
+    if (observerFailures.length > 0) throw this.requireMutationRecovery(observerFailures[0]);
     return true;
   }
 
@@ -1499,14 +1503,18 @@ export class CommandRuntime {
     if (!entry) return false;
     if (entry.status !== 'active') return false;
     this.preflightHistory(entry.forwardMutations, 'redo');
-    this.applyHistory(entry.forwardMutations, 'redo');
+    const observerFailures: unknown[] = [];
+    this.applyHistory(entry.forwardMutations, 'redo', true, observerFailures);
     this.redoStack.pop();
     this.undoStack.push(entry);
-    try {
-      for (const listener of this.historyReplayListeners) listener('redo', entry);
-    } catch (error) {
-      throw this.requireMutationRecovery(error);
+    for (const listener of this.historyReplayListeners) {
+      try {
+        listener('redo', entry);
+      } catch (error) {
+        if (observerFailures.length === 0) observerFailures.push(error);
+      }
     }
+    if (observerFailures.length > 0) throw this.requireMutationRecovery(observerFailures[0]);
     return true;
   }
 
@@ -1525,8 +1533,9 @@ export class CommandRuntime {
     // them against an isolated snapshot first so a later rejection cannot
     // leave the live workbook partially changed.
     this.preflightHistory(items, 'remote');
+    const observerFailures: unknown[] = [];
     try {
-      this.applyHistory(items, 'remote');
+      this.applyHistory(items, 'remote', true, observerFailures);
       for (const item of items) {
         const remote = item.structuralImpactRanges?.length
           ? { ...item, affectedRanges: [...item.affectedRanges, ...item.structuralImpactRanges] }
@@ -1536,6 +1545,7 @@ export class CommandRuntime {
       if (remoteContext.revision !== undefined) {
         this.currentRevision = Math.max(this.currentRevision, remoteContext.revision);
       }
+      if (observerFailures.length > 0) throw this.requireMutationRecovery(observerFailures[0]);
     } catch (error) {
       if (this.recoveryRequiredError) throw this.recoveryRequiredError;
       throw this.requireMutationRecovery(error);
@@ -1604,6 +1614,7 @@ export class CommandRuntime {
     }
 
     try {
+      const observerFailures: unknown[] = [];
       for (let index = 0; index < patchesToApply.length; index += 1) {
         const item = patchesToApply[index]!;
         const committed = patched[index]!;
@@ -1625,7 +1636,13 @@ export class CommandRuntime {
           definedNameOwnerDeltas: definedNameDeltas,
           rangeOwnerDeltas: rangeDeltas,
         };
-        for (const listener of this.mutationListeners) listener(committed, 'remote', effect);
+        for (const listener of this.mutationListeners) {
+          try {
+            listener(committed, 'remote', effect);
+          } catch (error) {
+            if (observerFailures.length === 0) observerFailures.push(error);
+          }
+        }
       }
 
       if (entry) {
@@ -1658,6 +1675,7 @@ export class CommandRuntime {
       }
 
       this.setRevision(Math.max(this.currentRevision, revision));
+      if (observerFailures.length > 0) throw this.requireMutationRecovery(observerFailures[0]);
     } catch (error) {
       throw this.requireMutationRecovery(error);
     }
@@ -1720,7 +1738,12 @@ export class CommandRuntime {
     }
   }
 
-  private applyHistory(items: readonly MutationInfo[], source: MutationSource, requireRecoveryOnFailure = true): void {
+  private applyHistory(
+    items: readonly MutationInfo[],
+    source: MutationSource,
+    requireRecoveryOnFailure = true,
+    observerFailures?: unknown[],
+  ): void {
     const issues: MutationRegistryIssue[] = [];
     for (const item of items) {
       if (item.unitId !== this.workbook.unitId) {
@@ -1789,7 +1812,12 @@ export class CommandRuntime {
           );
         }
         for (const listener of this.mutationListeners) {
-          listener(item, source, notificationEffect);
+          try {
+            listener(item, source, notificationEffect);
+          } catch (error) {
+            if (!observerFailures) throw error;
+            if (observerFailures.length === 0) observerFailures.push(error);
+          }
         }
       }
     } catch (error) {

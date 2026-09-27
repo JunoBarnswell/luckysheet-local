@@ -2138,3 +2138,13 @@ history AutoFilter 专用变换现要求主 range、sortState.ref 及每个 cond
 六轮静态自审：①无 pending 时游标只越过已完成应用的 remoteMutations；②本地操作在此前远端变更后创建时，后续只重基新提交；③重基中途抛错时分类缓存与 queue 均保留旧态；④journal persist 拒绝时 queue splice 不发生，分类缓存与游标不前移；⑤persist 成功后按顺序提交 queue、分类与游标，且不可重写的 in-flight operation 保持原请求；⑥remote revision 已落地但 journal 写入失败时，既有同步 fail-close 能看到原错，后续恢复前不会将已改写半态冒充成功。初步差异检查无空白错误；回归源码未运行，不报告测试通过。
 
 本轮确认并修复 **2 个真实根因**，仍未达到每轮 30 个独立问题的目标；不把“空队列游标”和“非空队列部分写入”拆成更多调用点计数。未运行测试、typecheck、build、浏览器、Excel 或性能实测。Java 唯一结构规划权、完整可逆 StructuralPatch、跨 participants 的 staged replay 与最终实测仍未完成；PR #345 继续保持 draft。
+
+### 2026-09-28 continuation — finish committed replay before observer fail-stop
+
+沿 `CommandRuntime.applyRemoteMutations`、`applyCommittedStructuralPatches`、undo/redo 的 `applyHistory` 调用链确认 **1 个独立的已提交状态收敛根因**：同步 mutation listener 在每项模型/owner patch 后立即执行；listener 抛错会截断同一 operation 的后续 mutation/patch，远端路径也因此无法先完成 history transform 与 revision 前移，undo/redo 则留下已改模型但未移动的 history 栈。服务器 operation 已提交或本地 replay 已开始时，这会形成“状态只应用一部分、revision/history 看起来未提交”的可重放窗口。
+
+修复保留每项 mutation handler 与其 listener 的原有顺序，继续后续 handler 前不改变成功路径的派生依赖；在远端批次、服务端 owner-patch ACK、undo/redo 中记录首个 listener 异常，同时继续完成该批模型/owner 更新及相应 history/revision 收敛，最后进入既有 `MutationRecoveryRequiredError` fail-stop。后续 listeners 仍按原序尝试，以便其它 participants 收到提交事实；异常没有被吞掉，恢复锁与重同步仍是必需条件。新增回归源码覆盖远端第二项 mutation、undo history-stack 收敛及多个服务端 formula-owner patch；测试未运行。此修复只关闭 listener 中断造成的 operation 部分应用窗口，不提供模型、FormulaEngine、projection 与 journal 的跨 participant 原子事务，也不替代 Canonical StructuralPatch。
+
+六轮静态自审：①确认 preflight rejection 仍在任何 live handler 前 fail-close，未被 observer-error 收集逻辑放行；②确认 handler 与同项 listener 仍交替执行，保留 mutation 之间现有派生计算顺序；③确认只保留第一个异常但会尝试剩余 listeners 与 mutation，最终仍设置 recovery lock 并抛出原始原因；④确认远端 `transformHistoryAgainstRemote` 和 revision advancement 在 observer failure 抛出前完成，且 recovery lock 阻止当前 runtime 再次 apply；⑤确认 undo/redo 在报告 observer failure 前同步移动两条 history stack，并仍运行 history replay observers；⑥确认 server ACK 的 owner deltas、history reconciliation 与 revision 先完成再 fail-stop，并复核多 owner、无本地 history、常规成功与既有 preflight rejection 分支。
+
+本轮修复 **1 个真实跨入口根因**，没有达到每轮至少 30 个独立问题的目标，不把 remote、ACK、undo、redo 的相同 listener 中断原因重复计数。只进行源码审查与 `git diff --check`；新增回归测试源码未执行，未运行测试、typecheck、build、浏览器、Excel 或 benchmark。Java 唯一结构规划权、完整可逆 StructuralPatch、完整 staged replay/participant transaction 与最终实测仍未完成；PR #345 继续保持 draft。
