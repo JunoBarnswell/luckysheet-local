@@ -516,7 +516,7 @@ describe('canonical row permutation metadata plan', () => {
     sheet.cells.set(0, 0, { value: 'first' });
     sheet.cells.set(1, 0, { value: 'second' });
     sheet.conditionalFormats.push({
-      id: 'cf-colors', sheetId: sheet.id, ranges: [range(sheet.id, 0, 0, 3, 3)], type: 'color-scale',
+      id: 'cf-colors', sheetId: sheet.id, ranges: [range(sheet.id, 0, 0, 3, 3)], type: 'colorScale',
     });
     sheet.dataValidations.push({
       id: 'dv-values', sheetId: sheet.id, ranges: [range(sheet.id, 0, 0, 4, 4)], type: 'list',

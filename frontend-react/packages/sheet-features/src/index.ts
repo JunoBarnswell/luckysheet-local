@@ -864,7 +864,7 @@ function isConditionalAddMutation(value: unknown): value is AddConditionalFormat
   const ranges = rule.ranges;
   const ruleSheetId = rule.sheetId as string;
   if (ranges.length === 0
-    || !ranges.every((range) => isRange(range) && range.sheetId === ruleSheetId
+    || !ranges.every((range: unknown) => isRange(range) && range.sheetId === ruleSheetId
       && range.endRow < MAX_SHEET_ROW_COUNT && range.endColumn < MAX_SHEET_COLUMN_COUNT)) return false;
   try {
     normalizeConditionalFormatRule(rule as unknown as ConditionalFormatRule);
@@ -915,7 +915,7 @@ function isDataValidationAddMutation(value: unknown): value is AddDataValidation
   const ranges = rule.ranges;
   const ruleSheetId = rule.sheetId as string;
   if (ranges.length === 0
-    || !ranges.every((range) => isRange(range) && range.sheetId === ruleSheetId
+    || !ranges.every((range: unknown) => isRange(range) && range.sheetId === ruleSheetId
       && range.endRow < MAX_SHEET_ROW_COUNT && range.endColumn < MAX_SHEET_COLUMN_COUNT)) return false;
   try {
     normalizeDataValidationRule(rule as unknown as DataValidationRule);

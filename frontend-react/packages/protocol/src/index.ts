@@ -1,4 +1,4 @@
-import { assertCanonicalWorkbookHyperlinks, createPivotCollator, normalizePivotRefreshPolicy, parsePivotCalculatedItemFormula, PIVOT_MAX_MEMBER_COUNT } from '@react-sheets/core-model';
+import { assertCanonicalWorkbookHyperlinks, createPivotCollator, normalizePivotRefreshPolicy, parsePivotCalculatedItemFormula, PIVOT_MAX_MEMBER_COUNT, structuralRangeOwnerAffectedRanges } from '@react-sheets/core-model';
 import type {
   DataSourceManifest,
   ChartTextFormulaField,
@@ -2909,13 +2909,7 @@ function validateCommittedOperationEnvelope(value: unknown): CommittedOperationE
           sheetId: address.sheetId, startRow: address.row, endRow: address.row, startColumn: address.column, endColumn: address.column,
         }))
         : delta.kind === 'formula-rule' ? [...delta.beforeRanges, ...delta.afterRanges] : []);
-      const rangeOwnerImpact = structuralPatch.rangeOwnerDeltas.flatMap((delta) => delta.ownerKind === 'data-region'
-        ? [delta.before.range, delta.after.range]
-        : delta.ownerKind === 'conditional-format' || delta.ownerKind === 'data-validation'
-          ? [...delta.before, ...delta.after]
-        : delta.ownerKind === 'validation-list-source'
-          ? [delta.before, delta.after, ...delta.beforeOwnerRanges, ...delta.afterOwnerRanges]
-          : [delta.before, delta.after]);
+      const rangeOwnerImpact = structuralPatch.rangeOwnerDeltas.flatMap(structuralRangeOwnerAffectedRanges);
       const expectedImpact = [...formulaImpact, ...rangeOwnerImpact];
       const uniqueExpected = [...new Map(expectedImpact.map((range) => [
         JSON.stringify([range.sheetId, range.startRow, range.endRow, range.startColumn, range.endColumn]), range,

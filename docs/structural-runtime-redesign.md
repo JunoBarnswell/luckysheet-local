@@ -1904,3 +1904,9 @@ PR CI 的两次独立构建都在 `SheetRuleLifecycle.indexRulesById` 报出同�
 终审复核发现另一个独立 fail-close 根因，累计 **33 项**：规范快照验证器遍历了 cell payload，却没有验证行列对象键；canonical snapshot/migration 入口因而会放过前导零和超出安全整数范围的键，deferred worksheet 后续才可能报错。现在 deferred JSON、JSON import 和 canonical snapshot validator 共用同一坐标解析器，规范快照入口会立即拒绝坏键；新增源码回归覆盖 validator 与 stored-snapshot migration 的拒绝路径。
 
 六个终审视角：①规范键与 JSON 数字序列化的一致性；②deferred loader 的惰性解析时点；③直接 snapshot validator 与 stored-snapshot migration 的拒绝一致性；④前导零和超安全整数的双轴覆盖；⑤合法坐标 parser 语义与既有 JSON/import/deferred 消费者保持一致；⑥只在 snapshot owner 边界遍历已存 cell，而不改变之后的稀疏读取复杂度。此次仍只做静态审查，源码测试未运行，也未运行 typecheck、build、browser、Excel 或 benchmark；运行时表现和最终互操作验收仍待完成。
+
+### 2026-09-27 automatic canonical-build correction
+
+推送 head `92c653f7` 后，两个 GitHub `canonical-build` job 报出同一组 **28 条 TypeScript 诊断**。静态对照日志与本提交 diff 后，去重为 8 个根因并修复：①command-runtime、protocol、collaboration 各自用联合类型 ternary 展开 owner range，未能区分单 range 与 readonly range-array；现统一通过 core-model `structuralRangeOwnerAffectedRanges` 投影。②StructuralRangeOwnerState 来自 Map 状态表，TypeScript 不能推断它和原 delta 的 ownerKind 相关；现在在写入前显式核验 state/owner kind。③验证规则 owner ranges 需要独立复制为可写数组；删除已过期、缺少 ownerRanges 的旧写入分支。④inverse/state switch 显式按 ownerKind 穷尽映射并对未知类型 fail-close。⑤CF/DV 成对循环丢失 rule 类型与 ownerKind 的关联；用实际 `listSource` 字段存在性窄化。⑥条件验证器从 unknown 解构数组后 callback 参数隐式 any；显式标为 unknown，再由 range guard 收窄。⑦一项 CF 回归 fixture 使用非契约枚举 `color-scale`，改为 canonical `colorScale`。⑧消费只读范围结果时明确复制为 owner 可写 DTO，避免 readonly/mutable 边界混用。
+
+两条自动 job 的错误位置、相同 head 和重复诊断已核对；本次不把 28 条类型报错拆成 28 个业务问题。没有在本地执行测试、typecheck、build、browser、Excel 或 benchmark。上述修复仍需由下一次 push 的 CI 门禁验证；PR 保持 draft。

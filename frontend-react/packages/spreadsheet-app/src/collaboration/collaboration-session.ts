@@ -1,4 +1,5 @@
 import type { CommandRuntime, MutationInfo } from '@react-sheets/command-runtime';
+import { structuralRangeOwnerAffectedRanges } from '@react-sheets/core-model';
 import type {
   ApiError,
   CommittedOperationEnvelope,
@@ -51,15 +52,8 @@ function structuralPatchImpactRanges(
     }
   }
   for (const delta of patch.rangeOwnerDeltas) {
-    const deltaRanges: StructuralImpactRange[] = delta.ownerKind === 'data-region'
-      ? [delta.before.range, delta.after.range]
-      : delta.ownerKind === 'validation-list-source'
-        ? [delta.before, delta.after, ...delta.beforeOwnerRanges, ...delta.afterOwnerRanges]
-        : delta.ownerKind === 'conditional-format' || delta.ownerKind === 'data-validation'
-          ? [...delta.before, ...delta.after]
-      : [delta.before, delta.after];
-    for (const range of deltaRanges) {
-      ranges.set(JSON.stringify([range.sheetId, range.startRow, range.endRow, range.startColumn, range.endColumn]), range);
+    for (const range of structuralRangeOwnerAffectedRanges(delta)) {
+      ranges.set(JSON.stringify([range.sheetId, range.startRow, range.endRow, range.startColumn, range.endColumn]), { ...range });
     }
   }
   return [...ranges.values()];

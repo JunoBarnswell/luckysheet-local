@@ -1030,7 +1030,7 @@ function planMovedRangeOwnerDeltas(
         }
         ids.add(rule.id);
         if (structuralRuleFormulaFields(rule).size > 0
-          || ownerKind === 'data-validation' && rule.listSource?.kind === 'range') continue;
+          || ownerKind === 'data-validation' && 'listSource' in rule && rule.listSource?.kind === 'range') continue;
         const afterRanges = rule.ranges.map((range) => moved(range) ?? Object.freeze({ ...range }));
         if (sameStructuralMetadata(rule.ranges, afterRanges)) continue;
         changes.push(Object.freeze({
@@ -1300,7 +1300,7 @@ function planRuleRangeDeltas(
       for (const rule of afterRules) afterById.set(rule.id, afterById.has(rule.id) ? null : rule);
       for (const before of beforeRules) {
         if (structuralRuleFormulaFields(before).size > 0
-          || ownerKind === 'data-validation' && before.listSource?.kind === 'range') continue;
+          || ownerKind === 'data-validation' && 'listSource' in before && before.listSource?.kind === 'range') continue;
         const after = afterById.get(before.id);
         if (!before.id.trim() || beforeIdCounts.get(before.id) !== 1 || !after || after.sheetId !== beforeSheet.id
           || structuralRuleFormulaFields(after).size > 0

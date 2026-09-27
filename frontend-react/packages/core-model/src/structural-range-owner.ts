@@ -39,3 +39,20 @@ export type StructuralRangeOwnerDelta =
     readonly before: readonly Readonly<RangeRef>[];
     readonly after: readonly Readonly<RangeRef>[];
   };
+
+export function structuralRangeOwnerAffectedRanges(delta: StructuralRangeOwnerDelta): readonly Readonly<RangeRef>[] {
+  switch (delta.ownerKind) {
+    case 'data-region':
+      return [delta.before.range, delta.after.range];
+    case 'conditional-format':
+    case 'data-validation':
+      return [...delta.before, ...delta.after];
+    case 'validation-list-source':
+      return [delta.before, delta.after, ...delta.beforeOwnerRanges, ...delta.afterOwnerRanges];
+    case 'workbook-table':
+    case 'data-source':
+    case 'sheet-table':
+      return [delta.before, delta.after];
+  }
+  throw new Error('STRUCTURAL_PATCH_INVARIANT: unsupported range owner');
+}
