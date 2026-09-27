@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { CommandRuntime } from '@react-sheets/command-runtime';
 import { WorkbookModel } from '@react-sheets/core-model';
+import type { CommittedOperationEnvelope } from '@react-sheets/protocol';
 import { createCellSetMutationParams, createPasteSpecialSpec } from '@react-sheets/sheet-features';
 import { registerSpreadsheetFeatures } from './feature-registry';
 import { DrawingRuntime } from './features/drawing';
@@ -126,7 +127,7 @@ describe('WorkbookSession collaboration integration', () => {
     registerSpreadsheetFeatures(runtime, new DrawingRuntime());
     const session = new CollaborationSession(runtime);
 
-    const skippedRevision = {
+    const skippedRevision: CommittedOperationEnvelope = {
       schema: 'OperationEnvelope', clientSessionId: 'fixture-session',
       operationId: 'remote-op-after-gap',
       unitId: 'wb-collab-gap',
@@ -147,7 +148,7 @@ describe('WorkbookSession collaboration integration', () => {
         affectedRanges: [{ sheetId: 'sheet-1', startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }],
       }],
       createdAt: new Date().toISOString(),
-    } as const;
+    };
     assert.throws(() => session.applyRemote(skippedRevision), /COLLABORATION_REVISION_GAP: expected revision 1, received 2/);
     assert.throws(() => session.loadCommittedHistory([skippedRevision], 0), /COLLABORATION_HISTORY_AHEAD_OF_MODEL/);
 
