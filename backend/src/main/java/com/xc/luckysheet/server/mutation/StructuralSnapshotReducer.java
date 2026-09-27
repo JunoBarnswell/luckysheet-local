@@ -1608,29 +1608,74 @@ final class StructuralSnapshotReducer {
     }
 
     private static void remapCells(ObjectNode sheet, FormulaReferenceTransformer.Axis axis, int at, int count, FormulaReferenceTransformer.Direction direction) {
-        ObjectNode oldCells = SnapshotMutationSupport.cells(sheet);
-        ObjectNode next = JsonNodeFactory.instance.objectNode();
-        for (java.util.Iterator<java.util.Map.Entry<String, JsonNode>> rows = oldCells.fields(); rows.hasNext();) {
+        record AxisEntry(String key, JsonNode value, int mapped) { }
+
+        ObjectNode cells = SnapshotMutationSupport.cells(sheet);
+
+        if (axis == FormulaReferenceTransformer.Axis.ROW) {
+            List<AxisEntry> movingRows = new ArrayList<>();
+            List<String> emptyRows = new ArrayList<>();
+            for (java.util.Iterator<java.util.Map.Entry<String, JsonNode>> rows = cells.fields(); rows.hasNext();) {
+                java.util.Map.Entry<String, JsonNode> rowEntry = rows.next();
+                int row = integerKey(rowEntry.getKey(), SnapshotMutationSupport.MAX_ROW, "Cell row");
+                if (!rowEntry.getValue().isObject()) throw ServiceException.validation("Cell row must be an object");
+                ObjectNode rowCells = (ObjectNode) rowEntry.getValue();
+                if (rowCells.isEmpty()) {
+                    emptyRows.add(rowEntry.getKey());
+                    continue;
+                }
+                if (row < at) continue;
+                for (java.util.Iterator<java.util.Map.Entry<String, JsonNode>> columns = rowCells.fields(); columns.hasNext();) {
+                    java.util.Map.Entry<String, JsonNode> columnEntry = columns.next();
+                    integerKey(columnEntry.getKey(), SnapshotMutationSupport.MAX_COLUMN, "Cell column");
+                    if (!columnEntry.getValue().isObject()) throw ServiceException.validation("Cell payload must be an object");
+                }
+                int mapped = shiftIndex(row, at, count, direction, axis);
+                if (mapped > SnapshotMutationSupport.MAX_ROW) {
+                    throw ServiceException.validation("Structural mutation moves a cell outside worksheet bounds");
+                }
+                movingRows.add(new AxisEntry(rowEntry.getKey(), rowEntry.getValue(), mapped));
+            }
+
+            for (String emptyRow : emptyRows) cells.remove(emptyRow);
+            for (AxisEntry entry : movingRows) {
+                cells.remove(entry.key());
+            }
+            for (AxisEntry entry : movingRows) {
+                if (entry.mapped() >= 0) cells.set(Integer.toString(entry.mapped()), entry.value());
+            }
+            return;
+        }
+
+        List<String> emptyRows = new ArrayList<>();
+        for (java.util.Iterator<java.util.Map.Entry<String, JsonNode>> rows = cells.fields(); rows.hasNext();) {
             java.util.Map.Entry<String, JsonNode> rowEntry = rows.next();
-            int row = integerKey(rowEntry.getKey(), SnapshotMutationSupport.MAX_ROW, "Cell row");
+            integerKey(rowEntry.getKey(), SnapshotMutationSupport.MAX_ROW, "Cell row");
             if (!rowEntry.getValue().isObject()) throw ServiceException.validation("Cell row must be an object");
-            for (java.util.Iterator<java.util.Map.Entry<String, JsonNode>> columns = ((ObjectNode) rowEntry.getValue()).fields(); columns.hasNext();) {
+            ObjectNode rowCells = (ObjectNode) rowEntry.getValue();
+            List<AxisEntry> movingColumns = new ArrayList<>();
+            for (java.util.Iterator<java.util.Map.Entry<String, JsonNode>> columns = rowCells.fields(); columns.hasNext();) {
                 java.util.Map.Entry<String, JsonNode> columnEntry = columns.next();
                 int column = integerKey(columnEntry.getKey(), SnapshotMutationSupport.MAX_COLUMN, "Cell column");
                 if (!columnEntry.getValue().isObject()) throw ServiceException.validation("Cell payload must be an object");
-                int nextRow = axis == FormulaReferenceTransformer.Axis.ROW ? shiftIndex(row, at, count, direction, axis) : row;
-                int nextColumn = axis == FormulaReferenceTransformer.Axis.COLUMN ? shiftIndex(column, at, count, direction, axis) : column;
-                if (nextRow < 0 || nextColumn < 0) continue;
-                if (nextRow > SnapshotMutationSupport.MAX_ROW || nextColumn > SnapshotMutationSupport.MAX_COLUMN) {
-                    throw ServiceException.validation("Structural mutation moves a cell outside worksheet bounds");
+                if (column >= at) {
+                    int mapped = shiftIndex(column, at, count, direction, axis);
+                    if (mapped > SnapshotMutationSupport.MAX_COLUMN) {
+                        throw ServiceException.validation("Structural mutation moves a cell outside worksheet bounds");
+                    }
+                    movingColumns.add(new AxisEntry(columnEntry.getKey(), columnEntry.getValue(), mapped));
                 }
-                ObjectNode rowTarget = next.with(Integer.toString(nextRow));
-                // The reducer owns this detached snapshot. Transfer the node instead of
-                // duplicating every cell payload while constructing its new coordinates.
-                rowTarget.set(Integer.toString(nextColumn), columnEntry.getValue());
             }
+
+            for (AxisEntry entry : movingColumns) {
+                rowCells.remove(entry.key());
+            }
+            for (AxisEntry entry : movingColumns) {
+                if (entry.mapped() >= 0) rowCells.set(Integer.toString(entry.mapped()), entry.value());
+            }
+            if (rowCells.isEmpty()) emptyRows.add(rowEntry.getKey());
         }
-        sheet.set("cells", next);
+        for (String emptyRow : emptyRows) cells.remove(emptyRow);
     }
 
     private static int shiftIndex(

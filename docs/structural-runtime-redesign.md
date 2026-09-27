@@ -2033,3 +2033,13 @@ wire 与提交端也不能直接把 Java 规划出的不同结果送回：`Opera
 六轮静态复核：①外层/payload revision equality、safe integer 与旧消息过滤次序；②当前模型 revision 与 CollaborationSession 已知历史 revision 的区别；③丢失、乱序、重复事件和自有 ACK 事件的后继检查；④snapshot→history 并发提交时精确 revision snapshot、hydrate、history 筛选顺序；⑤pending operation 在结果查询前后提交、journal confirm、queue acknowledge 与 stale-base 保留；⑥deferred revision drain 只在权威 snapshot revision 上连续推进，任一缺口仍进入既有只读/重同步路径。新增 TypeScript 回归源码覆盖跳号原子拒绝、history 超前模型拒绝及外层/payload revision 不匹配。
 
 本轮 3 个根因仍未达到用户希望的每轮至少 30 个真实问题；没有把三个同步边界的跨层调用点重复计数。仅静态阅读和添加回归源码，未运行测试、build、typecheck、浏览器、Excel 或性能实测；`git diff --check` 通过。唯一 Java 结构规划、完整 StructuralPatch 与最终实测仍未完成，PR #345 保持 draft。
+
+### 2026-09-28 continuation — sparse whole-axis cell remap allocation
+
+沿 Java `StructuralMutationDescriptor.applyWithPatchOnOwnedSnapshot` → `StructuralSnapshotReducer.applyAxis` → `remapCells` 复核确认 **1 个独立性能根因**：事务已拥有隔离快照，`remapCells` 仍为整张目标工作表构造第二套 `ObjectNode` 行/列映射，并逐个重新插入所有 cell property；行插入靠近表尾时也重新遍历并分配未受影响的前缀单元格容器。cell payload 节点本身虽被转移而未深拷贝，但容器/映射 entry 的额外分配与峰值内存仍随整张稀疏表增长。
+
+修复直接在事务拥有的 `cells` 对象及 row object 内搬移 sparse nodes：只暂存待移动的 key、节点引用和已验证目标坐标；先移除该轴上所有来源，再按原对象遍历顺序写入目的坐标，因此插入/删除都不依赖 JSON 字段顺序，也不需要排序热路径。整行搬移时复用原 row object；列搬移时复用 row 与 cell payload，仅改变受影响的 row/column map entries。删除的 cell 仍被移除，空 row 的清理顺序先于行目的坐标写入，避免空行 key 与刚搬入的非空 row 相撞。新增回归源码覆盖乱序 sparse keys、插入后删除往返、目的坐标冲突顺序、未受影响 row identity、搬移 row identity 和空 row 目的键。
+
+六轮自审：①范围/数量边界仍由既有轴 bounds 与 `shiftIndex` 校验；②来源 key 全部先移除，消除升/降序及稀疏洞造成的覆盖；③删除 band 继续映射为 `-1` 并移除，owner/formula 与 metadata 阶段顺序不变；④事务隔离快照是唯一被原位修改的对象，cell payload 不 deep-copy，失败候选仍由提交事务丢弃；⑤空 row 在写入目的 key 之前清理，列操作仅在该 row 搬移完成后清空空容器；⑥行路径不遍历未受影响行内的 cell，列路径因 `ObjectNode` 没有按列索引仍需扫描 sparse cells，但额外暂存限于当前 row 的受影响 cell，不宣称已实现 ReferenceIndex 或大数据 benchmark。
+
+本轮新增 1 个源码确认的问题并修复，**没有达到用户要求的每轮至少 30 个独立真实问题**；其余完整 planner/patch 架构缺口不拆成多个重复计数，也未在此轮冒险加入未接通的 DTO/服务端旁路。测试、构建、typecheck、浏览器、Excel 和性能测量均未运行；只做静态复核与 `git diff --check`。现有 PR CI 绿状态对应修改前 head，不能代表本次代码已通过 CI。Java 唯一结构规划权、完整可逆 patch、owner 索引与最终实测仍未完成。

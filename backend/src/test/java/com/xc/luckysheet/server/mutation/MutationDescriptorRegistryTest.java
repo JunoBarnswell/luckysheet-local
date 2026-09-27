@@ -56,6 +56,55 @@ class MutationDescriptorRegistryTest {
     }
 
     @Test
+    void wholeAxisRemapMovesSparseCellMapsInPlaceAndRestoresCoordinates() throws Exception {
+        ObjectNode snapshot = (ObjectNode) mapper.readTree("""
+                {"sheets":[{"id":"sheet-1","name":"Sheet1","rowCount":12,"columnCount":12,
+                  "cells":{"9":{"9":{"value":"far"}},"2":{"2":{"value":"anchor"},"4":{"value":"middle"},"6":{"value":"six"},"8":{"value":"eight"}},
+                           "7":{"4":{"value":"seven"}},"4":{"7":{"value":"four"}},"1":{"1":{"value":"before"}},
+                           "5":{"0":{"value":"five"}},"6":{}},
+                  "pane":{"kind":"none"},"review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}},
+                  "merges":[],"conditionalFormats":[],"dataValidations":[],"pivots":[],"sparklines":[],
+                  "drawings":[],"drawingPayloads":{},"sheetTables":[],"spillRanges":[],"protectionRules":[]}]}
+                """);
+        ObjectNode sheet = (ObjectNode) snapshot.path("sheets").get(0);
+        ObjectNode originalCells = ((ObjectNode) sheet.path("cells")).deepCopy();
+        originalCells.remove("6");
+        ObjectNode rowBeforeBoundary = (ObjectNode) sheet.path("cells").path("2");
+        ObjectNode rowAtDestination = (ObjectNode) sheet.path("cells").path("4");
+        ObjectNode rowAfterDestination = (ObjectNode) sheet.path("cells").path("5");
+        ObjectNode rowToMove = (ObjectNode) sheet.path("cells").path("7");
+
+        StructuralSnapshotReducer.applyAxis(snapshot, "sheet-1", "rows.inserted",
+                FormulaReferenceTransformer.Axis.ROW, 3, 1, FormulaReferenceTransformer.Direction.INSERT);
+
+        ObjectNode rowCells = (ObjectNode) sheet.path("cells");
+        assertSame(rowBeforeBoundary, rowCells.path("2"));
+        assertSame(rowAtDestination, rowCells.path("5"));
+        assertSame(rowAfterDestination, rowCells.path("6"));
+        assertSame(rowToMove, rowCells.path("8"));
+        assertEquals("seven", rowCells.path("8").path("4").path("value").asText());
+
+        StructuralSnapshotReducer.applyAxis(snapshot, "sheet-1", "rows.deleted",
+                FormulaReferenceTransformer.Axis.ROW, 3, 1, FormulaReferenceTransformer.Direction.DELETE);
+        assertEquals(originalCells, sheet.path("cells"));
+
+        ObjectNode rowForColumnShift = (ObjectNode) sheet.path("cells").path("2");
+        JsonNode cellToMove = rowForColumnShift.path("4");
+        StructuralSnapshotReducer.applyAxis(snapshot, "sheet-1", "columns.inserted",
+                FormulaReferenceTransformer.Axis.COLUMN, 3, 2, FormulaReferenceTransformer.Direction.INSERT);
+
+        assertSame(rowForColumnShift, sheet.path("cells").path("2"));
+        assertSame(cellToMove, sheet.path("cells").path("2").path("6"));
+        assertEquals("middle", sheet.path("cells").path("2").path("6").path("value").asText());
+        assertEquals("six", sheet.path("cells").path("2").path("8").path("value").asText());
+        assertEquals("eight", sheet.path("cells").path("2").path("10").path("value").asText());
+
+        StructuralSnapshotReducer.applyAxis(snapshot, "sheet-1", "columns.deleted",
+                FormulaReferenceTransformer.Axis.COLUMN, 3, 2, FormulaReferenceTransformer.Direction.DELETE);
+        assertEquals(originalCells, sheet.path("cells"));
+    }
+
+    @Test
     void tableUpdateReferenceTransformEmitsAnExplicitEmptyPatchWhenNoOwnerFormulaChanges() throws Exception {
         JsonNode before = mapper.readTree("""
                 {"sheets":[{"id":"sheet-1","name":"Sheet1","sheetTables":[
