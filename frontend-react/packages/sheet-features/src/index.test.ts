@@ -1717,6 +1717,31 @@ test('sheet commands: row insert/delete use StructuralTransform and preserve und
   assert.equal(sheet.cells.get(2, 0)?.value, 42);
 });
 
+test('axis deletion retains sparse cell objects for history and clones only when restoring them', () => {
+  for (const axis of ['row', 'column'] as const) {
+    const workbook = new WorkbookModel(`unit-structural-delete-snapshot-${axis}`, 'Structural Delete Snapshot');
+    const runtime = new CommandRuntime(workbook);
+    registerSheetCommands(runtime);
+    const sheet = workbook.getSheet(workbook.primarySheetId);
+    const original = { value: 'retained', style: { bold: true } };
+    sheet.cells.set(3, 2, original);
+
+    runtime.execute(axis === 'row' ? 'sheet.rows.delete' : 'sheet.columns.delete', {
+      sheetId: sheet.id, at: axis === 'row' ? 3 : 2, count: 1,
+    });
+    const restore = runtime.getUndoEntries().at(-1)!.inversePlan.find((mutation) => mutation.id === 'cell.restore');
+    assert.ok(restore);
+    assert.strictEqual((restore.params as { previous?: typeof original }).previous, original);
+
+    assert.equal(runtime.undo(), true);
+    const restored = sheet.cells.get(3, 2)!;
+    assert.notStrictEqual(restored, original);
+    assert.notStrictEqual(restored.style, original.style);
+    restored.style!.bold = false;
+    assert.equal(original.style.bold, true);
+  }
+});
+
 test('sheet.freeze.set enforces the canonical pane contract before recording local history', () => {
   const workbook = new WorkbookModel('unit-freeze-pane-contract', 'Freeze Pane Contract');
   const runtime = new CommandRuntime(workbook);

@@ -59,7 +59,7 @@ function snapshotCellRegion(
 ): Array<{ row: number; column: number; cell: CellData }> {
   const extracted: Array<{ row: number; column: number; cell: CellData }> = [];
   sheet.cells.forEachInRangeWithoutHydration(startRow, endRow, startColumn, endColumn,
-    (cell, row, column) => extracted.push({ row, column, cell: structuredClone(cell) }));
+    (cell, row, column) => extracted.push({ row, column, cell }));
   return extracted;
 }
 
@@ -997,7 +997,7 @@ function restoreCell(
 ): void {
   const sheet = workbook.getSheet(item.sheetId);
   const { row, column, previous } = item.params;
-  if (previous) sheet.cells.set(row, column, previous);
+  if (previous) sheet.cells.set(row, column, structuredClone(previous));
   else sheet.cells.delete(row, column);
 }
 

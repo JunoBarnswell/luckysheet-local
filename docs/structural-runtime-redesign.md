@@ -2043,3 +2043,11 @@ wire 与提交端也不能直接把 Java 规划出的不同结果送回：`Opera
 六轮自审：①范围/数量边界仍由既有轴 bounds 与 `shiftIndex` 校验；②来源 key 全部先移除，消除升/降序及稀疏洞造成的覆盖；③删除 band 继续映射为 `-1` 并移除，owner/formula 与 metadata 阶段顺序不变；④事务隔离快照是唯一被原位修改的对象，cell payload 不 deep-copy，失败候选仍由提交事务丢弃；⑤空 row 在写入目的 key 之前清理，列操作仅在该 row 搬移完成后清空空容器；⑥行路径不遍历未受影响行内的 cell，列路径因 `ObjectNode` 没有按列索引仍需扫描 sparse cells，但额外暂存限于当前 row 的受影响 cell，不宣称已实现 ReferenceIndex 或大数据 benchmark。
 
 本轮新增 1 个源码确认的问题并修复，**没有达到用户要求的每轮至少 30 个独立真实问题**；其余完整 planner/patch 架构缺口不拆成多个重复计数，也未在此轮冒险加入未接通的 DTO/服务端旁路。测试、构建、typecheck、浏览器、Excel 和性能测量均未运行；只做静态复核与 `git diff --check`。现有 PR CI 绿状态对应修改前 head，不能代表本次代码已通过 CI。Java 唯一结构规划权、完整可逆 patch、owner 索引与最终实测仍未完成。
+
+### 2026-09-28 continuation — defer deleted-cell history cloning
+
+沿 whole-axis delete → `snapshotCellRegion` → `StructuralTransform.apply` → `cell.restore` undo/remote replay 审查，确认 **1 个独立内存问题**：删行/列之前，history 快照对每个被删单元格执行 `structuredClone`；同一操作的 `planStructuralCells` 还会为公开的 detached `removedCells` 结果复制一次。两路快照之后，结构变换把原单元格从 `CellMatrix` 摘除，因此 history 侧的深拷贝是重复持有的完整 payload。修复让 history 暂存将被摘除的 cell object，并把隔离深拷贝移动到 `cell.restore` 实际写回模型时执行；公开 `removedCells` 仍保持现有 detached-copy 契约，普通 cell undo 也在写回时建立与历史参数隔离的模型副本。新增源码回归检查历史复用被摘除对象、undo 恢复 cell 与嵌套 style 均不和历史载荷共享。
+
+六轮静态自审：①确认快照调用仅服务整行/整列删除，变换会摘除被删 band 内全部稀疏 cells；②检查 `CellMatrix.delete` 的 hydrated 删除与 deferred overlay 删除路径，不会将移除对象写回活动矩阵；③确认 `cell.restore` 是本地 undo、事务回滚及远端重放共用入口，均在 `set` 前复制；④保留 `StructuralTransformResult.removedCells` 的 detached-copy 公共语义，避免把本地 history 优化扩展成跨调用方别名变化；⑤redo 仍重放原 delete mutation，history-held old value 不被恢复后的 cell 写入修改；⑥区分峰值与总量：只消除 history 侧的重复深拷贝，`planStructuralCells` 的 removed-result 副本、第二次稀疏遍历、每 cell inverse mutation 包装、undo 序列化数据及恢复时复制仍存在，不能声称已解决批量 StructuralPatch 或 undo 网络成本。
+
+本轮确认并修复 **1 个根因**，未达到每轮至少 30 个独立真实问题的目标；不把一份快照在本地历史、恢复及协同传输的多个消费者重复计数。只做静态审查和添加回归源码；没有运行测试、typecheck、build、浏览器、Excel 或性能基准。Java 服务端唯一规划权、owner-complete 可逆 patch、批量 history 表示和最终实测仍未完成。
