@@ -1747,6 +1747,7 @@ test('remote column insertion rebases worksheet AutoFilter keys with their colum
   const runtime = new CommandRuntime(workbook);
   registerSheetCommands(runtime);
   const sheet = workbook.getSheet(workbook.primarySheetId);
+  const readAutoFilter = () => sheet.autoFilter;
   runtime.execute('sheet.autoFilter.set', {
     sheetId: sheet.id,
     autoFilter: {
@@ -1767,18 +1768,18 @@ test('remote column insertion rebases worksheet AutoFilter keys with their colum
     params: { sheetId: sheet.id, at: 0, count: 1 },
     affectedRanges: [{ sheetId: sheet.id, startRow: 0, endRow: sheet.rowCount - 1, startColumn: 0, endColumn: 0 }],
   }], { revision: 1 });
-  assert.equal(sheet.autoFilter?.range.startColumn, 3);
-  assert.deepEqual(Object.keys(sheet.autoFilter!.columns), ['3']);
-  assert.equal(sheet.autoFilter!.columns[3]?.column, 3);
-  assert.equal(sheet.autoFilter!.sortState?.conditions[0]?.ref.startColumn, 3);
+  assert.equal(readAutoFilter()?.range.startColumn, 3);
+  assert.deepEqual(Object.keys(readAutoFilter()!.columns), ['3']);
+  assert.equal(readAutoFilter()!.columns[3]?.column, 3);
+  assert.equal(readAutoFilter()!.sortState?.conditions[0]?.ref.startColumn, 3);
 
   assert.equal(runtime.undo(), true);
-  assert.equal(sheet.autoFilter, undefined);
+  assert.equal(readAutoFilter(), undefined);
   assert.equal(runtime.redo(), true);
-  assert.equal(sheet.autoFilter?.range.startColumn, 3);
-  assert.deepEqual(Object.keys(sheet.autoFilter!.columns), ['3']);
-  assert.equal(sheet.autoFilter!.columns[3]?.column, 3);
-  assert.equal(sheet.autoFilter!.sortState?.conditions[0]?.ref.startColumn, 3);
+  assert.equal(readAutoFilter()?.range.startColumn, 3);
+  assert.deepEqual(Object.keys(readAutoFilter()!.columns), ['3']);
+  assert.equal(readAutoFilter()!.columns[3]?.column, 3);
+  assert.equal(readAutoFilter()!.sortState?.conditions[0]?.ref.startColumn, 3);
 });
 
 test('remote axis history invalidates AutoFilter undo carrying opaque preserved XML', () => {
