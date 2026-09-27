@@ -31,7 +31,7 @@ export function registerPhoneticCommands(runtime: CommandRuntime): void {
       if (!writes.length) throw new Error('PHONETIC_TEXT_REQUIRED: Select at least one non-empty text cell');
       const affectedRanges = [range];
       for (const write of writes) {
-        const setParams = createCellSetMutationParams(sheet, { sheetId: params.sheetId, row: write.row, column: write.column, value: write.after }, 'script');
+        const setParams = createCellSetMutationParams(sheet, { sheetId: params.sheetId, row: write.row, column: write.column, value: write.after }, 'script', false, (sheetId) => context.workbook.getSheet(sheetId));
         context.applyMutation({
           id: 'cell.set', unitId: context.workbook.unitId, sheetId: params.sheetId, params: setParams, affectedRanges,
           inverse: [{ id: 'cell.restore', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, row: write.row, column: write.column, previous: write.before }, affectedRanges }],

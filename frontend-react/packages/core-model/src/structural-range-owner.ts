@@ -21,4 +21,21 @@ export type StructuralRangeOwnerDelta =
     readonly ownerId: string;
     readonly before: Readonly<RangeRef>;
     readonly after: Readonly<RangeRef>;
+  }
+  | {
+    readonly ownerKind: 'validation-list-source';
+    /** Worksheet that owns the validation rule; before/after may reference another worksheet. */
+    readonly sheetId: SheetId;
+    readonly ownerId: string;
+    readonly before: Readonly<RangeRef>;
+    readonly after: Readonly<RangeRef>;
+    readonly beforeOwnerRanges: readonly Readonly<RangeRef>[];
+    readonly afterOwnerRanges: readonly Readonly<RangeRef>[];
+  }
+  | {
+    readonly ownerKind: 'conditional-format' | 'data-validation';
+    readonly sheetId: SheetId;
+    readonly ownerId: string;
+    readonly before: readonly Readonly<RangeRef>[];
+    readonly after: readonly Readonly<RangeRef>[];
   };

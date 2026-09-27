@@ -66,8 +66,7 @@ final class SheetRuleLifecycle {
             throw ServiceException.validation("Data validation list source is invalid");
         }
         if ("range".equals(listSource.path("kind").asText())) {
-            RangeRef source = SnapshotMutationSupport.range(root, listSource.get("range"));
-            SnapshotMutationSupport.requireSheet(source, sheetId);
+            SnapshotMutationSupport.range(root, listSource.get("range"));
         } else if (!listSource.path("formula").isTextual() || listSource.path("formula").asText().isBlank()) {
             throw ServiceException.validation("Data validation list formula is required");
         }
@@ -228,16 +227,46 @@ final class SheetRuleLifecycle {
         return row >= startRow && row <= endRow ? Math.max(end, column) : end;
     }
 
-    static void transformValidationListSources(ObjectNode root, ObjectNode sheet,
+    static void transformValidationListSources(ObjectNode root, String targetSheetId,
                                                Function<RangeRef, List<RangeRef>> mapRange) {
-        for (JsonNode raw : SnapshotMutationSupport.array(sheet, "dataValidations")) {
-            ObjectNode rule = requireRule(raw, "Data validation");
-            JsonNode listSource = rule.get("listSource");
-            if (listSource == null || listSource.isNull() || !listSource.isObject() || !"range".equals(listSource.path("kind").asText())) continue;
-            RangeRef source = SnapshotMutationSupport.range(root, listSource.get("range"));
-            List<RangeRef> mapped = mapRange.apply(source);
-            if (mapped.size() != 1) throw ServiceException.validation("Row permutation cannot exactly remap validation list source");
-            ((ObjectNode) listSource).set("range", rangeNode(mapped.get(0)));
+        for (JsonNode rawOwner : SnapshotMutationSupport.sheets(root)) {
+            ObjectNode ownerSheet = requireObject(rawOwner, "Worksheet");
+            String ownerSheetId = SnapshotMutationSupport.text(ownerSheet, "id");
+            for (JsonNode raw : SnapshotMutationSupport.array(ownerSheet, "dataValidations")) {
+                ObjectNode rule = requireRule(raw, "Data validation");
+                JsonNode listSource = rule.get("listSource");
+                if (listSource == null || listSource.isNull() || !listSource.isObject()
+                        || !"range".equals(listSource.path("kind").asText())) continue;
+                if (!ownerSheetId.equals(rule.path("sheetId").asText())) {
+                    throw ServiceException.validation("Data-validation owner identity does not match worksheet");
+                }
+                RangeRef source = SnapshotMutationSupport.range(root, listSource.get("range"));
+                if (!targetSheetId.equals(source.sheetId())) continue;
+                List<RangeRef> mapped = mapRange.apply(source);
+                if (mapped.size() != 1) throw ServiceException.validation("Row permutation cannot exactly remap validation list source");
+                ((ObjectNode) listSource).set("range", rangeNode(mapped.get(0)));
+            }
+        }
+    }
+
+    static void validateValidationListSources(ObjectNode root, String targetSheetId,
+                                              Function<RangeRef, List<RangeRef>> mapRange) {
+        for (JsonNode rawOwner : SnapshotMutationSupport.sheets(root)) {
+            ObjectNode ownerSheet = requireObject(rawOwner, "Worksheet");
+            String ownerSheetId = SnapshotMutationSupport.text(ownerSheet, "id");
+            for (JsonNode raw : SnapshotMutationSupport.array(ownerSheet, "dataValidations")) {
+                ObjectNode rule = requireRule(raw, "Data validation");
+                JsonNode listSource = rule.get("listSource");
+                if (listSource == null || listSource.isNull() || !listSource.isObject()
+                        || !"range".equals(listSource.path("kind").asText())) continue;
+                if (!ownerSheetId.equals(rule.path("sheetId").asText())) {
+                    throw ServiceException.validation("Data-validation owner identity does not match worksheet");
+                }
+                RangeRef source = SnapshotMutationSupport.range(root, listSource.get("range"));
+                if (targetSheetId.equals(source.sheetId()) && mapRange.apply(source).size() != 1) {
+                    throw ServiceException.validation("Row permutation cannot exactly remap validation list source");
+                }
+            }
         }
     }
 

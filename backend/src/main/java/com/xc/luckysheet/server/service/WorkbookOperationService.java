@@ -140,7 +140,8 @@ public class WorkbookOperationService {
         if (sequenceExisting != null && !sequenceExisting.operationId().equals(operation.operationId())) {
             throw ServiceException.conflict("clientSequence was already committed");
         }
-        CommittedOperationEnvelope undoTarget = validateIntent(routeUnitId, operation, actor, row);
+        UndoContext undoContext = validateIntent(routeUnitId, operation, actor, row);
+        CommittedOperationEnvelope undoTarget = undoContext == null ? null : undoContext.target();
         if (operation.baseRevision() > row.revision()) {
             throw ServiceException.conflict("Base revision is ahead of the server; reload before submitting");
         }
@@ -179,6 +180,8 @@ public class WorkbookOperationService {
             committedMutations.add(CommittedOperationMutation.from(mutation, committedRanges, structuralImpactRanges, committedPatch));
         }
 
+        if (undoContext != null) requireUndoRestoredPreimage(undoContext.preimage(), next);
+
         if (operation.baseRevision() < row.revision()) {
             for (OperationRow intervening : contiguousOperationRowsBetween(routeUnitId, operation.baseRevision(), row.revision())) {
                 var interveningMutations = readCommittedHistoryRow(intervening).mutations();
@@ -216,7 +219,7 @@ public class WorkbookOperationService {
         return new CommitResult(committed, true);
     }
 
-    private CommittedOperationEnvelope validateIntent(String unitId, OperationEnvelope operation, String actor, WorkbookRow row) {
+    private UndoContext validateIntent(String unitId, OperationEnvelope operation, String actor, WorkbookRow row) {
         OperationIntent intent = operation.intent();
         if (intent == null) return null;
         if (!OperationIntent.UNDO.equals(intent.type())) {
@@ -240,16 +243,21 @@ public class WorkbookOperationService {
             throw ServiceException.conflict("Undo requires the current workbook revision " + row.revision());
         }
         CommittedOperationEnvelope target = readCommittedHistoryRow(targetRow);
-        if (target.mutations().stream().anyMatch(mutation -> mutation.structuralPatch() != null)
-                && targetRow.revision() != row.revision()) {
-            throw ServiceException.conflict("Structural undo requires the target operation to be the current workbook revision");
+        if (targetRow.revision() != row.revision()) {
+            throw ServiceException.conflict("Undo requires its target to be the current workbook revision");
         }
-        JsonNode structuralUndoPreimage = target.mutations().stream()
-                .anyMatch(mutation -> "sheetTable.update".equals(mutation.id()))
-                ? snapshotAtRevision(row, targetRow.revision() - 1)
-                : null;
-        validateStructuralUndoMutations(operation, target, structuralUndoPreimage);
-        return target;
+        JsonNode preimage = snapshotAtRevision(row, targetRow.revision() - 1);
+        validateStructuralUndoMutations(operation, target, preimage);
+        return new UndoContext(target, preimage);
+    }
+
+    private record UndoContext(CommittedOperationEnvelope target, JsonNode preimage) {
+    }
+
+    static void requireUndoRestoredPreimage(JsonNode preimage, JsonNode candidate) {
+        if (preimage == null || candidate == null || !preimage.equals(candidate)) {
+            throw ServiceException.conflict("UNDO_RESULT_MISMATCH: inverse mutations do not restore the target operation preimage");
+        }
     }
 
     static void validateStructuralUndoMutations(

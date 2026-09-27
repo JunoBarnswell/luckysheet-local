@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { collectFormulaDependencies, collectFormulaReferenceNodes, parseFormula, RangeIndex } from '@react-sheets/formula-engine';
-import { StructuralTransform, WorkbookModel, type CellData, type StructuralTransformParams } from './index';
+import { planCellShift, StructuralTransform, WorkbookModel, type CellData, type StructuralTransformParams } from './index';
 
 const sheetId = 'sheet-1';
 const operations: readonly { name: string; params: StructuralTransformParams; afterFormula: string; row: number; column: number }[] = [
@@ -23,6 +23,38 @@ const operations: readonly { name: string; params: StructuralTransformParams; af
 ];
 
 describe('prepared structural formula writes', () => {
+  it('keeps sparse target cells deferred through axis, cell-shift and move transforms', () => {
+    for (const { name, params, row, column } of operations) {
+      const workbook = new WorkbookModel(`sparse-structural-${name}`, 'Sparse structural transform');
+      const target = workbook.getSheet(sheetId);
+      target.rowCount = 12;
+      target.columnCount = 12;
+      const persisted = { '4': { '4': { value: 'payload' } } };
+      target.cells.deferJSON(persisted);
+      const sheetOrder = workbook.sheetOrder.map((id) => ({ id, name: workbook.getSheet(id).name }));
+
+      StructuralTransform.apply(workbook, params, new RangeIndex(sheetOrder));
+
+      assert.equal(target.cells.isHydrated, false, `${name} must preserve deferred cell storage`);
+      assert.equal(target.cells.getWithoutHydration(row, column)?.value, 'payload', name);
+      assert.deepEqual(persisted, { '4': { '4': { value: 'payload' } } });
+    }
+  });
+
+  it('rejects non-integral cell-shift coordinates before constructing a transform band', () => {
+    const workbook = new WorkbookModel('invalid-cell-shift-coordinate', 'Invalid cell shift coordinate');
+    const sheet = workbook.getSheet(sheetId);
+    sheet.rowCount = 12;
+    sheet.columnCount = 12;
+
+    assert.throws(() => planCellShift(workbook, {
+      sheetId,
+      range: { sheetId, startRow: 1.5, endRow: 2, startColumn: 0, endColumn: 0 },
+      operation: 'insert',
+      axis: 'row',
+    }), /Cell shift coordinates must be safe integers/);
+  });
+
   for (const { name, params, afterFormula, row, column } of operations) {
     it(`${name} rewrites referenced cells without loading other sheets`, () => {
       const workbook = new WorkbookModel(`lazy-formula-${name}`, 'Lazy formulas');

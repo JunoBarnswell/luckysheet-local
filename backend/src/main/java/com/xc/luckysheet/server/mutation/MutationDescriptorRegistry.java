@@ -73,7 +73,7 @@ public class MutationDescriptorRegistry {
             "sheet.add", "sheet.duplicated", "sheet.hidden", "sheet.protect.remove", "sheet.protect.set", "sheet.remove", "sheet.rename", "sheet.reordered", "sheet.restore", "sheet.tabColor", "sheet.unhidden",
             "sheetTable.add", "sheetTable.remove", "sheetTable.update", "sheetTable.autoFilter.set", "tableSheet.update", "ganttSheet.update", "reportSheet.update",
             "sparkline.add", "sparkline.group.add", "sparkline.group.remove", "sparkline.group.replace", "sparkline.remove", "sparkline.update",
-            "style.set", "style.preset.set", "cf.reorder", "table.add", "table.remove", "view.set", "analysis.view.replace", "workbook.renamed", "workbook.restore",
+            "style.set", "style.preset.set", "cf.reorder", "cf.update", "table.add", "table.remove", "view.set", "analysis.view.replace", "workbook.renamed", "workbook.restore",
             "drawing.visibility.set", "drawing.rename"
     );
     private static final Map<String, String> UNAVAILABLE_REASONS = Map.ofEntries(
@@ -125,6 +125,7 @@ public class MutationDescriptorRegistry {
         for (String id : SheetDataMutationDescriptor.IDS) register(new SheetDataMutationDescriptor(id));
         for (String id : DrawingMutationDescriptor.IDS) register(new DrawingMutationDescriptor(id));
         register(new ConditionalFormatMutationDescriptor("cf.reorder"));
+        register(new ConditionalFormatMutationDescriptor("cf.update"));
         for (String id : PivotMutationDescriptor.IDS) register(new PivotMutationDescriptor(id));
         for (String id : PivotDrillDownMutationDescriptor.IDS) register(new PivotDrillDownMutationDescriptor(id));
         for (String id : SparklineMutationDescriptor.IDS) register(new SparklineMutationDescriptor(id));
@@ -226,8 +227,17 @@ public class MutationDescriptorRegistry {
                 ownerPreconditions.addAll(formulaOwnerRanges(delta));
             }
             for (var delta : structuralPatch.rangeOwnerDeltas()) {
-                ownerPreconditions.add(delta.beforeRange());
-                ownerPreconditions.add(delta.afterRange());
+                if (List.of("conditional-format", "data-validation").contains(delta.ownerKind())) {
+                    ownerPreconditions.addAll(delta.beforeRanges());
+                    ownerPreconditions.addAll(delta.afterRanges());
+                } else {
+                    ownerPreconditions.add(delta.beforeRange());
+                    ownerPreconditions.add(delta.afterRange());
+                }
+                if ("validation-list-source".equals(delta.ownerKind())) {
+                    ownerPreconditions.addAll(delta.beforeOwnerRanges());
+                    ownerPreconditions.addAll(delta.afterOwnerRanges());
+                }
             }
             if (prepared.descriptor().checksProtection() && role != WorkbookAclRole.OWNER) {
                 List<RangeRef> protectedRanges = new ArrayList<>(prepared.affectedRanges());
@@ -245,8 +255,17 @@ public class MutationDescriptorRegistry {
             ranges.addAll(formulaOwnerRanges(delta));
         }
         for (var delta : structuralPatch.rangeOwnerDeltas()) {
-            ranges.add(delta.beforeRange());
-            ranges.add(delta.afterRange());
+            if (List.of("conditional-format", "data-validation").contains(delta.ownerKind())) {
+                ranges.addAll(delta.beforeRanges());
+                ranges.addAll(delta.afterRanges());
+            } else {
+                ranges.add(delta.beforeRange());
+                ranges.add(delta.afterRange());
+            }
+            if ("validation-list-source".equals(delta.ownerKind())) {
+                ranges.addAll(delta.beforeOwnerRanges());
+                ranges.addAll(delta.afterOwnerRanges());
+            }
         }
         return List.copyOf(ranges);
     }
@@ -639,17 +658,21 @@ public class MutationDescriptorRegistry {
 
         private List<RangeRef> pasteRanges(ObjectNode root, OperationMutation mutation, ObjectNode params) {
             PasteShape shape = requirePasteShape(root, mutation.sheetId(), params);
+            ObjectNode snapshot = SnapshotMutationSupport.requiredObject(params, "snapshot");
+            if (snapshot.has("validations") || snapshot.has("conditionalFormats") || snapshot.has("workbookTheme")) {
+                return List.of(new RangeRef(mutation.sheetId(), 0, SnapshotMutationSupport.MAX_ROW, 0, SnapshotMutationSupport.MAX_COLUMN));
+            }
             List<RangeRef> ranges = new ArrayList<>();
             ranges.add(shape.target());
-            addColumnWidthRanges(root, mutation.sheetId(), SnapshotMutationSupport.requiredObject(params, "snapshot"), shape.allowedRanges(), ranges);
             if (params.path("clearSource").asBoolean(false)) {
                 RangeRef source = requireBoundedSourceRange(root, params);
                 ranges.add(source);
             }
+            addColumnWidthRanges(mutation.sheetId(), snapshot, shape.allowedRanges(), ranges);
             return List.copyOf(ranges);
         }
 
-        private void addColumnWidthRanges(ObjectNode root, String sheetId, ObjectNode snapshot, List<RangeRef> allowedRanges, List<RangeRef> affectedRanges) {
+        private void addColumnWidthRanges(String sheetId, ObjectNode snapshot, List<RangeRef> allowedRanges, List<RangeRef> affectedRanges) {
             JsonNode widths = snapshot.get("columnWidths");
             if (widths == null) return;
             if (!widths.isArray()) throw ServiceException.validation("Paste snapshot columnWidths must be an array");
@@ -659,10 +682,7 @@ public class MutationDescriptorRegistry {
                 if (allowedRanges.stream().noneMatch(range -> column >= range.startColumn() && column <= range.endColumn())) {
                     throw ServiceException.validation("Paste snapshot column width is outside its affected range");
                 }
-                ObjectNode sheet = SnapshotMutationSupport.sheet(root, sheetId);
-                int canonicalEndRow = sheet.path("rowCount").asInt(0) - 1;
-                if (canonicalEndRow < 0) throw ServiceException.validation("Paste column width requires canonical worksheet rowCount");
-                RangeRef columnRange = new RangeRef(sheetId, 0, canonicalEndRow, column, column);
+                RangeRef columnRange = new RangeRef(sheetId, 0, SnapshotMutationSupport.MAX_ROW, column, column);
                 if (!affectedRanges.contains(columnRange)) affectedRanges.add(columnRange);
             }
         }
@@ -705,25 +725,27 @@ public class MutationDescriptorRegistry {
 
         private void applyPaste(ObjectNode root, ObjectNode targetSheet, String sheetId, ObjectNode params) {
             PasteShape shape = requirePasteShape(root, sheetId, params);
-            applyPasteSnapshot(root, targetSheet, sheetId, SnapshotMutationSupport.requiredObject(params, "snapshot"), shape.allowedRanges());
+            applyPasteSnapshot(root, targetSheet, sheetId, SnapshotMutationSupport.requiredObject(params, "snapshot"), shape);
         }
 
-        private void applyPasteSnapshot(ObjectNode root, ObjectNode sheet, String sheetId, ObjectNode snapshot, List<RangeRef> allowedRanges) {
-            applyPasteClearRanges(root, sheet, sheetId, snapshot.get("clearRanges"), allowedRanges, true);
-            applyPasteClearRanges(root, sheet, sheetId, snapshot.get("clearMetadataRanges"), allowedRanges, false);
-            for (RangeRef range : allowedRanges) {
+        private void applyPasteSnapshot(ObjectNode root, ObjectNode sheet, String sheetId, ObjectNode snapshot, PasteShape shape) {
+            applyPasteClearRanges(root, sheet, sheetId, snapshot.get("clearRanges"), shape.allowedRanges(), snapshot, true);
+            applyPasteClearRanges(root, sheet, sheetId, snapshot.get("clearMetadataRanges"), shape.allowedRanges(), snapshot, false);
+            for (RangeRef range : shape.allowedRanges()) {
                 if (!sheetId.equals(range.sheetId())) continue;
                 sheet.put("rowCount", Math.max(sheet.path("rowCount").asInt(0), range.endRow() + 1));
                 sheet.put("columnCount", Math.max(sheet.path("columnCount").asInt(0), range.endColumn() + 1));
             }
             JsonNode cells = snapshot.get("cells");
             if (cells == null || !cells.isArray() || cells.size() > SnapshotMutationSupport.MAX_CHANGED_CELLS) throw ServiceException.validation("Paste snapshot cells are required and bounded");
+            Set<String> cellCoordinates = new HashSet<>();
             for (JsonNode entry : cells) {
                 if (!entry.isObject()) throw ServiceException.validation("Paste snapshot cell must be an object");
                 int row = boundedValue((ObjectNode) entry, "row", SnapshotMutationSupport.MAX_ROW);
                 int column = boundedValue((ObjectNode) entry, "column", SnapshotMutationSupport.MAX_COLUMN);
                 SnapshotMutationSupport.CellCoordinate coordinate = new SnapshotMutationSupport.CellCoordinate(row, column);
-                if (allowedRanges.stream().noneMatch(range -> SnapshotMutationSupport.contains(range, coordinate))) throw ServiceException.validation("Paste snapshot cell is outside its affected range");
+                if (shape.allowedRanges().stream().noneMatch(range -> SnapshotMutationSupport.contains(range, coordinate))) throw ServiceException.validation("Paste snapshot cell is outside its affected range");
+                if (!cellCoordinates.add(row + ":" + column)) throw ServiceException.validation("Paste snapshot cells contain a duplicate coordinate");
                 JsonNode value = entry.get("value");
                 if (value == null || value.isNull()) SnapshotMutationSupport.removeCell(sheet, coordinate);
                 else {
@@ -731,37 +753,161 @@ public class MutationDescriptorRegistry {
                     SnapshotMutationSupport.putCell(sheet, coordinate, value);
                 }
             }
-            applyPasteNotes(root, sheet, sheetId, snapshot.get("notes"), allowedRanges);
-            applyPasteHyperlinks(root, sheet, sheetId, snapshot.get("hyperlinks"), allowedRanges);
-            applyPasteComments(root, sheet, sheetId, snapshot.get("commentCells"), snapshot.get("comments"), allowedRanges);
+            applyPasteNotes(root, sheet, sheetId, snapshot.get("notes"), shape.allowedRanges());
+            applyPasteHyperlinks(root, sheet, sheetId, snapshot.get("hyperlinks"), shape.allowedRanges());
+            applyPasteComments(root, sheet, sheetId, snapshot.get("commentCells"), snapshot.get("comments"), shape.allowedRanges());
             if (snapshot.has("validations")) {
-                SheetRuleLifecycle.validateSnapshot(root, sheet, sheetId, "dataValidations", snapshot.path("validations"), allowedRanges);
+                SheetRuleLifecycle.validateSnapshot(root, sheet, sheetId, "dataValidations", snapshot.path("validations"), shape.allowedRanges());
                 sheet.set("dataValidations", snapshot.path("validations").deepCopy());
             }
             if (snapshot.has("conditionalFormats")) {
-                SheetRuleLifecycle.validateSnapshot(root, sheet, sheetId, "conditionalFormats", snapshot.path("conditionalFormats"), allowedRanges);
+                SheetRuleLifecycle.validateSnapshot(root, sheet, sheetId, "conditionalFormats", snapshot.path("conditionalFormats"), shape.allowedRanges());
                 sheet.set("conditionalFormats", snapshot.path("conditionalFormats").deepCopy());
             }
             if (snapshot.has("columnWidths")) {
                 JsonNode widths = snapshot.get("columnWidths");
-                if (!widths.isArray()) throw ServiceException.validation("Paste snapshot columnWidths must be an array");
+                if (!widths.isArray() || widths.size() > SnapshotMutationSupport.MAX_CHANGED_CELLS) throw ServiceException.validation("Paste snapshot columnWidths must be a bounded array");
                 ObjectNode targetWidths = SnapshotMutationSupport.object(sheet, "columnWidthsPx");
+                Set<Integer> columns = new HashSet<>();
                 for (JsonNode entry : widths) {
                     if (!entry.isObject()) throw ServiceException.validation("Paste snapshot column width must be an object");
                     int column = boundedValue((ObjectNode) entry, "column", SnapshotMutationSupport.MAX_COLUMN);
-                    if (allowedRanges.stream().noneMatch(range -> column >= range.startColumn() && column <= range.endColumn())) throw ServiceException.validation("Paste snapshot column width is outside its affected range");
+                    if (shape.allowedRanges().stream().noneMatch(range -> column >= range.startColumn() && column <= range.endColumn())) throw ServiceException.validation("Paste snapshot column width is outside its affected range");
+                    if (!columns.add(column)) throw ServiceException.validation("Paste snapshot column widths contain a duplicate column");
                     String key = Integer.toString(column);
                     JsonNode width = entry.get("widthPx");
                     if (width == null || width.isNull()) targetWidths.remove(key);
                     else {
-                        if (!width.isNumber() || width.asDouble() <= 0) throw ServiceException.validation("Paste snapshot width must be positive");
+                        if (!width.isNumber() || !Double.isFinite(width.asDouble()) || width.asDouble() <= 0) {
+                            throw ServiceException.validation("Paste snapshot width must be a finite positive number");
+                        }
                         targetWidths.set(key, width.deepCopy());
                     }
                 }
             }
+            if (snapshot.has("workbookTheme")) root.set("theme", canonicalPasteTheme(snapshot.get("workbookTheme")));
         }
 
-        private void applyPasteClearRanges(ObjectNode root, ObjectNode sheet, String sheetId, JsonNode ranges, List<RangeRef> allowedRanges, boolean cells) {
+        private void requirePasteSnapshotContract(ObjectNode root, PasteShape shape, ObjectNode params, ObjectNode snapshot) {
+            ObjectNode spec = SnapshotMutationSupport.requiredObject(params, "spec");
+            ObjectNode metadata = SnapshotMutationSupport.requiredObject(spec, "metadata");
+            boolean skipBlanks = spec.path("skipBlanks").asBoolean(false);
+            boolean transpose = spec.path("transpose").asBoolean(false);
+            List<RangeRef> expectedCellClears = new ArrayList<>();
+            if (!"none".equals(spec.path("content").asText()) && !skipBlanks) expectedCellClears.add(shape.target());
+            if (shape.source() != null) expectedCellClears.add(shape.source());
+            requireExactPasteRanges(root, snapshot.get("clearRanges"), expectedCellClears, "clearRanges");
+            JsonNode cells = snapshot.get("cells");
+            if (cells == null || !cells.isArray() || cells.size() > SnapshotMutationSupport.MAX_CHANGED_CELLS) {
+                throw ServiceException.validation("Paste snapshot cells are required and bounded");
+            }
+
+            boolean commentsNotes = metadata.path("commentsNotes").asBoolean(false);
+            boolean validation = metadata.path("validation").asBoolean(false);
+            boolean columnWidths = metadata.path("columnWidths").asBoolean(false);
+            boolean conditionalFormats = metadata.path("conditionalFormats").asBoolean(false);
+            boolean hyperlinks = metadata.path("hyperlinks").asBoolean(false);
+            requirePasteSnapshotArray(snapshot, "notes", commentsNotes);
+            requirePasteSnapshotArray(snapshot, "comments", commentsNotes);
+            requirePasteSnapshotArray(snapshot, "commentCells", commentsNotes);
+            requirePasteSnapshotArray(snapshot, "hyperlinks", hyperlinks);
+            requirePasteSnapshotArray(snapshot, "validations", validation);
+            requirePasteSnapshotArray(snapshot, "conditionalFormats", conditionalFormats);
+            requirePasteSnapshotArray(snapshot, "columnWidths", columnWidths);
+
+            boolean hasMetadata = commentsNotes || validation || columnWidths || conditionalFormats || hyperlinks;
+            ObjectNode clipboard = SnapshotMutationSupport.requiredObject(params, "clipboard");
+            JsonNode occupied = clipboard.get("occupiedCells");
+            if (occupied == null || !occupied.isArray() || occupied.size() > SnapshotMutationSupport.MAX_CHANGED_CELLS) {
+                throw ServiceException.validation("Sparse clipboard occupied cells are required and bounded");
+            }
+            JsonNode actualMetadataClears = snapshot.get("clearMetadataRanges");
+            if (actualMetadataClears == null || !actualMetadataClears.isArray()
+                    || actualMetadataClears.size() > SnapshotMutationSupport.MAX_CHANGED_CELLS) {
+                throw ServiceException.validation("Paste snapshot clearMetadataRanges is invalid or too large");
+            }
+            Set<String> occupiedCoordinates = new HashSet<>();
+            int expectedIndex = 0;
+            boolean sparseBlankCopy = hasMetadata && "copy".equals(params.path("transfer").asText()) && skipBlanks;
+            if (hasMetadata && !sparseBlankCopy) {
+                requirePasteRangeAt(root, actualMetadataClears, expectedIndex++, shape.target(), "clearMetadataRanges");
+            }
+            ObjectNode sourceExtent = SnapshotMutationSupport.requiredObject(params, "sourceExtent");
+            int sourceRows = boundedValue(sourceExtent, "rows", SnapshotMutationSupport.MAX_ROW + 1);
+            int sourceColumns = boundedValue(sourceExtent, "columns", SnapshotMutationSupport.MAX_COLUMN + 1);
+            for (JsonNode cell : occupied) {
+                if (!cell.isObject()) throw ServiceException.validation("Sparse clipboard cell must be an object");
+                int rowOffset = boundedValue((ObjectNode) cell, "rowOffset", sourceRows - 1);
+                int columnOffset = boundedValue((ObjectNode) cell, "columnOffset", sourceColumns - 1);
+                if (!occupiedCoordinates.add(rowOffset + ":" + columnOffset)) throw ServiceException.validation("Sparse clipboard contains a duplicate coordinate");
+                JsonNode cellData = cell.get("value");
+                if (cellData == null || !cellData.isObject() || !cellData.has("value")) {
+                    throw ServiceException.validation("Sparse clipboard cell value is invalid");
+                }
+                JsonNode cellValue = cellData.get("value");
+                boolean blank = (cellValue == null || cellValue.isNull()) && !cellData.has("formula") && !cellData.has("formulaValue");
+                if (!sparseBlankCopy || blank) continue;
+                int rowOffsetForTarget = transpose ? columnOffset : rowOffset;
+                int columnOffsetForTarget = transpose ? rowOffset : columnOffset;
+                int row = shape.target().startRow() + rowOffsetForTarget;
+                int column = shape.target().startColumn() + columnOffsetForTarget;
+                requirePasteRangeAt(root, actualMetadataClears, expectedIndex++,
+                        new RangeRef(shape.target().sheetId(), row, row, column, column), "clearMetadataRanges");
+            }
+            if (hasMetadata && shape.source() != null) {
+                requirePasteRangeAt(root, actualMetadataClears, expectedIndex++, shape.source(), "clearMetadataRanges");
+            }
+            if (actualMetadataClears.size() != expectedIndex) {
+                throw ServiceException.validation("Paste snapshot clearMetadataRanges does not match its specification");
+            }
+
+            boolean themeExpected = "source-theme".equals(spec.path("formatting").asText());
+            if (snapshot.has("workbookTheme") != themeExpected) throw ServiceException.validation("Paste snapshot workbookTheme does not match formatting");
+            if (themeExpected) canonicalPasteTheme(snapshot.get("workbookTheme"));
+        }
+
+        private void requirePasteSnapshotArray(ObjectNode snapshot, String field, boolean expected) {
+            if (snapshot.has(field) != expected || (expected && !snapshot.path(field).isArray())) {
+                throw ServiceException.validation("Paste snapshot " + field + " does not match its specification");
+            }
+        }
+
+        private void requireExactPasteRanges(ObjectNode root, JsonNode actual, List<RangeRef> expected, String field) {
+            if (actual == null || !actual.isArray() || actual.size() > SnapshotMutationSupport.MAX_CHANGED_CELLS
+                    || actual.size() != expected.size()) {
+                throw ServiceException.validation("Paste snapshot " + field + " does not match its specification");
+            }
+            for (int index = 0; index < expected.size(); index++) {
+                if (!expected.get(index).equals(SnapshotMutationSupport.range(root, actual.get(index)))) {
+                    throw ServiceException.validation("Paste snapshot " + field + " does not match its specification");
+                }
+            }
+        }
+
+        private void requirePasteRangeAt(ObjectNode root, JsonNode actual, int index, RangeRef expected, String field) {
+            if (index >= actual.size() || !expected.equals(SnapshotMutationSupport.range(root, actual.get(index)))) {
+                throw ServiceException.validation("Paste snapshot " + field + " does not match its specification");
+            }
+        }
+
+        private ObjectNode canonicalPasteTheme(JsonNode theme) {
+            if (theme == null || !theme.isObject() || !theme.path("id").isTextual() || theme.path("id").asText().isBlank()
+                    || !theme.path("colors").isObject()) {
+                throw ServiceException.validation("Paste snapshot workbookTheme is invalid");
+            }
+            theme.path("colors").fields().forEachRemaining(entry -> {
+                if (entry.getKey().isBlank() || !entry.getValue().isTextual()
+                        || !entry.getValue().asText().matches("#[0-9a-fA-F]{6}")) {
+                    throw ServiceException.validation("Paste snapshot workbookTheme color is invalid");
+                }
+            });
+            ObjectNode canonical = JsonNodeFactory.instance.objectNode();
+            canonical.put("id", theme.path("id").asText().trim());
+            canonical.set("colors", theme.path("colors").deepCopy());
+            return canonical;
+        }
+
+        private void applyPasteClearRanges(ObjectNode root, ObjectNode sheet, String sheetId, JsonNode ranges, List<RangeRef> allowedRanges, ObjectNode snapshot, boolean cells) {
             if (ranges == null) return;
             if (!ranges.isArray() || ranges.size() > SnapshotMutationSupport.MAX_CHANGED_CELLS) throw ServiceException.validation("Paste clear ranges are invalid or too large");
             for (JsonNode value : ranges) {
@@ -773,20 +919,22 @@ public class MutationDescriptorRegistry {
                 }
                 if (cells) SnapshotMutationSupport.clearCells(sheet, range);
                 else {
-                    SnapshotMutationSupport.removeNotes(sheet, range);
-                    SnapshotMutationSupport.removeHyperlinks(sheet, range);
-                    SnapshotMutationSupport.removeThreads(sheet, range);
+                    if (snapshot.has("notes")) SnapshotMutationSupport.removeNotes(sheet, range);
+                    if (snapshot.has("hyperlinks")) SnapshotMutationSupport.removeHyperlinks(sheet, range);
+                    if (snapshot.has("comments") || snapshot.has("commentCells")) SnapshotMutationSupport.removeThreads(sheet, range);
                 }
             }
         }
 
         private void applyPasteNotes(ObjectNode root, ObjectNode sheet, String sheetId, JsonNode entries, List<RangeRef> allowedRanges) {
             if (entries == null) return;
-            if (!entries.isArray()) throw ServiceException.validation("Paste snapshot notes must be an array");
+            if (!entries.isArray() || entries.size() > SnapshotMutationSupport.MAX_CHANGED_CELLS) throw ServiceException.validation("Paste snapshot notes must be a bounded array");
+            Set<SnapshotMutationSupport.CellCoordinate> coordinates = new HashSet<>();
             for (JsonNode entry : entries) {
                 if (!entry.isObject()) throw ServiceException.validation("Paste snapshot note must be an object");
                 SnapshotMutationSupport.CellCoordinate coordinate = keyCoordinate(root, sheetId, entry.path("key").asText(null));
                 if (allowedRanges.stream().noneMatch(range -> SnapshotMutationSupport.contains(range, coordinate))) throw ServiceException.validation("Paste snapshot note is outside its affected range");
+                if (!coordinates.add(coordinate)) throw ServiceException.validation("Paste snapshot notes contain a duplicate coordinate");
                 JsonNode value = entry.get("value");
                 if (value == null || value.isNull()) SnapshotMutationSupport.removeNote(sheet, coordinate);
                 else SnapshotMutationSupport.putNote(sheet, coordinate, value);
@@ -795,12 +943,14 @@ public class MutationDescriptorRegistry {
 
         private void applyPasteHyperlinks(ObjectNode root, ObjectNode sheet, String sheetId, JsonNode entries, List<RangeRef> allowedRanges) {
             if (entries == null) return;
-            if (!entries.isArray()) throw ServiceException.validation("Paste snapshot hyperlinks must be an array");
+            if (!entries.isArray() || entries.size() > SnapshotMutationSupport.MAX_CHANGED_CELLS) throw ServiceException.validation("Paste snapshot hyperlinks must be a bounded array");
             ArrayNode hyperlinks = SnapshotMutationSupport.array(sheet, "hyperlinks");
+            Set<SnapshotMutationSupport.CellCoordinate> coordinates = new HashSet<>();
             for (JsonNode entry : entries) {
                 if (!entry.isObject()) throw ServiceException.validation("Paste snapshot hyperlink must be an object");
                 SnapshotMutationSupport.CellCoordinate coordinate = keyCoordinate(root, sheetId, entry.path("key").asText(null));
                 if (allowedRanges.stream().noneMatch(range -> SnapshotMutationSupport.contains(range, coordinate))) throw ServiceException.validation("Paste snapshot hyperlink is outside its affected range");
+                if (!coordinates.add(coordinate)) throw ServiceException.validation("Paste snapshot hyperlinks contain a duplicate coordinate");
                 for (int index = hyperlinks.size() - 1; index >= 0; index--) {
                     JsonNode current = hyperlinks.get(index);
                     if (current.path("row").asInt(-1) == coordinate.row() && current.path("column").asInt(-1) == coordinate.column()) hyperlinks.remove(index);
@@ -818,20 +968,24 @@ public class MutationDescriptorRegistry {
 
         private void applyPasteComments(ObjectNode root, ObjectNode sheet, String sheetId, JsonNode keys, JsonNode comments, List<RangeRef> allowedRanges) {
             if (keys == null && comments == null) return;
-            if (keys != null && !keys.isArray()) throw ServiceException.validation("Paste snapshot commentCells must be an array");
+            if (keys != null && (!keys.isArray() || keys.size() > SnapshotMutationSupport.MAX_CHANGED_CELLS)) throw ServiceException.validation("Paste snapshot commentCells must be a bounded array");
+            Set<SnapshotMutationSupport.CellCoordinate> commentCells = new HashSet<>();
             if (keys != null) for (JsonNode key : keys) {
                 SnapshotMutationSupport.CellCoordinate coordinate = keyCoordinate(root, sheetId, key.asText(null));
                 if (allowedRanges.stream().noneMatch(range -> SnapshotMutationSupport.contains(range, coordinate))) throw ServiceException.validation("Paste snapshot comment is outside its affected range");
+                if (!commentCells.add(coordinate)) throw ServiceException.validation("Paste snapshot commentCells contain a duplicate coordinate");
                 SnapshotMutationSupport.removeThreads(sheet, new RangeRef(sheetId, coordinate.row(), coordinate.row(), coordinate.column(), coordinate.column()));
             }
             if (comments != null) {
-                if (!comments.isArray()) throw ServiceException.validation("Paste snapshot comments must be an array");
+                if (!comments.isArray() || comments.size() > SnapshotMutationSupport.MAX_CHANGED_CELLS) throw ServiceException.validation("Paste snapshot comments must be a bounded array");
+                Set<String> commentIds = new HashSet<>();
                 for (JsonNode comment : comments) {
-                    if (!comment.isObject() || !sheetId.equals(comment.path("sheetId").asText())) throw ServiceException.validation("Paste snapshot comment targets another sheet");
+                    if (!comment.isObject() || !sheetId.equals(comment.path("sheetId").asText())
+                            || !comment.path("id").isTextual() || comment.path("id").asText().isBlank()
+                            || !commentIds.add(comment.path("id").asText())) throw ServiceException.validation("Paste snapshot comment identity or owner is invalid");
                     int row = boundedValue((ObjectNode) comment, "row", SnapshotMutationSupport.MAX_ROW);
                     int column = boundedValue((ObjectNode) comment, "column", SnapshotMutationSupport.MAX_COLUMN);
                     if (allowedRanges.stream().noneMatch(range -> SnapshotMutationSupport.contains(range, new SnapshotMutationSupport.CellCoordinate(row, column)))) throw ServiceException.validation("Paste snapshot comment is outside its affected range");
-                    SnapshotMutationSupport.removeThread(sheet, comment.path("id").asText());
                     SnapshotMutationSupport.addThread(sheet, comment);
                 }
             }
@@ -877,14 +1031,6 @@ public class MutationDescriptorRegistry {
                     || clipboardRange.endColumn() - clipboardRange.startColumn() + 1 != clipboardColumns) {
                 throw ServiceException.validation("Clipboard range differs from its declared source extent");
             }
-            JsonNode occupied = clipboard.get("occupiedCells");
-            if (occupied == null || !occupied.isArray() || occupied.size() > SnapshotMutationSupport.MAX_CHANGED_CELLS) throw ServiceException.validation("Sparse clipboard occupied cells are required and bounded");
-            for (JsonNode cell : occupied) {
-                if (!cell.isObject()) throw ServiceException.validation("Sparse clipboard cell must be an object");
-                int rowOffset = boundedValue((ObjectNode) cell, "rowOffset", sourceRows - 1);
-                int columnOffset = boundedValue((ObjectNode) cell, "columnOffset", sourceColumns - 1);
-                if (!cell.has("value") || !cell.path("value").isObject()) throw ServiceException.validation("Sparse clipboard cell value is invalid");
-            }
             ObjectNode spec = SnapshotMutationSupport.requiredObject(params, "spec");
             String content = SnapshotMutationSupport.text(spec, "content");
             String formatting = SnapshotMutationSupport.text(spec, "formatting");
@@ -915,13 +1061,25 @@ public class MutationDescriptorRegistry {
             if (source != null && !sheetId.equals(source.sheetId())) {
                 throw ServiceException.unsupportedFeature("UNSUPPORTED_FEATURE: cross-sheet cut/paste requires a canonical structural move patch");
             }
-            return new PasteShape(new RangeRef(sheetId, row, row + rows - 1, column, column + columns - 1), source);
+            RangeRef target = new RangeRef(sheetId, row, row + rows - 1, column, column + columns - 1);
+            if (source != null && intersects(source, target)) {
+                throw ServiceException.validation("Move source and target ranges cannot overlap");
+            }
+            PasteShape shape = new PasteShape(target, source);
+            requirePasteSnapshotContract(root, shape, params, SnapshotMutationSupport.requiredObject(params, "snapshot"));
+            return shape;
         }
 
         private record PasteShape(RangeRef target, RangeRef source) {
             private List<RangeRef> allowedRanges() {
                 return source == null ? List.of(target) : List.of(target, source);
             }
+        }
+
+        private boolean intersects(RangeRef left, RangeRef right) {
+            return left.sheetId().equals(right.sheetId())
+                    && left.startRow() <= right.endRow() && left.endRow() >= right.startRow()
+                    && left.startColumn() <= right.endColumn() && left.endColumn() >= right.startColumn();
         }
 
         private void clearRange(ObjectNode root, ObjectNode sheet, String sheetId, ObjectNode params) {

@@ -226,7 +226,7 @@ async function hydratePreviewFormula(workbook: WorkbookModel): Promise<FormulaEn
   engine.setSheetTables(tableRefs);
   for (const sheet of workbook.getSheets()) {
     engine.setSpillEnvironment(sheet.id, createSpillEnvironment(sheet));
-    sheet.cells.forEach((cell, row, column) => {
+    sheet.cells.forEachWithoutHydration((cell, row, column) => {
       const address = { sheetId: sheet.id, row, column };
       if (cell.formula !== undefined) engine.setFormula(address, cell.formula);
       else if (cell.value !== null) engine.setValue(address, cell.value as never);

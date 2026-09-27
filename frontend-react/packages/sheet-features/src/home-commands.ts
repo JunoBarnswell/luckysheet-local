@@ -446,6 +446,11 @@ function dataRegionMaterializeAffected(params: DataRegionMaterializeParams): Ran
   return [structuredClone(params.range)];
 }
 
+function clearStoredCellsInRange(sheet: WorksheetModel, range: RangeRef): void {
+  sheet.cells.forEachInRangeWithoutHydration(range.startRow, range.endRow, range.startColumn, range.endColumn,
+    (_cell, row, column) => sheet.cells.delete(row, column));
+}
+
 function applyDataRegionMaterialization(params: DataRegionMaterializeParams, context: CommandContext): void {
   const sheet = context.workbook.getSheet(params.sheetId);
   const index = sheet.dataRegions.findIndex((region) => region.id === params.region.id);
@@ -460,9 +465,7 @@ function applyDataRegionMaterialization(params: DataRegionMaterializeParams, con
   if (!currentManifest || currentManifest.revision !== params.manifest.revision) {
     throw new Error(`Data source ${params.manifest.id} changed before materialization commit`);
   }
-  for (let row = params.range.startRow; row <= params.range.endRow; row += 1) {
-    for (let column = params.range.startColumn; column <= params.range.endColumn; column += 1) sheet.cells.delete(row, column);
-  }
+  clearStoredCellsInRange(sheet, params.range);
   for (const entry of params.materializedCells) sheet.cells.set(entry.row, entry.column, structuredClone(entry.cell));
   sheet.removeDataRegionAt(index);
   if (params.willRemoveSource) context.workbook.dataModel.sources.delete(params.manifest.id);
@@ -472,9 +475,7 @@ function restoreDataRegionMaterialization(params: DataRegionMaterializeParams, c
   const sheet = context.workbook.getSheet(params.sheetId);
   if (sheet.dataRegions.some((region) => region.id === params.region.id)) throw new Error(`Data region already exists: ${params.region.id}`);
   if (params.willRemoveSource) context.workbook.dataModel.sources.set(params.manifest.id, structuredClone(params.manifest));
-  for (let row = params.range.startRow; row <= params.range.endRow; row += 1) {
-    for (let column = params.range.startColumn; column <= params.range.endColumn; column += 1) sheet.cells.delete(row, column);
-  }
+  clearStoredCellsInRange(sheet, params.range);
   for (const entry of params.previousCells) sheet.cells.set(entry.row, entry.column, structuredClone(entry.cell));
   sheet.addDataRegion(params.region, params.regionIndex);
 }
@@ -763,8 +764,24 @@ interface ConditionalFormatReorderParams {
 
 function isConditionalFormatReorder(value: unknown): value is ConditionalFormatReorderParams {
   return isRecord(value) && typeof value.sheetId === 'string' && Array.isArray(value.ruleIds)
-    && value.ruleIds.every((entry) => typeof entry === 'string')
+    && value.ruleIds.every((entry) => typeof entry === 'string' && entry.length > 0)
+    && new Set(value.ruleIds).size === value.ruleIds.length
     && (value.ranges === undefined || (Array.isArray(value.ranges) && value.ranges.every(isRange)));
+}
+
+function orderConditionalRules(sheet: WorksheetModel, ruleIds: readonly string[]): ConditionalFormatRule[] {
+  const byId = new Map(sheet.conditionalFormats.map((rule) => [rule.id, rule] as const));
+  if (byId.size !== sheet.conditionalFormats.length || ruleIds.length !== byId.size
+    || new Set(ruleIds).size !== ruleIds.length || ruleIds.some((id) => !byId.has(id))) {
+    throw new Error('Conditional-format order must be a complete permutation of existing rules');
+  }
+  return ruleIds.map((id) => byId.get(id)!);
+}
+
+function applyConditionalRuleOrder(sheet: WorksheetModel, ruleIds: readonly string[]): void {
+  const ordered = orderConditionalRules(sheet, ruleIds);
+  sheet.conditionalFormats.splice(0, sheet.conditionalFormats.length,
+    ...ordered.map((rule, index) => ({ ...structuredClone(rule), priority: index + 1 })));
 }
 
 function allConditionalRanges(sheet: WorksheetModel): RangeRef[] {
@@ -1330,7 +1347,7 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
         const targetSheet = context.workbook.getSheet(patch.sheetId);
         const validation = patch.next.formula
           ? { valid: true, blocking: false, ruleId: undefined, alertStyle: undefined }
-          : validateDataInput(targetSheet, patch.row, patch.column, patch.next.value);
+          : validateDataInput(targetSheet, patch.row, patch.column, patch.next.value, (sheetId) => context.workbook.getSheet(sheetId));
         if (validation.blocking) throw new Error(validation.message ?? 'Find/Replace value failed data validation');
         if (!validation.valid) throw new Error('CELL_ENTRY_CONFIRMATION_REQUIRED: Find/Replace requires explicit validation confirmation');
         runtime.execute('sheet.cell.set', {
@@ -1652,15 +1669,12 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
   runtime.registry.registerMutation<ConditionalFormatReorderParams>({
     id: 'cf.reorder',
     handler: (item, context) => {
-      if (!isConditionalFormatReorder(item.params)) throw new Error('Invalid cf.reorder mutation payload');
+      if (!isConditionalFormatReorder(item.params) || !Array.isArray(item.params.ranges)) throw new Error('Invalid cf.reorder mutation payload');
       const sheet = context.workbook.getSheet(item.params.sheetId);
-      const byId = new Map(sheet.conditionalFormats.map((rule) => [rule.id, rule] as const));
-      const next = item.params.ruleIds.map((id) => byId.get(id)).filter((rule): rule is ConditionalFormatRule => rule !== undefined);
-      for (const rule of sheet.conditionalFormats) if (!item.params.ruleIds.includes(rule.id)) next.push(rule);
-      sheet.conditionalFormats.splice(0, sheet.conditionalFormats.length, ...next.map((rule, index) => ({ ...structuredClone(rule), priority: index + 1 })));
+      applyConditionalRuleOrder(sheet, item.params.ruleIds);
     },
     metadata: {
-      schema: { name: 'ConditionalFormatReorder', validate: isConditionalFormatReorder },
+      schema: { name: 'ConditionalFormatReorder', validate: (value) => isConditionalFormatReorder(value) && Array.isArray(value.ranges) },
       permission: { capability: 'sheet.conditional-format.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: (params) => params.ranges?.map((range) => structuredClone(range)) ?? [], mode: 'declared' },
       inverseIds: ['cf.reorder'],
@@ -1672,6 +1686,7 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
       if (!isConditionalFormatReorder(params)) throw new Error('Invalid conditional format reorder parameters');
       const sheet = context.workbook.getSheet(params.sheetId);
       const previousIds = sheet.conditionalFormats.map((rule) => rule.id);
+      orderConditionalRules(sheet, params.ruleIds);
       const affectedRanges = allConditionalRanges(sheet);
       context.applyMutation({
         id: 'cf.reorder',
@@ -1680,12 +1695,7 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
         params: { ...params, ranges: affectedRanges },
         affectedRanges,
         inverse: [{ id: 'cf.reorder', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, ruleIds: previousIds, ranges: affectedRanges }, affectedRanges }],
-        apply: () => {
-          const byId = new Map(sheet.conditionalFormats.map((rule) => [rule.id, rule] as const));
-          const next = params.ruleIds.map((id) => byId.get(id)).filter((rule): rule is ConditionalFormatRule => rule !== undefined);
-          for (const rule of sheet.conditionalFormats) if (!params.ruleIds.includes(rule.id)) next.push(rule);
-          sheet.conditionalFormats.splice(0, sheet.conditionalFormats.length, ...next);
-        },
+        apply: () => applyConditionalRuleOrder(sheet, params.ruleIds),
       });
       return homeResult(context, affectedRanges, 1);
     },

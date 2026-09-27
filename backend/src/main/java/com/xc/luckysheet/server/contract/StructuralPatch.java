@@ -4,6 +4,7 @@ import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
@@ -21,7 +22,7 @@ public record StructuralPatch(
         @JsonProperty("definedNameOwnerDeltas") List<DefinedNameOwnerDelta> definedNameOwnerDeltas,
         @JsonProperty("rangeOwnerDeltas") List<RangeOwnerDelta> rangeOwnerDeltas
 ) {
-    public static final int VERSION = 6;
+    public static final int VERSION = 8;
 
     public record FormulaOwnerKey(String kind, String sheetId, Integer row, Integer column,
             String ruleKind, String ruleId, String field, String ownerKind, String ownerId,
@@ -54,6 +55,28 @@ public record StructuralPatch(
             RangeOwnerKey key = rangeOwnerKey(delta);
             if (!rangeOwnerKeys.add(key)) throw new IllegalArgumentException("StructuralPatch contains duplicate range-owner deltas");
         }
+        Set<String> formulaRuleRangeOwners = new HashSet<>();
+        for (FormulaOwnerDelta delta : formulaOwnerDeltas) {
+            if ("formula-rule".equals(delta.kind())) {
+                formulaRuleRangeOwners.add(delta.sheetId() + "\u0000" + delta.ruleKind() + "\u0000" + delta.ruleId());
+            }
+        }
+        Set<String> validationListSourceOwners = new HashSet<>();
+        for (RangeOwnerDelta delta : rangeOwnerDeltas) {
+            if ("validation-list-source".equals(delta.ownerKind())) {
+                validationListSourceOwners.add(delta.sheetId() + "\u0000" + delta.ownerId());
+            }
+        }
+        for (RangeOwnerDelta delta : rangeOwnerDeltas) {
+            if (List.of("conditional-format", "data-validation").contains(delta.ownerKind())
+                    && formulaRuleRangeOwners.contains(delta.sheetId() + "\u0000" + delta.ownerKind() + "\u0000" + delta.ownerId())) {
+                throw new IllegalArgumentException("StructuralPatch duplicates range state across rule-owner deltas");
+            }
+            if ("data-validation".equals(delta.ownerKind())
+                    && validationListSourceOwners.contains(delta.sheetId() + "\u0000" + delta.ownerId())) {
+                throw new IllegalArgumentException("StructuralPatch duplicates data-validation range ownership");
+            }
+        }
     }
 
     public static FormulaOwnerKey formulaOwnerKey(FormulaOwnerDelta delta) {
@@ -66,6 +89,8 @@ public record StructuralPatch(
             }
             case "formula-rule" -> new FormulaOwnerKey(delta.kind(), delta.sheetId(), null, null,
                     delta.ruleKind(), delta.ruleId(), delta.field(), null, null, null, null, null);
+            case "formula-rule-anchor" -> new FormulaOwnerKey(delta.kind(), delta.sheetId(), null, null,
+                    delta.ruleKind(), delta.ruleId(), "formulaAnchor", null, null, null, null, null);
             case "formula-object" -> new FormulaOwnerKey(delta.kind(), delta.sheetId(), null, null,
                     null, null, delta.field(), delta.ownerKind(), delta.ownerId(),
                     delta.fieldId(), delta.viewId(), delta.templateId());
@@ -104,7 +129,9 @@ public record StructuralPatch(
             @JsonProperty("regionId") String regionId,
             @JsonProperty("ownerId") String ownerId,
             @JsonProperty("before") JsonNode before,
-            @JsonProperty("after") JsonNode after
+            @JsonProperty("after") JsonNode after,
+            @JsonProperty("beforeOwnerRanges") List<RangeRef> beforeOwnerRanges,
+            @JsonProperty("afterOwnerRanges") List<RangeRef> afterOwnerRanges
     ) {
         @JsonCreator
         public RangeOwnerDelta {
@@ -113,13 +140,32 @@ public record StructuralPatch(
             after = after.deepCopy();
             if ("data-region".equals(ownerKind)) {
                 if (sheetId == null || sheetId.isBlank() || regionId == null || regionId.isBlank() || ownerId != null
+                        || beforeOwnerRanges != null || afterOwnerRanges != null
                         || !validRegionState(before, sheetId) || !validRegionState(after, sheetId)
                         || !sameExtent(regionRange(before), regionRange(after))
                         || before.equals(after)) {
                     throw new IllegalArgumentException("StructuralPatch data-region range-owner delta is invalid");
                 }
+            } else if ("validation-list-source".equals(ownerKind)) {
+                if (sheetId == null || sheetId.isBlank() || regionId != null || ownerId == null || ownerId.isBlank()
+                        || !validRange(before) || !validRange(after)
+                        || !java.util.Objects.equals(range(before).sheetId(), range(after).sheetId())
+                        || !validOwnerRanges(beforeOwnerRanges, sheetId) || !validOwnerRanges(afterOwnerRanges, sheetId)
+                        || (before.equals(after) && beforeOwnerRanges.equals(afterOwnerRanges))) {
+                    throw new IllegalArgumentException("StructuralPatch validation list-source range-owner delta is invalid");
+                }
+                beforeOwnerRanges = List.copyOf(beforeOwnerRanges);
+                afterOwnerRanges = List.copyOf(afterOwnerRanges);
+            } else if (List.of("conditional-format", "data-validation").contains(ownerKind)) {
+                if (sheetId == null || sheetId.isBlank() || regionId != null || ownerId == null || ownerId.isBlank()
+                        || beforeOwnerRanges != null || afterOwnerRanges != null
+                        || !validRuleRanges(before, sheetId) || !validRuleRanges(after, sheetId)
+                        || before.equals(after)) {
+                    throw new IllegalArgumentException("StructuralPatch range-rule delta is invalid");
+                }
             } else if ("sheet-table".equals(ownerKind)) {
                 if (sheetId == null || sheetId.isBlank() || regionId != null || ownerId == null || ownerId.isBlank()
+                        || beforeOwnerRanges != null || afterOwnerRanges != null
                         || !validRange(before) || !validRange(after)
                         || !sheetId.equals(range(before).sheetId()) || !sheetId.equals(range(after).sheetId())
                         || before.equals(after)) {
@@ -127,6 +173,7 @@ public record StructuralPatch(
                 }
             } else if (List.of("workbook-table", "data-source").contains(ownerKind)) {
                 if (sheetId != null || regionId != null || ownerId == null || ownerId.isBlank()
+                        || beforeOwnerRanges != null || afterOwnerRanges != null
                         || !validRange(before) || !validRange(after)
                         || !range(before).sheetId().equals(range(after).sheetId())
                         || !sameExtent(range(before), range(after)) || before.equals(after)) {
@@ -145,27 +192,70 @@ public record StructuralPatch(
             ObjectNode after = JsonNodeFactory.instance.objectNode();
             after.set("range", rangeNode(afterRange));
             after.put("headerRow", afterHeaderRow);
-            return new RangeOwnerDelta("data-region", sheetId, regionId, null, before, after);
+            return new RangeOwnerDelta("data-region", sheetId, regionId, null, before, after, null, null);
         }
 
         public static RangeOwnerDelta range(String ownerKind, String ownerId, RangeRef before, RangeRef after) {
             if (!List.of("workbook-table", "data-source").contains(ownerKind)) {
                 throw new IllegalArgumentException("Unsupported StructuralPatch range owner kind");
             }
-            return new RangeOwnerDelta(ownerKind, null, null, ownerId, rangeNode(before), rangeNode(after));
+            return new RangeOwnerDelta(ownerKind, null, null, ownerId, rangeNode(before), rangeNode(after), null, null);
         }
 
         public static RangeOwnerDelta sheetTable(String sheetId, String ownerId, RangeRef before, RangeRef after) {
-            return new RangeOwnerDelta("sheet-table", sheetId, null, ownerId, rangeNode(before), rangeNode(after));
+            return new RangeOwnerDelta("sheet-table", sheetId, null, ownerId, rangeNode(before), rangeNode(after), null, null);
         }
 
-        public RangeRef beforeRange() { return "data-region".equals(ownerKind) ? regionRange(before) : range(before); }
-        public RangeRef afterRange() { return "data-region".equals(ownerKind) ? regionRange(after) : range(after); }
+        /** sheetId identifies the worksheet owning the rule; the ranges retain their referenced worksheet. */
+        public static RangeOwnerDelta validationListSource(String sheetId, String ownerId, RangeRef before, RangeRef after,
+                List<RangeRef> beforeOwnerRanges, List<RangeRef> afterOwnerRanges) {
+            return new RangeOwnerDelta("validation-list-source", sheetId, null, ownerId,
+                    rangeNode(before), rangeNode(after), beforeOwnerRanges, afterOwnerRanges);
+        }
+
+        public static RangeOwnerDelta ruleRanges(String ownerKind, String sheetId, String ownerId,
+                List<RangeRef> before, List<RangeRef> after) {
+            if (!List.of("conditional-format", "data-validation").contains(ownerKind)) {
+                throw new IllegalArgumentException("Unsupported StructuralPatch range-rule kind");
+            }
+            return new RangeOwnerDelta(ownerKind, sheetId, null, ownerId,
+                    rangeArray(before), rangeArray(after), null, null);
+        }
+
+        public RangeRef beforeRange() {
+            if (List.of("conditional-format", "data-validation").contains(ownerKind)) {
+                throw new IllegalStateException("Range-rule owner has multiple ranges");
+            }
+            return "data-region".equals(ownerKind) ? regionRange(before) : range(before);
+        }
+        public RangeRef afterRange() {
+            if (List.of("conditional-format", "data-validation").contains(ownerKind)) {
+                throw new IllegalStateException("Range-rule owner has multiple ranges");
+            }
+            return "data-region".equals(ownerKind) ? regionRange(after) : range(after);
+        }
+        public List<RangeRef> beforeRanges() { return rangeArray(before); }
+        public List<RangeRef> afterRanges() { return rangeArray(after); }
         public int beforeHeaderRow() { return regionHeaderRow(before); }
         public int afterHeaderRow() { return regionHeaderRow(after); }
 
         public RangeOwnerDelta inverse() {
-            return new RangeOwnerDelta(ownerKind, sheetId, regionId, ownerId, after, before);
+            return new RangeOwnerDelta(ownerKind, sheetId, regionId, ownerId, after, before, afterOwnerRanges, beforeOwnerRanges);
+        }
+
+        private static boolean validOwnerRanges(List<RangeRef> ranges, String ownerSheetId) {
+            return ranges != null && !ranges.isEmpty() && ranges.stream().allMatch(range -> range != null
+                    && ownerSheetId.equals(range.sheetId()) && range.startRow() >= 0 && range.endRow() >= range.startRow()
+                    && range.endRow() <= 1_048_575 && range.startColumn() >= 0
+                    && range.endColumn() >= range.startColumn() && range.endColumn() <= 16_383);
+        }
+
+        private static boolean validRuleRanges(JsonNode ranges, String ownerSheetId) {
+            if (ranges == null || !ranges.isArray() || ranges.size() == 0) return false;
+            for (JsonNode item : ranges) {
+                if (!validRange(item) || !ownerSheetId.equals(range(item).sheetId())) return false;
+            }
+            return true;
         }
 
         private static boolean validRegionState(JsonNode state, String sheetId) {
@@ -210,6 +300,13 @@ public record StructuralPatch(
                     node.path("startColumn").intValue(), node.path("endColumn").intValue());
         }
 
+        private static List<RangeRef> rangeArray(JsonNode node) {
+            if (node == null || !node.isArray()) throw new IllegalArgumentException("StructuralPatch range-rule state must be an array");
+            List<RangeRef> result = new java.util.ArrayList<>(node.size());
+            for (JsonNode item : node) result.add(range(item));
+            return List.copyOf(result);
+        }
+
         private static RangeRef regionRange(JsonNode state) { return range(state.path("range")); }
         private static int regionHeaderRow(JsonNode state) { return state.path("headerRow").intValue(); }
 
@@ -224,6 +321,15 @@ public record StructuralPatch(
             node.put("startColumn", range.startColumn());
             node.put("endColumn", range.endColumn());
             return node;
+        }
+
+        private static ArrayNode rangeArray(List<RangeRef> ranges) {
+            if (ranges == null || ranges.isEmpty()) {
+                throw new IllegalArgumentException("StructuralPatch range-rule owner ranges are required");
+            }
+            ArrayNode nodes = JsonNodeFactory.instance.arrayNode();
+            ranges.forEach(range -> nodes.add(rangeNode(range)));
+            return nodes;
         }
     }
 
@@ -350,6 +456,16 @@ public record StructuralPatch(
                         || beforeFormula != null || afterFormula != null || beforeRanges != null || afterRanges != null) {
                     throw new IllegalArgumentException("StructuralPatch formula-cell owner delta is incomplete or mixed with rule state");
                 }
+            } else if ("formula-rule-anchor".equals(kind)) {
+                if (beforeAddress == null || afterAddress == null || before != null || after != null
+                        || sheetId == null || sheetId.isBlank() || ruleId == null || ruleId.isBlank()
+                        || ruleKind == null || !List.of("conditional-format", "data-validation").contains(ruleKind)
+                        || field != null || beforeFormula != null || afterFormula != null
+                        || beforeRanges != null || afterRanges != null
+                        || ownerKind != null || ownerId != null || fieldId != null || viewId != null || templateId != null
+                        || !validAddress(beforeAddress) || !validAddress(afterAddress) || beforeAddress.equals(afterAddress)) {
+                    throw new IllegalArgumentException("StructuralPatch formula-rule anchor owner delta is incomplete or invalid");
+                }
             } else if ("formula-rule".equals(kind)) {
                 if (beforeAddress != null || afterAddress != null || before != null || after != null
                         || ownerKind != null || ownerId != null || fieldId != null || viewId != null || templateId != null
@@ -381,6 +497,12 @@ public record StructuralPatch(
         private static boolean validRanges(List<RangeRef> ranges, String sheetId) {
             return ranges.stream().allMatch(range -> range != null && sheetId.equals(range.sheetId())
                     && range.endRow() <= 1_048_575 && range.endColumn() <= 16_383);
+        }
+
+        private static boolean validAddress(CellAddress address) {
+            return address != null && address.sheetId() != null && !address.sheetId().isBlank()
+                    && address.row() >= 0 && address.row() <= 1_048_575
+                    && address.column() >= 0 && address.column() <= 16_383;
         }
 
         private static boolean validFormulaObjectOwner(String ownerKind, String sheetId, String payloadId,
@@ -417,6 +539,12 @@ public record StructuralPatch(
                     field, beforeFormula, afterFormula, beforeRanges, afterRanges, null, null, null, null, null);
         }
 
+        public static FormulaOwnerDelta formulaRuleAnchor(String sheetId, String ruleKind, String ruleId,
+                CellAddress beforeAddress, CellAddress afterAddress) {
+            return new FormulaOwnerDelta("formula-rule-anchor", beforeAddress, afterAddress, null, null,
+                    sheetId, ruleKind, ruleId, null, null, null, null, null, null, null, null, null, null);
+        }
+
         public static FormulaOwnerDelta formulaObject(String sheetId, String ownerKind, String ownerId, String field,
                 String beforeFormula, String afterFormula) {
             return new FormulaOwnerDelta("formula-object", null, null, null, null, sheetId, null, null,
@@ -432,6 +560,9 @@ public record StructuralPatch(
         public FormulaOwnerDelta inverse() {
             if ("formula-cell".equals(kind)) {
                 return new FormulaOwnerDelta(kind, afterAddress, beforeAddress, after, before);
+            }
+            if ("formula-rule-anchor".equals(kind)) {
+                return formulaRuleAnchor(sheetId, ruleKind, ruleId, afterAddress, beforeAddress);
             }
             if ("formula-rule".equals(kind)) return formulaRule(sheetId, ruleKind, ruleId, field, afterFormula, beforeFormula, afterRanges, beforeRanges);
             return new FormulaOwnerDelta("formula-object", null, null, null, null, sheetId, null, null,

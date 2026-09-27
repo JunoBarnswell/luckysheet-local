@@ -315,7 +315,7 @@ function sourceRevision(workbook: WorkbookModel, pivot: PivotModel, formula?: Fo
     // when available. Do not scan a whole range merely to build a cache key.
     const revision = (sheet.cells as unknown as { revision?: number }).revision;
     const sourceId = source.kind === 'worksheet-ranges' ? source.ranges[index]?.sourceId : undefined;
-    return `${sourceId ?? index}:${range.sheetId}:${revision ?? 'live'}:${sheet.cells.count()}`;
+    return `${sourceId ?? index}:${range.sheetId}:${revision ?? 'live'}`;
   }).sort();
   const spills = formula ? ranges.map((range) => formula.getSpillsForSheet(range.sheetId)
     .filter((spill) => spill.range.startRow <= range.endRow && range.startRow <= spill.range.endRow
@@ -431,7 +431,7 @@ function createPivotFormulaEngine(workbook: WorkbookModel): FormulaEngine {
   configureWorkbookSpillEnvironments(engine, workbook);
   syncWorkbookSheetTables(engine, workbook);
   for (const sheet of workbook.getSheets()) {
-    sheet.cells.forEach((cell, row, column) => {
+    sheet.cells.forEachWithoutHydration((cell, row, column) => {
       const address = { sheetId: sheet.id, row, column };
       if (cell.formula !== undefined && !cell.formulaMetadata?.preservedOnly) engine.setFormula(address, cell.formula);
       else if (cell.value != null) engine.setValue(address, cell.value as never);
@@ -3340,10 +3340,8 @@ export function detectPivotCollision(workbook: WorkbookModel, pivot: PivotModel,
   };
   const wholeSheet = { sheetId: sheet.id, startRow: 0, endRow: Math.max(sheet.rowCount - 1, 0), startColumn: 0, endColumn: Math.max(sheet.columnCount - 1, 0) };
   if (range.endRow >= sheet.rowCount || range.endColumn >= sheet.columnCount) addConflict('worksheet-bounds', range);
-  sheet.cells.forEach((_cell, row, column) => {
-    if (row >= range.startRow && row <= range.endRow && column >= range.startColumn && column <= range.endColumn) {
-      addConflict('cell-data', { sheetId: sheet.id, startRow: row, endRow: row, startColumn: column, endColumn: column });
-    }
+  sheet.cells.forEachInRangeWithoutHydration(range.startRow, range.endRow, range.startColumn, range.endColumn, (_cell, row, column) => {
+    addConflict('cell-data', { sheetId: sheet.id, startRow: row, endRow: row, startColumn: column, endColumn: column });
   });
   for (const merge of sheet.merges) {
     if (rangesIntersect(range, merge.range)) addConflict('merge', merge.range);

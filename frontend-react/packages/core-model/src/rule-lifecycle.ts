@@ -187,11 +187,14 @@ export class SheetRuleRegistry {
     if ((rule.type === 'whole' || rule.type === 'decimal' || rule.type === 'textLength') && rule.formula1 === undefined) throw new Error(`Data validation ${rule.id} requires a lower bound`);
     if (rule.type === 'checkbox' && rule.operator !== undefined) throw new Error('Checkbox validation does not accept a comparison operator');
     if (rule.alertStyle !== undefined && !['stop', 'warning', 'information'].includes(rule.alertStyle)) throw new Error('Data validation alert style is invalid');
-    if (rule.listSource?.kind === 'range' && rule.listSource.range.sheetId !== rule.sheetId) throw new Error('Validation list range must target the validation sheet');
+    const normalizedRule = structuredClone(rule);
+    if (normalizedRule.listSource?.kind === 'range') {
+      normalizedRule.listSource = { ...normalizedRule.listSource, range: normalizeRange(normalizedRule.listSource.range) };
+    }
     const formula = rule.type === 'custom' ? rule.formula1 : rule.listSource?.kind === 'formula' ? rule.listSource.formula : undefined;
     if (formula?.trim().startsWith('=')) validateFormula?.(formula.trim());
     return {
-      ...structuredClone(rule),
+      ...normalizedRule,
       ranges,
       formulaAnchor: normalizeAnchor(rule.sheetId, ranges, rule.formulaAnchor),
       alertStyle: rule.alertStyle ?? 'stop',
@@ -267,7 +270,8 @@ export class SheetRuleRegistry {
     }
     if (rule.formulaAnchor || structuralRuleFormulaFields(rule).size > 0) next.formulaAnchor = targetAnchor;
     offsetRuleFormulas(next, targetAnchor.row - sourceAnchor.row, targetAnchor.column - sourceAnchor.column);
-    if (!isConditionalFormat(rule) && rule.listSource?.kind === 'range') {
+    if (!isConditionalFormat(rule) && rule.listSource?.kind === 'range'
+      && rule.listSource.range.sheetId === rule.sheetId) {
       const validation = next as unknown as DataValidationRule;
       validation.listSource = { ...rule.listSource, range: remapPasteRange(rule.listSource.range, transform) };
     }

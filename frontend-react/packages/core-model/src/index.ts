@@ -1,3 +1,5 @@
+import { parseCellMatrixCoordinate } from './cell-coordinates';
+
 export type UnitId = string;
 export type SheetId = string;
 export type Row = number;
@@ -559,6 +561,8 @@ export {
   type StructuralFormulaOwnerDelta,
   type StructuralFormulaCellOwnerDelta,
   type StructuralFormulaRuleOwnerDelta,
+  type StructuralFormulaRuleFormulaOwnerDelta,
+  type StructuralFormulaRuleAnchorOwnerDelta,
   type StructuralFormulaObjectOwnerDelta,
   type StructuralDefinedNameOwnerDelta,
   type StructuralFormulaOwnerState,
@@ -1049,6 +1053,12 @@ function firstCoordinateAtLeast(coordinates: readonly number[], target: number):
   return low;
 }
 
+function assertCellMatrixCoordinates(row: Row, column: Column): void {
+  if (!Number.isSafeInteger(row) || row < 0 || !Number.isSafeInteger(column) || column < 0) {
+    throw new Error(`CELL_MATRIX_INVALID_COORDINATE: cell address ${row}:${column} must use non-negative safe integers`);
+  }
+}
+
 export class CellMatrix {
   private readonly rows = new Map<Row, Map<Column, CellData>>();
   private readonly rowBounds = new SparseAxisBounds();
@@ -1057,8 +1067,10 @@ export class CellMatrix {
   private cellCount = 0;
   private revisionCounter = 0;
   private deferredJSON?: Record<string, Record<string, CellData>>;
-  private deferredJSONOwned = false;
-  private readonly deferredOwnedRowCounts = new Map<string, number>();
+  private deferredRowCoordinates?: Row[];
+  private deferredMaterializedCells = new WeakSet<CellData>();
+  private readonly deferredCellOverlays = new Map<string, Map<string, CellData | null>>();
+  private readonly deferredCellCountsByRow = new Map<string, number>();
   private deferredRevision = 0;
   private deferredBounds?: {
     count: number;
@@ -1082,8 +1094,10 @@ export class CellMatrix {
   deferJSON(input: Record<string, Record<string, CellData>> | undefined): void {
     if (this.rows.size > 0 || this.deferredJSON !== undefined) throw new Error('CellMatrix already contains data');
     this.deferredJSON = input ?? {};
-    this.deferredJSONOwned = false;
-    this.deferredOwnedRowCounts.clear();
+    this.deferredRowCoordinates = undefined;
+    this.deferredMaterializedCells = new WeakSet<CellData>();
+    this.deferredCellOverlays.clear();
+    this.deferredCellCountsByRow.clear();
     this.deferredRevision = 0;
     this.sortedRowCoordinates = undefined;
     this.deferredBounds = undefined;
@@ -1092,19 +1106,27 @@ export class CellMatrix {
   /** Monotonic content revision used by derived caches; it is not persisted. */
   get revision(): number {
     return this.deferredJSON !== undefined
-      ? this.getDeferredBounds().count + this.revisionCounter + this.deferredRevision
+      ? this.revisionCounter + this.deferredRevision
       : this.revisionCounter;
   }
 
+  /** Read one persisted cell, materializing and normalizing only that cell when storage is deferred. */
   get(row: Row, column: Column): CellData | undefined {
-    this.hydrate();
-    return this.rows.get(row)?.get(column);
+    const cell = this.getWithoutHydration(row, column);
+    if (!cell || this.deferredJSON === undefined) return cell;
+    if (this.deferredMaterializedCells.has(cell)) return cell;
+
+    const materialized = normalizeCellDataForStorage(structuredClone(cell));
+    this.writeDeferredCell(row, column, materialized);
+    this.deferredMaterializedCells.add(materialized);
+    return materialized;
   }
 
   /** Read a persisted sparse cell without materializing deferred worksheet data. */
   getWithoutHydration(row: Row, column: Column): CellData | undefined {
+    assertCellMatrixCoordinates(row, column);
     return this.deferredJSON !== undefined
-      ? this.deferredJSON[String(row)]?.[String(column)]
+      ? this.getDeferredCell(row, column)
       : this.rows.get(row)?.get(column);
   }
 
@@ -1135,16 +1157,16 @@ export class CellMatrix {
     this.writeNormalizedCell(row, column, normalizeCellDataForStorage(cell));
   }
 
-  private writeNormalizedCell(row: Row, column: Column, cell: CellData): void {
+  private writeNormalizedCell(row: Row, column: Column, cell: CellData, incrementRevision = true): void {
+    assertCellMatrixCoordinates(row, column);
     this.onWrite?.(row, column);
     if (this.deferredJSON !== undefined) {
       const existed = this.getWithoutHydration(row, column) !== undefined;
-      this.ownDeferredRow(row)[String(column)] = cell;
-      if (existed) {
-        this.deferredRevision += 1;
-      } else {
-        const rowKey = String(row);
-        this.deferredOwnedRowCounts.set(rowKey, this.deferredOwnedRowCounts.get(rowKey)! + 1);
+      const rowKey = String(row);
+      if (!existed) {
+        const rowCount = this.getDeferredCellCountForRow(rowKey) + 1;
+        this.deferredCellCountsByRow.set(rowKey, rowCount);
+        if (rowCount === 1) this.deferredRowCoordinates = undefined;
         if (this.deferredBounds) {
           const bounds = this.deferredBounds;
           const wasEmpty = bounds.count === 0;
@@ -1155,8 +1177,9 @@ export class CellMatrix {
           bounds.endColumn = wasEmpty ? column : Math.max(bounds.endColumn, column);
         }
       }
-      // A newly stored cell itself contributes +1 to revision. Hydration
-      // retains the same token because it writes exactly those stored cells.
+      this.writeDeferredCell(row, column, cell);
+      this.deferredMaterializedCells.add(cell);
+      this.deferredRevision += 1;
       return;
     }
     let rowMap = this.rows.get(row);
@@ -1172,26 +1195,20 @@ export class CellMatrix {
       this.rowBounds.add(row);
       this.columnBounds.add(column);
     }
-    this.revisionCounter += 1;
+    if (incrementRevision) this.revisionCounter += 1;
   }
 
   delete(row: Row, column: Column): void {
+    assertCellMatrixCoordinates(row, column);
     if (this.deferredJSON !== undefined) {
       if (this.getWithoutHydration(row, column) === undefined) return;
-      const columns = this.ownDeferredRow(row);
-      delete columns[String(column)];
       const rowKey = String(row);
-      const remaining = this.deferredOwnedRowCounts.get(rowKey)! - 1;
-      if (remaining === 0) {
-        delete this.deferredJSON[rowKey];
-        this.deferredOwnedRowCounts.delete(rowKey);
-      } else {
-        this.deferredOwnedRowCounts.set(rowKey, remaining);
-      }
+      const remaining = this.getDeferredCellCountForRow(rowKey) - 1;
+      this.deferredCellCountsByRow.set(rowKey, remaining);
+      this.writeDeferredCell(row, column, null);
+      if (remaining === 0) this.deferredRowCoordinates = undefined;
       this.deferredBounds = undefined;
-      // Removing a stored cell subtracts one from the count term. Add two
-      // so every successful deletion still advances the content token by one.
-      this.deferredRevision += 2;
+      this.deferredRevision += 1;
       return;
     }
     const rowMap = this.rows.get(row);
@@ -1209,12 +1226,29 @@ export class CellMatrix {
     }
   }
 
+  /** Check sparse-cell presence without materializing deferred worksheet data. */
   has(row: Row, column: Column): boolean {
-    this.hydrate();
-    return this.rows.get(row)?.has(column) ?? false;
+    return this.getWithoutHydration(row, column) !== undefined;
   }
 
   clear(): void {
+    if (this.deferredJSON !== undefined) {
+      const revision = this.revision;
+      const hadCells = this.count() > 0;
+      this.revisionCounter = revision + (hadCells ? 1 : 0);
+      this.deferredJSON = undefined;
+      this.deferredRowCoordinates = undefined;
+      this.deferredBounds = undefined;
+      this.sortedRowCoordinates = undefined;
+      this.rowBounds.clear();
+      this.columnBounds.clear();
+      this.cellCount = 0;
+      this.deferredMaterializedCells = new WeakSet<CellData>();
+      this.deferredCellOverlays.clear();
+      this.deferredCellCountsByRow.clear();
+      this.deferredRevision = 0;
+      return;
+    }
     this.hydrate();
     if (this.rows.size > 0) this.revisionCounter += 1;
     this.rows.clear();
@@ -1261,29 +1295,89 @@ export class CellMatrix {
     }
   }
 
-  /** Own only the sparse dictionary and touched row; unrelated payloads remain shared and read-only. */
-  private ownDeferredRow(row: Row): Record<string, CellData> {
+  private writeDeferredCell(row: Row, column: Column, cell: CellData | null): void {
     const rowKey = String(row);
-    if (!this.deferredJSONOwned) {
-      this.deferredJSON = { ...this.deferredJSON! };
-      this.deferredJSONOwned = true;
+    let overlay = this.deferredCellOverlays.get(rowKey);
+    if (!overlay) {
+      overlay = new Map<string, CellData | null>();
+      this.deferredCellOverlays.set(rowKey, overlay);
     }
-    if (!this.deferredOwnedRowCounts.has(rowKey)) {
-      this.deferredJSON![rowKey] = { ...this.deferredJSON![rowKey] };
-      this.deferredOwnedRowCounts.set(rowKey, Object.keys(this.deferredJSON![rowKey]!).length);
+    overlay.set(String(column), cell);
+  }
+
+  private getDeferredCellCountForRow(rowKey: string): number {
+    const cached = this.deferredCellCountsByRow.get(rowKey);
+    if (cached !== undefined) return cached;
+    const base = this.deferredJSON?.[rowKey];
+    const overlay = this.deferredCellOverlays.get(rowKey);
+    let count = Object.keys(base ?? {}).length;
+    if (overlay) {
+      for (const [columnKey, cell] of overlay) {
+        const existed = base !== undefined && Object.prototype.hasOwnProperty.call(base, columnKey);
+        if (cell === null && existed) count -= 1;
+        else if (cell !== null && !existed) count += 1;
+      }
     }
-    return this.deferredJSON![rowKey]!;
+    this.deferredCellCountsByRow.set(rowKey, count);
+    return count;
+  }
+
+  private parseDeferredCoordinate(key: string, axis: 'row' | 'column'): number {
+    return parseCellMatrixCoordinate(key, axis, 'deferred');
+  }
+
+  private forEachDeferredCellInRow(row: Row, callback: (cell: CellData, column: Column) => void): void {
+    const rowKey = String(row);
+    const base = this.deferredJSON?.[rowKey];
+    const overlay = this.deferredCellOverlays.get(rowKey);
+    if (!overlay) {
+      for (const columnKey of Object.keys(base ?? {})) callback(base![columnKey]!, this.parseDeferredCoordinate(columnKey, 'column'));
+      return;
+    }
+
+    const addedColumns = [...overlay]
+      .filter(([columnKey, cell]) => cell !== null && !(base && Object.prototype.hasOwnProperty.call(base, columnKey)))
+      .map(([columnKey, cell]) => ({ column: this.parseDeferredCoordinate(columnKey, 'column'), cell: cell! }))
+      .sort((left, right) => left.column - right.column);
+    let addedIndex = 0;
+    for (const columnKey of Object.keys(base ?? {})) {
+      const baseColumn = this.parseDeferredCoordinate(columnKey, 'column');
+      while (addedIndex < addedColumns.length && addedColumns[addedIndex]!.column < baseColumn) {
+        const added = addedColumns[addedIndex++]!;
+        callback(added.cell, added.column);
+      }
+      const cell = overlay.has(columnKey) ? overlay.get(columnKey) : base![columnKey];
+      if (cell !== null && cell !== undefined) callback(cell, baseColumn);
+    }
+    while (addedIndex < addedColumns.length) {
+      const added = addedColumns[addedIndex++]!;
+      callback(added.cell, added.column);
+    }
+  }
+
+  private getDeferredRow(row: Row): Record<string, CellData> | undefined {
+    const rowKey = String(row);
+    const base = this.deferredJSON?.[rowKey];
+    if (!this.deferredCellOverlays.has(rowKey)) return base;
+    const columns: Record<string, CellData> = {};
+    this.forEachDeferredCellInRow(row, (cell, column) => { columns[String(column)] = cell; });
+    return Object.keys(columns).length > 0 ? columns : undefined;
+  }
+
+  private getDeferredCell(row: Row, column: Column): CellData | undefined {
+    const rowKey = String(row);
+    const columnKey = String(column);
+    const overlay = this.deferredCellOverlays.get(rowKey);
+    if (overlay?.has(columnKey)) return overlay.get(columnKey) ?? undefined;
+    return this.deferredJSON?.[rowKey]?.[columnKey];
   }
 
   /** Read persisted sparse cells without constructing row maps or changing storage ownership. */
   forEachWithoutHydration(callback: (cell: CellData, row: Row, column: Column) => void): void {
     const deferred = this.deferredJSON;
     if (deferred !== undefined) {
-      for (const row of Object.keys(deferred)) {
-        const columns = deferred[row]!;
-        for (const column of Object.keys(columns)) {
-          callback(columns[column]!, Number(row), Number(column));
-        }
+      for (const row of this.getDeferredRowCoordinates()) {
+        this.forEachDeferredCellInRow(row, (cell, column) => callback(cell, row, column));
       }
       return;
     }
@@ -1310,7 +1404,32 @@ export class CellMatrix {
   }
 
   forEachInRows(rows: ReadonlySet<Row>, callback: (cell: CellData, row: Row, column: Column) => void): void {
-    this.hydrate();
+    if (this.deferredJSON !== undefined) {
+      this.forEachInRowsWithoutHydration(rows, (_cell, row, column) => {
+        const cell = this.get(row, column);
+        if (cell) callback(cell, row, column);
+      });
+      return;
+    }
+    for (const row of rows) {
+      const columns = this.rows.get(row);
+      if (!columns) continue;
+      for (const [column, cell] of columns) callback(cell, row, column);
+    }
+  }
+
+  /** Enumerate selected sparse rows without materializing deferred worksheet cells. */
+  forEachInRowsWithoutHydration(rows: ReadonlySet<Row>, callback: (cell: CellData, row: Row, column: Column) => void): void {
+    const deferred = this.deferredJSON;
+    if (deferred !== undefined) {
+      for (const row of rows) {
+        if (!Number.isSafeInteger(row)) continue;
+        this.forEachDeferredCellInRow(row, (cell, column) => {
+          if (Number.isSafeInteger(column)) callback(cell, row, column);
+        });
+      }
+      return;
+    }
     for (const row of rows) {
       const columns = this.rows.get(row);
       if (!columns) continue;
@@ -1319,7 +1438,13 @@ export class CellMatrix {
   }
 
   forEachInColumns(columns: ReadonlySet<Column>, callback: (cell: CellData, row: Row, column: Column) => void): void {
-    this.hydrate();
+    if (this.deferredJSON !== undefined) {
+      this.forEachInColumnsWithoutHydration(columns, (_cell, row, column) => {
+        const cell = this.get(row, column);
+        if (cell) callback(cell, row, column);
+      });
+      return;
+    }
     for (const [row, rowCells] of this.rows) {
       for (const column of columns) {
         const cell = rowCells.get(column);
@@ -1329,14 +1454,35 @@ export class CellMatrix {
   }
 
   *entriesInColumn(column: Column): IterableIterator<{ row: Row; cell: CellData }> {
-    this.hydrate();
+    if (this.deferredJSON !== undefined) {
+      for (const row of this.getDeferredRowCoordinates()) {
+        const cell = this.get(row, column);
+        if (cell) yield { row, cell };
+      }
+      return;
+    }
     for (const [row, rowCells] of this.rows) {
       const cell = rowCells.get(column);
       if (cell) yield { row, cell };
     }
   }
 
-  /** Enumerate only persisted cells inside a range; implicit cells are not materialized. */
+  /** Read one sparse column without cloning cells or creating editable overlays. */
+  *entriesInColumnWithoutHydration(column: Column): IterableIterator<{ row: Row; cell: CellData }> {
+    if (this.deferredJSON !== undefined) {
+      for (const row of this.getDeferredRowCoordinates()) {
+        const cell = this.getDeferredCell(row, column);
+        if (cell) yield { row, cell };
+      }
+      return;
+    }
+    for (const [row, rowCells] of this.rows) {
+      const cell = rowCells.get(column);
+      if (cell) yield { row, cell };
+    }
+  }
+
+  /** Enumerate persisted cells inside a range, materializing only matching deferred cells. */
   forEachInRange(
     startRow: Row,
     endRow: Row,
@@ -1344,7 +1490,13 @@ export class CellMatrix {
     endColumn: Column,
     callback: (cell: CellData, row: Row, column: Column) => void,
   ): void {
-    this.hydrate();
+    if (this.deferredJSON !== undefined) {
+      this.forEachInRangeWithoutHydration(startRow, endRow, startColumn, endColumn, (_cell, row, column) => {
+        const cell = this.get(row, column);
+        if (cell) callback(cell, row, column);
+      });
+      return;
+    }
     const rows = this.getSortedRowCoordinates();
     for (let index = firstCoordinateAtLeast(rows, startRow); index < rows.length; index += 1) {
       const row = rows[index]!;
@@ -1357,6 +1509,104 @@ export class CellMatrix {
     }
   }
 
+  /** Enumerate selected sparse columns without materializing deferred worksheet cells. */
+  forEachInColumnsWithoutHydration(columns: ReadonlySet<Column>, callback: (cell: CellData, row: Row, column: Column) => void): void {
+    if (this.deferredJSON !== undefined) {
+      if (columns.size === 0) return;
+      const requestedColumns = [...columns];
+      const orderByColumn = columns.size > 4
+        ? new Map(requestedColumns.map((column, index) => [column, index] as const))
+        : undefined;
+      for (const row of this.getDeferredRowCoordinates()) {
+        if (!orderByColumn) {
+          for (const column of requestedColumns) {
+            const cell = this.getDeferredCell(row, column);
+            if (cell) callback(cell, row, column);
+          }
+        } else {
+          const selected: Array<{ cell: CellData; column: Column; requestedOrder: number }> = [];
+          this.forEachDeferredCellInRow(row, (cell, column) => {
+            const requestedOrder = orderByColumn.get(column);
+            if (requestedOrder !== undefined) selected.push({ cell, column, requestedOrder });
+          });
+          selected.sort((left, right) => left.requestedOrder - right.requestedOrder);
+          for (const entry of selected) callback(entry.cell, row, entry.column);
+        }
+      }
+      return;
+    }
+    const requestedColumns = [...columns];
+    const orderByColumn = columns.size > 4
+      ? new Map(requestedColumns.map((column, index) => [column, index] as const))
+      : undefined;
+    for (const [row, rowCells] of this.rows) {
+      if (!orderByColumn) {
+        for (const column of requestedColumns) {
+          const cell = rowCells.get(column);
+          if (cell) callback(cell, row, column);
+        }
+      } else {
+        const selected: Array<{ cell: CellData; column: Column; requestedOrder: number }> = [];
+        for (const [column, cell] of rowCells) {
+          const requestedOrder = orderByColumn.get(column);
+          if (requestedOrder !== undefined) selected.push({ cell, column, requestedOrder });
+        }
+        selected.sort((left, right) => left.requestedOrder - right.requestedOrder);
+        for (const entry of selected) callback(entry.cell, row, entry.column);
+      }
+    }
+  }
+
+  /** Enumerate a sparse range in row-major order without materializing deferred worksheet cells. */
+  forEachInRangeWithoutHydration(
+    startRow: Row,
+    endRow: Row,
+    startColumn: Column,
+    endColumn: Column,
+    callback: (cell: CellData, row: Row, column: Column) => void,
+  ): void {
+    const deferred = this.deferredJSON;
+    if (deferred !== undefined) {
+      const rows = this.getDeferredRowCoordinates();
+      const rangeWidth = endColumn - startColumn;
+      for (let index = firstCoordinateAtLeast(rows, startRow); index < rows.length; index += 1) {
+        const row = rows[index]!;
+        if (row > endRow) break;
+        if (rangeWidth >= 0 && rangeWidth < 4) {
+          for (let column = startColumn; column <= endColumn; column += 1) {
+            const cell = this.getDeferredCell(row, column);
+            if (cell) callback(cell, row, column);
+          }
+          continue;
+        }
+        this.forEachDeferredCellInRow(row, (cell, column) => {
+          if (Number.isSafeInteger(column) && column >= startColumn && column <= endColumn) callback(cell, row, column);
+        });
+      }
+      return;
+    }
+
+    const rows = this.getSortedRowCoordinates();
+    const rangeWidth = endColumn - startColumn;
+    for (let index = firstCoordinateAtLeast(rows, startRow); index < rows.length; index += 1) {
+      const row = rows[index]!;
+      if (row > endRow) break;
+      const columns = this.rows.get(row);
+      if (!columns) continue;
+      if (rangeWidth >= 0 && rangeWidth < 4) {
+        for (let column = startColumn; column <= endColumn; column += 1) {
+          const cell = columns.get(column);
+          if (cell) callback(cell, row, column);
+        }
+        continue;
+      }
+      const selectedColumns = [...columns.keys()]
+        .filter((column) => column >= startColumn && column <= endColumn)
+        .sort((left, right) => left - right);
+      for (const column of selectedColumns) callback(columns.get(column)!, row, column);
+    }
+  }
+
   private getSortedRowCoordinates(): Row[] {
     if (!this.sortedRowCoordinates) {
       this.sortedRowCoordinates = [...this.rows.keys()].sort((left, right) => left - right);
@@ -1365,14 +1615,29 @@ export class CellMatrix {
   }
 
   clone(): CellMatrix {
-    this.hydrate();
     const copy = new CellMatrix();
-    this.forEach((cell, row, column) => copy.set(row, column, { ...cell }));
+    this.forEachWithoutHydration((cell, row, column) => copy.set(row, column, structuredClone(cell)));
     return copy;
   }
 
   toJSON(): Record<string, Record<string, CellData>> {
-    if (this.deferredJSON !== undefined) return structuredClone(this.deferredJSON);
+    if (this.deferredJSON !== undefined) {
+      const result = structuredClone(this.deferredJSON);
+      for (const [row, overlay] of this.deferredCellOverlays) {
+        const columns = result[row] ?? (result[row] = {});
+        for (const [column, cell] of overlay) {
+          if (cell === null) delete columns[column];
+          else columns[column] = structuredClone(cell);
+        }
+        if (Object.keys(columns).length === 0) delete result[row];
+      }
+      for (const columns of Object.values(result)) {
+        for (const [column, cell] of Object.entries(columns)) {
+          columns[column] = normalizeCellDataForStorage(cell);
+        }
+      }
+      return result;
+    }
     const result: Record<string, Record<string, CellData>> = {};
     this.forEach((cell, row, column) => {
       result[row] ??= {};
@@ -1385,7 +1650,7 @@ export class CellMatrix {
     const matrix = new CellMatrix();
     for (const [row, columns] of Object.entries(input ?? {})) {
       for (const [column, cell] of Object.entries(columns)) {
-        matrix.set(Number(row), Number(column), { ...cell });
+        matrix.set(parseCellMatrixCoordinate(row, 'row', 'JSON import'), parseCellMatrixCoordinate(column, 'column', 'JSON import'), { ...cell });
       }
     }
     return matrix;
@@ -1394,8 +1659,9 @@ export class CellMatrix {
   private hydrate(): void {
     const input = this.deferredJSON;
     if (input === undefined) return;
+    const rows = this.getDeferredRowCoordinates().map((row) => [row, this.getDeferredRow(row)!] as const);
     const normalizedFontFamilies = new Map<CellData, string>();
-    for (const [row, columns] of Object.entries(input)) {
+    for (const [, columns] of rows) {
       for (const cell of Object.values(columns)) {
         const fontFamily = cell.style?.fontFamily;
         if (fontFamily === undefined) continue;
@@ -1404,40 +1670,39 @@ export class CellMatrix {
       }
     }
     this.deferredJSON = undefined;
+    this.deferredRowCoordinates = undefined;
     this.deferredBounds = undefined;
     this.revisionCounter += this.deferredRevision;
     this.deferredRevision = 0;
-    this.deferredJSONOwned = false;
-    this.deferredOwnedRowCounts.clear();
-    for (const [row, columns] of Object.entries(input)) {
+    this.deferredMaterializedCells = new WeakSet<CellData>();
+    this.deferredCellOverlays.clear();
+    this.deferredCellCountsByRow.clear();
+    for (const [row, columns] of rows) {
       for (const [column, cell] of Object.entries(columns)) {
         const fontFamily = cell.style?.fontFamily;
         const normalizedCell = fontFamily === undefined
           ? { ...cell }
           : { ...cell, style: { ...cell.style, fontFamily: normalizedFontFamilies.get(cell) ?? fontFamily } };
-        this.writeNormalizedCell(Number(row), Number(column), normalizedCell);
+        this.writeNormalizedCell(Number(row), Number(column), normalizedCell, false);
       }
     }
   }
 
   private getDeferredBounds(): NonNullable<CellMatrix['deferredBounds']> {
     if (this.deferredBounds) return this.deferredBounds;
-    const input = this.deferredJSON ?? {};
     let count = 0;
     let startRow = Number.POSITIVE_INFINITY;
     let endRow = Number.NEGATIVE_INFINITY;
     let startColumn = Number.POSITIVE_INFINITY;
     let endColumn = Number.NEGATIVE_INFINITY;
-    for (const [rowKey, columns] of Object.entries(input)) {
-      const row = Number(rowKey);
-      for (const columnKey of Object.keys(columns)) {
-        const column = Number(columnKey);
+    for (const row of this.getDeferredRowCoordinates()) {
+      this.forEachDeferredCellInRow(row, (_cell, column) => {
         count += 1;
         startRow = Math.min(startRow, row);
         endRow = Math.max(endRow, row);
         startColumn = Math.min(startColumn, column);
         endColumn = Math.max(endColumn, column);
-      }
+      });
     }
     this.deferredBounds = {
       count,
@@ -1449,11 +1714,44 @@ export class CellMatrix {
     return this.deferredBounds;
   }
 
+  private getDeferredRowCoordinates(): Row[] {
+    if (!this.deferredRowCoordinates) {
+      const input = this.deferredJSON ?? {};
+      const coordinates = new Set<Row>();
+      let previous = Number.NEGATIVE_INFINITY;
+      let ordered = true;
+      for (const key of Object.keys(input)) {
+        const row = this.parseDeferredCoordinate(key, 'row');
+        if (row < previous) ordered = false;
+        coordinates.add(row);
+        previous = row;
+      }
+      for (const key of this.deferredCellOverlays.keys()) {
+        const row = this.parseDeferredCoordinate(key, 'row');
+        if (this.deferredCellCountsByRow.get(key) === 0) coordinates.delete(row);
+        else coordinates.add(row);
+      }
+      const rows = [...coordinates];
+      for (let index = 1; index < rows.length; index += 1) {
+        if (rows[index]! < rows[index - 1]!) {
+          ordered = false;
+          break;
+        }
+      }
+      if (!ordered) rows.sort((left, right) => left - right);
+      this.deferredRowCoordinates = rows;
+    }
+    return this.deferredRowCoordinates;
+  }
+
   /** 按稀疏行列索引读取范围内实际存在的单元格。 */
   getRegion(startRow: Row, endRow: Row, startColumn: Column, endColumn: Column): Array<{ row: Row; column: Column; cell: CellData }> {
     const extracted: Array<{ row: Row; column: Column; cell: CellData }> = [];
-    this.forEachInRange(startRow, endRow, startColumn, endColumn, (cell, row, column) => {
-      extracted.push({ row, column, cell: structuredClone(cell) });
+    this.forEachInRangeWithoutHydration(startRow, endRow, startColumn, endColumn, (cell, row, column) => {
+      const copy = structuredClone(cell);
+      const fontFamily = copy.style?.fontFamily;
+      if (fontFamily !== undefined) copy.style = { ...copy.style, fontFamily: normalizeFontFamily(fontFamily) };
+      extracted.push({ row, column, cell: copy });
     });
     return extracted;
   }
@@ -1467,6 +1765,113 @@ export class CellMatrix {
 
   placeRegion(items: ReadonlyArray<{ row: Row; column: Column; cell: CellData }>): void {
     for (const item of items) this.set(item.row, item.column, structuredClone(item.cell));
+  }
+}
+
+export class CellHyperlinkMap extends Map<string, CellHyperlink> {
+  private indexBuilt = false;
+  private readonly hyperlinksByRow = new Map<Row, Map<Column, string>>();
+  private sortedRows?: Row[];
+  private readonly sortedColumnsByRow = new Map<Row, Column[]>();
+
+  set(key: string, hyperlink: CellHyperlink): this {
+    const address = this.parseAddress(key);
+    const existed = super.has(key);
+    super.set(key, hyperlink);
+    if (this.indexBuilt && !existed) this.addAddress(address, key);
+    return this;
+  }
+
+  delete(key: string): boolean {
+    if (!super.has(key)) return false;
+    const address = this.parseAddress(key);
+    super.delete(key);
+    if (this.indexBuilt) {
+      const columns = this.hyperlinksByRow.get(address.row);
+      columns?.delete(address.column);
+      this.sortedColumnsByRow.delete(address.row);
+      if (columns?.size === 0) {
+        this.hyperlinksByRow.delete(address.row);
+        this.sortedRows = undefined;
+      }
+    }
+    return true;
+  }
+
+  clear(): void {
+    super.clear();
+    if (!this.indexBuilt) return;
+    this.hyperlinksByRow.clear();
+    this.sortedRows = [];
+    this.sortedColumnsByRow.clear();
+  }
+
+  *entriesInRange(startRow: Row, endRow: Row, startColumn: Column, endColumn: Column): IterableIterator<{
+    key: string;
+    row: Row;
+    column: Column;
+    hyperlink: CellHyperlink;
+  }> {
+    if (![startRow, endRow, startColumn, endColumn].every((coordinate) => Number.isSafeInteger(coordinate) && coordinate >= 0)
+      || endRow < startRow || endColumn < startColumn) {
+      throw new Error('Hyperlink range is invalid');
+    }
+    const rowCount = endRow - startRow + 1;
+    const columnCount = endColumn - startColumn + 1;
+    if (rowCount <= 16 && columnCount <= 16 && rowCount * columnCount <= 16) {
+      for (let row = startRow; row <= endRow; row += 1) {
+        for (let column = startColumn; column <= endColumn; column += 1) {
+          const key = cellKey(row, column);
+          const hyperlink = super.get(key);
+          if (hyperlink) yield { key, row, column, hyperlink };
+        }
+      }
+      return;
+    }
+    this.ensureIndex();
+    const rows = this.sortedRows ??= [...this.hyperlinksByRow.keys()].sort((left, right) => left - right);
+    for (let rowIndex = firstCoordinateAtLeast(rows, startRow); rowIndex < rows.length; rowIndex += 1) {
+      const row = rows[rowIndex]!;
+      if (row > endRow) break;
+      const columnsByAddress = this.hyperlinksByRow.get(row)!;
+      const columns = this.sortedColumnsByRow.get(row) ?? [...columnsByAddress.keys()].sort((left, right) => left - right);
+      this.sortedColumnsByRow.set(row, columns);
+      for (let columnIndex = firstCoordinateAtLeast(columns, startColumn); columnIndex < columns.length; columnIndex += 1) {
+        const column = columns[columnIndex]!;
+        if (column > endColumn) break;
+        const key = columnsByAddress.get(column)!;
+        const hyperlink = super.get(key);
+        if (!hyperlink) throw new Error(`Hyperlink coordinate index is dangling: ${key}`);
+        yield { key, row, column, hyperlink };
+      }
+    }
+  }
+
+  private ensureIndex(): void {
+    if (this.indexBuilt) return;
+    for (const key of super.keys()) this.addAddress(this.parseAddress(key), key);
+    this.indexBuilt = true;
+  }
+
+  private addAddress(address: { row: Row; column: Column }, key: string): void {
+    let columns = this.hyperlinksByRow.get(address.row);
+    if (!columns) {
+      columns = new Map();
+      this.hyperlinksByRow.set(address.row, columns);
+      this.sortedRows = undefined;
+    }
+    if (columns.has(address.column)) throw new Error(`Hyperlink coordinate is duplicated: ${key}`);
+    columns.set(address.column, key);
+    this.sortedColumnsByRow.delete(address.row);
+  }
+
+  private parseAddress(key: string): { row: Row; column: Column } {
+    const separator = key.indexOf(':');
+    if (separator <= 0 || separator !== key.lastIndexOf(':')) throw new Error(`Hyperlink cell key is invalid: ${key}`);
+    const row = Number(key.slice(0, separator));
+    const column = Number(key.slice(separator + 1));
+    if (cellKey(row, column) !== key) throw new Error(`Hyperlink cell key is not canonical: ${key}`);
+    return { row, column };
   }
 }
 
@@ -1490,7 +1895,7 @@ export class WorksheetModel {
   readonly drawingGroups: DrawingGroup[] = [];
   snapSettings: WorksheetSnapSettings = structuredClone(DEFAULT_WORKSHEET_SNAP_SETTINGS);
   /** Canonical persisted hyperlink metadata keyed by row:column. */
-  readonly hyperlinks = new Map<string, CellHyperlink>();
+  readonly hyperlinks = new CellHyperlinkMap();
   readonly review: ReviewStore;
   readonly spillRanges: SpillRange[] = [];
   readonly protectionRules: ProtectionRule[] = [];
@@ -1617,7 +2022,7 @@ export class WorksheetModel {
     copy.tableSheet = this.tableSheet ? structuredClone(this.tableSheet) : undefined;
     copy.ganttSheet = this.ganttSheet ? structuredClone(this.ganttSheet) : undefined;
     copy.reportSheet = this.reportSheet ? structuredClone(this.reportSheet) : undefined;
-    this.cells.forEach((cell, row, column) => copy.cells.set(row, column, structuredClone(cell)));
+    this.cells.forEachWithoutHydration((cell, row, column) => copy.cells.set(row, column, structuredClone(cell)));
     copy.replaceDataRegions(this.dataRegions);
     copy.merges.push(...structuredClone(this.merges));
     copy.pivots.push(...structuredClone(this.pivots));

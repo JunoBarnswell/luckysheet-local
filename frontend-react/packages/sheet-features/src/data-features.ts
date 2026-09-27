@@ -95,6 +95,7 @@ function rowPermutationCalculationEffect(
     rewrittenFormulaOwners: [],
     ...(ownerChanges.formulaOwnerDeltas.length === 0 ? {} : { formulaOwnerDeltas: ownerChanges.formulaOwnerDeltas }),
     definedNameOwnerDeltas: ownerChanges.definedNameOwnerDeltas,
+    rangeOwnerDeltas: ownerChanges.rangeOwnerDeltas,
   };
 }
 
@@ -1303,6 +1304,8 @@ export interface DataValidationResult {
   alertStyle?: 'stop' | 'warning' | 'information';
 }
 
+export type ValidationWorksheetResolver = (sheetId: string) => WorksheetModel | undefined;
+
 export function findValidationRule(sheet: WorksheetModel, row: number, column: number): DataValidationRule | undefined {
   return sheet.dataValidations.find((rule) =>
     rule.ranges.some((range) =>
@@ -1310,18 +1313,26 @@ export function findValidationRule(sheet: WorksheetModel, row: number, column: n
       && column >= range.startColumn && column <= range.endColumn));
 }
 
-export function validationList(rule: DataValidationRule, sheet?: WorksheetModel): string[] | undefined {
+export function validationList(
+  rule: DataValidationRule,
+  sheet?: WorksheetModel,
+  resolveSheet?: ValidationWorksheetResolver,
+): string[] | undefined {
   if (rule.type !== "list") return undefined;
   if (rule.listSource?.kind === 'values') return [...rule.listSource.values];
-  if (rule.listSource?.kind === 'range' && sheet && rule.listSource.range.sheetId === sheet.id) {
+  if (rule.listSource?.kind === 'range') {
+    const sourceSheet = rule.listSource.range.sheetId === sheet?.id
+      ? sheet
+      : resolveSheet?.(rule.listSource.range.sheetId);
+    if (!sourceSheet || sourceSheet.id !== rule.listSource.range.sheetId) return undefined;
     const values: string[] = [];
     const range = normalizeRangeRef(rule.listSource.range);
-    for (let row = range.startRow; row <= range.endRow; row += 1) {
-      for (let column = range.startColumn; column <= range.endColumn; column += 1) {
-        const value = sheet.cells.get(row, column)?.value;
-        if (value != null && String(value) !== '') values.push(String(value));
-      }
-    }
+    sourceSheet.cells.forEachInRangeWithoutHydration(range.startRow, range.endRow, range.startColumn, range.endColumn, (cell) => {
+      const value = cell.formulaValue !== undefined ? cell.formulaValue : cell.value;
+      if (value == null || value === '' || isFormulaError(value)
+        || (typeof value !== 'string' && typeof value !== 'number' && typeof value !== 'boolean')) return;
+      values.push(String(value));
+    });
     return values;
   }
   const listFormula = rule.listSource?.kind === 'formula' ? rule.listSource.formula : undefined;
@@ -1402,6 +1413,7 @@ export function validateDataInput(
   row: number,
   column: number,
   value: CellData["value"],
+  resolveSheet?: ValidationWorksheetResolver,
 ): DataValidationResult {
   const rule = findValidationRule(sheet, row, column);
   if (!rule) return { valid: true, blocking: false };
@@ -1414,7 +1426,7 @@ export function validateDataInput(
     const valid = Boolean(rule.allowBlank ?? true);
     return withRule({ valid, blocking: !valid && (rule.alertStyle ?? 'stop') === 'stop', message: valid ? undefined : validationMessage(rule, "该单元格不允许为空") });
   }
-  const list = validationList(rule, sheet);
+  const list = validationList(rule, sheet, resolveSheet);
   if (rule.type === 'list') {
     if (!list) {
       return withRule({

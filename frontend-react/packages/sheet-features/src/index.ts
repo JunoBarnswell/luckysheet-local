@@ -58,11 +58,8 @@ function snapshotCellRegion(
   endColumn: number,
 ): Array<{ row: number; column: number; cell: CellData }> {
   const extracted: Array<{ row: number; column: number; cell: CellData }> = [];
-  sheet.cells.forEach((cell, row, column) => {
-    if (row >= startRow && row <= endRow && column >= startColumn && column <= endColumn) {
-      extracted.push({ row, column, cell: structuredClone(cell) });
-    }
-  });
+  sheet.cells.forEachInRangeWithoutHydration(startRow, endRow, startColumn, endColumn,
+    (cell, row, column) => extracted.push({ row, column, cell: structuredClone(cell) }));
   return extracted;
 }
 
@@ -378,7 +375,7 @@ function prepareCellEntry(
     }
   }
   if (!next.formula) {
-    const validation = validateDataInput(sheet, params.row, params.column, next.value);
+    const validation = validateDataInput(sheet, params.row, params.column, next.value, (sheetId) => context.workbook.getSheet(sheetId));
     const rule = validation.ruleId ? findValidationRule(sheet, params.row, params.column) : undefined;
     if (validation.blocking) {
       throw new CellEntryError({
@@ -427,7 +424,7 @@ function applyPreparedCellEntry(prepared: PreparedCellEntry, context: CommandCon
       row: params.row,
       column: params.column,
       value: structuredClone(next),
-    }, 'direct-entry', params.validationConfirmation === true),
+    }, 'direct-entry', params.validationConfirmation === true, (sheetId) => context.workbook.getSheet(sheetId)),
     affectedRanges,
     inverse: [{
       id: 'cell.restore',
@@ -860,9 +857,21 @@ function isFilterRemoveMutation(value: unknown): value is { sheetId: string; ran
 }
 
 function isConditionalAddMutation(value: unknown): value is AddConditionalFormatParams {
-  return isRecord(value) && typeof value.sheetId === 'string' && isRecord(value.rule)
-    && typeof value.rule.id === 'string' && typeof value.rule.sheetId === 'string'
-    && Array.isArray(value.rule.ranges) && value.rule.ranges.length > 0 && value.rule.ranges.every(isRange);
+  if (!isRecord(value) || typeof value.sheetId !== 'string' || !isRecord(value.rule)
+    || typeof value.rule.id !== 'string' || typeof value.rule.sheetId !== 'string'
+    || value.sheetId !== value.rule.sheetId || !Array.isArray(value.rule.ranges)) return false;
+  const rule = value.rule;
+  const ranges = rule.ranges;
+  const ruleSheetId = rule.sheetId as string;
+  if (ranges.length === 0
+    || !ranges.every((range) => isRange(range) && range.sheetId === ruleSheetId
+      && range.endRow < MAX_SHEET_ROW_COUNT && range.endColumn < MAX_SHEET_COLUMN_COUNT)) return false;
+  try {
+    normalizeConditionalFormatRule(rule as unknown as ConditionalFormatRule);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function isConditionalFormatUpdateParams(value: unknown): value is UpdateConditionalFormatParams {
@@ -870,25 +879,89 @@ function isConditionalFormatUpdateParams(value: unknown): value is UpdateConditi
 }
 
 function isConditionalFormatUpdateMutation(value: unknown): value is ConditionalFormatUpdateMutationParams {
-  return isRecord(value) && typeof value.sheetId === 'string'
-    && isConditionalAddMutation({ sheetId: value.sheetId, rule: value.before })
-    && isConditionalAddMutation({ sheetId: value.sheetId, rule: value.after })
-    && Array.isArray(value.ranges) && value.ranges.every(isRange);
+  if (!isRecord(value) || typeof value.sheetId !== 'string'
+    || !isConditionalAddMutation({ sheetId: value.sheetId, rule: value.before })
+    || !isConditionalAddMutation({ sheetId: value.sheetId, rule: value.after })
+    || !Array.isArray(value.ranges) || !value.ranges.every(isRange)) return false;
+  const before = value.before as ConditionalFormatRule;
+  const after = value.after as ConditionalFormatRule;
+  return before.id === after.id && rangesExactlyMatch(value.ranges as RangeRef[], [
+    ...before.ranges,
+    ...after.ranges,
+  ]);
 }
 
-function isRuleRemoveMutation(value: unknown): value is { sheetId: string; ruleId: string } {
-  return isRecord(value) && typeof value.sheetId === 'string' && typeof value.ruleId === 'string'
-    && (value.ranges === undefined || (Array.isArray(value.ranges) && value.ranges.every(isRange)));
+function isRuleRemoveMutation(value: unknown): value is { sheetId: string; ruleId: string; ranges: RangeRef[] } {
+  if (!isRecord(value) || typeof value.sheetId !== 'string' || typeof value.ruleId !== 'string'
+    || value.ruleId.length === 0 || !Array.isArray(value.ranges)) return false;
+  const sheetId = value.sheetId;
+  const ranges = value.ranges;
+  return ranges.length > 0 && ranges.every((range) => isRange(range) && range.sheetId === sheetId
+      && range.endRow < MAX_SHEET_ROW_COUNT && range.endColumn < MAX_SHEET_COLUMN_COUNT);
 }
 
 function isSheetRangesMutation(value: unknown): value is { sheetId: string; ranges: RangeRef[] } {
-  return isRecord(value) && typeof value.sheetId === 'string' && Array.isArray(value.ranges) && value.ranges.every(isRange);
+  if (!isRecord(value) || typeof value.sheetId !== 'string' || !Array.isArray(value.ranges)) return false;
+  const sheetId = value.sheetId;
+  return value.ranges.every((range) => isRange(range) && range.sheetId === sheetId
+    && range.endRow < MAX_SHEET_ROW_COUNT && range.endColumn < MAX_SHEET_COLUMN_COUNT);
 }
 
 function isDataValidationAddMutation(value: unknown): value is AddDataValidationParams {
-  return isRecord(value) && typeof value.sheetId === 'string' && isRecord(value.rule)
-    && typeof value.rule.id === 'string' && typeof value.rule.sheetId === 'string'
-    && Array.isArray(value.rule.ranges) && value.rule.ranges.length > 0 && value.rule.ranges.every(isRange);
+  if (!isRecord(value) || typeof value.sheetId !== 'string' || !isRecord(value.rule)
+    || typeof value.rule.id !== 'string' || typeof value.rule.sheetId !== 'string'
+    || value.sheetId !== value.rule.sheetId || !Array.isArray(value.rule.ranges)) return false;
+  const rule = value.rule;
+  const ranges = rule.ranges;
+  const ruleSheetId = rule.sheetId as string;
+  if (ranges.length === 0
+    || !ranges.every((range) => isRange(range) && range.sheetId === ruleSheetId
+      && range.endRow < MAX_SHEET_ROW_COUNT && range.endColumn < MAX_SHEET_COLUMN_COUNT)) return false;
+  try {
+    normalizeDataValidationRule(rule as unknown as DataValidationRule);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function assertDataValidationSourceSheetsExist(workbook: WorkbookModel, rule: DataValidationRule): void {
+  if (rule.listSource?.kind === 'range') workbook.getSheet(rule.listSource.range.sheetId);
+}
+
+function rangesExactlyMatch(actual: readonly RangeRef[], expected: readonly RangeRef[]): boolean {
+  if (actual.length !== expected.length) return false;
+  const key = (range: RangeRef) => JSON.stringify([
+    range.sheetId, range.startRow, range.endRow, range.startColumn, range.endColumn,
+  ]);
+  const counts = new Map<string, number>();
+  for (const range of expected) counts.set(key(range), (counts.get(key(range)) ?? 0) + 1);
+  for (const range of actual) {
+    const rangeKey = key(range);
+    const count = counts.get(rangeKey);
+    if (!count) return false;
+    if (count === 1) counts.delete(rangeKey);
+    else counts.set(rangeKey, count - 1);
+  }
+  return counts.size === 0;
+}
+
+function uniqueRuleIndex<T extends { id: string }>(rules: readonly T[], ruleId: string, label: string): number {
+  let found = -1;
+  for (let index = 0; index < rules.length; index += 1) {
+    if (rules[index]!.id !== ruleId) continue;
+    if (found >= 0) throw new Error(`${label} identity is duplicated: ${ruleId}`);
+    found = index;
+  }
+  return found;
+}
+
+function assertUniqueRuleIds<T extends { id: string }>(rules: readonly T[], label: string): void {
+  const ids = new Set<string>();
+  for (const rule of rules) {
+    if (!rule.id.trim() || ids.has(rule.id)) throw new Error(`${label} identity is missing or duplicated: ${rule.id}`);
+    ids.add(rule.id);
+  }
 }
 
 function isBandedMutation(value: unknown): value is { sheetId: string; rule: BandedRule | null } {
@@ -914,8 +987,8 @@ function ruleRanges(value: { rule: { ranges: RangeRef[] } }): RangeRef[] {
   return value.rule.ranges.map((range) => structuredClone(range));
 }
 
-function removeRuleRanges(value: { ranges?: RangeRef[] }): RangeRef[] {
-  return value.ranges?.map((range) => structuredClone(range)) ?? [];
+function removeRuleRanges(value: { ranges: RangeRef[] }): RangeRef[] {
+  return value.ranges.map((range) => structuredClone(range));
 }
 
 function restoreCell(
@@ -1387,7 +1460,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
     handler: (item, context) => {
       if (!isCellSetMutationParams(item.params)) throw new Error('Invalid cell.set mutation payload');
       const params = item.params;
-      assertCellWriteAuthority(params, context.workbook.getSheet(params.sheetId));
+      assertCellWriteAuthority(params, context.workbook.getSheet(params.sheetId), (sheetId) => context.workbook.getSheet(sheetId));
       const value = clearFormulaProvenance(params.value);
       assertCanonicalCheckboxCell(value);
       context.workbook.getSheet(params.sheetId).cells.set(params.row, params.column, value);
@@ -1422,7 +1495,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       const previous = sheet.cells.get(params.row, params.column);
       const affectedRanges = cellRange(params);
       const value = clearFormulaProvenance(params.value);
-      const canonicalParams = createCellSetMutationParams(sheet, { ...params, value }, 'script');
+      const canonicalParams = createCellSetMutationParams(sheet, { ...params, value }, 'script', false, (sheetId) => context.workbook.getSheet(sheetId));
       context.applyMutation({
         id: 'cell.set',
         unitId: context.workbook.unitId,
@@ -2799,10 +2872,11 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
     handler: (item, context) => {
       if (!isConditionalAddMutation(item.params)) throw new Error('Invalid cf.add mutation payload');
       const params = item.params;
+      if (item.sheetId !== params.sheetId) throw new Error('Invalid cf.add mutation owner sheet');
       const sheet = context.workbook.getSheet(params.rule.sheetId);
-      const index = sheet.conditionalFormats.findIndex((rule) => rule.id === params.rule.id);
-      if (index >= 0) sheet.conditionalFormats[index] = structuredClone(params.rule);
-      else sheet.conditionalFormats.push(structuredClone(params.rule));
+      const index = uniqueRuleIndex(sheet.conditionalFormats, params.rule.id, 'Conditional format');
+      if (index >= 0) throw new Error(`Conditional format ${params.rule.id} already exists`);
+      sheet.conditionalFormats.push(structuredClone(params.rule));
     },
     metadata: {
       schema: { name: 'ConditionalFormatAdd', validate: isConditionalAddMutation },
@@ -2811,19 +2885,23 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       inverseIds: ['cf.remove'],
     },
   });
-  runtime.registry.registerMutation<{ sheetId: string; ruleId: string; ranges?: RangeRef[] }>({
+  runtime.registry.registerMutation<{ sheetId: string; ruleId: string; ranges: RangeRef[] }>({
     id: 'cf.remove',
     handler: (item, context) => {
       if (!isRuleRemoveMutation(item.params)) throw new Error('Invalid cf.remove mutation payload');
       const params = item.params;
+      if (item.sheetId !== params.sheetId) throw new Error('Invalid cf.remove mutation owner sheet');
       const sheet = context.workbook.getSheet(params.sheetId);
-      const index = sheet.conditionalFormats.findIndex((rule) => rule.id === params.ruleId);
-      if (index >= 0) sheet.conditionalFormats.splice(index, 1);
+      const index = uniqueRuleIndex(sheet.conditionalFormats, params.ruleId, 'Conditional format');
+      if (index < 0 || !rangesExactlyMatch(params.ranges, sheet.conditionalFormats[index]!.ranges)) {
+        throw new Error(`Conditional format ${params.ruleId} changed before removal`);
+      }
+      sheet.conditionalFormats.splice(index, 1);
     },
     metadata: {
       schema: { name: 'ConditionalFormatRemove', validate: isRuleRemoveMutation },
       permission: { capability: 'sheet.conditional-format.write', roles: ['owner', 'editor'] },
-      affectedRanges: { resolve: removeRuleRanges, mode: 'declared' },
+      affectedRanges: { resolve: removeRuleRanges, mode: 'exact' },
       inverseIds: ['cf.add'],
     },
   });
@@ -2831,20 +2909,34 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
     id: 'cf.clear',
     handler: (item, context) => {
       if (!isRecord(item.params) || typeof item.params.sheetId !== 'string') throw new Error('Invalid cf.clear mutation payload');
-      context.workbook.getSheet(item.params.sheetId).conditionalFormats.length = 0;
+      if (!isSheetRangesMutation(item.params) || item.sheetId !== item.params.sheetId) throw new Error('Invalid cf.clear mutation owner sheet');
+      const sheet = context.workbook.getSheet(item.params.sheetId);
+      assertUniqueRuleIds(sheet.conditionalFormats, 'Conditional format');
+      const expected = sheet.conditionalFormats.flatMap((rule) => rule.ranges);
+      if (expected.length === 0 || !rangesExactlyMatch(item.params.ranges, expected)) {
+        throw new Error('Conditional formats changed before clear');
+      }
+      sheet.conditionalFormats.length = 0;
     },
     metadata: {
       schema: { name: 'ConditionalFormatClear', validate: isSheetRangesMutation },
       permission: { capability: 'sheet.conditional-format.write', roles: ['owner', 'editor'] },
-      affectedRanges: { resolve: (params) => params.ranges.map((range) => structuredClone(range)), mode: 'declared' },
+      affectedRanges: { resolve: (params) => params.ranges.map((range) => structuredClone(range)), mode: 'exact' },
       inverseIds: ['cf.add'],
     },
   });
   runtime.registry.registerCommand<AddConditionalFormatParams>({
     id: 'sheet.cf.add',
     execute: (params, context) => {
+      if (params.sheetId !== params.rule.sheetId) throw new Error('Invalid sheet.cf.add owner sheet');
       const sheet = context.workbook.getSheet(params.rule.sheetId);
-      const normalizedRule = normalizeConditionalFormatRule(params.rule, sheet.conditionalFormats.length + 1);
+      const existingIndex = sheet.conditionalFormats.findIndex((rule) => rule.id === params.rule.id);
+      const existing = existingIndex >= 0 ? sheet.conditionalFormats[existingIndex] : undefined;
+      const fallbackPriority = existing?.priority ?? (existing ? existingIndex + 1 : sheet.conditionalFormats.length + 1);
+      const normalizedRule = normalizeConditionalFormatRule(params.rule, fallbackPriority);
+      const previous = existing
+        ? runtime.execute('sheet.cf.remove', { sheetId: params.sheetId, ruleId: params.rule.id })
+        : undefined;
       const normalizedParams = { ...params, rule: normalizedRule };
       const affectedRanges: RangeRef[] = structuredClone(normalizedRule.ranges);
       context.applyMutation({
@@ -2864,27 +2956,33 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
         ],
         apply: () => {
           const target = context.workbook.getSheet(normalizedRule.sheetId);
-          const index = target.conditionalFormats.findIndex((rule) => rule.id === normalizedRule.id);
-          if (index >= 0) target.conditionalFormats[index] = structuredClone(normalizedRule);
-          else target.conditionalFormats.push(structuredClone(normalizedRule));
+          if (uniqueRuleIndex(target.conditionalFormats, normalizedRule.id, 'Conditional format') >= 0) {
+            throw new Error(`Conditional format ${normalizedRule.id} already exists`);
+          }
+          target.conditionalFormats.push(structuredClone(normalizedRule));
         },
       });
-      return { operationId: context.operationId, mutationCount: 1, affectedRanges };
+      return {
+        operationId: context.operationId,
+        mutationCount: 1 + (previous?.mutationCount ?? 0),
+        affectedRanges: [...(previous?.affectedRanges ?? []), ...affectedRanges],
+      };
     },
   });
   runtime.registry.registerMutation<ConditionalFormatUpdateMutationParams>({
     id: 'cf.update',
     handler: (item, context) => {
       if (!isConditionalFormatUpdateMutation(item.params)) throw new Error('Invalid cf.update mutation payload');
+      if (item.sheetId !== item.params.sheetId) throw new Error('Invalid cf.update mutation owner sheet');
       const sheet = context.workbook.getSheet(item.params.sheetId);
-      const index = sheet.conditionalFormats.findIndex((rule) => rule.id === item.params.before.id);
+      const index = uniqueRuleIndex(sheet.conditionalFormats, item.params.before.id, 'Conditional format');
       if (index < 0 || JSON.stringify(sheet.conditionalFormats[index]) !== JSON.stringify(item.params.before)) throw new Error(`Conditional format ${item.params.before.id} changed before update`);
       sheet.conditionalFormats[index] = structuredClone(item.params.after);
     },
     metadata: {
       schema: { name: 'ConditionalFormatUpdate', validate: isConditionalFormatUpdateMutation },
       permission: { capability: 'sheet.conditional-format.write', roles: ['owner', 'editor'] },
-      affectedRanges: { resolve: (params) => params.ranges.map((range) => structuredClone(range)), mode: 'declared' },
+      affectedRanges: { resolve: (params) => params.ranges.map((range) => structuredClone(range)), mode: 'exact' },
       inverseIds: ['cf.update'],
     },
   });
@@ -2966,7 +3064,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
           unitId: context.workbook.unitId,
           sheetId: params.sheetId,
           params: { sheetId: params.sheetId, rule } satisfies AddConditionalFormatParams,
-          affectedRanges: [] as RangeRef[],
+          affectedRanges: structuredClone(rule.ranges),
         })),
         apply: () => {
           context.workbook.getSheet(params.sheetId).conditionalFormats.length = 0;
@@ -2981,10 +3079,12 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
     handler: (item, context) => {
       if (!isDataValidationAddMutation(item.params)) throw new Error('Invalid dv.add mutation payload');
       const params = item.params;
+      if (item.sheetId !== params.sheetId) throw new Error('Invalid dv.add mutation owner sheet');
+      assertDataValidationSourceSheetsExist(context.workbook, params.rule);
       const sheet = context.workbook.getSheet(params.rule.sheetId);
-      const index = sheet.dataValidations.findIndex((rule) => rule.id === params.rule.id);
-      if (index >= 0) sheet.dataValidations[index] = structuredClone(params.rule);
-      else sheet.dataValidations.push(structuredClone(params.rule));
+      const index = uniqueRuleIndex(sheet.dataValidations, params.rule.id, 'Data validation');
+      if (index >= 0) throw new Error(`Data validation ${params.rule.id} already exists`);
+      sheet.dataValidations.push(structuredClone(params.rule));
     },
     metadata: {
       schema: { name: 'DataValidationAdd', validate: isDataValidationAddMutation },
@@ -2993,19 +3093,23 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       inverseIds: ['dv.remove'],
     },
   });
-  runtime.registry.registerMutation<{ sheetId: string; ruleId: string; ranges?: RangeRef[] }>({
+  runtime.registry.registerMutation<{ sheetId: string; ruleId: string; ranges: RangeRef[] }>({
     id: 'dv.remove',
     handler: (item, context) => {
       if (!isRuleRemoveMutation(item.params)) throw new Error('Invalid dv.remove mutation payload');
       const params = item.params;
+      if (item.sheetId !== params.sheetId) throw new Error('Invalid dv.remove mutation owner sheet');
       const sheet = context.workbook.getSheet(params.sheetId);
-      const index = sheet.dataValidations.findIndex((rule) => rule.id === params.ruleId);
-      if (index >= 0) sheet.dataValidations.splice(index, 1);
+      const index = uniqueRuleIndex(sheet.dataValidations, params.ruleId, 'Data validation');
+      if (index < 0 || !rangesExactlyMatch(params.ranges, sheet.dataValidations[index]!.ranges)) {
+        throw new Error(`Data validation ${params.ruleId} changed before removal`);
+      }
+      sheet.dataValidations.splice(index, 1);
     },
     metadata: {
       schema: { name: 'DataValidationRemove', validate: isRuleRemoveMutation },
       permission: { capability: 'sheet.data-validation.write', roles: ['owner', 'editor'] },
-      affectedRanges: { resolve: removeRuleRanges, mode: 'declared' },
+      affectedRanges: { resolve: removeRuleRanges, mode: 'exact' },
       inverseIds: ['dv.add'],
     },
   });
@@ -3013,6 +3117,13 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
     id: 'sheet.dv.add',
     execute: (params, context) => {
       const normalizedRule = normalizeDataValidationRule(params.rule);
+      if (params.sheetId !== normalizedRule.sheetId) throw new Error('Invalid sheet.dv.add owner sheet');
+      assertDataValidationSourceSheetsExist(context.workbook, normalizedRule);
+      const sheet = context.workbook.getSheet(normalizedRule.sheetId);
+      const existing = sheet.dataValidations.find((rule) => rule.id === normalizedRule.id);
+      const previous = existing
+        ? runtime.execute('sheet.dv.remove', { sheetId: params.sheetId, ruleId: normalizedRule.id })
+        : undefined;
       const normalizedParams = { ...params, rule: normalizedRule };
       const affectedRanges: RangeRef[] = structuredClone(normalizedRule.ranges);
       context.applyMutation({
@@ -3032,12 +3143,18 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
         ],
         apply: () => {
           const sheet = context.workbook.getSheet(normalizedRule.sheetId);
-          const index = sheet.dataValidations.findIndex((rule) => rule.id === normalizedRule.id);
-          if (index >= 0) sheet.dataValidations[index] = structuredClone(normalizedRule);
-          else sheet.dataValidations.push(structuredClone(normalizedRule));
+          assertDataValidationSourceSheetsExist(context.workbook, normalizedRule);
+          if (uniqueRuleIndex(sheet.dataValidations, normalizedRule.id, 'Data validation') >= 0) {
+            throw new Error(`Data validation ${normalizedRule.id} already exists`);
+          }
+          sheet.dataValidations.push(structuredClone(normalizedRule));
         },
       });
-      return { operationId: context.operationId, mutationCount: 1, affectedRanges };
+      return {
+        operationId: context.operationId,
+        mutationCount: 1 + (previous?.mutationCount ?? 0),
+        affectedRanges: [...(previous?.affectedRanges ?? []), ...affectedRanges],
+      };
     },
   });
   runtime.registry.registerCommand<{ sheetId: string; ruleId: string }>({

@@ -89,6 +89,7 @@ public final class GeneratedWorkbookContract {
         Map.entry("range.move", new MutationCapability("remote", true, "RangeMove", "editor", "exact", true, "edit-cell", true, "exact", "range")),
         Map.entry("style.preset.set", new MutationCapability("remote", true, "CellStylePreset", "editor", "range", true, "format", true, "declared", "range")),
         Map.entry("cf.reorder", new MutationCapability("remote", true, "ConditionalFormatReorder", "editor", "exact", true, "format", true, "declared", "range")),
+        Map.entry("cf.update", new MutationCapability("remote", true, "ConditionalFormatUpdate", "editor", "exact", true, "format", true, "exact", "range")),
         Map.entry("drawing.visibility.set", new MutationCapability("remote", true, "DrawingVisibilitySet", "editor", "exact", true, "edit-objects", true, "declared", "drawing")),
         Map.entry("drawing.rename", new MutationCapability("remote", true, "DrawingRename", "editor", "exact", true, "edit-objects", true, "declared", "drawing"))
     );
@@ -111,6 +112,7 @@ public final class GeneratedWorkbookContract {
         Map.entry("cf.clear", new PermissionPolicy("format", "format", true, "declared", "range")),
         Map.entry("cf.remove", new PermissionPolicy("format", "format", true, "declared", "range")),
         Map.entry("cf.reorder", new PermissionPolicy("format", "format", true, "declared", "range")),
+        Map.entry("cf.update", new PermissionPolicy("format", "format", true, "exact", "range")),
         Map.entry("column.defaultWidth.resize", new PermissionPolicy("format", "format", true, "declared", "range")),
         Map.entry("column.hidden", new PermissionPolicy("structure", "edit-cell", true, "declared", "range")),
         Map.entry("column.resize", new PermissionPolicy("format", "format", true, "declared", "range")),

@@ -91,7 +91,7 @@ export interface OperationIntent {
 
 /** Server-derived reference-owner effects for one committed structural mutation. */
 export interface StructuralPatch {
-  version: 6;
+  version: 8;
   mutationId: string;
   formulaOwnerDeltas: StructuralFormulaOwnerDelta[];
   definedNameOwnerDeltas: StructuralDefinedNameOwnerDelta[];
@@ -1021,7 +1021,7 @@ export function validateDataSourceMutationParams(
 export function validateStructuralPatch(value: unknown, mutationId: string): StructuralPatch {
   const patch = requireRecord(value, 'Committed structural patch');
   validateExactKeys(patch, ['version', 'mutationId', 'formulaOwnerDeltas', 'definedNameOwnerDeltas', 'rangeOwnerDeltas'], 'Committed structural patch');
-  if (patch.version !== 6 || patch.mutationId !== mutationId || !Array.isArray(patch.formulaOwnerDeltas)
+  if (patch.version !== 8 || patch.mutationId !== mutationId || !Array.isArray(patch.formulaOwnerDeltas)
     || !Array.isArray(patch.definedNameOwnerDeltas) || !Array.isArray(patch.rangeOwnerDeltas)) {
     throw new Error('Committed structural patch header is invalid');
   }
@@ -1075,6 +1075,27 @@ export function validateStructuralPatch(value: unknown, mutationId: string): Str
         afterAddress: address(delta.afterAddress, `${label} afterAddress`),
         before: state(delta.before, `${label} before`),
         after: state(delta.after, `${label} after`),
+      };
+    }
+    if (delta.kind === 'formula-rule-anchor') {
+      validateExactKeys(delta, ['kind', 'sheetId', 'ruleKind', 'ruleId', 'beforeAddress', 'afterAddress'], label);
+      if (!isNonEmptyString(delta.sheetId) || !isNonEmptyString(delta.ruleId)
+        || !['conditional-format', 'data-validation'].includes(String(delta.ruleKind))) {
+        throw new Error(`${label} formula-rule anchor owner is invalid`);
+      }
+      const beforeAddress = address(delta.beforeAddress, `${label} beforeAddress`);
+      const afterAddress = address(delta.afterAddress, `${label} afterAddress`);
+      if (beforeAddress.sheetId === afterAddress.sheetId
+        && beforeAddress.row === afterAddress.row && beforeAddress.column === afterAddress.column) {
+        throw new Error(`${label} formula-rule anchor owner state is unchanged`);
+      }
+      return {
+        kind: 'formula-rule-anchor' as const,
+        sheetId: delta.sheetId,
+        ruleKind: delta.ruleKind as 'conditional-format' | 'data-validation',
+        ruleId: delta.ruleId,
+        beforeAddress,
+        afterAddress,
       };
     }
     if (delta.kind === 'formula-object') {
@@ -1175,6 +1196,8 @@ export function validateStructuralPatch(value: unknown, mutationId: string): Str
       ? JSON.stringify([delta.kind, delta.afterAddress.sheetId, delta.afterAddress.row, delta.afterAddress.column])
       : delta.kind === 'formula-rule'
         ? JSON.stringify([delta.kind, delta.sheetId, delta.ruleKind, delta.ruleId, delta.field])
+        : delta.kind === 'formula-rule-anchor'
+          ? JSON.stringify([delta.kind, delta.sheetId, delta.ruleKind, delta.ruleId])
         : delta.ownerKind === 'chart-text'
           ? JSON.stringify([delta.kind, delta.ownerKind, delta.sheetId, delta.payloadId, delta.field])
           : delta.ownerKind === 'shape-property'
@@ -1248,6 +1271,24 @@ export function validateStructuralPatch(value: unknown, mutationId: string): Str
   const rangeOwnerDeltas = patch.rangeOwnerDeltas.map((raw, index): StructuralRangeOwnerDelta => {
     const label = `Committed structural patch range-owner delta ${index}`;
     const delta = requireRecord(raw, label);
+    if (delta.ownerKind === 'conditional-format' || delta.ownerKind === 'data-validation') {
+      validateExactKeys(delta, ['ownerKind', 'sheetId', 'ownerId', 'before', 'after'], label);
+      if (!isNonEmptyString(delta.sheetId) || !isNonEmptyString(delta.ownerId)) {
+        throw new Error(`${label} range-rule identity is invalid`);
+      }
+      const ruleRanges = (value: unknown, side: string): RangeRef[] => {
+        if (!Array.isArray(value) || value.length === 0) throw new Error(`${label}.${side} ranges must not be empty`);
+        return value.map((item, rangeIndex) => {
+          const mapped = range(item, `${label}.${side}[${rangeIndex}]`);
+          if (mapped.sheetId !== delta.sheetId) throw new Error(`${label}.${side} range belongs to another worksheet`);
+          return mapped;
+        });
+      };
+      const before = ruleRanges(delta.before, 'before');
+      const after = ruleRanges(delta.after, 'after');
+      if (JSON.stringify(before) === JSON.stringify(after)) throw new Error(`${label} range-rule state is unchanged`);
+      return { ownerKind: delta.ownerKind, sheetId: delta.sheetId, ownerId: delta.ownerId, before, after };
+    }
     if (delta.ownerKind === 'data-region') {
       validateExactKeys(delta, ['ownerKind', 'sheetId', 'regionId', 'before', 'after'], label);
       if (!isNonEmptyString(delta.sheetId) || !isNonEmptyString(delta.regionId)) {
@@ -1285,6 +1326,33 @@ export function validateStructuralPatch(value: unknown, mutationId: string): Str
       }
       return { ownerKind: 'sheet-table', sheetId: delta.sheetId, ownerId: delta.ownerId, before, after };
     }
+    if (delta.ownerKind === 'validation-list-source') {
+      validateExactKeys(delta, ['ownerKind', 'sheetId', 'ownerId', 'before', 'after', 'beforeOwnerRanges', 'afterOwnerRanges'], label);
+      if (!isNonEmptyString(delta.sheetId) || !isNonEmptyString(delta.ownerId)) {
+        throw new Error(`${label} data-validation list-source identity is invalid`);
+      }
+      const before = range(delta.before, `${label}.before`);
+      const after = range(delta.after, `${label}.after`);
+      const ownerRanges = (value: unknown, side: string): RangeRef[] => {
+        if (!Array.isArray(value) || value.length === 0) throw new Error(`${label}.${side} owner ranges must not be empty`);
+        return value.map((item, index) => {
+          const ownerRange = range(item, `${label}.${side}[${index}]`);
+          if (ownerRange.sheetId !== delta.sheetId) throw new Error(`${label}.${side} owner range belongs to another worksheet`);
+          return ownerRange;
+        });
+      };
+      const beforeOwnerRanges = ownerRanges(delta.beforeOwnerRanges, 'beforeOwnerRanges');
+      const afterOwnerRanges = ownerRanges(delta.afterOwnerRanges, 'afterOwnerRanges');
+      const ownerRangesChanged = JSON.stringify(beforeOwnerRanges) !== JSON.stringify(afterOwnerRanges);
+      if (before.sheetId !== after.sheetId
+        || (JSON.stringify(before) === JSON.stringify(after) && !ownerRangesChanged)) {
+        throw new Error(`${label} list-source owner state is unchanged or changes referenced worksheet identity`);
+      }
+      return {
+        ownerKind: 'validation-list-source', sheetId: delta.sheetId, ownerId: delta.ownerId,
+        before, after, beforeOwnerRanges, afterOwnerRanges,
+      };
+    }
     if (delta.ownerKind !== 'workbook-table' && delta.ownerKind !== 'data-source') {
       throw new Error(`${label} range-owner kind is unsupported`);
     }
@@ -1300,17 +1368,32 @@ export function validateStructuralPatch(value: unknown, mutationId: string): Str
     }
     return { ownerKind: delta.ownerKind, ownerId: delta.ownerId, before, after };
   });
+  const formulaRuleRangeOwners = new Set(formulaOwnerDeltas.flatMap((delta) => delta.kind === 'formula-rule'
+    ? [JSON.stringify([delta.sheetId, delta.ruleKind, delta.ruleId])]
+    : []));
+  const validationListSourceOwners = new Set(rangeOwnerDeltas.flatMap((delta) => delta.ownerKind === 'validation-list-source'
+    ? [JSON.stringify([delta.sheetId, delta.ownerId])]
+    : []));
   const rangeOwnerKeys = new Set<string>();
   for (const delta of rangeOwnerDeltas) {
+    if ((delta.ownerKind === 'conditional-format' || delta.ownerKind === 'data-validation')
+      && formulaRuleRangeOwners.has(JSON.stringify([delta.sheetId, delta.ownerKind, delta.ownerId]))) {
+      throw new Error('Committed structural patch duplicates range state across rule-owner deltas');
+    }
+    if (delta.ownerKind === 'data-validation'
+      && validationListSourceOwners.has(JSON.stringify([delta.sheetId, delta.ownerId]))) {
+      throw new Error('Committed structural patch duplicates data-validation range ownership');
+    }
     const key = delta.ownerKind === 'data-region'
       ? JSON.stringify([delta.ownerKind, delta.sheetId, delta.regionId])
-      : delta.ownerKind === 'sheet-table'
+      : delta.ownerKind === 'sheet-table' || delta.ownerKind === 'validation-list-source'
+        || delta.ownerKind === 'conditional-format' || delta.ownerKind === 'data-validation'
         ? JSON.stringify([delta.ownerKind, delta.sheetId, delta.ownerId])
       : JSON.stringify([delta.ownerKind, delta.ownerId]);
     if (rangeOwnerKeys.has(key)) throw new Error('Committed structural patch contains duplicate range-owner deltas');
     rangeOwnerKeys.add(key);
   }
-  return { version: 6, mutationId, formulaOwnerDeltas, definedNameOwnerDeltas, rangeOwnerDeltas };
+  return { version: 8, mutationId, formulaOwnerDeltas, definedNameOwnerDeltas, rangeOwnerDeltas };
 }
 
 /** Validate the shared dashboard state before it enters a recovery journal. */
@@ -2821,13 +2904,18 @@ function validateCommittedOperationEnvelope(value: unknown): CommittedOperationE
     const actualImpact = (structuralImpactRanges ?? []) as RangeRef[];
     if (structuralPatch !== undefined) {
       const formulaImpact = structuralPatch.formulaOwnerDeltas.flatMap((delta) => delta.kind === 'formula-cell'
+        || delta.kind === 'formula-rule-anchor'
         ? [delta.beforeAddress, delta.afterAddress].map((address) => ({
           sheetId: address.sheetId, startRow: address.row, endRow: address.row, startColumn: address.column, endColumn: address.column,
         }))
         : delta.kind === 'formula-rule' ? [...delta.beforeRanges, ...delta.afterRanges] : []);
       const rangeOwnerImpact = structuralPatch.rangeOwnerDeltas.flatMap((delta) => delta.ownerKind === 'data-region'
         ? [delta.before.range, delta.after.range]
-        : [delta.before, delta.after]);
+        : delta.ownerKind === 'conditional-format' || delta.ownerKind === 'data-validation'
+          ? [...delta.before, ...delta.after]
+        : delta.ownerKind === 'validation-list-source'
+          ? [delta.before, delta.after, ...delta.beforeOwnerRanges, ...delta.afterOwnerRanges]
+          : [delta.before, delta.after]);
       const expectedImpact = [...formulaImpact, ...rangeOwnerImpact];
       const uniqueExpected = [...new Map(expectedImpact.map((range) => [
         JSON.stringify([range.sheetId, range.startRow, range.endRow, range.startColumn, range.endColumn]), range,

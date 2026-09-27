@@ -190,7 +190,7 @@ function collectFormulaChanges(
   const changes: FormulaChange[] = [];
   let requiresCalculationContextRebuild = false;
   for (const sheet of workbook.getSheets()) {
-    sheet.cells.forEach((cell, row, column) => {
+    sheet.cells.forEachFormulaOwner((cell, row, column) => {
       const hasBarcodeFormula = cell.presentation?.kind === 'barcode' && cell.presentation.source.kind === 'formula';
       if (!cell.formula && !cell.formulaMetadata?.sourceFormula && !hasBarcodeFormula) return;
       const participant = `cell:${sheet.id}!${row},${column}`;
@@ -455,7 +455,7 @@ function cloneWorksheetWithIdentity(
       };
     }),
   };
-  copy.cells.forEach((cell, row, column) => {
+  copy.cells.forEachFormulaOwner((cell, row, column) => {
     const hasBarcodeFormula = cell.presentation?.kind === 'barcode' && cell.presentation.source.kind === 'formula';
     if (!cell.formula && !cell.formulaMetadata?.sourceFormula && !hasBarcodeFormula) return;
     const next = structuredClone(cell);
@@ -498,7 +498,7 @@ function collectDeletedSheetReferences(workbook: WorkbookModel, sourceSheetId: S
   };
   for (const sheet of workbook.getSheets()) {
     if (sheet.id === sourceSheetId) continue;
-    sheet.cells.forEach((cell) => {
+    sheet.cells.forEachFormulaOwner((cell) => {
       if (cell.formula && formulaReferencesSheet(cell.formula, sourceName, 'cell-formula', sheet.id)) invalidations.push({ participant: 'cell-formula', ownerSheetId: sheet.id, reference: cell.formula, reason: 'deleted-sheet-reference' });
       const barcodeFormula = cell.presentation?.kind === 'barcode' && cell.presentation.source.kind === 'formula'
         ? cell.presentation.source.formula

@@ -40,7 +40,7 @@ function contains(range: RangeRef, row: number, column: number): boolean {
 }
 
 function cellHasContent(sheet: WorksheetModel, row: number, column: number): boolean {
-  const cell = sheet.cells.get(row, column);
+  const cell = sheet.cells.getWithoutHydration(row, column);
   return Boolean(cell && (cell.value !== null && cell.value !== undefined || cell.formula !== undefined || cell.formulaValue !== undefined));
 }
 
@@ -49,14 +49,14 @@ function usedRange(sheet: WorksheetModel): RangeRef {
   let endRow = 0;
   let startColumn = sheet.columnCount - 1;
   let endColumn = 0;
-  let occupied = false;
-  sheet.cells.forEach((_cell, row, column) => {
-    occupied = true;
-    startRow = Math.min(startRow, row);
-    endRow = Math.max(endRow, row);
-    startColumn = Math.min(startColumn, column);
-    endColumn = Math.max(endColumn, column);
-  });
+  let occupied = sheet.cells.count() > 0;
+  if (occupied) {
+    const range = sheet.cells.occupiedRange(sheet.id);
+    startRow = range.startRow;
+    endRow = range.endRow;
+    startColumn = range.startColumn;
+    endColumn = range.endColumn;
+  }
   for (const { row, column } of sheet.review.noteEntries()) {
     occupied = true;
     startRow = Math.min(startRow, row);

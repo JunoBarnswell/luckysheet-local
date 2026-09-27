@@ -1093,7 +1093,7 @@ head `1d8508ea` 的两个后端 CI 已通过 test-compile，随后在 `sheetRena
 本轮按用户要求沿六条独立路径复核并确认实际缺陷；不是把同一根因重复计数：
 
 1. **公式改写器**：Java 改名扫描器在多个同名结构化引用间复用错误的源切片边界，会把前一个引用后缀重复输出；现逐段输出改名 token 与原结构化引用，并用多引用源码用例约束。TS/Java 边界同时避免把 Unicode 标识符中的 ASCII 后缀误认成目标表名、误改外部 workbook 表引用；正常字符串字面量保留。
-2. **延迟单元格**：公式 owner 遍历本身不 hydrate deferred JSON，但 rename apply 与通用 Undo/Redo formula-cell patch 原先都会调用 `CellMatrix.get/set`，仍把整张工作表物化。现增加不 hydrate 的稀疏单元格读写与按行 copy-on-write，维持 deferred 状态、隔离输入快照、递增内容 revision；rename 与 Undo/Redo 源码用例都断言不 hydrate。
+2. **延迟单元格**：公式 owner 遍历本身不 hydrate deferred JSON，但 rename apply 与通用 Undo/Redo formula-cell patch 原先都会调用 `CellMatrix.get/set`，仍把整张工作表物化。最初实现用按行 copy-on-write；后续静态性能复核发现单格点读会复制整行字典，现改为单元格级 overlay，避免与触及单元格无关的行宽复制。rename 与 Undo/Redo 源码用例断言 deferred 状态、输入快照隔离和 revision。
 3. **公式来源所有权**：Java patch reducer 拒绝修改 `preservedOnly` 的 `formulaMetadata.sourceFormula`，与 TS Undo/Redo 和 rename planner 的 owner 模型冲突。现仅要求 metadata owner 仍存在，允许按前置状态更新 source formula，并覆盖 inverse/redo 源码用例。
 4. **提交与 patch**：`WorkbookOperationService` 将 `applyWithPatch().snapshot()` 作为提交快照；Sheet Table descriptor 原先只返回新表元数据，公式 owner delta 只在回放阶段应用，实时提交会持久化旧公式。descriptor 现于同一 detached snapshot 应用 patch 后再返回，提交与重放使用同一状态。
 5. **对象身份与协议**：table rename 必须携带 cell、rule、defined-name、chart/shape、TableSheet、data-view 和 cell-style-template owners；现由 TS/Java v3 精确契约约束新增 owner 身份，服务端查找 table ID 时要求全工作簿唯一，避免跨 Sheet 重复身份被局部查找遮蔽。
@@ -1379,7 +1379,7 @@ PR 上两个 `canonical-build` job 使用相同 head，前端依赖安装与前�
 
 **本轮结果与验证边界**：收敛两个已证实的架构缺口（写入后才决定公式 owner 目标/最终状态、规则公式与 metadata 结果分离），修复一组跨表强制物化路径和一个 CI 测试输入错误。不把多个调用点或行列变体凑成 30 个独立 bug。新增/补充成功与拒绝回归源码，按用户要求只做静态审查与 diff whitespace 检查，不执行本地 tests/build/lint/typecheck/browser。测试中的 600001 行/XFD 是稀疏边界坐标，只有少量 occupied cells，绝不是大数据量 benchmark。
 
-**性能与回退**：已删除公式 owner 更新引发的整表 Map 物化及重复 live 写入组装，但首次计算仍要枚举值、FormulaEngine 仍持有普通输入，deferred 写入仍有目录/行的 copy-on-write 成本，metadata 仍有 cloning/owner-family 枚举。没有毫秒、heap、加速倍数或百万 occupied cells 验收结论。无 schema/data migration；回退需整体 revert 模型公式计划、稀疏枚举及 runtime/spill 消费者和回归源码。完整目标保持 active，PR 继续 draft。
+**性能与回退**：已删除公式 owner 更新引发的整表 Map 物化及重复 live 写入组装，但首次计算仍要枚举值、FormulaEngine 仍持有普通输入，deferred 单格读写仍会为触及 cell payload 和必要的 row-count 索引付出成本，metadata 仍有 cloning/owner-family 枚举。没有毫秒、heap、加速倍数或百万 occupied cells 验收结论。无 schema/data migration；回退需整体 revert 模型公式计划、稀疏枚举及 runtime/spill 消费者和回归源码。完整目标保持 active，PR 继续 draft。
 
 ### 基础操作性能继续 — StructuralPatch owner 合并（2026-09-26）
 
@@ -1801,3 +1801,106 @@ Repeatable history migration 将旧 v1-v5 patch 先投影回旧 formula-owner �
 PR CI 的两次独立构建都在 `SheetRuleLifecycle.indexRulesById` 报出同一 Java 编译错误：参数静态类型是 `JsonNode`，而 `SnapshotMutationSupport.text` 要求 `ObjectNode`。循环已先用 `rule.isObject()` fail-close；随后显式窄化为 `ObjectNode` 再读取稳定 ID，修复类型契约，不改变规则校验或 patch 行为。
 
 六个静态复核点核对了调用签名、对象判定先于窄化、非 object 输入仍拒绝、身份读取字段不变、变更仅限报错行、以及 PR CI 错误与修复位置对应。按单一根因计 **1 项**；本轮没有达到“至少 30 个真实问题”的审查规模。只做静态类型/差异核查，未在本机运行测试或构建；新提交的 CI 和整个结构编辑目标仍待验收。
+
+### 2026-09-27 continuation — cross-worksheet validation source patch v7
+
+静态沿 axis insert/delete、cell-shift、range.move、row permutation → range-owner delta → Java patch apply → frontend ACK/history/undo/redo → migration 回放复核，确认并修复四个独立行为问题：
+
+1. **范围 owner 身份与引用身份被混为一谈**：数据验证规则归属一个 worksheet，但 `listSource.range` 可以引用另一 worksheet（`core-model/index.test.ts` 已有 cross-sheet fixture）。现有尝试若要求 `range.sheetId === owner.sheetId` 会拒绝合法模型，也无法回放；v7 将 `sheetId` 明确定义为规则 owner sheet，before/after range 保留被引用 sheet，并要求两侧引用 sheet 稳定。
+2. **结构重排没有更新跨表规则的列表来源**：axis、cell shift、move 与 row permutation 的 owner 写入/预检分别只捕获本表规则或缺少外表 rule 扫描；现在 TypeScript 与 Java 都扫描拥有规则的工作表，只对引用目标 sheet 的 list source 规划、验证及写入，排序先预检可否单范围表达，拒绝碎片化后再改任何 owner。
+3. **行排序本地 owner patch 与 Java reducer 不一致**：Java row permutation 已产生 data-region、table、source 等范围 owner delta，前端 `RowPermutationResult` 原先只带公式/name delta，ACK 会因 range-owner 集合不一致而 fail-close；前端现返回并应用相同 owner 事实，并包含跨表 list-source range。
+4. **验证规则 owner geometry 未进入同一 patch/precondition**：旧 delta 只保存 list-source range。规则自己的 applies-to ranges 若因 owner worksheet 的编辑而变化，ACK/undo 无法发现并发 owner 变化，协作冲突与保护检查也只覆盖 source sheet；move 的坐标变换还必须避免把其它 worksheet 上同坐标的 applies-to range 错当成本表范围。v7 delta 现同时携带 `beforeOwnerRanges/afterOwnerRanges`，按 owner sheet 验证和变换，参与前端历史前置条件、Java reducer 原子 apply/inverse、collaboration impact 及 protection authorization。
+
+六轮静态复核分别核对：①owner worksheet 与 referenced worksheet 身份；②v7 TS/Java DTO、exact keys 及 owner-range sheet identity；③axis/cell-shift/move 的双坐标系写入者与采集；④排序跨表遍历和碎片拒绝先于写入；⑤ACK、undo/redo、冲突 impact 与保护授权是否同时覆盖 owner/source ranges；⑥旧 v1-v6 历史投影到 v7、checksum 与重复 migration 路径。新增 TS/Java 回归源码覆盖跨表 source 的协议拒绝/接收、source-only 与 owner-only 变化、move 坐标隔离、axis/sort delta、逆操作与碎片化拒绝。
+
+本轮只确认并修复 **4 个独立问题**，仍**未达到每轮至少 30 个真实问题**，不能把 owner 字段、工作表数量或回归断言拆分凑数。v7 尚只是部分范围 owner 集合；formulaAnchor、无 list-source 的规则 applies-to 几何、charts/pivots/sparklines 等对象 owner、paste after-snapshot 与 Java 唯一 planner 仍未完成。本轮按要求只做静态审查和 `git diff --check`；未运行新增测试、构建、浏览器、性能实测或 Excel 互操作。最终实测仍为后续验收门槛。
+
+### 2026-09-27 continuation — sparse validation reads and structural edits
+
+沿跨表数据验证与结构编辑的 lazy-cell 边界继续静态追踪，确认并修复 3 个独立根因：
+
+1. **列表 range 按矩形读单元格**：`validationList` 对 range 的每个坐标调用 `CellMatrix.get`，稀疏的大范围成本与面积成正比，且引用延迟工作表会触发整表 hydration。改为行优先稀疏遍历，不物化 deferred cells；取值使用公式结果，明确空公式结果不回退到陈旧缓存，并排除错误/非标量。跨表列表校验仍在缺少 resolver 或 worksheet 时 fail-close。微软 Excel API 大范围指南建议按需加载、对稀疏单元使用离散区域；本实现按模型的稀疏 CellMatrix 迭代已存储单元：[大范围读写建议](https://learn.microsoft.com/en-us/office/dev/add-ins/excel/excel-add-ins-ranges-large)、[Excel API 性能建议](https://learn.microsoft.com/en-us/office/dev/add-ins/excel/performance)。
+2. **结构编辑与排序强制 hydration**：axis/cell-shift/move 的 cell plan、cell-shift 拒绝预检、formula-group 拒绝预检，以及 sort 的 selected-row 扫描都使用会先 hydration 的遍历接口。现在使用范围/行定向的 sparse-no-hydration 遍历；数据仍通过 CellMatrix 的 copy-on-write sparse 写入，不复制无关工作表 payload。
+3. **cell-shift 几何没有整数前置校验**：public planner 仅依赖静态类型，运行时允许分数坐标进入 band/mapper。现在在构造 band 前验证 axis、operation 和四个规范化坐标均为安全整数，拒绝路径不写入工作簿。
+
+六轮静态自审依次确认：① deferred 对象的规范十进制键、行列次序和无副作用；② hydrated Map 路径沿用 sparse row index 且恢复 row-major list 顺序；③ range-list blank、formulaValue、error 与跨表 resolver 语义；④所有结构规划/拒绝遍历点已脱离会 hydration 的 API；⑤sort 的 requested-row 顺序与 COW 写入保持既有语义；⑥cell-shift 非整数拒绝发生在 band/metadata/cell mutation 之前。新增 CellMatrix、跨表验证及结构编辑回归源码；按本轮要求未执行测试、构建、浏览器、Excel 或性能实测。
+
+此 continuation 只确认 **3 个根因**，仍未达到用户要求的每轮至少 30 个真实问题；没有把每个调用点、坐标或断言拆分计数。范围 owner v7 的已知未覆盖项（formulaAnchor、无 list-source 的 applies-to ranges、其它持久引用对象、paste after-snapshot、Java 唯一 planner）仍然开放；最终实测仍是验收门槛。
+
+### 2026-09-27 continuation — sheet-rule mutation ownership and replay
+
+静态追踪 CF/DV add、update、remove、clear → mutation envelope/affected ranges → `PermissionService` protection check → isolated replay → Java snapshot reducer → undo/redo，确认并修复 11 个独立根因：
+
+1. **DV range source 可悬空**：直接 `sheet.dv.add` 和远端 `dv.add` 原先只验证范围形状，不要求引用 worksheet 存在。命令与 mutation handler 现在都解析 `listSource.range.sheetId`；远端重放在隔离快照预检时拒绝未知表，不改 live model。
+2. **规则 owner 与 mutation envelope 可分离**：CF/DV add、CF update、CF/DV remove 曾只按 params 中的 sheet 写入，却允许 envelope `item.sheetId` 指向另一张表；add 还允许 `params.sheetId` 与 rule owner 不同。现强制参数、rule owner 和 mutation envelope 一致，范围只能属于 rule owner 表。
+3. **CF 远端写入绕过 canonical normalization**：`cf.add` mutation schema 原先仅检查 id/ranges，remote/replay 可绕过 command 的公式解析及规范化。schema 现执行同一纯 normalization/公式校验，拒绝路径发生在 handler 写入前。
+4. **CF update 可缩小声明影响范围**：服务端 mutation 可把 before/after rule 几何留在真实位置、同时把 `ranges`/`affectedRanges` 声明为空，从而使保护检查漏掉旧/新 applies-to 区域。schema 现要求声明范围精确等于 before 与 after 的多重集并用 exact affected-range 契约。
+5. **CF update 可改写规则身份**：before/after 均校验了 owner sheet，却没有要求 `id` 稳定，远端可把一个既有规则替换成另一 identity 并打断后续 remove/undo；现在要求 identity 不变。
+6. **CF clear 可用空声明清除受保护规则**：handler 原先清空整张表的 CF 集合，却不核对 params ranges 是否覆盖当前规则；现按当前规则集合核对 owner 几何并要求 exact impact。
+7. **CF/DV remove 可少报保护范围**：remove descriptor 曾接受缺失范围或仅信任客户端范围。现在范围为必填 exact，handler 再与当前 rule geometry 比较，且 envelope owner 必须一致。
+8. **重复的持久化 rule ID 使 remove/clear 历史不确定**：旧代码按 ID 只删第一项，而 clear 的逆操作会尝试 add 两个相同 ID；现在 TS/Java 在写入前检测集合内重复/空 identity，拒绝有歧义的 remove、update、clear 或 add。
+9. **CF clear 的 undo inverse 无效**：清空时每个 `cf.add` inverse 都声明空 affected ranges，与 add 的 exact rule ranges 契约冲突；inverse 现携带被恢复规则的实际 ranges，使恢复/重做链对齐。
+10. **同 ID add 实际是不可逆 upsert**：CF/DV add 遇到已存在 ID 会原位覆盖，但 inverse 只有 remove，undo 会丢失旧规则。命令现在以同一事务显式 remove+add，保留反向顺序；底层 TS handler 和 Java reducer 将 add 改为拒绝重复 ID，确保远端单条 upsert 不能绕过历史语义。
+11. **嵌套命令 mutationCount 丢失**：`CommandRuntime.execute` 只返回当前 invocation 的直接 mutation 数，组合命令（例如样式模板依次调用 style/editor/validation 命令）会把实际事务数报成 0。现从共享 history entry 的 mutation 游标计算本次事务增量；加入组合模板及同 ID 规则替换的计数源码断言。
+
+六轮静态复核：①检查 owner sheet 参数与 mutation envelope 的逐层绑定；②对照 CF/DV 的 normalization 与远端 handler 入口；③按保护 guard 的真实 affectedRanges 重算 add/update/remove/clear 授权边界；④核对规则状态先决条件与 isolated replay 的拒绝原子性；⑤逐项追踪 add/remove/clear 的 forward、inverse、redo 序列及 Java add-only reducer；⑥检查嵌套 transaction depth 下 mutation offset、operation history 和调用方结果计数，并核对回归源码覆盖的成功/拒绝路径。
+
+本轮确认并修复 **11 个根因**，仍未达到用户要求的每轮至少 30 个真实问题；没有把 CF/DV 平行入口、保护范围或断言数量重复计数。新增 TS/Java 回归源码，**未运行**测试、构建、浏览器、Excel 或性能实测。静态追踪还确认 v7 patch 仍未携带 CF/DV `formulaAnchor` 与所有规则 applies-to 几何；这会让客户端 ACK/history 冲突事实不完整，需在后续 owner patch 契约中解决。完整目标和最终实测保持开放。
+
+### 2026-09-27 continuation — StructuralPatch v8 owner completeness and deferred move cost
+
+静态复核将 CF/DV 的 formula anchor、规则几何、collaboration impact、ACK 校验、Java replay、客户端 undo/redo 与历史迁移串成一条链。本轮新增/确认的根因集中在以下边界：
+
+1. **row permutation 漏记显式 formula anchor**：规则公式 owner delta 能记录公式/ranges，但排序后 anchor 独立改变；现作为 v8 `formula-rule-anchor` owner delta 输出，并进入本地 replay、collaboration impact 和 committed-envelope impact 校验。
+2. **影响范围漏掉 source validation 的 owner geometry**：Java 已把 DV applies-to 范围纳入 `beforeOwnerRanges`/`afterOwnerRanges`，frontend collaboration 和协议期望集合此前漏掉该部分；现在三侧集合顺序与去重规则一致。
+3. **无公式 CF/DV applies-to range 没有独立 owner**：公式-less 规则的 ranges 不适合伪装成公式 delta；v8 新增范围数组 owner，轴编辑、cell shift、move、row permutation、服务端快照 diff、保护/冲突范围与双端 replay 均使用同一 delta。含公式的规则仍由 formula-rule owner 唯一持有，range-list validation 由 validation-list-source 唯一持有。
+4. **range-only patch 可指向 formula-managed rule**：单靠 wire delta 不能证明持久 owner 类型；服务端 reducer 和客户端 replay 现在在任何写入前拒绝含公式字段或 range-list source 的规则，并新增成功/拒绝回归源码。
+5. **小范围 move-range 触发 deferred 全表 hydration**：`getRegion`/`extractRegion` 原来调用有 hydration 的范围遍历，且移动源单元格被重复读取、复制。范围读取/摘除现使用稀疏无 hydration 遍历，move 直接摘取一次 source 并复用快照；deferred 行坐标索引缓存后，窄范围查询可二分定位且在新增/删除行或 hydration 时失效。
+6. **deferred range query 线性扫描所有行键**：即使只触及少数行也会扫描整个 JSON cell map；新缓存索引在首次构建时检查既有键序、必要时才排序，此后用二分查找范围起点。回归源码覆盖索引失效、range extraction 和 move-range 不 hydration；旧 axis 测试标题/断言同步为真实无 hydration 语义。
+
+六个静态自审视角：①row permutation anchor delta 的产生条件及空 anchor 拒绝；②公式规则、普通规则和 range-list DV 三种 ranges owner 的互斥；③Java/TS reducer 的完整 precondition、原子写入顺序与逆向状态；④server、协议、collaboration 三个 impact 集合的枚举顺序/去重；⑤v1-v7 migration 的 pre-v8 patch 与历史 impact 重算边界；⑥deferred 行索引读写/删除/hydration 失效，以及 move source 单次 sparse 摘取。
+
+本 continuation 确认并修复 **6 类根因**，没有把跨模块同一 owner 漏项拆成多个问题计数，仍未达到“每轮至少 30 个真实问题”；不能据此宣称全目标完成。只进行静态审查并补充回归源码，按用户要求**未运行**测试、构建、浏览器、Excel 或性能实测。StructuralPatch v8 与同一草稿 PR 后续仍需 CI、完整门禁及真实文件/Excel 验收。
+
+### 2026-09-27 continuation — point reads no longer hydrate a worksheet
+
+静态追踪 deferred worksheet 的读取 API → 数据解析器 → permission/editing/clipboard/chart/pivot/data-source/rendering 调用链，找到一个系统性根因：`CellMatrix.get`、`has`、范围/行/列读取把局部访问升级成整张工作表 hydration。仓库中有 **114 处生产 `*.cells.get(...)` 调用点**受此行为影响；另确认并迁移了 **20 处范围枚举调用**及 **15 处生产整表枚举调用**（14 处 app 调用和 1 处 core-model worksheet clone）。这些是具体受影响路径计数，不把同一 API 根因伪称为独立机制。修复集中在 canonical `CellMatrix`：点读只克隆所选 cell payload 并写入单元格级 overlay，不复制整行或全表字典；`has` 直接查稀疏存储；deferred 范围和 selected-row 遍历只访问相关稀疏单元格，selected-column 按行对请求列做直接查找，避免扫描整行；完整 clone 和 clear 不再先 hydrate。全量 `toJSON` 仍输出规范化快照，显式完整枚举仍保留全量语义。
+
+同一链路还揭示了独立的无效扫描：Find 搜索一个选区却先收集整张表；“当前区域”求 used-range 重走所有单元格而忽略已有边界索引；公式 owner 重建、worksheet identity、history/what-if/pivot 公式引擎与 Canvas occupied-cell 流使用全量 Map 枚举。静态复核还发现 selected-column 的首版 sparse iterator 为少量请求列扫描每行所有键；现改为每个 sparse row × 请求列的直接查找，并由源码断言固定列请求顺序。延迟坐标索引曾静默跳过非规范 row key，现改为返回可观察的 `CELL_MATRIX_INVALID_COORDINATE`，不再把无效数据误表示为稀疏空白。Find/ReviewStore 链还移除了选区结果的整表 Map/坐标副本，按需读取 cell/metadata targets，以 ReviewStore 的行索引限定 metadata clone；每次 scan 只编译一次 matcher，workbook 顺序排序改为 O(1) identity lookup，note ID 唯一性检查从线性扫描改用现有 owner 的 identity index。行索引和 ID 索引均为内存派生索引，不改变持久化 snapshot/protocol。其余路径分别改用范围 sparse 遍历、`occupiedRange`、formula-owner sparse iterator 或只读 no-hydration 流，保留调用方需要的地址次序、内容过滤及公式来源语义。新增源码断言覆盖输入对象隔离、字体规范化、嵌套 payload 隔离、无效坐标 fail-close、稳定引用、修订号、point/range read、选行选列、ReviewStore 范围索引更新、Find 目标筛选、cell overlay 删除/重插、clone/clear 和序列化行为。
+
+六轮静态自审：①所有 114 个基线 point-read 引用、20 个 range-enumeration 与 15 个 full-enumeration 调用的迁移范围；②单格读取是否触发整行复制、selected-column 是否误扫整行、嵌套 payload 输入隔离、单元格字体规范化与稳定对象引用；③行/范围/bounds cache 在读、覆盖写、插入、删除、删空及重插时的失效与 revision token；④range/row/column 遍历的行列次序、请求列次序、无效 row/column key fail-close、回调删改及 formula-owner 筛选语义；⑤`toJSON`/hydrate/clone/clear 对单元格 overlay、全量字体规范化、原输入和修订号的合并边界；⑥Find cell/metadata target 路径、query regex 状态复用、workbook sheet-order sort、ReviewStore 索引增删/移动/rebuild 与主要调用方是否继续触发整表扫描。
+
+本 continuation 记录 **12 个独立根因**：①局部 CellMatrix 读取整表 hydration；②首版 row-level COW 点读时复制整行字典；③selected-column iterator 扫描整行；④延迟 row index 静默略过无效 row key；⑤Find 选区扫描整表；⑥Find 为已扫描 cell 重复建立 Map、坐标串和排序数组；⑦values/formulas-only Find 仍构建 review metadata；⑧metadata-only Find 仍扫描 cell storage；⑨metadata Find 克隆范围外全部 ReviewStore entries；⑩每个候选文本重复编译正则；⑪结果排序比较器重复线性搜索 workbook sheet order；⑫`ReviewStore.setNote` 为 identity 冲突逐项扫描全部 notes。修复分别集中在 per-cell overlay、fail-close coordinate parsing、请求列直接查找、Find sparse streaming/target gating、ReviewStore range/identity derived indexes 与 matcher/sheet-order 复用；没有把同一调用点拆分计数。另修复多个被静态调用链证明的整表/超范围扫描。114 个 point-read 和 range/full-enumeration 数量均为受影响调用路径，不宣称成同数目的独立根因；本轮仍未达到“每轮至少 30 个真实问题”的目标，不能据此宣称全目标完成。仅静态审查与源码检查；未运行测试、构建、浏览器、Excel 或性能实测，因此实际延迟/内存收益尚未测量。用户要求的真实实测和 Excel 互操作仍是未完成门槛。
+
+### 2026-09-27 continuation — range-index, revision-token, and sparse-write audit
+
+在上一节 12 项之上，沿 CellMatrix → Find/ReviewStore → clear/paste → data-region materialization → structural commit/undo → Pivot/autocomplete 的消费者链先确认 **20 项不同根因，累计 32 项**；同一机制的重复调用点没有重复计数：
+
+13. `CellMatrix.clone()` 只做 cell 顶层浅拷贝，嵌套 rich text 会与来源共享；改为复制被克隆 cell 的完整 payload，并加嵌套写隔离源码断言。
+14. Find 遍历已拿到 candidate cell 后，`cellValueText` 再调用 `CellMatrix.get`，造成每个候选额外深拷贝并写 overlay；现在直接读取该 candidate。
+15. `ReviewStore.entriesInRange` 原先对命中行逐一解析整行 metadata key；现在使用按需排序、按列二分的行索引，并在索引生命周期里处理增删/移动。
+16. Find 只需 note/comment 的 id 与文字，却深拷贝完整 `CommentThread`（包括 replies）；新增 owner 投影只复制搜索所需字段。
+17. Clear plan/apply/restore 通过全量 `noteEntries`/`threadEntries` 后过滤选区；改用 ReviewStore 范围迭代器。
+18. Data-region materialize/undo 对整个矩形逐行逐列 `delete`，稀疏大区域成本与面积而非存储 cell 数成正比；改为已存 cell 范围遍历。
+19. Clear apply 与 restore 为安全删除先构造临时 cell/coordinate 数组；改为在稳定 sparse iterator 上就地处理，避免第二份范围列表。
+20. 首次读取 deferred `CellMatrix.revision` 会计算所有 cell bounds/count；改为只由 mutation 推进的 O(1) revision token，hydrate 不改变 token。
+21. Pivot fingerprint 在读取 revision 后又调用 `count()`，重复全矩阵扫描；移除冗余 count 分量。
+22. Value autocomplete 的 `entriesInColumn` 对每个只读候选执行 `get`、深拷贝并保留 overlay；新增只读列 iterator 并切换调用方。
+23. 结构轴/带状 cell shift 把 deferred 原 cell 对象直接写进目标 overlay，嵌套 mutation 可穿透至来源快照；仅复制受影响的 cell payload 后提交。
+24. CellMatrix 窄列范围仍扫描行内所有列；宽度小的范围改为逐个坐标直查，宽范围保留稀疏 row 扫描。
+25. 大列选择按每个 sparse row × 每个 requested column 做笛卡尔查找；列集合较宽时改为单次 sparse row scan，再按请求列序恢复输出顺序。
+26. Find 同时检索 cell 与 metadata 时，对每个 cell 构造坐标 key 查 metadata，并对每个 metadata 位置再调用 `has`；现在 cell 与范围内 metadata 分别单次扫描，再统一排序。
+27. Hyperlink 范围 clear 通过 Map 全量枚举；Map owner 增加懒构建的行/列索引，范围结果按 row-major 迭代，并由 `set/delete/clear` 保持派生索引一致。
+28. Paste snapshot 只关心若干范围，却先枚举所有 ReviewStore/Hyperlink owner；切换到对应范围迭代器和按 key 去重。
+29. Paste snapshot 为 comments 与 commentCells 分别调用 `threadEntries()`，整批深拷贝 threads/replies 两次；改为一次范围投影同时生成两种结果。
+30. CellMatrix `set/delete/fromJSON` 接受负数、分数或非规范 JSON 坐标；现在在写入/extent 变更前 fail-close 校验安全整数与规范键。
+31. Paste apply 对每个空 cell patch 逐一 `.some(clearRanges)`，成本为 patch 数 × range 数；由于 `delete` 对不存在 cell 是无操作，现在直接删除，不再重复测试已清空范围。
+32. ReviewStore/Hyperlink 的首个小范围查询此前也先建立完整排序索引；面积不超过 16 个地址时直接 hash lookup，较大范围才建立/使用排序索引。
+
+六轮静态自审分别覆盖：①deferred revision 与 hydrate/clear 的 token 连续性；②行覆盖、行列索引及小/大范围复杂度；③Find 多 target、查询排序、regex 状态和候选对象身份；④ReviewStore note/thread add/remove/move/rebuild 与范围结果隔离；⑤结构写入和 clone 的嵌套 payload 所有权；⑥clear/paste/materialize 的稀疏删除、mutation 顺序、undo/redo 与范围 owner 一致性。新增或更新 TS 回归源码覆盖 clone 隔离、索引增删/移动、Find 混合 targets、无效坐标、列顺序及 deferred 行为；**按当前要求未运行**测试、typecheck、build、browser、Excel 或 benchmark。上述“32 项”是当轮静态源码根因清单，不是运行时性能收益证明；最终真实验收仍开放。
+
+### 2026-09-27 snapshot-boundary coordinate follow-up
+
+终审复核发现另一个独立 fail-close 根因，累计 **33 项**：规范快照验证器遍历了 cell payload，却没有验证行列对象键；canonical snapshot/migration 入口因而会放过前导零和超出安全整数范围的键，deferred worksheet 后续才可能报错。现在 deferred JSON、JSON import 和 canonical snapshot validator 共用同一坐标解析器，规范快照入口会立即拒绝坏键；新增源码回归覆盖 validator 与 stored-snapshot migration 的拒绝路径。
+
+六个终审视角：①规范键与 JSON 数字序列化的一致性；②deferred loader 的惰性解析时点；③直接 snapshot validator 与 stored-snapshot migration 的拒绝一致性；④前导零和超安全整数的双轴覆盖；⑤合法坐标 parser 语义与既有 JSON/import/deferred 消费者保持一致；⑥只在 snapshot owner 边界遍历已存 cell，而不改变之后的稀疏读取复杂度。此次仍只做静态审查，源码测试未运行，也未运行 typecheck、build、browser、Excel 或 benchmark；运行时表现和最终互操作验收仍待完成。

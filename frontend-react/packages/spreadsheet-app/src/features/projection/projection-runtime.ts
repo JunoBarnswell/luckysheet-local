@@ -148,7 +148,7 @@ export class ProjectionRuntime {
           for (const address of [delta.beforeAddress, delta.afterAddress]) {
             formulaOwnerAddresses.set(`${address.sheetId}:${address.row}:${address.column}`, address);
           }
-        } else if (delta.kind === 'formula-rule') {
+        } else if (delta.kind === 'formula-rule' || delta.kind === 'formula-rule-anchor') {
           this.invalidateSheetProjection(delta.sheetId, ['content', 'dataRules']);
         } else if (delta.ownerKind === 'chart-text') {
           drawingOwnerSheets.add(delta.sheetId);
@@ -157,6 +157,12 @@ export class ProjectionRuntime {
           drawingOwnerSheets.add(delta.sheetId);
         } else if (delta.ownerKind === 'table-sheet-column') {
           this.invalidateSheetProjection(delta.sheetId, ['content']);
+        }
+      }
+      for (const delta of mutation.structuralRangeOwnerDeltas ?? []) {
+        if (delta.ownerKind === 'conditional-format' || delta.ownerKind === 'data-validation'
+          || delta.ownerKind === 'validation-list-source') {
+          this.invalidateSheetProjection(delta.sheetId, ['content', 'dataRules']);
         }
       }
       if (mutation.id === 'drawing.add' && isRecord(mutation.params)) {

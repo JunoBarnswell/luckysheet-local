@@ -134,6 +134,7 @@
     "range.move": { "durability": "remote", "remote": true, "schema": "RangeMove", "minRole": "editor", "rebasePolicy": "exact", "javaReducer": true, "collaborationKind": "move-range" },
     "style.preset.set": { "durability": "remote", "remote": true, "schema": "CellStylePreset", "minRole": "editor", "rebasePolicy": "range", "javaReducer": true, "collaborationKind": "cell-style" },
     "cf.reorder": { "durability": "remote", "remote": true, "schema": "ConditionalFormatReorder", "minRole": "editor", "rebasePolicy": "exact", "javaReducer": true, "collaborationKind": "cell-style" },
+    "cf.update": { "durability": "remote", "remote": true, "schema": "ConditionalFormatUpdate", "minRole": "editor", "rebasePolicy": "exact", "javaReducer": true, "collaborationKind": "cell-style" },
     "drawing.visibility.set": { "durability": "remote", "remote": true, "schema": "DrawingVisibilitySet", "minRole": "editor", "rebasePolicy": "exact", "javaReducer": true, "collaborationKind": "drawing" },
     "drawing.rename": { "durability": "remote", "remote": true, "schema": "DrawingRename", "minRole": "editor", "rebasePolicy": "exact", "javaReducer": true, "collaborationKind": "drawing" }
   },
@@ -347,6 +348,7 @@
       "cf.clear": { "capability": "format", "protectionAction": "format", "checksProtection": true },
       "cf.remove": { "capability": "format", "protectionAction": "format", "checksProtection": true },
       "cf.reorder": { "capability": "format", "protectionAction": "format", "checksProtection": true },
+      "cf.update": { "capability": "format", "protectionAction": "format", "checksProtection": true, "affectedRangeMode": "exact", "objectScope": "range" },
       "column.defaultWidth.resize": { "capability": "format", "protectionAction": "format", "checksProtection": true },
       "column.hidden": { "capability": "structure", "protectionAction": "edit-cell", "checksProtection": true },
       "column.resize": { "capability": "format", "protectionAction": "format", "checksProtection": true },

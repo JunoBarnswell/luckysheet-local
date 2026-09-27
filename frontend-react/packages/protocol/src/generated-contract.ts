@@ -149,6 +149,7 @@ export const MUTATION_CAPABILITIES = {
   "range.move": { durability: "remote", remote: true, schema: "RangeMove", minRole: "editor", rebasePolicy: "exact", javaReducer: true, protectionAction: "edit-cell", checksProtection: true, affectedRangeMode: "exact", objectScope: "range", collaborationKind: "move-range" },
   "style.preset.set": { durability: "remote", remote: true, schema: "CellStylePreset", minRole: "editor", rebasePolicy: "range", javaReducer: true, protectionAction: "format", checksProtection: true, affectedRangeMode: "declared", objectScope: "range", collaborationKind: "cell-style" },
   "cf.reorder": { durability: "remote", remote: true, schema: "ConditionalFormatReorder", minRole: "editor", rebasePolicy: "exact", javaReducer: true, protectionAction: "format", checksProtection: true, affectedRangeMode: "declared", objectScope: "range", collaborationKind: "cell-style" },
+  "cf.update": { durability: "remote", remote: true, schema: "ConditionalFormatUpdate", minRole: "editor", rebasePolicy: "exact", javaReducer: true, protectionAction: "format", checksProtection: true, affectedRangeMode: "exact", objectScope: "range", collaborationKind: "cell-style" },
   "drawing.visibility.set": { durability: "remote", remote: true, schema: "DrawingVisibilitySet", minRole: "editor", rebasePolicy: "exact", javaReducer: true, protectionAction: "edit-objects", checksProtection: true, affectedRangeMode: "declared", objectScope: "drawing", collaborationKind: "drawing" },
   "drawing.rename": { durability: "remote", remote: true, schema: "DrawingRename", minRole: "editor", rebasePolicy: "exact", javaReducer: true, protectionAction: "edit-objects", checksProtection: true, affectedRangeMode: "declared", objectScope: "drawing", collaborationKind: "drawing" },
 } as const satisfies Record<string, MutationCapability>;
@@ -348,6 +349,7 @@ export const MUTATION_PERMISSION_POLICIES = {
   "cf.clear": { capability: "format", protectionAction: "format", checksProtection: true, affectedRangeMode: "declared", objectScope: "range" },
   "cf.remove": { capability: "format", protectionAction: "format", checksProtection: true, affectedRangeMode: "declared", objectScope: "range" },
   "cf.reorder": { capability: "format", protectionAction: "format", checksProtection: true, affectedRangeMode: "declared", objectScope: "range" },
+  "cf.update": { capability: "format", protectionAction: "format", checksProtection: true, affectedRangeMode: "exact", objectScope: "range" },
   "column.defaultWidth.resize": { capability: "format", protectionAction: "format", checksProtection: true, affectedRangeMode: "declared", objectScope: "range" },
   "column.hidden": { capability: "structure", protectionAction: "edit-cell", checksProtection: true, affectedRangeMode: "declared", objectScope: "range" },
   "column.resize": { capability: "format", protectionAction: "format", checksProtection: true, affectedRangeMode: "declared", objectScope: "range" },

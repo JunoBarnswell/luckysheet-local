@@ -68,7 +68,7 @@ export interface StructuralFormulaCellOwnerDelta {
   readonly after: StructuralFormulaOwnerState;
 }
 
-export interface StructuralFormulaRuleOwnerDelta {
+export interface StructuralFormulaRuleFormulaOwnerDelta {
   readonly kind: 'formula-rule';
   readonly sheetId: string;
   readonly ruleKind: 'conditional-format' | 'data-validation';
@@ -79,6 +79,17 @@ export interface StructuralFormulaRuleOwnerDelta {
   readonly beforeRanges: readonly RangeRef[];
   readonly afterRanges: readonly RangeRef[];
 }
+
+export interface StructuralFormulaRuleAnchorOwnerDelta {
+  readonly kind: 'formula-rule-anchor';
+  readonly sheetId: string;
+  readonly ruleKind: 'conditional-format' | 'data-validation';
+  readonly ruleId: string;
+  readonly beforeAddress: CellAddress;
+  readonly afterAddress: CellAddress;
+}
+
+export type StructuralFormulaRuleOwnerDelta = StructuralFormulaRuleFormulaOwnerDelta | StructuralFormulaRuleAnchorOwnerDelta;
 
 export type StructuralFormulaObjectOwnerDelta =
   | {
@@ -500,9 +511,134 @@ function planAxisRangeOwners(
   return Object.freeze(changes);
 }
 
+function planValidationListSourceRangeDeltas(
+  beforeSheets: readonly WorksheetModel[],
+  afterSheets: readonly WorksheetModel[],
+  targetSheetId: string,
+): StructuralRangeOwnerDelta[] {
+  const afterBySheet = new Map(afterSheets.map((sheet) => [sheet.id, sheet]));
+  if (afterBySheet.size !== afterSheets.length || beforeSheets.length !== afterSheets.length
+    || beforeSheets.some((sheet) => !afterBySheet.has(sheet.id))) {
+    throw new Error('STRUCTURAL_PATCH_INVARIANT: worksheet membership changed during validation list-source planning');
+  }
+  const deltas: StructuralRangeOwnerDelta[] = [];
+  for (const beforeSheet of beforeSheets) {
+    const afterSheet = afterBySheet.get(beforeSheet.id)!;
+    const index = (rules: WorksheetModel['dataValidations'], side: string) => {
+      const byId = new Map<string, WorksheetModel['dataValidations'][number]>();
+      for (const rule of rules) {
+        if (!rule.id?.trim() || rule.sheetId !== beforeSheet.id || byId.has(rule.id)) {
+          throw new Error(`STRUCTURAL_PATCH_INVARIANT: ${side} data-validation identity is invalid on worksheet ${beforeSheet.id}`);
+        }
+        byId.set(rule.id, rule);
+      }
+      return byId;
+    };
+      const beforeById = index(beforeSheet.dataValidations, 'before');
+      const afterById = index(afterSheet.dataValidations, 'after');
+    if (beforeById.size !== afterById.size || [...beforeById.keys()].some((id) => !afterById.has(id))) {
+      throw new Error(`STRUCTURAL_PATCH_INVARIANT: data-validation membership changed during structural planning on ${beforeSheet.id}`);
+    }
+    for (const [ruleId, beforeRule] of beforeById) {
+      const afterRule = afterById.get(ruleId)!;
+      const beforeSource = beforeRule.listSource;
+      const afterSource = afterRule.listSource;
+      if ((beforeSource?.kind === 'range') !== (afterSource?.kind === 'range')) {
+        throw new Error(`STRUCTURAL_PATCH_INVARIANT: data-validation ${beforeSheet.id}:${ruleId} changed list-source kind`);
+      }
+      if (beforeSource?.kind !== 'range' || afterSource?.kind !== 'range') continue;
+      if (beforeSource.range.sheetId !== afterSource.range.sheetId) {
+        throw new Error(`STRUCTURAL_PATCH_INVARIANT: data-validation ${beforeSheet.id}:${ruleId} changed list-source worksheet identity`);
+      }
+      const sourceTargetsSheet = beforeSource.range.sheetId === targetSheetId;
+      const ownerTargetsSheet = beforeSheet.id === targetSheetId;
+      if (!sourceTargetsSheet && !ownerTargetsSheet) continue;
+      if (beforeRule.ranges.length === 0 || afterRule.ranges.length === 0
+        || beforeRule.ranges.some((range) => range.sheetId !== beforeSheet.id)
+        || afterRule.ranges.some((range) => range.sheetId !== beforeSheet.id)) {
+        throw new Error(`STRUCTURAL_PATCH_INVARIANT: data-validation ${beforeSheet.id}:${ruleId} has invalid applies-to ranges`);
+      }
+      if (sameStructuralMetadata(beforeSource.range, afterSource.range)
+        && sameStructuralMetadata(beforeRule.ranges, afterRule.ranges)) continue;
+      deltas.push({
+        ownerKind: 'validation-list-source', sheetId: beforeSheet.id, ownerId: ruleId,
+        before: Object.freeze({ ...beforeSource.range }), after: Object.freeze({ ...afterSource.range }),
+        beforeOwnerRanges: Object.freeze(beforeRule.ranges.map((range) => Object.freeze({ ...range }))),
+        afterOwnerRanges: Object.freeze(afterRule.ranges.map((range) => Object.freeze({ ...range }))),
+      });
+    }
+  }
+  return deltas;
+}
+
 function applyAxisRangeOwnerDeltas(workbook: WorkbookModel, targetSheetId: string, changes: readonly StructuralRangeOwnerDelta[]): void {
   if (changes.length === 0) return;
   const regions = new Map<string, Extract<StructuralRangeOwnerDelta, { ownerKind: 'data-region' }>>();
+  const sheetTableChanges = new Map<string, Map<string, Extract<StructuralRangeOwnerDelta, { ownerKind: 'sheet-table' }>>>();
+  const validationChanges = new Map<string, Map<string, Extract<StructuralRangeOwnerDelta, { ownerKind: 'validation-list-source' }>>>();
+  const rangeRuleChanges = new Map<string, Extract<StructuralRangeOwnerDelta, { ownerKind: 'conditional-format' | 'data-validation' }>>();
+  const addOwnerChange = <T extends StructuralRangeOwnerDelta>(
+    grouped: Map<string, Map<string, T>>,
+    sheetId: string,
+    ownerId: string,
+    change: T,
+  ) => {
+    let byId = grouped.get(sheetId);
+    if (!byId) {
+      byId = new Map();
+      grouped.set(sheetId, byId);
+    }
+    if (byId.has(ownerId)) throw new Error(`STRUCTURAL_PATCH_INVARIANT: duplicate ${change.ownerKind} delta ${sheetId}:${ownerId}`);
+    byId.set(ownerId, change);
+  };
+  for (const change of changes) {
+    if (change.ownerKind === 'sheet-table') addOwnerChange(sheetTableChanges, change.sheetId, change.ownerId, change);
+    else if (change.ownerKind === 'validation-list-source') addOwnerChange(validationChanges, change.sheetId, change.ownerId, change);
+    else if (change.ownerKind === 'conditional-format' || change.ownerKind === 'data-validation') {
+      const key = JSON.stringify([change.ownerKind, change.sheetId, change.ownerId]);
+      if (rangeRuleChanges.has(key)) throw new Error(`STRUCTURAL_PATCH_INVARIANT: duplicate ${change.ownerKind} delta ${change.sheetId}:${change.ownerId}`);
+      rangeRuleChanges.set(key, change);
+    }
+  }
+  const sheetTablesBySheet = new Map<string, Map<string, WorksheetModel['sheetTables'][number]>>();
+  for (const [sheetId, byId] of sheetTableChanges) {
+    const sheet = workbook.getSheet(sheetId);
+    const owners = new Map<string, WorksheetModel['sheetTables'][number]>();
+    for (const table of sheet.sheetTables) {
+      if (!byId.has(table.id)) continue;
+      if (table.sheetId !== sheetId || owners.has(table.id)) {
+        throw new Error(`STRUCTURAL_PATCH_INVARIANT: Sheet Table ${sheetId}:${table.id} has an invalid identity during axis commit`);
+      }
+      owners.set(table.id, table);
+    }
+    if (owners.size !== byId.size) throw new Error(`STRUCTURAL_PATCH_INVARIANT: Sheet Table owner is missing on ${sheetId}`);
+    sheetTablesBySheet.set(sheetId, owners);
+  }
+  const validationsBySheet = new Map<string, Map<string, WorksheetModel['dataValidations'][number]>>();
+  for (const [sheetId, byId] of validationChanges) {
+    const sheet = workbook.getSheet(sheetId);
+    const owners = new Map<string, WorksheetModel['dataValidations'][number]>();
+    for (const rule of sheet.dataValidations) {
+      if (!byId.has(rule.id)) continue;
+      if (rule.sheetId !== sheetId || owners.has(rule.id) || rule.listSource?.kind !== 'range') {
+        throw new Error(`STRUCTURAL_PATCH_INVARIANT: validation list-source owner ${sheetId}:${rule.id} is invalid during axis commit`);
+      }
+      owners.set(rule.id, rule);
+    }
+    if (owners.size !== byId.size) throw new Error(`STRUCTURAL_PATCH_INVARIANT: validation list-source owner is missing on ${sheetId}`);
+    validationsBySheet.set(sheetId, owners);
+  }
+  const rangeRulesByIdentity = new Map<string, StructuralRangeRuleOwner>();
+  for (const change of rangeRuleChanges.values()) {
+    const rules = change.ownerKind === 'conditional-format'
+      ? workbook.getSheet(change.sheetId).conditionalFormats
+      : workbook.getSheet(change.sheetId).dataValidations;
+    const matches = rules.filter((rule) => rule.id === change.ownerId && rule.sheetId === change.sheetId);
+    if (matches.length !== 1 || matches[0]!.ranges.some((range) => range.sheetId !== change.sheetId)) {
+      throw new Error(`STRUCTURAL_PATCH_INVARIANT: ${change.ownerKind} owner ${change.sheetId}:${change.ownerId} must resolve exactly once during axis commit`);
+    }
+    rangeRulesByIdentity.set(JSON.stringify([change.ownerKind, change.sheetId, change.ownerId]), matches[0]!);
+  }
   for (const change of changes) {
     switch (change.ownerKind) {
       case 'data-region':
@@ -519,10 +655,25 @@ function applyAxisRangeOwnerDeltas(workbook: WorkbookModel, targetSheetId: strin
         break;
       }
       case 'sheet-table': {
-        const sheet = workbook.getSheet(change.sheetId);
-        const matches = sheet.sheetTables.filter((table) => table.id === change.ownerId && table.sheetId === change.sheetId);
-        if (matches.length !== 1) throw new Error(`STRUCTURAL_PATCH_INVARIANT: Sheet Table ${change.sheetId}:${change.ownerId} must resolve exactly once during axis commit`);
-        matches[0]!.range = { ...change.after };
+        const table = sheetTablesBySheet.get(change.sheetId)?.get(change.ownerId);
+        if (!table) throw new Error(`STRUCTURAL_PATCH_INVARIANT: Sheet Table ${change.sheetId}:${change.ownerId} must resolve exactly once during axis commit`);
+        table.range = { ...change.after };
+        break;
+      }
+      case 'validation-list-source': {
+        const rule = validationsBySheet.get(change.sheetId)?.get(change.ownerId);
+        if (!rule || rule.listSource?.kind !== 'range' || rule.listSource.range.sheetId !== change.before.sheetId) {
+          throw new Error(`STRUCTURAL_PATCH_INVARIANT: validation list-source owner ${change.sheetId}:${change.ownerId} must resolve exactly once during structural commit`);
+        }
+        rule.listSource.range = { ...change.after };
+        rule.ranges = change.afterOwnerRanges.map((range) => ({ ...range }));
+        break;
+      }
+      case 'conditional-format':
+      case 'data-validation': {
+        const rule = rangeRulesByIdentity.get(JSON.stringify([change.ownerKind, change.sheetId, change.ownerId]));
+        if (!rule) throw new Error(`STRUCTURAL_PATCH_INVARIANT: ${change.ownerKind} owner ${change.sheetId}:${change.ownerId} disappeared during axis commit`);
+        rule.ranges = change.after.map((range) => ({ ...range }));
         break;
       }
     }
@@ -549,16 +700,15 @@ function planStructuralCells(
 ): StructuralCellPlan {
   const moves: StructuralCellPlan['moves'] = [];
   const removedCells: StructuralCellPlan['removedCells'] = [];
-  sheet.cells.forEachInRange(range.startRow, range.endRow, range.startColumn, range.endColumn, (cell, row, column) => {
+  sheet.cells.forEachInRangeWithoutHydration(range.startRow, range.endRow, range.startColumn, range.endColumn, (cell, row, column) => {
     const target = mapAddress(row, column);
     if (!target) {
       removedCells.push({ row, column, cell: structuredClone(cell) });
       return;
     }
-    let prepared = cell;
-    if (cell.style?.fontFamily !== undefined) {
-      const fontFamily = normalizeFontFamily(cell.style.fontFamily);
-      if (fontFamily !== cell.style.fontFamily) prepared = { ...cell, style: { ...cell.style, fontFamily } };
+    const prepared = structuredClone(cell);
+    if (prepared.style?.fontFamily !== undefined) {
+      prepared.style = { ...prepared.style, fontFamily: normalizeFontFamily(prepared.style.fontFamily) };
     }
     moves.push({ row, column, targetRow: target.row, targetColumn: target.column, cell: prepared });
   });
@@ -681,7 +831,14 @@ function structuralAxisInputRanges(
 export function planCellShift(workbook: WorkbookModel, spec: CellShiftSpec): CellShiftPlan {
   const sheet = workbook.getSheet(spec.sheetId);
   if (spec.range.sheetId !== spec.sheetId) throw new Error('Cell shift range must belong to the target worksheet');
+  if ((spec.axis !== 'row' && spec.axis !== 'column')
+    || (spec.operation !== 'insert' && spec.operation !== 'delete')) {
+    throw new Error('Cell shift requires a supported axis and operation');
+  }
   const selection = normalizeRange(spec.range);
+  if (![selection.startRow, selection.endRow, selection.startColumn, selection.endColumn].every(Number.isSafeInteger)) {
+    throw new Error('Cell shift coordinates must be safe integers');
+  }
   const count = spec.axis === 'row'
     ? selection.endRow - selection.startRow + 1
     : selection.endColumn - selection.startColumn + 1;
@@ -731,6 +888,7 @@ function applyCellShift(
     rewrittenFormulaOwners: formulaRewriteResult.owners,
     formulaOwnerDeltas: [...formulaRewriteResult.deltas, ...formulaRewriteResult.formulaRuleDeltas],
     definedNameOwnerDeltas: formulaRewriteResult.definedNameDeltas,
+    rangeOwnerDeltas: metadataPlan.rangeOwners,
   };
 }
 
@@ -749,7 +907,7 @@ function validateCellShiftBounds(
     count,
     direction: operation === 'insert' ? 1 : -1,
   };
-  sheet.cells.forEachInRange(band.startRow, band.endRow, band.startColumn, band.endColumn, (_cell, row, column) => {
+  sheet.cells.forEachInRangeWithoutHydration(band.startRow, band.endRow, band.startColumn, band.endColumn, (_cell, row, column) => {
     const destination = mapCellShiftCoordinate(plan, row, column);
     if (destination && !insideCell(band, destination.row, destination.column)) throw new Error('Cell shift would move data outside worksheet bounds');
     if (!destination && operation === 'insert') throw new Error('Cell shift would discard data outside worksheet bounds');
@@ -859,6 +1017,77 @@ function planMovedRangeOwnerDeltas(
       ownerKind: 'sheet-table', sheetId: sheet.id, ownerId: table.id,
       before: Object.freeze({ ...table.range }), after,
     }));
+  }
+  for (const ownerSheet of workbook.getSheets()) {
+    for (const [ownerKind, rules] of [
+      ['conditional-format', ownerSheet.conditionalFormats],
+      ['data-validation', ownerSheet.dataValidations],
+    ] as const) {
+      const ids = new Set<string>();
+      for (const rule of rules) {
+        if (!rule.id?.trim() || ids.has(rule.id) || rule.sheetId !== ownerSheet.id) {
+          throw new Error(`STRUCTURAL_PATCH_INVARIANT: ${ownerKind} ${ownerSheet.id}:${rule.id} has an invalid identity during move planning`);
+        }
+        ids.add(rule.id);
+        if (structuralRuleFormulaFields(rule).size > 0
+          || ownerKind === 'data-validation' && rule.listSource?.kind === 'range') continue;
+        const afterRanges = rule.ranges.map((range) => moved(range) ?? Object.freeze({ ...range }));
+        if (sameStructuralMetadata(rule.ranges, afterRanges)) continue;
+        changes.push(Object.freeze({
+          ownerKind,
+          sheetId: ownerSheet.id,
+          ownerId: rule.id,
+          before: Object.freeze(rule.ranges.map((range) => Object.freeze({ ...range }))),
+          after: Object.freeze(afterRanges),
+        }));
+      }
+    }
+    const validationIds = new Set<string>();
+    for (const rule of ownerSheet.dataValidations) {
+      if (!rule.id?.trim() || validationIds.has(rule.id) || rule.sheetId !== ownerSheet.id) {
+        throw new Error(`STRUCTURAL_PATCH_INVARIANT: data validation ${ownerSheet.id}:${rule.id} has an invalid owner identity during move planning`);
+      }
+      validationIds.add(rule.id);
+      const listSource = rule.listSource;
+      if (listSource?.kind !== 'range') continue;
+      const sourceOnTargetSheet = listSource.range.sheetId === sheet.id;
+      const ownerOnTargetSheet = ownerSheet.id === sheet.id;
+      if (!sourceOnTargetSheet && !ownerOnTargetSheet) continue;
+      if (!Array.isArray(rule.ranges) || rule.ranges.length === 0
+        || rule.ranges.some((ownerRange) => ownerRange.sheetId !== ownerSheet.id)) {
+        throw new Error(`STRUCTURAL_PATCH_INVARIANT: data validation ${ownerSheet.id}:${rule.id} has invalid applies-to ranges during move planning`);
+      }
+      let after: Readonly<RangeRef> | undefined;
+      if (listSource.range.sheetId === sheet.id) {
+        const range = listSource.range;
+        const intersectsSource = rangesIntersect(source, range);
+        if (intersectsSource && !rangeContains(source, range)) {
+          throw new Error(`Move partially intersects validation list-source range for ${ownerSheet.id}:${rule.id}`);
+        }
+        if (rangesIntersect(target, range) && !rangeContains(source, range)) {
+          throw new Error(`Move destination would overwrite validation list-source range for ${ownerSheet.id}:${rule.id}`);
+        }
+        after = moved(range);
+      }
+      const beforeOwnerRanges = rule.ranges.map((ownerRange) => Object.freeze({ ...ownerRange }));
+      const afterOwnerRanges = ownerSheet.id === sheet.id
+        ? rule.ranges.map((ownerRange) => {
+          if (rangesIntersect(source, ownerRange) && !rangeContains(source, ownerRange)) {
+            throw new Error(`Move partially intersects validation applies-to range for ${ownerSheet.id}:${rule.id}`);
+          }
+          if (rangesIntersect(target, ownerRange) && !rangeContains(source, ownerRange)) {
+            throw new Error(`Move destination would overwrite validation applies-to range for ${ownerSheet.id}:${rule.id}`);
+          }
+          return moved(ownerRange) ?? Object.freeze({ ...ownerRange });
+        })
+        : beforeOwnerRanges;
+      const ownerRangesChanged = !sameStructuralMetadata(beforeOwnerRanges, afterOwnerRanges);
+      if (after || ownerRangesChanged) changes.push(Object.freeze({
+        ownerKind: 'validation-list-source', sheetId: ownerSheet.id, ownerId: rule.id,
+        before: Object.freeze({ ...listSource.range }), after: after ?? Object.freeze({ ...listSource.range }),
+        beforeOwnerRanges: Object.freeze(beforeOwnerRanges), afterOwnerRanges: Object.freeze(afterOwnerRanges),
+      }));
+    }
   }
   return Object.freeze(changes);
 }
@@ -975,7 +1204,11 @@ function planCellShiftMetadata(
     );
   }
   const formulaRuleDeltas = stageMetadataFormulaRules(workbook, stagedSheets, formulaRewrite);
-  return collectStructuralMetadataPlan(workbook, sheet.id, stagedSheets, [], printDocument, formulaRuleDeltas);
+  const rangeOwners = [
+    ...planValidationListSourceRangeDeltas(workbook.getSheets(), stagedSheets, sheet.id),
+    ...planRuleRangeDeltas(workbook.getSheets(), stagedSheets),
+  ];
+  return collectStructuralMetadataPlan(workbook, sheet.id, stagedSheets, rangeOwners, printDocument, formulaRuleDeltas);
 }
 
 interface StructuralMetadataPlan {
@@ -994,6 +1227,7 @@ const STRUCTURAL_LOCAL_METADATA_FIELDS = [
 ] as const;
 type StructuralMetadataField = typeof STRUCTURAL_REFERENCE_METADATA_FIELDS[number] | typeof STRUCTURAL_LOCAL_METADATA_FIELDS[number];
 type StructuralMetadataValues = { -readonly [Field in StructuralMetadataField]?: WorksheetModel[Field] };
+type StructuralRangeRuleOwner = WorksheetModel['conditionalFormats'][number] | WorksheetModel['dataValidations'][number];
 
 interface StructuralSheetMetadataPlan {
   readonly sheetId: string;
@@ -1011,7 +1245,7 @@ function planAxisMetadata(
   direction: 1 | -1,
   formulaRewrite: FormulaRewritePlan,
 ): StructuralMetadataPlan {
-  const rangeOwners = planAxisRangeOwners(workbook, sheet, axis, at, count, direction);
+  const rangeOwners = [...planAxisRangeOwners(workbook, sheet, axis, at, count, direction)];
   const stagedSheets = cloneStructuralPreflightSheets(workbook, sheet);
   const staged = stagedSheets.find((candidate) => candidate.id === sheet.id);
   if (!staged) throw new Error(`STRUCTURAL_PATCH_INVARIANT: worksheet ${sheet.id} is absent from metadata preflight`);
@@ -1039,7 +1273,57 @@ function planAxisMetadata(
   const printDocument = currentPrintDocument ? structuredClone(currentPrintDocument) : undefined;
   if (printDocument) shiftPrintDocumentAxis(printDocument, staged.id, axis, at, count, direction);
   const formulaRuleDeltas = stageMetadataFormulaRules(workbook, stagedSheets, formulaRewrite);
+  rangeOwners.push(...planValidationListSourceRangeDeltas(workbook.getSheets(), stagedSheets, sheet.id));
+  rangeOwners.push(...planRuleRangeDeltas(workbook.getSheets(), stagedSheets));
   return collectStructuralMetadataPlan(workbook, sheet.id, stagedSheets, rangeOwners, printDocument, formulaRuleDeltas);
+}
+
+function planRuleRangeDeltas(
+  beforeSheets: readonly WorksheetModel[],
+  afterSheets: readonly WorksheetModel[],
+): StructuralRangeOwnerDelta[] {
+  const afterBySheet = new Map(afterSheets.map((sheet) => [sheet.id, sheet]));
+  if (afterBySheet.size !== afterSheets.length || beforeSheets.length !== afterSheets.length
+    || beforeSheets.some((sheet) => !afterBySheet.has(sheet.id))) {
+    throw new Error('STRUCTURAL_PATCH_INVARIANT: worksheet membership changed during range-rule planning');
+  }
+  const deltas: StructuralRangeOwnerDelta[] = [];
+  for (const beforeSheet of beforeSheets) {
+    const afterSheet = afterBySheet.get(beforeSheet.id)!;
+    for (const [ownerKind, beforeRules, afterRules] of [
+      ['conditional-format', beforeSheet.conditionalFormats, afterSheet.conditionalFormats],
+      ['data-validation', beforeSheet.dataValidations, afterSheet.dataValidations],
+    ] as const) {
+      const beforeIdCounts = new Map<string, number>();
+      for (const rule of beforeRules) beforeIdCounts.set(rule.id, (beforeIdCounts.get(rule.id) ?? 0) + 1);
+      const afterById = new Map<string, StructuralFormulaRule | null>();
+      for (const rule of afterRules) afterById.set(rule.id, afterById.has(rule.id) ? null : rule);
+      for (const before of beforeRules) {
+        if (structuralRuleFormulaFields(before).size > 0
+          || ownerKind === 'data-validation' && before.listSource?.kind === 'range') continue;
+        const after = afterById.get(before.id);
+        if (!before.id.trim() || beforeIdCounts.get(before.id) !== 1 || !after || after.sheetId !== beforeSheet.id
+          || structuralRuleFormulaFields(after).size > 0
+          || after.ranges.length === 0
+          || before.ranges.some((range) => range.sheetId !== beforeSheet.id)
+          || after.ranges.some((range) => range.sheetId !== beforeSheet.id)) {
+          throw new Error(`STRUCTURAL_PATCH_INVARIANT: ${ownerKind} range owner ${beforeSheet.id}:${before.id} is invalid during planning`);
+        }
+        if (JSON.stringify(before.ranges) === JSON.stringify(after.ranges)) continue;
+        deltas.push({
+          ownerKind,
+          sheetId: beforeSheet.id,
+          ownerId: before.id,
+          before: before.ranges.map((range) => ({ ...range })),
+          after: after.ranges.map((range) => ({ ...range })),
+        });
+      }
+      if (afterById.size !== beforeIdCounts.size || [...beforeIdCounts.keys()].some((id) => !afterById.has(id))) {
+        throw new Error(`STRUCTURAL_PATCH_INVARIANT: ${ownerKind} membership changed during range-rule planning on ${beforeSheet.id}`);
+      }
+    }
+  }
+  return deltas;
 }
 
 function collectStructuralMetadataPlan(
@@ -2629,7 +2913,7 @@ function assertFormulaRuleReferenceIndexUsable(referenceOwners: StructuralRefere
 }
 
 function rejectFormulaGroupMetadataInRange(sheet: WorksheetModel, range: RangeRef, operation: string): void {
-  sheet.cells.forEachInRange(range.startRow, range.endRow, range.startColumn, range.endColumn, (cell, row, column) => {
+  sheet.cells.forEachInRangeWithoutHydration(range.startRow, range.endRow, range.startColumn, range.endColumn, (cell, row, column) => {
     if (!hasFormulaGroupMetadata(cell)) return;
     throw new Error(`UNSUPPORTED_STRUCTURAL_REFERENCE: ${cell.formulaMetadata?.kind} formula metadata at ${sheet.id}!${row}:${column} requires an explicit formula-group operation before ${operation}`);
   });
@@ -2695,7 +2979,7 @@ function stageMetadataFormulaRules(
     ] as const) {
       const formulaRules = beforeRules.flatMap((rule) => {
         const formulas = structuralRuleFormulaFields(rule);
-        return formulas.size > 0 ? [{ rule, formulas }] : [];
+        return formulas.size > 0 || rule.formulaAnchor !== undefined ? [{ rule, formulas }] : [];
       });
       const beforeIdCounts = new Map<string, number>();
       const formulaRuleIds = new Set<string>();
@@ -2717,6 +3001,22 @@ function stageMetadataFormulaRules(
         const afterFormulas = structuralRuleFormulaFields(afterRule);
         if (beforeFormulas.size !== afterFormulas.size) {
           throw new Error(`STRUCTURAL_PATCH_INVARIANT: formula rule ${beforeSheet.id}:${beforeRule.id} changed owner fields during metadata planning`);
+        }
+        const beforeAnchor = beforeRule.formulaAnchor;
+        const afterAnchor = afterRule.formulaAnchor;
+        if ((beforeAnchor === undefined) !== (afterAnchor === undefined)) {
+          throw new Error(`STRUCTURAL_PATCH_INVARIANT: formula rule ${beforeSheet.id}:${beforeRule.id} added or removed its formula anchor during metadata planning`);
+        }
+        if (beforeAnchor && afterAnchor && (beforeAnchor.sheetId !== afterAnchor.sheetId
+          || beforeAnchor.row !== afterAnchor.row || beforeAnchor.column !== afterAnchor.column)) {
+          deltas.push({
+            kind: 'formula-rule-anchor',
+            sheetId: beforeSheet.id,
+            ruleKind,
+            ruleId: beforeRule.id,
+            beforeAddress: { ...beforeAnchor },
+            afterAddress: { ...afterAnchor },
+          });
         }
         const rangesChanged = JSON.stringify(beforeRule.ranges) !== JSON.stringify(afterRule.ranges);
         for (const [field, beforeFormula] of beforeFormulas) {
@@ -2922,7 +3222,7 @@ export function planSheetTableRename(
       before: structuredClone(before),
       after: structuredClone(after),
     })),
-    ...ruleChanges.map(({ owner, beforeFormula, afterFormula, beforeRanges }): StructuralFormulaRuleOwnerDelta => ({
+    ...ruleChanges.map(({ owner, beforeFormula, afterFormula, beforeRanges }): StructuralFormulaRuleFormulaOwnerDelta => ({
       kind: 'formula-rule',
       sheetId: owner.sheetId,
       ruleKind: owner.ruleKind,
@@ -3078,17 +3378,13 @@ function applyMoveRange(
     delete cell.formulaValue;
     return { ...entry, cell };
   });
+  const overwritten = sheet.cells.getRegion(target.startRow, target.endRow, target.startColumn, target.endColumn);
   const formulaRewrite = rewriteReferencesForMovedRegion(workbook, sheet, normalizedSource, target, rowDelta, colDelta, referenceOwners);
   sheet.ensureRangeExtent(target.startRow, target.endRow, target.startColumn, target.endColumn);
-  sheet.cells.extractRegion(
-    normalizedSource.startRow,
-    normalizedSource.endRow,
-    normalizedSource.startColumn,
-    normalizedSource.endColumn,
-  );
+  for (const item of cellsToMove) sheet.cells.delete(item.row, item.column);
+  for (const item of overwritten) sheet.cells.delete(item.row, item.column);
   // Moving a range replaces every destination coordinate, including cells
   // that were empty in the source. This prevents stale target values.
-  const overwritten = sheet.cells.extractRegion(target.startRow, target.endRow, target.startColumn, target.endColumn);
   for (const item of cellsToMove) {
     sheet.cells.set(item.row + rowDelta, item.column + colDelta, item.cell);
   }

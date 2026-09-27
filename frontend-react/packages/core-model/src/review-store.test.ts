@@ -18,6 +18,35 @@ test('ReviewStore indexes blank-cell review and rejects identity collisions with
   assert.equal(store.threadCount, 1);
 });
 
+test('ReviewStore range index returns only selected rows, keeps copies isolated, and refreshes after row edits', () => {
+  const store = new ReviewStore('sheet-1');
+  store.setNote(2, 3, note('n2'));
+  store.setNote(10, 5, note('n10'));
+  store.addThread(thread('t8', 8, 1));
+  store.addThread(thread('t10', 10, 5));
+
+  const selected = [...store.entriesInRange(5, 10, 0, 5)];
+  assert.deepEqual(selected.map(({ row, column }) => `${row}:${column}`), ['8:1', '10:5']);
+  selected[1]!.note!.text = 'outside mutation';
+  selected[1]!.threads[0]!.text = 'outside mutation';
+  assert.equal(store.getNoteAt(10, 5)?.text, 'note');
+  assert.equal(store.getThreadsAt(10, 5)[0]?.text, 'comment');
+  const textOnly = [...store.textEntriesInRange(10, 10, 5, 5)];
+  assert.deepEqual(textOnly, [{ row: 10, column: 5, note: { id: 'n10', text: 'note' }, threads: [{ id: 't10', text: 'comment' }] }]);
+  textOnly[0]!.threads[0]!.text = 'search projection mutation';
+  assert.equal(store.getThreadsAt(10, 5)[0]?.text, 'comment');
+  assert.deepEqual([...store.entriesInRange(10, 10, 4, 4)], []);
+  store.setNote(10, 4, note('n10-side'));
+  assert.deepEqual([...store.entriesInRange(10, 10, 4, 4)].map(({ row, column }) => `${row}:${column}`), ['10:4']);
+  store.removeNote(10, 4);
+
+  store.removeNote(2, 3);
+  store.setNote(6, 2, note('n2', 'reused identity'));
+  store.updateThread('t8', (value) => { value.row = 6; value.column = 4; });
+  assert.deepEqual([...store.entriesInRange(5, 10, 0, 5)].map(({ row, column }) => `${row}:${column}`), ['6:2', '6:4', '10:5']);
+  assert.throws(() => [...store.entriesInRange(-1, 10, 0, 5)], /Review range is invalid/);
+});
+
 test('ReviewStore snapshot validation rejects dangling and incompatible indexes', () => {
   const store = new ReviewStore('sheet-1');
   store.setNote(0, 0, note('n1'));

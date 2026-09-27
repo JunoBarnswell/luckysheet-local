@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { collectFormulaDependencies, collectFormulaReferenceNodes, MAX_COLUMN_INDEX, MAX_ROW_INDEX, parseFormula, RangeIndex } from '@react-sheets/formula-engine';
-import { planSheetIdentityTransform, structuralRuleFormulaFields, StructuralTransform as CoreStructuralTransform, WorkbookModel, type StructuralFormulaRule, type StructuralTransformParams } from './index';
+import { planSheetIdentityTransform, sheetRuleRegistry, structuralRuleFormulaFields, StructuralTransform as CoreStructuralTransform, WorkbookModel, type StructuralFormulaRule, type StructuralTransformParams } from './index';
 import type { ReportSheetDefinition } from './data-model';
 
 const StructuralTransform = {
@@ -126,17 +126,46 @@ describe('structural operations', () => {
     assert.equal(matrix.get(5, 1)?.value, 'bottom');
   });
 
-  it('axis shifts hydrate deferred sparse cells before reading row buckets', () => {
+  it('emits a reversible formula-rule anchor owner delta for axis edits', () => {
+    const workbook = new WorkbookModel('unit-rule-anchor-owner', 'Rule anchor owner');
+    const sheet = workbook.getSheet('sheet-1');
+    sheet.conditionalFormats.push({
+      id: 'cf-anchor',
+      sheetId: sheet.id,
+      ranges: [{ sheetId: sheet.id, startRow: 3, endRow: 3, startColumn: 0, endColumn: 2 }],
+      formulaAnchor: { sheetId: sheet.id, row: 3, column: 1 },
+      type: 'highlight',
+    });
+
+    const result = StructuralTransform.apply(workbook, { kind: 'insert-rows', sheetId: sheet.id, at: 0, count: 1 });
+
+    assert.deepEqual(result.formulaOwnerDeltas, [{
+      kind: 'formula-rule-anchor',
+      sheetId: sheet.id,
+      ruleKind: 'conditional-format',
+      ruleId: 'cf-anchor',
+      beforeAddress: { sheetId: sheet.id, row: 3, column: 1 },
+      afterAddress: { sheetId: sheet.id, row: 4, column: 1 },
+    }]);
+    assert.deepEqual(sheet.conditionalFormats[0]?.formulaAnchor, { sheetId: sheet.id, row: 4, column: 1 });
+  });
+
+  it('axis shifts preserve deferred sparse cells and their row data', () => {
     const workbook = new WorkbookModel('unit-deferred-axis-movement', 'Deferred axis movement');
     const sheet = workbook.getSheet('sheet-1');
     const matrix = sheet.cells;
-    matrix.deferJSON({ '5': { '1': { value: 'row' }, '4': { value: 'column' } } });
+    const persisted = { '5': { '1': { value: 'row', richText: [{ text: 'source', style: { bold: true } }] }, '4': { value: 'column' } } };
+    matrix.deferJSON(persisted);
     const index = new RangeIndex([{ id: sheet.id, name: sheet.name }]);
     assert.equal(matrix.isHydrated, false);
     CoreStructuralTransform.apply(workbook, { kind: 'insert-rows', sheetId: sheet.id, at: 3, count: 2 }, index);
-    assert.equal(matrix.get(7, 1)?.value, 'row');
+    assert.equal(matrix.getWithoutHydration(7, 1)?.value, 'row');
+    matrix.get(7, 1)!.richText![0]!.text = 'moved-only';
+    assert.equal(persisted['5']['1'].richText[0]!.text, 'source');
+    assert.equal(matrix.isHydrated, false);
     CoreStructuralTransform.apply(workbook, { kind: 'insert-columns', sheetId: sheet.id, at: 3, count: 2 }, index);
-    assert.equal(matrix.get(7, 6)?.value, 'column');
+    assert.equal(matrix.getWithoutHydration(7, 6)?.value, 'column');
+    assert.equal(matrix.isHydrated, false);
   });
 
   it('StructuralTransform insertRows keeps merges and freeze consistent', () => {
@@ -1068,6 +1097,80 @@ describe('structural operations', () => {
     }]);
   });
 
+  it('move-range keeps deferred cells sparse and does not hydrate unrelated rows', () => {
+    const workbook = new WorkbookModel('unit-deferred-move-range', 'Deferred Move Range');
+    const sheet = workbook.getSheet('sheet-1');
+    sheet.cells.deferJSON({
+      '2': { '0': { value: 'source' }, '4': { value: 'same-row-outside' } },
+      '900000': { '5': { value: 'unrelated-tail' } },
+    });
+    const referenceOwners = new RangeIndex([{ id: sheet.id, name: sheet.name }]);
+
+    CoreStructuralTransform.apply(workbook, {
+      kind: 'move-range',
+      sheetId: sheet.id,
+      sourceRange: { sheetId: sheet.id, startRow: 2, endRow: 2, startColumn: 0, endColumn: 0 },
+      targetOrigin: { row: 5, column: 0 },
+    }, referenceOwners);
+
+    assert.equal(sheet.cells.getWithoutHydration(2, 0), undefined);
+    assert.equal(sheet.cells.getWithoutHydration(5, 0)?.value, 'source');
+    assert.equal(sheet.cells.getWithoutHydration(2, 4)?.value, 'same-row-outside');
+    assert.equal(sheet.cells.getWithoutHydration(900_000, 5)?.value, 'unrelated-tail');
+    assert.equal(sheet.cells.isHydrated, false);
+  });
+
+  it('move-range keeps deferred source intact when formula preflight rejects', () => {
+    const workbook = new WorkbookModel('unit-deferred-move-range-rejected', 'Rejected Deferred Move Range');
+    const sheet = workbook.getSheet('sheet-1');
+    sheet.cells.deferJSON({
+      '2': { '0': { value: 'source' } },
+      '10': { '0': { value: null, formula: '=A1+' } },
+    });
+    const referenceOwners = new RangeIndex([{ id: sheet.id, name: sheet.name }]);
+    referenceOwners.set({ sheetId: sheet.id, row: 10, column: 0 }, [], true);
+    const before = sheet.cells.toJSON();
+
+    assert.throws(() => CoreStructuralTransform.apply(workbook, {
+      kind: 'move-range',
+      sheetId: sheet.id,
+      sourceRange: { sheetId: sheet.id, startRow: 2, endRow: 2, startColumn: 0, endColumn: 0 },
+      targetOrigin: { row: 5, column: 0 },
+    }, referenceOwners));
+
+    assert.deepEqual(sheet.cells.toJSON(), before);
+    assert.equal(sheet.cells.isHydrated, false);
+  });
+
+  it('preserves external validation list sources when cloning rules for paste', () => {
+    const workbook = new WorkbookModel('paste-validation-list-scope', 'Paste Validation List Scope');
+    const owner = workbook.getSheet('sheet-1');
+    const source = workbook.addSheet('validation-source', 'Validation Source');
+    const ownerRange = { sheetId: owner.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 };
+    const externalSourceRange = { sheetId: source.id, startRow: 4, endRow: 6, startColumn: 1, endColumn: 1 };
+    const localSourceRange = { sheetId: owner.id, startRow: 5, endRow: 6, startColumn: 2, endColumn: 2 };
+    const externalRule = sheetRuleRegistry.normalizeDataValidation({
+      id: 'external-list', sheetId: owner.id, ranges: [ownerRange], type: 'list',
+      listSource: { kind: 'range', range: externalSourceRange },
+    });
+    const localRule = sheetRuleRegistry.normalizeDataValidation({
+      id: 'local-list', sheetId: owner.id, ranges: [ownerRange], type: 'list',
+      listSource: { kind: 'range', range: localSourceRange },
+    });
+
+    const pasted = sheetRuleRegistry.cloneRulesForPaste([externalRule, localRule], {
+      source: ownerRange,
+      target: { sheetId: owner.id, startRow: 2, endRow: 2, startColumn: 2, endColumn: 2 },
+      transpose: false,
+      id: (rule) => `${rule.id}-copy`,
+    });
+
+    assert.deepEqual(pasted[0]?.listSource, { kind: 'range', range: externalSourceRange });
+    assert.deepEqual(pasted[1]?.listSource, {
+      kind: 'range', range: { sheetId: owner.id, startRow: 7, endRow: 8, startColumn: 4, endColumn: 4 },
+    });
+  });
+
   it('rewrites rule formulas and hyperlink addresses on other worksheets when a referenced range moves', () => {
     const workbook = new WorkbookModel('unit-move-metadata-references', 'Move Metadata References');
     const sheet = workbook.getSheet('sheet-1');
@@ -1082,6 +1185,12 @@ describe('structural operations', () => {
       ranges: [{ sheetId: other.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }],
       type: 'custom', formula1: '=Sheet1!A1',
     });
+    other.dataValidations.push({
+      id: 'dv-cross-sheet-list', sheetId: other.id,
+      ranges: [{ sheetId: other.id, startRow: 1, endRow: 1, startColumn: 0, endColumn: 0 }],
+      type: 'list',
+      listSource: { kind: 'range', range: { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 } },
+    });
     other.hyperlinks.set('0:0', {
       id: 'link-1', target: { kind: 'sheet', sheetId: sheet.id, address: 'A1' },
     });
@@ -1094,6 +1203,16 @@ describe('structural operations', () => {
 
     assert.equal(other.conditionalFormats[0]?.value1, '=Sheet1!C3');
     assert.equal(other.dataValidations[0]?.formula1, '=Sheet1!C3');
+    assert.deepEqual(other.dataValidations[1]?.listSource, {
+      kind: 'range', range: { sheetId: sheet.id, startRow: 2, endRow: 2, startColumn: 2, endColumn: 2 },
+    });
+    assert.deepEqual(result.rangeOwnerDeltas, [{
+      ownerKind: 'validation-list-source', sheetId: other.id, ownerId: 'dv-cross-sheet-list',
+      before: { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 },
+      after: { sheetId: sheet.id, startRow: 2, endRow: 2, startColumn: 2, endColumn: 2 },
+      beforeOwnerRanges: [{ sheetId: other.id, startRow: 1, endRow: 1, startColumn: 0, endColumn: 0 }],
+      afterOwnerRanges: [{ sheetId: other.id, startRow: 1, endRow: 1, startColumn: 0, endColumn: 0 }],
+    }]);
     assert.deepEqual(result.formulaOwnerDeltas?.filter((delta) => delta.kind === 'formula-rule').map((delta) =>
       delta.kind === 'formula-rule' ? [delta.ruleId, delta.beforeFormula, delta.afterFormula] : []), [
       ['cf-1', '=Sheet1!A1', '=Sheet1!C3'],
@@ -1101,6 +1220,58 @@ describe('structural operations', () => {
     ]);
     const target = other.hyperlinks.get('0:0')?.target;
     assert.equal(target?.kind === 'sheet' ? target.address : undefined, 'C3');
+  });
+
+  it('emits range-owner facts when an axis edit shifts another worksheet validation list source', () => {
+    const workbook = new WorkbookModel('unit-axis-cross-sheet-validation', 'Axis Cross-sheet Validation');
+    const source = workbook.getSheet('sheet-1');
+    const owner = workbook.addSheet('validation-owner', 'Validation Owner');
+    owner.dataValidations.push({
+      id: 'cross-sheet-list', sheetId: owner.id,
+      ranges: [{ sheetId: owner.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }],
+      type: 'list',
+      listSource: { kind: 'range', range: { sheetId: source.id, startRow: 2, endRow: 4, startColumn: 0, endColumn: 0 } },
+    });
+
+    const result = StructuralTransform.apply(workbook, {
+      kind: 'insert-rows', sheetId: source.id, at: 1, count: 1,
+    });
+
+    assert.deepEqual(owner.dataValidations[0]?.listSource, {
+      kind: 'range', range: { sheetId: source.id, startRow: 3, endRow: 5, startColumn: 0, endColumn: 0 },
+    });
+    assert.deepEqual(result.rangeOwnerDeltas, [{
+      ownerKind: 'validation-list-source', sheetId: owner.id, ownerId: 'cross-sheet-list',
+      before: { sheetId: source.id, startRow: 2, endRow: 4, startColumn: 0, endColumn: 0 },
+      after: { sheetId: source.id, startRow: 3, endRow: 5, startColumn: 0, endColumn: 0 },
+      beforeOwnerRanges: [{ sheetId: owner.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }],
+      afterOwnerRanges: [{ sheetId: owner.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }],
+    }]);
+  });
+
+  it('records owner-range-only axis changes without shifting an external list source', () => {
+    const workbook = new WorkbookModel('unit-axis-validation-owner-range', 'Axis Validation Owner Range');
+    const source = workbook.getSheet('sheet-1');
+    const owner = workbook.addSheet('validation-owner', 'Validation Owner');
+    const sourceRange = { sheetId: source.id, startRow: 2, endRow: 4, startColumn: 0, endColumn: 0 };
+    const beforeOwnerRange = { sheetId: owner.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 };
+    const afterOwnerRange = { ...beforeOwnerRange, startRow: 1, endRow: 1 };
+    owner.dataValidations.push({
+      id: 'owner-range-only', sheetId: owner.id, ranges: [beforeOwnerRange], type: 'list',
+      listSource: { kind: 'range', range: sourceRange },
+    });
+
+    const result = StructuralTransform.apply(workbook, {
+      kind: 'insert-rows', sheetId: owner.id, at: 0, count: 1,
+    });
+
+    assert.deepEqual(owner.dataValidations[0]?.ranges, [afterOwnerRange]);
+    assert.deepEqual(owner.dataValidations[0]?.listSource, { kind: 'range', range: sourceRange });
+    assert.deepEqual(result.rangeOwnerDeltas, [{
+      ownerKind: 'validation-list-source', sheetId: owner.id, ownerId: 'owner-range-only',
+      before: sourceRange, after: sourceRange,
+      beforeOwnerRanges: [beforeOwnerRange], afterOwnerRanges: [afterOwnerRange],
+    }]);
   });
 
   it('indexes moved rule formulas and records their applies-to range transition', () => {

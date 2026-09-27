@@ -29,6 +29,21 @@ test('canonical workbook snapshots reject malformed or unowned pane fields', () 
   }
 });
 
+test('canonical workbook snapshots reject noncanonical deferred cell coordinates at the boundary', () => {
+  const invalidSnapshots = [
+    (candidate: Record<string, any>) => { candidate.sheets[0].cells['01'] = { '0': { v: 'row' } }; },
+    (candidate: Record<string, any>) => { candidate.sheets[0].cells['0'] = { '01': { v: 'column' } }; },
+    (candidate: Record<string, any>) => { candidate.sheets[0].cells['9007199254740992'] = { '0': { v: 'unsafe row' } }; },
+    (candidate: Record<string, any>) => { candidate.sheets[0].cells['0'] = { '9007199254740992': { v: 'unsafe column' } }; },
+  ];
+  for (const mutate of invalidSnapshots) {
+    const candidate = structuredClone(new WorkbookModel('unit-cell-coordinate-snapshot', 'Cell coordinate snapshot').snapshot()) as unknown as Record<string, any>;
+    mutate(candidate);
+    assert.throws(() => assertCanonicalWorkbookSnapshot(candidate as unknown as WorkbookSnapshot), /CELL_MATRIX_INVALID_COORDINATE/);
+    assert.throws(() => migrateStoredWorkbookSnapshot(candidate), /CELL_MATRIX_INVALID_COORDINATE/);
+  }
+});
+
 test('worksheet identity collisions are rejected before loading, creating, renaming, or duplicating sheets', () => {
   const workbook = new WorkbookModel('unit-sheet-identities', 'Sheet identities');
   const duplicateId = structuredClone(workbook.snapshot());
@@ -321,6 +336,23 @@ test('CellMatrix keeps empty logical space sparse', () => {
   assert.equal(cloned.has(100_000, 4), true);
 });
 
+test('worksheet hyperlinks enumerate sparse ranges in row-major order and invalidate their lazy index', () => {
+  const workbook = new WorkbookModel('hyperlink-range-index', 'Hyperlink range index');
+  const hyperlinks = workbook.getSheet(workbook.primarySheetId).hyperlinks;
+  const add = (id: string) => ({ id, target: { kind: 'url' as const, url: `https://example.com/${id}` } });
+  hyperlinks.set('10:8', add('tail'));
+  hyperlinks.set('2:4', add('middle'));
+  hyperlinks.set('2:1', add('first'));
+
+  assert.deepEqual([...hyperlinks.entriesInRange(2, 10, 1, 5)].map(({ key }) => key), ['2:1', '2:4']);
+  hyperlinks.delete('2:1');
+  hyperlinks.set('2:3', add('reinserted'));
+  assert.deepEqual([...hyperlinks.entriesInRange(2, 2, 1, 5)].map(({ key }) => key), ['2:3', '2:4']);
+  for (const entry of hyperlinks.entriesInRange(2, 2, 0, 10)) hyperlinks.delete(entry.key);
+  assert.deepEqual([...hyperlinks.entriesInRange(2, 10, 0, 10)].map(({ key }) => key), ['10:8']);
+  assert.throws(() => [...hyperlinks.entriesInRange(-1, 10, 0, 10)], /Hyperlink range is invalid/);
+});
+
 test('CellMatrix range iteration visits only persisted cells', () => {
   const matrix = new CellMatrix();
   matrix.set(2, 3, { value: 'inside' });
@@ -328,6 +360,177 @@ test('CellMatrix range iteration visits only persisted cells', () => {
   const entries: string[] = [];
   matrix.forEachInRange(0, 10, 0, 10, (_cell, row, column) => entries.push(`${row}:${column}`));
   assert.deepEqual(entries, ['2:3']);
+});
+
+test('CellMatrix iterates deferred ranges sparsely in row-major order without hydration', () => {
+  const persisted = {
+    '4': { '3': { value: 'four-three' }, '1': { value: 'four-one' }, '8': { value: 'outside-column' } },
+    '8': { '1': { value: 'outside-row' } },
+    '1': { '2': { value: 'one-two' } },
+  };
+  const matrix = new CellMatrix();
+  matrix.deferJSON(persisted);
+  const revision = matrix.revision;
+  const visited: string[] = [];
+
+  matrix.forEachInRangeWithoutHydration(1, 4, 1, 3, (cell, row, column) => {
+    visited.push(`${row}:${column}:${cell.value}`);
+  });
+
+  assert.deepEqual(visited, ['1:2:one-two', '4:1:four-one', '4:3:four-three']);
+  assert.equal(matrix.isHydrated, false);
+  assert.equal(matrix.revision, revision);
+  assert.deepEqual(matrix.toJSON(), persisted);
+});
+
+test('CellMatrix point and range reads preserve deferred storage and return normalized cells', () => {
+  const persisted = {
+    '4': { '3': { value: 'selected', style: { fontFamily: ' arial ' }, richText: [{ text: 'selected rich', style: { bold: true } }] } },
+    '8': { '1': { value: 'unselected', style: { fontFamily: ' calibri ' } } },
+  };
+  const matrix = new CellMatrix();
+  matrix.deferJSON(persisted);
+  const revision = matrix.revision;
+
+  assert.equal(matrix.has(4, 3), true);
+  assert.equal(matrix.isHydrated, false);
+  const selected = matrix.get(4, 3)!;
+  assert.equal(selected.style?.fontFamily, 'Arial');
+  assert.notEqual(selected.richText, persisted['4']!['3']!.richText);
+  assert.notEqual(selected.richText?.[0], persisted['4']!['3']!.richText?.[0]);
+  assert.equal(matrix.get(4, 3), selected);
+  assert.equal(matrix.isHydrated, false);
+
+  const values: string[] = [];
+  matrix.forEachInRange(4, 8, 1, 3, (cell, row, column) => values.push(`${row}:${column}:${cell.value}`));
+  assert.deepEqual(values, ['4:3:selected', '8:1:unselected']);
+  assert.equal(matrix.isHydrated, false);
+  assert.equal(matrix.revision, revision);
+  assert.equal(persisted['4']!['3']!.style.fontFamily, ' arial ');
+  assert.deepEqual(matrix.toJSON(), {
+    '4': { '3': { value: 'selected', style: { fontFamily: 'Arial' }, richText: [{ text: 'selected rich', style: { bold: true } }] } },
+    '8': { '1': { value: 'unselected', style: { fontFamily: 'Calibri' } } },
+  });
+  assert.equal(matrix.isHydrated, false);
+});
+
+test('CellMatrix selected-row and column reads, clone, and clear do not hydrate the source', () => {
+  const persisted = {
+    '4': {
+      '1': { value: 'row-one', richText: [{ text: 'original', style: { bold: true } }] },
+      '3': { value: 'row-three' },
+    },
+    '8': { '1': { value: 'tail-one' } },
+  };
+  const matrix = new CellMatrix();
+  matrix.deferJSON(persisted);
+
+  const selectedRows: string[] = [];
+  matrix.forEachInRows(new Set([4]), (cell, row, column) => selectedRows.push(`${row}:${column}:${cell.value}`));
+  assert.deepEqual(selectedRows, ['4:1:row-one', '4:3:row-three']);
+  const selectedColumns: string[] = [];
+  matrix.forEachInColumns(new Set([3]), (cell, row, column) => selectedColumns.push(`${row}:${column}:${cell.value}`));
+  assert.deepEqual(selectedColumns, ['4:3:row-three']);
+  const requestedColumnOrder: string[] = [];
+  matrix.forEachInColumns(new Set([3, 1, 2, 4, 5]), (cell, row, column) => requestedColumnOrder.push(`${row}:${column}:${cell.value}`));
+  assert.deepEqual(requestedColumnOrder, ['4:3:row-three', '4:1:row-one', '8:1:tail-one']);
+  const rawSelectedColumns: string[] = [];
+  matrix.forEachInColumnsWithoutHydration(new Set([3]), (cell, row, column) => rawSelectedColumns.push(`${row}:${column}:${cell.value}`));
+  assert.deepEqual(rawSelectedColumns, ['4:3:row-three']);
+  assert.deepEqual([...matrix.entriesInColumn(1)].map(({ row, cell }) => `${row}:${cell.value}`), ['4:row-one', '8:tail-one']);
+  assert.equal(matrix.isHydrated, false);
+
+  const lazyColumnMatrix = new CellMatrix();
+  lazyColumnMatrix.deferJSON(persisted);
+  const lazyColumnEntries = [...lazyColumnMatrix.entriesInColumnWithoutHydration(1)];
+  assert.deepEqual(lazyColumnEntries.map(({ row }) => row), [4, 8]);
+  assert.equal(lazyColumnEntries[0]!.cell, persisted['4']!['1']);
+  assert.equal(lazyColumnMatrix.isHydrated, false);
+
+  const copy = matrix.clone();
+  assert.equal(copy.isHydrated, true);
+  assert.deepEqual(copy.toJSON(), persisted);
+  copy.get(4, 1)!.richText![0]!.text = 'clone-only';
+  assert.equal(matrix.getWithoutHydration(4, 1)?.richText?.[0]?.text, 'original');
+  assert.equal(matrix.isHydrated, false);
+
+  const revision = matrix.revision;
+  matrix.clear();
+  assert.equal(matrix.isHydrated, true);
+  assert.equal(matrix.count(), 0);
+  assert.equal(matrix.revision, revision + 1);
+  assert.deepEqual(matrix.toJSON(), {});
+});
+
+test('CellMatrix deferred cell overlays preserve the source and rebuild indexes after deletion and reinsertion', () => {
+  const persisted = {
+    '4': { '1': { value: 'first' } },
+    '8': { '2': { value: 'deleted' } },
+    '900000': { '16383': { value: 'tail' } },
+  };
+  const matrix = new CellMatrix();
+  matrix.deferJSON(persisted);
+  matrix.occupiedRange('sheet-1');
+
+  matrix.delete(8, 2);
+  assert.equal(matrix.count(), 2);
+  matrix.set(8, 3, { value: 'reinserted' });
+  const rows: number[] = [];
+  matrix.forEachInRangeWithoutHydration(0, 900000, 0, 16383, (_cell, row) => rows.push(row));
+  assert.deepEqual(rows, [4, 8, 900000]);
+  assert.equal(matrix.isHydrated, false);
+  assert.deepEqual(persisted, {
+    '4': { '1': { value: 'first' } },
+    '8': { '2': { value: 'deleted' } },
+    '900000': { '16383': { value: 'tail' } },
+  });
+  assert.deepEqual(matrix.toJSON(), {
+    '4': { '1': { value: 'first' } },
+    '8': { '3': { value: 'reinserted' } },
+    '900000': { '16383': { value: 'tail' } },
+  });
+});
+
+test('CellMatrix fails closed instead of omitting malformed deferred coordinates from sparse indexes', () => {
+  const invalidRow = new CellMatrix();
+  const rowPayload = { invalid: { '0': { value: 'retained' } } };
+  invalidRow.deferJSON(rowPayload);
+  assert.throws(() => invalidRow.count(), /CELL_MATRIX_INVALID_COORDINATE: deferred row key/);
+  assert.equal(invalidRow.isHydrated, false);
+  assert.deepEqual(invalidRow.toJSON(), rowPayload);
+
+  const invalidColumn = new CellMatrix();
+  const columnPayload = { '0': { invalid: { value: 'retained' } } };
+  invalidColumn.deferJSON(columnPayload);
+  assert.throws(() => invalidColumn.count(), /CELL_MATRIX_INVALID_COORDINATE: deferred column key/);
+  assert.equal(invalidColumn.isHydrated, false);
+  assert.deepEqual(invalidColumn.toJSON(), columnPayload);
+});
+
+test('CellMatrix rejects invalid write and import coordinates before changing sparse state', () => {
+  const matrix = new CellMatrix();
+  assert.throws(() => matrix.set(-1, 0, { value: 'invalid row' }), /CELL_MATRIX_INVALID_COORDINATE/);
+  assert.throws(() => matrix.delete(0, 1.5), /CELL_MATRIX_INVALID_COORDINATE/);
+  assert.throws(() => CellMatrix.fromJSON({ '01': { '0': { value: 'noncanonical' } } }), /canonical non-negative integer/);
+  assert.equal(matrix.count(), 0);
+  assert.deepEqual(matrix.toJSON(), {});
+});
+
+test('CellMatrix range extraction stays deferred and refreshes its cached row index', () => {
+  const persisted = {
+    '4': { '3': { value: 'four-three' } },
+    '8': { '1': { value: 'eight-one' } },
+  };
+  const matrix = new CellMatrix();
+  matrix.deferJSON(persisted);
+
+  assert.deepEqual(matrix.getRegion(4, 4, 3, 3), [{ row: 4, column: 3, cell: { value: 'four-three' } }]);
+  assert.equal(matrix.isHydrated, false);
+  matrix.set(5, 2, { value: 'inserted-row' });
+  assert.deepEqual(matrix.extractRegion(5, 5, 2, 2), [{ row: 5, column: 2, cell: { value: 'inserted-row' } }]);
+  assert.deepEqual(matrix.getRegion(5, 5, 2, 2), []);
+  assert.equal(matrix.isHydrated, false);
+  assert.deepEqual(matrix.toJSON(), persisted);
 });
 
 test('CellMatrix range traversal stays ordered and refreshes row indexes after sparse mutations', () => {
@@ -348,6 +551,25 @@ test('CellMatrix range traversal stays ordered and refreshes row indexes after s
   matrix.delete(5, 2);
   matrix.set(7, 2, moved);
   assert.deepEqual(matrix.getRegion(5, 7, 2, 2).map(({ row }) => row), [7]);
+});
+
+test('CellMatrix iterates requested deferred rows without loading unrelated worksheet rows', () => {
+  const persisted = {
+    '1': { '2': { value: 'row-one' } },
+    '4': { '3': { value: 'row-four-column-three' }, '1': { value: 'row-four-column-one' } },
+    '600000': { '16383': { value: 'unrelated tail' } },
+  };
+  const matrix = new CellMatrix();
+  matrix.deferJSON(persisted);
+  const visited: string[] = [];
+
+  matrix.forEachInRowsWithoutHydration(new Set([4, 1]), (cell, row, column) => {
+    visited.push(`${row}:${column}:${cell.value}`);
+  });
+
+  assert.deepEqual(visited, ['4:1:row-four-column-one', '4:3:row-four-column-three', '1:2:row-one']);
+  assert.equal(matrix.isHydrated, false);
+  assert.deepEqual(matrix.toJSON(), persisted);
 });
 
 test('CellMatrix visits all persisted sparse cells without hydration and propagates reader failures', () => {
@@ -431,7 +653,7 @@ test('CellMatrix rewrites deferred formula owners without hydrating or mutating 
   assert.equal(matrix.replaceFormulaOwnerWithoutHydration(2, 3, { ...current, formula: '=Orders[Amount]' }), true);
 
   assert.equal(matrix.isHydrated, false);
-  assert.equal(matrix.revision, 3);
+  assert.equal(matrix.revision, 1);
   assert.equal(matrix.toJSON()['2']?.['3']?.formula, '=Orders[Amount]');
   assert.equal(deferred['2']?.['3']?.formula, '=Sales[Amount]');
   assert.equal(matrix.replaceFormulaOwnerWithoutHydration(2, 4, { value: 'changed' }), false);
@@ -452,7 +674,8 @@ test('CellMatrix applies sparse additions, replacements and deletions without lo
   assert.equal(matrix.count(), 3);
   matrix.set(2, 3, { value: 20, style: { fontFamily: ' arial ' } });
   assert.equal(matrix.revision, ++revision);
-  matrix.set(2, 5, { value: 'new column' });
+  const insertedCell = { value: 'new column' };
+  matrix.set(2, 5, insertedCell);
   assert.equal(matrix.revision, ++revision);
   matrix.set(1, 0, { value: 'new row' });
   assert.equal(matrix.revision, ++revision);
@@ -470,6 +693,7 @@ test('CellMatrix applies sparse additions, replacements and deletions without lo
   assert.equal(matrix.getWithoutHydration(2, 4), input['2']['4']);
   assert.deepEqual(input, original, 'the persisted input must remain unchanged');
   const serialized = matrix.toJSON();
+  assert.equal(matrix.get(2, 5), insertedCell, 'deferred writes keep the canonical cell identity on subsequent reads');
   assert.equal(matrix.get(2, 5)?.value, 'new column');
   assert.equal(matrix.isHydrated, true);
   assert.equal(matrix.revision, revision, 'materialization cannot invalidate an unchanged content token');
@@ -1090,7 +1314,7 @@ test('WorkbookSnapshot round-trips complete model state including canonical draw
   assert.deepEqual(restoredEditor?.kind === 'combo-box' ? restoredEditor.items : undefined, [{ value: 'Open' }, { value: 'Closed' }]);
 });
 
-test('defers sparse worksheet cell hydration until the sheet is read', () => {
+test('defers sparse worksheet cell hydration across point reads', () => {
   const source = new WorkbookModel('lazy-sheet-hydration', 'Lazy sheets');
   const second = source.addSheet('sheet-2', 'Second');
   source.getSheet('sheet-1').cells.set(2, 3, { value: 'first' });
@@ -1109,7 +1333,7 @@ test('defers sparse worksheet cell hydration until the sheet is read', () => {
   assert.equal(deferred.cells.revision, 1);
   assert.equal(deferred.cells.isHydrated, false);
   assert.equal(deferred.cells.get(100, 4)?.value, 'second');
-  assert.equal(deferred.cells.isHydrated, true);
+  assert.equal(deferred.cells.isHydrated, false);
 });
 
 test('sheet lifecycle restores only its own deferred cells while preserving other scoped names', () => {

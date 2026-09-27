@@ -569,7 +569,7 @@ function isPasteRuleCollectionForSheet(
         if (listSource.kind === 'values' && (!Array.isArray(listSource.values) || !listSource.values.every((entry) => typeof entry === 'string'))) return false;
         if (listSource.kind === 'range') {
           const range = listSource.range;
-          if (!isRange(range) || range.sheetId !== sheetId
+          if (!isRange(range)
             || range.endRow >= MAX_SHEET_ROW_COUNT || range.endColumn >= MAX_SHEET_COLUMN_COUNT) return false;
         }
         if (listSource.kind === 'formula' && typeof listSource.formula !== 'string') return false;
@@ -774,7 +774,7 @@ function resolveFormulaDependents(workbook: WorkbookModel, sheet: WorksheetModel
   const targets = new Set<string>();
   for (let row = range.startRow; row <= range.endRow; row += 1) for (let column = range.startColumn; column <= range.endColumn; column += 1) targets.add(`${sheet.id}:${row}:${column}`);
   const hits: RangeRef[] = [];
-  for (const candidate of workbook.getSheets()) candidate.cells.forEach((cell, row, column) => {
+  for (const candidate of workbook.getSheets()) candidate.cells.forEachFormulaOwner((cell, row, column) => {
     if (!cell.formula) return;
     if (formulaReferences(workbook, candidate, cell.formula).some((reference) => targets.has(`${reference.sheetId}:${reference.row}:${reference.column}`))) hits.push({ sheetId: candidate.id, startRow: row, endRow: row, startColumn: column, endColumn: column });
   });
@@ -815,7 +815,7 @@ export function resolveGoToSpecial(
   if (params.kind === 'last-cell') {
     let lastRow = 0;
     let lastColumn = 0;
-    sheet.cells.forEach((cell, row, column) => {
+    sheet.cells.forEachWithoutHydration((cell, row, column) => {
       if (cell && (cell.value !== null && cell.value !== undefined || cell.formula || cell.style || cell.numberFormat)) {
         if (row > lastRow || (row === lastRow && column > lastColumn)) {
           lastRow = row;
@@ -1130,18 +1130,39 @@ function snapshotCells(sheet: WorksheetModel, ranges: RangeRef[]): CellSnapshot[
 }
 
 function snapshotMetadata(sheet: WorksheetModel, ranges: RangeRef[], include: PasteSpecialSpec['metadata']): Pick<PasteSnapshot, 'notes' | 'hyperlinks' | 'commentCells' | 'comments'> {
-  const contains = (row: number, column: number) => ranges.some((range) => rangeContains(range, row, column));
-  const notes = include.commentsNotes ? sheet.review.noteEntries().filter((entry) => contains(entry.row, entry.column)).map((entry) => ({ key: entry.key, value: entry.note })) : undefined;
-  const hyperlinks = include.hyperlinks ? [...sheet.hyperlinks.entries()].filter(([key]) => {
-    const { row, column } = coordinatesFromKey(key);
-    return Number.isInteger(row) && Number.isInteger(column) && contains(row, column);
-  }).map(([key, value]) => ({ key, value: structuredClone(value) })) : undefined;
-  const commentCells = include.commentsNotes ? sheet.review.threadEntries().filter((thread) => contains(thread.row, thread.column)).map((thread) => keyFor(thread.row, thread.column)) : undefined;
-  const comments = include.commentsNotes ? sheet.review.threadEntries().filter((thread) => contains(thread.row, thread.column)) : undefined;
-  return { notes, hyperlinks, commentCells, comments };
+  const notesByKey = new Map<string, NonNullable<PasteSnapshot['notes']>[number]>();
+  const comments: NonNullable<PasteSnapshot['comments']> = [];
+  const commentCells: NonNullable<PasteSnapshot['commentCells']> = [];
+  const seenThreadIds = new Set<string>();
+  if (include.commentsNotes) for (const range of ranges) {
+    for (const entry of sheet.review.entriesInRange(range.startRow, range.endRow, range.startColumn, range.endColumn)) {
+      const key = keyFor(entry.row, entry.column);
+      if (entry.note && !notesByKey.has(key)) notesByKey.set(key, { key, value: entry.note });
+      for (const thread of entry.threads) {
+        if (seenThreadIds.has(thread.id)) continue;
+        seenThreadIds.add(thread.id);
+        comments.push(thread);
+        commentCells.push(key);
+      }
+    }
+  }
+  const hyperlinksByKey = new Map<string, NonNullable<PasteSnapshot['hyperlinks']>[number]>();
+  if (include.hyperlinks) for (const range of ranges) {
+    for (const entry of sheet.hyperlinks.entriesInRange(range.startRow, range.endRow, range.startColumn, range.endColumn)) {
+      if (!hyperlinksByKey.has(entry.key)) hyperlinksByKey.set(entry.key, { key: entry.key, value: structuredClone(entry.hyperlink) });
+    }
+  }
+  const notes = include.commentsNotes ? [...notesByKey.values()] : undefined;
+  const hyperlinks = include.hyperlinks ? [...hyperlinksByKey.values()] : undefined;
+  const selectedCommentCells = include.commentsNotes ? commentCells : undefined;
+  const selectedComments = include.commentsNotes ? comments : undefined;
+  return { notes, hyperlinks, commentCells: selectedCommentCells, comments: selectedComments };
 }
 
 function applyPasteSnapshot(workbook: WorkbookModel, sheet: WorksheetModel, snapshot: PasteSnapshot): void {
+  for (const rule of snapshot.validations ?? []) {
+    if (rule.listSource?.kind === 'range') workbook.getSheet(rule.listSource.range.sheetId);
+  }
   if (snapshot.workbookTheme) workbook.setTheme(snapshot.workbookTheme);
   for (const range of [...(snapshot.clearRanges ?? []), ...(snapshot.clearMetadataRanges ?? [])]) {
     if (range.sheetId !== sheet.id) continue;
@@ -1154,22 +1175,23 @@ function applyPasteSnapshot(workbook: WorkbookModel, sheet: WorksheetModel, snap
   }
   for (const range of snapshot.clearMetadataRanges ?? []) {
     if (range.sheetId !== sheet.id) continue;
-    if (snapshot.notes !== undefined) {
-      for (const entry of sheet.review.noteEntries()) if (rangeContains(range, entry.row, entry.column)) sheet.review.removeNote(entry.row, entry.column);
-    }
-    if (snapshot.hyperlinks !== undefined) {
-      for (const key of [...sheet.hyperlinks.keys()]) {
-        const { row, column } = coordinatesFromKey(key);
-        if (Number.isInteger(row) && Number.isInteger(column) && rangeContains(range, row, column)) sheet.hyperlinks.delete(key);
+    if (snapshot.notes !== undefined || snapshot.comments !== undefined || snapshot.commentCells !== undefined) {
+      for (const entry of sheet.review.entriesInRange(range.startRow, range.endRow, range.startColumn, range.endColumn)) {
+        if (snapshot.notes !== undefined && entry.note) sheet.review.removeNote(entry.row, entry.column);
+        if (snapshot.comments !== undefined || snapshot.commentCells !== undefined) {
+          for (const thread of entry.threads) sheet.review.removeThread(thread.id);
+        }
       }
     }
-    if (snapshot.comments !== undefined || snapshot.commentCells !== undefined) {
-      for (const thread of sheet.review.threadEntries()) if (rangeContains(range, thread.row, thread.column)) sheet.review.removeThread(thread.id);
+    if (snapshot.hyperlinks !== undefined) {
+      for (const entry of sheet.hyperlinks.entriesInRange(range.startRow, range.endRow, range.startColumn, range.endColumn)) {
+        sheet.hyperlinks.delete(entry.key);
+      }
     }
   }
   for (const cell of snapshot.cells) {
     if (cell.value) sheet.cells.set(cell.row, cell.column, structuredClone(cell.value));
-    else if (!(snapshot.clearRanges ?? []).some((range) => rangeContains(range, cell.row, cell.column))) sheet.cells.delete(cell.row, cell.column);
+    else sheet.cells.delete(cell.row, cell.column);
   }
   if (snapshot.notes) {
     for (const entry of snapshot.notes) {

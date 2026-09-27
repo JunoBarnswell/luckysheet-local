@@ -22,6 +22,7 @@ import java.util.List;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -89,6 +90,24 @@ class WorkbookOperationServiceTest {
 
         assertThrows(ServiceException.class,
                 () -> WorkbookOperationService.validateStructuralUndoMutations(reusedInverse, duplicateTarget, null));
+    }
+
+    @Test
+    void undoMustRestoreTheExactTargetPreimageAndAcceptsTheCanonicalInverse() throws Exception {
+        var preimage = mapper.readTree("""
+                {"sheets":[{"id":"sheet-1","cells":{"0":{"0":{"value":"before"}}}}]}
+                """);
+        var exactInverse = preimage.deepCopy();
+        var incompleteInverse = mapper.readTree("""
+                {"sheets":[{"id":"sheet-1","cells":{"0":{"0":{"value":"after"}}}}]}
+                """);
+
+        assertDoesNotThrow(() -> WorkbookOperationService.requireUndoRestoredPreimage(preimage, exactInverse));
+        ServiceException error = assertThrows(ServiceException.class,
+                () -> WorkbookOperationService.requireUndoRestoredPreimage(preimage, incompleteInverse));
+
+        assertEquals("CONFLICT", error.code());
+        assertTrue(error.getMessage().contains("UNDO_RESULT_MISMATCH"));
     }
 
     @Test

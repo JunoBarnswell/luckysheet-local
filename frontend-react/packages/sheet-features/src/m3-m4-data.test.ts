@@ -924,6 +924,37 @@ test('conditional formatting and validation resolve qualified same-sheet names t
   assert.equal(validateDataInput(sheet, 0, 2, 'candidate').valid, true);
 });
 
+test('cross-sheet list validation resolves the referenced worksheet for options and write checks', () => {
+  const { workbook } = runtime();
+  const owner = workbook.getSheet(workbook.primarySheetId);
+  const source = workbook.addSheet('validation-source', 'Validation Source');
+  source.cells.deferJSON({
+    '2': { '2': { value: 'Other' } },
+    '0': {
+      '0': { value: 'Allowed' },
+      '1': { value: null, formula: '=1+1', formulaValue: 2 },
+      '2': { value: 'stale cached value', formula: '=""', formulaValue: null },
+      '4': { value: 'outside source range' },
+    },
+  });
+  const rule = normalizeDataValidationRule({
+    id: 'cross-sheet-list', sheetId: owner.id,
+    ranges: [{ sheetId: owner.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }],
+    type: 'list',
+    listSource: { kind: 'range', range: { sheetId: source.id, startRow: 0, endRow: 2, startColumn: 0, endColumn: 2 } },
+  });
+  owner.dataValidations.push(rule);
+  const resolveSheet = (sheetId: string) => workbook.getSheet(sheetId);
+
+  assert.deepEqual(validationList(rule, owner, resolveSheet), ['Allowed', '2', 'Other']);
+  assert.equal(source.cells.isHydrated, false);
+  assert.equal(validateDataInput(owner, 0, 0, 'Allowed', resolveSheet).valid, true);
+  assert.equal(source.cells.isHydrated, false);
+  assert.equal(validateDataInput(owner, 0, 0, 'Rejected', resolveSheet).blocking, true);
+  assert.equal(validateDataInput(owner, 0, 0, 'Allowed').blocking, true);
+  assert.equal(source.cells.isHydrated, false);
+});
+
 test('unresolved formula-backed validation lists never become literal options or allow arbitrary values', () => {
   const { workbook } = runtime();
   const sheet = workbook.getSheet(workbook.primarySheetId);

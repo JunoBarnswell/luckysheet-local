@@ -121,10 +121,10 @@ final class SheetDataMutationDescriptor extends CanonicalJsonMutationDescriptor 
                 }
                 sheet.remove("autoFilter");
             }
-            case "cf.add" -> upsertRule(root, sheet, mutation.sheetId(), params, "conditionalFormats");
+            case "cf.add" -> addRule(root, sheet, mutation.sheetId(), params, "conditionalFormats");
             case "cf.remove" -> removeRule(sheet, params, "conditionalFormats");
             case "cf.clear" -> sheet.set("conditionalFormats", JsonNodeFactory.instance.arrayNode());
-            case "dv.add" -> upsertRule(root, sheet, mutation.sheetId(), params, "dataValidations");
+            case "dv.add" -> addRule(root, sheet, mutation.sheetId(), params, "dataValidations");
             case "dv.remove" -> removeRule(sheet, params, "dataValidations");
             case "banded.set" -> setBanded(root, sheet, mutation.sheetId(), params);
             case "outline.set" -> setOutline(root, sheet, mutation.sheetId(), params);
@@ -323,14 +323,36 @@ final class SheetDataMutationDescriptor extends CanonicalJsonMutationDescriptor 
         return tableRange;
     }
 
-    private void upsertRule(ObjectNode root, ObjectNode sheet, String sheetId, ObjectNode params, String collection) {
+    private void addRule(ObjectNode root, ObjectNode sheet, String sheetId, ObjectNode params, String collection) {
         ObjectNode rule = SnapshotMutationSupport.requiredObject(params, "rule");
         validateRule(root, sheetId, rule, collection);
-        SnapshotMutationSupport.upsertById(SnapshotMutationSupport.array(sheet, collection), rule);
+        ArrayNode rules = SnapshotMutationSupport.array(sheet, collection);
+        String ruleId = SnapshotMutationSupport.text(rule, "id");
+        if (uniqueRuleIndex(rules, ruleId, collection) >= 0) {
+            throw ServiceException.conflict("Rule already exists; remove it before adding a replacement: " + ruleId);
+        }
+        rules.add(rule.deepCopy());
     }
 
     private void removeRule(ObjectNode sheet, ObjectNode params, String collection) {
-        SnapshotMutationSupport.removeById(SnapshotMutationSupport.array(sheet, collection), SnapshotMutationSupport.text(params, "ruleId"));
+        ArrayNode rules = SnapshotMutationSupport.array(sheet, collection);
+        String ruleId = SnapshotMutationSupport.text(params, "ruleId");
+        int index = uniqueRuleIndex(rules, ruleId, collection);
+        if (index < 0) throw ServiceException.notFound("Rule not found: " + ruleId);
+        rules.remove(index);
+    }
+
+    private int uniqueRuleIndex(ArrayNode rules, String ruleId, String collection) {
+        int found = -1;
+        for (int index = 0; index < rules.size(); index++) {
+            JsonNode rule = rules.get(index);
+            if (!rule.isObject()) throw ServiceException.validation(collection + " contains an invalid rule");
+            String existingId = SnapshotMutationSupport.text((ObjectNode) rule, "id");
+            if (!ruleId.equals(existingId)) continue;
+            if (found >= 0) throw ServiceException.conflict(collection + " contains duplicate rule identity: " + ruleId);
+            found = index;
+        }
+        return found;
     }
 
     private void validateRule(ObjectNode root, String sheetId, ObjectNode rule, String collection) {
@@ -343,17 +365,24 @@ final class SheetDataMutationDescriptor extends CanonicalJsonMutationDescriptor 
 
     private List<RangeRef> existingRuleRanges(ObjectNode root, String sheetId, String property, String ruleId) {
         ObjectNode sheet = SnapshotMutationSupport.sheet(root, sheetId);
-        ObjectNode rule = SnapshotMutationSupport.findById(SnapshotMutationSupport.array(sheet, property), ruleId);
-        return rule == null ? List.of() : ruleRanges(root, sheetId, rule);
+        ArrayNode rules = SnapshotMutationSupport.array(sheet, property);
+        int index = uniqueRuleIndex(rules, ruleId, property);
+        if (index < 0) throw ServiceException.notFound("Rule not found: " + ruleId);
+        return ruleRanges(root, sheetId, (ObjectNode) rules.get(index));
     }
 
     private List<RangeRef> allRuleRanges(ObjectNode root, String sheetId, String property) {
         ObjectNode sheet = SnapshotMutationSupport.sheet(root, sheetId);
+        ArrayNode rules = SnapshotMutationSupport.array(sheet, property);
         List<RangeRef> ranges = new ArrayList<>();
-        for (JsonNode rule : SnapshotMutationSupport.array(sheet, property)) {
+        Set<String> ids = new java.util.HashSet<>();
+        for (JsonNode rule : rules) {
             if (!rule.isObject()) throw ServiceException.validation(property + " contains an invalid rule");
+            String ruleId = SnapshotMutationSupport.text((ObjectNode) rule, "id");
+            if (!ids.add(ruleId)) throw ServiceException.conflict(property + " contains duplicate rule identity: " + ruleId);
             ranges.addAll(ruleRanges(root, sheetId, (ObjectNode) rule));
         }
+        if (ranges.isEmpty()) throw ServiceException.notFound("No rules to clear: " + property);
         return List.copyOf(ranges);
     }
 

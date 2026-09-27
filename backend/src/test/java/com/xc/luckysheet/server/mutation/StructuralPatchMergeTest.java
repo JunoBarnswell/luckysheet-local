@@ -15,6 +15,98 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class StructuralPatchMergeTest {
     @Test
+    void formulaRuleAnchorPatchReplaysOnlyFromItsExpectedPreimage() throws Exception {
+        var before = new StructuralPatch.CellAddress("sheet-1", 4, 2);
+        var after = new StructuralPatch.CellAddress("sheet-1", 5, 2);
+        var delta = StructuralPatch.FormulaOwnerDelta.formulaRuleAnchor(
+                "sheet-1", "data-validation", "dv-1", before, after);
+        var patch = new StructuralPatch(StructuralPatch.VERSION, "rows.inserted", List.of(delta), List.of(), List.of());
+        var mapper = new ObjectMapper();
+        var snapshot = mapper.readTree("""
+                {"sheets":[{"id":"sheet-1","dataValidations":[
+                  {"id":"dv-1","sheetId":"sheet-1","ranges":[{"sheetId":"sheet-1","startRow":0,"endRow":4,"startColumn":0,"endColumn":2}],
+                   "formulaAnchor":{"sheetId":"sheet-1","row":4,"column":2},"type":"list"}
+                ]}]}
+                """);
+
+        var replayed = StructuralSnapshotReducer.applyStructuralOwnerPatchOnOwnedSnapshot(snapshot, patch);
+
+        assertEquals(5, replayed.path("sheets").get(0).path("dataValidations").get(0).path("formulaAnchor").path("row").asInt());
+        var conflicting = snapshot.deepCopy();
+        ((com.fasterxml.jackson.databind.node.ObjectNode) conflicting.path("sheets").get(0)
+                .path("dataValidations").get(0).path("formulaAnchor")).put("row", 9);
+        assertThrows(ServiceException.class,
+                () -> StructuralSnapshotReducer.applyStructuralOwnerPatchOnOwnedSnapshot(conflicting, patch));
+        assertEquals(9, conflicting.path("sheets").get(0).path("dataValidations").get(0).path("formulaAnchor").path("row").asInt());
+    }
+
+    @Test
+    void nonFormulaRuleRangesReplayOnlyFromTheirExactPreimage() throws Exception {
+        var before = List.of(range("sheet-1", 1, 2, 0, 3));
+        var after = List.of(range("sheet-1", 2, 3, 0, 3));
+        var delta = StructuralPatch.RangeOwnerDelta.ruleRanges("conditional-format", "sheet-1", "cf-color-scale", before, after);
+        var patch = new StructuralPatch(StructuralPatch.VERSION, "rows.inserted", List.of(), List.of(), List.of(delta));
+        var mapper = new ObjectMapper();
+        var snapshot = mapper.readTree("""
+                {"sheets":[{"id":"sheet-1","conditionalFormats":[
+                  {"id":"cf-color-scale","sheetId":"sheet-1","ranges":[
+                    {"sheetId":"sheet-1","startRow":1,"endRow":2,"startColumn":0,"endColumn":3}],"type":"color-scale"}
+                ]}]}
+                """);
+
+        var replayed = StructuralSnapshotReducer.applyStructuralOwnerPatchOnOwnedSnapshot(snapshot, patch);
+
+        assertEquals(2, replayed.path("sheets").get(0).path("conditionalFormats").get(0).path("ranges").get(0).path("startRow").asInt());
+        var restored = StructuralSnapshotReducer.applyStructuralOwnerPatchOnOwnedSnapshot(
+                replayed, patch.inverse("rows.deleted"));
+        assertEquals(snapshot.path("sheets").get(0).path("conditionalFormats"),
+                restored.path("sheets").get(0).path("conditionalFormats"));
+
+        var conflicting = snapshot.deepCopy();
+        ((com.fasterxml.jackson.databind.node.ObjectNode) conflicting.path("sheets").get(0)
+                .path("conditionalFormats").get(0).path("ranges").get(0)).put("startRow", 9);
+        assertThrows(ServiceException.class,
+                () -> StructuralSnapshotReducer.applyStructuralOwnerPatchOnOwnedSnapshot(conflicting, patch));
+        assertEquals(9, conflicting.path("sheets").get(0).path("conditionalFormats").get(0)
+                .path("ranges").get(0).path("startRow").asInt());
+    }
+
+    @Test
+    void rangeOnlyRuleDeltaRejectsFormulaManagedOwners() throws Exception {
+        var before = List.of(range("sheet-1", 1, 2, 0, 3));
+        var after = List.of(range("sheet-1", 2, 3, 0, 3));
+        var delta = StructuralPatch.RangeOwnerDelta.ruleRanges("conditional-format", "sheet-1", "cf-formula", before, after);
+        var patch = new StructuralPatch(StructuralPatch.VERSION, "rows.inserted", List.of(), List.of(), List.of(delta));
+        var mapper = new ObjectMapper();
+        var formulaSnapshot = mapper.readTree("""
+                {"sheets":[{"id":"sheet-1","conditionalFormats":[
+                  {"id":"cf-formula","sheetId":"sheet-1","ranges":[
+                    {"sheetId":"sheet-1","startRow":1,"endRow":2,"startColumn":0,"endColumn":3}],
+                   "type":"highlight","operator":"formula","value1":"=TRUE"}
+                ]}]}
+                """);
+
+        assertThrows(ServiceException.class,
+                () -> StructuralSnapshotReducer.applyStructuralOwnerPatchOnOwnedSnapshot(formulaSnapshot, patch));
+
+        var listSourceDelta = StructuralPatch.RangeOwnerDelta.ruleRanges(
+                "data-validation", "sheet-1", "dv-range-source", before, after);
+        var listSourcePatch = new StructuralPatch(
+                StructuralPatch.VERSION, "rows.inserted", List.of(), List.of(), List.of(listSourceDelta));
+        var listSourceSnapshot = mapper.readTree("""
+                {"sheets":[{"id":"sheet-1","dataValidations":[
+                  {"id":"dv-range-source","sheetId":"sheet-1","ranges":[
+                    {"sheetId":"sheet-1","startRow":1,"endRow":2,"startColumn":0,"endColumn":3}],
+                   "type":"list","listSource":{"kind":"range","range":
+                    {"sheetId":"sheet-1","startRow":5,"endRow":7,"startColumn":0,"endColumn":0}}}
+                ]}]}
+                """);
+
+        assertThrows(ServiceException.class,
+                () -> StructuralSnapshotReducer.applyStructuralOwnerPatchOnOwnedSnapshot(listSourceSnapshot, listSourcePatch));
+    }
+
+    @Test
     void formulaRuleOwnerCanRepresentRangeOnlyChangesButRejectsAnEmptyDelta() {
         RangeRef before = range("sheet-1", 1, 3, 0, 2);
         RangeRef after = range("sheet-1", 2, 4, 0, 2);
@@ -98,12 +190,15 @@ class StructuralPatchMergeTest {
                 "data-source", "source-1", range("sheet-1", 4, 6, 0, 1), range("sheet-1", 5, 7, 0, 1));
         StructuralPatch.RangeOwnerDelta sheetTable = StructuralPatch.RangeOwnerDelta.sheetTable("sheet-1", "sheet-table-1",
                 range("sheet-1", 8, 10, 0, 1), range("sheet-1", 9, 11, 0, 1));
+        StructuralPatch.RangeOwnerDelta validation = StructuralPatch.RangeOwnerDelta.validationListSource("sheet-2", "validation-1",
+                range("sheet-1", 12, 14, 0, 1), range("sheet-1", 13, 15, 0, 1),
+                List.of(range("sheet-2", 0, 0, 0, 0)), List.of(range("sheet-2", 1, 1, 0, 0)));
 
         StructuralPatch merged = MutationDescriptorRegistry.mergeStructuralPatches("rows.inserted",
-                patch("rows.inserted", List.of(), List.of(), List.of(table, region)),
-                patch("rows.inserted", List.of(), List.of(), List.of(table, region, source, sheetTable)));
+                patch("rows.inserted", List.of(), List.of(), List.of(table, region, validation)),
+                patch("rows.inserted", List.of(), List.of(), List.of(table, region, validation, source, sheetTable)));
 
-        assertEquals(List.of(table, region, source, sheetTable), merged.rangeOwnerDeltas());
+        assertEquals(List.of(table, region, validation, source, sheetTable), merged.rangeOwnerDeltas());
     }
 
     @Test

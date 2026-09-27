@@ -3,6 +3,7 @@ import { cellKey, hasFormulaGroupMetadata } from './index';
 import type { DefinedNameModel, DrawingObject, DrawingPayload, SpillRange } from './domain';
 import type { WorkbookTableModel } from './data-model';
 import type { DataSourceManifest } from './data-source';
+import type { StructuralRangeOwnerDelta } from './structural-range-owner';
 import type {
   StructuralDefinedNameOwnerDelta,
   StructuralFormulaOwnerDelta,
@@ -33,6 +34,7 @@ export interface RowPermutationPlan {
 export interface RowPermutationResult {
   readonly formulaOwnerDeltas: StructuralFormulaOwnerDelta[];
   readonly definedNameOwnerDeltas: StructuralDefinedNameOwnerDelta[];
+  readonly rangeOwnerDeltas: StructuralRangeOwnerDelta[];
 }
 
 const MAX_SEGMENT_CELLS = 100_000;
@@ -448,6 +450,15 @@ interface RowPermutationOwnerChanges {
   readonly templates: CellStyleTemplate[];
   readonly workbookTableSourceRanges: Array<{ owner: WorkbookTableModel; sourceRange: RangeRef }>;
   readonly dataSourceRanges: Array<{ owner: DataSourceManifest; sourceRange: RangeRef }>;
+  readonly dataRegions: Array<{ owner: WorksheetModel['dataRegions'][number]; range: RangeRef; headerRow: number }>;
+  readonly sheetTableRanges: Array<{ owner: WorksheetModel['sheetTables'][number]; range: RangeRef }>;
+  readonly validationListSources: Array<{
+    owner: WorksheetModel;
+    ruleId: string;
+    range: RangeRef;
+    ownerRanges: RangeRef[];
+  }>;
+  readonly rangeOwnerDeltas: StructuralRangeOwnerDelta[];
   readonly drawingPayloads: Array<{ owner: WorksheetModel; payloads: Map<string, DrawingPayload> }>;
   readonly reportSheet?: WorksheetModel['reportSheet'];
 }
@@ -472,7 +483,7 @@ export function validatePermutationMetadata(
   }
   const changesRows = plan.sourceRows.some((sourceRow, targetOffset) => sourceRow !== range.startRow + targetOffset);
   if (changesRows) {
-    sheet.cells.forEachInRows(new Set(plan.sourceRows), (cell, row, column) => {
+    sheet.cells.forEachInRowsWithoutHydration(new Set(plan.sourceRows), (cell, row, column) => {
       if (column < range.startColumn || column > range.endColumn) return;
       if (hasFormulaGroupMetadata(cell)) {
         throw new Error(`UNSUPPORTED_STRUCTURAL_REFERENCE: row sort cannot remap formula-group metadata at ${sheet.id}!${row}:${column}`);
@@ -514,6 +525,57 @@ export function validatePermutationMetadata(
   const ruleTransform = ruleTransformForPlan(plan);
   const conditionalFormats = sheet.conditionalFormats.map((rule) => remapRuleForPermutation(rule, ruleTransform, plan, changesRows, false));
   const dataValidations = sheet.dataValidations.map((rule) => remapRuleForPermutation(rule, ruleTransform, plan, changesRows, true));
+  const validationListSourceChanges: Array<{
+    owner: WorksheetModel;
+    ruleId: string;
+    before: RangeRef;
+    after: RangeRef;
+    beforeOwnerRanges: RangeRef[];
+    afterOwnerRanges: RangeRef[];
+  }> = [];
+  for (const owner of worksheetOwners) {
+    const rulesAfter = owner.id === sheet.id ? dataValidations : owner.dataValidations.map((rule) => {
+      const listSource = rule.listSource;
+      if (listSource?.kind !== 'range' || listSource.range.sheetId !== sheet.id
+        || !rangesIntersect(listSource.range, range)) return rule;
+      const sourceAfter = remapSingleRange(`data validation ${owner.id}:${rule.id} list source`, listSource.range, plan);
+      return sameRange(listSource.range, sourceAfter)
+        ? rule
+        : { ...rule, listSource: { ...listSource, range: sourceAfter } };
+    });
+    const rulesAfterById = new Map(rulesAfter.map((rule) => [rule.id, rule]));
+    const seenRuleIds = new Set<string>();
+    for (const rule of owner.dataValidations) {
+      if (!rule.id?.trim() || rule.sheetId !== owner.id || seenRuleIds.has(rule.id)) {
+        throw new Error(`ROW_PERMUTATION_INVARIANT: data validation ${owner.id}:${rule.id} has invalid owner identity`);
+      }
+      seenRuleIds.add(rule.id);
+      const beforeSource = rule.listSource;
+      if (beforeSource?.kind !== 'range') continue;
+      if (owner.id !== sheet.id && beforeSource.range.sheetId !== sheet.id) continue;
+      const afterRule = rulesAfterById.get(rule.id);
+      const afterSource = afterRule?.listSource;
+      if (afterRule?.sheetId !== owner.id || afterSource?.kind !== 'range'
+        || afterSource.range.sheetId !== beforeSource.range.sheetId) {
+        throw new Error(`ROW_PERMUTATION_INVARIANT: data validation ${owner.id}:${rule.id} changed list-source identity`);
+      }
+      const beforeOwnerRanges = rule.ranges.map((ownerRange) => ({ ...ownerRange }));
+      const afterOwnerRanges = afterRule.ranges.map((ownerRange) => ({ ...ownerRange }));
+      if (beforeOwnerRanges.some((ownerRange) => ownerRange.sheetId !== owner.id)
+        || afterOwnerRanges.some((ownerRange) => ownerRange.sheetId !== owner.id)) {
+        throw new Error(`ROW_PERMUTATION_INVARIANT: data validation ${owner.id}:${rule.id} has invalid applies-to ranges`);
+      }
+      const sourceChanged = !sameRange(beforeSource.range, afterSource.range);
+      const ownerRangesChanged = beforeOwnerRanges.length !== afterOwnerRanges.length
+        || beforeOwnerRanges.some((range, index) => !sameRange(range, afterOwnerRanges[index]!));
+      if (sourceChanged || ownerRangesChanged) {
+        validationListSourceChanges.push({
+          owner, ruleId: rule.id, before: beforeSource.range, after: afterSource.range,
+          beforeOwnerRanges, afterOwnerRanges,
+        });
+      }
+    }
+  }
   if (sheet.autoFilter) remapSingleRange('auto filter', sheet.autoFilter.range, plan);
   for (const rule of sheet.protectionRules) if (rule.range) remapSingleRange(`protection ${rule.id}`, rule.range, plan, plan.metadataScope);
   if (sheet.bandedRule) remapSingleRange('banded rule', sheet.bandedRule.range, plan);
@@ -548,6 +610,51 @@ export function validatePermutationMetadata(
     const mapped = remapSingleRange(`data source ${owner.id} source`, sourceRange, plan);
     return sameRange(sourceRange, mapped) ? [] : [{ owner, sourceRange: mapped }];
   });
+  const dataRegions = sheet.dataRegions.flatMap((owner) => {
+    if (!owner.id || owner.range.sheetId !== sheet.id) throw new Error(`ROW_PERMUTATION_INVARIANT: data region ${owner.id} has invalid identity or geometry`);
+    const rangeAfter = remapSingleRange(`data region ${owner.id}`, owner.range, plan);
+    const headerRowAfter = owner.headerRow >= range.startRow && owner.headerRow <= range.endRow
+      ? remapRow(owner.headerRow, plan)
+      : owner.headerRow;
+    if (rangeAfter.startRow === owner.range.startRow && rangeAfter.endRow === owner.range.endRow
+      && rangeAfter.startColumn === owner.range.startColumn && rangeAfter.endColumn === owner.range.endColumn
+      && headerRowAfter === owner.headerRow) return [];
+    return [{ owner, range: rangeAfter, headerRow: headerRowAfter }];
+  });
+  const sheetTableRanges = sheet.sheetTables.flatMap((owner) => {
+    if (isTableBodyPermutation(owner, range)) return [];
+    const rangeAfter = remapSingleRange(`table ${owner.id}`, owner.range, plan);
+    return sameRange(owner.range, rangeAfter) ? [] : [{ owner, range: rangeAfter }];
+  });
+  const rangeOwnerDeltas: StructuralRangeOwnerDelta[] = [
+    ...dataRegions.map(({ owner, range: rangeAfter, headerRow }) => ({
+      ownerKind: 'data-region' as const,
+      sheetId: sheet.id,
+      regionId: owner.id,
+      before: { range: { ...owner.range }, headerRow: owner.headerRow },
+      after: { range: { ...rangeAfter }, headerRow },
+    })),
+    ...workbookTableSourceRanges.map(({ owner, sourceRange }) => ({
+      ownerKind: 'workbook-table' as const, ownerId: owner.id,
+      before: { ...owner.sourceRange! }, after: { ...sourceRange },
+    })),
+    ...dataSourceRanges.map(({ owner, sourceRange }) => ({
+      ownerKind: 'data-source' as const, ownerId: owner.id,
+      before: { ...owner.sourceRange! }, after: { ...sourceRange },
+    })),
+    ...sheetTableRanges.map(({ owner, range: rangeAfter }) => ({
+      ownerKind: 'sheet-table' as const, sheetId: sheet.id, ownerId: owner.id,
+      before: { ...owner.range }, after: { ...rangeAfter },
+    })),
+    ...permutationRuleRangeDeltas(sheet.conditionalFormats, conditionalFormats, 'conditional-format'),
+    ...permutationRuleRangeDeltas(sheet.dataValidations, dataValidations, 'data-validation'),
+    ...validationListSourceChanges.map(({ owner, ruleId, before, after, beforeOwnerRanges, afterOwnerRanges }) => ({
+      ownerKind: 'validation-list-source' as const, sheetId: owner.id, ownerId: ruleId,
+      before: { ...before }, after: { ...after },
+      beforeOwnerRanges: beforeOwnerRanges.map((range) => ({ ...range })),
+      afterOwnerRanges: afterOwnerRanges.map((range) => ({ ...range })),
+    })),
+  ];
   const drawingPayloads = worksheetOwners.flatMap((owner) => {
     let mapped: Map<string, DrawingPayload> | undefined;
     for (const [payloadId, payload] of owner.drawingPayloads) {
@@ -575,6 +682,12 @@ export function validatePermutationMetadata(
     templates,
     workbookTableSourceRanges,
     dataSourceRanges,
+    dataRegions,
+    sheetTableRanges,
+    validationListSources: validationListSourceChanges.map(({ owner, ruleId, after, afterOwnerRanges }) => ({
+      owner, ruleId, range: after, ownerRanges: afterOwnerRanges,
+    })),
+    rangeOwnerDeltas,
     drawingPayloads,
     reportSheet,
   };
@@ -595,7 +708,7 @@ export function applyRowPermutation(
   ];
   const formulaOwnerDeltas: StructuralFormulaOwnerDelta[] = [];
   const cellsByRow = new Map<number, Array<{ column: number; cell: CellData }>>();
-  sheet.cells.forEachInRows(new Set(sourceRows), (cell, row, column) => {
+  sheet.cells.forEachInRowsWithoutHydration(new Set(sourceRows), (cell, row, column) => {
     if (column < range.startColumn || column > range.endColumn) return;
     if (row < range.startRow || row > range.endRow) throw new Error(`ROW_PERMUTATION_INVARIANT: cell owner row ${row} is outside its source map`);
     const targetRow = remapRow(row, plan);
@@ -635,14 +748,52 @@ export function applyRowPermutation(
   }
   for (const change of ownerChanges.workbookTableSourceRanges) change.owner.sourceRange = change.sourceRange;
   for (const change of ownerChanges.dataSourceRanges) change.owner.sourceRange = change.sourceRange;
+  if (ownerChanges.dataRegions.length > 0) {
+    const changed = new Map(ownerChanges.dataRegions.map((entry) => [entry.owner.id, entry]));
+    sheet.replaceDataRegions(sheet.dataRegions.map((region) => {
+      const next = changed.get(region.id);
+      return next ? { ...region, range: { ...next.range }, headerRow: next.headerRow } : region;
+    }));
+  }
   sheet.spillRanges.splice(0, sheet.spillRanges.length, ...sheet.spillRanges.map((spill) => remapSpill(spill, plan)));
   sheet.conditionalFormats.splice(0, sheet.conditionalFormats.length, ...ownerChanges.conditionalFormats);
   sheet.dataValidations.splice(0, sheet.dataValidations.length, ...ownerChanges.dataValidations);
+  const validationChangesByOwner = new Map<WorksheetModel, Map<string, (typeof ownerChanges.validationListSources)[number]>>();
+  for (const change of ownerChanges.validationListSources) {
+    let changes = validationChangesByOwner.get(change.owner);
+    if (!changes) {
+      changes = new Map();
+      validationChangesByOwner.set(change.owner, changes);
+    }
+    if (changes.has(change.ruleId)) {
+      throw new Error(`ROW_PERMUTATION_INVARIANT: duplicate validation list-source delta ${change.owner.id}:${change.ruleId}`);
+    }
+    changes.set(change.ruleId, change);
+  }
+  for (const [owner, changes] of validationChangesByOwner) {
+    const found = new Set<string>();
+    for (const rule of owner.dataValidations) {
+      const change = changes.get(rule.id);
+      if (!change) continue;
+      if (rule.sheetId !== owner.id || rule.listSource?.kind !== 'range'
+        || rule.listSource.range.sheetId !== change.range.sheetId || found.has(rule.id)) {
+        throw new Error(`ROW_PERMUTATION_INVARIANT: validation list-source owner ${owner.id}:${rule.id} is invalid during commit`);
+      }
+      found.add(rule.id);
+      rule.listSource.range = { ...change.range };
+      rule.ranges = change.ownerRanges.map((range) => ({ ...range }));
+    }
+    if (found.size !== changes.size) {
+      throw new Error(`ROW_PERMUTATION_INVARIANT: validation list-source owner is missing during commit on ${owner.id}`);
+    }
+  }
   if (sheet.autoFilter) sheet.autoFilter.range = remapSingleRange('auto filter', sheet.autoFilter.range, plan);
+  const sheetTableRangesByOwner = new Map(ownerChanges.sheetTableRanges.map((change) => [change.owner, change.range]));
   for (const table of sheet.sheetTables) {
     const bodyPermutation = isTableBodyPermutation(table, range);
     if (!bodyPermutation) {
-      table.range = remapSingleRange(`table ${table.id}`, table.range, plan);
+      const rangeChange = sheetTableRangesByOwner.get(table);
+      if (rangeChange) table.range = rangeChange;
       if (table.autoFilter) table.autoFilter.range = remapSingleRange(`table ${table.id} filter`, table.autoFilter.range, plan);
     }
   }
@@ -663,6 +814,7 @@ export function applyRowPermutation(
   return {
     formulaOwnerDeltas,
     definedNameOwnerDeltas: ownerChanges.definedNames.map(createPermutationDefinedNameDelta),
+    rangeOwnerDeltas: ownerChanges.rangeOwnerDeltas,
   };
 }
 
@@ -702,13 +854,29 @@ function permutationRuleFormulaDeltas<T extends StructuralFormulaRule>(
   const deltas: StructuralFormulaOwnerDelta[] = [];
   for (const before of beforeRules) {
     const beforeFormulas = structuralRuleFormulaFields(before);
-    if (beforeFormulas.size === 0) continue;
+    if (beforeFormulas.size === 0 && before.formulaAnchor === undefined) continue;
     const matches = afterRules.filter((candidate) => candidate.id === before.id && candidate.sheetId === before.sheetId);
     if (beforeIdCounts.get(before.id) !== 1 || matches.length !== 1 || !before.id.trim()) {
       throw new Error(`STRUCTURAL_PATCH_INVARIANT: formula rule identity ${before.sheetId}:${before.id} is not unique`);
     }
     const after = matches[0]!;
     const afterFormulas = structuralRuleFormulaFields(after);
+    if ((before.formulaAnchor === undefined) !== (after.formulaAnchor === undefined)) {
+      throw new Error(`STRUCTURAL_PATCH_INVARIANT: formula rule anchor ${before.sheetId}:${before.id} was added or removed during row permutation`);
+    }
+    if (before.formulaAnchor && after.formulaAnchor
+      && (before.formulaAnchor.sheetId !== after.formulaAnchor.sheetId
+        || before.formulaAnchor.row !== after.formulaAnchor.row
+        || before.formulaAnchor.column !== after.formulaAnchor.column)) {
+      deltas.push({
+        kind: 'formula-rule-anchor',
+        sheetId: before.sheetId,
+        ruleKind,
+        ruleId: before.id,
+        beforeAddress: { ...before.formulaAnchor },
+        afterAddress: { ...after.formulaAnchor },
+      });
+    }
     const rangesChanged = JSON.stringify(before.ranges) !== JSON.stringify(after.ranges);
     for (const [field, beforeFormula] of beforeFormulas) {
       const afterFormula = afterFormulas.get(field);
@@ -729,6 +897,42 @@ function permutationRuleFormulaDeltas<T extends StructuralFormulaRule>(
         });
       }
     }
+  }
+  return deltas;
+}
+
+function permutationRuleRangeDeltas<T extends StructuralFormulaRule>(
+  beforeRules: readonly T[],
+  afterRules: readonly T[],
+  ownerKind: 'conditional-format' | 'data-validation',
+): StructuralRangeOwnerDelta[] {
+  const beforeIdCounts = new Map<string, number>();
+  for (const rule of beforeRules) beforeIdCounts.set(rule.id, (beforeIdCounts.get(rule.id) ?? 0) + 1);
+  const afterById = new Map<string, T | null>();
+  for (const rule of afterRules) afterById.set(rule.id, afterById.has(rule.id) ? null : rule);
+  const deltas: StructuralRangeOwnerDelta[] = [];
+  for (const before of beforeRules) {
+    if (structuralRuleFormulaFields(before).size > 0
+      || ownerKind === 'data-validation' && before.listSource?.kind === 'range') continue;
+    const after = afterById.get(before.id);
+    if (!before.id.trim() || beforeIdCounts.get(before.id) !== 1 || !after || after.sheetId !== before.sheetId
+      || structuralRuleFormulaFields(after).size > 0
+      || before.ranges.some((range) => range.sheetId !== before.sheetId)
+      || after.ranges.length === 0 || after.ranges.some((range) => range.sheetId !== before.sheetId)) {
+      throw new Error(`ROW_PERMUTATION_INVARIANT: ${ownerKind} range owner ${before.sheetId}:${before.id} is invalid`);
+    }
+    if (before.ranges.length === after.ranges.length
+      && before.ranges.every((range, index) => sameRange(range, after.ranges[index]!))) continue;
+    deltas.push({
+      ownerKind,
+      sheetId: before.sheetId,
+      ownerId: before.id,
+      before: before.ranges.map((range) => ({ ...range })),
+      after: after.ranges.map((range) => ({ ...range })),
+    });
+  }
+  if (afterById.size !== beforeIdCounts.size || [...beforeIdCounts.keys()].some((id) => !afterById.has(id))) {
+    throw new Error(`ROW_PERMUTATION_INVARIANT: ${ownerKind} membership changed during permutation`);
   }
   return deltas;
 }

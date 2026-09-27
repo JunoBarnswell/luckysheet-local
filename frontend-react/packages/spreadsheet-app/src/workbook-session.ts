@@ -3211,7 +3211,7 @@ export class WorkbookSession {
     }
 
     const rule = findValidationRule(canonicalSheet, canonicalAddress.row, canonicalAddress.column);
-    const listValues = rule ? validationList(rule, canonicalSheet) : undefined;
+    const listValues = rule ? validationList(rule, canonicalSheet, (sheetId) => this.runtime.model.getSheet(sheetId)) : undefined;
     const editorContext: CellEditorContext = {
       target,
       source: request.source,
@@ -3319,7 +3319,7 @@ export class WorkbookSession {
       }
 
       const rule = findValidationRule(currentSheet, request.target.canonical.row, request.target.canonical.column);
-      const listValues = rule ? validationList(rule, currentSheet) : undefined;
+      const listValues = rule ? validationList(rule, currentSheet, (sheetId) => this.runtime.model.getSheet(sheetId)) : undefined;
       const behavior = this.cellEditorRegistry.get(request.editorKind);
       const behaviorContext: CellEditorContext = {
         target: request.target,
@@ -3590,7 +3590,7 @@ export class WorkbookSession {
     const sheet = this.runtime.model.getSheet(session.target.canonical.sheetId);
     const cell = this.readResolvedCell(sheet, session.target.canonical.row, session.target.canonical.column);
     const rule = findValidationRule(sheet, session.target.canonical.row, session.target.canonical.column);
-    const validationValues = rule ? validationList(rule, sheet) : undefined;
+    const validationValues = rule ? validationList(rule, sheet, (sheetId) => this.runtime.model.getSheet(sheetId)) : undefined;
     const context: CellEditorContext = {
       target: session.target,
       source: session.source,
@@ -3623,7 +3623,7 @@ export class WorkbookSession {
     return {
       key: `${sheet.id}:${session.target.display.column}`,
       revision: sheet.cells.revision,
-      entries: sheet.cells.entriesInColumn(session.target.display.column),
+      entries: sheet.cells.entriesInColumnWithoutHydration(session.target.display.column),
       excludeRow: session.target.display.row,
       cultureId: this.runtime.model.collationContext.cultureId,
     };

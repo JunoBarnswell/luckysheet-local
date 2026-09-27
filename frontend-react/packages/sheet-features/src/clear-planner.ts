@@ -49,10 +49,6 @@ function normalizeRange(range: RangeRef): RangeRef {
   };
 }
 
-function contains(range: RangeRef, row: number, column: number): boolean {
-  return range.startRow <= row && row <= range.endRow && range.startColumn <= column && column <= range.endColumn;
-}
-
 function snapshotCells(sheet: WorksheetModel, range: RangeRef): NonNullable<ClearRangeSnapshot['cells']> {
   const cells: NonNullable<ClearRangeSnapshot['cells']> = [];
   sheet.cells.forEachInRange(range.startRow, range.endRow, range.startColumn, range.endColumn,
@@ -65,16 +61,14 @@ export function createClearRangePlan(sheet: WorksheetModel, input: ClearRangePar
   if (range.sheetId !== sheet.id || input.sheetId !== sheet.id) throw new Error('Clear range targets another worksheet');
   const notes: ClearRangeSnapshot['notes'] = [];
   const hyperlinks: ClearRangeSnapshot['hyperlinks'] = [];
-  for (const { row, column, note } of sheet.review.noteEntries()) {
-    if (contains(range, row, column)) notes.push({ row, column, note });
+  const comments: ClearRangeSnapshot['comments'] = [];
+  for (const entry of sheet.review.entriesInRange(range.startRow, range.endRow, range.startColumn, range.endColumn)) {
+    if (entry.note) notes.push({ row: entry.row, column: entry.column, note: entry.note });
+    comments.push(...entry.threads);
   }
-  for (const [key, hyperlink] of sheet.hyperlinks) {
-    const parts = key.split(':');
-    const row = Number(parts[0]);
-    const column = Number(parts[1]);
-    if (Number.isInteger(row) && Number.isInteger(column) && contains(range, row, column)) hyperlinks.push({ row, column, hyperlink: structuredClone(hyperlink) });
+  for (const entry of sheet.hyperlinks.entriesInRange(range.startRow, range.endRow, range.startColumn, range.endColumn)) {
+    hyperlinks.push({ row: entry.row, column: entry.column, hyperlink: structuredClone(entry.hyperlink) });
   }
-  const comments = sheet.review.threadEntries().filter((thread) => contains(range, thread.row, thread.column));
   return {
     params: { ...input, range },
     range,
@@ -109,33 +103,31 @@ function clearCellFormats(cell: CellData): CellData {
 export function applyClearRangePlan(sheet: WorksheetModel, plan: ClearRangePlan): void {
   const { range, params } = plan;
   if (params.family === 'comments-and-notes') {
-    for (const { row, column } of sheet.review.noteEntries()) if (contains(range, row, column)) sheet.review.removeNote(row, column);
-    for (const thread of sheet.review.threadEntries()) if (contains(range, thread.row, thread.column)) sheet.review.removeThread(thread.id);
+    for (const entry of sheet.review.entriesInRange(range.startRow, range.endRow, range.startColumn, range.endColumn)) {
+      if (entry.note) sheet.review.removeNote(entry.row, entry.column);
+      for (const thread of entry.threads) sheet.review.removeThread(thread.id);
+    }
     return;
   }
   if (params.family === 'hyperlinks') {
-    for (const key of [...sheet.hyperlinks.keys()]) {
-      const [row, column] = key.split(':').map(Number);
-      if (Number.isInteger(row) && Number.isInteger(column) && contains(range, row!, column!)) sheet.hyperlinks.delete(key);
+    for (const entry of sheet.hyperlinks.entriesInRange(range.startRow, range.endRow, range.startColumn, range.endColumn)) {
+      sheet.hyperlinks.delete(entry.key);
     }
     return;
   }
-  const cells: Array<{ row: number; column: number; cell: CellData }> = [];
-  sheet.cells.forEachInRange(range.startRow, range.endRow, range.startColumn, range.endColumn,
-    (cell, row, column) => cells.push({ row, column, cell }));
-  for (const entry of cells) {
-    const { row, column, cell: current } = entry;
+  sheet.cells.forEachInRange(range.startRow, range.endRow, range.startColumn, range.endColumn, (current, row, column) => {
     if (params.family === 'contents') sheet.cells.set(row, column, clearCellContents(current));
     else if (params.family === 'formats') sheet.cells.set(row, column, clearCellFormats(current));
     else sheet.cells.delete(row, column);
-  }
+  });
   if (params.family === 'all') {
-    for (const { row, column } of sheet.review.noteEntries()) if (contains(range, row, column)) sheet.review.removeNote(row, column);
-    for (const key of [...sheet.hyperlinks.keys()]) {
-      const [row, column] = key.split(':').map(Number);
-      if (contains(range, row!, column!)) sheet.hyperlinks.delete(key);
+    for (const entry of sheet.review.entriesInRange(range.startRow, range.endRow, range.startColumn, range.endColumn)) {
+      if (entry.note) sheet.review.removeNote(entry.row, entry.column);
+      for (const thread of entry.threads) sheet.review.removeThread(thread.id);
     }
-    for (const thread of sheet.review.threadEntries()) if (contains(range, thread.row, thread.column)) sheet.review.removeThread(thread.id);
+    for (const entry of sheet.hyperlinks.entriesInRange(range.startRow, range.endRow, range.startColumn, range.endColumn)) {
+      sheet.hyperlinks.delete(entry.key);
+    }
   }
   if (params.family === 'formats' || params.family === 'all') {
     sheet.conditionalFormats.splice(0, sheet.conditionalFormats.length, ...sheetRuleRegistry.cropRules(sheet.conditionalFormats, range));
@@ -145,17 +137,16 @@ export function applyClearRangePlan(sheet: WorksheetModel, plan: ClearRangePlan)
 
 export function restoreClearRangeSnapshot(sheet: WorksheetModel, range: RangeRef, snapshot: ClearRangeSnapshot): void {
   if (snapshot.cells !== undefined) {
-    const cells: Array<{ row: number; column: number }> = [];
     sheet.cells.forEachInRange(range.startRow, range.endRow, range.startColumn, range.endColumn,
-      (_cell, row, column) => cells.push({ row, column }));
-    for (const { row, column } of cells) sheet.cells.delete(row, column);
+      (_cell, row, column) => sheet.cells.delete(row, column));
   }
-  for (const { row, column } of sheet.review.noteEntries()) if (contains(range, row, column)) sheet.review.removeNote(row, column);
-  for (const key of [...sheet.hyperlinks.keys()]) {
-    const [row, column] = key.split(':').map(Number);
-    if (contains(range, row!, column!)) sheet.hyperlinks.delete(key);
+  for (const entry of sheet.review.entriesInRange(range.startRow, range.endRow, range.startColumn, range.endColumn)) {
+    if (entry.note) sheet.review.removeNote(entry.row, entry.column);
+    for (const thread of entry.threads) sheet.review.removeThread(thread.id);
   }
-  for (const thread of sheet.review.threadEntries()) if (contains(range, thread.row, thread.column)) sheet.review.removeThread(thread.id);
+  for (const entry of sheet.hyperlinks.entriesInRange(range.startRow, range.endRow, range.startColumn, range.endColumn)) {
+    sheet.hyperlinks.delete(entry.key);
+  }
   for (const item of snapshot.cells ?? []) if (item.value !== undefined) sheet.cells.set(item.row, item.column, structuredClone(item.value));
   for (const item of snapshot.notes) sheet.review.setNote(item.row, item.column, item.note);
   for (const item of snapshot.hyperlinks) sheet.hyperlinks.set(`${item.row}:${item.column}`, structuredClone(item.hyperlink));

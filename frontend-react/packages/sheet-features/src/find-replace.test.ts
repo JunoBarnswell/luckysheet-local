@@ -59,6 +59,40 @@ test('Find planner supports canonical row-major and column-major search order', 
   assert.deepEqual(planFind(workbook, { ...base, searchOrder: 'columns' }).matches.map((match) => `${match.row}:${match.column}`), ['1:0', '0:1']);
 });
 
+test('Find scans only requested cell or metadata targets and preserves deferred worksheet storage', () => {
+  const source = new WorkbookModel('find-deferred', 'Deferred Find');
+  const sourceSheet = source.getSheet(source.primarySheetId);
+  sourceSheet.cells.set(0, 0, { value: 'needle' });
+  sourceSheet.cells.set(900, 2, { value: 'outside' });
+  sourceSheet.review.setNote(0, 0, { id: 'note-0', author: 'u', text: 'needle on a populated cell', createdAt: 'now', visible: true });
+  sourceSheet.review.setNote(2, 0, { id: 'note-1', author: 'u', text: 'needle note', createdAt: 'now', visible: true });
+
+  const workbook = WorkbookModel.fromSnapshot(source.snapshot());
+  const sheet = workbook.getSheet(sourceSheet.id);
+  assert.equal(sheet.cells.isHydrated, false);
+
+  const cellResult = planFind(workbook, {
+    sheetId: sheet.id, query: 'needle', searchOrder: 'rows', scope: 'selection',
+    range: range(sheet.id, 0, 0, 0, 0), targets: ['values'],
+  });
+  assert.deepEqual(cellResult.matches.map((match) => `${match.row}:${match.column}:${match.target}`), ['0:0:values']);
+  assert.equal(sheet.cells.isHydrated, false);
+
+  const mixedResult = planFind(workbook, {
+    sheetId: sheet.id, query: 'needle', searchOrder: 'rows', scope: 'selection',
+    range: range(sheet.id, 0, 0, 0, 0), targets: ['values', 'notes'],
+  });
+  assert.deepEqual(mixedResult.matches.map((match) => `${match.row}:${match.column}:${match.target}`), ['0:0:values', '0:0:notes']);
+  assert.equal(sheet.cells.isHydrated, false);
+
+  const noteResult = planFind(workbook, {
+    sheetId: sheet.id, query: 'needle', searchOrder: 'rows', scope: 'selection',
+    range: range(sheet.id, 2, 2, 0, 0), targets: ['notes'],
+  });
+  assert.deepEqual(noteResult.matches.map((match) => `${match.row}:${match.column}:${match.target}`), ['2:0:notes']);
+  assert.equal(sheet.cells.isHydrated, false);
+});
+
 test('Find matcher replaces literal wildcard matches without replacement-string expansion', () => {
   assert.equal(matchesFindText('A*B', { query: 'A~*B', wildcard: true }), true);
   assert.equal(replaceFindText('ab ab', { query: 'a?', matchCase: false, wildcard: true }, '$1'), '$1 $1');

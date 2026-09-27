@@ -88,6 +88,40 @@ class StructuralPatchV2MigrationTest {
     }
 
     @Test
+    void upgradesV6AndV7HistoryWithFormulaAnchorOwnerFacts() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        RangeRef before = new RangeRef("sheet-1", 0, 3, 2, 2);
+        RangeRef after = new RangeRef("sheet-1", 0, 5, 2, 2);
+        StructuralPatch currentPatch = new StructuralPatch(StructuralPatch.VERSION, "rows.inserted",
+                List.of(StructuralPatch.FormulaOwnerDelta.formulaRuleAnchor("sheet-1", "data-validation", "validation-1",
+                        new StructuralPatch.CellAddress("sheet-1", 0, 0), new StructuralPatch.CellAddress("sheet-1", 1, 0))),
+                List.of(), List.of(StructuralPatch.RangeOwnerDelta.validationListSource(
+                        "sheet-1", "validation-1", before, after,
+                        List.of(new RangeRef("sheet-1", 0, 0, 0, 0)), List.of(new RangeRef("sheet-1", 1, 1, 0, 0))),
+                        StructuralPatch.RangeOwnerDelta.ruleRanges("conditional-format", "sheet-1", "cf-color-scale",
+                                List.of(new RangeRef("sheet-1", 4, 4, 0, 2)), List.of(new RangeRef("sheet-1", 5, 5, 0, 2)))));
+
+        ObjectNode v6Envelope = rawEnvelope(6, currentPatch, preV7RangeImpacts(currentPatch, registry));
+        new V4__TestMigration().rewriteMutationPatches(v6Envelope, operation(),
+                List.of(Optional.of(currentPatch)), registry, "unit-1", 1);
+        assertEquals(mapper.valueToTree(currentPatch), v6Envelope.path("mutations").get(0).get("structuralPatch"));
+        assertEquals(mapper.valueToTree(registry.structuralImpactRanges(currentPatch)),
+                v6Envelope.path("mutations").get(0).get("structuralImpactRanges"));
+
+        StructuralPatch preV8 = new StructuralPatch(StructuralPatch.VERSION, currentPatch.mutationId(), List.of(),
+                currentPatch.definedNameOwnerDeltas(), currentPatch.rangeOwnerDeltas());
+        ObjectNode v7Envelope = rawEnvelope(7, currentPatch, registry.structuralImpactRanges(preV8));
+        new V4__TestMigration().rewriteMutationPatches(v7Envelope, operation(),
+                List.of(Optional.of(currentPatch)), registry, "unit-1", 1);
+        assertEquals(mapper.valueToTree(currentPatch), v7Envelope.path("mutations").get(0).get("structuralPatch"));
+
+        ObjectNode v8Envelope = rawEnvelope(8, currentPatch, registry.structuralImpactRanges(currentPatch));
+        new V4__TestMigration().rewriteMutationPatches(v8Envelope, operation(),
+                List.of(Optional.of(currentPatch)), registry, "unit-1", 1);
+        assertEquals(mapper.valueToTree(currentPatch), v8Envelope.path("mutations").get(0).get("structuralPatch"));
+    }
+
+    @Test
     void backfillsLegacyWorksheetRenameOwnerPatches() throws Exception {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         StructuralPatch renamePatch = new StructuralPatch(StructuralPatch.VERSION,
@@ -112,6 +146,27 @@ class StructuralPatchV2MigrationTest {
     private ObjectNode rawEnvelope(int version, StructuralPatch currentPatch, List<RangeRef> impact) {
         ObjectNode legacyPatch = (ObjectNode) mapper.valueToTree(currentPatch);
         legacyPatch.put("version", version);
+        if (version < 8) {
+            ArrayNode priorFormulaOwners = mapper.createArrayNode();
+            for (JsonNode delta : legacyPatch.path("formulaOwnerDeltas")) {
+                if (!"formula-rule-anchor".equals(delta.path("kind").asText())) priorFormulaOwners.add(delta.deepCopy());
+            }
+            legacyPatch.set("formulaOwnerDeltas", priorFormulaOwners);
+            ArrayNode priorRangeOwners = mapper.createArrayNode();
+            for (JsonNode delta : legacyPatch.path("rangeOwnerDeltas")) {
+                if (!List.of("conditional-format", "data-validation").contains(delta.path("ownerKind").asText())) {
+                    priorRangeOwners.add(delta.deepCopy());
+                }
+            }
+            legacyPatch.set("rangeOwnerDeltas", priorRangeOwners);
+        }
+        if (version < 7) {
+            ArrayNode priorRangeOwners = mapper.createArrayNode();
+            for (JsonNode delta : legacyPatch.path("rangeOwnerDeltas")) {
+                if (!"validation-list-source".equals(delta.path("ownerKind").asText())) priorRangeOwners.add(delta.deepCopy());
+            }
+            legacyPatch.set("rangeOwnerDeltas", priorRangeOwners);
+        }
         if (version < 4) legacyPatch.remove("rangeOwnerDeltas");
         if (version == 1) legacyPatch.remove("definedNameOwnerDeltas");
         ObjectNode envelope = mapper.createObjectNode();
@@ -151,5 +206,13 @@ class StructuralPatchV2MigrationTest {
         return registry.structuralImpactRanges(new StructuralPatch(StructuralPatch.VERSION, patch.mutationId(),
                 patch.formulaOwnerDeltas(), patch.definedNameOwnerDeltas(), patch.rangeOwnerDeltas().stream()
                         .filter(delta -> !"sheet-table".equals(delta.ownerKind())).toList()));
+    }
+
+    private List<RangeRef> preV7RangeImpacts(StructuralPatch patch, MutationDescriptorRegistry registry) {
+        return registry.structuralImpactRanges(new StructuralPatch(StructuralPatch.VERSION, patch.mutationId(),
+                patch.formulaOwnerDeltas().stream().filter(delta -> !"formula-rule-anchor".equals(delta.kind())).toList(),
+                patch.definedNameOwnerDeltas(), patch.rangeOwnerDeltas().stream()
+                        .filter(delta -> !List.of("validation-list-source", "conditional-format", "data-validation")
+                                .contains(delta.ownerKind())).toList()));
     }
 }

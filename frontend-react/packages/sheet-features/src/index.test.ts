@@ -713,6 +713,217 @@ test('paste special copies range-owned metadata atomically and restores it once'
   assert.equal(runtime.getHistoryDepth().undo, 1);
 });
 
+test('paste preserves a data-validation list source on its referenced worksheet', () => {
+  const workbook = new WorkbookModel('unit-paste-cross-sheet-validation', 'Cross-sheet validation paste');
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const source = workbook.getSheet('sheet-1');
+  const listSheet = workbook.addSheet('list-source', 'List Source');
+  const target = workbook.addSheet('paste-target', 'Paste Target');
+  source.cells.set(0, 0, { value: 'source cell' });
+  listSheet.cells.set(0, 0, { value: 'Allowed' });
+  source.dataValidations.push({
+    id: 'cross-sheet-list', sheetId: source.id,
+    ranges: [{ sheetId: source.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }],
+    type: 'list',
+    listSource: { kind: 'range', range: { sheetId: listSheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 } },
+  });
+  const clipboard = copyRangeToClipboardData(workbook, { sheetId: source.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 });
+  const invalidClipboard = structuredClone(clipboard);
+  const invalidValidation = invalidClipboard.rangeMetadata.validations[0];
+  assert.ok(invalidValidation?.listSource?.kind === 'range');
+  invalidValidation.listSource.range.sheetId = 'missing-list-sheet';
+  assert.throws(() => runtime.execute('sheet.range.paste', {
+    sheetId: target.id,
+    targetOrigin: { row: 0, column: 0 },
+    clipboard: invalidClipboard,
+    transfer: 'copy',
+    spec: createPasteSpecialSpec({ metadata: { commentsNotes: false, validation: true, columnWidths: false, conditionalFormats: false, hyperlinks: false } }),
+  }), /Unknown sheet/);
+  assert.equal(target.cells.get(0, 0), undefined);
+  assert.equal(target.dataValidations.length, 0);
+
+  runtime.execute('sheet.range.paste', {
+    sheetId: target.id,
+    targetOrigin: { row: 2, column: 3 },
+    clipboard,
+    transfer: 'copy',
+    spec: createPasteSpecialSpec({ metadata: { commentsNotes: false, validation: true, columnWidths: false, conditionalFormats: false, hyperlinks: false } }),
+  });
+
+  const copied = target.dataValidations.find((rule) => rule.id !== 'cross-sheet-list');
+  assert.deepEqual(copied?.listSource, {
+    kind: 'range', range: { sheetId: listSheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 },
+  });
+  assert.deepEqual(copied?.ranges, [{ sheetId: target.id, startRow: 2, endRow: 2, startColumn: 3, endColumn: 3 }]);
+  runtime.undo();
+  assert.equal(target.dataValidations.length, 0);
+  runtime.redo();
+  assert.deepEqual(target.dataValidations.find((rule) => rule.id !== 'cross-sheet-list')?.listSource, copied?.listSource);
+});
+
+test('data-validation range sources resolve to live worksheets on command and remote replay paths', () => {
+  const workbook = new WorkbookModel('unit-dv-range-source-owner', 'Validation Source Owner');
+  const owner = workbook.getSheet(workbook.primarySheetId);
+  const listSource = workbook.addSheet('validation-values', 'Validation Values');
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const appliesTo = { sheetId: owner.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 };
+  const rule = {
+    id: 'external-list', sheetId: owner.id, ranges: [appliesTo], type: 'list' as const,
+    listSource: { kind: 'range' as const, range: { sheetId: listSource.id, startRow: 0, endRow: 2, startColumn: 0, endColumn: 0 } },
+  };
+
+  runtime.execute('sheet.dv.add', { sheetId: owner.id, rule });
+  assert.equal(owner.dataValidations[0]?.listSource?.kind, 'range');
+
+  const unresolved = structuredClone(rule);
+  unresolved.id = 'missing-list-sheet';
+  unresolved.listSource.range.sheetId = 'missing-worksheet';
+  assert.throws(() => runtime.applyRemoteMutations([{
+    id: 'dv.add', unitId: workbook.unitId, sheetId: owner.id,
+    params: { sheetId: owner.id, rule: unresolved }, affectedRanges: [appliesTo],
+  }]), /Unknown sheet/);
+  assert.equal(owner.dataValidations.length, 1);
+
+  assert.throws(() => runtime.execute('sheet.dv.add', {
+    sheetId: listSource.id,
+    rule: { ...rule, id: 'owner-mismatch' },
+  }), /owner sheet/);
+  assert.equal(listSource.dataValidations.length, 0);
+});
+
+test('conditional-format and validation removals bind the declared geometry to current owners', () => {
+  const workbook = new WorkbookModel('unit-rule-owner-ranges', 'Rule Owner Ranges');
+  const owner = workbook.getSheet(workbook.primarySheetId);
+  const other = workbook.addSheet('other-owner', 'Other Owner');
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const appliesTo = { sheetId: owner.id, startRow: 3, endRow: 4, startColumn: 2, endColumn: 2 };
+  owner.conditionalFormats.push({ id: 'protected-format', sheetId: owner.id, ranges: [appliesTo], type: 'highlight' });
+  owner.dataValidations.push({
+    id: 'protected-validation', sheetId: owner.id, ranges: [appliesTo], type: 'list',
+    listSource: { kind: 'values', values: ['Allowed'] },
+  });
+
+  assert.throws(() => runtime.applyRemoteMutations([{
+    id: 'cf.clear', unitId: workbook.unitId, sheetId: owner.id,
+    params: { sheetId: owner.id, ranges: [] }, affectedRanges: [],
+  }]), /changed before clear/);
+  assert.equal(owner.conditionalFormats.length, 1);
+
+  const beforeUpdate = structuredClone(owner.conditionalFormats[0]!);
+  assert.throws(() => runtime.applyRemoteMutations([{
+    id: 'cf.update', unitId: workbook.unitId, sheetId: owner.id,
+    params: {
+      sheetId: owner.id,
+      before: beforeUpdate,
+      after: { ...beforeUpdate, ranges: [{ ...appliesTo, startRow: 5, endRow: 5 }] },
+      ranges: [],
+    },
+    affectedRanges: [],
+  }]), /parameters do not match/);
+  assert.deepEqual(owner.conditionalFormats[0], beforeUpdate);
+
+  assert.throws(() => runtime.applyRemoteMutations([{
+    id: 'cf.update', unitId: workbook.unitId, sheetId: owner.id,
+    params: {
+      sheetId: owner.id,
+      before: beforeUpdate,
+      after: { ...beforeUpdate, id: 'replacement-identity' },
+      ranges: [appliesTo, appliesTo],
+    },
+    affectedRanges: [appliesTo, appliesTo],
+  }]), /parameters do not match/);
+  assert.deepEqual(owner.conditionalFormats[0], beforeUpdate);
+
+  assert.throws(() => runtime.applyRemoteMutations([{
+    id: 'cf.remove', unitId: workbook.unitId, sheetId: owner.id,
+    params: { sheetId: owner.id, ruleId: 'protected-format', ranges: [] }, affectedRanges: [],
+  }]), /parameters do not match|Invalid cf.remove/);
+  assert.equal(owner.conditionalFormats.length, 1);
+
+  assert.throws(() => runtime.applyRemoteMutations([{
+    id: 'dv.remove', unitId: workbook.unitId, sheetId: owner.id,
+    params: { sheetId: owner.id, ruleId: 'protected-validation', ranges: [] }, affectedRanges: [],
+  }]), /parameters do not match|Invalid dv.remove/);
+  assert.equal(owner.dataValidations.length, 1);
+
+  assert.throws(() => runtime.applyRemoteMutations([{
+    id: 'cf.add', unitId: workbook.unitId, sheetId: other.id,
+    params: { sheetId: owner.id, rule: { id: 'cross-envelope', sheetId: owner.id, ranges: [appliesTo], type: 'highlight' } },
+    affectedRanges: [appliesTo],
+  }]), /owner sheet/);
+  assert.equal(owner.conditionalFormats.some((rule) => rule.id === 'cross-envelope'), false);
+
+  runtime.execute('sheet.cf.clear', { sheetId: owner.id });
+  assert.equal(owner.conditionalFormats.length, 0);
+  runtime.undo();
+  assert.equal(owner.conditionalFormats.length, 1);
+  runtime.redo();
+  assert.equal(owner.conditionalFormats.length, 0);
+
+  runtime.execute('sheet.dv.remove', { sheetId: owner.id, ruleId: 'protected-validation' });
+  assert.equal(owner.dataValidations.length, 0);
+  runtime.undo();
+  assert.equal(owner.dataValidations.length, 1);
+});
+
+test('same-id rule additions replace through reversible remove-and-add mutations', () => {
+  const workbook = new WorkbookModel('unit-rule-replacement-history', 'Rule Replacement History');
+  const owner = workbook.getSheet(workbook.primarySheetId);
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const range = { sheetId: owner.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 };
+  const previousFormat = { id: 'format-1', sheetId: owner.id, ranges: [range], type: 'highlight' as const, value1: 'before' };
+  const nextFormat = { ...previousFormat, value1: 'after' };
+  owner.conditionalFormats.push(structuredClone(previousFormat));
+
+  const formatResult = runtime.execute('sheet.cf.add', { sheetId: owner.id, rule: nextFormat });
+  assert.equal(formatResult.mutationCount, 2);
+  assert.equal(owner.conditionalFormats[0]?.value1, 'after');
+  runtime.undo();
+  assert.equal(owner.conditionalFormats[0]?.value1, 'before');
+  runtime.redo();
+  assert.equal(owner.conditionalFormats[0]?.value1, 'after');
+
+  const previousValidation = {
+    id: 'validation-1', sheetId: owner.id, ranges: [range], type: 'list' as const,
+    listSource: { kind: 'values' as const, values: ['before'] },
+  };
+  const nextValidation = { ...previousValidation, listSource: { kind: 'values' as const, values: ['after'] } };
+  owner.dataValidations.push(structuredClone(previousValidation));
+  const validationResult = runtime.execute('sheet.dv.add', { sheetId: owner.id, rule: nextValidation });
+  assert.equal(validationResult.mutationCount, 2);
+  assert.deepEqual(owner.dataValidations[0]?.listSource, { kind: 'values', values: ['after'] });
+  runtime.undo();
+  assert.deepEqual(owner.dataValidations[0]?.listSource, { kind: 'values', values: ['before'] });
+  runtime.redo();
+  assert.deepEqual(owner.dataValidations[0]?.listSource, { kind: 'values', values: ['after'] });
+});
+
+test('duplicate persisted rule identities reject clear and remove without partial writes', () => {
+  const workbook = new WorkbookModel('unit-duplicate-rule-identities', 'Duplicate Rule Identities');
+  const owner = workbook.getSheet(workbook.primarySheetId);
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const firstRange = { sheetId: owner.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 };
+  const secondRange = { sheetId: owner.id, startRow: 1, endRow: 1, startColumn: 0, endColumn: 0 };
+  owner.conditionalFormats.push(
+    { id: 'duplicate-cf', sheetId: owner.id, ranges: [firstRange], type: 'highlight' },
+    { id: 'duplicate-cf', sheetId: owner.id, ranges: [secondRange], type: 'highlight' },
+  );
+  owner.dataValidations.push(
+    { id: 'duplicate-dv', sheetId: owner.id, ranges: [firstRange], type: 'list', listSource: { kind: 'values', values: ['A'] } },
+    { id: 'duplicate-dv', sheetId: owner.id, ranges: [secondRange], type: 'list', listSource: { kind: 'values', values: ['B'] } },
+  );
+
+  assert.throws(() => runtime.execute('sheet.cf.clear', { sheetId: owner.id }), /identity is missing or duplicated/);
+  assert.equal(owner.conditionalFormats.length, 2);
+  assert.throws(() => runtime.execute('sheet.dv.remove', { sheetId: owner.id, ruleId: 'duplicate-dv' }), /identity is duplicated/);
+  assert.equal(owner.dataValidations.length, 2);
+});
+
 test('paste special preserves metadata categories that are not selected', () => {
   const workbook = new WorkbookModel('unit-paste-metadata-selection', 'Paste Metadata Selection');
   const runtime = new CommandRuntime(workbook);

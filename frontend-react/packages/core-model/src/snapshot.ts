@@ -17,6 +17,7 @@ import type { ReviewStoreSnapshot } from './review-store';
 import { isAnalysisViewDefinition, type AnalysisViewDefinition } from './data-model';
 import { DEFAULT_WORKBOOK_CALCULATION_SETTINGS, isWorkbookCalculationSettings, type WorkbookCalculationSettings, type WorkbookCollationContext } from '@react-sheets/formula-engine';
 import { assertCanonicalWorksheetName } from './worksheet-name';
+import { parseCellMatrixCoordinate } from './cell-coordinates';
 
 const HYPERLINK_EMAIL_ADDRESS = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const HYPERLINK_SHEET_ADDRESS = /^([A-Za-z]+)([1-9][0-9]*)$/;
@@ -456,8 +457,19 @@ export function assertCanonicalWorkbookSnapshot(snapshot: WorkbookSnapshot): Wor
       if (payload.kind === 'embedded-object' && !isEmbeddedObjectDrawingPayload(payload)) throw new Error('Drawing embedded-object payload is invalid');
       if (payload.kind === 'equation' && !isEquationDrawingPayload(payload)) throw new Error('Drawing equation payload is invalid');
     }
-    for (const row of Object.values(sheet.cells)) {
-      for (const cell of Object.values(row)) {
+    if (!sheet.cells || typeof sheet.cells !== 'object' || Array.isArray(sheet.cells)) {
+      throw new Error(`Workbook snapshot cells on ${sheet.id} are invalid`);
+    }
+    for (const [rowKey, columns] of Object.entries(sheet.cells)) {
+      parseCellMatrixCoordinate(rowKey, 'row', 'workbook snapshot');
+      if (!columns || typeof columns !== 'object' || Array.isArray(columns)) {
+        throw new Error(`Workbook snapshot cell row ${rowKey} on ${sheet.id} is invalid`);
+      }
+      for (const [columnKey, cell] of Object.entries(columns)) {
+        parseCellMatrixCoordinate(columnKey, 'column', 'workbook snapshot');
+        if (!cell || typeof cell !== 'object' || Array.isArray(cell)) {
+          throw new Error(`Workbook snapshot cell ${sheet.id}!${rowKey}:${columnKey} is invalid`);
+        }
         if ('note' in cell || 'comment' in cell) throw new Error(`Cell ${sheet.id} contains legacy review metadata`);
         if ('hyperlink' in cell || 'hyperlinkDetail' in cell) throw new Error(`Cell ${sheet.id} contains legacy hyperlink metadata`);
         if (cell.phonetic && !isCellPhoneticMetadata(cell.phonetic)) throw new Error(`Cell ${sheet.id} contains invalid phonetic metadata`);

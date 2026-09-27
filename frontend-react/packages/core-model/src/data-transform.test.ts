@@ -59,6 +59,86 @@ function pivotDefinition(id: string, targetSheetId: string, source: PivotModel['
 }
 
 describe('canonical row permutation metadata plan', () => {
+  it('rewrites cross-worksheet validation list sources and emits an invertible owner fact', () => {
+    const workbook = new WorkbookModel('permutation-cross-sheet-validation', 'Cross-sheet validation');
+    const source = workbook.getSheet('sheet-1');
+    const owner = workbook.addSheet('validation-owner', 'Validation Owner');
+    source.rowCount = 4;
+    source.columnCount = 1;
+    owner.dataValidations.push({
+      id: 'cross-sheet-list',
+      sheetId: owner.id,
+      ranges: [range(owner.id, 0, 0, 0, 0)],
+      type: 'list',
+      listSource: { kind: 'range', range: range(source.id, 0, 2, 0, 0) },
+    });
+
+    const forward = applyPermutation(workbook, range(source.id, 0, 3, 0, 0), [3, 0, 1, 2]);
+
+    assert.deepEqual(owner.dataValidations[0]?.listSource, {
+      kind: 'range', range: range(source.id, 1, 3, 0, 0),
+    });
+    assert.deepEqual(forward.rangeOwnerDeltas, [{
+      ownerKind: 'validation-list-source', sheetId: owner.id, ownerId: 'cross-sheet-list',
+      before: range(source.id, 0, 2, 0, 0), after: range(source.id, 1, 3, 0, 0),
+      beforeOwnerRanges: [range(owner.id, 0, 0, 0, 0)], afterOwnerRanges: [range(owner.id, 0, 0, 0, 0)],
+    }]);
+
+    const inverse = applyPermutation(workbook, range(source.id, 0, 3, 0, 0), [1, 2, 3, 0]);
+    assert.deepEqual(owner.dataValidations[0]?.listSource, {
+      kind: 'range', range: range(source.id, 0, 2, 0, 0),
+    });
+    assert.deepEqual(inverse.rangeOwnerDeltas[0]?.before, range(source.id, 1, 3, 0, 0));
+    assert.deepEqual(inverse.rangeOwnerDeltas[0]?.after, range(source.id, 0, 2, 0, 0));
+  });
+
+  it('records owner-range-only changes when sorting the validation rule worksheet', () => {
+    const workbook = new WorkbookModel('permutation-owner-range-validation', 'Validation owner range permutation');
+    const owner = workbook.getSheet('sheet-1');
+    const source = workbook.addSheet('validation-source', 'Validation Source');
+    owner.rowCount = 4;
+    owner.columnCount = 1;
+    const beforeOwnerRange = range(owner.id, 0, 0, 0, 0);
+    const afterOwnerRange = range(owner.id, 1, 1, 0, 0);
+    const externalSourceRange = range(source.id, 2, 3, 0, 0);
+    owner.dataValidations.push({
+      id: 'owner-range-only', sheetId: owner.id, ranges: [beforeOwnerRange], type: 'list',
+      listSource: { kind: 'range', range: externalSourceRange },
+    });
+
+    const result = applyPermutation(workbook, range(owner.id, 0, 3, 0, 0), [3, 0, 1, 2]);
+
+    assert.deepEqual(owner.dataValidations[0]?.ranges, [afterOwnerRange]);
+    assert.deepEqual(owner.dataValidations[0]?.listSource, { kind: 'range', range: externalSourceRange });
+    assert.deepEqual(result.rangeOwnerDeltas, [{
+      ownerKind: 'validation-list-source', sheetId: owner.id, ownerId: 'owner-range-only',
+      before: externalSourceRange, after: externalSourceRange,
+      beforeOwnerRanges: [beforeOwnerRange], afterOwnerRanges: [afterOwnerRange],
+    }]);
+  });
+
+  it('rejects a fragmented cross-worksheet validation source before sorting mutates either owner', () => {
+    const workbook = new WorkbookModel('permutation-fragmented-cross-sheet-validation', 'Fragmented cross-sheet validation');
+    const source = workbook.getSheet('sheet-1');
+    const owner = workbook.addSheet('validation-owner', 'Validation Owner');
+    source.rowCount = 4;
+    source.columnCount = 1;
+    owner.dataValidations.push({
+      id: 'fragmented-cross-sheet-list',
+      sheetId: owner.id,
+      ranges: [range(owner.id, 0, 0, 0, 0)],
+      type: 'list',
+      listSource: { kind: 'range', range: range(source.id, 0, 2, 0, 0) },
+    });
+    const before = workbook.snapshot();
+
+    assert.throws(
+      () => applyPermutation(workbook, range(source.id, 0, 3, 0, 0), [2, 0, 3, 1]),
+      /exactly remap data validation .* list source/,
+    );
+    assert.deepEqual(workbook.snapshot(), before);
+  });
+
   it('permutes report binding anchors and repeated header rows with their data rows', () => {
     const workbook = new WorkbookModel('permutation-report-sheet', 'Permutation report sheet');
     const sheet = workbook.getSheet('sheet-1');
@@ -379,6 +459,14 @@ describe('canonical row permutation metadata plan', () => {
         after: { formula: '=A2', sourceFormula: null, barcodeFormula: null },
       },
       {
+        kind: 'formula-rule-anchor',
+        sheetId: sheet.id,
+        ruleKind: 'conditional-format',
+        ruleId: 'cf-permuted',
+        beforeAddress: { sheetId: sheet.id, row: 0, column: 4 },
+        afterAddress: { sheetId: sheet.id, row: 1, column: 4 },
+      },
+      {
         kind: 'formula-rule',
         sheetId: sheet.id,
         ruleKind: 'conditional-format',
@@ -418,6 +506,35 @@ describe('canonical row permutation metadata plan', () => {
       beforeRanges: [range(sheet.id, 0, 0, 4, 4)],
       afterRanges: [range(sheet.id, 1, 1, 4, 4)],
     }]);
+  });
+
+  it('records non-formula rule range owners for a row permutation', () => {
+    const workbook = new WorkbookModel('permutation-range-rule-owners', 'Permutation range-rule owners');
+    const sheet = workbook.getSheet('sheet-1');
+    sheet.rowCount = 2;
+    sheet.columnCount = 1;
+    sheet.cells.set(0, 0, { value: 'first' });
+    sheet.cells.set(1, 0, { value: 'second' });
+    sheet.conditionalFormats.push({
+      id: 'cf-colors', sheetId: sheet.id, ranges: [range(sheet.id, 0, 0, 3, 3)], type: 'color-scale',
+    });
+    sheet.dataValidations.push({
+      id: 'dv-values', sheetId: sheet.id, ranges: [range(sheet.id, 0, 0, 4, 4)], type: 'list',
+      listSource: { kind: 'values', values: ['North', 'South'] },
+    });
+
+    const result = applyPermutation(workbook, range(sheet.id, 0, 1, 0, 0), [1, 0]);
+
+    assert.deepEqual(result.rangeOwnerDeltas, [
+      {
+        ownerKind: 'conditional-format', sheetId: sheet.id, ownerId: 'cf-colors',
+        before: [range(sheet.id, 0, 0, 3, 3)], after: [range(sheet.id, 1, 1, 3, 3)],
+      },
+      {
+        ownerKind: 'data-validation', sheetId: sheet.id, ownerId: 'dv-values',
+        before: [range(sheet.id, 0, 0, 4, 4)], after: [range(sheet.id, 1, 1, 4, 4)],
+      },
+    ]);
   });
 
   it('rebases rule, defined-name, and reusable-template formulas when their anchors move outside the sorted columns', () => {

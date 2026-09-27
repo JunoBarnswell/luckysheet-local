@@ -400,7 +400,8 @@ test('workbook cell templates apply style, editor and validation through one com
       dataValidation: { type: 'list', listSource: { kind: 'values', values: ['Open', 'Closed'] } },
     },
   });
-  runtime.execute('sheet.cellTemplate.apply', { sheetId: sheet.id, ranges: [range], templateId: 'status' });
+  const applied = runtime.execute('sheet.cellTemplate.apply', { sheetId: sheet.id, ranges: [range], templateId: 'status' });
+  assert.equal(applied.mutationCount, 3);
   assert.equal(sheet.cells.get(1, 1)?.style?.indent, 1);
   assert.equal(sheet.cells.get(1, 1)?.editor?.kind, 'validation-list');
   assert.deepEqual(sheet.dataValidations[0]?.listSource, { kind: 'values', values: ['Open', 'Closed'] });
