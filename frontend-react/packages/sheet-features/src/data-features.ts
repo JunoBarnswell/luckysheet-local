@@ -2034,6 +2034,9 @@ export function registerDataToolCommands(runtime: CommandRuntime): void {
       }
       const range = normalizeRangeRef(regionContext.range);
       const hasHeader = params.hasHeader ?? regionContext.header.kind === 'present';
+      if (regionContext.owner.kind === 'sheet-table' && hasHeader !== (regionContext.header.kind === 'present')) {
+        throw new Error('Sort header flag does not match Sheet Table metadata');
+      }
       assertNoDataRegionIntersection(sheet, range, 'Sort');
       if (params.criteria.length === 0) return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
       const sourceRows = sortedSourceRows(sheet, { ...params, range, hasHeader }, context.resolveCellValue);

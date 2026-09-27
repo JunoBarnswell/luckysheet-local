@@ -401,6 +401,7 @@ export function EditorShell({
         session={session}
         locale={locale}
         sortColumns={controller.sortColumns}
+        sortHeaderOptions={controller.sortHeaderOptions}
         formatCellsInitial={formatCellsInitial}
         pivotSourceOptions={controller.pivotSourceOptions}
         createPivotFromDialog={controller.createPivotFromDialog}

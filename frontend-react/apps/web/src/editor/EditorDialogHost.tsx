@@ -30,6 +30,7 @@ export interface EditorDialogHostProps {
   session: WorkbookSession;
   locale: Locale;
   sortColumns: UiSnapshot["selectedSheet"]["columns"];
+  sortHeaderOptions: ReturnType<WorkbookSession["getSortHeaderOptions"]> | undefined;
   formatCellsInitial: { numberFormat: string; style: UiSnapshot["homeRibbon"]["style"]; mixedFontFamily?: boolean };
   pivotSourceOptions: EditorCommandController["pivotSourceOptions"];
   createPivotFromDialog: EditorCommandController["createPivotFromDialog"];
@@ -43,6 +44,7 @@ export function EditorDialogHost({
   session,
   locale,
   sortColumns,
+  sortHeaderOptions,
   formatCellsInitial,
   pivotSourceOptions,
   createPivotFromDialog,
@@ -82,6 +84,8 @@ export function EditorDialogHost({
       <SortDialog
         open={state.dialogs.active === 'sort-dialog'}
         columns={sortColumns}
+        initialHasHeader={sortHeaderOptions?.hasHeader ?? false}
+        headerFixed={sortHeaderOptions?.fixed ?? false}
         locale={locale}
         onClose={session.closeSortDialog.bind(session)}
         onSort={(criteria, hasHeader) => session.sortRange(criteria, hasHeader)}

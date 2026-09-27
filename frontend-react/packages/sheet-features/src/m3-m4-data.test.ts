@@ -18,6 +18,7 @@ import {
   validateDataInput,
 } from './index';
 import { compareSortValues, resolveSortCellValue } from './data-features';
+import { resolveDataRegionContext } from './data-region-context';
 
 function runtime(): { workbook: WorkbookModel; commands: CommandRuntime } {
   const workbook = new WorkbookModel('m3-m4', 'M3/M4');
@@ -87,6 +88,43 @@ test('sorting uses resolved formula results, keeps stable ties, and replays/undo
   assert.equal(sheet.cells.get(1, 1)?.value, 'second');
   assert.equal(sheet.cells.get(3, 1)?.value, 'first');
   assert.equal(sheet.cells.get(3, 0)?.formula, '=B4+10');
+});
+
+test('worksheet sorting honors an explicit header override while Sheet Table headers stay fixed', () => {
+  const { workbook, commands } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  const range = { sheetId: sheet.id, startRow: 0, endRow: 2, startColumn: 0, endColumn: 0 };
+  sheet.cells.set(0, 0, { value: 'Z' });
+  sheet.cells.set(1, 0, { value: 'A' });
+  sheet.cells.set(2, 0, { value: 'B' });
+  const worksheetContext = resolveDataRegionContext(workbook, { selection: range, activeRow: 0, activeColumn: 0 });
+  assert.equal(worksheetContext.header.kind, 'present');
+  commands.execute('data.sort.rows', {
+    sheetId: sheet.id, range, criteria: [{ column: 0, ascending: true }], hasHeader: false,
+    dataRegionContext: worksheetContext,
+  });
+  assert.deepEqual([0, 1, 2].map((row) => sheet.cells.get(row, 0)?.value), ['A', 'B', 'Z']);
+
+  const { workbook: tableWorkbook, commands: tableCommands } = runtime();
+  const tableSheet = tableWorkbook.getSheet(tableWorkbook.primarySheetId);
+  tableSheet.cells.set(0, 0, { value: 'Z' });
+  tableSheet.cells.set(1, 0, { value: 'A' });
+  tableSheet.cells.set(2, 0, { value: 'B' });
+  const tableRange = { ...range, sheetId: tableSheet.id };
+  tableCommands.execute('sheetTable.add', {
+    id: 'table-sort-header', sheetId: tableSheet.id, name: 'SortHeader', range: tableRange,
+    hasHeaderRow: true, hasTotalRow: false, showBandedRows: false, showBandedColumns: false,
+    showFirstColumn: false, showLastColumn: false, showFilterButton: true, autoExpand: 'both',
+    columns: [{ id: 'value', name: 'Value' }],
+  });
+  const tableContext = resolveDataRegionContext(tableWorkbook, { selection: tableRange, activeRow: 0, activeColumn: 0 });
+  assert.equal(tableContext.owner.kind, 'sheet-table');
+  const before = [0, 1, 2].map((row) => tableSheet.cells.get(row, 0)?.value);
+  assert.throws(() => tableCommands.execute('data.sort.rows', {
+    sheetId: tableSheet.id, range: tableRange, criteria: [{ column: 0, ascending: true }], hasHeader: false,
+    dataRegionContext: tableContext,
+  }), /Sheet Table metadata/);
+  assert.deepEqual([0, 1, 2].map((row) => tableSheet.cells.get(row, 0)?.value), before);
 });
 
 test('sort keys retain canonical typed formula results and reject unresolved values', () => {

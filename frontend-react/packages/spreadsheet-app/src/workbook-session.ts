@@ -2592,6 +2592,14 @@ export class WorkbookSession {
     });
   }
 
+  getSortHeaderOptions(context: DataRegionContext): { hasHeader: boolean; fixed: boolean } {
+    const fixed = context.owner.kind === 'sheet-table';
+    return {
+      hasHeader: fixed ? context.header.kind === 'present' : this.inferSortHeader(normalizeRangeRef(context.range)),
+      fixed,
+    };
+  }
+
   async storeDataBlock(ref: DataBlockRef, bytes: ArrayBuffer): Promise<void> {
     await this.runtime.dataBlocks.put(ref, bytes);
     this.notify(`Stored data block ${ref.id}`);
@@ -7424,7 +7432,8 @@ export class WorkbookSession {
 
   sortRange(criteria: Array<{ colIdx: number; ascending: boolean }>, hasHeader?: boolean): void {
     if (criteria.length === 0) return;
-    const range = normalizeRangeRef(this.getCurrentRegion());
+    const context = this.getDataRegionContext();
+    const range = normalizeRangeRef(context.range);
     if (range.endRow <= range.startRow) {
       this.notify('Select a data region with at least one data row before sorting');
       return;
@@ -7437,12 +7446,21 @@ export class WorkbookSession {
       }
       return { column, ascending: criterion.ascending };
     });
-    const detectedHeader = this.inferSortHeader(range);
+    const headerOptions = {
+      hasHeader: context.owner.kind === 'sheet-table'
+        ? context.header.kind === 'present'
+        : this.inferSortHeader(range),
+      fixed: context.owner.kind === 'sheet-table',
+    };
+    const resolvedHeader = hasHeader ?? headerOptions.hasHeader;
+    if (headerOptions.fixed && resolvedHeader !== headerOptions.hasHeader) {
+      throw new Error('Sort header flag does not match Sheet Table metadata');
+    }
     this.dispatch({ commandId: 'sheet.sort.multi', params: {
       sheetId: this.activeSheetId,
       range,
       criteria: normalizedCriteria,
-      hasHeader: hasHeader ?? detectedHeader,
+      hasHeader: resolvedHeader,
     } });
   }
 

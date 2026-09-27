@@ -32,8 +32,14 @@ public final class DataRegionContextValidator {
         validateOwnerAndHeader(root, sheetId, context, contextRange);
         JsonNode hasHeader = params.get("hasHeader");
         JsonNode header = context.get("header");
-        if (hasHeader != null && (!hasHeader.isBoolean() || hasHeader.asBoolean() != "present".equals(header.path("kind").asText()))) {
-            throw ServiceException.validation("Sort header flag does not match DataRegionContext");
+        if (hasHeader != null && !hasHeader.isBoolean()) {
+            throw ServiceException.validation("Sort header flag must be a boolean");
+        }
+        ObjectNode owner = (ObjectNode) context.get("owner");
+        // Worksheet detection is advisory; a Sheet Table header is canonical metadata.
+        if (hasHeader != null && "sheet-table".equals(owner.path("kind").asText())
+                && hasHeader.asBoolean() != "present".equals(header.path("kind").asText())) {
+            throw ServiceException.validation("Sort header flag does not match Sheet Table metadata");
         }
     }
 

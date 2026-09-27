@@ -1930,3 +1930,11 @@ head `6d23407f` 的自动 Maven 门禁报告 12 个测试条目（4 failures、8
 新增源码回归覆盖 resolver 覆盖持久值、deferred read 不推进 CellMatrix revision、两键升降序及每行每键只解析一次。六轮静态自审分别核对：①稳定多轮排序与字典序等价；②降序只反转非零比较结果，原始顺序继续承担最终稳定 tie-break；③公式 resolver 的 `undefined` 才回退到持久状态，合法 `null`、零和错误值保持既有语义；④延迟读取路径不触发单格 materialization；⑤暂存内存为行序与单一键向量 O(R)，不随 K 形成矩阵；⑥`sourceRows`、逆排列/history/remote mutation wire shape 未变。
 
 本 follow-up 只修复上述两个性能根因，未达到“每轮至少 30 个真实问题”的广域审查规模，不将一次比较中的重复调用拆分计数。最重要的架构缺口仍在：客户端 `data.sort.rows` 仍计算并发送 `sourceRows`，Java 只校验排列和执行；`StructuralPatch v9` 仍不是 cell/metadata owner-complete patch，remote replay 仍可重算 intent。只静态审查并新增测试源码；没有运行本地测试、typecheck、build、浏览器、Excel 或性能实测。
+
+### 2026-09-27 worksheet sort header choice follow-up
+
+沿排序对话框 → `WorkbookSession.sortRange` → `data.sort.rows` → `rows.permuted` → Java `DataRegionContextValidator` 追踪确认一个契约缺陷：worksheet 的首行 header inference 是提示，但后端把客户端显式选择强制等同于 inference；而 UI 每次打开又固定取消勾选，导致检测到标题的普通区域无法按默认行为排序，也无法通过用户覆盖纠正。现让 worksheet 使用 UI 显示的默认推断且允许明确覆盖；Sheet Table 则由 `hasHeaderRow` 元数据固定，并在 UI、session、command 与 Java 边界拒绝冲突。添加 TS 成功/拒绝路径和 Java worksheet 双向覆盖 / Sheet Table 拒绝用例。设计依据：[Microsoft Support：Sort data in a range or table in Excel](https://support.microsoft.com/en-us/excel/sort-data-in-a-range-or-table-in-excel) 明确普通范围可勾选或清除 “My data has headers”，表格则通过其 header/filter 控件排序。
+
+六轮静态复核分别核对：① dialog 每次打开和活动区域变化时的默认值重置；② session 的范围、准则列界限和 worksheet/Table header 来源；③ command planner 在写入前拒绝 Table 冲突且不把 worksheet inference 当强制约束；④ row-permutation mutation 对 hasHeader、完整上下文和 undo/redo 参数的传递；⑤ Java 校验 owner 后，仅对 canonical Table header 执行相等性验证并拒绝非 boolean；⑥新增回归源码覆盖双向 worksheet override、Table 拒绝和拒绝前数据不变。
+
+本 follow-up 只确认并修复 **1 个根因**，没有达到用户要求的每轮至少 30 个真实问题，不用 UI、TS、Java 三处同一契约缺陷重复计数。只做静态检查并新增测试源码；按当前要求未运行本地测试、typecheck、build、浏览器、Excel 或 benchmark。服务端排序规划权、owner-complete StructuralPatch、完整互操作及性能实测仍未完成。
