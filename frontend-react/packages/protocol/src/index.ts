@@ -91,7 +91,7 @@ export interface OperationIntent {
 
 /** Server-derived reference-owner effects for one committed structural mutation. */
 export interface StructuralPatch {
-  version: 5;
+  version: 6;
   mutationId: string;
   formulaOwnerDeltas: StructuralFormulaOwnerDelta[];
   definedNameOwnerDeltas: StructuralDefinedNameOwnerDelta[];
@@ -1021,7 +1021,7 @@ export function validateDataSourceMutationParams(
 export function validateStructuralPatch(value: unknown, mutationId: string): StructuralPatch {
   const patch = requireRecord(value, 'Committed structural patch');
   validateExactKeys(patch, ['version', 'mutationId', 'formulaOwnerDeltas', 'definedNameOwnerDeltas', 'rangeOwnerDeltas'], 'Committed structural patch');
-  if (patch.version !== 5 || patch.mutationId !== mutationId || !Array.isArray(patch.formulaOwnerDeltas)
+  if (patch.version !== 6 || patch.mutationId !== mutationId || !Array.isArray(patch.formulaOwnerDeltas)
     || !Array.isArray(patch.definedNameOwnerDeltas) || !Array.isArray(patch.rangeOwnerDeltas)) {
     throw new Error('Committed structural patch header is invalid');
   }
@@ -1141,7 +1141,6 @@ export function validateStructuralPatch(value: unknown, mutationId: string): Str
         || (delta.ruleKind === 'conditional-format' && !['value1', 'value2'].includes(String(delta.field)))
         || (delta.ruleKind === 'data-validation' && ['value1', 'value2'].includes(String(delta.field)))
         || typeof delta.beforeFormula !== 'string' || typeof delta.afterFormula !== 'string'
-        || delta.beforeFormula === delta.afterFormula
         || !Array.isArray(delta.beforeRanges) || !Array.isArray(delta.afterRanges)
         || delta.beforeRanges.length === 0 || delta.afterRanges.length === 0) {
         throw new Error(`${label} formula-rule owner is invalid`);
@@ -1151,6 +1150,10 @@ export function validateStructuralPatch(value: unknown, mutationId: string): Str
       if ([...beforeRanges, ...afterRanges].some((item) => item.sheetId !== delta.sheetId
         || item.endRow > 1_048_575 || item.endColumn > 16_383)) {
         throw new Error(`${label} formula-rule ranges do not belong to the rule worksheet or exceed worksheet bounds`);
+      }
+      if (delta.beforeFormula === delta.afterFormula
+        && JSON.stringify(beforeRanges) === JSON.stringify(afterRanges)) {
+        throw new Error(`${label} formula-rule owner state is unchanged`);
       }
       return {
         kind: 'formula-rule' as const,
@@ -1307,7 +1310,7 @@ export function validateStructuralPatch(value: unknown, mutationId: string): Str
     if (rangeOwnerKeys.has(key)) throw new Error('Committed structural patch contains duplicate range-owner deltas');
     rangeOwnerKeys.add(key);
   }
-  return { version: 5, mutationId, formulaOwnerDeltas, definedNameOwnerDeltas, rangeOwnerDeltas };
+  return { version: 6, mutationId, formulaOwnerDeltas, definedNameOwnerDeltas, rangeOwnerDeltas };
 }
 
 /** Validate the shared dashboard state before it enters a recovery journal. */

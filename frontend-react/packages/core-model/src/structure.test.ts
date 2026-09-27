@@ -244,6 +244,37 @@ describe('structural operations', () => {
     ]);
   });
 
+  it('records formula-rule range changes even when the rule formula is unchanged', () => {
+    const workbook = new WorkbookModel('unit-rule-range-only-structure', 'Rule range-only structure');
+    const sheet = workbook.getSheet('sheet-1');
+    sheet.conditionalFormats.push({
+      id: 'cf-range-only', sheetId: sheet.id,
+      ranges: [{ sheetId: sheet.id, startRow: 5, endRow: 7, startColumn: 0, endColumn: 2 }],
+      type: 'highlight', operator: 'formula', value1: '=TRUE',
+    });
+    sheet.dataValidations.push({
+      id: 'dv-range-only', sheetId: sheet.id,
+      ranges: [{ sheetId: sheet.id, startRow: 5, endRow: 7, startColumn: 3, endColumn: 3 }],
+      type: 'custom', formula1: '=TRUE',
+    });
+
+    const result = StructuralTransform.apply(workbook, { kind: 'insert-rows', sheetId: sheet.id, at: 2, count: 1 });
+    const deltas = result.formulaOwnerDeltas?.filter((delta) => delta.kind === 'formula-rule');
+
+    assert.equal(sheet.conditionalFormats[0]?.value1, '=TRUE');
+    assert.equal(sheet.dataValidations[0]?.formula1, '=TRUE');
+    assert.deepEqual(deltas?.map((delta) => delta.kind === 'formula-rule'
+      ? [delta.ruleId, delta.beforeFormula, delta.afterFormula, delta.beforeRanges, delta.afterRanges]
+      : []), [
+      ['cf-range-only', '=TRUE', '=TRUE',
+        [{ sheetId: sheet.id, startRow: 5, endRow: 7, startColumn: 0, endColumn: 2 }],
+        [{ sheetId: sheet.id, startRow: 6, endRow: 8, startColumn: 0, endColumn: 2 }]],
+      ['dv-range-only', '=TRUE', '=TRUE',
+        [{ sheetId: sheet.id, startRow: 5, endRow: 7, startColumn: 3, endColumn: 3 }],
+        [{ sheetId: sheet.id, startRow: 6, endRow: 8, startColumn: 3, endColumn: 3 }]],
+    ]);
+  });
+
   it('cell-shift rewrites rule formulas referencing cells moved beyond the selected range', () => {
     const workbook = new WorkbookModel('unit-rule-formula-cell-shift', 'Rule Formula Cell Shift');
     const sheet = workbook.getSheet('sheet-1');

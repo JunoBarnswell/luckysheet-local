@@ -392,6 +392,34 @@ describe('canonical row permutation metadata plan', () => {
     ]);
   });
 
+  it('records formula-rule applies-to changes when a row permutation leaves the formula unchanged', () => {
+    const workbook = new WorkbookModel('permutation-range-only-owner-delta', 'Permutation range-only owner delta');
+    const sheet = workbook.getSheet('sheet-1');
+    sheet.rowCount = 2;
+    sheet.columnCount = 1;
+    sheet.cells.set(0, 0, { value: 'first' });
+    sheet.cells.set(1, 0, { value: 'second' });
+    sheet.conditionalFormats.push({
+      id: 'cf-range-only', sheetId: sheet.id,
+      ranges: [range(sheet.id, 0, 0, 4, 4)],
+      type: 'highlight', operator: 'formula', value1: '=TRUE',
+    });
+
+    const changes = applyPermutation(workbook, range(sheet.id, 0, 1, 0, 0), [1, 0]);
+
+    assert.deepEqual(changes.formulaOwnerDeltas, [{
+      kind: 'formula-rule',
+      sheetId: sheet.id,
+      ruleKind: 'conditional-format',
+      ruleId: 'cf-range-only',
+      field: 'value1',
+      beforeFormula: '=TRUE',
+      afterFormula: '=TRUE',
+      beforeRanges: [range(sheet.id, 0, 0, 4, 4)],
+      afterRanges: [range(sheet.id, 1, 1, 4, 4)],
+    }]);
+  });
+
   it('rebases rule, defined-name, and reusable-template formulas when their anchors move outside the sorted columns', () => {
     const workbook = new WorkbookModel('permutation-workbook-owners', 'Permutation workbook owners');
     const sheet = workbook.getSheet('sheet-1');

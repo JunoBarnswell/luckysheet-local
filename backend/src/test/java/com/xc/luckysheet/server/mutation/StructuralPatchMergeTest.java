@@ -15,6 +15,22 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class StructuralPatchMergeTest {
     @Test
+    void formulaRuleOwnerCanRepresentRangeOnlyChangesButRejectsAnEmptyDelta() {
+        RangeRef before = range("sheet-1", 1, 3, 0, 2);
+        RangeRef after = range("sheet-1", 2, 4, 0, 2);
+
+        StructuralPatch.FormulaOwnerDelta rangeOnly = StructuralPatch.FormulaOwnerDelta.formulaRule(
+                "sheet-1", "conditional-format", "cf-1", "value1", "=TRUE", "=TRUE",
+                List.of(before), List.of(after));
+
+        assertEquals(before, rangeOnly.inverse().afterRanges().getFirst());
+        assertEquals(after, rangeOnly.inverse().beforeRanges().getFirst());
+        assertThrows(IllegalArgumentException.class, () -> StructuralPatch.FormulaOwnerDelta.formulaRule(
+                "sheet-1", "conditional-format", "cf-1", "value1", "=TRUE", "=TRUE",
+                List.of(before), List.of(before)));
+    }
+
+    @Test
     void mergeDeduplicatesEveryCanonicalOwnerKindAndPreservesOrder() {
         StructuralPatch.FormulaOwnerDelta cell = cellDelta("sheet-1", 0, 0, "=A1", "=A2");
         StructuralPatch.FormulaOwnerDelta rule = StructuralPatch.FormulaOwnerDelta.formulaRule(

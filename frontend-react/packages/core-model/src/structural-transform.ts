@@ -974,7 +974,7 @@ function planCellShiftMetadata(
       'cell-shift',
     );
   }
-  const formulaRuleDeltas = stageMetadataFormulaRules(stagedSheets, formulaRewrite);
+  const formulaRuleDeltas = stageMetadataFormulaRules(workbook, stagedSheets, formulaRewrite);
   return collectStructuralMetadataPlan(workbook, sheet.id, stagedSheets, [], printDocument, formulaRuleDeltas);
 }
 
@@ -1038,7 +1038,7 @@ function planAxisMetadata(
   const currentPrintDocument = workbook.printDocuments.get(sheet.id);
   const printDocument = currentPrintDocument ? structuredClone(currentPrintDocument) : undefined;
   if (printDocument) shiftPrintDocumentAxis(printDocument, staged.id, axis, at, count, direction);
-  const formulaRuleDeltas = stageMetadataFormulaRules(stagedSheets, formulaRewrite);
+  const formulaRuleDeltas = stageMetadataFormulaRules(workbook, stagedSheets, formulaRewrite);
   return collectStructuralMetadataPlan(workbook, sheet.id, stagedSheets, rangeOwners, printDocument, formulaRuleDeltas);
 }
 
@@ -2663,12 +2663,12 @@ interface FormulaRewriteApplication {
 
 /** Combine geometry and formula fields on detached rules before collecting metadata writes. */
 function stageMetadataFormulaRules(
+  workbook: WorkbookModel,
   stagedSheets: readonly WorksheetModel[],
   plan: FormulaRewritePlan,
 ): StructuralFormulaRuleOwnerDelta[] {
-  if (plan.formulaRules.length === 0) return [];
   const sheets = new Map(stagedSheets.map((sheet) => [sheet.id, sheet]));
-  return plan.formulaRules.map((change): StructuralFormulaRuleOwnerDelta => {
+  for (const change of plan.formulaRules) {
     const sheet = sheets.get(change.owner.sheetId);
     if (!sheet) throw new Error(`STRUCTURAL_PATCH_INVARIANT: formula-rule worksheet ${change.owner.sheetId} is missing from metadata planning`);
     const rules = change.owner.ruleKind === 'conditional-format'
@@ -2684,18 +2684,66 @@ function stageMetadataFormulaRules(
     if (!writeStructuralFormulaRule(rule, change.owner.field, change.afterFormula)) {
       throw new Error(`STRUCTURAL_PATCH_INVARIANT: formula rule ${sheet.id}:${change.owner.ruleId}.${change.owner.field} is not writable during metadata planning`);
     }
-    return {
-      kind: 'formula-rule',
-      sheetId: sheet.id,
-      ruleKind: change.owner.ruleKind,
-      ruleId: change.owner.ruleId,
-      field: change.owner.field as StructuralFormulaRuleField,
-      beforeFormula: change.beforeFormula,
-      afterFormula: change.afterFormula,
-      beforeRanges: change.beforeRanges,
-      afterRanges: structuredClone(rule.ranges),
-    };
-  });
+  }
+  const deltas: StructuralFormulaRuleOwnerDelta[] = [];
+  for (const beforeSheet of workbook.getSheets()) {
+    const afterSheet = sheets.get(beforeSheet.id);
+    if (!afterSheet) throw new Error(`STRUCTURAL_PATCH_INVARIANT: formula-rule worksheet ${beforeSheet.id} is missing from metadata planning`);
+    for (const [ruleKind, beforeRules, afterRules] of [
+      ['conditional-format', beforeSheet.conditionalFormats, afterSheet.conditionalFormats],
+      ['data-validation', beforeSheet.dataValidations, afterSheet.dataValidations],
+    ] as const) {
+      const formulaRules = beforeRules.flatMap((rule) => {
+        const formulas = structuralRuleFormulaFields(rule);
+        return formulas.size > 0 ? [{ rule, formulas }] : [];
+      });
+      const beforeIdCounts = new Map<string, number>();
+      const formulaRuleIds = new Set<string>();
+      for (const { rule } of formulaRules) {
+        beforeIdCounts.set(rule.id, (beforeIdCounts.get(rule.id) ?? 0) + 1);
+        formulaRuleIds.add(rule.id);
+      }
+      const afterById = new Map<string, StructuralFormulaRule | null>();
+      for (const rule of afterRules) {
+        if (!formulaRuleIds.has(rule.id)) continue;
+        afterById.set(rule.id, afterById.has(rule.id) ? null : rule);
+      }
+      for (const { rule: beforeRule, formulas: beforeFormulas } of formulaRules) {
+        const afterRule = afterById.get(beforeRule.id);
+        if (!beforeRule.id.trim() || beforeIdCounts.get(beforeRule.id) !== 1 || beforeRule.sheetId !== beforeSheet.id
+          || !afterRule || afterRule.sheetId !== beforeSheet.id) {
+          throw new Error(`STRUCTURAL_PATCH_INVARIANT: formula rule ${beforeSheet.id}:${beforeRule.id} disappeared during metadata planning`);
+        }
+        const afterFormulas = structuralRuleFormulaFields(afterRule);
+        if (beforeFormulas.size !== afterFormulas.size) {
+          throw new Error(`STRUCTURAL_PATCH_INVARIANT: formula rule ${beforeSheet.id}:${beforeRule.id} changed owner fields during metadata planning`);
+        }
+        const rangesChanged = JSON.stringify(beforeRule.ranges) !== JSON.stringify(afterRule.ranges);
+        for (const [field, beforeFormula] of beforeFormulas) {
+          const afterFormula = afterFormulas.get(field);
+          if (afterFormula === undefined) {
+            throw new Error(`STRUCTURAL_PATCH_INVARIANT: formula rule ${beforeSheet.id}:${beforeRule.id}.${field} disappeared during metadata planning`);
+          }
+          if (beforeFormula === afterFormula && !rangesChanged) continue;
+          if (beforeRule.ranges.length === 0 || afterRule.ranges.length === 0) {
+            throw new Error(`STRUCTURAL_PATCH_INVARIANT: formula rule ${beforeSheet.id}:${beforeRule.id} has no range after metadata planning`);
+          }
+          deltas.push({
+            kind: 'formula-rule',
+            sheetId: beforeSheet.id,
+            ruleKind,
+            ruleId: beforeRule.id,
+            field,
+            beforeFormula,
+            afterFormula,
+            beforeRanges: structuredClone(beforeRule.ranges),
+            afterRanges: structuredClone(afterRule.ranges),
+          });
+        }
+      }
+    }
+  }
+  return deltas;
 }
 
 function applyFormulaRewritePlan(

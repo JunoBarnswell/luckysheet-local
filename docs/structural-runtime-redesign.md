@@ -1520,7 +1520,7 @@ Six non-overlapping static review passes confirmed two independent performance r
 3. **执行者**：Sheet Features/Editing 的本地 `mutation.apply` 仍调用 `StructuralTransform.apply`，在客户端 live Workbook 上变换 cells 和引用 owner。
 4. **出站顺序**：`attachCoreListeners` 的 `onMutation` 在 mutation handler 成功后采集原 mutation params；`onCommand` 完成后才将 batch 交给 collaboration transport。
 5. **服务端职责**：transport 再调用 commit API；`WorkbookOperationService` 在服务端重新 prepare/apply 相同操作并派生 StructuralPatch。Java 当前是提交端 reducer/校验者，不是客户端改动前的唯一 planner。
-6. **回传能力**：StructuralPatch v5 仅有 formula/name/range-owner deltas；ACK consumer 也只消费这些 owner facts。cell relocation 与其余 metadata 由 remote mutation handlers 再次执行 TS reducer 得出，因此不能删除客户端第二套结构算法。
+6. **回传能力**：StructuralPatch v6 仍只有 formula/name/range-owner deltas；ACK consumer 也只消费这些 owner facts。cell relocation 与其余 metadata 由 remote mutation handlers 再次执行 TS reducer 得出，因此不能删除客户端第二套结构算法。
 
 这是 **1 个架构根因**：服务端在线 gate 被误当成服务端权威规划，实际上仍是 TS 先变更、Java 后重算并回传部分引用事实。不能只删本地 transform 或将该 gate 改为 async：当前 patch 没有 cells/metadata 的完整可逆写集，客户端也没有 server-first 原子提交边界。实现必须先选定 revision-bound 的 intent→Java plan/commit→complete patch→TS apply 合约，再按单一 mutation vertical slice 同时贯通 server、ACK、remote replay、undo/redo、calc/projection 与 persistence；每个操作最终迁移后才能移除旧 TS planner。该静态追踪不把六个调用环节拆成六个问题，也不表示架构已修复。
 
@@ -1717,11 +1717,18 @@ CI 随后暴露 Java 侧另一个阻断该拒绝路径的解析缺陷：3D 预�
 3. **事实采集面**：Java `captureRangeOwnerSnapshots` 以及 TS `StructuralRangeOwnerDelta` 目前只建模 `data-region`、`workbook-table`、`data-source`、`sheet-table`。其它上述持久字段虽被两侧写入，却没有进入可逆 owner patch。
 4. **协议与校验面**：`StructuralPatch` / frontend `validateStructuralPatch` 固定版本 5，并只接受上述四类范围 owner；范围影响提取和 ACK 的精确对比只能覆盖 patch 中实际存在的事实，因此无法检测未表达的嵌套引用发生 TS/Java 分歧。
 5. **历史/回放面**：Java `StructuralPatchV2Migration` 能从校验过的 checkpoint 连续重放并重写 operation log/outbox；但现有 v5 分支会严格比较旧 patch 与当前派生 patch。新增 owner 事实必须显式升到新协议版本并迁移历史，不能在 v5 上静默扩展或让 runtime 接受双格式。
+
 6. **性能/身份面**：一次性深拷贝整个 payload/worksheet 来补 patch 会放大高 owner 数工作簿的临时内存；按数组下标标识 chart/pivot 子引用又会使后续重排后历史 patch 指向不稳定对象。实现需使用 owner-kind 专属稳定身份，在 mapper 修改点收集受影响 before/after，不能以全量 JSON diff 或猜字段名代替。
 
 **修复方案**：在同一 PR 中完成 StructuralPatch v6 的 typed metadata/reference owner facts；逐 owner-kind 定义稳定 key 与精确状态（含缺失/存在），首批覆盖 axis insert/delete、cell shift、move-range 和 row permutation 会实际改动的 chart/pivot/sparkline/drawing、filter/layout、anchor 与其它持久坐标所有者。Java 各 mapper 在首次写入前记录 owner before-state、完成映射后生成 after-state；同一 patch 驱动 Java replay/inverse、TS ACK/history/remote application 和影响范围。chart series、pivot source 等没有稳定子 owner ID 的 canonical 输入必须在结构写入前 fail-close，或在显式迁移中赋予持久 ID，不能退回数组位置猜测。v6 migration 必须校验 checkpoint checksum 与连续 revision，重放旧 intent、核验 v5 owner facts，再原子重写 operation log、pending outbox 与 canonical checkpoints；任一历史无法重放就返回 workbook/revision 并停止，不伪造 owner facts。
 
 本轮没有把同一缺失 patch 根因按图表字段、owner 类型或 mutation 数量凑成 30 项；因此**尚未达到用户要求的每轮至少 30 个真实问题**，不能宣称该批审查或整改完成。六个视角已确认的是一个跨层架构缺口，而不是六个不同缺陷。当前仅完成源码静态核查与方案收敛，未运行测试、构建、浏览器或 Excel；下一步实施 v6 owner-complete patch/migration，再做静态自审和最终实测。
+
+### 后续代码增量 — StructuralPatch v6 公式规则范围-only owner facts
+
+静态审查确认，axis 插入/删除、cell-shift 和行置换会改变 conditional-format / data-validation 的 `ranges`，但此前只在规则公式文本同时变化时才输出 `formula-rule` delta。因此公式保持不变的规则，其 applies-to 几何既无法在 ACK 中核对，也不会成为历史 patch 的可逆 owner fact。修复在 v6 中允许 `beforeFormula === afterFormula`，但仅当 `beforeRanges !== afterRanges`；TS/Java 规划器、协议校验、逆向 patch 和历史重放使用同一字段承载该变化。无公式字段的规则几何及 `listSource.range` 仍未由此切片覆盖。
+
+Repeatable history migration 将旧 v1-v5 patch 先投影回旧 formula-owner 语义，再校验原 impact 和 owner 数据，然后写入 v6；已有 v6 记录要求与 replay 派生值完全相等。新增回归用例覆盖 CF/DV 范围变化而公式不变、行置换范围变化而公式不变、拒绝空 owner delta，以及 v5 历史升级路径。遵循当前轮约束，这些用例尚未执行；测试、构建、浏览器和真实 Excel 互操作仍未验收。当前仍是有限 owner 切片，不表示 Java 已成为唯一规划器或完成 v6 owner 集合。`formulaAnchor` 单独变化、没有公式字段的规则、`listSource.range` 以及其它结构 owner 仍需在完整 v6 patch 中显式建模。该历史迁移会重写已保存的 operation/outbox；回滚应用前必须恢复迁移前数据库备份，不存在自动反向迁移。
 
 ### 2026-09-27 six-view review — block-backed sort memory amplification
 

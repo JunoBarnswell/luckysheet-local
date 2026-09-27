@@ -2712,7 +2712,7 @@ final class StructuralSnapshotReducer {
                     throw ServiceException.conflict("STRUCTURAL_PATCH_INVARIANT: formula rule owner disappeared: "
                             + snapshot.sheetId() + ":" + snapshot.ruleId() + "." + before.getKey());
                 }
-                if (!before.getValue().equals(after)) {
+                if (!before.getValue().equals(after) || !snapshot.ranges().equals(afterRanges)) {
                     formulaOwnerDeltas.add(StructuralPatch.FormulaOwnerDelta.formulaRule(
                             snapshot.sheetId(), snapshot.ruleKind(), snapshot.ruleId(), before.getKey(),
                             before.getValue(), after, snapshot.ranges(), afterRanges));

@@ -67,6 +67,27 @@ class StructuralPatchV2MigrationTest {
     }
 
     @Test
+    void upgradesV5HistoryWithoutRangeOnlyFormulaRuleFacts() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        RangeRef before = new RangeRef("sheet-1", 1, 3, 0, 2);
+        RangeRef after = new RangeRef("sheet-1", 2, 4, 0, 2);
+        StructuralPatch currentPatch = new StructuralPatch(StructuralPatch.VERSION, "rows.inserted",
+                List.of(StructuralPatch.FormulaOwnerDelta.formulaRule("sheet-1", "conditional-format",
+                        "rule-1", "value1", "=A1", "=A1", List.of(before), List.of(after))),
+                List.of(), List.of());
+        ObjectNode envelope = rawEnvelope(5, currentPatch, List.of());
+        ((ObjectNode) envelope.path("mutations").get(0).path("structuralPatch"))
+                .set("formulaOwnerDeltas", mapper.createArrayNode());
+
+        new V4__TestMigration().rewriteMutationPatches(envelope, operation(),
+                List.of(Optional.of(currentPatch)), registry, "unit-1", 1);
+
+        assertEquals(mapper.valueToTree(currentPatch), envelope.path("mutations").get(0).get("structuralPatch"));
+        assertEquals(mapper.valueToTree(registry.structuralImpactRanges(currentPatch)),
+                envelope.path("mutations").get(0).get("structuralImpactRanges"));
+    }
+
+    @Test
     void backfillsLegacyWorksheetRenameOwnerPatches() throws Exception {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         StructuralPatch renamePatch = new StructuralPatch(StructuralPatch.VERSION,

@@ -21,7 +21,7 @@ public record StructuralPatch(
         @JsonProperty("definedNameOwnerDeltas") List<DefinedNameOwnerDelta> definedNameOwnerDeltas,
         @JsonProperty("rangeOwnerDeltas") List<RangeOwnerDelta> rangeOwnerDeltas
 ) {
-    public static final int VERSION = 5;
+    public static final int VERSION = 6;
 
     public record FormulaOwnerKey(String kind, String sheetId, Integer row, Integer column,
             String ruleKind, String ruleId, String field, String ownerKind, String ownerId,
@@ -358,8 +358,9 @@ public record StructuralPatch(
                         || field == null || !List.of("value1", "value2", "formula1", "formula2", "listSource.formula").contains(field)
                         || "conditional-format".equals(ruleKind) && !List.of("value1", "value2").contains(field)
                         || "data-validation".equals(ruleKind) && List.of("value1", "value2").contains(field)
-                        || beforeFormula == null || afterFormula == null || beforeFormula.equals(afterFormula)
+                        || beforeFormula == null || afterFormula == null
                         || beforeRanges == null || beforeRanges.isEmpty() || afterRanges == null || afterRanges.isEmpty()
+                        || beforeFormula.equals(afterFormula) && beforeRanges.equals(afterRanges)
                         || !validRanges(beforeRanges, sheetId) || !validRanges(afterRanges, sheetId)) {
                     throw new IllegalArgumentException("StructuralPatch formula-rule owner delta is incomplete or invalid");
                 }

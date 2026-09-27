@@ -709,12 +709,13 @@ function permutationRuleFormulaDeltas<T extends StructuralFormulaRule>(
     }
     const after = matches[0]!;
     const afterFormulas = structuralRuleFormulaFields(after);
+    const rangesChanged = JSON.stringify(before.ranges) !== JSON.stringify(after.ranges);
     for (const [field, beforeFormula] of beforeFormulas) {
       const afterFormula = afterFormulas.get(field);
       if (afterFormula === undefined) {
         throw new Error(`STRUCTURAL_PATCH_INVARIANT: formula rule owner ${before.sheetId}:${before.id}.${field} disappeared`);
       }
-      if (afterFormula !== beforeFormula) {
+      if (afterFormula !== beforeFormula || rangesChanged) {
         deltas.push({
           kind: 'formula-rule',
           sheetId: before.sheetId,
