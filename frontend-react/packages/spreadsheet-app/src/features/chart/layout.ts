@@ -1009,7 +1009,7 @@ function pieLayouts(payload: ChartDrawingPayload, data: ResolvedChartData, plot:
     if (specialPie) {
       for (let pointIndex = 0; pointIndex < values.length; pointIndex += 1) {
         const value = values[pointIndex];
-        if (value === null || value <= 0) continue;
+        if (value === null || value === undefined || value <= 0) continue;
         positiveCount += 1;
         let insertion = smallestPositive.findIndex((candidate) => value < candidate.value || (value === candidate.value && pointIndex < candidate.pointIndex));
         if (insertion < 0) insertion = smallestPositive.length;
@@ -1029,7 +1029,7 @@ function pieLayouts(payload: ChartDrawingPayload, data: ResolvedChartData, plot:
     let mainSweepBeforeAggregate = 0;
     for (let pointIndex = 0; pointIndex < values.length; pointIndex += 1) {
       const value = values[pointIndex];
-      if (value === null || value <= 0 || splitIndexes.has(pointIndex)) continue;
+      if (value === null || value === undefined || value <= 0 || splitIndexes.has(pointIndex)) continue;
       mainValues.push({ pointIndex, value, label: String(data.categories[pointIndex] ?? pointIndex + 1), color: DEFAULT_COLORS[pointIndex % DEFAULT_COLORS.length]! });
       mainSweepBeforeAggregate += value / total * Math.PI * 2;
     }
