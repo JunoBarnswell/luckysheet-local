@@ -77,6 +77,7 @@ import {
   isPivotError,
   pivotSourceIdentity,
 } from '@react-sheets/core-model';
+import { MutationRecoveryRequiredError } from '@react-sheets/command-runtime';
 import type { HistoryEntry, MutationInfo, CommandDescriptor, CommandResult } from '@react-sheets/command-runtime';
 import type {
   AuthTokenProvider,
@@ -2250,7 +2251,13 @@ export class WorkbookSession {
 
   runCommand(commandId: string, params?: unknown): CommandResult {
     const resolvedParams = this.resolveAuthorizedCommandParams(commandId, params);
-    const result = this.runtime.commands.execute(commandId, resolvedParams);
+    let result: CommandResult;
+    try {
+      result = this.runtime.commands.execute(commandId, resolvedParams);
+    } catch (error) {
+      this.handleMutationRecovery(error);
+      throw error;
+    }
     if (commandId === 'pivot.refresh') {
       const refreshParams = resolvedParams as { pivotId?: string };
       if (refreshParams.pivotId) this.refreshPivotsForTrigger({ kind: 'explicit', pivotId: refreshParams.pivotId });
@@ -2717,7 +2724,12 @@ export class WorkbookSession {
         this.notify('Undo is no longer allowed for the protected selection');
         break;
       }
-      if (!this.runtime.commands.undo()) break;
+      try {
+        if (!this.runtime.commands.undo()) break;
+      } catch (error) {
+        if (!this.handleMutationRecovery(error)) throw error;
+        return;
+      }
     }
     this.ensureActiveSheetSession();
     this.reconcileDrawingSessionState();
@@ -2887,6 +2899,17 @@ export class WorkbookSession {
     return mutations.every((mutation) => this.permission.checkMutation(mutation).allowed);
   }
 
+  private handleMutationRecovery(error: unknown): boolean {
+    if (!(error instanceof MutationRecoveryRequiredError)) return false;
+    if (this.runtime.collab) {
+      this.runtime.collab.requestResynchronization();
+      this.notify(`${error.message}；正在重新同步工作簿。`);
+    } else {
+      this.notify(`${error.message}；请重新加载工作簿以恢复。`);
+    }
+    return true;
+  }
+
   undo(): void {
     const entry = this.runtime.commands.getUndoEntries().at(-1);
     const hasStructuralMutation = entry?.forwardMutations.some((mutation) => (
@@ -2905,12 +2928,16 @@ export class WorkbookSession {
       this.notify('Undo is no longer allowed for the protected selection');
       return;
     }
-    if (this.runtime.commands.undo()) {
-      this.ensureActiveSheetSession();
-      this.reconcileDrawingSessionState();
-      this.syncDraftFromPrimary();
-      this.notify('Undo applied');
-      this.refresh();
+    try {
+      if (this.runtime.commands.undo()) {
+        this.ensureActiveSheetSession();
+        this.reconcileDrawingSessionState();
+        this.syncDraftFromPrimary();
+        this.notify('Undo applied');
+        this.refresh();
+      }
+    } catch (error) {
+      if (!this.handleMutationRecovery(error)) throw error;
     }
   }
 
@@ -2920,12 +2947,16 @@ export class WorkbookSession {
       this.notify('Redo is no longer allowed for the protected selection');
       return;
     }
-    if (this.runtime.commands.redo()) {
-      this.ensureActiveSheetSession();
-      this.reconcileDrawingSessionState();
-      this.syncDraftFromPrimary();
-      this.notify('Redo applied');
-      this.refresh();
+    try {
+      if (this.runtime.commands.redo()) {
+        this.ensureActiveSheetSession();
+        this.reconcileDrawingSessionState();
+        this.syncDraftFromPrimary();
+        this.notify('Redo applied');
+        this.refresh();
+      }
+    } catch (error) {
+      if (!this.handleMutationRecovery(error)) throw error;
     }
   }
 

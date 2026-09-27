@@ -2089,3 +2089,13 @@ history AutoFilter 专用变换现要求主 range、sortState.ref 及每个 cond
 六轮静态自审：①恢复错误仅从真实 live replay/ACK 阶段产生，preview preflight 仍抛原错误；②检查错误锁覆盖 command、undo、redo、remote 和 committed patch 入口，且 UI `canExecute` 同步禁用；③确认重复 remote delivery 在 lock 处停止，不再次运行 mutation handler；④确认 ACK transport 对此 typed failure 请求重同步，socket revision failure 原有路径也请求重同步；⑤确认 authoritative snapshot 覆盖待确认 commit 时只 ack 队列、不二次变换 owner；⑥确认 hydrate 创建新 `CommandRuntime` 后解锁，普通 preflight rejection 不永久锁定。未采用整本快照 clone/swap，因为该代价与目标的大数据性能约束冲突。
 
 这是**故障隔离/恢复路径**，不是 staged replay transaction 修复：失败发生时 live workbook 仍可能部分变更，不能称为原子回滚；确切的 patch prepare/commit、history/revision/operationId 同事务收敛仍是开放根因。新增远端 replay 成功/失败及快照包含已提交 pending operation 的源码回归；只做静态复核和 `git diff --check`，本机测试、构建、typecheck、浏览器、Excel 和性能测量均未运行。本轮只确认并处理 1 个故障恢复根因，未达到“每轮至少 30 个互相独立真实问题”的数量要求，不通过拆分同一根因凑数；完整架构目标继续保持未完成。
+
+### 2026-09-28 continuation — user-triggered replay recovery routing
+
+静态追踪 `WorkbookSession.runCommand`、`undo`、`redo` 与 `undoToHistoryIndex` 后，确认 fail-stop 错误处理仍有一条边界缺口：远端 socket 和协作 ACK 捕获 `MutationRecoveryRequiredError` 后请求权威快照重同步，但 UI 直接触发的命令回滚失败和 history replay 只锁住 `CommandRuntime`，没有通知协作 socket；history index 路径也可能在恢复失败后继续发出“已恢复”通知。它们共享同一遗漏根因——会话入口没有统一路由此 typed recovery outcome，而不是四个独立缺陷。
+
+修复在 `WorkbookSession` 入口识别该错误：在线时请求 socket 重新同步并提示恢复中；无 socket 时明确提示重新加载；普通错误继续原样抛出。覆盖普通命令执行/回滚、Undo、Redo 和 history index 回退，恢复路径立即返回，不再发布成功通知。新增四条源码回归，分别核对每条入口都会触发恢复锁/重同步并检查用户通知；测试源码尚未执行。
+
+六轮静态复核：①错误类型仅匹配 `MutationRecoveryRequiredError`，普通拒绝不触发重连；②`runCommand` 仍向调用方保留原异常；③Undo/Redo 捕获恢复型异常后不执行“成功”UI收尾；④`undoToHistoryIndex` 中止后续历史步骤并立即退出；⑤在线 socket 的 resynchronization 会关闭连接并走现有 snapshot hydration，新 runtime 清除 fail-stop；⑥离线 session 不伪称能服务端恢复，而提示重新加载；恢复提示只调用 `notify`，不触发 `refresh/syncPersistenceMeta` 的整本快照序列化。
+
+本轮确认并修复 **1 个真实恢复路由问题**，仍未达到用户希望的每轮 30 个独立问题；不把四个入口重复计数。只进行静态源码复核和必要 diff 检查，未运行测试、构建、typecheck、浏览器、Excel 或性能实测；完整 staged replay transaction、Java 唯一规划权与最终验收仍未完成。
