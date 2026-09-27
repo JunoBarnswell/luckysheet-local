@@ -1795,3 +1795,9 @@ Repeatable history migration 将旧 v1-v5 patch 先投影回旧 formula-owner �
 六个静态复核视角分别核对：① TS crop 与 Java validator 的同一用户操作前后链；② rule ID 稳定身份与重复 ID 拒绝；③ 多 ranges 的逐段几何裁剪与 target/source allowed 顺序；④ 目标外 range、formula 与其它字段的严格保留；⑤ validate 失败前不修改原快照；⑥ 按规则/range 数线性比较，且没有扩大服务端授权范围。新增 Java 回归源码覆盖跨目标规则被裁剪时的 CF/DV 成功路径，以及目标外片段被缩短时的拒绝和原快照不变。
 
 本 follow-up 仅确认并修复 **1 个**独立根因，未达到“每轮至少 30 个真实问题”的审查规模；不把 CF 与 DV 两种同一共享 validator 行为重复计数。它也没有改变 paste after-snapshot 仍由客户端规划并提交、`range.paste` 尚无 StructuralPatch、Java 尚未成为唯一 planner 的架构事实。按当前阶段要求，仅做静态审查，新增测试源码未执行；全目标及最终实测仍开放。
+
+### CI correction — validated rule object narrowing (2026-09-27)
+
+PR CI 的两次独立构建都在 `SheetRuleLifecycle.indexRulesById` 报出同一 Java 编译错误：参数静态类型是 `JsonNode`，而 `SnapshotMutationSupport.text` 要求 `ObjectNode`。循环已先用 `rule.isObject()` fail-close；随后显式窄化为 `ObjectNode` 再读取稳定 ID，修复类型契约，不改变规则校验或 patch 行为。
+
+六个静态复核点核对了调用签名、对象判定先于窄化、非 object 输入仍拒绝、身份读取字段不变、变更仅限报错行、以及 PR CI 错误与修复位置对应。按单一根因计 **1 项**；本轮没有达到“至少 30 个真实问题”的审查规模。只做静态类型/差异核查，未在本机运行测试或构建；新提交的 CI 和整个结构编辑目标仍待验收。
