@@ -2327,6 +2327,7 @@ export class WorkbookSession {
 
   canExecute(commandId: string, params?: unknown): boolean {
     if (!this.runtime.commands.registry.hasCommand(commandId)) return false;
+    if (this.runtime.commands.isMutationRecoveryRequired) return false;
     if (requiresServerStructuralPlannerCommand(commandId) && !this.isServerStructuralPlannerAvailable()) return false;
     if (!this.runtime.localOnly && !this.runtime.remoteConnected) return false;
     const resolvedParams = this.resolveCommandContext(commandId, params);

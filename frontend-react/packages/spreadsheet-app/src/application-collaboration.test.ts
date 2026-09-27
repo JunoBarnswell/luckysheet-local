@@ -214,6 +214,74 @@ describe('WorkbookSession collaboration integration', () => {
     }
   });
 
+  it('acknowledges a pending commit already included in the hydrated snapshot without applying its patch twice', async () => {
+    const runtime = createSpreadsheetRuntime({ unitId: 'wb-commit-in-snapshot', localOnly: false });
+    try {
+      const sheetId = runtime.model.primarySheetId;
+      const params = { sheetId, at: 0, count: 1 };
+      const affectedRanges = runtime.commands.registry.getMutationMetadata('rows.inserted').affectedRanges.resolve(params);
+      const mutation = { id: 'rows.inserted', unitId: runtime.model.unitId, sheetId, params, affectedRanges };
+      const collaboration = new CollaborationSession(runtime.commands, { clientSessionId: 'snapshot-recovery-session' });
+      runtime.collaboration = collaboration;
+      const pending = collaboration.enqueueLocalMutations([mutation], runtime.model.unitId, 'committed-before-snapshot');
+      const beforeAddress = { sheetId, row: 0, column: 0 };
+      const afterAddress = { sheetId, row: 1, column: 0 };
+      const committed = {
+        ...pending,
+        actorId: 'actor-1',
+        origin: 'client' as const,
+        revision: 1,
+        committedAt: new Date().toISOString(),
+        mutations: [{
+          ...pending.mutations[0]!,
+          structuralImpactRanges: [beforeAddress, afterAddress].map((address) => ({
+            sheetId,
+            startRow: address.row,
+            endRow: address.row,
+            startColumn: address.column,
+            endColumn: address.column,
+          })),
+          structuralPatch: {
+            version: 9 as const,
+            mutationId: 'rows.inserted',
+            formulaOwnerDeltas: [{
+              kind: 'formula-cell' as const,
+              beforeAddress,
+              afterAddress,
+              before: { formula: '=A1', sourceFormula: null, barcodeFormula: null },
+              after: { formula: '=A2', sourceFormula: null, barcodeFormula: null },
+            }],
+            definedNameOwnerDeltas: [],
+            rangeOwnerDeltas: [],
+          },
+        }],
+      };
+      const authoritative = new WorkbookModel(runtime.model.unitId, 'Authoritative snapshot');
+      authoritative.getSheet(sheetId).cells.set(1, 0, { value: null, formula: '=A2' });
+      const snapshot = { unitId: runtime.model.unitId, snapshot: authoritative.snapshot(), revision: 1, checksum: 'committed' };
+      runtime.api = {
+        getOperationResult: async () => ({ operation: committed }),
+        checkpointWorkbook: async () => ({ revision: 1 }),
+        listRevisions: async () => [{
+          operationId: committed.operationId,
+          revision: committed.revision,
+          committedAt: committed.committedAt,
+          payload: committed,
+        }],
+      } as unknown as typeof runtime.api;
+      hydrateRuntime(runtime, snapshot);
+
+      await loadHistoryAndReplayPending(runtime, snapshot.revision);
+
+      assert.equal(runtime.model.getSheet(sheetId).cells.get(1, 0)?.formula, '=A2');
+      assert.equal(collaboration.offlineQueue.getPendingCount(), 0);
+      assert.equal(collaboration.getRevision(), 1);
+      assert.equal(runtime.commands.isMutationRecoveryRequired, false);
+    } finally {
+      disposeSpreadsheetRuntime(runtime);
+    }
+  });
+
   it('replays an authoritative sheet-rename patch without rebuilding the formula engine', async () => {
     const app = createRemoteReadySessionFixture();
     try {

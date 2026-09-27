@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { CALCULATION_CONTEXT_EFFECTS, WorkbookModel, type DataSourceManifest, type StructuralDefinedNameOwnerDelta, type StructuralFormulaOwnerDelta, type StructuralRangeOwnerDelta } from '@react-sheets/core-model';
 import { FormulaEngine } from '@react-sheets/formula-engine';
-import { CommandRegistry, CommandRuntime, type MutationInfo } from './index';
+import { CommandRegistry, CommandRuntime, MutationRecoveryRequiredError, type MutationInfo } from './index';
 
 const cellRange = (params: { row: number; column: number; sheetId?: string }) => [{
   sheetId: params.sheetId ?? 'sheet-1',
@@ -83,6 +83,7 @@ test('CommandRuntime executes a registered command and tracks history', () => {
     id: 'cell.set',
     handler: (item, context) => {
       const params = item.params as { row: number; column: number; value: string };
+      if (params.value === 'preflight-rejection') throw new Error('preflight rejection');
       context.workbook.getSheet(item.sheetId).cells.set(params.row, params.column, { value: params.value });
       return { replayed: 'cell.set' };
     },
@@ -140,6 +141,65 @@ test('CommandRuntime executes a registered command and tracks history', () => {
   assert.equal(workbook.getSheet('sheet-1').cells.get(1, 1)?.value, 'A');
 
   unsubscribe();
+});
+
+test('CommandRuntime blocks replay after a post-mutation participant failure until snapshot recovery', () => {
+  const registerCellSet = (runtime: CommandRuntime) => runtime.registry.registerMutation({
+    id: 'cell.set',
+    handler: (item, context) => {
+      const params = item.params as { row: number; column: number; value: string };
+      context.workbook.getSheet(item.sheetId).cells.set(params.row, params.column, { value: params.value });
+    },
+    metadata: cellSetMetadata,
+  });
+  const remoteMutation = (unitId: string, value: string): MutationInfo => ({
+    id: 'cell.set',
+    unitId,
+    sheetId: 'sheet-1',
+    params: { row: 2, column: 3, value },
+    affectedRanges: [{ sheetId: 'sheet-1', startRow: 2, endRow: 2, startColumn: 3, endColumn: 3 }],
+  });
+
+  const workbook = new WorkbookModel('unit-replay-recovery', 'Replay Recovery');
+  const runtime = new CommandRuntime(workbook);
+  registerCellSet(runtime);
+  runtime.onMutation((_mutation, source) => {
+    if (source === 'remote') throw new Error('derived projection synchronization failed');
+  });
+
+  const incoming = remoteMutation(workbook.unitId, 'committed');
+  const laterMutation = {
+    ...incoming,
+    params: { row: 3, column: 4, value: 'must-wait-for-resync' },
+    affectedRanges: [{ sheetId: 'sheet-1', startRow: 3, endRow: 3, startColumn: 4, endColumn: 4 }],
+  };
+  assert.throws(
+    () => runtime.applyRemoteMutations([incoming, laterMutation], { revision: 1 }),
+    (error: unknown) => error instanceof MutationRecoveryRequiredError
+      && error.code === 'MUTATION_RECOVERY_REQUIRED'
+      && error.message.includes('derived projection synchronization failed'),
+  );
+  assert.equal(workbook.getSheet('sheet-1').cells.get(2, 3)?.value, 'committed');
+  assert.equal(workbook.getSheet('sheet-1').cells.get(3, 4), undefined);
+  assert.equal(runtime.isMutationRecoveryRequired, true);
+  const partiallyAppliedSnapshot = workbook.snapshot();
+  assert.throws(
+    () => runtime.applyRemoteMutations([incoming, laterMutation], { revision: 1 }),
+    (error: unknown) => error instanceof MutationRecoveryRequiredError && error.code === 'MUTATION_RECOVERY_REQUIRED',
+  );
+  assert.deepEqual(workbook.snapshot(), partiallyAppliedSnapshot);
+
+  const healthyWorkbook = new WorkbookModel('unit-replay-healthy', 'Replay Healthy');
+  const healthyRuntime = new CommandRuntime(healthyWorkbook);
+  registerCellSet(healthyRuntime);
+  assert.throws(
+    () => healthyRuntime.applyRemoteMutations([remoteMutation(healthyWorkbook.unitId, 'preflight-rejection')]),
+    /preflight rejection/,
+  );
+  assert.equal(healthyRuntime.isMutationRecoveryRequired, false);
+  healthyRuntime.applyRemoteMutations([remoteMutation(healthyWorkbook.unitId, 'accepted')], { revision: 1 });
+  assert.equal(healthyWorkbook.getSheet('sheet-1').cells.get(2, 3)?.value, 'accepted');
+  assert.equal(healthyRuntime.isMutationRecoveryRequired, false);
 });
 
 test('CommandRuntime restores chart linked formulas through local history', () => {

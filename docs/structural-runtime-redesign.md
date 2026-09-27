@@ -2081,3 +2081,11 @@ history AutoFilter 专用变换现要求主 range、sortState.ref 及每个 cond
 六轮静态自审：①核对 `preflightHistory` 的克隆 runtime 没有继承 host mutation listeners；②核对 live handler 和 owner-delta 写入先于 mutation listener；③核对 undo/redo 的栈迁移晚于整个 `applyHistory` 返回；④核对 remote 的 history transform、runtime revision 更新晚于整个 `applyHistory` 返回，且 session operationId/baseRevision 登记更晚；⑤核对 server ACK owner-delta listener 调用先于 history reconciliation、revision 和 queue acknowledge，并检查应用层 core listener确实同步修改公式运行时、可见性与数据内容；⑥确认 `MutationInfo` 无 inverse、`WorkbookModel` 无保留身份的整本恢复 API，当前无安全回滚原语，不先写虚假的 snapshot rollback。
 
 此为**已证实、尚未修复**的一个 replay transaction 问题；与 AutoFilter 的两个 history payload 完整性问题不同，不计入已修复项。下一 vertical slice 必须把 staged replay/commit contract 与 Canonical StructuralPatch 一起设计和实现，并为 observer failure、第二项 mutation reject、undo/redo 与 remote revision 加成功/拒绝路径源码覆盖。最新 `ceb46694` 的 AutoFilter 修复 CI 已通过；本段只作静态审计，无本地或远程运行测试。全目标仍未完成。
+
+### 2026-09-28 continuation — replay failure containment, not transaction completion
+
+为降低尚未具备 staged patch 原语时的重复写入风险，重放 handler/host listener 在 live mutation 开始后失败会被包装为 `MUTATION_RECOVERY_REQUIRED` 并锁定该 `CommandRuntime` 的命令、undo/redo、remote replay 和结构补丁入口。权限/协议/owner preflight 在 live 写入前失败仍保持原错误，不误锁工作簿。`WorkbookSession.canExecute` 同步返回不可执行；远端消息失败、协作 ACK 失败或同步中的 pending commit 应用失败会触发权威快照重连。快照 revision 已覆盖的 pending commit 只确认队列，不再把其 structural owner deltas 第二次应用；`hydrateRuntime` 用新 runtime epoch 清除此 fail-stop 状态。
+
+六轮静态自审：①恢复错误仅从真实 live replay/ACK 阶段产生，preview preflight 仍抛原错误；②检查错误锁覆盖 command、undo、redo、remote 和 committed patch 入口，且 UI `canExecute` 同步禁用；③确认重复 remote delivery 在 lock 处停止，不再次运行 mutation handler；④确认 ACK transport 对此 typed failure 请求重同步，socket revision failure 原有路径也请求重同步；⑤确认 authoritative snapshot 覆盖待确认 commit 时只 ack 队列、不二次变换 owner；⑥确认 hydrate 创建新 `CommandRuntime` 后解锁，普通 preflight rejection 不永久锁定。未采用整本快照 clone/swap，因为该代价与目标的大数据性能约束冲突。
+
+这是**故障隔离/恢复路径**，不是 staged replay transaction 修复：失败发生时 live workbook 仍可能部分变更，不能称为原子回滚；确切的 patch prepare/commit、history/revision/operationId 同事务收敛仍是开放根因。新增远端 replay 成功/失败及快照包含已提交 pending operation 的源码回归；只做静态复核和 `git diff --check`，本机测试、构建、typecheck、浏览器、Excel 和性能测量均未运行。本轮只确认并处理 1 个故障恢复根因，未达到“每轮至少 30 个互相独立真实问题”的数量要求，不通过拆分同一根因凑数；完整架构目标继续保持未完成。

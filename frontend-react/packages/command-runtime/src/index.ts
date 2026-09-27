@@ -1139,6 +1139,19 @@ function transformHistoryEntry(
 /** 变更来源:正向命令、本地撤销、本地重做、远端协同重放 */
 export type MutationSource = 'command' | 'undo' | 'redo' | 'remote';
 
+/** A replay participant failed after live state started changing; reload before permitting further edits. */
+export class MutationRecoveryRequiredError extends Error {
+  readonly code = 'MUTATION_RECOVERY_REQUIRED';
+  readonly originalCause: unknown;
+
+  constructor(cause: unknown) {
+    const detail = cause instanceof Error ? cause.message : String(cause);
+    super(`MUTATION_RECOVERY_REQUIRED: workbook replay may be partially applied; reload the canonical workbook snapshot before editing. Cause: ${detail}`);
+    this.name = 'MutationRecoveryRequiredError';
+    this.originalCause = cause;
+  }
+}
+
 export type MutationListener = (mutation: MutationInfo, source: MutationSource, effect?: unknown) => void;
 export type MutationGuard = (mutation: MutationInfo, source: MutationSource) => void;
 export type CommandListener = (commandId: string, params: unknown, result: CommandResult) => void;
@@ -1166,6 +1179,7 @@ export class CommandRuntime {
   private readonly structuralFormulaRuleReferenceIndex = new Map<string, StructuralFormulaRuleReferenceIndexState>();
   private currentRevision = 0;
   private readonly invalidHistory: HistoryEntry[] = [];
+  private recoveryRequiredError: MutationRecoveryRequiredError | undefined;
 
   constructor(
     readonly workbook: WorkbookModel,
@@ -1173,6 +1187,25 @@ export class CommandRuntime {
     options: CommandRuntimeOptions = {},
   ) {
     this.revisionProvider = options.getRevision;
+  }
+
+  get isMutationRecoveryRequired(): boolean {
+    return this.recoveryRequiredError !== undefined;
+  }
+
+  get mutationRecoveryError(): MutationRecoveryRequiredError | undefined {
+    return this.recoveryRequiredError;
+  }
+
+  private assertMutationReady(): void {
+    if (this.recoveryRequiredError) throw this.recoveryRequiredError;
+  }
+
+  private requireMutationRecovery(cause: unknown): MutationRecoveryRequiredError {
+    this.recoveryRequiredError ??= cause instanceof MutationRecoveryRequiredError
+      ? cause
+      : new MutationRecoveryRequiredError(cause);
+    return this.recoveryRequiredError;
   }
 
   setCellValueResolver(resolver: ((sheet: WorksheetModel, row: number, column: number) => unknown) | undefined): void {
@@ -1250,6 +1283,7 @@ export class CommandRuntime {
     // host fallback.
     const command = this.registry.getCommand<P>(id);
     this.registry.assertComplete();
+    this.assertMutationReady();
     const operationId = createOperationId();
     const mutations: MutationInfo[] = [];
     const isRootTransaction = this.transactionDepth === 0;
@@ -1411,6 +1445,7 @@ export class CommandRuntime {
 
   undo(): boolean {
     this.registry.assertComplete();
+    this.assertMutationReady();
     const entry = this.undoStack[this.undoStack.length - 1];
     if (!entry) return false;
     if (entry.status !== 'active') return false;
@@ -1418,12 +1453,17 @@ export class CommandRuntime {
     this.applyHistory(entry.inversePlan, 'undo');
     this.undoStack.pop();
     this.redoStack.push(entry);
-    for (const listener of this.historyReplayListeners) listener('undo', entry);
+    try {
+      for (const listener of this.historyReplayListeners) listener('undo', entry);
+    } catch (error) {
+      throw this.requireMutationRecovery(error);
+    }
     return true;
   }
 
   redo(): boolean {
     this.registry.assertComplete();
+    this.assertMutationReady();
     const entry = this.redoStack[this.redoStack.length - 1];
     if (!entry) return false;
     if (entry.status !== 'active') return false;
@@ -1431,7 +1471,11 @@ export class CommandRuntime {
     this.applyHistory(entry.forwardMutations, 'redo');
     this.redoStack.pop();
     this.undoStack.push(entry);
-    for (const listener of this.historyReplayListeners) listener('redo', entry);
+    try {
+      for (const listener of this.historyReplayListeners) listener('redo', entry);
+    } catch (error) {
+      throw this.requireMutationRecovery(error);
+    }
     return true;
   }
 
@@ -1441,6 +1485,7 @@ export class CommandRuntime {
    */
   applyRemoteMutations(items: readonly MutationInfo[], remoteContext: RemoteMutationContext = {}): void {
     this.registry.assertComplete();
+    this.assertMutationReady();
     if (remoteContext.revision !== undefined
       && (!Number.isSafeInteger(remoteContext.revision) || remoteContext.revision < 1)) {
       throw new Error('Remote revision is invalid');
@@ -1449,15 +1494,20 @@ export class CommandRuntime {
     // them against an isolated snapshot first so a later rejection cannot
     // leave the live workbook partially changed.
     this.preflightHistory(items, 'remote');
-    this.applyHistory(items, 'remote');
-    for (const item of items) {
-      const remote = item.structuralImpactRanges?.length
-        ? { ...item, affectedRanges: [...item.affectedRanges, ...item.structuralImpactRanges] }
-        : item;
-      this.transformHistoryAgainstRemote(remote);
-    }
-    if (remoteContext.revision !== undefined) {
-      this.currentRevision = Math.max(this.currentRevision, remoteContext.revision);
+    try {
+      this.applyHistory(items, 'remote');
+      for (const item of items) {
+        const remote = item.structuralImpactRanges?.length
+          ? { ...item, affectedRanges: [...item.affectedRanges, ...item.structuralImpactRanges] }
+          : item;
+        this.transformHistoryAgainstRemote(remote);
+      }
+      if (remoteContext.revision !== undefined) {
+        this.currentRevision = Math.max(this.currentRevision, remoteContext.revision);
+      }
+    } catch (error) {
+      if (this.recoveryRequiredError) throw this.recoveryRequiredError;
+      throw this.requireMutationRecovery(error);
     }
   }
 
@@ -1470,6 +1520,7 @@ export class CommandRuntime {
   }
 
   applyCommittedStructuralPatches(operationId: string, items: readonly MutationInfo[], revision: number): void {
+    this.assertMutationReady();
     if (!Number.isSafeInteger(revision) || revision < 1) throw new Error('Committed revision must be a positive safe integer');
     const patched = items.filter((item) => item.structuralFormulaOwnerDeltas !== undefined
       || item.structuralDefinedNameOwnerDeltas !== undefined
@@ -1521,60 +1572,64 @@ export class CommandRuntime {
       return;
     }
 
-    for (let index = 0; index < patchesToApply.length; index += 1) {
-      const item = patchesToApply[index]!;
-      const committed = patched[index]!;
-      const formulaDeltas = item.structuralFormulaOwnerDeltas ?? [];
-      const committedFormulaDeltas = committed.structuralFormulaOwnerDeltas ?? [];
-      const definedNameDeltas = item.structuralDefinedNameOwnerDeltas ?? [];
-      const rangeDeltas = item.structuralRangeOwnerDeltas ?? [];
-      if (formulaDeltas.length === 0 && definedNameDeltas.length === 0 && rangeDeltas.length === 0) continue;
-      for (const delta of formulaDeltas) applyFormulaOwnerDelta(this.workbook, delta, 'forward');
-      for (const delta of definedNameDeltas) applyDefinedNameOwnerDelta(this.workbook, delta, 'forward');
-      applyStructuralRangeOwnerDeltas(this.workbook, rangeDeltas, 'forward');
-      const effect = {
-        kind: 'structural-transform' as const,
-        removedCells: [],
-        clearInputRanges: [],
-        populateInputRanges: [],
-        rewrittenFormulaOwners: committedFormulaDeltas.flatMap((delta) => delta.kind === 'formula-cell' ? [delta.afterAddress] : []),
-        formulaOwnerDeltas: committedFormulaDeltas,
-        definedNameOwnerDeltas: definedNameDeltas,
-        rangeOwnerDeltas: rangeDeltas,
-      };
-      for (const listener of this.mutationListeners) listener(committed, 'remote', effect);
-    }
-
-    if (entry) {
-      replaceHistoryFormulaOwnerDeltas(entry, formulaReconciliation!.authoritativeDeltas);
-      const forwardRenames = entry.forwardMutations.filter((mutation) => mutation.id === 'sheet.rename');
-      const inverseRenames = entry.inversePlan.filter((mutation) => mutation.id === 'sheet.rename');
-      const committedRenames = items.filter((item) => item.id === 'sheet.rename');
-      for (let index = 0; index < committedRenames.length; index += 1) {
-        const committed = committedRenames[index]!;
-        const forward = forwardRenames[index]!;
-        const inverse = inverseRenames[inverseRenames.length - index - 1]!;
-        const formulaDeltas = committed.structuralFormulaOwnerDeltas ?? [];
-        const definedNameDeltas = committed.structuralDefinedNameOwnerDeltas ?? [];
-        const rangeDeltas = committed.structuralRangeOwnerDeltas ?? [];
-        const impactRanges = committed.structuralImpactRanges
-          ?? [...formulaOwnerDeltasRanges(formulaDeltas), ...rangeOwnerDeltasRanges(rangeDeltas)];
-        for (const mutation of [forward, inverse]) {
-          mutation.structuralFormulaOwnerDeltas = structuredClone(formulaDeltas);
-          mutation.structuralDefinedNameOwnerDeltas = structuredClone(definedNameDeltas);
-          mutation.structuralRangeOwnerDeltas = structuredClone(rangeDeltas);
-          mutation.structuralImpactRanges = structuredClone(impactRanges);
-          mutation.affectedRanges = structuredClone(committed.affectedRanges);
-        }
-        const mergedRanges = new Map<string, RangeRef>();
-        for (const range of [...entry.affectedRanges, ...committed.affectedRanges, ...impactRanges]) {
-          mergedRanges.set(JSON.stringify([range.sheetId, range.startRow, range.endRow, range.startColumn, range.endColumn]), structuredClone(range));
-        }
-        entry.affectedRanges.splice(0, entry.affectedRanges.length, ...mergedRanges.values());
+    try {
+      for (let index = 0; index < patchesToApply.length; index += 1) {
+        const item = patchesToApply[index]!;
+        const committed = patched[index]!;
+        const formulaDeltas = item.structuralFormulaOwnerDeltas ?? [];
+        const committedFormulaDeltas = committed.structuralFormulaOwnerDeltas ?? [];
+        const definedNameDeltas = item.structuralDefinedNameOwnerDeltas ?? [];
+        const rangeDeltas = item.structuralRangeOwnerDeltas ?? [];
+        if (formulaDeltas.length === 0 && definedNameDeltas.length === 0 && rangeDeltas.length === 0) continue;
+        for (const delta of formulaDeltas) applyFormulaOwnerDelta(this.workbook, delta, 'forward');
+        for (const delta of definedNameDeltas) applyDefinedNameOwnerDelta(this.workbook, delta, 'forward');
+        applyStructuralRangeOwnerDeltas(this.workbook, rangeDeltas, 'forward');
+        const effect = {
+          kind: 'structural-transform' as const,
+          removedCells: [],
+          clearInputRanges: [],
+          populateInputRanges: [],
+          rewrittenFormulaOwners: committedFormulaDeltas.flatMap((delta) => delta.kind === 'formula-cell' ? [delta.afterAddress] : []),
+          formulaOwnerDeltas: committedFormulaDeltas,
+          definedNameOwnerDeltas: definedNameDeltas,
+          rangeOwnerDeltas: rangeDeltas,
+        };
+        for (const listener of this.mutationListeners) listener(committed, 'remote', effect);
       }
-    }
 
-    this.setRevision(Math.max(this.currentRevision, revision));
+      if (entry) {
+        replaceHistoryFormulaOwnerDeltas(entry, formulaReconciliation!.authoritativeDeltas);
+        const forwardRenames = entry.forwardMutations.filter((mutation) => mutation.id === 'sheet.rename');
+        const inverseRenames = entry.inversePlan.filter((mutation) => mutation.id === 'sheet.rename');
+        const committedRenames = items.filter((item) => item.id === 'sheet.rename');
+        for (let index = 0; index < committedRenames.length; index += 1) {
+          const committed = committedRenames[index]!;
+          const forward = forwardRenames[index]!;
+          const inverse = inverseRenames[inverseRenames.length - index - 1]!;
+          const formulaDeltas = committed.structuralFormulaOwnerDeltas ?? [];
+          const definedNameDeltas = committed.structuralDefinedNameOwnerDeltas ?? [];
+          const rangeDeltas = committed.structuralRangeOwnerDeltas ?? [];
+          const impactRanges = committed.structuralImpactRanges
+            ?? [...formulaOwnerDeltasRanges(formulaDeltas), ...rangeOwnerDeltasRanges(rangeDeltas)];
+          for (const mutation of [forward, inverse]) {
+            mutation.structuralFormulaOwnerDeltas = structuredClone(formulaDeltas);
+            mutation.structuralDefinedNameOwnerDeltas = structuredClone(definedNameDeltas);
+            mutation.structuralRangeOwnerDeltas = structuredClone(rangeDeltas);
+            mutation.structuralImpactRanges = structuredClone(impactRanges);
+            mutation.affectedRanges = structuredClone(committed.affectedRanges);
+          }
+          const mergedRanges = new Map<string, RangeRef>();
+          for (const range of [...entry.affectedRanges, ...committed.affectedRanges, ...impactRanges]) {
+            mergedRanges.set(JSON.stringify([range.sheetId, range.startRow, range.endRow, range.startColumn, range.endColumn]), structuredClone(range));
+          }
+          entry.affectedRanges.splice(0, entry.affectedRanges.length, ...mergedRanges.values());
+        }
+      }
+
+      this.setRevision(Math.max(this.currentRevision, revision));
+    } catch (error) {
+      throw this.requireMutationRecovery(error);
+    }
   }
 
   getInvalidHistoryEntries(): readonly HistoryEntry[] {
@@ -1634,7 +1689,7 @@ export class CommandRuntime {
     }
   }
 
-  private applyHistory(items: readonly MutationInfo[], source: MutationSource): void {
+  private applyHistory(items: readonly MutationInfo[], source: MutationSource, requireRecoveryOnFailure = true): void {
     const issues: MutationRegistryIssue[] = [];
     for (const item of items) {
       if (item.unitId !== this.workbook.unitId) {
@@ -1646,71 +1701,76 @@ export class CommandRuntime {
       throw new Error(`Invalid mutation history: ${formatIssues(issues)}`);
     }
     for (const item of items) this.mutationGuard?.(item, source);
-    for (const item of items) {
-      const handler = this.registry.getMutation(item.id);
-      const commandRuntime = this;
-      const replayContext: CommandContext = {
-        workbook: this.workbook,
-        operationId: createOperationId(),
-        mutationSource: source,
-        get structuralReferenceOwners() { return commandRuntime.resolveStructuralReferenceOwners(); },
-        resolveCellValue: (sheet, row, column) => this.cellValueResolver?.(sheet, row, column),
-        applyMutation: () => {
-          throw new Error('Nested mutation application is not allowed during mutation replay');
-        },
-        recordOperation: (operation, operationParams) => {
-          const registered = this.registry.getOperation(operation.id);
-          return registered.execute(operationParams, replayContext);
-        },
-      };
-      const effect = handler(item, {
-        ...replayContext,
-      }) ?? this.registry.getMutationMetadata(item.id).calculationContextEffect;
-      if (source === 'remote') assertRemoteStructuralOwnerFacts(item, effect);
-      let notificationEffect: unknown = effect;
-      const replaysOwnerFacts = source === 'undo' || source === 'redo' || source === 'remote';
-      const formulaOwnerDeltas = replaysOwnerFacts ? item.structuralFormulaOwnerDeltas ?? [] : [];
-      const rangeOwnerDeltas = replaysOwnerFacts ? item.structuralRangeOwnerDeltas ?? [] : [];
-      if (formulaOwnerDeltas.length > 0) {
-        const direction = source === 'undo' ? 'undo' : 'forward';
-        for (const delta of formulaOwnerDeltas) applyFormulaOwnerDelta(this.workbook, delta, direction);
+    try {
+      for (const item of items) {
+        const handler = this.registry.getMutation(item.id);
+        const commandRuntime = this;
+        const replayContext: CommandContext = {
+          workbook: this.workbook,
+          operationId: createOperationId(),
+          mutationSource: source,
+          get structuralReferenceOwners() { return commandRuntime.resolveStructuralReferenceOwners(); },
+          resolveCellValue: (sheet, row, column) => this.cellValueResolver?.(sheet, row, column),
+          applyMutation: () => {
+            throw new Error('Nested mutation application is not allowed during mutation replay');
+          },
+          recordOperation: (operation, operationParams) => {
+            const registered = this.registry.getOperation(operation.id);
+            return registered.execute(operationParams, replayContext);
+          },
+        };
+        const effect = handler(item, {
+          ...replayContext,
+        }) ?? this.registry.getMutationMetadata(item.id).calculationContextEffect;
+        if (source === 'remote') assertRemoteStructuralOwnerFacts(item, effect);
+        let notificationEffect: unknown = effect;
+        const replaysOwnerFacts = source === 'undo' || source === 'redo' || source === 'remote';
+        const formulaOwnerDeltas = replaysOwnerFacts ? item.structuralFormulaOwnerDeltas ?? [] : [];
+        const rangeOwnerDeltas = replaysOwnerFacts ? item.structuralRangeOwnerDeltas ?? [] : [];
+        if (formulaOwnerDeltas.length > 0) {
+          const direction = source === 'undo' ? 'undo' : 'forward';
+          for (const delta of formulaOwnerDeltas) applyFormulaOwnerDelta(this.workbook, delta, direction);
+        }
+        let notificationFormulaOwnerDeltas = formulaOwnerDeltas;
+        if (source === 'undo') notificationFormulaOwnerDeltas = formulaOwnerDeltas.map(inverseFormulaOwnerDelta);
+        let notificationDefinedNameOwnerDeltas: readonly StructuralDefinedNameOwnerDelta[] = [];
+        if (item.structuralDefinedNameOwnerDeltas && (source === 'undo' || source === 'redo' || source === 'remote')) {
+          const direction = source === 'undo' ? 'undo' : 'forward';
+          for (const delta of item.structuralDefinedNameOwnerDeltas) applyDefinedNameOwnerDelta(this.workbook, delta, direction);
+          notificationDefinedNameOwnerDeltas = source === 'undo'
+            ? item.structuralDefinedNameOwnerDeltas.map(inverseDefinedNameOwnerDelta)
+            : item.structuralDefinedNameOwnerDeltas;
+        }
+        if (rangeOwnerDeltas.length > 0) {
+          const direction = source === 'undo' ? 'undo' : 'forward';
+          applyStructuralRangeOwnerDeltas(this.workbook, rangeOwnerDeltas, direction);
+        }
+        const notificationRangeOwnerDeltas = source === 'undo'
+          ? rangeOwnerDeltas.map(inverseStructuralRangeOwnerDelta)
+          : rangeOwnerDeltas;
+        if (notificationFormulaOwnerDeltas.length > 0 || notificationDefinedNameOwnerDeltas.length > 0
+          || notificationRangeOwnerDeltas.length > 0) {
+          notificationEffect = structuralOwnerPatchReplayEffect(
+            effect,
+            notificationFormulaOwnerDeltas,
+            notificationDefinedNameOwnerDeltas,
+            notificationRangeOwnerDeltas,
+          );
+        }
+        for (const listener of this.mutationListeners) {
+          listener(item, source, notificationEffect);
+        }
       }
-      let notificationFormulaOwnerDeltas = formulaOwnerDeltas;
-      if (source === 'undo') notificationFormulaOwnerDeltas = formulaOwnerDeltas.map(inverseFormulaOwnerDelta);
-      let notificationDefinedNameOwnerDeltas: readonly StructuralDefinedNameOwnerDelta[] = [];
-      if (item.structuralDefinedNameOwnerDeltas && (source === 'undo' || source === 'redo' || source === 'remote')) {
-        const direction = source === 'undo' ? 'undo' : 'forward';
-        for (const delta of item.structuralDefinedNameOwnerDeltas) applyDefinedNameOwnerDelta(this.workbook, delta, direction);
-        notificationDefinedNameOwnerDeltas = source === 'undo'
-          ? item.structuralDefinedNameOwnerDeltas.map(inverseDefinedNameOwnerDelta)
-          : item.structuralDefinedNameOwnerDeltas;
-      }
-      if (rangeOwnerDeltas.length > 0) {
-        const direction = source === 'undo' ? 'undo' : 'forward';
-        applyStructuralRangeOwnerDeltas(this.workbook, rangeOwnerDeltas, direction);
-      }
-      const notificationRangeOwnerDeltas = source === 'undo'
-        ? rangeOwnerDeltas.map(inverseStructuralRangeOwnerDelta)
-        : rangeOwnerDeltas;
-      if (notificationFormulaOwnerDeltas.length > 0 || notificationDefinedNameOwnerDeltas.length > 0
-        || notificationRangeOwnerDeltas.length > 0) {
-        notificationEffect = structuralOwnerPatchReplayEffect(
-          effect,
-          notificationFormulaOwnerDeltas,
-          notificationDefinedNameOwnerDeltas,
-          notificationRangeOwnerDeltas,
-        );
-      }
-      for (const listener of this.mutationListeners) {
-        listener(item, source, notificationEffect);
-      }
+    } catch (error) {
+      if (!requireRecoveryOnFailure) throw error;
+      throw this.requireMutationRecovery(error);
     }
   }
 
   private preflightHistory(items: readonly MutationInfo[], source: MutationSource): void {
     const preview = new CommandRuntime(WorkbookModel.fromSnapshot(this.workbook.snapshot()), this.registry);
     preview.setStructuralReferenceOwnersProvider((workbook) => buildStructuralReferenceIndex(workbook));
-    preview.applyHistory(items, source);
+    preview.applyHistory(items, source, false);
   }
 }
 

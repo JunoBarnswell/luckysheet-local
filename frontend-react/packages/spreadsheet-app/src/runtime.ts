@@ -1,7 +1,7 @@
 import { RecoveryJournal } from './features/persistence/recovery-journal';
 import { CheckpointCoordinator } from './features/persistence/checkpoint-coordinator';
 import { WorkbookModel, isWorkbookCalculationContextEffect, type CellData, type DataSourceManifest, type StructuralTransformResult } from '@react-sheets/core-model';
-import { CommandRuntime, type HistoryEntry, type MutationInfo } from '@react-sheets/command-runtime';
+import { CommandRuntime, MutationRecoveryRequiredError, type HistoryEntry, type MutationInfo } from '@react-sheets/command-runtime';
 import { canonicalExcelDateFromUtcDate, FormulaEngine, type CanonicalExcelDateParts, type CellAddressInput, type ExcelDateSystem, type CalculationInputUpdate } from '@react-sheets/formula-engine';
 import {
   ApiRequestError,
@@ -1352,7 +1352,11 @@ export async function loadHistoryAndReplayPending(runtime: SpreadsheetRuntime, h
     const result = await runtime.api.getOperationResult(runtime.model.unitId, operation.operationId);
     if (result) {
       assertOperationResultMatches(operation, result.operation);
-      collaboration.applyCommittedStructuralPatches(result.operation);
+      // A hydrated snapshot already contains every operation through its revision.
+      // Re-applying its owner deltas would apply the same committed patch twice.
+      if (result.operation.revision > hydratedRevision) {
+        collaboration.applyCommittedStructuralPatches(result.operation);
+      }
       await runtime.recoveryJournal?.confirm(operation, result.operation.revision);
       collaboration.acknowledge(operation.operationId, result.operation.revision);
       runtime.remoteRevision = Math.max(runtime.remoteRevision, result.operation.revision);
@@ -1449,6 +1453,7 @@ export function startCollaborationSession(
         runtime.handlers.onPhaseChange?.('error');
         runtime.handlers.onSaveState?.('conflict');
         runtime.handlers.onNotice?.(error instanceof Error ? error.message : 'Change could not be committed');
+        if (error instanceof MutationRecoveryRequiredError) runtime.collab?.requestResynchronization();
         throw error;
       }
     });
@@ -1554,6 +1559,7 @@ export function startCollaborationSession(
         runtime.remoteConnected = false;
         runtime.handlers.onSaveState?.('conflict');
         runtime.handlers.onNotice?.(error.message);
+        if (error instanceof MutationRecoveryRequiredError) client.requestResynchronization();
       });
     });
     client.open();
