@@ -870,6 +870,7 @@ export class WorkbookSession {
   /** Compatibility inspection surface for existing projection-cache tests; the owner is ProjectionRuntime. */
   private get sheetProjectionCache(): ReadonlyMap<string, unknown> { return this.projection.cache; }
   private persistenceMetaDirty = true;
+  private readonly handledMutationRecoveryErrors = new WeakSet<MutationRecoveryRequiredError>();
 
   constructor({ unitId, api, recoverySubject, workspacePersistence, assetStore, resolution, onReady, initialPhase = 'ready', authTokenProvider, shareTokenProvider, dateSystem, canonicalReferenceDate, collaborationUrl, nativeDocumentExecution = 'worker', pivotTaskPort, pivotExecution = 'inline-test' }: WorkbookSessionOptions = {}) {
     const sessionUnitId = resolution?.unitId ?? unitId;
@@ -2901,6 +2902,8 @@ export class WorkbookSession {
 
   private handleMutationRecovery(error: unknown): boolean {
     if (!(error instanceof MutationRecoveryRequiredError)) return false;
+    if (this.handledMutationRecoveryErrors.has(error)) return true;
+    this.handledMutationRecoveryErrors.add(error);
     if (this.runtime.collab) {
       this.runtime.collab.requestResynchronization();
       this.notify(`${error.message}；正在重新同步工作簿。`);

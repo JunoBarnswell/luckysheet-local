@@ -2096,6 +2096,6 @@ history AutoFilter 专用变换现要求主 range、sortState.ref 及每个 cond
 
 修复在 `WorkbookSession` 入口识别该错误：在线时请求 socket 重新同步并提示恢复中；无 socket 时明确提示重新加载；普通错误继续原样抛出。覆盖普通命令执行/回滚、Undo、Redo 和 history index 回退，恢复路径立即返回，不再发布成功通知。新增四条源码回归，分别核对每条入口都会触发恢复锁/重同步并检查用户通知；测试源码尚未执行。
 
-六轮静态复核：①错误类型仅匹配 `MutationRecoveryRequiredError`，普通拒绝不触发重连；②`runCommand` 仍向调用方保留原异常；③Undo/Redo 捕获恢复型异常后不执行“成功”UI收尾；④`undoToHistoryIndex` 中止后续历史步骤并立即退出；⑤在线 socket 的 resynchronization 会关闭连接并走现有 snapshot hydration，新 runtime 清除 fail-stop；⑥离线 session 不伪称能服务端恢复，而提示重新加载；恢复提示只调用 `notify`，不触发 `refresh/syncPersistenceMeta` 的整本快照序列化。
+七轮静态复核：①错误类型仅匹配 `MutationRecoveryRequiredError`，普通拒绝不触发重连；②`runCommand` 仍向调用方保留原异常；③Undo/Redo 捕获恢复型异常后不执行“成功”UI收尾；④`undoToHistoryIndex` 中止后续历史步骤并立即退出；⑤在线 socket 的 resynchronization 会关闭连接并走现有 snapshot hydration，新 runtime 清除 fail-stop；⑥同一 runtime 锁会重复抛出同一错误对象，`WeakSet` 让后续命令不重复关闭 socket/通知，hydrate 后的新 runtime 可处理新的恢复错误；⑦离线 session 不伪称能服务端恢复，而提示重新加载，恢复提示只调用 `notify`，不触发 `refresh/syncPersistenceMeta` 的整本快照序列化。
 
 本轮确认并修复 **1 个真实恢复路由问题**，仍未达到用户希望的每轮 30 个独立问题；不把四个入口重复计数。只进行静态源码复核和必要 diff 检查，未运行测试、构建、typecheck、浏览器、Excel 或性能实测；完整 staged replay transaction、Java 唯一规划权与最终验收仍未完成。

@@ -58,7 +58,7 @@ describe('WorkbookSession history integration', () => {
     assert.equal(app.canExecute('sheet.cell.set'), false);
   });
 
-  it('requests authoritative recovery when redo observers fail after a live replay', () => {
+  it('requests recovery once when redo fails and later commands see the same lock error', () => {
     const app = new WorkbookSession();
     const runtime = app['runtime'];
     let resynchronizations = 0;
@@ -76,6 +76,10 @@ describe('WorkbookSession history integration', () => {
     assert.equal(resynchronizations, 1);
     assert.equal(runtime.commands.isMutationRecoveryRequired, true);
     assert.match(app.getUiSnapshot().notice, /重新同步工作簿/);
+    assert.throws(() => app.runCommand('sheet.cell.set', {
+      sheetId: app.getActiveSheetId(), row: 0, column: 1, value: { value: 'retry while locked' },
+    }), /MUTATION_RECOVERY_REQUIRED/);
+    assert.equal(resynchronizations, 1);
   });
 
   it('does not report a successful history-index restore after replay recovery is required', () => {
