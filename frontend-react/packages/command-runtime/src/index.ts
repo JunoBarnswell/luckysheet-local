@@ -125,6 +125,11 @@ export interface Operation<P = unknown> {
 
 export interface Mutation<P = unknown> extends MutationInfo<P> {
   apply(context: CommandContext): unknown;
+  /**
+   * Inverse payloads are command-owned history facts transferred at applyMutation.
+   * Commands must not mutate them after handoff; restore handlers retain
+   * responsibility for owner-specific live-model copy semantics.
+   */
   inverse: MutationInfo[];
 }
 
@@ -1342,11 +1347,14 @@ export class CommandRuntime {
         // execution and every replay path fail closed on protocol drift.
         this.registry.assertMutation(mutation);
         this.mutationGuard?.(mutation, 'command');
-        // History, collaboration, and replay outlive the caller's command objects.
-        // Own the wire facts before the apply callback can mutate either side.
+        // Forward history/wire facts outlive caller objects; snapshot them before apply.
+        // Inverse payload ownership follows Mutation's transfer contract below.
         const paramsSnapshot = structuredClone(mutation.params);
         const affectedRangesSnapshot = structuredClone(mutation.affectedRanges);
-        const inverseSnapshots = mutation.inverse.map((item) => structuredClone(item));
+        const inverseSnapshots = mutation.inverse.map((item) => ({
+          ...item,
+          affectedRanges: structuredClone(item.affectedRanges),
+        }));
         const effect = mutation.apply(context) ?? this.registry.getMutationMetadata(mutation.id).calculationContextEffect;
         const formulaOwnerDeltas = isRecord(effect) && Array.isArray(effect.formulaOwnerDeltas)
           ? effect.formulaOwnerDeltas as StructuralFormulaOwnerDelta[]

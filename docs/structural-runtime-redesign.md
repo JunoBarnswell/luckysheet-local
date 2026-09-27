@@ -2113,10 +2113,18 @@ history AutoFilter 专用变换现要求主 range、sortState.ref 及每个 cond
 
 ### 2026-09-28 continuation — own mutation history facts and share unchanged rebase payloads
 
-沿本地命令 → `CommandRuntime.applyMutation` → history/collaboration payload → 远端结构操作重基链，确认 **1 个独立历史完整性根因**：`MutationInfo.params` 和 `affectedRanges` 直接引用 mutation 调用方对象，inverse 仅浅复制；调用方或 apply callback 后续改写这些对象会改变已记录的撤销/重放事实。相同重基还会为每个未变更数组/对象无条件重建整棵 payload，放大大粘贴/元数据在多个远端结构操作下的临时分配。
+沿本地命令 → `CommandRuntime.applyMutation` → history/collaboration payload → 远端结构操作重基链，确认 **1 个独立历史完整性根因**：`MutationInfo.params` 和 `affectedRanges` 直接引用 mutation 调用方对象；调用方或 apply callback 后续改写这些对象会改变已记录的撤销/重放事实。相同重基还会为每个未变更数组/对象无条件重建整棵 payload，放大大粘贴/元数据在多个远端结构操作下的临时分配。
 
-修复在任何 mutation apply callback 触碰工作簿前深拷贝 params、affectedRanges 与 inverse facts；不可克隆的 wire payload 在 apply 前失败。重基仅在坐标/公式/子节点实际变化时复制数组或对象，未变化的 history-owned 子树复用原身份；坐标或公式变换语义、删除相交时的 fail-close 保持不变。新增回归源码验证调用方后续改写不污染 history、拒绝不可克隆 payload 不执行 apply，以及结构重基保留未变更 owned payload 身份。仍需线性扫描 payload 来发现引用，所以这只降低分配，不声称降低其遍历复杂度或已有性能基准。
+修复在任何 mutation apply callback 触碰工作簿前深拷贝 forward params 和 affectedRanges；不可克隆的 forward wire payload 在 apply 前失败。inverse 是命令生成并移交 runtime 的领域快照：runtime 复制外层事实与 affectedRanges，但保留 params 内部的所有权/引用语义，以免重新复制已从矩阵摘除的大型 cell payload。重基仅在坐标/公式/子节点实际变化时复制数组或对象，未变化的 history-owned 子树复用原身份；坐标或公式变换语义、删除相交时的 fail-close 保持不变。新增回归源码验证调用方后续改写不污染 forward history、拒绝不可克隆 forward payload 不执行 apply，以及结构重基保留未变更 owned payload 身份。仍需线性扫描 payload 来发现引用，所以这只降低分配，不声称降低其遍历复杂度或已有性能基准。
 
-六轮静态自审：①确认 params、ranges、inverse 全在 apply callback 前快照，克隆失败路径在 live workbook 写入前停止；②同 sheet 坐标和 formula 子节点变化只写入 shallow clone，不回写历史基线；③删除命中的坐标/范围仍走既有拒绝路径，不因 COW 变成静默丢弃；④数组首个变更前不分配，发生变更后保留顺序并追加所有后续映射值；⑤公式文本变化仍删除同对象的 formulaValue/displayValue，未变化公式保留原值；⑥确认调用边界已经取得独立快照，未变化引用共享只发生在该 owned snapshot 内；检查本次没有扩展到 server planner、wire schema 或持久化契约。
+六轮静态自审：①确认 forward params、declared ranges 在 apply callback 前快照，克隆失败路径在 live workbook 写入前停止；②inverse 的领域 payload 保留移交时身份，`affectedRanges` 在外层快照；③同 sheet 坐标和 formula 子节点变化只写入 shallow clone，不回写历史基线；④删除命中的坐标/范围仍走既有拒绝路径，不因 COW 变成静默丢弃；⑤数组首个变更前不分配，发生变更后保留顺序，公式变化仍清除缓存；⑥确认未变化引用只在 runtime-owned forward snapshot 内共享，并核对无 server planner、wire schema 或持久化契约改动。
 
 本轮确认并修复 **1 个真实根因**；copy-on-write 是其重基分配优化，不另计问题，也未达到每轮至少 30 个独立问题目标。仅静态审查与 `git diff --check`；新增测试源码未执行，未运行测试、typecheck、build、浏览器、Excel 或 benchmark。初查 `ReferenceTransformDomain` 上限校验的候选经复核已由现有 `Number.isSafeInteger(maximum)` 处理，未修改或计数。Java 唯一规划权、完整 StructuralPatch、staged replay transaction 与最终实测仍未完成。
+
+### 2026-09-28 follow-up — preserve detached inverse cell ownership
+
+复核 `30005996` 后发现其对 `mutation.inverse` 执行深克隆会回归既有大数据优化：`sheet-features` 已有回归源码明确断言整行/整列删除时，历史 `cell.restore.previous` 复用从 `CellMatrix` 摘除的原 CellData，而 `restoreCell` 仅在写回模型时深克隆。深克隆所有 inverse payload 不但破坏该身份契约，也会为大删除多复制一次每个单元格载荷。
+
+修正为复制 inverse 外层记录与小型 affected-range 数组，保留命令交接的 nested inverse payload；Mutation 契约明确 command 在 `applyMutation` 后不得再改写 inverse，写回模型的 owner handler 负责复制。forward params/ranges 仍在 apply 前独立快照。六轮复核：①定位现有测试的 identity assertion；②确认 `snapshotCellRegion` 提供 detached cell object；③确认 axis transform 将 cell 从 live matrix 移除；④确认 restore handler 在写回时复制 cell 和 nested style；⑤确认 inverse 外层/ranges 快照不重复拷贝 cell payload，forward caller-isolation 仍在；⑥核对改动不扩展到 operation wire 与持久化版本。
+
+此为 `30005996` 引入的 **1 个已修正回归**，归属同一 mutation history ownership 主题，不作为新的业务根因重复计数。只做静态复核与 `git diff --check`；该测试源码以及全部本地测试、typecheck、build、browser、Excel、benchmark 均未执行。PR 自动 `canonical-build` 当时在运行；未据此声称通过。
