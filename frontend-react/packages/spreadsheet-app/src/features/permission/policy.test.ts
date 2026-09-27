@@ -52,6 +52,33 @@ describe('permission policy', () => {
     assert.equal(autoSumTargetBlocked.allowed, false);
   });
 
+  it('checks the nested source range for data-source permission', () => {
+    const workbook = new WorkbookModel('wb-data-source-permission', 'Data source permission');
+    const permission = new PermissionService();
+    permission.applyServerAccess('editor');
+    permission.setOnline(true);
+    workbook.getSheet('sheet-1').protectionRules.push({
+      id: 'source-range-protection',
+      scope: 'range',
+      sheetId: 'sheet-1',
+      range: { sheetId: 'sheet-1', startRow: 4, endRow: 5, startColumn: 2, endColumn: 3 },
+      locked: true,
+      allow: {},
+    });
+
+    const blocked = canExecuteCommand(permission, workbook, 'dataSource.add', {
+      sheetId: 'sheet-1',
+      source: { sourceRange: { sheetId: 'sheet-1', startRow: 4, endRow: 5, startColumn: 2, endColumn: 3 } },
+    }, 'editor-1', 'sheet-1');
+    const allowed = canExecuteCommand(permission, workbook, 'dataSource.add', {
+      sheetId: 'sheet-1',
+      source: { sourceRange: { sheetId: 'sheet-1', startRow: 10, endRow: 11, startColumn: 2, endColumn: 3 } },
+    }, 'editor-1', 'sheet-1');
+
+    assert.equal(blocked.allowed, false);
+    assert.equal(allowed.allowed, true);
+  });
+
   it('resolves every selected row or column for structural permission checks', () => {
     const workbook = new WorkbookModel('wb-selected-header', 'Selected header');
     const permission = new PermissionService();

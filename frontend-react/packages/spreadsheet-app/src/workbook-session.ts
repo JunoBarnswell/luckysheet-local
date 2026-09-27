@@ -1562,7 +1562,7 @@ export class WorkbookSession {
       );
     }
     try {
-      const resolved = this.resolveCommandContext(descriptor.commandId, descriptor.params);
+      const resolved = this.resolveAuthorizedCommandParams(descriptor.commandId, descriptor.params);
       preflightDataToolCommand(this.runtime.model, descriptor.commandId, resolved);
       const regions = this.dataRegionsRequiredForCommand(descriptor.commandId, resolved);
       if (regions.length > 0 && descriptor.commandId === 'sheet.autoFilter.sort') {
@@ -1943,7 +1943,7 @@ export class WorkbookSession {
    */
   private async executeCommandAfterMaterialization(commandId: string, params: unknown): Promise<CommandResult> {
     if (this.phase !== 'ready') throw new Error('Workbook is not ready');
-    const resolved = this.resolveCommandContext(commandId, params);
+    const resolved = this.resolveAuthorizedCommandParams(commandId, params);
     preflightDataToolCommand(this.runtime.model, commandId, resolved);
     const regions = this.dataRegionsRequiredForCommand(commandId, resolved);
     if (regions.length > 0) await this.materializeDataRegions(regions);
@@ -2238,13 +2238,18 @@ export class WorkbookSession {
     this.cellEditorRegistry.register(behavior);
   }
 
-  runCommand(commandId: string, params?: unknown): CommandResult {
+  private resolveAuthorizedCommandParams(commandId: string, params?: unknown): unknown {
     if (!this.runtime.commands.registry.hasCommand(commandId)) {
       throw new Error(`Unknown command: ${commandId}`);
     }
     if (requiresServerStructuralPlannerCommand(commandId)) this.assertServerStructuralPlannerReady();
     const resolvedParams = this.resolveCommandContext(commandId, params);
     this.assertPermission(commandId, resolvedParams);
+    return resolvedParams;
+  }
+
+  runCommand(commandId: string, params?: unknown): CommandResult {
+    const resolvedParams = this.resolveAuthorizedCommandParams(commandId, params);
     const result = this.runtime.commands.execute(commandId, resolvedParams);
     if (commandId === 'pivot.refresh') {
       const refreshParams = resolvedParams as { pivotId?: string };
@@ -3865,6 +3870,14 @@ export class WorkbookSession {
       this.dispatch({ commandId: 'sheet.merge.unmerge', params: { sheetId: this.activeSheetId, range } });
       return;
     }
+    const commandId = operation === 'center' ? 'sheet.merge.center' : operation === 'across' ? 'sheet.merge.across' : 'sheet.merge.cells';
+    const commandParams = { sheetId: this.activeSheetId, range, confirmDataLoss: true };
+    try {
+      this.resolveAuthorizedCommandParams(commandId, commandParams);
+    } catch (error) {
+      this.notify(error instanceof Error ? error.message : 'Merge action was rejected');
+      return;
+    }
     const regions = this.dataRegionsIntersectingRanges(this.activeSheetId, [range]);
     if (regions.length > 0) {
       void this.materializeDataRegions(regions)
@@ -3888,7 +3901,7 @@ export class WorkbookSession {
       this.emit();
       return;
     }
-    this.dispatch({ commandId: operation === 'center' ? 'sheet.merge.center' : operation === 'across' ? 'sheet.merge.across' : 'sheet.merge.cells', params: { sheetId: this.activeSheetId, range, confirmDataLoss: true } });
+    this.dispatch({ commandId, params: commandParams });
   }
 
   confirmMergeAction(): void {
@@ -7813,9 +7826,14 @@ export class WorkbookSession {
   }
 
   async createDataSourceFromSelection(): Promise<void> {
-    const sheet = this.runtime.model.getSheet(this.activeSheetId);
+    const sheetId = this.activeSheetId;
+    const sheet = this.runtime.model.getSheet(sheetId);
     const primaryRange = this.getPrimaryRange();
-    const sourceRange = primaryRange.startRow !== primaryRange.endRow || primaryRange.startColumn !== primaryRange.endColumn ? primaryRange : usedRangeOfSheet(sheet);
+    const sourceRange = normalizeRangeRef({
+      ...(primaryRange.startRow !== primaryRange.endRow || primaryRange.startColumn !== primaryRange.endColumn ? primaryRange : usedRangeOfSheet(sheet)),
+      sheetId,
+    });
+    this.resolveAuthorizedCommandParams('dataSource.add', { sheetId, source: { sourceRange } });
     await this.materializeDataRegions(this.dataRegionsIntersectingRanges(sourceRange.sheetId, [sourceRange]));
     const sourceId = nextId('data-source');
     const sheetSnapshot = this.runtime.model.snapshot().sheets.find((candidate) => candidate.id === sheet.id);

@@ -1780,8 +1780,8 @@ Repeatable history migration 将旧 v1-v5 patch 先投影回旧 formula-owner �
 
 ### Materialization preflight follow-up
 
-沿上一节未加载数据的边界继续复核后，确认并修复了三个独立问题：一是 Text-to-Columns 的前置拒绝只在专用 Session helper 中运行，通用 `dispatch()` 仍会先加载整块数据；同时 Remove Duplicates、Subtotal、Split Column 的纯参数/坐标拒绝也发生在 materialize 之后。现在四个工具在两个异步入口共享同一预检，命令执行端复用相同规则。二是 Split Column 只传 row/column，region 解析器却只看 range 类字段，因而退回当前选择区域；现在按实际目标单元格定位数据块。三是这些命令以顶层 `sheetId` 为实际访问对象，但 region 命中原先保留 `range.sheetId`；旧选择身份会漏掉同坐标目标块。常规命令范围现按顶层 sheet 绑定，同时剪贴板的跨表源范围不被重写。
+沿上一节未加载数据的边界继续复核后，确认并修复了五个独立根因：一是纯输入预检并未覆盖通用 `dispatch()`，且 Remove Duplicates、Subtotal、Split Column 的拒绝发生在 materialize 后；现在四个数据工具在两个异步入口共享预检，并由命令复用。二是 Split Column 只传 row/column，region 解析器却只看 range 字段而退回当前选择；现在按实际目标单元格定位数据块。三是命令按顶层 `sheetId` 访问，但 region 匹配保留旧 `range.sheetId`，会漏掉同坐标目标块；常规范围现绑定命令 sheet，剪贴板跨表源仍保留原身份。四是通用 dispatch、异步命令 helper、合并确认和数据源创建在可能加载数据前未统一检查权限/Java planner 在线状态；现在共享 command authorization 在 materialize 前运行，执行前仍二次校验。五是 `dataSource.add/update` 的权限范围推断漏掉嵌套的 `source.sourceRange`，原先退回 A1；现在按真实源范围检查保护，数据源创建也先授权再加载/写入数据块。
 
-六轮静态自审依次复核：①专用 helper 的调用顺序；②公共 dispatch 是否绕过预检；③输入校验是否由命令与 Session 共用；④Split Column 的参数形状与 region 几何是否一致；⑤range identity、命令 sheet 及剪贴板跨表源的边界；⑥拒绝路径是否在加载前返回且不产生命令 mutation，以及有效请求是否仍只在目标 region materialize 后读取值并 fail-close。新增对应的应用层回归源码，**未执行**。
+六轮静态自审依次复核：①列举所有相关异步入口和手工加载点；②验证命令注册、服务在线与角色/保护授权均早于读取准备；③核对四类参数预检在 Session 与 reducer 共用且值依赖检查仍留在执行端；④按实际 row/column 验证 Split Column region 命中；⑤核对 stale range identity 与剪贴板跨表边界；⑥追踪嵌套源范围保护与拒绝后的无加载/无持久化副作用，并复查有效路径二次授权。新增了 dispatcher、权限、目标 region 和保护范围回归源码，**未执行**。
 
-本 follow-up 只修复上述三个边界问题，不冒称达到“每轮至少 30 个真实问题”的审查规模，也不把一个共享预检缺口按四个命令重复计数。Subtotal 的输出大小仍依赖已加载数据中的实际分组；交替重复行仍可能产生大量独立 row-delete 变换；完整 Java 唯一 planner、owner-complete StructuralPatch、性能实测与 Excel 互操作仍未完成。本轮没有运行测试、构建、浏览器或 Excel。
+本 follow-up 只修复上述五个根因，不冒称达到“每轮至少 30 个真实问题”的审查规模，也不把共享预检缺口按四个命令重复计数。Subtotal 输出大小仍依赖已加载数据中的实际分组；交替重复行仍可能产生大量独立 row-delete 变换；完整 Java 唯一 planner、owner-complete StructuralPatch、性能实测与 Excel 互操作仍未完成。本轮没有运行测试、构建、浏览器或 Excel。

@@ -93,6 +93,100 @@ describe('WorkbookSession data tools integration', () => {
     }
   });
 
+  it('checks permission and planner availability before loading block-backed data', async () => {
+    const viewer = new WorkbookSession();
+    const viewerSheetId = viewer.getActiveSheetId();
+    viewer['runtime'].model.getSheet(viewerSheetId).addDataRegion({
+      id: 'viewer-region',
+      sourceId: 'viewer-unloaded-source',
+      range: { sheetId: viewerSheetId, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 },
+      headerRow: 0,
+      revision: 0,
+    });
+    viewer['permission'].applyServerAccess('viewer');
+    viewer['permission'].setOnline(true);
+    let viewerMaterializationCalls = 0;
+    viewer['materializeDataRegions'] = async () => { viewerMaterializationCalls += 1; };
+
+    const viewerResult = await viewer.dispatch({
+      commandId: 'data.textToColumns',
+      params: {
+        sheetId: viewerSheetId,
+        range: { sheetId: viewerSheetId, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 },
+        delimiter: ',',
+        maxColumns: 2,
+      },
+    });
+
+    assert.equal(viewerResult.status, 'rejected');
+    if (viewerResult.status === 'rejected') assert.match(viewerResult.error.message, /permission|viewer|edit/i);
+    assert.equal(viewerMaterializationCalls, 0);
+
+    const offline = new WorkbookSession();
+    const offlineSheetId = offline.getActiveSheetId();
+    offline['runtime'].model.getSheet(offlineSheetId).addDataRegion({
+      id: 'offline-region',
+      sourceId: 'offline-unloaded-source',
+      range: { sheetId: offlineSheetId, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 },
+      headerRow: 0,
+      revision: 0,
+    });
+    let offlineMaterializationCalls = 0;
+    offline['materializeDataRegions'] = async () => { offlineMaterializationCalls += 1; };
+
+    const offlineResult = await offline.dispatch({
+      commandId: 'sheet.rows.insert',
+      params: { sheetId: offlineSheetId, at: 0, count: 1 },
+    });
+
+    assert.equal(offlineResult.status, 'rejected');
+    if (offlineResult.status === 'rejected') assert.match(offlineResult.error.message, /STRUCTURAL_PLANNER_OFFLINE/);
+    assert.equal(offlineMaterializationCalls, 0);
+  });
+
+  it('does not materialize a merge range before checking edit permission', () => {
+    const app = new WorkbookSession();
+    const sheetId = app.getActiveSheetId();
+    app['runtime'].model.getSheet(sheetId).addDataRegion({
+      id: 'protected-merge-region',
+      sourceId: 'protected-merge-source',
+      range: { sheetId, startRow: 0, endRow: 1, startColumn: 0, endColumn: 1 },
+      headerRow: 0,
+      revision: 0,
+    });
+    app['permission'].applyServerAccess('viewer');
+    app['permission'].setOnline(true);
+    selectRange(app, 0, 0, 1, 1);
+    let materializationCalls = 0;
+    app['materializeDataRegions'] = async () => { materializationCalls += 1; };
+
+    app.requestMergeAction('center');
+
+    assert.equal(materializationCalls, 0);
+    assert.match(app.getUiSnapshot().notice, /permission|viewer|edit/i);
+  });
+
+  it('rejects data-source creation before loading or persisting a viewer range', async () => {
+    const app = new WorkbookSession();
+    const sheetId = app.getActiveSheetId();
+    app['runtime'].model.getSheet(sheetId).addDataRegion({
+      id: 'viewer-source-region',
+      sourceId: 'viewer-source-blocks',
+      range: { sheetId, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 },
+      headerRow: 0,
+      revision: 0,
+    });
+    app['permission'].applyServerAccess('viewer');
+    app['permission'].setOnline(true);
+    let materializationCalls = 0;
+    app['materializeDataRegions'] = async () => { materializationCalls += 1; };
+
+    await assert.rejects(() => app.createDataSourceFromSelection(), /permission|viewer|structure/i);
+
+    assert.equal(materializationCalls, 0);
+    assert.equal(app['runtime'].model.dataModel.sources.size, 0);
+  });
+
   it('materializes the addressed cell region for splitColumn, not the current selection region', async () => {
     const app = new WorkbookSession();
     const sheetId = app.getActiveSheetId();

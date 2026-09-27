@@ -1631,13 +1631,6 @@ function preflightSplitColumn(workbook: WorkbookModel, params: SplitColumnParams
   if (!Number.isSafeInteger(requestedMaxColumns) || requestedMaxColumns < 1) throw new Error('Split Column maxColumns must be a positive safe integer');
   const maxColumns = Math.max(2, requestedMaxColumns);
   if (params.column + maxColumns > MAX_SHEET_COLUMN_COUNT) throw new Error('Split Column exceeds worksheet bounds');
-  assertBoundedMutationArea({
-    sheetId: params.sheetId,
-    startRow: params.row,
-    endRow: params.row,
-    startColumn: params.column,
-    endColumn: params.column + maxColumns - 1,
-  }, 'Split Column');
 }
 
 export function preflightDataToolCommand(workbook: WorkbookModel, commandId: string, params: unknown): void {
