@@ -300,6 +300,22 @@ test('reference parser rejects incomplete reference syntax without swallowing it
   }
 });
 
+test('structural rewrite respects Unicode sheet names and identifier boundaries', () => {
+  const formula = parseFormula('=销售!A1+其他!A1+A1变量+A1.name+A1$part+A1𐐀+A١+A$١');
+  const rewritten = formatFormula(mapAstStructuralReferences(formula, {
+    shift: { axis: 'row', at: 0, count: 1, op: 'insert' },
+    ownerSheetId: 'sales-id',
+    targetSheetId: 'sales-id',
+    targetSheetName: '销售',
+    sheetOrder: [
+      { id: 'sales-id', name: '销售' },
+      { id: 'other-id', name: '其他' },
+    ],
+  }));
+
+  assert.equal(rewritten, "='销售'!A2+'其他'!A1+A1变量+A1.name+A1$part+A1𐐀+A١+A$١");
+});
+
 test('whole-axis parser accepts Excel limits and rejects endpoints outside the reference domain', () => {
   assert.equal(formatFormula(parseFormula('=SUM($XFD:XFD,$1048576:1048576)')), '=SUM($XFD:XFD,$1048576:1048576)');
   for (const formula of ['=SUM(XFE:XFE)', '=SUM(A:XFE)', '=SUM(1048577:1048577)', '=SUM(1:$1048577)', '=SUM(0:1)', '=SUM(Revenue:Other)']) {

@@ -464,7 +464,7 @@ final class FormulaReferenceTransformer {
                 continue;
             }
             if (isTableIdentifierStart(current)
-                    && (index == 0 || !isReferenceNamePart(formula.charAt(index - 1)))) {
+                    && (index == 0 || !isReferenceNamePart(formula.codePointBefore(index)))) {
                 int nameEnd = scanTableIdentifier(formula, index);
                 int referenceStart = nameEnd;
                 while (referenceStart < formula.length() && Character.isWhitespace(formula.charAt(referenceStart))) referenceStart += 1;
@@ -495,8 +495,13 @@ final class FormulaReferenceTransformer {
     }
 
     private static int scanTableIdentifier(String formula, int start) {
-        int end = start + 1;
-        while (end < formula.length() && isReferenceNamePart(formula.charAt(end))) end += 1;
+        int firstCodePoint = formula.codePointAt(start);
+        int end = start + Character.charCount(firstCodePoint);
+        while (end < formula.length()) {
+            int codePoint = formula.codePointAt(end);
+            if (!isReferenceNamePart(codePoint)) break;
+            end += Character.charCount(codePoint);
+        }
         return end;
     }
 
@@ -554,7 +559,7 @@ final class FormulaReferenceTransformer {
                     continue;
                 }
             }
-            if (index > 0 && isReferenceNamePart(formula.charAt(index - 1))) {
+            if (index > 0 && isReferenceNamePart(formula.codePointBefore(index))) {
                 output.append(current);
                 index += 1;
                 continue;
@@ -582,9 +587,14 @@ final class FormulaReferenceTransformer {
             }
             if (parsed == null) parsed = parseReference(formula, index, null, null);
             if (parsed == null) {
-                if (isSheetIdentifierStart(current)) {
-                    int end = index + 1;
-                    while (end < formula.length() && isSheetIdentifierPart(formula.charAt(end))) end += 1;
+                int codePoint = formula.codePointAt(index);
+                if (isSheetIdentifierStart(codePoint)) {
+                    int end = index + Character.charCount(codePoint);
+                    while (end < formula.length()) {
+                        int nextCodePoint = formula.codePointAt(end);
+                        if (!isSheetIdentifierPart(nextCodePoint)) break;
+                        end += Character.charCount(nextCodePoint);
+                    }
                     output.append(formula, index, end);
                     index = end;
                     continue;
@@ -702,10 +712,15 @@ final class FormulaReferenceTransformer {
 
     private static int consumeExternalReference(String formula, int start) {
         int closingBook = formula.indexOf(']', start + 1);
-        if (closingBook <= start + 1 || closingBook + 1 >= formula.length()
-                || !isSheetIdentifierStart(formula.charAt(closingBook + 1))) return -1;
-        int cursor = closingBook + 2;
-        while (cursor < formula.length() && isSheetIdentifierPart(formula.charAt(cursor))) cursor += 1;
+        if (closingBook <= start + 1 || closingBook + 1 >= formula.length()) return -1;
+        int firstCodePoint = formula.codePointAt(closingBook + 1);
+        if (!isSheetIdentifierStart(firstCodePoint)) return -1;
+        int cursor = closingBook + 1 + Character.charCount(firstCodePoint);
+        while (cursor < formula.length()) {
+            int codePoint = formula.codePointAt(cursor);
+            if (!isSheetIdentifierPart(codePoint)) break;
+            cursor += Character.charCount(codePoint);
+        }
         if (cursor >= formula.length() || formula.charAt(cursor) != '!') return -1;
         ParsedReference external = parseReference(formula, cursor + 1, null, null);
         if (external != null) return external.endIndex();
@@ -916,7 +931,7 @@ final class FormulaReferenceTransformer {
 
     private static WholeAxisReference parseWholeAxisReference(String formula, int start) {
         if (start < 0 || start >= formula.length()) return null;
-        if (start > 0 && isReferenceNamePart(formula.charAt(start - 1))) return null;
+        if (start > 0 && isReferenceNamePart(formula.codePointBefore(start))) return null;
 
         int cursor = start;
         if (formula.charAt(cursor) == '$') cursor += 1;
@@ -932,7 +947,7 @@ final class FormulaReferenceTransformer {
             int secondStart = cursor;
             while (cursor < formula.length() && isAsciiLetter(formula.charAt(cursor))) cursor += 1;
             if (secondStart == cursor || cursor - secondStart > 3 || columnIndex(formula, secondStart, cursor) > MAX_COLUMN
-                    || (cursor < formula.length() && isReferenceNamePart(formula.charAt(cursor)))) return null;
+                    || (cursor < formula.length() && isReferenceNamePart(formula.codePointAt(cursor)))) return null;
             return new WholeAxisReference(Axis.COLUMN, startColumn, columnIndex(formula, secondStart, cursor),
                     start, firstStart, secondStart, cursor);
         }
@@ -940,7 +955,7 @@ final class FormulaReferenceTransformer {
         cursor = start;
         if (formula.charAt(cursor) == '$') cursor += 1;
         int rowStart = cursor;
-        while (cursor < formula.length() && Character.isDigit(formula.charAt(cursor))) cursor += 1;
+        while (cursor < formula.length() && isAsciiDigit(formula.charAt(cursor))) cursor += 1;
         if (rowStart == cursor || cursor >= formula.length() || formula.charAt(cursor) != ':') return null;
         if (!validWholeRowIndex(formula, rowStart, cursor)) return null;
         int firstEnd = cursor;
@@ -948,9 +963,9 @@ final class FormulaReferenceTransformer {
         cursor += 1;
         if (cursor < formula.length() && formula.charAt(cursor) == '$') cursor += 1;
         int secondStart = cursor;
-        while (cursor < formula.length() && Character.isDigit(formula.charAt(cursor))) cursor += 1;
+        while (cursor < formula.length() && isAsciiDigit(formula.charAt(cursor))) cursor += 1;
         if (secondStart == cursor || !validWholeRowIndex(formula, secondStart, cursor)
-                || (cursor < formula.length() && isReferenceNamePart(formula.charAt(cursor)))) return null;
+                || (cursor < formula.length() && isReferenceNamePart(formula.codePointAt(cursor)))) return null;
         int endRow = (int) Long.parseLong(formula.substring(secondStart, cursor)) - 1;
         return new WholeAxisReference(Axis.ROW, startRow, endRow, start, rowStart, secondStart, cursor);
     }
@@ -964,8 +979,8 @@ final class FormulaReferenceTransformer {
         }
     }
 
-    private static boolean isReferenceNamePart(char value) {
-        return Character.isLetterOrDigit(value) || value == '_' || value == '.';
+    private static boolean isReferenceNamePart(int codePoint) {
+        return isUnicodeLetterOrNumber(codePoint) || codePoint == '_' || codePoint == '.' || codePoint == '$';
     }
 
     private static int consumeString(String formula, int start) {
@@ -1006,9 +1021,14 @@ final class FormulaReferenceTransformer {
             }
             return null;
         }
-        if (!isSheetIdentifierStart(formula.charAt(start))) return null;
-        int index = start + 1;
-        while (index < formula.length() && isSheetIdentifierPart(formula.charAt(index))) index += 1;
+        int firstCodePoint = formula.codePointAt(start);
+        if (!isSheetIdentifierStart(firstCodePoint)) return null;
+        int index = start + Character.charCount(firstCodePoint);
+        while (index < formula.length()) {
+            int codePoint = formula.codePointAt(index);
+            if (!isSheetIdentifierPart(codePoint)) break;
+            index += Character.charCount(codePoint);
+        }
         return new SheetPrefix(formula.substring(start, index), formula.substring(start, index), index);
     }
 
@@ -1028,9 +1048,14 @@ final class FormulaReferenceTransformer {
             }
             return formula.length();
         }
-        if (!isSheetIdentifierStart(current)) return start + 1;
-        int index = start + 1;
-        while (index < formula.length() && isSheetIdentifierPart(formula.charAt(index))) index += 1;
+        int firstCodePoint = formula.codePointAt(start);
+        if (!isSheetIdentifierStart(firstCodePoint)) return start + Character.charCount(firstCodePoint);
+        int index = start + Character.charCount(firstCodePoint);
+        while (index < formula.length()) {
+            int codePoint = formula.codePointAt(index);
+            if (!isSheetIdentifierPart(codePoint)) break;
+            index += Character.charCount(codePoint);
+        }
         return index;
     }
 
@@ -1069,7 +1094,7 @@ final class FormulaReferenceTransformer {
             index += 1;
         }
         int rowStart = index;
-        while (index < formula.length() && Character.isDigit(formula.charAt(index))) index += 1;
+        while (index < formula.length() && isAsciiDigit(formula.charAt(index))) index += 1;
         if (rowStart == index) return null;
         long rowOneBased;
         try {
@@ -1078,7 +1103,7 @@ final class FormulaReferenceTransformer {
             return null;
         }
         if (rowOneBased < 1 || rowOneBased > MAX_ROW + 1L) return null;
-        if (index < formula.length() && (isAsciiLetter(formula.charAt(index)) || formula.charAt(index) == '_' || Character.isDigit(formula.charAt(index)))) return null;
+        if (index < formula.length() && isReferenceNamePart(formula.codePointAt(index))) return null;
         String coordinate = formula.substring(start, index);
         return new ParsedCell(new Reference(sheetName, rawPrefix, (int) rowOneBased - 1, column, absoluteRow, absoluteColumn), coordinate, index);
     }
@@ -1129,7 +1154,7 @@ final class FormulaReferenceTransformer {
         boolean simple = !name.isEmpty();
         for (int index = 0; index < name.length(); index++) {
             char current = name.charAt(index);
-            if (!isSheetIdentifierPart(current)) {
+            if (!isAsciiLetter(current) && !Character.isDigit(current) && current != '_' && current != '.') {
                 simple = false;
                 break;
             }
@@ -1152,12 +1177,23 @@ final class FormulaReferenceTransformer {
         return (value >= 'A' && value <= 'Z') || (value >= 'a' && value <= 'z');
     }
 
-    private static boolean isSheetIdentifierStart(char value) {
-        return isAsciiLetter(value) || value == '_';
+    private static boolean isAsciiDigit(char value) {
+        return value >= '0' && value <= '9';
     }
 
-    private static boolean isSheetIdentifierPart(char value) {
-        return isAsciiLetter(value) || Character.isDigit(value) || value == '_' || value == '.';
+    private static boolean isUnicodeLetterOrNumber(int codePoint) {
+        return Character.isLetter(codePoint) || switch (Character.getType(codePoint)) {
+            case Character.DECIMAL_DIGIT_NUMBER, Character.LETTER_NUMBER, Character.OTHER_NUMBER -> true;
+            default -> false;
+        };
+    }
+
+    private static boolean isSheetIdentifierStart(int codePoint) {
+        return Character.isLetter(codePoint) || codePoint == '_' || codePoint == '$';
+    }
+
+    private static boolean isSheetIdentifierPart(int codePoint) {
+        return isUnicodeLetterOrNumber(codePoint) || codePoint == '_' || codePoint == '.' || codePoint == '$';
     }
 
     enum Axis { ROW, COLUMN }

@@ -163,6 +163,18 @@ class FormulaReferenceTransformerTest {
     }
 
     @Test
+    void structuralRewriteRespectsUnicodeSheetNamesAndIdentifierBoundaries() {
+        FormulaReferenceTransformer.SheetIdentity sales = new FormulaReferenceTransformer.SheetIdentity("sales-id", "销售");
+        String formula = "=销售!A1+其他!A1+A1变量+A1.name+A1$part+A1𐐀+A١+A$١";
+
+        assertEquals("=销售!A2+其他!A1+A1变量+A1.name+A1$part+A1𐐀+A١+A$١",
+                FormulaReferenceTransformer.remapAxis(formula, sales, sales,
+                        FormulaReferenceTransformer.Axis.ROW, 0, 1,
+                        FormulaReferenceTransformer.Direction.INSERT));
+        assertEquals("='New Name'!A1", FormulaReferenceTransformer.renameSheet("=销售!A1", "销售", "New Name"));
+    }
+
+    @Test
     void threeDimensionalBoundariesResolveNamesBeforeCrossCollidingIds() {
         List<FormulaReferenceTransformer.SheetIdentity> order = List.of(
                 new FormulaReferenceTransformer.SheetIdentity("start-id", "Start"),
