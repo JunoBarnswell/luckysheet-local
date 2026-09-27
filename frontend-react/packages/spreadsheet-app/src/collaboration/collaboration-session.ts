@@ -142,6 +142,13 @@ export class CollaborationSession {
     return this.baseRevision;
   }
 
+  assertNextRevision(revision: number): void {
+    const expected = this.baseRevision + 1;
+    if (!Number.isSafeInteger(revision) || revision !== expected) {
+      throw new Error(`COLLABORATION_REVISION_GAP: expected revision ${expected}, received ${revision}`);
+    }
+  }
+
   /** 本地命令执行后 enqueue operation；ranges 只用于本地 OT，不进入 wire。 */
   enqueueLocalMutations(
     mutations: MutationInfo[],
@@ -214,6 +221,7 @@ export class CollaborationSession {
       this.baseRevision = Math.max(this.baseRevision, operation.revision);
       return;
     }
+    this.assertNextRevision(operation.revision);
     if (pendingLocal) {
       this.applyValidatedStructuralPatches(operation);
       this.acknowledge(operation.operationId, operation.revision);
@@ -326,9 +334,15 @@ export class CollaborationSession {
   }
 
   /** Load server history before replaying restored offline operations. */
-  loadCommittedHistory(operations: readonly CommittedOperationEnvelope[]): void {
+  loadCommittedHistory(operations: readonly CommittedOperationEnvelope[], appliedThroughRevision: number): void {
+    if (!Number.isSafeInteger(appliedThroughRevision) || appliedThroughRevision < 0) {
+      throw new Error('COLLABORATION_HISTORY_REVISION_INVALID: applied-through revision must be a non-negative safe integer');
+    }
     const ordered = [...operations].sort((left, right) => left.revision - right.revision);
     for (const operation of ordered) this.assertCommittedOperation(operation);
+    if (ordered.some((operation) => operation.revision > appliedThroughRevision)) {
+      throw new Error(`COLLABORATION_HISTORY_AHEAD_OF_MODEL: history exceeds applied revision ${appliedThroughRevision}`);
+    }
     const pendingOperationIds = new Set(this.offlineQueue.getPendingOperationIds());
     const acknowledgedPending: string[] = [];
     for (const operation of ordered) {

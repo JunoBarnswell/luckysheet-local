@@ -1344,15 +1344,17 @@ export function replayPendingOperations(
   return applied;
 }
 
-async function loadHistoryAndReplayPending(runtime: SpreadsheetRuntime): Promise<void> {
-  const pending = runtime.collaboration?.getPendingOperations() ?? [];
+export async function loadHistoryAndReplayPending(runtime: SpreadsheetRuntime, hydratedRevision: number): Promise<void> {
+  const collaboration = runtime.collaboration;
+  if (!collaboration) throw new Error('COLLABORATION_SESSION_REQUIRED: recovery history cannot be applied without a session');
+  const pending = collaboration.getPendingOperations();
   for (const operation of pending) {
     const result = await runtime.api.getOperationResult(runtime.model.unitId, operation.operationId);
     if (result) {
       assertOperationResultMatches(operation, result.operation);
-      runtime.collaboration?.applyCommittedStructuralPatches(result.operation);
+      collaboration.applyCommittedStructuralPatches(result.operation);
       await runtime.recoveryJournal?.confirm(operation, result.operation.revision);
-      runtime.collaboration?.acknowledge(operation.operationId, result.operation.revision);
+      collaboration.acknowledge(operation.operationId, result.operation.revision);
       runtime.remoteRevision = Math.max(runtime.remoteRevision, result.operation.revision);
       runtime.ownOperationIds.delete(operation.operationId);
       await runtime.recoveryJournal?.flushed();
@@ -1363,13 +1365,42 @@ async function loadHistoryAndReplayPending(runtime: SpreadsheetRuntime): Promise
     }
   }
   await runtime.flushCheckpoint();
-  const unresolvedSessions = new Set(runtime.collaboration?.getPendingOperations().map(operation => operation.clientSessionId));
+  const unresolvedSessions = new Set(collaboration.getPendingOperations().map(operation => operation.clientSessionId));
   if (unresolvedSessions.size > 1) {
     throw new Error('RECOVERY_SESSION_CONFLICT: 多个已关闭页面存在未确认修改；草稿已保留，请分别核对恢复分支，不能自动混合提交');
   }
   const revisions = await runtime.api.listRevisions(runtime.model.unitId);
-  runtime.collaboration?.loadCommittedHistory(revisions.map(record => record.payload));
+  const latestHistoryRevision = revisions.reduce((latest, record) => Math.max(latest, record.revision), hydratedRevision);
+  if (latestHistoryRevision < runtime.remoteRevision) {
+    throw new Error(`RECOVERY_HISTORY_BEHIND_SNAPSHOT: history ends before committed revision ${runtime.remoteRevision}`);
+  }
+  if (latestHistoryRevision > hydratedRevision) {
+    const latestSnapshot = await runtime.api.getRevisionSnapshot(runtime.model.unitId, latestHistoryRevision);
+    if (latestSnapshot.revision !== latestHistoryRevision) {
+      throw new Error(`RECOVERY_SNAPSHOT_REVISION_MISMATCH: requested ${latestHistoryRevision}, received ${latestSnapshot.revision}`);
+    }
+    hydrateRuntime(runtime, latestSnapshot);
+    await runtime.flushCheckpoint();
+  }
+
+  const committedById = new Map(revisions.map(record => [record.payload.operationId, record.payload]));
+  for (const operation of collaboration.getPendingOperations()) {
+    const committed = committedById.get(operation.operationId);
+    if (!committed) continue;
+    assertOperationResultMatches(operation, committed);
+    await runtime.recoveryJournal?.confirm(operation, committed.revision);
+    runtime.ownOperationIds.delete(operation.operationId);
+    serverCheckpoint(runtime).request(committed.revision);
+  }
+  await runtime.recoveryJournal?.flushed();
+
+  const appliedHistory = revisions.filter(record => record.revision <= runtime.remoteRevision);
+  collaboration.loadCommittedHistory(appliedHistory.map(record => record.payload), runtime.remoteRevision);
   runtime.handlers.onRemoteRevisions?.(revisions);
+  const stalePending = collaboration.getPendingOperations().find(operation => operation.baseRevision !== runtime.remoteRevision);
+  if (stalePending) {
+    throw new Error(`RECOVERY_REVISION_CONFLICT: ${stalePending.operationId}，恢复草稿保留，请核对服务器版本后处理`);
+  }
   replayPendingOperations(runtime);
 }
 
@@ -1444,8 +1475,13 @@ export function startCollaborationSession(
       if (message.type === 'revision.created') {
         if (synchronizationFailed) return;
         if (message.payload.unitId !== runtime.model.unitId || message.revision <= runtime.remoteRevision) return;
-        if (runtime.ownOperationIds.has(message.payload.operationId)) return;
-        try { runtime.collaboration?.applyRemote(message.payload); }
+        try {
+          const collaboration = runtime.collaboration;
+          if (!collaboration) throw new Error('COLLABORATION_SESSION_REQUIRED: revision cannot be applied without a session');
+          collaboration.assertNextRevision(message.revision);
+          if (runtime.ownOperationIds.has(message.payload.operationId)) return;
+          collaboration.applyRemote(message.payload);
+        }
         catch (error) {
           synchronizationFailed = true;
           runtime.remoteConnected = false;
@@ -1501,7 +1537,7 @@ export function startCollaborationSession(
         runtime.handlers.onAccessRole?.(access.role);
         hydrateRuntime(runtime, snapshot);
         runtime.collaboration?.setRevision(snapshot.revision);
-        await loadHistoryAndReplayPending(runtime);
+        await loadHistoryAndReplayPending(runtime, snapshot.revision);
         if (!active || runtime.disposed) return;
         synchronizing = false;
         for (const message of deferredMessages.splice(0)) applyRemote(message);
@@ -1693,7 +1729,7 @@ async function initializePersistence(runtime: SpreadsheetRuntime, isActive: () =
     runtime.localOnly = false;
     runtime.remoteSyncRequested = true;
     replaceCollaborationSession(runtime, localRecord);
-    await loadHistoryAndReplayPending(runtime);
+    await loadHistoryAndReplayPending(runtime, snapshotResponse.revision);
     if (!isActive()) return;
       runtime.remoteConnected = false;
       if (isActive()) {

@@ -2963,11 +2963,16 @@ export function decodeOperationMessage(input: string): OperationMessage {
   switch (message.type) {
     case 'revision.created':
       if (!Number.isSafeInteger(message.revision) || Number(message.revision) < 1) throw new Error('revision.created requires revision');
-      return {
-        type: 'revision.created',
-        payload: validateCommittedOperationEnvelope(message.payload),
-        revision: Number(message.revision),
-      };
+      {
+        const revision = Number(message.revision);
+        const payload = validateCommittedOperationEnvelope(message.payload);
+        if (payload.revision !== revision) throw new Error('revision.created revision must match payload revision');
+        return {
+          type: 'revision.created',
+          payload,
+          revision,
+        };
+      }
     case 'presence.updated':
     case 'cursor.updated':
       if (!isNonEmptyString(message.unitId)) throw new Error(`${message.type} requires unitId`);

@@ -2021,3 +2021,15 @@ wire 与提交端也不能直接把 Java 规划出的不同结果送回：`Opera
 六轮静态复核：①单个 revision 失败后同连接后续 revision 在 revision guard 被忽略；②同步期间延期事件仍先排队，失败后 drain 中剩余事件也受同一 guard 阻止；③snapshot/access/history/recovery journal 任一 bootstrap error 都置锁存并停用编辑；④新 socket open 后锁存仅在 snapshot hydration/replay 前为同步流程复位，消息仍延期；⑤只有权威快照、历史、pending replay 和延期 revision 成功后才 mark synchronized 并清除退避；⑥用户 dispose/close 后不会因迟到的 REST reject 再连接，正常网络 close 仍沿原自动退避链路；重复的 pending-revision conflict 不会触发无界主动重连。此次只计 1 个新根因，仍低于每轮至少 30 项诉求；未将 socket、REST、deferred queue 分别重复计数。
 
 未运行测试、build、typecheck、浏览器、Excel 或性能实测；`git diff --check` 与最终 PR CI 状态须在提交阶段另行记录。该同步修复不代表 owner-complete patch、Java 唯一结构规划权或整体 structural acceptance 已完成；PR #345 继续保持 draft。
+
+### 2026-09-28 continuation — collaboration revision continuity and snapshot/history boundary
+
+沿 Redis Pub/Sub → WebSocket `revision.created` → runtime dispatch → `CollaborationSession` → snapshot/history bootstrap 复核，确认并修复 **3 个独立根因**：
+
+1. **实时 revision 缺口会被当作连续流继续应用。** 客户端只忽略 `revision <= remoteRevision`，而 Redis Pub/Sub/单个 WebSocket 投递可能丢失或乱序；接收 revision N+2 时没有要求本地模型已应用 N+1。现在 revision 必须恰好是模型当前 revision 的后继，否则沿既有冲突锁存和重连快照流程恢复；本客户端待确认 operation 的事件也先经过该检查，避免自有事件跳过保护。
+2. **revision 外层字段与 envelope 字段互不校验。** `decodeOperationMessage` 分别验证了消息 revision 和 payload，但允许两者不同，runtime 与 mutation applier 因而可能采用两个版本号。现在不相等即拒绝；测试源码覆盖该 malformed frame。
+3. **快照和历史分两次读取时可能跨越提交。** snapshot 在 revision S 返回后，history 查询可能已经包含 S+1；此前 `loadCommittedHistory` 会把它标为模型已应用，尽管 workbook 仍是 S 的内容，后续缺失事件还可能静默留下旧模型。bootstrap 现在根据 history 的最高 revision 拉取该精确 revision 的权威快照，验证返回 revision，重新 hydrate 后才加载不超过模型 revision 的 history；仍待处理且 baseRevision 落后于权威快照的草稿 fail-close 保留，不直接套用到新状态。history 中在结果查询之后刚提交的 pending operation 也先核对 request identity 并确认 recovery journal。
+
+六轮静态复核：①外层/payload revision equality、safe integer 与旧消息过滤次序；②当前模型 revision 与 CollaborationSession 已知历史 revision 的区别；③丢失、乱序、重复事件和自有 ACK 事件的后继检查；④snapshot→history 并发提交时精确 revision snapshot、hydrate、history 筛选顺序；⑤pending operation 在结果查询前后提交、journal confirm、queue acknowledge 与 stale-base 保留；⑥deferred revision drain 只在权威 snapshot revision 上连续推进，任一缺口仍进入既有只读/重同步路径。新增 TypeScript 回归源码覆盖跳号原子拒绝、history 超前模型拒绝及外层/payload revision 不匹配。
+
+本轮 3 个根因仍未达到用户希望的每轮至少 30 个真实问题；没有把三个同步边界的跨层调用点重复计数。仅静态阅读和添加回归源码，未运行测试、build、typecheck、浏览器、Excel 或性能实测；`git diff --check` 通过。唯一 Java 结构规划、完整 StructuralPatch 与最终实测仍未完成，PR #345 保持 draft。

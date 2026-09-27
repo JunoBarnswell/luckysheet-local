@@ -5,7 +5,7 @@ import { WorkbookModel } from '@react-sheets/core-model';
 import { createCellSetMutationParams, createPasteSpecialSpec } from '@react-sheets/sheet-features';
 import { registerSpreadsheetFeatures } from './feature-registry';
 import { DrawingRuntime } from './features/drawing';
-import { hydrateRuntime } from './runtime';
+import { disposeSpreadsheetRuntime, hydrateRuntime, loadHistoryAndReplayPending } from './runtime';
 import { createRemoteReadySessionFixture } from './session-test-fixtures';
 import { WorkbookSession } from './workbook-session';
 import { CollaborationSession } from './collaboration/collaboration-session';
@@ -118,6 +118,99 @@ describe('WorkbookSession collaboration integration', () => {
     });
     assert.equal(workbook.getSheet('sheet-1').cells.get(0, 0)?.value, 'remote');
     assert.equal(runtime.undo(), false);
+  });
+
+  it('rejects a skipped remote revision before applying its mutations', () => {
+    const workbook = new WorkbookModel('wb-collab-gap', 'Collab revision gap');
+    const runtime = new CommandRuntime(workbook);
+    registerSpreadsheetFeatures(runtime, new DrawingRuntime());
+    const session = new CollaborationSession(runtime);
+
+    const skippedRevision = {
+      schema: 'OperationEnvelope', clientSessionId: 'fixture-session',
+      operationId: 'remote-op-after-gap',
+      unitId: 'wb-collab-gap',
+      actorId: 'actor-2',
+      origin: 'client',
+      clientSequence: 2,
+      baseRevision: 1,
+      revision: 2,
+      committedAt: new Date().toISOString(),
+      mutations: [{
+        id: 'cell.set',
+        sheetId: 'sheet-1',
+        params: createCellSetMutationParams(
+          workbook.getSheet('sheet-1'),
+          { sheetId: 'sheet-1', row: 0, column: 0, value: { value: 'must-not-apply' } },
+          'external-sync',
+        ),
+        affectedRanges: [{ sheetId: 'sheet-1', startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }],
+      }],
+      createdAt: new Date().toISOString(),
+    } as const;
+    assert.throws(() => session.applyRemote(skippedRevision), /COLLABORATION_REVISION_GAP: expected revision 1, received 2/);
+    assert.throws(() => session.loadCommittedHistory([skippedRevision], 0), /COLLABORATION_HISTORY_AHEAD_OF_MODEL/);
+
+    assert.equal(workbook.getSheet('sheet-1').cells.get(0, 0), undefined);
+    assert.equal(session.getRevision(), 0);
+  });
+
+  it('hydrates the latest exact snapshot when commits race the initial snapshot read', async () => {
+    const runtime = createSpreadsheetRuntime({ unitId: 'wb-bootstrap-race', localOnly: false });
+    try {
+      const serverWorkbook = new WorkbookModel('wb-bootstrap-race', 'Concurrent server state');
+      const sheetId = serverWorkbook.primarySheetId;
+      const mutationParams = createCellSetMutationParams(
+        serverWorkbook.getSheet(sheetId),
+        { sheetId, row: 4, column: 2, value: { value: 'revision-one' } },
+        'external-sync',
+      );
+      serverWorkbook.getSheet(sheetId).cells.set(4, 2, { value: 'revision-one' });
+      const operation = {
+        schema: 'OperationEnvelope' as const,
+        clientSessionId: 'fixture-session',
+        operationId: 'commit-after-snapshot',
+        unitId: serverWorkbook.unitId,
+        actorId: 'actor-2',
+        origin: 'client' as const,
+        clientSequence: 1,
+        baseRevision: 0,
+        revision: 1,
+        createdAt: new Date().toISOString(),
+        committedAt: new Date().toISOString(),
+        mutations: [{
+          id: 'cell.set',
+          sheetId,
+          params: mutationParams,
+          affectedRanges: [{ sheetId, startRow: 4, endRow: 4, startColumn: 2, endColumn: 2 }],
+        }],
+      };
+      const snapshot = { unitId: serverWorkbook.unitId, snapshot: serverWorkbook.snapshot(), revision: 1, checksum: 'fixture' };
+      let requestedRevision: number | undefined;
+      runtime.api = {
+        getOperationResult: async () => null,
+        listRevisions: async () => [{
+          operationId: operation.operationId,
+          revision: operation.revision,
+          committedAt: operation.committedAt,
+          payload: operation,
+        }],
+        getRevisionSnapshot: async (_unitId: string, revision: number) => {
+          requestedRevision = revision;
+          return snapshot;
+        },
+      } as unknown as typeof runtime.api;
+      runtime.collaboration = new CollaborationSession(runtime.commands);
+      hydrateRuntime(runtime, { ...snapshot, snapshot: new WorkbookModel('wb-bootstrap-race', 'Initial').snapshot(), revision: 0 });
+
+      await loadHistoryAndReplayPending(runtime, 0);
+
+      assert.equal(requestedRevision, 1);
+      assert.equal(runtime.remoteRevision, 1);
+      assert.equal(runtime.model.getSheet(sheetId).cells.get(4, 2)?.value, 'revision-one');
+    } finally {
+      disposeSpreadsheetRuntime(runtime);
+    }
   });
 
   it('replays an authoritative sheet-rename patch without rebuilding the formula engine', async () => {

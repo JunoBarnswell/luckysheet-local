@@ -206,6 +206,11 @@ test('committed structural patches and impact ranges survive collaboration decod
   ]);
   assert.throws(() => decodeOperationMessage(JSON.stringify({
     type: 'revision.created',
+    revision: 3,
+    payload: decoded.payload,
+  })), /revision must match payload revision/);
+  assert.throws(() => decodeOperationMessage(JSON.stringify({
+    type: 'revision.created',
     revision: 2,
     payload: {
       ...decoded.payload,
