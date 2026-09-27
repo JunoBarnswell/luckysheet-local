@@ -970,8 +970,9 @@ export function attachCoreListeners(runtime: SpreadsheetRuntime): void {
         ? mutation.affectedRanges.filter((range) => range.sheetId === mutation.sheetId)
         : mutation.id === 'sheetTable.update'
           ? (structuralEffect?.rangeOwnerDeltas ?? [])
-            .filter((delta) => delta.ownerKind === 'sheet-table' && delta.sheetId === mutation.sheetId)
-            .flatMap((delta) => [delta.before, delta.after])
+            .flatMap((delta) => delta.ownerKind === 'sheet-table' && delta.sheetId === mutation.sheetId
+              ? [delta.before, delta.after]
+              : [])
           : [];
       const spillBlockerGeometryChanged = spillBlockerGeometryRanges.length > 0;
       if (spillBlockerGeometryChanged) {
