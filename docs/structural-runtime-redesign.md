@@ -2227,6 +2227,10 @@ history AutoFilter 专用变换现要求主 range、sortState.ref 及每个 cond
 
 新增 `contracts/native-document-structural-capability.json` 作为能力策略源，由合同生成器产出 TS 与 Java 表示；导入/导出 feature ID、前端结构阻断列表、worksheet/workbook control extension 的 URI→容器→item→relationship owner 均改为读取该源。生成器验证 blocking feature 引用、唯一列表、节点 policy 所属范围及 extension owner 的必需字段，减少人工同步造成的前后端分叉。
 
-六轮静态自审：①检查 JSON→生成器→TS/Java 输出同一 schemaVersion 与 blocking feature 集；②检查 XML 文档根必须是唯一直接 root，并确认 parser 的宽松多根行为不再绕过检测；③逐查必需 part 缺失、错误 root、root 属性、重复 singleton 的失败分支均产出阻断 feature；④对照 `buildWorksheetXml` 逐项核实 `sheetCalcPr`、`phoneticPr`、`legacyDrawing` 和未拥有的 `sheetPr`/`sheetFormatPr` 值不会继续落入“安全保留”路径；⑤核对 `import.ts`、`export.ts`、能力报告与结构 guard 的 feature/extension owner 使用同一生成策略；⑥重查 Java 服务提交入口：生成的 Java policy 当前仍没有 verifier 消费者，`WorkbookOperationService` 仍未检查服务端 artifact capability，故明确保持这项架构缺口未完成。
+六轮静态自审：①检查 JSON→生成器→TS/Java 输出同一 policy revision 与 blocking feature 集；②检查 XML 文档根必须是唯一直接 root，并确认 parser 的宽松多根行为不再绕过检测；③逐查必需 part 缺失、错误 root、root 属性、重复 singleton 的失败分支均产出阻断 feature；④对照 `buildWorksheetXml` 逐项核实 `sheetCalcPr`、`phoneticPr`、`legacyDrawing` 和未拥有的 `sheetPr`/`sheetFormatPr` 值不会继续落入“安全保留”路径；⑤核对 `import.ts`、`export.ts`、能力报告与结构 guard 的 feature/extension owner 使用同一生成策略；⑥重查 Java 服务提交入口：生成的 Java policy 当前仍没有 verifier 消费者，`WorkbookOperationService` 仍未检查服务端 artifact capability，故明确保持这项架构缺口未完成。
 
 本批确认并修复 12 个独立静态问题；仍未达到“每轮至少 30 个独立真实问题”的目标，不把同一根因的调用点重复计数。剩余直接风险包括 `sheetViews`/DrawingML anchor 的完整 owner 验证、chart/pivot preservation 条件进入共享契约，以及服务端 checksum-bound capability record 与 Java-first StructuralPatch。仅运行了确定性合同生成和 `git diff --check`；未运行测试、typecheck、build、浏览器、Excel 或 benchmark。PR #345 仍为 draft，goal active。
+
+### CI follow-up — capability policy boundary compatibility
+
+推送后 GitHub 自动门禁先发现 `export.ts` 将带 `location` 的 detection 与不带该字段的 feature 记录合并，产生 TS2339；改为分别查找 blocking detection 与 artifact feature 后，下一轮 CI 的前端构建、Java 构建及后端测试均通过。随后 boundary 检查因新生成 TS 文件含禁用标识 `schemaVersion` 而失败；将共享契约字段重命名为 `policyRevision`，未放宽边界扫描规则。当前本地 `node tools/check-boundaries.mjs` 已通过（扫描 599 个源文件、9 个 package）；这次策略修正后的 CI 正在等待自动结果。

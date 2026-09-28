@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "policyRevision": 1,
   "features": {
     "unknownWorksheetNode": "unknown-worksheet-node",
     "unknownWorkbookNode": "unknown-workbook-node",
