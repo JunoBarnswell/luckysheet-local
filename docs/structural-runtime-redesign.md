@@ -2190,3 +2190,13 @@ history AutoFilter 专用变换现要求主 range、sortState.ref 及每个 cond
 六轮自审：①核对结构检查位于 `mutation.apply` 之前而非 `runCommand` 之后；②核对 helper 仍由导出入口调用，避免导出与结构编辑采用不同的 opaque owner 分类；③核对导出使用当次重新解析的 capability detections，session 快路径只读取导入 artifact 的 detections，避免每次按键重新解析整个 ZIP；④核对保留-only 与未索引 chart 仍被拦截；⑤核对没 artifact / 非 OPC graph 的新建工作簿路径不被错误拒绝；⑥核对远程 socket 建立在 artifact 加载之后，且明确发现服务端 `WorkbookOperationService` 本身仍未根据 source OOXML capability 拒绝绕过 UI 的 API mutation，因此本改动只收紧正式 UI 入口，不能冒称 Java 权威层已 fail-close。
 
 本轮修复 **1 个静态证实问题**，仍未达到每轮至少 30 个独立真实问题；不把同一延迟拒绝拆成重复条目。按“静态审查、不运行测试”执行；新增测试源码但不执行。接下来必须把 source-package capability 纳入 Java 可验证的提交前置条件，并使服务端规划结果替代 TypeScript live structural planner；这一轮没有解决 API 绕过、remote replay、完整可逆 cell/owner patch、ReferenceIndex 或最终实测。`git diff --check` 尚待本轮收尾执行，PR #345 保持 draft。
+
+### 2026-09-28 continuation — apply OOXML owner preflight to remote replay
+
+沿 `CollaborationSession.applyRemote` → `CommandRuntime.applyRemoteMutations` → `applyHistory` 核对入口，发现上一轮本地 preflight 被 `source !== 'remote'` 条件绕过。remote replay 在隔离 `WorkbookModel` 上先做 history preflight，随后 live apply 前再次调用 session 的 mutation guard；若 guard 拒绝，runtime 将错误标记为 recovery-required，外层 websocket handler 会停止同步并请求 resync，live workbook 不会局部执行该序列。
+
+已把 OOXML capability guard 扩展到所有 `requiresServerStructuralPlanner` mutation 来源；只有本地 `command/undo/redo` 仍需检查 server 在线，已提交的 `remote` replay 不重复做在线检查，但仍必须满足 source OOXML fidelity precondition。新增真实导入未知 worksheet node 的远端 `rows.inserted` 回归源码：预期在 live model 不变的前提下拒绝回放。没有执行测试。
+
+六轮自审：①确认 guard 针对 mutation id 集合，而非误拦普通远端 cell/style edits；②确认远端合法 source 在客户端 socket 已建立后通过同一检查；③确认未知 worksheet feature 由 artifact import capability 保留至 session；④确认命令源仍先做 server-online 检查，避免倒置之前的离线保证；⑤确认 replay 的结构预检/应用仍保有原有 isolated-snapshot 和 recovery-required 语义；⑥确认此处拒绝只能令当前客户端停止并 resync，服务端可能已提交，因此明确不把它当作 Java commit fail-close 或最终解决方案。
+
+此次是同一 OOXML preflight 根因在 remote ingress 的补齐，不另行膨胀问题计数；本轮累计仍远低于用户要求的每轮 30 个独立问题。静态复核与 `git diff --check` 已通过；不运行测试/构建。服务端 authoritativeness、完整 patch、ReferenceIndex 和实测仍未完成，PR #345 保持 draft。

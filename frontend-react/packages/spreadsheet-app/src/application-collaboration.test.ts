@@ -3,6 +3,7 @@ import { describe, it } from 'node:test';
 import { CommandRuntime } from '@react-sheets/command-runtime';
 import { WorkbookModel } from '@react-sheets/core-model';
 import type { CommittedOperationEnvelope } from '@react-sheets/protocol';
+import { exportSnapshotToOoxmlBuffer, importOoxmlDocument, loadOpcPackageGraph, zipOpcPartsBuffer } from '@react-sheets/exchange-excel-ooxml';
 import { createCellSetMutationParams, createPasteSpecialSpec } from '@react-sheets/sheet-features';
 import { registerSpreadsheetFeatures } from './feature-registry';
 import { DrawingRuntime } from './features/drawing';
@@ -119,6 +120,64 @@ describe('WorkbookSession collaboration integration', () => {
     });
     assert.equal(workbook.getSheet('sheet-1').cells.get(0, 0)?.value, 'remote');
     assert.equal(runtime.undo(), false);
+  });
+
+  it('rejects remote structural replay before live mutation when source OOXML owners are unsupported', async () => {
+    const app = createRemoteReadySessionFixture();
+    const runtime = app['runtime'];
+    const sheetId = runtime.model.primarySheetId;
+    const generated = loadOpcPackageGraph(exportSnapshotToOoxmlBuffer(runtime.model.snapshot()));
+    const worksheetPart = generated.packageGraph.sheetPartById[sheetId]!;
+    const worksheetXml = new TextDecoder().decode(generated.packageGraph.parts[worksheetPart]!);
+    generated.packageGraph.parts[worksheetPart] = new TextEncoder().encode(
+      worksheetXml.replace('</worksheet>', '<futureSheetNode value="keep"/></worksheet>'),
+    );
+    const imported = await importOoxmlDocument({
+      fileName: 'remote-unsupported-source.xlsx',
+      buffer: zipOpcPartsBuffer(generated.packageGraph.parts),
+      options: { compatibilityTarget: 'B', compatibilityMode: 'balanced' },
+    });
+    app['nativeArtifact'] = imported.artifact;
+
+    const params = { sheetId, at: 0, count: 1 };
+    const affectedRanges = [...runtime.commands.registry.getMutationMetadata('rows.inserted').affectedRanges.resolve(params)];
+    const before = runtime.model.snapshot();
+    const remote: CommittedOperationEnvelope = {
+      schema: 'OperationEnvelope',
+      clientSessionId: 'unsupported-source-session',
+      operationId: 'remote-structural-on-opaque-source',
+      unitId: runtime.model.unitId,
+      actorId: 'actor-2',
+      origin: 'client',
+      clientSequence: 1,
+      baseRevision: 0,
+      revision: 1,
+      committedAt: new Date().toISOString(),
+      createdAt: new Date().toISOString(),
+      mutations: [{
+        id: 'rows.inserted',
+        sheetId,
+        params,
+        affectedRanges,
+        structuralPatch: {
+          version: 9,
+          mutationId: 'rows.inserted',
+          formulaOwnerDeltas: [],
+          definedNameOwnerDeltas: [],
+          rangeOwnerDeltas: [],
+        },
+      }],
+    };
+
+    try {
+      assert.throws(
+        () => new CollaborationSession(runtime.commands).applyRemote(remote),
+        /NATIVE_DOCUMENT_UNCHANGED_SAVE_REQUIRED/,
+      );
+      assert.deepEqual(runtime.model.snapshot(), before);
+    } finally {
+      app.dispose();
+    }
   });
 
   it('rejects a skipped remote revision before applying its mutations', () => {
