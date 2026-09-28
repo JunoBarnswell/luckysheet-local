@@ -2170,3 +2170,13 @@ history AutoFilter 专用变换现要求主 range、sortState.ref 及每个 cond
 据此形成首个纵向迁移边界：保留现有 mutation id/params 作为结构请求意图，不增加平行 intent 字段；将命令构造与 live apply 分开，服务端针对当前 revision 完成一次权威规划与提交，返回有 base/revision、typed cell 和 metadata owner before/after、reference facts、calculation/projection invalidations 及逆向事实的单个版本化 patch；本地 sender、远端 replay、undo/redo、history rebasing 与持久化都消费同一个 patch apply/revert 入口。整个提交确认前 canonical WorkbookModel、Calculation/Projection、History 和 checkpoint 不得出现结构性部分写入；若有即时预览，必须是独立可丢弃的 projection，而非第二份 canonical workbook mutation。先完成 whole-axis rows/columns 全对象 patch 纵向链，再扩展 cells/move/permutation/table/sheet 与 OOXML capability preflight；计划器必须按 sparse affected owners/cells 工作，不能以全工作簿深拷贝或全格扫描换取正确性。
 
 本轮没有把上述重验结果另计为多个新根因，也没有宣称 six-domain audit 已可交付或达到 30 个独立发现。仅源码静态复核与架构边界记录；未运行测试、typecheck、build、浏览器、Excel 或 benchmark。首个完整 server-first axis patch、其余对象 owner、OOXML fail-close、全部基础操作实测仍未完成，目标保持 active，PR #345 继续保持 draft。
+
+### 2026-09-28 continuation — avoid deep-copying hydrated surviving cells
+
+沿 `StructuralTransform.applyAxis` / `planCellShift` → `planStructuralCells` → `applyStructuralCells` 静态复核确认 **1 个独立性能根因**：每个存活的 sparse cell 都先 `structuredClone` 完整载荷，随后旧地址被删除、同一个载荷仅搬到新坐标；对于已 hydrated 且由当前 `CellMatrix` 独占的 cell，这次深拷贝既不供 inverse/history 使用，也不保护仍留在矩阵中的别名。已有 `structural-cell-plan.test.ts` 明确规定 cell-shift 后保留 cell payload identity，当前实现却先克隆，因此源码实现与已有行为断言相冲突。
+
+修复仅在 `CellMatrix.isHydrated` 时复用 cell 对象；deferred 路径仍深拷贝，以隔离 `deferJSON` 保留的原始 snapshot 对象。所有移动源地址先从矩阵移除，再写入目的地址；删除的 cell 仍以 detached clone 暴露给既有 removed-cell 契约。字体规范化仍在计划/preflight 阶段验证，并由 `CellMatrix.set` 在提交时执行原有存储规范化。该共享计划当前只服务 whole-axis 与 cell-shift，不声称改到了 range-move/permutation，也不改变 Java planner 或 StructuralPatch 架构。
+
+六轮静态自审：①确认 axis 与 cell-shift 共用此规划函数，移动源全部删除后才写目的坐标，复用对象不会同时保留在两个 hydrated 坐标；②确认 `isHydrated` 为 false 时仍完整 clone，避免 deferred JSON 输入对象被后续 formula/style 写入污染；③确认被删除单元格仍单独 clone，removed-cell/history 所有权语义不变；④确认字体验证仍发生在 live commit 前，`CellMatrix.set` 继续运行同一存储规范化；⑤沿 `CellMatrix.set` 检查无 font-family 的 hydrated cell 会保留引用身份，与现有 identity assertion 对齐；⑥确认变更仅减少 hydrated survivor payload 的复制，边界/映射/公式与 metadata 顺序不变，partial commit 仍由既有结构恢复锁处理。
+
+本轮确认并修复 **1 个真实性能根因**，未达到用户要求的每轮至少 30 个独立真实问题；未把 axis 和 cell-shift 两个调用入口重复计数。只做静态代码审查与 `git diff --check`，没有运行测试、typecheck、build、浏览器、Excel 或 benchmark。Java 唯一规划权、owner-complete StructuralPatch、完整 reference index 与最终实测仍未完成；PR #345 保持 draft。

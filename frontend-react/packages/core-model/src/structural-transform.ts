@@ -709,10 +709,13 @@ function planStructuralCells(
       removedCells.push({ row, column, cell: structuredClone(cell) });
       return;
     }
-    const prepared = structuredClone(cell);
-    if (prepared.style?.fontFamily !== undefined) {
-      prepared.style = { ...prepared.style, fontFamily: normalizeFontFamily(prepared.style.fontFamily) };
-    }
+    // Hydrated cells are already owned by this matrix and are deleted before
+    // they are inserted at their destination. Reuse that payload instead of
+    // deep-copying every surviving cell in a large structural edit. Deferred
+    // cells still need detaching from the original snapshot JSON before a
+    // later formula/style write can mutate them.
+    const prepared = sheet.cells.isHydrated ? cell : structuredClone(cell);
+    if (cell.style?.fontFamily !== undefined) normalizeFontFamily(cell.style.fontFamily);
     moves.push({ row, column, targetRow: target.row, targetColumn: target.column, cell: prepared });
   });
   return { moves, removedCells };
