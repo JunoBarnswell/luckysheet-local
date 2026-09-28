@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { CALCULATION_CONTEXT_EFFECTS, WorkbookModel, type DataSourceManifest, type StructuralDefinedNameOwnerDelta, type StructuralFormulaOwnerDelta, type StructuralRangeOwnerDelta } from '@react-sheets/core-model';
+import { CALCULATION_CONTEXT_EFFECTS, StructuralMutationApplyError, WorkbookModel, type DataSourceManifest, type StructuralDefinedNameOwnerDelta, type StructuralFormulaOwnerDelta, type StructuralRangeOwnerDelta } from '@react-sheets/core-model';
 import { FormulaEngine } from '@react-sheets/formula-engine';
 import { CommandRegistry, CommandRuntime, MutationRecoveryRequiredError, type MutationInfo } from './index';
 
@@ -141,6 +141,72 @@ test('CommandRuntime executes a registered command and tracks history', () => {
   assert.equal(workbook.getSheet('sheet-1').cells.get(1, 1)?.value, 'A');
 
   unsubscribe();
+});
+
+test('CommandRuntime fail-stops without rolling back an incomplete structural commit', () => {
+  const workbook = new WorkbookModel('unit-partial-structural-commit', 'Partial Structural Commit');
+  const runtime = new CommandRuntime(workbook);
+  runtime.registry.registerMutation({
+    id: 'cell.set',
+    handler: (item, context) => {
+      const params = item.params as { row: number; column: number; value: string };
+      context.workbook.getSheet(item.sheetId).cells.set(params.row, params.column, { value: params.value });
+    },
+    metadata: cellSetMetadata,
+  });
+  runtime.registry.registerMutation({
+    id: 'cell.restore',
+    handler: (item, context) => {
+      const params = item.params as { row: number; column: number };
+      context.workbook.getSheet(item.sheetId).cells.delete(params.row, params.column);
+    },
+    metadata: cellRestoreMetadata,
+  });
+  runtime.registry.registerCommand({
+    id: 'structural.partial-commit',
+    execute: (_params, context) => {
+      const sheet = context.workbook.getSheet('sheet-1');
+      const applyCell = (row: number, failAfterWrite = false): void => {
+        const ranges = cellRange({ row, column: 0 });
+        context.applyMutation({
+          id: 'cell.set',
+          unitId: context.workbook.unitId,
+          sheetId: sheet.id,
+          params: { row, column: 0, value: `row-${row}` },
+          affectedRanges: ranges,
+          inverse: [{
+            id: 'cell.restore',
+            unitId: context.workbook.unitId,
+            sheetId: sheet.id,
+            params: { row, column: 0 },
+            affectedRanges: ranges,
+          }],
+          apply: () => {
+            sheet.cells.set(row, 0, { value: `row-${row}` });
+            if (failAfterWrite) throw new StructuralMutationApplyError(new Error('structural owner commit failed'));
+          },
+        });
+      };
+      applyCell(0);
+      applyCell(1, true);
+      return { operationId: context.operationId, mutationCount: 2, affectedRanges: [] };
+    },
+  });
+
+  assert.throws(
+    () => runtime.execute('structural.partial-commit', {}),
+    (error: unknown) => error instanceof MutationRecoveryRequiredError
+      && error.code === 'MUTATION_RECOVERY_REQUIRED'
+      && error.message.includes('structural owner commit failed'),
+  );
+  assert.equal(workbook.getSheet('sheet-1').cells.get(0, 0)?.value, 'row-0');
+  assert.equal(workbook.getSheet('sheet-1').cells.get(1, 0)?.value, 'row-1');
+  assert.equal(runtime.getHistoryDepth().undo, 0);
+  assert.equal(runtime.isMutationRecoveryRequired, true);
+  assert.throws(
+    () => runtime.execute('structural.partial-commit', {}),
+    (error: unknown) => error instanceof MutationRecoveryRequiredError,
+  );
 });
 
 test('CommandRuntime finishes committed replay before fail-stopping on a participant failure', () => {

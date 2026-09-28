@@ -14,6 +14,19 @@ import {
   WorksheetModel,
 } from './index';
 import { assertCanonicalWorkbookSnapshot, migrateStoredWorkbookSnapshot, type WorkbookSnapshot } from './snapshot';
+import { commitStructuralMutation, StructuralMutationApplyError } from './structural-mutation-apply-error';
+
+test('structural mutation commit preserves success and marks partial-apply failures', () => {
+  assert.equal(commitStructuralMutation(() => 42), 42);
+
+  const cause = new Error('owner update failed');
+  assert.throws(
+    () => commitStructuralMutation(() => { throw cause; }),
+    (error: unknown) => error instanceof StructuralMutationApplyError
+      && error.code === 'STRUCTURAL_MUTATION_APPLY_FAILED'
+      && error.originalCause === cause,
+  );
+});
 
 test('canonical workbook snapshots reject malformed or unowned pane fields', () => {
   const panes = [

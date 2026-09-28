@@ -571,6 +571,7 @@ export {
   type CellShiftPlan,
   ensureDrawing,
 } from './structural-transform';
+export { StructuralMutationApplyError } from './structural-mutation-apply-error';
 export { structuralRuleFormulaFields, type StructuralFormulaRule, type StructuralFormulaRuleField } from './structural-formula-owner';
 export { structuralRangeOwnerAffectedRanges, type StructuralRangeOwnerDelta } from './structural-range-owner';
 export { SheetRuleRegistry, sheetRuleRegistry, ruleRangesIntersect, type RuleTransform, type RulePasteTransform, type SheetRule, type SheetRuleKind } from './rule-lifecycle';

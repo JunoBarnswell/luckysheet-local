@@ -14,7 +14,7 @@ import type {
   WorkbookModel,
   WorksheetModel,
 } from "@react-sheets/core-model";
-import { MAX_CHANGED_CELLS, MAX_SHEET_COLUMN_COUNT, MAX_SHEET_ROW_COUNT, clearFormulaProvenance, hasFormulaGroupMetadata, StructuralTransform, applyRowPermutation, columnLabel, createRowPermutationPlan, isDynamicFilterType, resolveFilterCellValue, rowPermutationAffectedColumnEnd, sheetRuleRegistry } from "@react-sheets/core-model";
+import { MAX_CHANGED_CELLS, MAX_SHEET_COLUMN_COUNT, MAX_SHEET_ROW_COUNT, clearFormulaProvenance, hasFormulaGroupMetadata, StructuralMutationApplyError, StructuralTransform, applyRowPermutation, columnLabel, createRowPermutationPlan, isDynamicFilterType, resolveFilterCellValue, rowPermutationAffectedColumnEnd, sheetRuleRegistry } from "@react-sheets/core-model";
 import { canonicalExcelDateDayOfWeek, canonicalExcelDateFromParts, canonicalExcelDateFromUtcDate, canonicalExcelDateFromValue, canonicalExcelDateToUtcDate, shiftCanonicalExcelDate, type CanonicalExcelDate, type CanonicalExcelDateParts } from '@react-sheets/formula-engine';
 import { compareWorkbookValues, MAX_COLUMN_INDEX, type WorkbookCollationContext } from '@react-sheets/formula-engine';
 import { clearCellContents } from './clear-planner';
@@ -162,6 +162,29 @@ function setAppliedSortState(sheet: WorksheetModel, state: AppliedSortState | un
   const target = sheet as WorksheetModel & { appliedSortState?: AppliedSortState };
   if (state === undefined) delete target.appliedSortState;
   else target.appliedSortState = structuredClone(state);
+}
+
+function applyRowsPermutedWithSortState(
+  workbook: WorkbookModel,
+  sheet: WorksheetModel,
+  range: RangeRef,
+  sourceRows: readonly number[],
+  affectedColumnEnd: number,
+  referenceOwners: CommandContext['structuralReferenceOwners'],
+  sortState: AppliedSortState | undefined,
+): ReturnType<typeof rowPermutationCalculationEffect> {
+  const plan = createRowPermutationPlan(range, sourceRows, affectedColumnEnd);
+  assertRowPermutationVisibilityAndOutlines(sheet, plan);
+  let permutationApplied = false;
+  try {
+    const ownerChanges = applyRowPermutation(workbook, plan, referenceOwners);
+    permutationApplied = true;
+    setAppliedSortState(sheet, sortState);
+    return rowPermutationCalculationEffect(range, ownerChanges);
+  } catch (error) {
+    if (error instanceof StructuralMutationApplyError || !permutationApplied) throw error;
+    throw new StructuralMutationApplyError(error);
+  }
 }
 
 function rowsPermutedAffectedColumnEnd(
@@ -2123,15 +2146,15 @@ export function registerDataToolCommands(runtime: CommandRuntime): void {
       const params = item.params;
       const range = params.range;
       const sheet = context.workbook.getSheet(params.sheetId);
-      const plan = createRowPermutationPlan(range, params.sourceRows, params.affectedColumnEnd);
-      assertRowPermutationVisibilityAndOutlines(sheet, plan);
-      const ownerChanges = applyRowPermutation(
+      return applyRowsPermutedWithSortState(
         context.workbook,
-        plan,
+        sheet,
+        range,
+        params.sourceRows,
+        params.affectedColumnEnd,
         context.structuralReferenceOwners,
+        params.sortState,
       );
-      setAppliedSortState(sheet, params.sortState);
-      return rowPermutationCalculationEffect(range, ownerChanges);
     },
     metadata: {
       schema: { name: 'RowsPermuted', validate: isRowsPermutedMutation },
@@ -2232,15 +2255,15 @@ export function registerDataToolCommands(runtime: CommandRuntime): void {
           },
           affectedRanges,
         }],
-        apply: () => {
-          const ownerChanges = applyRowPermutation(
+        apply: () => applyRowsPermutedWithSortState(
             context.workbook,
-            createRowPermutationPlan(bodyRange, sourceRows, affectedColumnEnd),
+            sheet,
+            bodyRange,
+            sourceRows,
+            affectedColumnEnd,
             context.structuralReferenceOwners,
-          );
-          setAppliedSortState(sheet, sortState);
-          return rowPermutationCalculationEffect(bodyRange, ownerChanges);
-        },
+            sortState,
+          ),
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },

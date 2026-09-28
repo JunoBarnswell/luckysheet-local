@@ -4,6 +4,7 @@ import type { StructuralRangeOwnerDelta } from './structural-range-owner';
 import type { CellHyperlink, ChartTextFormulaField, DrawingObject, StructuralTransformParams, SheetTableModel, SpillRange, ProtectionRule, OutlineGroup, CellShiftSpec } from './domain';
 import type { PrintDocumentSnapshot } from './workbook-state';
 import { mapReportSheetCoordinates } from './report-sheet-transform';
+import { commitStructuralMutation } from './structural-mutation-apply-error';
 import { normalizeFontFamily } from './font-family';
 import { chartTextFormulaEntries, readChartTextFormula, writeChartTextFormula } from './chart-text-reference';
 import { structuralRuleFormulaFields, type StructuralFormulaRule, type StructuralFormulaRuleField } from './structural-formula-owner';
@@ -777,23 +778,25 @@ function applyAxis(
     throw new Error(`STRUCTURAL_PATCH_INVARIANT: planned ${axis} extent exceeds worksheet bounds`);
   }
 
-  applyStructuralCells(sheet, cells);
-  if (axis === 'row') sheet.rowCount = nextCount;
-  else sheet.columnCount = nextCount;
+  return commitStructuralMutation<StructuralTransformResult>(() => {
+    applyStructuralCells(sheet, cells);
+    if (axis === 'row') sheet.rowCount = nextCount;
+    else sheet.columnCount = nextCount;
 
-  applyStructuralMetadataPlan(workbook, sheet.id, metadataPlan);
-  if (reportSheetAfter) sheet.reportSheet = reportSheetAfter;
-  const formulaRewriteResult = applyFormulaRewritePlan(workbook, formulaRewrite, metadataPlan.formulaRuleDeltas);
-  return {
-    kind: 'structural-transform',
-    removedCells: cells.removedCells,
-    clearInputRanges: calculationRanges.clearInputRanges,
-    populateInputRanges: calculationRanges.populateInputRanges,
-    rewrittenFormulaOwners: formulaRewriteResult.owners,
-    formulaOwnerDeltas: [...formulaRewriteResult.deltas, ...formulaRewriteResult.formulaRuleDeltas],
-    definedNameOwnerDeltas: formulaRewriteResult.definedNameDeltas,
-    rangeOwnerDeltas: metadataPlan.rangeOwners,
-  };
+    applyStructuralMetadataPlan(workbook, sheet.id, metadataPlan);
+    if (reportSheetAfter) sheet.reportSheet = reportSheetAfter;
+    const formulaRewriteResult = applyFormulaRewritePlan(workbook, formulaRewrite, metadataPlan.formulaRuleDeltas);
+    return {
+      kind: 'structural-transform',
+      removedCells: cells.removedCells,
+      clearInputRanges: calculationRanges.clearInputRanges,
+      populateInputRanges: calculationRanges.populateInputRanges,
+      rewrittenFormulaOwners: formulaRewriteResult.owners,
+      formulaOwnerDeltas: [...formulaRewriteResult.deltas, ...formulaRewriteResult.formulaRuleDeltas],
+      definedNameOwnerDeltas: formulaRewriteResult.definedNameDeltas,
+      rangeOwnerDeltas: metadataPlan.rangeOwners,
+    };
+  });
 }
 
 function structuralAxisInputRanges(
@@ -879,19 +882,21 @@ function applyCellShift(
   rejectFormulaGroupMetadataInRange(sheet, plan.band, 'cell shift');
   const metadataPlan = planCellShiftMetadata(workbook, sheet, plan, formulaRewrite);
   const cells = planStructuralCells(sheet, plan.band, (row, column) => mapCellShiftCoordinate(plan, row, column));
-  applyStructuralCells(sheet, cells);
-  applyStructuralMetadataPlan(workbook, sheet.id, metadataPlan);
-  const formulaRewriteResult = applyFormulaRewritePlan(workbook, formulaRewrite, metadataPlan.formulaRuleDeltas);
-  return {
-    kind: 'structural-transform',
-    removedCells: cells.removedCells,
-    clearInputRanges: [structuredClone(plan.band)],
-    populateInputRanges: [structuredClone(plan.band)],
-    rewrittenFormulaOwners: formulaRewriteResult.owners,
-    formulaOwnerDeltas: [...formulaRewriteResult.deltas, ...formulaRewriteResult.formulaRuleDeltas],
-    definedNameOwnerDeltas: formulaRewriteResult.definedNameDeltas,
-    rangeOwnerDeltas: metadataPlan.rangeOwners,
-  };
+  return commitStructuralMutation<StructuralTransformResult>(() => {
+    applyStructuralCells(sheet, cells);
+    applyStructuralMetadataPlan(workbook, sheet.id, metadataPlan);
+    const formulaRewriteResult = applyFormulaRewritePlan(workbook, formulaRewrite, metadataPlan.formulaRuleDeltas);
+    return {
+      kind: 'structural-transform',
+      removedCells: cells.removedCells,
+      clearInputRanges: [structuredClone(plan.band)],
+      populateInputRanges: [structuredClone(plan.band)],
+      rewrittenFormulaOwners: formulaRewriteResult.owners,
+      formulaOwnerDeltas: [...formulaRewriteResult.deltas, ...formulaRewriteResult.formulaRuleDeltas],
+      definedNameOwnerDeltas: formulaRewriteResult.definedNameDeltas,
+      rangeOwnerDeltas: metadataPlan.rangeOwners,
+    };
+  });
 }
 
 function validateCellShiftBounds(
@@ -3505,163 +3510,165 @@ function applyMoveRange(
   });
   const overwritten = sheet.cells.getRegion(target.startRow, target.endRow, target.startColumn, target.endColumn);
   const formulaRewrite = rewriteReferencesForMovedRegion(workbook, sheet, normalizedSource, target, rowDelta, colDelta, referenceOwners);
-  sheet.ensureRangeExtent(target.startRow, target.endRow, target.startColumn, target.endColumn);
-  for (const item of cellsToMove) sheet.cells.delete(item.row, item.column);
-  for (const item of overwritten) sheet.cells.delete(item.row, item.column);
-  // Moving a range replaces every destination coordinate, including cells
-  // that were empty in the source. This prevents stale target values.
-  for (const item of cellsToMove) {
-    sheet.cells.set(item.row + rowDelta, item.column + colDelta, item.cell);
-  }
+  return commitStructuralMutation<StructuralTransformResult>(() => {
+    sheet.ensureRangeExtent(target.startRow, target.endRow, target.startColumn, target.endColumn);
+    for (const item of cellsToMove) sheet.cells.delete(item.row, item.column);
+    for (const item of overwritten) sheet.cells.delete(item.row, item.column);
+    // Moving a range replaces every destination coordinate, including cells
+    // that were empty in the source. This prevents stale target values.
+    for (const item of cellsToMove) {
+      sheet.cells.set(item.row + rowDelta, item.column + colDelta, item.cell);
+    }
 
-  const relocate = (range: RangeRef): void => {
-    if (!rangeContains(normalizedSource, range)) return;
-    range.startRow += rowDelta;
-    range.endRow += rowDelta;
-    range.startColumn += colDelta;
-    range.endColumn += colDelta;
-  };
-  const relocateAutoFilter = (filter: NonNullable<WorksheetModel['autoFilter']>): void => {
-    const rangeMoved = rangeContains(normalizedSource, filter.range);
-    if (rangeMoved) relocate(filter.range);
-    if (filter.sortState) {
-      relocate(filter.sortState.ref);
-      for (const condition of filter.sortState.conditions) relocate(condition.ref);
-    }
-    if (!rangeMoved || colDelta === 0) return;
-    const columns: typeof filter.columns = {};
-    for (const [key, definition] of Object.entries(filter.columns)) {
-      const column = Number(key);
-      const shifted = column >= normalizedSource.startColumn && column <= normalizedSource.endColumn
-        ? column + colDelta
-        : column;
-      if (Object.prototype.hasOwnProperty.call(columns, String(shifted))) {
-        throw new Error('STRUCTURAL_PATCH_INVARIANT: move collides AutoFilter column criteria');
+    const relocate = (range: RangeRef): void => {
+      if (!rangeContains(normalizedSource, range)) return;
+      range.startRow += rowDelta;
+      range.endRow += rowDelta;
+      range.startColumn += colDelta;
+      range.endColumn += colDelta;
+    };
+    const relocateAutoFilter = (filter: NonNullable<WorksheetModel['autoFilter']>): void => {
+      const rangeMoved = rangeContains(normalizedSource, filter.range);
+      if (rangeMoved) relocate(filter.range);
+      if (filter.sortState) {
+        relocate(filter.sortState.ref);
+        for (const condition of filter.sortState.conditions) relocate(condition.ref);
       }
-      columns[shifted] = { ...definition, column: shifted };
-    }
-    filter.columns = columns;
-  };
-  for (const merge of sheet.merges) {
-    if (rangeContains(normalizedSource, merge.range)) {
-      relocate(merge.range);
-      merge.anchor.row += rowDelta;
-      merge.anchor.column += colDelta;
-    }
-  }
-  relocateDataRegions(sheet, normalizedSource, rowDelta, colDelta);
-  const printDocument = workbook.printDocuments.get(sheet.id);
-  for (const area of printDocument?.printAreas ?? []) relocate(area.range);
-  for (const sourceManifest of workbook.dataModel.sources.values()) {
-    if (sourceManifest.sourceRange?.sheetId === sheet.id) relocate(sourceManifest.sourceRange);
-  }
-  for (const owner of workbook.getSheets()) {
-    for (const rule of [...owner.conditionalFormats, ...owner.dataValidations]) {
-      for (const range of rule.ranges) relocate(range);
-      if ('listSource' in rule && rule.listSource?.kind === 'range') relocate(rule.listSource.range);
-      if (rule.formulaAnchor?.sheetId === sheet.id && insideCell(normalizedSource, rule.formulaAnchor.row, rule.formulaAnchor.column)) {
-        rule.formulaAnchor = { ...rule.formulaAnchor, row: rule.formulaAnchor.row + rowDelta, column: rule.formulaAnchor.column + colDelta };
+      if (!rangeMoved || colDelta === 0) return;
+      const columns: typeof filter.columns = {};
+      for (const [key, definition] of Object.entries(filter.columns)) {
+        const column = Number(key);
+        const shifted = column >= normalizedSource.startColumn && column <= normalizedSource.endColumn
+          ? column + colDelta
+          : column;
+        if (Object.prototype.hasOwnProperty.call(columns, String(shifted))) {
+          throw new Error('STRUCTURAL_PATCH_INVARIANT: move collides AutoFilter column criteria');
+        }
+        columns[shifted] = { ...definition, column: shifted };
+      }
+      filter.columns = columns;
+    };
+    for (const merge of sheet.merges) {
+      if (rangeContains(normalizedSource, merge.range)) {
+        relocate(merge.range);
+        merge.anchor.row += rowDelta;
+        merge.anchor.column += colDelta;
       }
     }
-  }
-  if (sheet.autoFilter) relocateAutoFilter(sheet.autoFilter);
-  for (const table of sheet.sheetTables) {
-    relocate(table.range);
-    if (table.autoFilter) relocateAutoFilter(table.autoFilter);
-  }
-  for (const table of workbook.dataModel.tables.values()) {
-    if (table.sourceRange?.sheetId === sheet.id) relocate(table.sourceRange);
-  }
-  for (const owner of workbook.getSheets()) for (const payload of owner.drawingPayloads.values()) {
-    if (payload.kind === 'camera' || payload.kind === 'screenshot') {
-      relocate(payload.sourceRange);
-    } else if (payload.kind === 'chart') {
-      if (payload.source.kind === 'worksheet-ranges') for (const range of payload.source.ranges) relocate(range);
-      else if (payload.source.kind === 'report-range') relocate(payload.source.range);
-      if (payload.categoryRange) relocate(payload.categoryRange);
-      for (const series of payload.series ?? []) {
-        relocate(series.range);
-        if (series.xRange) relocate(series.xRange);
-        if (series.yRange) relocate(series.yRange);
-        if (series.sizeRange) relocate(series.sizeRange);
-        if (series.categoryRange) relocate(series.categoryRange);
-        if (series.stockRoles?.open) relocate(series.stockRoles.open);
-        if (series.stockRoles?.high) relocate(series.stockRoles.high);
-        if (series.stockRoles?.low) relocate(series.stockRoles.low);
-        if (series.stockRoles?.close) relocate(series.stockRoles.close);
-        if (series.stockRoles?.volume) relocate(series.stockRoles.volume);
-        if (series.dataLabels?.valuesFromCells) relocate(series.dataLabels.valuesFromCells);
-        if (series.errorBars?.plusRange) relocate(series.errorBars.plusRange);
-        if (series.errorBars?.minusRange) relocate(series.errorBars.minusRange);
+    relocateDataRegions(sheet, normalizedSource, rowDelta, colDelta);
+    const printDocument = workbook.printDocuments.get(sheet.id);
+    for (const area of printDocument?.printAreas ?? []) relocate(area.range);
+    for (const sourceManifest of workbook.dataModel.sources.values()) {
+      if (sourceManifest.sourceRange?.sheetId === sheet.id) relocate(sourceManifest.sourceRange);
+    }
+    for (const owner of workbook.getSheets()) {
+      for (const rule of [...owner.conditionalFormats, ...owner.dataValidations]) {
+        for (const range of rule.ranges) relocate(range);
+        if ('listSource' in rule && rule.listSource?.kind === 'range') relocate(rule.listSource.range);
+        if (rule.formulaAnchor?.sheetId === sheet.id && insideCell(normalizedSource, rule.formulaAnchor.row, rule.formulaAnchor.column)) {
+          rule.formulaAnchor = { ...rule.formulaAnchor, row: rule.formulaAnchor.row + rowDelta, column: rule.formulaAnchor.column + colDelta };
+        }
       }
-    } else if (payload.kind === 'form-control') {
-      if ('cellLink' in payload && payload.cellLink?.sheetId === sheet.id && insideCell(normalizedSource, payload.cellLink.row, payload.cellLink.column)) {
-        payload.cellLink = {
-          ...payload.cellLink,
-          row: payload.cellLink.row + rowDelta,
-          column: payload.cellLink.column + colDelta,
-        };
+    }
+    if (sheet.autoFilter) relocateAutoFilter(sheet.autoFilter);
+    for (const table of sheet.sheetTables) {
+      relocate(table.range);
+      if (table.autoFilter) relocateAutoFilter(table.autoFilter);
+    }
+    for (const table of workbook.dataModel.tables.values()) {
+      if (table.sourceRange?.sheetId === sheet.id) relocate(table.sourceRange);
+    }
+    for (const owner of workbook.getSheets()) for (const payload of owner.drawingPayloads.values()) {
+      if (payload.kind === 'camera' || payload.kind === 'screenshot') {
+        relocate(payload.sourceRange);
+      } else if (payload.kind === 'chart') {
+        if (payload.source.kind === 'worksheet-ranges') for (const range of payload.source.ranges) relocate(range);
+        else if (payload.source.kind === 'report-range') relocate(payload.source.range);
+        if (payload.categoryRange) relocate(payload.categoryRange);
+        for (const series of payload.series ?? []) {
+          relocate(series.range);
+          if (series.xRange) relocate(series.xRange);
+          if (series.yRange) relocate(series.yRange);
+          if (series.sizeRange) relocate(series.sizeRange);
+          if (series.categoryRange) relocate(series.categoryRange);
+          if (series.stockRoles?.open) relocate(series.stockRoles.open);
+          if (series.stockRoles?.high) relocate(series.stockRoles.high);
+          if (series.stockRoles?.low) relocate(series.stockRoles.low);
+          if (series.stockRoles?.close) relocate(series.stockRoles.close);
+          if (series.stockRoles?.volume) relocate(series.stockRoles.volume);
+          if (series.dataLabels?.valuesFromCells) relocate(series.dataLabels.valuesFromCells);
+          if (series.errorBars?.plusRange) relocate(series.errorBars.plusRange);
+          if (series.errorBars?.minusRange) relocate(series.errorBars.minusRange);
+        }
+      } else if (payload.kind === 'form-control') {
+        if ('cellLink' in payload && payload.cellLink?.sheetId === sheet.id && insideCell(normalizedSource, payload.cellLink.row, payload.cellLink.column)) {
+          payload.cellLink = {
+            ...payload.cellLink,
+            row: payload.cellLink.row + rowDelta,
+            column: payload.cellLink.column + colDelta,
+          };
+        }
+        if ('inputRange' in payload) relocate(payload.inputRange);
       }
-      if ('inputRange' in payload) relocate(payload.inputRange);
     }
-  }
-  for (const owner of workbook.getSheets()) for (const pivot of owner.pivots) {
-    if (pivot.source.kind === 'worksheet-range') relocate(pivot.source.range);
-    if (pivot.source.kind === 'worksheet-ranges') for (const sourceRange of pivot.source.ranges) relocate(sourceRange.range);
-    if (pivot.target.sheetId === sheet.id && insideCell(normalizedSource, pivot.target.anchor.row, pivot.target.anchor.column)) {
-      pivot.target.anchor.row += rowDelta;
-      pivot.target.anchor.column += colDelta;
+    for (const owner of workbook.getSheets()) for (const pivot of owner.pivots) {
+      if (pivot.source.kind === 'worksheet-range') relocate(pivot.source.range);
+      if (pivot.source.kind === 'worksheet-ranges') for (const sourceRange of pivot.source.ranges) relocate(sourceRange.range);
+      if (pivot.target.sheetId === sheet.id && insideCell(normalizedSource, pivot.target.anchor.row, pivot.target.anchor.column)) {
+        pivot.target.anchor.row += rowDelta;
+        pivot.target.anchor.column += colDelta;
+      }
     }
-  }
-  for (const owner of workbook.getSheets()) for (const sparkline of owner.sparklines) {
-    relocate(sparkline.sourceRange);
-    if (sparkline.sheetId === sheet.id && insideCell(normalizedSource, sparkline.anchor.row, sparkline.anchor.column)) {
-      sparkline.anchor.row += rowDelta;
-      sparkline.anchor.column += colDelta;
+    for (const owner of workbook.getSheets()) for (const sparkline of owner.sparklines) {
+      relocate(sparkline.sourceRange);
+      if (sparkline.sheetId === sheet.id && insideCell(normalizedSource, sparkline.anchor.row, sparkline.anchor.column)) {
+        sparkline.anchor.row += rowDelta;
+        sparkline.anchor.column += colDelta;
+      }
     }
-  }
-  for (const spill of sheet.spillRanges) {
-    relocate(spill.range);
-    if (insideCell(normalizedSource, spill.anchor.row, spill.anchor.column)) {
-      spill.anchor.row += rowDelta;
-      spill.anchor.column += colDelta;
+    for (const spill of sheet.spillRanges) {
+      relocate(spill.range);
+      if (insideCell(normalizedSource, spill.anchor.row, spill.anchor.column)) {
+        spill.anchor.row += rowDelta;
+        spill.anchor.column += colDelta;
+      }
     }
-  }
-  for (const rule of sheet.protectionRules) if (rule.range) relocate(rule.range);
-  if (sheet.bandedRule) relocate(sheet.bandedRule.range);
-  for (const drawing of sheet.drawings) {
-    if (drawing.anchor.kind === 'absolute' || drawing.anchor.row === undefined || drawing.anchor.column === undefined) continue;
-    if (!insideCell(normalizedSource, drawing.anchor.row, drawing.anchor.column)) continue;
-    drawing.anchor.row += rowDelta;
-    drawing.anchor.column += colDelta;
-    if (drawing.anchor.endRow !== undefined) drawing.anchor.endRow += rowDelta;
-    if (drawing.anchor.endColumn !== undefined) drawing.anchor.endColumn += colDelta;
-  }
-  sheet.review.remapCoordinates((row, column) => insideCell(normalizedSource, row, column)
-    ? { row: row + rowDelta, column: column + colDelta }
-    : { row, column });
-  const nextHyperlinks = new Map<string, CellHyperlink>();
-  for (const [key, hyperlink] of sheet.hyperlinks) {
-    const [rowText, columnText] = key.split(':');
-    const row = Number(rowText);
-    const column = Number(columnText);
-    if (insideCell(normalizedSource, row, column)) nextHyperlinks.set(cellKey(row + rowDelta, column + colDelta), hyperlink);
-    else nextHyperlinks.set(key, hyperlink);
-  }
-  sheet.hyperlinks.clear();
-  for (const [key, hyperlink] of nextHyperlinks) sheet.hyperlinks.set(key, hyperlink);
-  const formulaRewriteResult = applyMovedFormulaRewritePlan(workbook, formulaRewrite);
-  if (reportSheetAfter) sheet.reportSheet = reportSheetAfter;
-  return {
-    kind: 'structural-transform',
-    removedCells: overwritten,
-    clearInputRanges: [structuredClone(normalizedSource), structuredClone(target)],
-    populateInputRanges: [structuredClone(normalizedSource), structuredClone(target)],
-    rewrittenFormulaOwners: formulaRewriteResult.owners,
-    formulaOwnerDeltas: [...formulaRewriteResult.deltas, ...formulaRewriteResult.formulaRuleDeltas],
-    definedNameOwnerDeltas: formulaRewriteResult.definedNameDeltas,
-    rangeOwnerDeltas,
-  };
+    for (const rule of sheet.protectionRules) if (rule.range) relocate(rule.range);
+    if (sheet.bandedRule) relocate(sheet.bandedRule.range);
+    for (const drawing of sheet.drawings) {
+      if (drawing.anchor.kind === 'absolute' || drawing.anchor.row === undefined || drawing.anchor.column === undefined) continue;
+      if (!insideCell(normalizedSource, drawing.anchor.row, drawing.anchor.column)) continue;
+      drawing.anchor.row += rowDelta;
+      drawing.anchor.column += colDelta;
+      if (drawing.anchor.endRow !== undefined) drawing.anchor.endRow += rowDelta;
+      if (drawing.anchor.endColumn !== undefined) drawing.anchor.endColumn += colDelta;
+    }
+    sheet.review.remapCoordinates((row, column) => insideCell(normalizedSource, row, column)
+      ? { row: row + rowDelta, column: column + colDelta }
+      : { row, column });
+    const nextHyperlinks = new Map<string, CellHyperlink>();
+    for (const [key, hyperlink] of sheet.hyperlinks) {
+      const [rowText, columnText] = key.split(':');
+      const row = Number(rowText);
+      const column = Number(columnText);
+      if (insideCell(normalizedSource, row, column)) nextHyperlinks.set(cellKey(row + rowDelta, column + colDelta), hyperlink);
+      else nextHyperlinks.set(key, hyperlink);
+    }
+    sheet.hyperlinks.clear();
+    for (const [key, hyperlink] of nextHyperlinks) sheet.hyperlinks.set(key, hyperlink);
+    const formulaRewriteResult = applyMovedFormulaRewritePlan(workbook, formulaRewrite);
+    if (reportSheetAfter) sheet.reportSheet = reportSheetAfter;
+    return {
+      kind: 'structural-transform',
+      removedCells: overwritten,
+      clearInputRanges: [structuredClone(normalizedSource), structuredClone(target)],
+      populateInputRanges: [structuredClone(normalizedSource), structuredClone(target)],
+      rewrittenFormulaOwners: formulaRewriteResult.owners,
+      formulaOwnerDeltas: [...formulaRewriteResult.deltas, ...formulaRewriteResult.formulaRuleDeltas],
+      definedNameOwnerDeltas: formulaRewriteResult.definedNameDeltas,
+      rangeOwnerDeltas,
+    };
+  });
 }
 
 function validateDataRegionMovePreservation(sheet: WorksheetModel, source: RangeRef, target: RangeRef): void {

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { MAX_SHEET_COLUMN_COUNT, MAX_SHEET_ROW_COUNT, WorkbookModel } from '@react-sheets/core-model';
-import { CommandRuntime } from '@react-sheets/command-runtime';
+import { MAX_SHEET_COLUMN_COUNT, MAX_SHEET_ROW_COUNT, StructuralMutationApplyError, WorkbookModel } from '@react-sheets/core-model';
+import { CommandRuntime, MutationRecoveryRequiredError } from '@react-sheets/command-runtime';
 import {
   registerSheetCommands,
   formatTsv,
@@ -26,6 +26,36 @@ const TEST_INPUT_CONTEXT: CellInputInterpretationContext = {
 const DIRECT_INPUT_CONTEXT: CellInputInterpretationContext = { ...TEST_INPUT_CONTEXT, sourceKind: 'direct-entry' };
 const parseTsv = (text: string) => parseTsvWithContext(text, TEST_INPUT_CONTEXT);
 const parseClipboardPayload = (payload: Parameters<typeof parseClipboardPayloadWithContext>[0]) => parseClipboardPayloadWithContext(payload, TEST_INPUT_CONTEXT);
+
+test('row sort fail-stops if its post-permutation sort-state owner cannot commit', () => {
+  const workbook = new WorkbookModel('unit-sort-state-commit-failure', 'Sort State Commit Failure');
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, { value: 'B' });
+  sheet.cells.set(1, 0, { value: 'A' });
+  Object.defineProperty(sheet, 'appliedSortState', {
+    configurable: false,
+    enumerable: false,
+    value: undefined,
+    writable: false,
+  });
+
+  assert.throws(
+    () => runtime.execute('data.sort.rows', {
+      sheetId: sheet.id,
+      range: { sheetId: sheet.id, startRow: 0, endRow: 1, startColumn: 0, endColumn: 0 },
+      criteria: [{ column: 0, ascending: true }],
+      hasHeader: false,
+    }),
+    (error: unknown) => error instanceof MutationRecoveryRequiredError
+      && error.originalCause instanceof StructuralMutationApplyError,
+  );
+  assert.equal(sheet.cells.get(0, 0)?.value, 'A');
+  assert.equal(sheet.cells.get(1, 0)?.value, 'B');
+  assert.equal(runtime.isMutationRecoveryRequired, true);
+  assert.equal(runtime.getHistoryDepth().undo, 0);
+});
 
 test('fixed-decimal direct entry uses the canonical interpreter and explicit decimals override it', () => {
   const workbook = new WorkbookModel('unit-fixed-decimal', 'Fixed Decimal');

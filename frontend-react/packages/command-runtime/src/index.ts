@@ -1,4 +1,4 @@
-import { WorkbookModel, isWorkbookCalculationContextEffect, normalizeCellDataForStorage, normalizeDefinedNameModel, readChartTextFormula, structuralRangeOwnerAffectedRanges, structuralRuleFormulaFields, writeChartTextFormula, type AutoFilterModel, type CellData, type ConditionalFormatRule, type DataSourceManifest, type DataValidationRule, type ProtectionAction, type RangeRef, type SortStateModel, type StructuralDefinedNameOwnerDelta, type StructuralFormulaOwnerDelta, type StructuralFormulaOwnerState, type StructuralFormulaRule, type StructuralRangeOwnerDelta, type StructuralReferenceOwnerIndex, type WorkbookCalculationContextEffect, type WorkbookTableModel, type WorksheetModel } from '@react-sheets/core-model';
+import { StructuralMutationApplyError, WorkbookModel, isWorkbookCalculationContextEffect, normalizeCellDataForStorage, normalizeDefinedNameModel, readChartTextFormula, structuralRangeOwnerAffectedRanges, structuralRuleFormulaFields, writeChartTextFormula, type AutoFilterModel, type CellData, type ConditionalFormatRule, type DataSourceManifest, type DataValidationRule, type ProtectionAction, type RangeRef, type SortStateModel, type StructuralDefinedNameOwnerDelta, type StructuralFormulaOwnerDelta, type StructuralFormulaOwnerState, type StructuralFormulaRule, type StructuralRangeOwnerDelta, type StructuralReferenceOwnerIndex, type WorkbookCalculationContextEffect, type WorkbookTableModel, type WorksheetModel } from '@react-sheets/core-model';
 import { collectFormulaDependencies, collectFormulaReferenceNodes, formatFormula, mapAstStructuralReferences, parseFormula, RangeIndex, ReferenceTransformDomain, MAX_COLUMN_INDEX, MAX_ROW_INDEX, type FormulaRuleReferenceFailureReason, type FormulaRuleReferenceOwnerIdentity } from '@react-sheets/formula-engine';
 
 export interface MutationInfo<P = unknown> {
@@ -1355,7 +1355,13 @@ export class CommandRuntime {
           ...item,
           affectedRanges: structuredClone(item.affectedRanges),
         }));
-        const effect = mutation.apply(context) ?? this.registry.getMutationMetadata(mutation.id).calculationContextEffect;
+        let effect: unknown;
+        try {
+          effect = mutation.apply(context) ?? this.registry.getMutationMetadata(mutation.id).calculationContextEffect;
+        } catch (error) {
+          if (error instanceof StructuralMutationApplyError) throw this.requireMutationRecovery(error);
+          throw error;
+        }
         const formulaOwnerDeltas = isRecord(effect) && Array.isArray(effect.formulaOwnerDeltas)
           ? effect.formulaOwnerDeltas as StructuralFormulaOwnerDelta[]
           : [];
@@ -1428,6 +1434,7 @@ export class CommandRuntime {
 
     try {
       const commandResult = command.execute(params, context);
+      this.assertMutationReady();
       const transactionMutationCount = this.activeEntry
         ? this.activeEntry.forwardMutations.length - transactionMutationOffset
         : mutations.length;
@@ -1456,19 +1463,27 @@ export class CommandRuntime {
     } catch (err) {
       this.transactionDepth -= 1;
       if (isRootTransaction) {
-        // Rollback applied mutations in this transaction if failed
         let rollbackError: unknown;
+        let abortListenerError: unknown;
         try {
-          if (this.activeEntry && this.activeEntry.inversePlan.length > 0) {
+          if (!this.recoveryRequiredError && this.activeEntry && this.activeEntry.inversePlan.length > 0) {
             this.applyHistory(this.activeEntry.inversePlan, 'undo');
           }
         } catch (error) {
           rollbackError = error;
         } finally {
           this.activeEntry = null;
-          for (const listener of this.commandAbortListeners) listener(id, params, operationId);
+          for (const listener of this.commandAbortListeners) {
+            try {
+              listener(id, params, operationId);
+            } catch (error) {
+              abortListenerError ??= error;
+            }
+          }
         }
+        if (this.recoveryRequiredError) throw this.recoveryRequiredError;
         if (rollbackError !== undefined) throw rollbackError;
+        if (abortListenerError !== undefined) throw abortListenerError;
       }
       throw err;
     }

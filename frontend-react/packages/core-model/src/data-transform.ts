@@ -4,6 +4,7 @@ import type { DefinedNameModel, DrawingObject, DrawingPayload, SpillRange } from
 import type { WorkbookTableModel } from './data-model';
 import type { DataSourceManifest } from './data-source';
 import type { StructuralRangeOwnerDelta } from './structural-range-owner';
+import { commitStructuralMutation } from './structural-mutation-apply-error';
 import type {
   StructuralDefinedNameOwnerDelta,
   StructuralFormulaOwnerDelta,
@@ -729,93 +730,95 @@ export function applyRowPermutation(
     entries.push({ column, cell: nextCell });
     cellsByRow.set(row, entries);
   });
-  for (const [row, entries] of cellsByRow) for (const entry of entries) sheet.cells.delete(row, entry.column);
-  sourceRows.forEach((sourceRow, targetOffset) => { for (const entry of cellsByRow.get(sourceRow) ?? []) sheet.cells.set(range.startRow + targetOffset, entry.column, entry.cell); });
+  return commitStructuralMutation<RowPermutationResult>(() => {
+    for (const [row, entries] of cellsByRow) for (const entry of entries) sheet.cells.delete(row, entry.column);
+    sourceRows.forEach((sourceRow, targetOffset) => { for (const entry of cellsByRow.get(sourceRow) ?? []) sheet.cells.set(range.startRow + targetOffset, entry.column, entry.cell); });
 
-  sheet.review.remapCoordinates((row, column) => ({ row: inRange(plan.range, row, column) ? remapRow(row, plan) : row, column }));
-  const hyperlinks = remapCellMap(sheet.hyperlinks, plan); sheet.hyperlinks.clear(); for (const [key, value] of hyperlinks) sheet.hyperlinks.set(key, value);
-  for (const drawing of sheet.drawings) Object.assign(drawing, remapDrawingAnchor(drawing, plan));
-  for (const owner of worksheetOwners) {
-    for (const sparkline of owner.sparklines) {
-      if (rangesIntersect(sparkline.sourceRange, range)) sparkline.sourceRange = remapSingleRange(`sparkline ${sparkline.id}`, sparkline.sourceRange, plan);
-      if (owner.id === sheet.id && inRange(range, sparkline.anchor.row, sparkline.anchor.column)) sparkline.anchor.row = remapRow(sparkline.anchor.row, plan);
-    }
-    for (const pivot of owner.pivots) {
-      if (pivot.source.kind === 'worksheet-range' && rangesIntersect(pivot.source.range, range)) pivot.source.range = remapSingleRange(`pivot ${pivot.id} source`, pivot.source.range, plan);
-      if (pivot.source.kind === 'worksheet-ranges') for (const source of pivot.source.ranges) if (rangesIntersect(source.range, range)) source.range = remapSingleRange(`pivot ${pivot.id} source`, source.range, plan);
-      if (pivot.target.sheetId === sheet.id && inRange(range, pivot.target.anchor.row, pivot.target.anchor.column)) pivot.target.anchor.row = remapRow(pivot.target.anchor.row, plan);
-    }
-  }
-  for (const change of ownerChanges.workbookTableSourceRanges) change.owner.sourceRange = change.sourceRange;
-  for (const change of ownerChanges.dataSourceRanges) change.owner.sourceRange = change.sourceRange;
-  if (ownerChanges.dataRegions.length > 0) {
-    const changed = new Map(ownerChanges.dataRegions.map((entry) => [entry.owner.id, entry]));
-    sheet.replaceDataRegions(sheet.dataRegions.map((region) => {
-      const next = changed.get(region.id);
-      return next ? { ...region, range: { ...next.range }, headerRow: next.headerRow } : region;
-    }));
-  }
-  sheet.spillRanges.splice(0, sheet.spillRanges.length, ...sheet.spillRanges.map((spill) => remapSpill(spill, plan)));
-  sheet.conditionalFormats.splice(0, sheet.conditionalFormats.length, ...ownerChanges.conditionalFormats);
-  sheet.dataValidations.splice(0, sheet.dataValidations.length, ...ownerChanges.dataValidations);
-  const validationChangesByOwner = new Map<WorksheetModel, Map<string, (typeof ownerChanges.validationListSources)[number]>>();
-  for (const change of ownerChanges.validationListSources) {
-    let changes = validationChangesByOwner.get(change.owner);
-    if (!changes) {
-      changes = new Map();
-      validationChangesByOwner.set(change.owner, changes);
-    }
-    if (changes.has(change.ruleId)) {
-      throw new Error(`ROW_PERMUTATION_INVARIANT: duplicate validation list-source delta ${change.owner.id}:${change.ruleId}`);
-    }
-    changes.set(change.ruleId, change);
-  }
-  for (const [owner, changes] of validationChangesByOwner) {
-    const found = new Set<string>();
-    for (const rule of owner.dataValidations) {
-      const change = changes.get(rule.id);
-      if (!change) continue;
-      if (rule.sheetId !== owner.id || rule.listSource?.kind !== 'range'
-        || rule.listSource.range.sheetId !== change.range.sheetId || found.has(rule.id)) {
-        throw new Error(`ROW_PERMUTATION_INVARIANT: validation list-source owner ${owner.id}:${rule.id} is invalid during commit`);
+    sheet.review.remapCoordinates((row, column) => ({ row: inRange(plan.range, row, column) ? remapRow(row, plan) : row, column }));
+    const hyperlinks = remapCellMap(sheet.hyperlinks, plan); sheet.hyperlinks.clear(); for (const [key, value] of hyperlinks) sheet.hyperlinks.set(key, value);
+    for (const drawing of sheet.drawings) Object.assign(drawing, remapDrawingAnchor(drawing, plan));
+    for (const owner of worksheetOwners) {
+      for (const sparkline of owner.sparklines) {
+        if (rangesIntersect(sparkline.sourceRange, range)) sparkline.sourceRange = remapSingleRange(`sparkline ${sparkline.id}`, sparkline.sourceRange, plan);
+        if (owner.id === sheet.id && inRange(range, sparkline.anchor.row, sparkline.anchor.column)) sparkline.anchor.row = remapRow(sparkline.anchor.row, plan);
       }
-      found.add(rule.id);
-      rule.listSource.range = { ...change.range };
-      rule.ranges = change.ownerRanges.map((range) => ({ ...range }));
+      for (const pivot of owner.pivots) {
+        if (pivot.source.kind === 'worksheet-range' && rangesIntersect(pivot.source.range, range)) pivot.source.range = remapSingleRange(`pivot ${pivot.id} source`, pivot.source.range, plan);
+        if (pivot.source.kind === 'worksheet-ranges') for (const source of pivot.source.ranges) if (rangesIntersect(source.range, range)) source.range = remapSingleRange(`pivot ${pivot.id} source`, source.range, plan);
+        if (pivot.target.sheetId === sheet.id && inRange(range, pivot.target.anchor.row, pivot.target.anchor.column)) pivot.target.anchor.row = remapRow(pivot.target.anchor.row, plan);
+      }
     }
-    if (found.size !== changes.size) {
-      throw new Error(`ROW_PERMUTATION_INVARIANT: validation list-source owner is missing during commit on ${owner.id}`);
+    for (const change of ownerChanges.workbookTableSourceRanges) change.owner.sourceRange = change.sourceRange;
+    for (const change of ownerChanges.dataSourceRanges) change.owner.sourceRange = change.sourceRange;
+    if (ownerChanges.dataRegions.length > 0) {
+      const changed = new Map(ownerChanges.dataRegions.map((entry) => [entry.owner.id, entry]));
+      sheet.replaceDataRegions(sheet.dataRegions.map((region) => {
+        const next = changed.get(region.id);
+        return next ? { ...region, range: { ...next.range }, headerRow: next.headerRow } : region;
+      }));
     }
-  }
-  if (sheet.autoFilter) sheet.autoFilter.range = remapSingleRange('auto filter', sheet.autoFilter.range, plan);
-  const sheetTableRangesByOwner = new Map(ownerChanges.sheetTableRanges.map((change) => [change.owner, change.range]));
-  for (const table of sheet.sheetTables) {
-    const bodyPermutation = isTableBodyPermutation(table, range);
-    if (!bodyPermutation) {
-      const rangeChange = sheetTableRangesByOwner.get(table);
-      if (rangeChange) table.range = rangeChange;
-      if (table.autoFilter) table.autoFilter.range = remapSingleRange(`table ${table.id} filter`, table.autoFilter.range, plan);
+    sheet.spillRanges.splice(0, sheet.spillRanges.length, ...sheet.spillRanges.map((spill) => remapSpill(spill, plan)));
+    sheet.conditionalFormats.splice(0, sheet.conditionalFormats.length, ...ownerChanges.conditionalFormats);
+    sheet.dataValidations.splice(0, sheet.dataValidations.length, ...ownerChanges.dataValidations);
+    const validationChangesByOwner = new Map<WorksheetModel, Map<string, (typeof ownerChanges.validationListSources)[number]>>();
+    for (const change of ownerChanges.validationListSources) {
+      let changes = validationChangesByOwner.get(change.owner);
+      if (!changes) {
+        changes = new Map();
+        validationChangesByOwner.set(change.owner, changes);
+      }
+      if (changes.has(change.ruleId)) {
+        throw new Error(`ROW_PERMUTATION_INVARIANT: duplicate validation list-source delta ${change.owner.id}:${change.ruleId}`);
+      }
+      changes.set(change.ruleId, change);
     }
-  }
-  for (const merge of sheet.merges) { merge.range = remapSingleRange('merge', merge.range, plan); if (inRange(range, merge.anchor.row, merge.anchor.column)) merge.anchor.row = remapRow(merge.anchor.row, plan); }
-  for (const group of sheet.outline?.groups ?? []) if (group.axis === 'row' && group.start >= range.startRow && group.end <= range.endRow) { const mapped = remapRangeExact({ sheetId: sheet.id, startRow: group.start, endRow: group.end, startColumn: range.startColumn, endColumn: range.endColumn }, plan); if (mapped.length !== 1) throw new Error('Sort cannot exactly remap outline group'); group.start = mapped[0]!.startRow; group.end = mapped[0]!.endRow; }
-  for (const rule of sheet.protectionRules) if (rule.range) rule.range = remapSingleRange(`protection ${rule.id}`, rule.range, plan, plan.metadataScope);
-  if (sheet.bandedRule) sheet.bandedRule.range = remapSingleRange('banded rule', sheet.bandedRule.range, plan);
-  for (const change of ownerChanges.definedNames) {
-    workbook.setDefinedName({ ...change.entry, formula: change.formula, anchor: change.anchor });
-  }
-  for (const template of ownerChanges.templates) workbook.cellStyleTemplates.set(template.id, template);
-  for (const update of ownerChanges.drawingPayloads) {
-    update.owner.drawingPayloads.clear();
-    for (const [payloadId, payload] of update.payloads) update.owner.drawingPayloads.set(payloadId, payload);
-  }
-  if (ownerChanges.reportSheet) sheet.reportSheet = ownerChanges.reportSheet;
-  formulaOwnerDeltas.push(...ruleFormulaOwnerDeltas);
-  return {
-    formulaOwnerDeltas,
-    definedNameOwnerDeltas: ownerChanges.definedNames.map(createPermutationDefinedNameDelta),
-    rangeOwnerDeltas: ownerChanges.rangeOwnerDeltas,
-  };
+    for (const [owner, changes] of validationChangesByOwner) {
+      const found = new Set<string>();
+      for (const rule of owner.dataValidations) {
+        const change = changes.get(rule.id);
+        if (!change) continue;
+        if (rule.sheetId !== owner.id || rule.listSource?.kind !== 'range'
+          || rule.listSource.range.sheetId !== change.range.sheetId || found.has(rule.id)) {
+          throw new Error(`ROW_PERMUTATION_INVARIANT: validation list-source owner ${owner.id}:${rule.id} is invalid during commit`);
+        }
+        found.add(rule.id);
+        rule.listSource.range = { ...change.range };
+        rule.ranges = change.ownerRanges.map((range) => ({ ...range }));
+      }
+      if (found.size !== changes.size) {
+        throw new Error(`ROW_PERMUTATION_INVARIANT: validation list-source owner is missing during commit on ${owner.id}`);
+      }
+    }
+    if (sheet.autoFilter) sheet.autoFilter.range = remapSingleRange('auto filter', sheet.autoFilter.range, plan);
+    const sheetTableRangesByOwner = new Map(ownerChanges.sheetTableRanges.map((change) => [change.owner, change.range]));
+    for (const table of sheet.sheetTables) {
+      const bodyPermutation = isTableBodyPermutation(table, range);
+      if (!bodyPermutation) {
+        const rangeChange = sheetTableRangesByOwner.get(table);
+        if (rangeChange) table.range = rangeChange;
+        if (table.autoFilter) table.autoFilter.range = remapSingleRange(`table ${table.id} filter`, table.autoFilter.range, plan);
+      }
+    }
+    for (const merge of sheet.merges) { merge.range = remapSingleRange('merge', merge.range, plan); if (inRange(range, merge.anchor.row, merge.anchor.column)) merge.anchor.row = remapRow(merge.anchor.row, plan); }
+    for (const group of sheet.outline?.groups ?? []) if (group.axis === 'row' && group.start >= range.startRow && group.end <= range.endRow) { const mapped = remapRangeExact({ sheetId: sheet.id, startRow: group.start, endRow: group.end, startColumn: range.startColumn, endColumn: range.endColumn }, plan); if (mapped.length !== 1) throw new Error('Sort cannot exactly remap outline group'); group.start = mapped[0]!.startRow; group.end = mapped[0]!.endRow; }
+    for (const rule of sheet.protectionRules) if (rule.range) rule.range = remapSingleRange(`protection ${rule.id}`, rule.range, plan, plan.metadataScope);
+    if (sheet.bandedRule) sheet.bandedRule.range = remapSingleRange('banded rule', sheet.bandedRule.range, plan);
+    for (const change of ownerChanges.definedNames) {
+      workbook.setDefinedName({ ...change.entry, formula: change.formula, anchor: change.anchor });
+    }
+    for (const template of ownerChanges.templates) workbook.cellStyleTemplates.set(template.id, template);
+    for (const update of ownerChanges.drawingPayloads) {
+      update.owner.drawingPayloads.clear();
+      for (const [payloadId, payload] of update.payloads) update.owner.drawingPayloads.set(payloadId, payload);
+    }
+    if (ownerChanges.reportSheet) sheet.reportSheet = ownerChanges.reportSheet;
+    formulaOwnerDeltas.push(...ruleFormulaOwnerDeltas);
+    return {
+      formulaOwnerDeltas,
+      definedNameOwnerDeltas: ownerChanges.definedNames.map(createPermutationDefinedNameDelta),
+      rangeOwnerDeltas: ownerChanges.rangeOwnerDeltas,
+    };
+  });
 }
 
 function createPermutationDefinedNameDelta(

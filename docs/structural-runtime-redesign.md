@@ -2148,3 +2148,13 @@ history AutoFilter 专用变换现要求主 range、sortState.ref 及每个 cond
 六轮静态自审：①确认 preflight rejection 仍在任何 live handler 前 fail-close，未被 observer-error 收集逻辑放行；②确认 handler 与同项 listener 仍交替执行，保留 mutation 之间现有派生计算顺序；③确认只保留第一个异常但会尝试剩余 listeners 与 mutation，最终仍设置 recovery lock 并抛出原始原因；④确认远端 `transformHistoryAgainstRemote` 和 revision advancement 在 observer failure 抛出前完成，且 recovery lock 阻止当前 runtime 再次 apply；⑤确认 undo/redo 在报告 observer failure 前同步移动两条 history stack，并仍运行 history replay observers；⑥确认 server ACK 的 owner deltas、history reconciliation 与 revision 先完成再 fail-stop，并复核多 owner、无本地 history、常规成功与既有 preflight rejection 分支。
 
 本轮修复 **1 个真实跨入口根因**，没有达到每轮至少 30 个独立问题的目标，不把 remote、ACK、undo、redo 的相同 listener 中断原因重复计数。只进行源码审查与 `git diff --check`；新增回归测试源码未执行，未运行测试、typecheck、build、浏览器、Excel 或 benchmark。Java 唯一结构规划权、完整可逆 StructuralPatch、完整 staged replay/participant transaction 与最终实测仍未完成；PR #345 继续保持 draft。
+
+### 2026-09-28 continuation — fail-stop after a structural commit-phase exception
+
+复核缺口清单第 15 项，确认一个本地正向命令的真实数据完整性风险：`CommandRuntime.applyMutation` 在 apply callback 正常返回后才登记当前 mutation 的 inverse；轴插删、单元格位移、范围移动和行排序的 live commit 都会分多步写 cell 与各类 owner。若其中一步抛错，当前 mutation 没有 inverse，根事务原先只能回滚已登记的前序 mutations，无法证明部分完成的结构写入已恢复。远端/undo/redo 的 `applyHistory` 已对 replay 失败 fail-stop，但本地正向 apply callback 原来没有对等恢复锁。
+
+新增 `StructuralMutationApplyError`，只包住四个已确认结构入口的 live commit 区域；预检与规划仍在边界外，普通拒绝保留原有错误与回滚语义。排序 caller 在行置换后还要提交 `appliedSortState`，因此单独追踪置换是否已成功：只有后置状态/effect 失败才提升为部分提交错误，置换预检拒绝仍原样返回。CommandRuntime 对该类型设置 `MutationRecoveryRequiredError`，根事务不再尝试对不完整结构操作执行前序逆操作；清理当前 history entry 后保留恢复错误，命令返回前再检查恢复锁，防止上层吞掉异常后报告成功。在线走既有 snapshot resynchronization，离线走既有 reload 提示。测试源码覆盖结构提交边界成功/失败、失败后不执行不安全局部回滚并拒绝后续命令，以及真实 `data.sort.rows` 在排序状态 owner 提交失败时 fail-stop；未执行测试。
+
+六轮静态自审：①逐一核对 axis、cell-shift、move-range、row-permutation 的规划/预检都先于 live commit 分类；检查 sort caller 只有在行置换成功后才分类其后置状态/effect 失败；②沿 `sheet-features` 调用链确认行列插删、cell shift、move 与本地 sort 经过对应边界，history/remote replay 仍由 `applyHistory` 的 recovery catch 承接；③确认只对 `StructuralMutationApplyError` 及“置换已经成功”的后续 sort 错误升级恢复，预检错误不误锁；④确认 recovery 已设置时不应用缺失当前 inverse 的整笔 history plan，且 abort listeners 仍逐个尝试；⑤确认命令 callback 吞掉结构异常也会被返回前的 `assertMutationReady` 拦截，原始失败原因留在恢复错误链中；⑥确认离线/在线恢复动作沿现有 session/collaboration handler、无 wire/Java/snapshot schema 变化，源码测试位于已纳入单测清单的文件。审查同时确认这只是 fail-stop 缓解：部分模型会暂留至权威快照重载，不能替代完整 staged transaction/inverse patch；未覆盖的其他结构写入者仍需逐条盘点。
+
+本轮确认并缓解 **1 个真实根因**，未达到每轮至少 30 个独立问题目标；未以四个入口或多种恢复表现重复计数。仅静态审查与源码修改，未运行本地测试、typecheck、build、浏览器、Excel 或 benchmark。完整事务原子性、Java 唯一规划权、owner-complete StructuralPatch 及最终实测仍未完成；PR #345 继续保持 draft。
