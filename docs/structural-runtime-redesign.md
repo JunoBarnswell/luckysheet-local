@@ -2200,3 +2200,11 @@ history AutoFilter 专用变换现要求主 range、sortState.ref 及每个 cond
 六轮自审：①确认 guard 针对 mutation id 集合，而非误拦普通远端 cell/style edits；②确认远端合法 source 在客户端 socket 已建立后通过同一检查；③确认未知 worksheet feature 由 artifact import capability 保留至 session；④确认命令源仍先做 server-online 检查，避免倒置之前的离线保证；⑤确认 replay 的结构预检/应用仍保有原有 isolated-snapshot 和 recovery-required 语义；⑥确认此处拒绝只能令当前客户端停止并 resync，服务端可能已提交，因此明确不把它当作 Java commit fail-close 或最终解决方案。
 
 此次是同一 OOXML preflight 根因在 remote ingress 的补齐，不另行膨胀问题计数；本轮累计仍远低于用户要求的每轮 30 个独立问题。静态复核与 `git diff --check` 已通过；不运行测试/构建。服务端 authoritativeness、完整 patch、ReferenceIndex 和实测仍未完成，PR #345 保持 draft。
+
+### 2026-09-28 continuation — Java artifact-capability authority boundary
+
+追查到原生 artifact 的服务端数据来源：`WorkbookCatalogService.importWorkbook` 收到并保存前端传入的 `detectedFeatures`/compatibility JSON，但服务端只验证 JSON schema，没有用源文件字节复核；后续 `putArtifact` 则把 metadata 替换成按文件名推导的 `format + codecRevision`，不携带 capability detections。`WorkbookOperationService` 当前只依赖 workbook/operation store，不读取 artifact repository；`backend/pom.xml` 没有 OOXML/ZIP 专用解析依赖。故不能把客户端自报 capability 当 Java 权威前置条件，也不能仅新增一个 metadata boolean 就声称 direct API 已 fail-close。
+
+后续 server-side capability 所有权必须由服务端对实际 artifact bytes 解析得出，并与 artifact checksum 绑定；导入及 `putArtifact` 替换时同步生成/替换该派生记录，operation commit 在结构 mutation 前读取同一已验证记录。缺少/过期/未知格式的分析状态必须按 fail-close 处理，而不是信任客户端 detections；解析应在 artifact 导入/保存边界进行一次，commit 热路径仅做 checksum/版本键查找，避免每次编辑重新扫描 OOXML。Java 需要成为这项 capability contract 的唯一 owner，再由 UI 取回同一服务端结果用于早期反馈。
+
+这一审查结果改变了下一步实现边界：先设计 Java artifact verifier 与 checksum-bound capability record 的协议/事务生命周期，再接入 `WorkbookOperationService`；当前 local/remote mutation guard 只是 UI 前置反馈，不能作为服务端修复的替代。当前仍未达到每轮 30 个独立问题的数量要求，也未开始 server verifier 实现、完整 StructuralPatch、ReferenceIndex 或实测；goal active，PR #345 保持 draft。
