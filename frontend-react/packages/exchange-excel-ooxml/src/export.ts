@@ -8,6 +8,9 @@ import { NativeDocumentError } from './native-document-error';
 import { scanFormulaPreserveIssues, scanSnapshotFeatures } from './feature-scan';
 import type { NativeDocumentExportOptions, NativeDocumentExportResult, NativeDocumentArtifact, OpcPackageGraph } from './types';
 import { capabilityFor, detectWorkbookCapabilities, detectWorksheetCapabilities } from './capability-manifest';
+import { NATIVE_DOCUMENT_STRUCTURAL_CAPABILITY_POLICY as structuralPolicy } from './generated-structural-capability-policy';
+
+const blockingSourceFeatures = new Set<string>(structuralPolicy.blockingFeatures);
 
 export interface NativeDocumentExportRequest {
   snapshot: WorkbookSnapshot;
@@ -29,10 +32,7 @@ export function assertNativeArtifactAllowsStructuralMutation(
   const unsafeSourceFeature = [
     ...(sourceCapabilityDetections ?? []),
     ...artifact.detectedFeatures.map((feature) => ({ feature })),
-  ].find(({ feature }) => [
-      'unknown-worksheet-node', 'unknown-workbook-node', 'unknown-extension',
-      'extended-validation', 'extended-conditional-format',
-    ].includes(feature));
+  ].find(({ feature }) => blockingSourceFeatures.has(feature));
   const preservedOnlyChart = sourcePackage.nativeChartGraph?.charts.find((chart) => !chart.editable)?.chartPart;
   const indexedChartParts = new Set(sourcePackage.nativeChartGraph?.charts.map((chart) => chart.chartPart) ?? []);
   const unindexedOpaqueChart = Object.keys(sourcePackage.opaqueParts)
@@ -89,7 +89,7 @@ export async function exportOoxmlDocument(request: NativeDocumentExportRequest):
   const emittedFileName = fileNameForFormat(request.fileName, emittedPackage.format.variant);
   const snapshotFeatureSet = new Set(scanSnapshotFeatures(request.snapshot));
   const packageFeatureSet = new Set(detectPackageFeatures(emittedPackage));
-  const preservedNativeChartDetections = emittedPackage.nativeChartGraph?.charts.filter((chart) => !chart.editable).map((chart) => ({ feature: 'preserved-native-chart', location: chart.chartPart, reason: chart.reason })) ?? [];
+  const preservedNativeChartDetections = emittedPackage.nativeChartGraph?.charts.filter((chart) => !chart.editable).map((chart) => ({ feature: structuralPolicy.features.preservedNativeChart, location: chart.chartPart, reason: chart.reason })) ?? [];
   const opaqueChartParts = Object.keys(emittedPackage.opaqueParts).filter((part) => part.toLowerCase().includes('/charts/') && !emittedPackage.nativeChartGraph?.charts.some((chart) => chart.chartPart === part));
   for (const detection of preservedNativeChartDetections) packageFeatureSet.add(detection.feature);
   const snapshotFeatures = [...snapshotFeatureSet];
@@ -109,7 +109,7 @@ export async function exportOoxmlDocument(request: NativeDocumentExportRequest):
     if (lower.includes('/drawings/')) return ['images'];
     return [];
   })) : new Set<string>();
-  if (preservedNativeChartDetections.length) preservedFeatures.add('preserved-native-chart');
+  if (preservedNativeChartDetections.length) preservedFeatures.add(structuralPolicy.features.preservedNativeChart);
   // Only parts that survived the writer can be preserved-only. The source
   // package is not authoritative after native graph synchronization.
   for (const feature of [...preservedFeatures]) if (!packageFeatures.includes(feature)) preservedFeatures.delete(feature);

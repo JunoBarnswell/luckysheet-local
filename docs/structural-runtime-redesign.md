@@ -2220,3 +2220,13 @@ history AutoFilter 专用变换现要求主 range、sortState.ref 及每个 cond
 六轮设计自审：①来源字节由服务端持有并自算 checksum，不信任 operation 内字段或前端报告；②record 与 artifact 同事务替换，避免新 bytes 配旧分析；③commit 只做数据库记录比对，不引入每次编辑全包扫描；④未知/坏包 fail-close，不以“没有发现问题”冒充安全；⑤只约束结构 mutation，避免把对结构无影响的普通 cell 编辑一并禁用；⑥明确 chart/pivot preserve ownership 和共享 policy 仍是未满足项，不把第一阶段 parser 冒充完整 Excel capability authority。
 
 这是可实施设计而非代码完成声明；本轮仍未达到每轮 30 个独立真实问题，也未实现 verifier 或结构服务端前置条件。只有在 extension/chart ownership policy 纳入共享契约后，才开始 Java scanner，避免落地第二套不完整判定器。`git diff --check` 已通过；不运行测试或构建。
+
+### 2026-09-28 continuation — shared OOXML capability policy foundation
+
+静态核对检测器与 `buildWorksheetXml` 的真实读写边界，确认并修复以下问题：①XML 解析器允许多个文档元素，而 capability 检测用任意后代元素寻找 `<worksheet>/<workbook>`，故错误根或嵌套伪根可能被当作有效 package root；改为只接受唯一直接文档根。②图谱引用但缺失的 worksheet part 被 `continue` 静默略过，缺失 workbook part 和错误 workbook root 则返回空 detection；改为产生 blocking unknown-owner detection。③worksheet 根级业务属性不参加检测，但 writer 重建 `<worksheet>` 时不保留这些属性；现在除 namespace 声明外 fail-close。④worksheet/workbook 对应唯一的根节点可以重复，canonical writer 只读取/写出一个；现在按共享 singleton policy 拒绝重复 owner。⑤`sheetCalcPr`、sheet 级 `phoneticPr` 会被接受后丢弃，`legacyDrawing` 会被保留但没有锚点坐标变换；从可安全结构节点移除，令其触发 unknown-owner 阻断。⑥`sheetPr` 与 `sheetFormatPr` 原先被整体视为安全节点，但 writer 只重建子集；现在检查已支持属性、子节点、leaf/text 形状、outline 缺省语义及有限正数格式值，其他语义 fail-close。
+
+新增 `contracts/native-document-structural-capability.json` 作为能力策略源，由合同生成器产出 TS 与 Java 表示；导入/导出 feature ID、前端结构阻断列表、worksheet/workbook control extension 的 URI→容器→item→relationship owner 均改为读取该源。生成器验证 blocking feature 引用、唯一列表、节点 policy 所属范围及 extension owner 的必需字段，减少人工同步造成的前后端分叉。
+
+六轮静态自审：①检查 JSON→生成器→TS/Java 输出同一 schemaVersion 与 blocking feature 集；②检查 XML 文档根必须是唯一直接 root，并确认 parser 的宽松多根行为不再绕过检测；③逐查必需 part 缺失、错误 root、root 属性、重复 singleton 的失败分支均产出阻断 feature；④对照 `buildWorksheetXml` 逐项核实 `sheetCalcPr`、`phoneticPr`、`legacyDrawing` 和未拥有的 `sheetPr`/`sheetFormatPr` 值不会继续落入“安全保留”路径；⑤核对 `import.ts`、`export.ts`、能力报告与结构 guard 的 feature/extension owner 使用同一生成策略；⑥重查 Java 服务提交入口：生成的 Java policy 当前仍没有 verifier 消费者，`WorkbookOperationService` 仍未检查服务端 artifact capability，故明确保持这项架构缺口未完成。
+
+本批确认并修复 12 个独立静态问题；仍未达到“每轮至少 30 个独立真实问题”的目标，不把同一根因的调用点重复计数。剩余直接风险包括 `sheetViews`/DrawingML anchor 的完整 owner 验证、chart/pivot preservation 条件进入共享契约，以及服务端 checksum-bound capability record 与 Java-first StructuralPatch。仅运行了确定性合同生成和 `git diff --check`；未运行测试、typecheck、build、浏览器、Excel 或 benchmark。PR #345 仍为 draft，goal active。
