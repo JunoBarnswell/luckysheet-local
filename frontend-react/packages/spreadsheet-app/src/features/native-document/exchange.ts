@@ -10,6 +10,8 @@ import type {
 import { nativeDocumentCodecRegistry } from '@react-sheets/exchange-excel-ooxml';
 import type { AssetStore } from '../persistence/asset-store';
 
+export { assertNativeArtifactAllowsStructuralMutation } from '@react-sheets/exchange-excel-ooxml';
+
 export type { CompatibilityReport, CompatibilityLevel, NativeDocumentExportOptions, NativeDocumentImportOptions };
 
 export const DEFAULT_NATIVE_COMPATIBILITY: CompatibilityLevel = 'B';

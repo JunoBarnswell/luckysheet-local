@@ -252,7 +252,7 @@ import {
   type PersistenceSnapshotMeta,
 } from './features/persistence';
 import type { FormulaAuditProjection } from './features/formula-audit';
-import { exchangeImportDocument, exchangeExportDocument, exchangeSaveAsDocument, exchangeSaveDocument, summarizeCompatibilityReport } from './features/native-document';
+import { assertNativeArtifactAllowsStructuralMutation, exchangeImportDocument, exchangeExportDocument, exchangeSaveAsDocument, exchangeSaveDocument, summarizeCompatibilityReport } from './features/native-document';
 import {
   buildPrintSnapshot,
   getPrintDocument,
@@ -893,7 +893,10 @@ export class WorkbookSession {
     this.cellResolver = createWorkbookCellResolver(this.runtime.dataContent);
     this.permission = new PermissionService();
     this.runtime.commands.setMutationGuard((mutation, source) => {
-      if (source !== 'remote' && requiresServerStructuralPlanner(mutation.id)) this.assertServerStructuralPlannerReady();
+      if (source !== 'remote' && requiresServerStructuralPlanner(mutation.id)) {
+        this.assertServerStructuralPlannerReady();
+        assertNativeArtifactAllowsStructuralMutation(this.nativeArtifact);
+      }
       if (source !== 'remote' && !this.runtime.localOnly && !this.runtime.remoteConnected) throw new Error('COLLABORATION_OFFLINE: 连接尚未就绪，编辑草稿已保留');
       this.permission.syncFromWorkbook(this.runtime.model);
       const result = this.permission.checkMutation(mutation);

@@ -2180,3 +2180,13 @@ history AutoFilter 专用变换现要求主 range、sortState.ref 及每个 cond
 六轮静态自审：①确认 axis 与 cell-shift 共用此规划函数，移动源全部删除后才写目的坐标，复用对象不会同时保留在两个 hydrated 坐标；②确认 `isHydrated` 为 false 时仍完整 clone，避免 deferred JSON 输入对象被后续 formula/style 写入污染；③确认被删除单元格仍单独 clone，removed-cell/history 所有权语义不变；④确认字体验证仍发生在 live commit 前，`CellMatrix.set` 继续运行同一存储规范化；⑤沿 `CellMatrix.set` 检查无 font-family 的 hydrated cell 会保留引用身份，与现有 identity assertion 对齐；⑥确认变更仅减少 hydrated survivor payload 的复制，边界/映射/公式与 metadata 顺序不变，partial commit 仍由既有结构恢复锁处理。
 
 本轮确认并修复 **1 个真实性能根因**，未达到用户要求的每轮至少 30 个独立真实问题；未把 axis 和 cell-shift 两个调用入口重复计数。只做静态代码审查与 `git diff --check`，没有运行测试、typecheck、build、浏览器、Excel 或 benchmark。Java 唯一规划权、owner-complete StructuralPatch、完整 reference index 与最终实测仍未完成；PR #345 保持 draft。
+
+### 2026-09-28 continuation — preflight unsupported OOXML owners before local structure mutation
+
+从 session startup 的真实顺序复核：远程 session 先从服务端取回并解析 source artifact，随后才启动 collaboration socket；结构 mutation guard 在 `Mutation.apply` 之前执行。之前 OOXML opaque-owner 拒绝只在 `exportOoxmlDocument` 再生成时发生，因此已获准的结构操作会先写本地模型并进入协同提交，之后才在 Save/Export 暴露 `NATIVE_DOCUMENT_UNCHANGED_SAVE_REQUIRED`。这会把可预防的 fidelity 冲突推迟到结构改动之后。
+
+修复把原有未知 worksheet/workbook 节点、扩展、extended validation/conditional format 和无 canonical chart owner 检查提取为共享的 `assertNativeArtifactAllowsStructuralMutation`，导出路径继续调用同一检查；WorkbookSession 在服务在线检查之后、命令 mutation apply 之前对当前 artifact 运行它。普通受支持的 OPC artifact 和无 source artifact 不受影响；未支持的 artifact 在本地 canonical model/operation journal 改变前 fail-close。静态回归源码覆盖允许的普通输入与拒绝未知 worksheet node，未运行该测试。
+
+六轮自审：①核对结构检查位于 `mutation.apply` 之前而非 `runCommand` 之后；②核对 helper 仍由导出入口调用，避免导出与结构编辑采用不同的 opaque owner 分类；③核对导出使用当次重新解析的 capability detections，session 快路径只读取导入 artifact 的 detections，避免每次按键重新解析整个 ZIP；④核对保留-only 与未索引 chart 仍被拦截；⑤核对没 artifact / 非 OPC graph 的新建工作簿路径不被错误拒绝；⑥核对远程 socket 建立在 artifact 加载之后，且明确发现服务端 `WorkbookOperationService` 本身仍未根据 source OOXML capability 拒绝绕过 UI 的 API mutation，因此本改动只收紧正式 UI 入口，不能冒称 Java 权威层已 fail-close。
+
+本轮修复 **1 个静态证实问题**，仍未达到每轮至少 30 个独立真实问题；不把同一延迟拒绝拆成重复条目。按“静态审查、不运行测试”执行；新增测试源码但不执行。接下来必须把 source-package capability 纳入 Java 可验证的提交前置条件，并使服务端规划结果替代 TypeScript live structural planner；这一轮没有解决 API 绕过、remote replay、完整可逆 cell/owner patch、ReferenceIndex 或最终实测。`git diff --check` 尚待本轮收尾执行，PR #345 保持 draft。

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { createPivotMemberKey, defaultChartSubtype, planConnectorRoute, planSheetIdentityTransform, WorkbookModel } from '@react-sheets/core-model';
-import { exportOoxmlDocument } from './export';
+import { assertNativeArtifactAllowsStructuralMutation, exportOoxmlDocument } from './export';
 import { importOoxmlDocument } from './import';
 import { scanFormulaPreserveIssues, scanSnapshotFeatures } from './feature-scan';
 import { exportSnapshotToOoxmlBuffer } from './archive';
@@ -1487,6 +1487,12 @@ describe('exchange-excel-ooxml', () => {
   it('keeps unsupported worksheet nodes and extensions on the source-byte path and rejects regeneration', async () => {
     const workbook = new WorkbookModel('wb-unknown-worksheet-node', 'Unknown worksheet node');
     workbook.getSheet(workbook.primarySheetId).cells.set(0, 0, { value: 1 });
+    const supported = await importOoxmlDocument({
+      fileName: 'supported-structure.xlsx',
+      buffer: exportSnapshotToOoxmlBuffer(workbook.snapshot()),
+      options: { compatibilityTarget: 'B', compatibilityMode: 'balanced' },
+    });
+    assert.doesNotThrow(() => assertNativeArtifactAllowsStructuralMutation(supported.artifact));
     const generated = loadOpcPackageGraph(exportSnapshotToOoxmlBuffer(workbook.snapshot()));
     const worksheetPart = generated.packageGraph.sheetPartById[workbook.primarySheetId]!;
     generated.packageGraph.parts[worksheetPart] = strToU8(
@@ -1497,6 +1503,10 @@ describe('exchange-excel-ooxml', () => {
       buffer: zipOpcPartsBuffer(generated.packageGraph.parts),
       options: { compatibilityTarget: 'B', compatibilityMode: 'balanced' },
     });
+    assert.throws(
+      () => assertNativeArtifactAllowsStructuralMutation(imported.artifact),
+      (error: unknown) => error instanceof Error && error.message.includes('NATIVE_DOCUMENT_UNCHANGED_SAVE_REQUIRED'),
+    );
 
     const unchanged = await exportOoxmlDocument({
       snapshot: imported.snapshot,

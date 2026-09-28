@@ -18,6 +18,37 @@ export interface NativeDocumentExportRequest {
   mode?: 'save' | 'save-as' | 'export';
 }
 
+/** Reject structural edits that would invalidate source OOXML owners without a canonical model. */
+export function assertNativeArtifactAllowsStructuralMutation(
+  artifact?: NativeDocumentArtifact,
+  sourceCapabilityDetections?: readonly { feature: string; location?: string }[],
+): void {
+  const sourcePackage = artifact?.nativeGraph.kind === 'opc' ? artifact.nativeGraph.package : undefined;
+  if (!artifact || !sourcePackage) return;
+
+  const unsafeSourceFeature = [
+    ...(sourceCapabilityDetections ?? []),
+    ...artifact.detectedFeatures.map((feature) => ({ feature })),
+  ].find(({ feature }) => [
+      'unknown-worksheet-node', 'unknown-workbook-node', 'unknown-extension',
+      'extended-validation', 'extended-conditional-format',
+    ].includes(feature));
+  const preservedOnlyChart = sourcePackage.nativeChartGraph?.charts.find((chart) => !chart.editable)?.chartPart;
+  const indexedChartParts = new Set(sourcePackage.nativeChartGraph?.charts.map((chart) => chart.chartPart) ?? []);
+  const unindexedOpaqueChart = Object.keys(sourcePackage.opaqueParts)
+    .find((part) => part.toLowerCase().includes('/charts/') && !indexedChartParts.has(part));
+  const chartWithoutCanonicalOwner = preservedOnlyChart ?? unindexedOpaqueChart;
+  if (unsafeSourceFeature || chartWithoutCanonicalOwner) {
+    throw new NativeDocumentError({
+      code: 'NATIVE_DOCUMENT_UNCHANGED_SAVE_REQUIRED',
+      message: 'The source contains an unsupported workbook/worksheet feature or chart without a canonical reference owner; regenerating could discard it or leave references stale.',
+      format: sourcePackage.format,
+      location: unsafeSourceFeature?.location ?? chartWithoutCanonicalOwner,
+      recovery: 'Keep the original package unchanged, or explicitly convert/remove the unsupported feature before exporting.',
+    });
+  }
+}
+
 /** Export an OOXML document and generate its Compatibility Report. */
 export async function exportOoxmlDocument(request: NativeDocumentExportRequest): Promise<NativeDocumentExportResult> {
   if (request.artifact) await verifyNativeDocumentArtifact(request.artifact);
@@ -44,24 +75,7 @@ export async function exportOoxmlDocument(request: NativeDocumentExportRequest):
   const sourceWorksheetDetections = sourcePackage ? detectWorksheetCapabilities(sourcePackage.parts, sourcePackage) : [];
   const sourceWorkbookDetections = sourcePackage ? detectWorkbookCapabilities(sourcePackage.parts, sourcePackage) : [];
   const sourcePackageDetections = [...sourceWorksheetDetections, ...sourceWorkbookDetections];
-  const unsafeSourceFeature = sourcePackageDetections.find((detection) => [
-    'unknown-worksheet-node', 'unknown-workbook-node', 'unknown-extension', 'extended-validation', 'extended-conditional-format',
-  ].includes(detection.feature));
-  const preservedOnlyChart = sourcePackage?.nativeChartGraph?.charts.find((chart) => !chart.editable)?.chartPart;
-  const indexedChartParts = new Set(sourcePackage?.nativeChartGraph?.charts.map((chart) => chart.chartPart) ?? []);
-  const unindexedOpaqueChart = sourcePackage
-    ? Object.keys(sourcePackage.opaqueParts).find((part) => part.toLowerCase().includes('/charts/') && !indexedChartParts.has(part))
-    : undefined;
-  const chartWithoutCanonicalOwner = preservedOnlyChart ?? unindexedOpaqueChart;
-  if (sourcePackage && (unsafeSourceFeature || chartWithoutCanonicalOwner)) {
-    throw new NativeDocumentError({
-      code: 'NATIVE_DOCUMENT_UNCHANGED_SAVE_REQUIRED',
-      message: 'The source contains an unsupported workbook/worksheet feature or chart without a canonical reference owner; regenerating could discard it or leave references stale.',
-      format: sourcePackage.format,
-      location: unsafeSourceFeature?.location ?? chartWithoutCanonicalOwner,
-      recovery: 'Keep the original package unchanged, or explicitly convert/remove the unsupported feature before exporting.',
-    });
-  }
+  assertNativeArtifactAllowsStructuralMutation(artifact, sourcePackageDetections);
   const targetFormat = ooxmlTargetFormat(request.fileName, sourcePackage);
   if (sourcePackage && targetFormat && targetFormat.variant !== sourcePackage.format.variant && hasMacroParts(sourcePackage) && !macroVariant(targetFormat.variant)) {
     throw new NativeDocumentError({ code: 'NATIVE_DOCUMENT_UNSUPPORTED', message: `Save As ${targetFormat.variant} would discard the source macro project`, format: targetFormat, recovery: 'Choose a macro-enabled target or explicitly remove the macro project in a dedicated conversion workflow.' });
