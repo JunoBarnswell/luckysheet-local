@@ -2208,3 +2208,15 @@ history AutoFilter 专用变换现要求主 range、sortState.ref 及每个 cond
 后续 server-side capability 所有权必须由服务端对实际 artifact bytes 解析得出，并与 artifact checksum 绑定；导入及 `putArtifact` 替换时同步生成/替换该派生记录，operation commit 在结构 mutation 前读取同一已验证记录。缺少/过期/未知格式的分析状态必须按 fail-close 处理，而不是信任客户端 detections；解析应在 artifact 导入/保存边界进行一次，commit 热路径仅做 checksum/版本键查找，避免每次编辑重新扫描 OOXML。Java 需要成为这项 capability contract 的唯一 owner，再由 UI 取回同一服务端结果用于早期反馈。
 
 这一审查结果改变了下一步实现边界：先设计 Java artifact verifier 与 checksum-bound capability record 的协议/事务生命周期，再接入 `WorkbookOperationService`；当前 local/remote mutation guard 只是 UI 前置反馈，不能作为服务端修复的替代。当前仍未达到每轮 30 个独立问题的数量要求，也未开始 server verifier 实现、完整 StructuralPatch、ReferenceIndex 或实测；goal active，PR #345 保持 draft。
+
+### 2026-09-28 design — server-owned OOXML structural capability precondition
+
+当前前端共享拒绝规则的范围来自 `capability-manifest.ts`：worksheet unknown root child；workbook root/child/attribute 超出 canonical writer 的 allowlist；`extLst` 中扩展 DV/CF；不能证明由 canonical owner 管理的 worksheet/workbook extension；preserve-only 或未索引 chart part。Java verifier 必须复现**同一个结构可变性契约**，不需要重做完整 UI compatibility report，也不能只按 feature 名称黑名单漏掉嵌套 owner。
+
+拟定事务边界：导入与原生 artifact 替换时，由 Java 从原始 bytes 解析并生成服务端 capability record，record 至少绑定 `{artifactChecksum, policyVersion, format, analysisStatus, blockingOwners}`；artifact bytes 与 record 原子持久化。结构 operation commit 在取得 workbook 写锁后，只读当前 artifact record，并校验 checksum/policyVersion 与当前 artifact 一致；`unsupported`、`malformed`、`unknown-format`、`missing` 或 checksum 不一致均返回 typed `UNSUPPORTED_FEATURE`，不得调用 reducer。普通 cell 编辑不受这个结构专属条件影响。前端启动时获取同一 record 供本地 UI 预提示，但服务器 commit 仍以自算 record 为准。
+
+解析面采用 JDK ZIP + 安全 StAX，导入边界设 entry 数、单 entry 解压字节、总解压字节、路径穿越、重复 part 与 DTD/external entity 上限；超过上限或解析不完整均记录 fail-close 状态。只在导入/替换时分析，commit 热路径不重复展开 ZIP/XML。必须把当前 root allowlist 与 extension ownership policy 收敛为单一 contract source，让 TS 和 Java 从同版 policy 生成/消费；禁止维护两份人工同步的 allowlist。Chart/pivot 等 preserve-only 判定尚未拆到可共享 policy，故在实现这块前不能声称 verifier 覆盖完整。
+
+六轮设计自审：①来源字节由服务端持有并自算 checksum，不信任 operation 内字段或前端报告；②record 与 artifact 同事务替换，避免新 bytes 配旧分析；③commit 只做数据库记录比对，不引入每次编辑全包扫描；④未知/坏包 fail-close，不以“没有发现问题”冒充安全；⑤只约束结构 mutation，避免把对结构无影响的普通 cell 编辑一并禁用；⑥明确 chart/pivot preserve ownership 和共享 policy 仍是未满足项，不把第一阶段 parser 冒充完整 Excel capability authority。
+
+这是可实施设计而非代码完成声明；本轮仍未达到每轮 30 个独立真实问题，也未实现 verifier 或结构服务端前置条件。只有在 extension/chart ownership policy 纳入共享契约后，才开始 Java scanner，避免落地第二套不完整判定器。`git diff --check` 已通过；不运行测试或构建。
