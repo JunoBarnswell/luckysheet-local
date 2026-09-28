@@ -29,21 +29,21 @@ export function assertNativeArtifactAllowsStructuralMutation(
   const sourcePackage = artifact?.nativeGraph.kind === 'opc' ? artifact.nativeGraph.package : undefined;
   if (!artifact || !sourcePackage) return;
 
-  const unsafeSourceFeature = [
-    ...(sourceCapabilityDetections ?? []),
-    ...artifact.detectedFeatures.map((feature) => ({ feature })),
-  ].find(({ feature }) => blockingSourceFeatures.has(feature));
+  const unsafeSourceDetection = (sourceCapabilityDetections ?? [])
+    .find(({ feature }) => blockingSourceFeatures.has(feature));
+  const unsafeSourceArtifactFeature = artifact.detectedFeatures
+    .find((feature) => blockingSourceFeatures.has(feature));
   const preservedOnlyChart = sourcePackage.nativeChartGraph?.charts.find((chart) => !chart.editable)?.chartPart;
   const indexedChartParts = new Set(sourcePackage.nativeChartGraph?.charts.map((chart) => chart.chartPart) ?? []);
   const unindexedOpaqueChart = Object.keys(sourcePackage.opaqueParts)
     .find((part) => part.toLowerCase().includes('/charts/') && !indexedChartParts.has(part));
   const chartWithoutCanonicalOwner = preservedOnlyChart ?? unindexedOpaqueChart;
-  if (unsafeSourceFeature || chartWithoutCanonicalOwner) {
+  if (unsafeSourceDetection || unsafeSourceArtifactFeature || chartWithoutCanonicalOwner) {
     throw new NativeDocumentError({
       code: 'NATIVE_DOCUMENT_UNCHANGED_SAVE_REQUIRED',
       message: 'The source contains an unsupported workbook/worksheet feature or chart without a canonical reference owner; regenerating could discard it or leave references stale.',
       format: sourcePackage.format,
-      location: unsafeSourceFeature?.location ?? chartWithoutCanonicalOwner,
+      location: unsafeSourceDetection?.location ?? chartWithoutCanonicalOwner,
       recovery: 'Keep the original package unchanged, or explicitly convert/remove the unsupported feature before exporting.',
     });
   }
