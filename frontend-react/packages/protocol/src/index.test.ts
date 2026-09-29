@@ -7,17 +7,91 @@ import {
   encodeOperationMessage,
   AuthenticationRequiredError,
   WorkbookApiClient,
+  CollabSocketClient,
   validateHistoryRestoreRequest,
   validateOperationEnvelope,
   validateUserPreferences,
   validatePivotDefinition,
+  validateStructuralPatch,
   validateWorkbookSnapshot,
+  requiresServerStructuralPlanner,
+  SERVER_STRUCTURAL_PLANNER_MUTATIONS,
+  requiresServerStructuralPlannerCommand,
+  SERVER_STRUCTURAL_PLANNER_COMMANDS,
 } from './index';
-import { PIVOT_MAX_MEMBER_COUNT, PIVOT_MEMBER_DISPLAY_LIMIT } from '@react-sheets/core-model';
+import { PIVOT_MAX_MEMBER_COUNT, PIVOT_MEMBER_DISPLAY_LIMIT, WorkbookModel } from '@react-sheets/core-model';
+
+test('server structural planner classification is explicit and excludes ordinary edits', () => {
+  assert.ok(SERVER_STRUCTURAL_PLANNER_MUTATIONS.includes('rows.inserted'));
+  assert.ok(SERVER_STRUCTURAL_PLANNER_MUTATIONS.includes('cells.inserted'));
+  assert.ok(SERVER_STRUCTURAL_PLANNER_MUTATIONS.includes('rows.permuted'));
+  assert.ok(SERVER_STRUCTURAL_PLANNER_MUTATIONS.includes('range.move'));
+  assert.ok(SERVER_STRUCTURAL_PLANNER_MUTATIONS.includes('range.paste'));
+  assert.ok(SERVER_STRUCTURAL_PLANNER_MUTATIONS.includes('fill.applied'));
+  assert.ok(SERVER_STRUCTURAL_PLANNER_MUTATIONS.includes('sheet.rename'));
+  assert.ok(SERVER_STRUCTURAL_PLANNER_MUTATIONS.includes('sheet.remove'));
+  assert.ok(SERVER_STRUCTURAL_PLANNER_MUTATIONS.includes('sheetTable.update'));
+  assert.ok(SERVER_STRUCTURAL_PLANNER_COMMANDS.includes('sheet.rows.insert'));
+  assert.ok(SERVER_STRUCTURAL_PLANNER_COMMANDS.includes('sheet.range.move'));
+  assert.ok(SERVER_STRUCTURAL_PLANNER_COMMANDS.includes('sheet.add'));
+  assert.ok(SERVER_STRUCTURAL_PLANNER_COMMANDS.includes('pivot.drillDown'));
+  assert.equal(requiresServerStructuralPlanner('row.hidden'), false);
+  assert.equal(requiresServerStructuralPlanner('cell.set'), false);
+  assert.equal(requiresServerStructuralPlannerCommand('sheet.rows.insert'), true);
+  assert.equal(requiresServerStructuralPlannerCommand('pivot.drillDown'), true);
+  assert.equal(requiresServerStructuralPlannerCommand('sheet.cell.set'), false);
+});
 
 test('WebSocket presence messages round-trip without becoming a mutation transport', () => {
   const message = { type: 'cursor.updated' as const, unitId: 'unit-1', state: { row: 2, column: 4, sheetId: 'sheet-1' } };
   assert.deepEqual(decodeMessage(encodeMessage(message)), message);
+});
+
+test('CollabSocketClient reconnects for authoritative resynchronization', async () => {
+  class TestSocket {
+    readyState = 0;
+    onopen: ((event: Event) => void) | null = null;
+    onmessage: ((event: MessageEvent) => void) | null = null;
+    onclose: ((event: CloseEvent) => void) | null = null;
+    onerror: ((event: Event) => void) | null = null;
+    open(): void {
+      this.readyState = 1;
+      this.onopen?.({} as Event);
+    }
+    close(): void {
+      this.readyState = 3;
+      this.onclose?.({} as CloseEvent);
+    }
+    send(): void { }
+  }
+  const sockets: TestSocket[] = [];
+  const client = new CollabSocketClient('ws://localhost/ws', {
+    reconnectBaseDelayMs: 0,
+    reconnectMaxDelayMs: 0,
+    webSocketFactory: () => {
+      const socket = new TestSocket();
+      sockets.push(socket);
+      return socket as unknown as WebSocket;
+    },
+  });
+  const nextTask = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+  client.open();
+  await nextTask();
+  assert.equal(sockets.length, 1);
+  sockets[0]!.open();
+  assert.equal(client.status, 'open');
+
+  client.requestResynchronization();
+  await nextTask();
+  assert.equal(sockets.length, 2);
+  sockets[1]!.open();
+  client.requestResynchronization();
+  await nextTask();
+  assert.equal(sockets.length, 3);
+  sockets[2]!.open();
+  client.markSynchronized();
+  client.close();
 });
 
 test('OperationEnvelope excludes client actor and affected ranges', () => {
@@ -36,6 +110,401 @@ test('OperationEnvelope excludes client actor and affected ranges', () => {
     ...envelope,
     mutations: [{ ...envelope.mutations[0], affectedRanges: [] }],
   }), /server-owned/);
+  assert.throws(() => validateOperationEnvelope({
+    ...envelope,
+    mutations: [{ ...envelope.mutations[0], structuralImpactRanges: [] }],
+  }), /server-owned/);
+});
+
+test('committed structural patches and impact ranges survive collaboration decoding', () => {
+  const ownerAddress = { sheetId: 'sheet-1', row: 0, column: 1 };
+  const impactRange = { sheetId: 'sheet-1', startRow: 0, endRow: 0, startColumn: 1, endColumn: 1 };
+  const rangeOwnerBefore = { sheetId: 'sheet-1', startRow: 5, endRow: 7, startColumn: 0, endColumn: 2 };
+  const rangeOwnerAfter = { ...rangeOwnerBefore, startRow: 6, endRow: 8 };
+  const validationSourceRange = { sheetId: 'sheet-2', startRow: 2, endRow: 8, startColumn: 1, endColumn: 1 };
+  const validationOwnerBefore = { sheetId: 'sheet-1', startRow: 10, endRow: 10, startColumn: 0, endColumn: 0 };
+  const validationOwnerAfter = { ...validationOwnerBefore, startRow: 11, endRow: 11 };
+  const ruleRangeBefore = { sheetId: 'sheet-1', startRow: 20, endRow: 22, startColumn: 3, endColumn: 4 };
+  const ruleRangeAfter = { ...ruleRangeBefore, startRow: 21, endRow: 23 };
+  const patch = {
+    version: 9 as const,
+    mutationId: 'rows.deleted',
+    formulaOwnerDeltas: [{
+      kind: 'formula-cell' as const,
+      beforeAddress: ownerAddress,
+      afterAddress: ownerAddress,
+      before: { formula: '=A2', sourceFormula: null, barcodeFormula: null },
+      after: { formula: '=#REF!', sourceFormula: null, barcodeFormula: null },
+    }, {
+      kind: 'formula-object' as const,
+      ownerKind: 'chart-text' as const,
+      sheetId: 'sheet-1',
+      payloadId: 'chart-1',
+      field: 'titleText.linkedFormula' as const,
+      beforeFormula: '=A1',
+      afterFormula: '=A2',
+    }],
+    definedNameOwnerDeltas: [{
+      owner: { scope: 'workbook' as const, name: 'RangeName' },
+      before: { name: 'RangeName', formula: '=Sheet1!A2', scope: 'workbook' as const, anchor: { sheetId: 'sheet-1', row: 1, column: 0 } },
+      after: { name: 'RangeName', formula: '=Sheet1!A3', scope: 'workbook' as const, anchor: { sheetId: 'sheet-1', row: 2, column: 0 } },
+    }],
+    rangeOwnerDeltas: [
+      { ownerKind: 'workbook-table' as const, ownerId: 'table-1', before: rangeOwnerBefore, after: rangeOwnerAfter },
+      {
+        ownerKind: 'validation-list-source' as const,
+        sheetId: 'sheet-1',
+        ownerId: 'validation-1',
+        before: validationSourceRange,
+        after: validationSourceRange,
+        beforeOwnerRanges: [validationOwnerBefore],
+        afterOwnerRanges: [validationOwnerAfter],
+      },
+      {
+        ownerKind: 'conditional-format' as const,
+        sheetId: 'sheet-1',
+        ownerId: 'cf-color-scale',
+        before: [ruleRangeBefore],
+        after: [ruleRangeAfter],
+      },
+    ],
+  };
+  const decoded = decodeOperationMessage(JSON.stringify({
+    type: 'revision.created',
+    revision: 2,
+    payload: {
+      schema: 'OperationEnvelope',
+      clientSessionId: 'fixture-session',
+      operationId: 'op-structural',
+      unitId: 'unit-1',
+      actorId: 'actor-1',
+      origin: 'client',
+      clientSequence: 1,
+      baseRevision: 1,
+      revision: 2,
+      createdAt: '2026-09-25T00:00:00.000Z',
+      committedAt: '2026-09-25T00:00:00.000Z',
+      mutations: [{
+        id: 'rows.deleted',
+        sheetId: 'sheet-1',
+        params: { sheetId: 'sheet-1', at: 1, count: 1 },
+        affectedRanges: [{ sheetId: 'sheet-1', startRow: 1, endRow: 1, startColumn: 0, endColumn: 51 }],
+        structuralImpactRanges: [
+          impactRange, rangeOwnerBefore, rangeOwnerAfter, validationSourceRange, validationOwnerBefore, validationOwnerAfter,
+          ruleRangeBefore, ruleRangeAfter,
+        ],
+        structuralPatch: patch,
+      }],
+    },
+  }));
+  assert.equal(decoded.type, 'revision.created');
+  if (decoded.type !== 'revision.created') throw new Error('Expected a revision event');
+  assert.deepEqual(decoded.payload.mutations[0]?.structuralPatch, patch);
+  assert.deepEqual(decoded.payload.mutations[0]?.structuralImpactRanges, [
+    impactRange, rangeOwnerBefore, rangeOwnerAfter, validationSourceRange, validationOwnerBefore, validationOwnerAfter,
+    ruleRangeBefore, ruleRangeAfter,
+  ]);
+  assert.throws(() => decodeOperationMessage(JSON.stringify({
+    type: 'revision.created',
+    revision: 3,
+    payload: decoded.payload,
+  })), /revision must match payload revision/);
+  assert.throws(() => decodeOperationMessage(JSON.stringify({
+    type: 'revision.created',
+    revision: 2,
+    payload: {
+      ...decoded.payload,
+      mutations: [{ ...decoded.payload.mutations[0]!, structuralPatch: undefined, structuralImpactRanges: [] }],
+    },
+  })), /requires a server-derived StructuralPatch/);
+});
+
+test('StructuralPatch v9 validates exact range-owner facts and rejects incomplete geometry', () => {
+  const range = { sheetId: 'sheet-1', startRow: 5, endRow: 7, startColumn: 1, endColumn: 3 };
+  const shifted = { ...range, startRow: 6, endRow: 8 };
+  const dataRegion = {
+    ownerKind: 'data-region', sheetId: 'sheet-1', regionId: 'region-1',
+    before: { range, headerRow: 5 }, after: { range: shifted, headerRow: 6 },
+  };
+  const table = { ownerKind: 'workbook-table', ownerId: 'table-1', before: range, after: shifted };
+  const source = { ownerKind: 'data-source', ownerId: 'source-1', before: range, after: shifted };
+  const sheetTableAfter = { ...shifted, endRow: shifted.endRow + 1 };
+  const sheetTable = { ownerKind: 'sheet-table', sheetId: 'sheet-1', ownerId: 'sheet-table-1', before: range, after: sheetTableAfter };
+  const validationSourceRange = { ...range, sheetId: 'sheet-2' };
+  const validationOwnerRange = { ...range };
+  const validationOwnerRangeAfter = { ...shifted };
+  const validationListSource = {
+    ownerKind: 'validation-list-source', sheetId: 'sheet-1', ownerId: 'validation-1',
+    before: validationSourceRange, after: { ...validationSourceRange, endRow: validationSourceRange.endRow + 2 },
+    beforeOwnerRanges: [validationOwnerRange], afterOwnerRanges: [validationOwnerRangeAfter],
+  };
+  const patch = {
+    version: 9,
+    mutationId: 'rows.inserted',
+    formulaOwnerDeltas: [],
+    definedNameOwnerDeltas: [],
+    rangeOwnerDeltas: [dataRegion, table, source, sheetTable, validationListSource],
+  };
+  assert.equal(validateStructuralPatch(patch, 'rows.inserted').rangeOwnerDeltas.length, 5);
+  assert.throws(() => validateStructuralPatch({ ...patch, version: 4 }, 'rows.inserted'));
+  assert.throws(() => validateStructuralPatch({ ...patch, rangeOwnerDeltas: [sheetTable, sheetTable] }, 'rows.inserted'), /duplicate range-owner/);
+  assert.throws(() => validateStructuralPatch({
+    ...patch,
+    rangeOwnerDeltas: [{ ...dataRegion, after: { range: { ...shifted, sheetId: 'sheet-2' }, headerRow: 6 } }],
+  }, 'rows.inserted'), /data-region identity or bounds/);
+  assert.throws(() => validateStructuralPatch({
+    ...patch,
+    rangeOwnerDeltas: [{ ...table, after: { ...shifted, endRow: shifted.endRow + 1 } }],
+  }, 'rows.inserted'), /changes physical extent/);
+  assert.throws(() => validateStructuralPatch({
+    ...patch,
+    rangeOwnerDeltas: [{ ...table, after: { ...shifted, endColumn: 16_384 } }],
+  }, 'rows.inserted'), /outside worksheet bounds/);
+  assert.throws(() => validateStructuralPatch({
+    ...patch,
+    rangeOwnerDeltas: [{ ...sheetTable, after: { ...sheetTableAfter, sheetId: 'sheet-2' } }],
+  }, 'rows.inserted'), /Sheet Table geometry/);
+  assert.throws(() => validateStructuralPatch({
+    ...patch,
+    rangeOwnerDeltas: [{ ...sheetTable, after: range }],
+  }, 'rows.inserted'), /Sheet Table geometry/);
+  assert.throws(() => validateStructuralPatch({
+    ...patch,
+    rangeOwnerDeltas: [{ ...validationListSource, after: { ...validationListSource.after, sheetId: 'sheet-3' } }],
+  }, 'rows.inserted'), /list-source owner state/);
+  assert.throws(() => validateStructuralPatch({
+    ...patch,
+    rangeOwnerDeltas: [{ ...validationListSource, after: range }],
+  }, 'rows.inserted'), /list-source owner state/);
+  assert.throws(() => validateStructuralPatch({
+    ...patch,
+    rangeOwnerDeltas: [{ ...validationListSource, beforeOwnerRanges: [] }],
+  }, 'rows.inserted'), /owner ranges must not be empty/);
+  assert.throws(() => validateStructuralPatch({
+    ...patch,
+    rangeOwnerDeltas: [{
+      ...validationListSource,
+      afterOwnerRanges: [{ ...validationOwnerRangeAfter, sheetId: 'sheet-2' }],
+    }],
+  }, 'rows.inserted'), /owner range belongs to another worksheet/);
+  assert.doesNotThrow(() => validateStructuralPatch({
+    ...patch,
+    rangeOwnerDeltas: [{
+      ...validationListSource,
+      before: validationSourceRange, after: validationSourceRange,
+      beforeOwnerRanges: [validationOwnerRange], afterOwnerRanges: [validationOwnerRangeAfter],
+    }],
+  }, 'rows.inserted'));
+  assert.throws(() => validateStructuralPatch({
+    ...patch,
+    rangeOwnerDeltas: [{
+      ...validationListSource,
+      before: validationSourceRange, after: validationSourceRange,
+      beforeOwnerRanges: [validationOwnerRange], afterOwnerRanges: [validationOwnerRange],
+    }],
+  }, 'rows.inserted'), /owner state is unchanged/);
+  assert.throws(() => validateStructuralPatch({ ...patch, rangeOwnerDeltas: [{ ...table, unexpected: true }] }, 'rows.inserted'), /Unexpected fields/);
+});
+
+test('StructuralPatch v9 carries formula-rule range-only changes and rejects empty deltas', () => {
+  const beforeRange = { sheetId: 'sheet-1', startRow: 1, endRow: 3, startColumn: 0, endColumn: 2 };
+  const afterRange = { ...beforeRange, startRow: 2, endRow: 4 };
+  const delta = {
+    kind: 'formula-rule', sheetId: 'sheet-1', ruleKind: 'conditional-format', ruleId: 'cf-1', field: 'value1',
+    beforeFormula: '=TRUE', afterFormula: '=TRUE', beforeRanges: [beforeRange], afterRanges: [afterRange],
+  };
+  const patch = {
+    version: 9, mutationId: 'rows.inserted', formulaOwnerDeltas: [delta], definedNameOwnerDeltas: [], rangeOwnerDeltas: [],
+  };
+
+  assert.deepEqual(validateStructuralPatch(patch, 'rows.inserted').formulaOwnerDeltas, [delta]);
+  assert.throws(() => validateStructuralPatch({
+    ...patch,
+    formulaOwnerDeltas: [{ ...delta, afterRanges: [beforeRange] }],
+  }, 'rows.inserted'), /formula-rule owner state is unchanged/);
+});
+
+test('StructuralPatch v9 carries conditional-format and data-validation range-only owners', () => {
+  const before = [{ sheetId: 'sheet-1', startRow: 1, endRow: 2, startColumn: 0, endColumn: 3 }];
+  const after = [{ ...before[0]!, startRow: 2, endRow: 3 }];
+  const patch = {
+    version: 9,
+    mutationId: 'rows.inserted',
+    formulaOwnerDeltas: [],
+    definedNameOwnerDeltas: [],
+    rangeOwnerDeltas: [{
+      ownerKind: 'conditional-format', sheetId: 'sheet-1', ownerId: 'cf-color-scale', before, after,
+    }],
+  };
+
+  assert.deepEqual(validateStructuralPatch(patch, 'rows.inserted').rangeOwnerDeltas, patch.rangeOwnerDeltas);
+  assert.throws(() => validateStructuralPatch({
+    ...patch,
+    rangeOwnerDeltas: [{ ...patch.rangeOwnerDeltas[0]!, after: before }],
+  }, 'rows.inserted'), /range-rule state is unchanged/);
+  assert.throws(() => validateStructuralPatch({
+    ...patch,
+    rangeOwnerDeltas: [{ ...patch.rangeOwnerDeltas[0]!, after: [{ ...after[0]!, sheetId: 'sheet-2' }] }],
+  }, 'rows.inserted'), /belongs to another worksheet/);
+  assert.throws(() => validateStructuralPatch({
+    ...patch,
+    formulaOwnerDeltas: [{
+      kind: 'formula-rule', sheetId: 'sheet-1', ruleKind: 'conditional-format', ruleId: 'cf-color-scale', field: 'value1',
+      beforeFormula: '=TRUE', afterFormula: '=TRUE', beforeRanges: before, afterRanges: after,
+    }],
+  }, 'rows.inserted'), /duplicates range state/);
+});
+
+test('StructuralPatch v9 carries reversible formula-rule anchors and rejects ambiguous owner facts', () => {
+  const delta = {
+    kind: 'formula-rule-anchor',
+    sheetId: 'sheet-1',
+    ruleKind: 'data-validation',
+    ruleId: 'dv-1',
+    beforeAddress: { sheetId: 'sheet-1', row: 4, column: 2 },
+    afterAddress: { sheetId: 'sheet-1', row: 5, column: 2 },
+  };
+  const patch = {
+    version: 9,
+    mutationId: 'rows.inserted',
+    formulaOwnerDeltas: [delta],
+    definedNameOwnerDeltas: [],
+    rangeOwnerDeltas: [],
+  };
+
+  assert.deepEqual(validateStructuralPatch(patch, 'rows.inserted').formulaOwnerDeltas, [delta]);
+  assert.throws(() => validateStructuralPatch({
+    ...patch,
+    formulaOwnerDeltas: [{ ...delta, afterAddress: delta.beforeAddress }],
+  }, 'rows.inserted'), /formula-rule anchor owner state is unchanged/);
+  assert.throws(() => validateStructuralPatch({
+    ...patch,
+    formulaOwnerDeltas: [delta, delta],
+  }, 'rows.inserted'), /duplicate formula owner/);
+  const materialized = validateStructuralPatch({
+    ...patch,
+    formulaOwnerDeltas: [{
+      kind: 'formula-rule-anchor', sheetId: 'sheet-1', ruleKind: 'data-validation', ruleId: 'dv-1',
+      afterAddress: delta.afterAddress,
+    }],
+  }, 'rows.inserted').formulaOwnerDeltas[0];
+  assert.equal(materialized?.kind, 'formula-rule-anchor');
+  if (materialized?.kind === 'formula-rule-anchor') {
+    assert.equal(materialized.beforeAddress, undefined);
+    assert.deepEqual(materialized.afterAddress, delta.afterAddress);
+  }
+  const removed = validateStructuralPatch({
+    ...patch,
+    formulaOwnerDeltas: [{
+      kind: 'formula-rule-anchor', sheetId: 'sheet-1', ruleKind: 'data-validation', ruleId: 'dv-1',
+      beforeAddress: delta.beforeAddress,
+    }],
+  }, 'rows.inserted').formulaOwnerDeltas[0];
+  assert.equal(removed?.kind, 'formula-rule-anchor');
+  if (removed?.kind === 'formula-rule-anchor') {
+    assert.deepEqual(removed.beforeAddress, delta.beforeAddress);
+    assert.equal(removed.afterAddress, undefined);
+  }
+  assert.throws(() => validateStructuralPatch({
+    ...patch,
+    formulaOwnerDeltas: [{ kind: 'formula-rule-anchor', sheetId: 'sheet-1', ruleKind: 'data-validation', ruleId: 'dv-1' }],
+  }, 'rows.inserted'), /change an explicit anchor state/);
+});
+
+test('committed row-permutation structural patches are accepted by the protocol', () => {
+  assert.deepEqual(validateStructuralPatch({
+    version: 9,
+    mutationId: 'rows.permuted',
+    formulaOwnerDeltas: [],
+    definedNameOwnerDeltas: [],
+    rangeOwnerDeltas: [],
+  }, 'rows.permuted'), {
+    version: 9,
+    mutationId: 'rows.permuted',
+    formulaOwnerDeltas: [],
+    definedNameOwnerDeltas: [],
+    rangeOwnerDeltas: [],
+  });
+});
+
+test('committed worksheet-rename structural patches are accepted by the protocol', () => {
+  const patch = {
+    version: 9,
+    mutationId: 'sheet.rename',
+    formulaOwnerDeltas: [],
+    definedNameOwnerDeltas: [],
+    rangeOwnerDeltas: [],
+  };
+  assert.deepEqual(validateStructuralPatch(patch, 'sheet.rename'), patch);
+});
+
+test('Sheet Table rename patches accept every canonical formula-object owner and reject mixed identities', () => {
+  const formulaOwnerDeltas = [
+    { kind: 'formula-object', ownerKind: 'chart-text', sheetId: 'sheet-1', payloadId: 'chart-1', field: 'titleText.linkedFormula', beforeFormula: '=Sales[Amount]', afterFormula: '=Orders[Amount]' },
+    { kind: 'formula-object', ownerKind: 'shape-property', sheetId: 'sheet-1', payloadId: 'shape-1', beforeFormula: '=Sales[Amount]', afterFormula: '=Orders[Amount]' },
+    { kind: 'formula-object', ownerKind: 'table-sheet-column', sheetId: 'sheet-1', fieldId: 'field-1', beforeFormula: '=Sales[Amount]', afterFormula: '=Orders[Amount]' },
+    { kind: 'formula-object', ownerKind: 'data-view-field', viewId: 'view-1', fieldId: 'field-1', beforeFormula: '=Sales[Amount]', afterFormula: '=Orders[Amount]' },
+    { kind: 'formula-object', ownerKind: 'cell-style-template', templateId: 'template-1', field: 'formula1', beforeFormula: '=Sales[Amount]', afterFormula: '=Orders[Amount]' },
+  ];
+  const patch = { version: 9, mutationId: 'sheetTable.update', formulaOwnerDeltas, definedNameOwnerDeltas: [], rangeOwnerDeltas: [] };
+  assert.equal(validateStructuralPatch(patch, 'sheetTable.update').formulaOwnerDeltas.length, formulaOwnerDeltas.length);
+  assert.deepEqual(validateStructuralPatch({
+    version: 9,
+    mutationId: 'sheetTable.update',
+    formulaOwnerDeltas: [],
+    definedNameOwnerDeltas: [],
+    rangeOwnerDeltas: [],
+  }, 'sheetTable.update'), {
+    version: 9,
+    mutationId: 'sheetTable.update',
+    formulaOwnerDeltas: [],
+    definedNameOwnerDeltas: [],
+    rangeOwnerDeltas: [],
+  });
+  assert.throws(() => validateStructuralPatch({
+    ...patch,
+    formulaOwnerDeltas: [{ ...formulaOwnerDeltas[3], sheetId: 'sheet-1' }],
+  }, 'sheetTable.update'), /Unexpected fields/);
+  assert.throws(() => validateStructuralPatch({ ...patch, version: 2 }, 'sheetTable.update'));
+});
+
+test('defined-name structural patches reject identity drift, duplicate owners, and legacy schema', () => {
+  const delta = {
+    owner: { scope: 'sheet', name: 'LocalName', sheetId: 'sheet-1' },
+    before: { name: 'LocalName', formula: '=A1', scope: 'sheet', sheetId: 'sheet-1' },
+    after: { name: 'LocalName', formula: '=A2', scope: 'sheet', sheetId: 'sheet-1' },
+  };
+  const patch = { version: 9, mutationId: 'rows.inserted', formulaOwnerDeltas: [], definedNameOwnerDeltas: [delta], rangeOwnerDeltas: [] };
+  assert.equal(validateStructuralPatch(patch, 'rows.inserted').definedNameOwnerDeltas.length, 1);
+  assert.throws(() => validateStructuralPatch({ version: 1, mutationId: 'rows.inserted', formulaOwnerDeltas: [] }, 'rows.inserted'));
+  assert.throws(() => validateStructuralPatch({ ...patch, definedNameOwnerDeltas: [delta, delta] }, 'rows.inserted'), /duplicate defined-name owner/);
+  assert.throws(() => validateStructuralPatch({
+    ...patch,
+    definedNameOwnerDeltas: [{ ...delta, after: { ...delta.after, sheetId: 'sheet-2' } }],
+  }, 'rows.inserted'), /identity or before\/after/);
+  const workbookName = {
+    owner: { scope: 'workbook', name: 'GlobalRate' },
+    before: { name: 'GlobalRate', formula: '=A1', scope: 'workbook' },
+    after: { name: 'GlobalRate', formula: '=A2', scope: 'workbook' },
+  };
+  assert.equal(validateStructuralPatch({ ...patch, definedNameOwnerDeltas: [workbookName] }, 'rows.inserted').definedNameOwnerDeltas.length, 1);
+  const anchoredSheetName = {
+    owner: { scope: 'sheet', name: 'AnchoredRate', sheetId: 'sheet-1' },
+    before: { name: 'AnchoredRate', formula: '=A1', scope: 'sheet', sheetId: 'sheet-1', anchor: { sheetId: 'sheet-1', row: 0, column: 0 } },
+    after: { name: 'AnchoredRate', formula: '=A2', scope: 'sheet', sheetId: 'sheet-1', anchor: { sheetId: 'sheet-1', row: 1, column: 0 } },
+  };
+  assert.equal(validateStructuralPatch({ ...patch, definedNameOwnerDeltas: [anchoredSheetName] }, 'rows.inserted').definedNameOwnerDeltas.length, 1);
+  assert.throws(() => validateStructuralPatch({
+    ...patch,
+    definedNameOwnerDeltas: [{
+      ...anchoredSheetName,
+      after: { ...anchoredSheetName.after, anchor: { sheetId: 'sheet-1', row: -1, column: 0 } },
+    }],
+  }, 'rows.inserted'), /outside worksheet bounds/);
+  assert.throws(() => validateStructuralPatch({
+    ...patch,
+    definedNameOwnerDeltas: [{ ...workbookName, owner: { ...workbookName.owner, extra: true } }],
+  }, 'rows.inserted'), /Unexpected fields/);
 });
 
 test('collaboration messages reject actor-bearing presence and legacy changesets', () => {
@@ -70,7 +539,7 @@ test('WorkbookApiClient injects bearer authentication and fails closed without a
       return new Response(JSON.stringify({
         snapshot: {
           schema: 'WorkbookSnapshot',
-          version: 9,
+          version: 10,
           unitId: 'unit-1',
           name: 'Workbook',
           dimensionMetrics: { normalFontFamily: 'Calibri', normalFontSizePx: 14.6666666667, maximumDigitWidthPx: 7 },
@@ -91,6 +560,7 @@ test('WorkbookApiClient injects bearer authentication and fails closed without a
             sparklines: [],
             drawings: [],
             drawingPayloads: {},
+            hyperlinks: [],
             review: { notesByCell: {}, notesById: {}, threadIdsByCell: {}, threadsById: {} },
           }],
         },
@@ -115,7 +585,7 @@ test('WorkbookApiClient uses a server-issued guest share token when no bearer ex
       return new Response(JSON.stringify({
         snapshot: {
           schema: 'WorkbookSnapshot',
-          version: 9,
+          version: 10,
           unitId: 'unit-guest',
           name: 'Guest workbook',
           dimensionMetrics: { normalFontFamily: 'Calibri', normalFontSizePx: 14.6666666667, maximumDigitWidthPx: 7 },
@@ -125,7 +595,7 @@ test('WorkbookApiClient uses a server-issued guest share token when no bearer ex
           sheets: [{
             kind: 'worksheet', id: 'sheet-1', name: 'Sheet1', rowCount: 10, columnCount: 10,
             cells: {}, merges: [], pane: { kind: 'none' }, defaultRowHeightPx: 20, defaultColumnWidthPx: 64,
-            pivots: [], sparklines: [], drawings: [], drawingPayloads: {},
+            pivots: [], sparklines: [], drawings: [], drawingPayloads: {}, hyperlinks: [],
             review: { notesByCell: {}, notesById: {}, threadIdsByCell: {}, threadsById: {} },
           }],
         },
@@ -253,7 +723,7 @@ test('snapshot trust boundary rejects versioned or legacy drawing payloads', () 
   assert.throws(() => validateWorkbookSnapshot({ schema: 'LegacyWorkbookSnapshot', unitId: 'unit-1' }), /Unsupported workbook snapshot schema/);
   assert.throws(() => validateWorkbookSnapshot({
     schema: 'WorkbookSnapshot',
-    version: 9,
+    version: 10,
     unitId: 'unit-1',
     name: 'Workbook',
     dimensionMetrics: { normalFontFamily: 'Calibri', normalFontSizePx: 14.6666666667, maximumDigitWidthPx: 7 },
@@ -275,9 +745,30 @@ test('snapshot trust boundary rejects versioned or legacy drawing payloads', () 
       charts: [],
       drawings: [],
       drawingPayloads: {},
+      hyperlinks: [],
       review: { notesByCell: {}, notesById: {}, threadIdsByCell: {}, threadsById: {} },
     }],
   }), /legacy drawing collections/);
+});
+
+test('v10 wire validation rejects dangling worksheet hyperlink references', () => {
+  const snapshot = new WorkbookModel('unit-link-wire', 'Links').snapshot();
+  snapshot.sheets[0]!.hyperlinks = [{
+    row: 0,
+    column: 0,
+    hyperlink: { id: 'dangling', target: { kind: 'sheet', sheetId: 'missing-sheet', address: 'A1' } },
+  }];
+
+  assert.throws(() => validateWorkbookSnapshot(snapshot), /target worksheet not found/);
+});
+
+test('v10 wire validation rejects undeclared hyperlink target properties', () => {
+  const snapshot = new WorkbookModel('unit-link-shape', 'Links').snapshot();
+  const target = { kind: 'url' as const, url: 'https://example.com' };
+  Object.assign(target, { sheetId: 'unexpected' });
+  snapshot.sheets[0]!.hyperlinks = [{ row: 0, column: 0, hyperlink: { id: 'link', target } }];
+
+  assert.throws(() => validateWorkbookSnapshot(snapshot), /unsupported fields/);
 });
 
 test('Pivot subtotal contract rejects malformed custom functions and accepts field-owned modes', () => {

@@ -9,6 +9,14 @@ export interface SpillResolveInput {
   rowCount: number;
   columnCount: number;
   isOccupied: (row: number, column: number) => boolean;
+  blockedRanges?: readonly SpillBlockerRange[];
+}
+
+export interface SpillBlockerRange {
+  readonly startRow: number;
+  readonly endRow: number;
+  readonly startColumn: number;
+  readonly endColumn: number;
 }
 
 export interface ResolvedSpill {
@@ -50,21 +58,21 @@ export function resolveSpill(input: SpillResolveInput): ResolvedSpill {
     };
   }
 
+  const rangeBlocker = findRangeBlocker(input.anchor, endRow, endColumn, input.blockedRanges ?? []);
+
   for (let row = input.anchor.row; row <= endRow; row++) {
     for (let column = input.anchor.column; column <= endColumn; column++) {
       if (row === input.anchor.row && column === input.anchor.column) continue;
+      if (rangeBlocker && isAtOrBefore(rangeBlocker, row, column)) {
+        return blockedSpill(input, range, rangeBlocker);
+      }
       if (input.isOccupied(row, column)) {
-        return {
-          sheetId: input.sheetId,
-          anchor: { ...input.anchor },
-          range,
-          values: toCoreMatrix(input.values),
-          state: 'blocked',
-          blocker: { row, column },
-        };
+        return blockedSpill(input, range, { row, column });
       }
     }
   }
+
+  if (rangeBlocker) return blockedSpill(input, range, rangeBlocker);
 
   return {
     sheetId: input.sheetId,
@@ -75,6 +83,50 @@ export function resolveSpill(input: SpillResolveInput): ResolvedSpill {
   };
 }
 
+function findRangeBlocker(
+  anchor: { readonly row: number; readonly column: number },
+  endRow: number,
+  endColumn: number,
+  blockedRanges: readonly SpillBlockerRange[],
+): { readonly row: number; readonly column: number } | undefined {
+  let first: { row: number; column: number } | undefined;
+  for (const blocker of blockedRanges) {
+    let row = Math.max(anchor.row, blocker.startRow);
+    let column = Math.max(anchor.column, blocker.startColumn);
+    const lastRow = Math.min(endRow, blocker.endRow);
+    const lastColumn = Math.min(endColumn, blocker.endColumn);
+    if (row > lastRow || column > lastColumn) continue;
+    if (row === anchor.row && column === anchor.column) {
+      if (column < lastColumn) column += 1;
+      else if (row < lastRow) {
+        row += 1;
+        column = anchor.column;
+      } else continue;
+    }
+    if (!first || row < first.row || (row === first.row && column < first.column)) first = { row, column };
+  }
+  return first;
+}
+
+function isAtOrBefore(blocker: { readonly row: number; readonly column: number }, row: number, column: number): boolean {
+  return blocker.row < row || (blocker.row === row && blocker.column <= column);
+}
+
+function blockedSpill(
+  input: SpillResolveInput,
+  range: SpillRange['range'],
+  blocker: { readonly row: number; readonly column: number },
+): ResolvedSpill {
+  return {
+    sheetId: input.sheetId,
+    anchor: { ...input.anchor },
+    range,
+    values: toCoreMatrix(input.values),
+    state: 'blocked',
+    blocker: { ...blocker },
+  };
+}
+
 export function spillValueAt(spill: ResolvedSpill | SpillRange, row: number, column: number): FormulaValue | undefined {
   const relRow = row - spill.anchor.row;
   const relColumn = column - spill.anchor.column;
@@ -82,14 +134,19 @@ export function spillValueAt(spill: ResolvedSpill | SpillRange, row: number, col
   if (row < spill.range.startRow || row > spill.range.endRow || column < spill.range.startColumn || column > spill.range.endColumn) {
     return undefined;
   }
-  if (spill.state === 'blocked' && row === spill.anchor.row && column === spill.anchor.column) {
-    return createFormulaError('#SPILL!', 'Spill range is not blank');
+  if (spill.state !== 'ok') {
+    if (row === spill.anchor.row && column === spill.anchor.column) {
+      const message = spill.state === 'blocked' ? 'Spill range is not blank' : 'Spill range exceeds worksheet bounds';
+      return createFormulaError('#SPILL!', message);
+    }
+    return undefined;
   }
   const raw = spill.values[relRow]?.[relColumn];
   return raw === undefined ? undefined : fromCoreValue(raw);
 }
 
 export function isSpillChild(spill: SpillRange, row: number, column: number): boolean {
+  if (spill.state !== 'ok') return false;
   if (row === spill.anchor.row && column === spill.anchor.column) return false;
   return row >= spill.range.startRow
     && row <= spill.range.endRow
@@ -98,7 +155,10 @@ export function isSpillChild(spill: SpillRange, row: number, column: number): bo
 }
 
 export function anchorDisplayValue(spill: ResolvedSpill | SpillRange, matrix: ArrayValue): FormulaValue {
-  if (spill.state === 'blocked') return createFormulaError('#SPILL!', 'Spill range is not blank');
+  if (spill.state !== 'ok') {
+    const message = spill.state === 'blocked' ? 'Spill range is not blank' : 'Spill range exceeds worksheet bounds';
+    return createFormulaError('#SPILL!', message);
+  }
   return matrix[0]?.[0] ?? null;
 }
 

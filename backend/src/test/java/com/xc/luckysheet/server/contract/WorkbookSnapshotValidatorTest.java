@@ -3,6 +3,7 @@ package com.xc.luckysheet.server.contract;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.xc.luckysheet.server.migration.SnapshotUpgrade;
 import com.xc.luckysheet.server.service.ServiceException;
 import org.junit.jupiter.api.Test;
 
@@ -61,6 +62,266 @@ class WorkbookSnapshotValidatorTest {
         assertEquals("VALIDATION_ERROR", error.code());
     }
 
+    @Test
+    void rejectsWorksheetNamesThatDifferOnlyByCase() {
+        ObjectNode snapshot = snapshot();
+        ObjectNode duplicate = ((ObjectNode) snapshot.path("sheets").get(0)).deepCopy();
+        duplicate.put("id", "sheet-2").put("name", "sHEET1");
+        ((ArrayNode) snapshot.path("sheets")).add(duplicate);
+
+        ServiceException error = assertThrows(ServiceException.class,
+                () -> WorkbookSnapshotValidator.requireCanonical(snapshot, "book-1"));
+
+        assertEquals("VALIDATION_ERROR", error.code());
+    }
+
+    @Test
+    void rejectsNonTextWorksheetIdentityAndNonExcelSheetNames() {
+        ObjectNode numericId = snapshot();
+        ((ObjectNode) numericId.path("sheets").get(0)).put("id", 1);
+        ObjectNode paddedId = snapshot();
+        ((ObjectNode) paddedId.path("sheets").get(0)).put("id", " sheet-1 ");
+        ObjectNode numericName = snapshot();
+        ((ObjectNode) numericName.path("sheets").get(0)).put("name", 1);
+        for (ObjectNode invalid : java.util.List.of(numericId, paddedId, numericName)) {
+            ServiceException error = assertThrows(ServiceException.class,
+                    () -> WorkbookSnapshotValidator.requireCanonical(invalid, "book-1"));
+            assertEquals("VALIDATION_ERROR", error.code());
+        }
+
+        for (String name : java.util.List.of("Bad/Name", "Bad\\Name", "Bad?Name", "Bad*Name", "Bad:Name",
+                "Bad[Name]", "'Quoted", "Quoted'", "History", "a".repeat(32))) {
+            ObjectNode invalid = snapshot();
+            ((ObjectNode) invalid.path("sheets").get(0)).put("name", name);
+            ServiceException error = assertThrows(ServiceException.class,
+                    () -> WorkbookSnapshotValidator.requireCanonical(invalid, "book-1"), name);
+            assertEquals("VALIDATION_ERROR", error.code(), name);
+        }
+    }
+
+    @Test
+    void rejectsPaneCoordinatesAndFrozenSplitsOutsideTheirCanonicalDomains() throws Exception {
+        for (String pane : java.util.List.of(
+                "{\"kind\":\"none\",\"activePane\":\"center\"}",
+                "{\"kind\":\"frozen\",\"state\":\"frozen\",\"xSplit\":1,\"ySplit\":0,\"startRow\":0}",
+                "{\"kind\":\"frozen\",\"state\":\"frozen\",\"xSplit\":1.5,\"ySplit\":0,\"startRow\":0,\"startColumn\":1}",
+                "{\"kind\":\"frozen\",\"state\":\"frozen\",\"xSplit\":1,\"ySplit\":0,\"startRow\":0,\"startColumn\":16384}",
+                "{\"kind\":\"split\",\"state\":\"split\",\"xSplit\":-0.5,\"ySplit\":10,\"startRow\":0,\"startColumn\":0}",
+                "{\"kind\":\"split\",\"state\":\"split\",\"xSplit\":20,\"ySplit\":10,\"startRow\":1048576,\"startColumn\":0}",
+                "{\"kind\":\"split\",\"state\":\"split\",\"xSplit\":20,\"ySplit\":10,\"startRow\":0,\"startColumn\":0,\"activePane\":\"center\"}",
+                "{\"kind\":\"frozen\",\"state\":\"frozen\",\"xSplit\":1,\"ySplit\":0,\"startRow\":0,\"startColumn\":1,\"referenceHint\":\"A1\"}",
+                "{\"kind\":\"none\",\"referenceHint\":\"A1\"}")) {
+            ObjectNode candidate = snapshot();
+            ((ObjectNode) candidate.path("sheets").get(0)).set("pane", mapper.readTree(pane));
+
+            ServiceException error = assertThrows(ServiceException.class,
+                    () -> WorkbookSnapshotValidator.requireCanonical(candidate, "book-1"));
+            assertEquals("VALIDATION_ERROR", error.code());
+        }
+    }
+
+    @Test
+    void migratesV9CellHyperlinksToTheCanonicalWorksheetOwner() {
+        ObjectNode snapshot = snapshot().put("version", 9);
+        ObjectNode sheet = (ObjectNode) snapshot.path("sheets").get(0);
+        ObjectNode row = sheet.withObject("cells").putObject("0");
+        row.putObject("0").put("value", "old").put("hyperlink", "https://legacy.example");
+        row.putObject("1").put("value", "detail").set("hyperlinkDetail", mapper.createObjectNode()
+                .put("id", "legacy-detail").set("target", mapper.createObjectNode().put("kind", "email").put("address", "link@example.com")));
+        sheet.withArray("hyperlinks").addObject().put("row", 0).put("column", 0)
+                .set("hyperlink", mapper.createObjectNode().put("id", "canonical")
+                        .set("target", mapper.createObjectNode().put("kind", "url").put("url", "https://canonical.example")));
+
+        ObjectNode migrated = SnapshotUpgrade.migrateStored(snapshot, "book-1");
+        ObjectNode migratedSheet = (ObjectNode) migrated.path("sheets").get(0);
+
+        assertEquals(GeneratedWorkbookContract.SNAPSHOT_VERSION, migrated.path("version").intValue());
+        assertEquals(2, migratedSheet.path("hyperlinks").size());
+        assertEquals("canonical", migratedSheet.path("hyperlinks").get(1).path("hyperlink").path("id").asText());
+        assertEquals("legacy-detail", migratedSheet.path("hyperlinks").get(0).path("hyperlink").path("id").asText());
+        assertEquals(false, migratedSheet.path("cells").path("0").path("0").has("hyperlink"));
+        assertEquals(false, migratedSheet.path("cells").path("0").path("1").has("hyperlinkDetail"));
+    }
+
+    @Test
+    void rejectsLegacyCellHyperlinkMetadataInCanonicalSnapshots() {
+        ObjectNode snapshot = snapshot();
+        ((ObjectNode) snapshot.path("sheets").get(0)).withObject("cells").putObject("0").putObject("0")
+                .put("hyperlink", "https://legacy.example");
+
+        ServiceException error = assertThrows(ServiceException.class,
+                () -> WorkbookSnapshotValidator.requireCanonical(snapshot, "book-1"));
+
+        assertEquals("VALIDATION_ERROR", error.code());
+    }
+
+    @Test
+    void requiresSheetTableColumnCountToMatchItsRangeWidth() {
+        ObjectNode snapshot = snapshot();
+        ObjectNode sheet = (ObjectNode) snapshot.path("sheets").get(0);
+        ObjectNode table = sheet.putArray("sheetTables").addObject();
+        table.put("id", "table-1").put("sheetId", "sheet-1").put("name", "Table1");
+        table.putObject("range").put("sheetId", "sheet-1").put("startRow", 0).put("endRow", 2)
+                .put("startColumn", 1).put("endColumn", 2);
+        ArrayNode columns = table.putArray("columns");
+        columns.addObject().put("id", "column-1").put("name", "A");
+        columns.addObject().put("id", "column-2").put("name", "B");
+        assertEquals(snapshot, WorkbookSnapshotValidator.requireCanonical(snapshot, "book-1"));
+        columns.remove(1);
+
+        ServiceException error = assertThrows(ServiceException.class,
+                () -> WorkbookSnapshotValidator.requireCanonical(snapshot, "book-1"));
+
+        assertEquals("VALIDATION_ERROR", error.code());
+    }
+
+    @Test
+    void rejectsDanglingWorksheetHyperlinkTargetsAndDuplicateAnchors() {
+        ObjectNode snapshot = snapshot();
+        ObjectNode sheet = (ObjectNode) snapshot.path("sheets").get(0);
+        ObjectNode link = mapper.createObjectNode().put("id", "dangling");
+        link.set("target", mapper.createObjectNode().put("kind", "sheet").put("sheetId", "missing-sheet").put("address", "A1"));
+        sheet.withArray("hyperlinks").addObject().put("row", 0).put("column", 0).set("hyperlink", link);
+
+        ServiceException dangling = assertThrows(ServiceException.class,
+                () -> WorkbookSnapshotValidator.requireCanonical(snapshot, "book-1"));
+        assertEquals("VALIDATION_ERROR", dangling.code());
+
+        sheet.withArray("hyperlinks").removeAll();
+        sheet.withArray("hyperlinks").addObject().put("row", 0).put("column", 0)
+                .set("hyperlink", mapper.createObjectNode().put("id", "duplicate")
+                        .set("target", mapper.createObjectNode().put("kind", "url").put("url", "https://example.com")));
+        sheet.withArray("hyperlinks").addObject().put("row", 0).put("column", 0)
+                .set("hyperlink", mapper.createObjectNode().put("id", "duplicate-2")
+                        .set("target", mapper.createObjectNode().put("kind", "url").put("url", "https://example.org")));
+        ServiceException duplicate = assertThrows(ServiceException.class,
+                () -> WorkbookSnapshotValidator.requireCanonical(snapshot, "book-1"));
+       assertEquals("VALIDATION_ERROR", duplicate.code());
+   }
+
+    @Test
+    void rejectsUndeclaredHyperlinkTargetFields() {
+        ObjectNode snapshot = snapshot();
+        ObjectNode target = mapper.createObjectNode().put("kind", "url").put("url", "https://example.com").put("sheetId", "unexpected");
+        ObjectNode hyperlink = mapper.createObjectNode().put("id", "link");
+        hyperlink.set("target", target);
+        ((ObjectNode) snapshot.path("sheets").get(0)).withArray("hyperlinks").addObject()
+                .put("row", 0).put("column", 0).set("hyperlink", hyperlink);
+
+        ServiceException error = assertThrows(ServiceException.class,
+                () -> WorkbookSnapshotValidator.requireCanonical(snapshot, "book-1"));
+
+        assertEquals("VALIDATION_ERROR", error.code());
+    }
+
+    @Test
+    void rejectsNonTextualIdsAndNonCanonicalTargetKinds() {
+        ObjectNode numericSnapshot = snapshot();
+        ObjectNode numericId = mapper.createObjectNode().put("id", 7);
+        numericId.set("target", mapper.createObjectNode().put("kind", "url").put("url", "https://example.com"));
+        ((ObjectNode) numericSnapshot.path("sheets").get(0)).withArray("hyperlinks").addObject()
+                .put("row", 0).put("column", 0).set("hyperlink", numericId);
+        ServiceException invalidId = assertThrows(ServiceException.class,
+                () -> WorkbookSnapshotValidator.requireCanonical(numericSnapshot, "book-1"));
+        assertEquals("VALIDATION_ERROR", invalidId.code());
+
+        ObjectNode kindSnapshot = snapshot();
+        ObjectNode nonCanonicalKind = mapper.createObjectNode().put("id", "link");
+        nonCanonicalKind.set("target", mapper.createObjectNode().put("kind", " url ").put("url", "https://example.com"));
+        ((ObjectNode) kindSnapshot.path("sheets").get(0)).withArray("hyperlinks").addObject()
+                .put("row", 0).put("column", 0).set("hyperlink", nonCanonicalKind);
+        ServiceException invalidKind = assertThrows(ServiceException.class,
+                () -> WorkbookSnapshotValidator.requireCanonical(kindSnapshot, "book-1"));
+        assertEquals("VALIDATION_ERROR", invalidKind.code());
+    }
+
+    @Test
+    void canonicalDefinedNameModelsRemainTheOnlyAuthorityForNameHyperlinks() {
+        ObjectNode snapshot = snapshot();
+        snapshot.putObject("definedNames").put("StaleProjection", "=A1");
+        snapshot.putArray("definedNameModels");
+        ObjectNode target = mapper.createObjectNode().put("kind", "name").put("name", "StaleProjection");
+        ObjectNode hyperlink = mapper.createObjectNode().put("id", "name-link");
+        hyperlink.set("target", target);
+        ((ObjectNode) snapshot.path("sheets").get(0)).withArray("hyperlinks").addObject()
+                .put("row", 0).put("column", 0).set("hyperlink", hyperlink);
+
+        ServiceException error = assertThrows(ServiceException.class,
+                () -> WorkbookSnapshotValidator.requireCanonical(snapshot, "book-1"));
+
+        assertEquals("VALIDATION_ERROR", error.code());
+    }
+
+    @Test
+    void validatesDefinedNameOwnerIdentityAndWorksheetScope() {
+        ObjectNode valid = snapshot();
+        ArrayNode definitions = valid.putArray("definedNameModels");
+        definitions.addObject().put("name", "TaxRate").put("formula", "0.1").put("scope", "workbook");
+        definitions.addObject().put("name", "TaxRate").put("formula", "0.2").put("scope", "sheet").put("sheetId", "sheet-1");
+        valid.putObject("definedNames").put("TaxRate", "0.1");
+        assertEquals(valid, WorkbookSnapshotValidator.requireCanonical(valid, "book-1"));
+
+        ObjectNode duplicate = snapshot();
+        ArrayNode duplicateDefinitions = duplicate.putArray("definedNameModels");
+        duplicateDefinitions.addObject().put("name", "TaxRate").put("formula", "0.1").put("scope", "workbook");
+        duplicateDefinitions.addObject().put("name", "taxrate").put("formula", "0.2").put("scope", "workbook");
+        ServiceException error = assertThrows(ServiceException.class,
+                () -> WorkbookSnapshotValidator.requireCanonical(duplicate, "book-1"));
+        assertEquals("VALIDATION_ERROR", error.code());
+
+        ObjectNode duplicateLocal = snapshot();
+        ArrayNode duplicateLocalDefinitions = duplicateLocal.putArray("definedNameModels");
+        duplicateLocalDefinitions.addObject().put("name", "LocalRate").put("formula", "0.1").put("scope", "sheet").put("sheetId", "sheet-1");
+        duplicateLocalDefinitions.addObject().put("name", "localrate").put("formula", "0.2").put("scope", "sheet").put("sheetId", "sheet-1");
+        ServiceException duplicateLocalError = assertThrows(ServiceException.class,
+                () -> WorkbookSnapshotValidator.requireCanonical(duplicateLocal, "book-1"));
+        assertEquals("VALIDATION_ERROR", duplicateLocalError.code());
+
+        ObjectNode duplicateProjection = snapshot();
+        duplicateProjection.putObject("definedNames").put("TaxRate", "0.1").put("taxrate", "0.2");
+        ServiceException duplicateProjectionError = assertThrows(ServiceException.class,
+                () -> WorkbookSnapshotValidator.requireCanonical(duplicateProjection, "book-1"));
+        assertEquals("VALIDATION_ERROR", duplicateProjectionError.code());
+
+        ObjectNode staleProjection = snapshot();
+        staleProjection.putArray("definedNameModels").addObject().put("name", "TaxRate").put("formula", "0.1").put("scope", "workbook");
+        staleProjection.putObject("definedNames").put("TaxRate", "0.2");
+        ServiceException staleProjectionError = assertThrows(ServiceException.class,
+                () -> WorkbookSnapshotValidator.requireCanonical(staleProjection, "book-1"));
+        assertEquals("VALIDATION_ERROR", staleProjectionError.code());
+
+        ObjectNode whitespaceFormula = snapshot();
+        whitespaceFormula.putArray("definedNameModels").addObject()
+                .put("name", "TaxRate").put("formula", "\u00A00.1").put("scope", "workbook");
+        ServiceException whitespaceFormulaError = assertThrows(ServiceException.class,
+                () -> WorkbookSnapshotValidator.requireCanonical(whitespaceFormula, "book-1"));
+        assertEquals("VALIDATION_ERROR", whitespaceFormulaError.code());
+
+        ObjectNode missingSheet = snapshot();
+        missingSheet.putArray("definedNameModels").addObject()
+                .put("name", "LocalRate").put("formula", "0.1").put("scope", "sheet").put("sheetId", "missing-sheet");
+        ServiceException missingSheetError = assertThrows(ServiceException.class,
+                () -> WorkbookSnapshotValidator.requireCanonical(missingSheet, "book-1"));
+        assertEquals("VALIDATION_ERROR", missingSheetError.code());
+    }
+
+    @Test
+    void rejectsAutoFilterColumnKeysWithNumericAliases() {
+        ObjectNode snapshot = snapshot();
+        ObjectNode filter = ((ObjectNode) snapshot.path("sheets").get(0)).putObject("autoFilter");
+        filter.put("sheetId", "sheet-1");
+        filter.set("range", mapper.createObjectNode().put("sheetId", "sheet-1")
+                .put("startRow", 0).put("endRow", 4).put("startColumn", 0).put("endColumn", 2));
+        ObjectNode columns = filter.putObject("columns");
+        columns.putObject("1").put("column", 1).put("showButton", true).put("hiddenButton", false);
+        columns.putObject("01").put("column", 1).put("showButton", true).put("hiddenButton", false);
+
+        ServiceException error = assertThrows(ServiceException.class,
+                () -> WorkbookSnapshotValidator.requireCanonical(snapshot, "book-1"));
+
+        assertEquals("VALIDATION_ERROR", error.code());
+    }
+
     private ObjectNode snapshot() {
         ObjectNode snapshot = mapper.createObjectNode();
         snapshot.put("schema", GeneratedWorkbookContract.SNAPSHOT_SCHEMA).put("version", GeneratedWorkbookContract.SNAPSHOT_VERSION)
@@ -72,7 +333,7 @@ class WorkbookSnapshotValidatorTest {
         sheet.put("kind", "worksheet").put("id", "sheet-1").put("name", "Sheet1").put("rowCount", 10).put("columnCount", 10)
                 .put("defaultRowHeightPx", 20).put("defaultColumnWidthPx", 64);
         sheet.putObject("cells"); sheet.putArray("merges"); sheet.putObject("pane").put("kind", "none");
-        sheet.putArray("pivots"); sheet.putArray("sparklines"); sheet.putArray("drawings"); sheet.putObject("drawingPayloads");
+        sheet.putArray("pivots"); sheet.putArray("sparklines"); sheet.putArray("drawings"); sheet.putObject("drawingPayloads"); sheet.putArray("hyperlinks");
         ObjectNode review = sheet.putObject("review");
         review.putObject("notesByCell"); review.putObject("notesById"); review.putObject("threadIdsByCell"); review.putObject("threadsById");
         return snapshot;

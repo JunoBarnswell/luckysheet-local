@@ -6,7 +6,7 @@
   "required": ["schema", "version", "unitId", "name", "dimensionMetrics", "calculationSettings", "editingOptions", "dataModel", "sheets"],
   "properties": {
     "schema": { "const": "WorkbookSnapshot" },
-    "version": { "const": 9 },
+    "version": { "const": 10 },
     "unitId": { "type": "string", "minLength": 1, "maxLength": 200 },
     "name": { "type": "string", "minLength": 1, "maxLength": 255 },
     "dimensionMetrics": {
@@ -53,6 +53,40 @@
   },
   "additionalProperties": true,
   "$defs": {
+    "hyperlinkTarget": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["kind", "url"],
+          "properties": { "kind": { "const": "url" }, "url": { "type": "string", "minLength": 1 } },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["kind", "address"],
+          "properties": { "kind": { "const": "email" }, "address": { "type": "string", "minLength": 1 }, "subject": { "type": "string" } },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["kind", "sheetId", "address"],
+          "properties": { "kind": { "const": "sheet" }, "sheetId": { "type": "string", "minLength": 1 }, "address": { "type": "string", "minLength": 1 } },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["kind", "sheetId", "row", "column"],
+          "properties": { "kind": { "const": "sheet" }, "sheetId": { "type": "string", "minLength": 1 }, "row": { "type": "integer", "minimum": 0 }, "column": { "type": "integer", "minimum": 0 } },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["kind", "name"],
+          "properties": { "kind": { "const": "name" }, "name": { "type": "string", "minLength": 1 } },
+          "additionalProperties": false
+        }
+      ]
+    },
     "pane": {
       "oneOf": [
         { "type": "object", "required": ["kind"], "properties": { "kind": { "const": "none" } }, "additionalProperties": false },
@@ -90,7 +124,7 @@
     },
     "worksheet": {
       "type": "object",
-      "required": ["kind", "id", "name", "rowCount", "columnCount", "cells", "merges", "pane", "pivots", "sparklines", "drawings", "drawingPayloads", "review", "defaultRowHeightPx", "defaultColumnWidthPx"],
+      "required": ["kind", "id", "name", "rowCount", "columnCount", "cells", "merges", "pane", "pivots", "sparklines", "drawings", "drawingPayloads", "hyperlinks", "review", "defaultRowHeightPx", "defaultColumnWidthPx"],
       "properties": {
         "kind": { "enum": ["worksheet", "table-sheet", "gantt-sheet", "report-sheet"] },
         "id": { "type": "string", "minLength": 1 },
@@ -105,6 +139,28 @@
         "sparklines": { "type": "array" },
         "drawings": { "type": "array" },
         "drawingPayloads": { "type": "object" },
+        "hyperlinks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["row", "column", "hyperlink"],
+            "properties": {
+              "row": { "type": "integer", "minimum": 0, "maximum": 1048575 },
+              "column": { "type": "integer", "minimum": 0, "maximum": 16383 },
+              "hyperlink": {
+                "type": "object",
+                "required": ["id", "target"],
+                "properties": {
+                  "id": { "type": "string", "minLength": 1 },
+                  "target": { "$ref": "#/$defs/hyperlinkTarget" },
+                  "tooltip": { "type": "string" }
+                },
+                "additionalProperties": false
+              }
+            },
+            "additionalProperties": false
+          }
+        },
         "review": {
           "type": "object",
           "required": ["notesByCell", "notesById", "threadIdsByCell", "threadsById"],

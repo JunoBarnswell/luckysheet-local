@@ -11,13 +11,15 @@ export interface SortCriterionInput {
 export interface SortDialogProps {
   open: boolean;
   columns: string[];
+  initialHasHeader: boolean;
+  headerFixed: boolean;
   locale?: Locale;
   onClose: () => void;
   onSort: (criteria: Array<{ colIdx: number; ascending: boolean }>, hasHeader: boolean) => void;
 }
 
 /** Sort UI only. The caller owns resolving the current selection into a command. */
-export function SortDialog({ open, columns, locale, onClose, onSort }: SortDialogProps): React.ReactElement | null {
+export function SortDialog({ open, columns, initialHasHeader, headerFixed, locale, onClose, onSort }: SortDialogProps): React.ReactElement | null {
   const [criteria, setCriteria] = useState<Array<{ colIdx: number; ascending: boolean }>>([{ colIdx: 0, ascending: true }]);
   const [hasHeader, setHasHeader] = useState(false);
   const activeLocale = resolveHomeLocale(locale);
@@ -25,8 +27,12 @@ export function SortDialog({ open, columns, locale, onClose, onSort }: SortDialo
   useEffect(() => {
     if (!open) return;
     setCriteria([{ colIdx: 0, ascending: true }]);
-    setHasHeader(false);
   }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    setHasHeader(initialHasHeader);
+  }, [open, initialHasHeader]);
 
   const canSort = columns.length > 0 && criteria.length > 0;
 
@@ -113,7 +119,7 @@ export function SortDialog({ open, columns, locale, onClose, onSort }: SortDialo
         >
           {homeText(activeLocale, 'addSortColumn')}
         </Button>
-        <CheckToggle checked={hasHeader} label={homeText(activeLocale, 'dataHasHeader')} onChange={(event) => setHasHeader(event.target.checked)} />
+        <CheckToggle checked={hasHeader} disabled={headerFixed} label={homeText(activeLocale, 'dataHasHeader')} onChange={(event) => setHasHeader(event.target.checked)} />
       </Stack>
     </Dialog>
   );

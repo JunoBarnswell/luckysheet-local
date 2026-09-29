@@ -8,10 +8,12 @@ import com.xc.luckysheet.server.contract.RangeRef;
 import com.xc.luckysheet.server.service.ServiceException;
 
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.function.Function;
-import java.util.function.IntUnaryOperator;
 
 /** Canonical server-side lifecycle for worksheet conditional-format and validation ranges. */
 final class SheetRuleLifecycle {
@@ -64,8 +66,7 @@ final class SheetRuleLifecycle {
             throw ServiceException.validation("Data validation list source is invalid");
         }
         if ("range".equals(listSource.path("kind").asText())) {
-            RangeRef source = SnapshotMutationSupport.range(root, listSource.get("range"));
-            SnapshotMutationSupport.requireSheet(source, sheetId);
+            SnapshotMutationSupport.range(root, listSource.get("range"));
         } else if (!listSource.path("formula").isTextual() || listSource.path("formula").asText().isBlank()) {
             throw ServiceException.validation("Data validation list formula is required");
         }
@@ -74,20 +75,82 @@ final class SheetRuleLifecycle {
     static void validateSnapshot(ObjectNode root, ObjectNode sheet, String sheetId, String property, JsonNode proposed, List<RangeRef> allowedRanges) {
         if (proposed == null || !proposed.isArray()) throw ServiceException.validation("Paste snapshot " + property + " must be an array");
         JsonNode existing = sheet.get(property);
+        if (existing != null && !existing.isNull() && !existing.isArray()) {
+            throw ServiceException.validation(property + " must be an array");
+        }
         ArrayNode current = existing != null && existing.isArray() ? (ArrayNode) existing : JsonNodeFactory.instance.arrayNode();
-        for (JsonNode rule : current) {
-            if (!ownerIsContained(root, sheetId, rule, allowedRanges) && !containsJson(proposed, rule)) {
+        Map<String, JsonNode> currentRules = indexRulesById(current, property);
+        Map<String, JsonNode> proposedRules = new HashMap<>(Math.max(16, proposed.size()));
+        for (JsonNode rule : proposed) {
+            if (!rule.isObject()) throw ServiceException.validation(property + " rule must be an object");
+            ObjectNode ruleObject = (ObjectNode) rule;
+            validateRule(root, sheetId, ruleObject, property);
+            String id = SnapshotMutationSupport.text(ruleObject, "id");
+            if (proposedRules.putIfAbsent(id, rule) != null) {
+                throw ServiceException.validation(property + " rule identity is duplicated");
+            }
+        }
+        for (Map.Entry<String, JsonNode> entry : currentRules.entrySet()) {
+            JsonNode proposedRule = proposedRules.remove(entry.getKey());
+            ObjectNode currentOutside = ruleOutsideAllowedRanges(root, sheetId, entry.getValue(), allowedRanges, property);
+            if (proposedRule == null) {
+                if (!currentOutside.path("ranges").isEmpty()) {
+                    throw ServiceException.validation("Paste snapshot changes an unrelated " + property + " rule");
+                }
+            } else if (!currentOutside.equals(ruleOutsideAllowedRanges(root, sheetId, proposedRule, allowedRanges, property))) {
                 throw ServiceException.validation("Paste snapshot changes an unrelated " + property + " rule");
             }
         }
-        for (JsonNode rule : proposed) {
-            if (!ownerIsContained(root, sheetId, rule, allowedRanges) && !containsJson(current, rule)) {
+        for (JsonNode rule : proposedRules.values()) {
+            if (!ruleOutsideAllowedRanges(root, sheetId, rule, allowedRanges, property).path("ranges").isEmpty()) {
                 throw ServiceException.validation("Paste snapshot adds an unrelated " + property + " rule");
             }
         }
     }
 
-    static int affectedColumnEnd(ObjectNode root, ObjectNode sheet, int baseline) {
+    private static Map<String, JsonNode> indexRulesById(JsonNode rules, String property) {
+        Map<String, JsonNode> indexed = new HashMap<>(Math.max(16, rules.size()));
+        for (JsonNode rule : rules) {
+            if (!rule.isObject()) throw ServiceException.validation(property + " rule must be an object");
+            String id = SnapshotMutationSupport.text((ObjectNode) rule, "id");
+            if (indexed.putIfAbsent(id, rule) != null) {
+                throw ServiceException.validation(property + " rule identity is duplicated");
+            }
+        }
+        return indexed;
+    }
+
+    private static ObjectNode ruleOutsideAllowedRanges(
+            ObjectNode root,
+            String sheetId,
+            JsonNode rule,
+            List<RangeRef> allowedRanges,
+            String property
+    ) {
+        if (!rule.isObject()) throw ServiceException.validation(property + " rule must be an object");
+        JsonNode ranges = rule.get("ranges");
+        if (ranges == null || !ranges.isArray() || ranges.isEmpty()) {
+            throw ServiceException.validation(property + " rule ranges must be a non-empty array");
+        }
+        ArrayNode outsideRanges = JsonNodeFactory.instance.arrayNode();
+        for (JsonNode candidate : ranges) {
+            RangeRef source = SnapshotMutationSupport.range(root, candidate);
+            if (!sheetId.equals(source.sheetId())) throw ServiceException.validation(property + " rule targets another sheet");
+            List<RangeRef> remaining = new ArrayList<>(List.of(source));
+            for (RangeRef allowed : allowedRanges) {
+                List<RangeRef> next = new ArrayList<>();
+                for (RangeRef fragment : remaining) next.addAll(subtract(fragment, allowed));
+                remaining = next;
+            }
+            for (RangeRef range : remaining) outsideRanges.add(rangeNode(range));
+        }
+        ObjectNode projected = (ObjectNode) rule.deepCopy();
+        projected.set("ranges", outsideRanges);
+        return projected;
+    }
+
+    static int affectedColumnEnd(ObjectNode root, ObjectNode sheet, int baseline, int startRow, int endRow) {
+        String sheetId = SnapshotMutationSupport.text(sheet, "id");
         int end = Math.max(baseline, sheet.path("columnCount").asInt(1) - 1);
         for (String property : List.of("conditionalFormats", "dataValidations")) {
             JsonNode rules = sheet.get(property);
@@ -98,29 +161,112 @@ final class SheetRuleLifecycle {
                 JsonNode ranges = rule.get("ranges");
                 if (ranges == null || !ranges.isArray()) throw ServiceException.validation(property + " rule ranges must be an array");
                 for (JsonNode candidate : ranges) end = Math.max(end, SnapshotMutationSupport.range(root, candidate).endColumn());
+                end = affectedAnchorColumnEnd(rule.get("formulaAnchor"), sheetId, startRow, endRow, end);
             }
         }
         JsonNode protections = sheet.get("protectionRules");
         if (protections != null && protections.isArray()) {
             for (JsonNode raw : protections) if (raw.isObject() && raw.has("range")) end = Math.max(end, SnapshotMutationSupport.range(root, raw.get("range")).endColumn());
         }
+        JsonNode models = root.get("definedNameModels");
+        if (models != null && !models.isNull()) {
+            if (!models.isArray()) throw ServiceException.validation("definedNameModels must be an array");
+            for (JsonNode raw : models) {
+                if (!raw.isObject()) throw ServiceException.validation("Defined name model must be an object");
+                end = affectedAnchorColumnEnd(raw.get("anchor"), sheetId, startRow, endRow, end);
+            }
+        }
+        JsonNode templates = root.get("cellStyleTemplates");
+        if (templates != null && !templates.isNull()) {
+            if (!templates.isArray()) throw ServiceException.validation("cellStyleTemplates must be an array");
+            for (JsonNode raw : templates) {
+                if (!raw.isObject()) throw ServiceException.validation("Cell style template must be an object");
+                JsonNode validation = raw.get("dataValidation");
+                if (validation != null && !validation.isNull()) {
+                    if (!validation.isObject()) throw ServiceException.validation("Cell style template validation must be an object");
+                    end = affectedAnchorColumnEnd(validation.get("formulaAnchor"), sheetId, startRow, endRow, end);
+                }
+            }
+        }
+        JsonNode reportSheet = sheet.get("reportSheet");
+        if (reportSheet != null && !reportSheet.isNull()) {
+            if (!reportSheet.isObject()) throw ServiceException.validation("ReportSheet definition must be an object");
+            JsonNode bindings = reportSheet.get("bindings");
+            if (bindings == null || !bindings.isArray()) throw ServiceException.validation("ReportSheet bindings must be an array");
+            for (JsonNode binding : bindings) {
+                if (!binding.isObject()) throw ServiceException.validation("ReportSheet binding must be an object");
+                JsonNode cell = binding.get("cell");
+                if (cell == null || !cell.isObject()
+                        || !cell.path("row").canConvertToInt() || !cell.path("column").canConvertToInt()) {
+                    throw ServiceException.validation("ReportSheet binding cell is invalid");
+                }
+                int row = cell.path("row").asInt(-1);
+                int column = cell.path("column").asInt(-1);
+                if (row < 0 || row > SnapshotMutationSupport.MAX_ROW
+                        || column < 0 || column > SnapshotMutationSupport.MAX_COLUMN) {
+                    throw ServiceException.validation("ReportSheet binding cell is outside worksheet bounds");
+                }
+                if (row >= startRow && row <= endRow) end = Math.max(end, column);
+            }
+        }
         return end;
     }
 
-    static void transformStructuralFields(ObjectNode root, ObjectNode sheet, String sheetId, RangeRef scope,
-                                          Function<RangeRef, List<RangeRef>> mapRange, IntUnaryOperator mapRow) {
-        for (JsonNode raw : SnapshotMutationSupport.array(sheet, "conditionalFormats")) {
-            transformFormulaAnchor(root, requireRule(raw, "Conditional format"), sheetId, scope, mapRow);
+    private static int affectedAnchorColumnEnd(JsonNode raw, String sheetId, int startRow, int endRow, int end) {
+        if (raw == null || raw.isNull()) return end;
+        if (!raw.isObject() || !raw.path("sheetId").isTextual()) {
+            throw ServiceException.validation("Structural formula anchor is invalid");
         }
-        for (JsonNode raw : SnapshotMutationSupport.array(sheet, "dataValidations")) {
-            ObjectNode rule = requireRule(raw, "Data validation");
-            transformFormulaAnchor(root, rule, sheetId, scope, mapRow);
-            JsonNode listSource = rule.get("listSource");
-            if (listSource == null || listSource.isNull() || !listSource.isObject() || !"range".equals(listSource.path("kind").asText())) continue;
-            RangeRef source = SnapshotMutationSupport.range(root, listSource.get("range"));
-            List<RangeRef> mapped = mapRange.apply(source);
-            if (mapped.size() != 1) throw ServiceException.validation("Row permutation cannot exactly remap validation list source");
-            ((ObjectNode) listSource).set("range", rangeNode(mapped.get(0)));
+        if (!sheetId.equals(raw.path("sheetId").asText())) return end;
+        if (!raw.path("row").canConvertToInt() || !raw.path("column").canConvertToInt()) throw ServiceException.validation("Structural formula anchor is invalid");
+        int row = raw.path("row").asInt(-1);
+        int column = raw.path("column").asInt(-1);
+        if (row < 0 || row > SnapshotMutationSupport.MAX_ROW || column < 0 || column > SnapshotMutationSupport.MAX_COLUMN) {
+            throw ServiceException.validation("Structural formula anchor is outside worksheet bounds");
+        }
+        return row >= startRow && row <= endRow ? Math.max(end, column) : end;
+    }
+
+    static void transformValidationListSources(ObjectNode root, String targetSheetId,
+                                               Function<RangeRef, List<RangeRef>> mapRange) {
+        for (JsonNode rawOwner : SnapshotMutationSupport.sheets(root)) {
+            ObjectNode ownerSheet = requireObject(rawOwner, "Worksheet");
+            String ownerSheetId = SnapshotMutationSupport.text(ownerSheet, "id");
+            for (JsonNode raw : SnapshotMutationSupport.array(ownerSheet, "dataValidations")) {
+                ObjectNode rule = requireRule(raw, "Data validation");
+                JsonNode listSource = rule.get("listSource");
+                if (listSource == null || listSource.isNull() || !listSource.isObject()
+                        || !"range".equals(listSource.path("kind").asText())) continue;
+                if (!ownerSheetId.equals(rule.path("sheetId").asText())) {
+                    throw ServiceException.validation("Data-validation owner identity does not match worksheet");
+                }
+                RangeRef source = SnapshotMutationSupport.range(root, listSource.get("range"));
+                if (!targetSheetId.equals(source.sheetId())) continue;
+                List<RangeRef> mapped = mapRange.apply(source);
+                if (mapped.size() != 1) throw ServiceException.validation("Row permutation cannot exactly remap validation list source");
+                ((ObjectNode) listSource).set("range", rangeNode(mapped.get(0)));
+            }
+        }
+    }
+
+    static void validateValidationListSources(ObjectNode root, String targetSheetId,
+                                              Function<RangeRef, List<RangeRef>> mapRange) {
+        for (JsonNode rawOwner : SnapshotMutationSupport.sheets(root)) {
+            ObjectNode ownerSheet = requireObject(rawOwner, "Worksheet");
+            String ownerSheetId = SnapshotMutationSupport.text(ownerSheet, "id");
+            for (JsonNode raw : SnapshotMutationSupport.array(ownerSheet, "dataValidations")) {
+                ObjectNode rule = requireRule(raw, "Data validation");
+                JsonNode listSource = rule.get("listSource");
+                if (listSource == null || listSource.isNull() || !listSource.isObject()
+                        || !"range".equals(listSource.path("kind").asText())) continue;
+                if (!ownerSheetId.equals(rule.path("sheetId").asText())) {
+                    throw ServiceException.validation("Data-validation owner identity does not match worksheet");
+                }
+                RangeRef source = SnapshotMutationSupport.range(root, listSource.get("range"));
+                if (targetSheetId.equals(source.sheetId()) && mapRange.apply(source).size() != 1) {
+                    throw ServiceException.validation("Row permutation cannot exactly remap validation list source");
+                }
+            }
         }
     }
 
@@ -140,21 +286,12 @@ final class SheetRuleLifecycle {
     }
 
     private static ObjectNode requireRule(JsonNode raw, String label) {
-        if (raw == null || !raw.isObject()) throw ServiceException.validation(label + " must be an object");
-        return (ObjectNode) raw;
+        return requireObject(raw, label);
     }
 
-    private static void transformFormulaAnchor(ObjectNode root, ObjectNode rule, String sheetId, RangeRef scope, IntUnaryOperator mapRow) {
-        JsonNode raw = rule.get("formulaAnchor");
-        if (raw == null || raw.isNull()) return;
-        if (!raw.isObject() || !sheetId.equals(raw.path("sheetId").asText())
-                || !raw.path("row").canConvertToInt() || !raw.path("column").canConvertToInt()
-                || raw.path("row").asInt(-1) < 0 || raw.path("column").asInt(-1) < 0) {
-            throw ServiceException.validation("Sheet rule formula anchor is invalid");
-        }
-        if (contains(scope, raw.path("row").asInt(), raw.path("column").asInt())) {
-            ((ObjectNode) raw).put("row", mapRow.applyAsInt(raw.path("row").asInt()));
-        }
+    private static ObjectNode requireObject(JsonNode raw, String label) {
+        if (raw == null || !raw.isObject()) throw ServiceException.validation(label + " must be an object");
+        return (ObjectNode) raw;
     }
 
     private static void validateFormulaAnchor(ObjectNode root, ObjectNode rule, String sheetId, RangeRef scope) {
@@ -165,26 +302,6 @@ final class SheetRuleLifecycle {
                 || raw.path("row").asInt(-1) < 0 || raw.path("column").asInt(-1) < 0) {
             throw ServiceException.validation("Sheet rule formula anchor is invalid");
         }
-    }
-
-    private static boolean ownerIsContained(ObjectNode root, String sheetId, JsonNode rule, List<RangeRef> allowedRanges) {
-        if (!rule.isObject()) throw ServiceException.validation("Paste owner rule must be an object");
-        JsonNode ranges = rule.get("ranges");
-        if (ranges == null || !ranges.isArray() || ranges.isEmpty()) throw ServiceException.validation("Paste owner rule ranges are required");
-        for (JsonNode value : ranges) {
-            RangeRef range = SnapshotMutationSupport.range(root, value);
-            if (!sheetId.equals(range.sheetId())) throw ServiceException.validation("Paste owner rule targets another sheet");
-            if (allowedRanges.stream().noneMatch(allowed -> allowed.sheetId().equals(range.sheetId())
-                    && allowed.startRow() <= range.startRow() && allowed.endRow() >= range.endRow()
-                    && allowed.startColumn() <= range.startColumn() && allowed.endColumn() >= range.endColumn())) return false;
-        }
-        return true;
-    }
-
-    private static boolean containsJson(JsonNode array, JsonNode candidate) {
-        if (array == null || !array.isArray()) return false;
-        for (JsonNode value : array) if (value.equals(candidate)) return true;
-        return false;
     }
 
     private static List<RangeRef> subtract(RangeRef source, RangeRef clear) {
@@ -215,8 +332,4 @@ final class SheetRuleLifecycle {
         return node;
     }
 
-    private static boolean contains(RangeRef range, int row, int column) {
-        return range.startRow() <= row && row <= range.endRow()
-                && range.startColumn() <= column && column <= range.endColumn();
-    }
 }

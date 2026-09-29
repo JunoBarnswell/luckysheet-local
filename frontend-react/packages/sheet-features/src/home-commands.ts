@@ -10,13 +10,13 @@ import type {
   WorkbookModel,
   WorksheetModel,
 } from '@react-sheets/core-model';
-import { protectionResolver } from '@react-sheets/core-model';
+import { MAX_SHEET_COLUMN_COUNT, MAX_SHEET_ROW_COUNT, protectionResolver } from '@react-sheets/core-model';
 import type { CommandContext, CommandResult, CommandRuntime, MutationInfo } from '@react-sheets/command-runtime';
 import { normalizeAutoFilterModel, validateDataInput, type DataSortParams } from './data-features';
 import { assertDataRegionContextMatches, filterOwnerFromDataRegionContext, resolveDataRegionContext, type DataRegionContext } from './data-region-context';
 import { resolveActiveAutoFilter, resolveFilterOwner, validateFilterOwnership } from './sheet-table-features';
 import { copyRangeToClipboardData, createPasteSpecialSpec, shiftFormula, type ClipboardPayload } from './clipboard';
-import { resolveGoToRange, resolveGoToSpecial, type GoToSpecialKind, type GoToSpecialParams } from './editing';
+import { applyRangeMoveMutation, resolveGoToRange, resolveGoToSpecial, type GoToSpecialKind, type GoToSpecialParams } from './editing';
 import { isFormulaError, isSpillChild, type FormulaError, type ScalarValue } from '@react-sheets/formula-engine';
 import { parseReplacementValue, replacementCell, replaceFindText } from './find-replace';
 import { isCellInputInterpretationContext, type CellInputInterpretationContext } from './text-input';
@@ -417,8 +417,11 @@ function isValidFormatPainterParams(value: unknown): value is FormatPainterParam
 }
 
 function isValidRangeMoveParams(value: unknown): value is RangeMoveParams {
-  return isRecord(value) && typeof value.sheetId === 'string' && isRange(value.sourceRange)
-    && isRecord(value.targetOrigin) && isFiniteInt(value.targetOrigin.row) && isFiniteInt(value.targetOrigin.column)
+  if (!isRecord(value) || typeof value.sheetId !== 'string' || !isRange(value.sourceRange)
+    || !isRecord(value.targetOrigin)) return false;
+  const source = value.sourceRange;
+  return [source.startRow, source.endRow, source.startColumn, source.endColumn,
+    value.targetOrigin.row, value.targetOrigin.column].every(Number.isSafeInteger)
     && (value.copy === undefined || typeof value.copy === 'boolean')
     && (value.insert === undefined || typeof value.insert === 'boolean');
 }
@@ -443,6 +446,11 @@ function dataRegionMaterializeAffected(params: DataRegionMaterializeParams): Ran
   return [structuredClone(params.range)];
 }
 
+function clearStoredCellsInRange(sheet: WorksheetModel, range: RangeRef): void {
+  sheet.cells.forEachInRangeWithoutHydration(range.startRow, range.endRow, range.startColumn, range.endColumn,
+    (_cell, row, column) => sheet.cells.delete(row, column));
+}
+
 function applyDataRegionMaterialization(params: DataRegionMaterializeParams, context: CommandContext): void {
   const sheet = context.workbook.getSheet(params.sheetId);
   const index = sheet.dataRegions.findIndex((region) => region.id === params.region.id);
@@ -457,9 +465,7 @@ function applyDataRegionMaterialization(params: DataRegionMaterializeParams, con
   if (!currentManifest || currentManifest.revision !== params.manifest.revision) {
     throw new Error(`Data source ${params.manifest.id} changed before materialization commit`);
   }
-  for (let row = params.range.startRow; row <= params.range.endRow; row += 1) {
-    for (let column = params.range.startColumn; column <= params.range.endColumn; column += 1) sheet.cells.delete(row, column);
-  }
+  clearStoredCellsInRange(sheet, params.range);
   for (const entry of params.materializedCells) sheet.cells.set(entry.row, entry.column, structuredClone(entry.cell));
   sheet.removeDataRegionAt(index);
   if (params.willRemoveSource) context.workbook.dataModel.sources.delete(params.manifest.id);
@@ -469,9 +475,7 @@ function restoreDataRegionMaterialization(params: DataRegionMaterializeParams, c
   const sheet = context.workbook.getSheet(params.sheetId);
   if (sheet.dataRegions.some((region) => region.id === params.region.id)) throw new Error(`Data region already exists: ${params.region.id}`);
   if (params.willRemoveSource) context.workbook.dataModel.sources.set(params.manifest.id, structuredClone(params.manifest));
-  for (let row = params.range.startRow; row <= params.range.endRow; row += 1) {
-    for (let column = params.range.startColumn; column <= params.range.endColumn; column += 1) sheet.cells.delete(row, column);
-  }
+  clearStoredCellsInRange(sheet, params.range);
   for (const entry of params.previousCells) sheet.cells.set(entry.row, entry.column, structuredClone(entry.cell));
   sheet.addDataRegion(params.region, params.regionIndex);
 }
@@ -760,8 +764,24 @@ interface ConditionalFormatReorderParams {
 
 function isConditionalFormatReorder(value: unknown): value is ConditionalFormatReorderParams {
   return isRecord(value) && typeof value.sheetId === 'string' && Array.isArray(value.ruleIds)
-    && value.ruleIds.every((entry) => typeof entry === 'string')
+    && value.ruleIds.every((entry) => typeof entry === 'string' && entry.length > 0)
+    && new Set(value.ruleIds).size === value.ruleIds.length
     && (value.ranges === undefined || (Array.isArray(value.ranges) && value.ranges.every(isRange)));
+}
+
+function orderConditionalRules(sheet: WorksheetModel, ruleIds: readonly string[]): ConditionalFormatRule[] {
+  const byId = new Map(sheet.conditionalFormats.map((rule) => [rule.id, rule] as const));
+  if (byId.size !== sheet.conditionalFormats.length || ruleIds.length !== byId.size
+    || new Set(ruleIds).size !== ruleIds.length || ruleIds.some((id) => !byId.has(id))) {
+    throw new Error('Conditional-format order must be a complete permutation of existing rules');
+  }
+  return ruleIds.map((id) => byId.get(id)!);
+}
+
+function applyConditionalRuleOrder(sheet: WorksheetModel, ruleIds: readonly string[]): void {
+  const ordered = orderConditionalRules(sheet, ruleIds);
+  sheet.conditionalFormats.splice(0, sheet.conditionalFormats.length,
+    ...ordered.map((rule, index) => ({ ...structuredClone(rule), priority: index + 1 })));
 }
 
 function allConditionalRanges(sheet: WorksheetModel): RangeRef[] {
@@ -1027,27 +1047,42 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
       if (!isValidRangeMoveParams(params)) throw new Error('Invalid range move parameters');
       const sourceRange = normalizeRange(params.sourceRange, params.sheetId);
       const sheet = context.workbook.getSheet(params.sheetId);
+      if (sourceRange.startRow < 0 || sourceRange.startColumn < 0
+        || sourceRange.endRow >= sheet.rowCount || sourceRange.endColumn >= sheet.columnCount) {
+        throw new Error('Range move source is outside worksheet bounds');
+      }
+      if (params.targetOrigin.row < 0 || params.targetOrigin.column < 0) throw new Error('Range move target is outside worksheet bounds');
+      const targetEndRow = params.targetOrigin.row + sourceRange.endRow - sourceRange.startRow;
+      const targetEndColumn = params.targetOrigin.column + sourceRange.endColumn - sourceRange.startColumn;
+      if (!Number.isSafeInteger(targetEndRow) || !Number.isSafeInteger(targetEndColumn)) {
+        throw new Error('Range move target exceeds safe worksheet coordinates');
+      }
       assertNoDataRegionIntersection(sheet, sourceRange, 'Range move');
       const targetRange: RangeRef = {
         sheetId: params.sheetId,
         startRow: params.targetOrigin.row,
-        endRow: params.targetOrigin.row + sourceRange.endRow - sourceRange.startRow,
+        endRow: targetEndRow,
         startColumn: params.targetOrigin.column,
-        endColumn: params.targetOrigin.column + sourceRange.endColumn - sourceRange.startColumn,
+        endColumn: targetEndColumn,
       };
       assertNoDataRegionIntersection(sheet, targetRange, 'Range move');
-      const clipboard = copyRangeToClipboardData(context.workbook, sourceRange);
       const copy = params.copy === true;
       const insert = params.insert === true;
-      const targetEndRow = params.targetOrigin.row + sourceRange.endRow - sourceRange.startRow;
-      const targetEndColumn = params.targetOrigin.column + sourceRange.endColumn - sourceRange.startColumn;
-      if (targetEndRow >= sheet.rowCount || targetEndColumn >= sheet.columnCount) throw new Error('Range move exceeds worksheet bounds');
+      if (targetEndRow >= MAX_SHEET_ROW_COUNT || targetEndColumn >= MAX_SHEET_COLUMN_COUNT) {
+        throw new Error('Range move exceeds worksheet bounds');
+      }
       if (targetRange.startRow === sourceRange.startRow && targetRange.startColumn === sourceRange.startColumn) throw new Error('Range drag cannot target the source range');
       if (!copy && rangesIntersect(sourceRange, targetRange)) throw new Error('Range move cannot overlap its source range');
       if (insert && params.targetOrigin.row !== sourceRange.startRow && params.targetOrigin.column !== sourceRange.startColumn) throw new Error('Range drag insert must move along one axis');
       let pasteSource = sourceRange;
       if (insert) {
         const axis = params.targetOrigin.row !== sourceRange.startRow ? 'row' as const : 'column' as const;
+        const insertionAt = axis === 'row' ? targetRange.startRow : targetRange.startColumn;
+        const sourceStart = axis === 'row' ? sourceRange.startRow : sourceRange.startColumn;
+        const sourceEnd = axis === 'row' ? sourceRange.endRow : sourceRange.endColumn;
+        if (insertionAt > sourceStart && insertionAt <= sourceEnd) {
+          throw new Error('Insert-drag cannot split its source range');
+        }
         const count = axis === 'row' ? targetRange.endRow - targetRange.startRow + 1 : targetRange.endColumn - targetRange.startColumn + 1;
         runtime.execute('sheet.cells.insert', {
           sheetId: params.sheetId,
@@ -1057,22 +1092,30 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
           operation: 'insert',
           axis,
         });
-        if (!copy) {
-          pasteSource = axis === 'row' && sourceRange.startRow >= targetRange.startRow
-            ? { ...sourceRange, startRow: sourceRange.startRow + count, endRow: sourceRange.endRow + count }
-            : axis === 'column' && sourceRange.startColumn >= targetRange.startColumn
-              ? { ...sourceRange, startColumn: sourceRange.startColumn + count, endColumn: sourceRange.endColumn + count }
-              : sourceRange;
-        }
+        pasteSource = axis === 'row' && sourceRange.startRow >= targetRange.startRow
+          ? { ...sourceRange, startRow: sourceRange.startRow + count, endRow: sourceRange.endRow + count }
+          : axis === 'column' && sourceRange.startColumn >= targetRange.startColumn
+            ? { ...sourceRange, startColumn: sourceRange.startColumn + count, endColumn: sourceRange.endColumn + count }
+            : sourceRange;
+      } else {
+        pasteSource = sourceRange;
       }
-      clipboard.transfer = copy ? 'copy' : 'move';
+      if (!copy) {
+        return applyRangeMoveMutation(context, {
+          sheetId: params.sheetId,
+          sourceRange: pasteSource,
+          targetOrigin: params.targetOrigin,
+        });
+      }
+      const clipboard = copyRangeToClipboardData(context.workbook, pasteSource);
+      clipboard.transfer = 'copy';
       return runtime.execute('sheet.range.paste', {
         sheetId: params.sheetId,
         targetOrigin: params.targetOrigin,
         clipboard,
-        sourceRange: copy ? undefined : pasteSource,
-        clearSource: copy ? false : true,
-        transfer: copy ? 'copy' : 'move',
+        sourceRange: undefined,
+        clearSource: false,
+        transfer: 'copy',
         spec: createPasteSpecialSpec(),
       });
     },
@@ -1304,7 +1347,7 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
         const targetSheet = context.workbook.getSheet(patch.sheetId);
         const validation = patch.next.formula
           ? { valid: true, blocking: false, ruleId: undefined, alertStyle: undefined }
-          : validateDataInput(targetSheet, patch.row, patch.column, patch.next.value);
+          : validateDataInput(targetSheet, patch.row, patch.column, patch.next.value, (sheetId) => context.workbook.getSheet(sheetId));
         if (validation.blocking) throw new Error(validation.message ?? 'Find/Replace value failed data validation');
         if (!validation.valid) throw new Error('CELL_ENTRY_CONFIRMATION_REQUIRED: Find/Replace requires explicit validation confirmation');
         runtime.execute('sheet.cell.set', {
@@ -1626,15 +1669,12 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
   runtime.registry.registerMutation<ConditionalFormatReorderParams>({
     id: 'cf.reorder',
     handler: (item, context) => {
-      if (!isConditionalFormatReorder(item.params)) throw new Error('Invalid cf.reorder mutation payload');
+      if (!isConditionalFormatReorder(item.params) || !Array.isArray(item.params.ranges)) throw new Error('Invalid cf.reorder mutation payload');
       const sheet = context.workbook.getSheet(item.params.sheetId);
-      const byId = new Map(sheet.conditionalFormats.map((rule) => [rule.id, rule] as const));
-      const next = item.params.ruleIds.map((id) => byId.get(id)).filter((rule): rule is ConditionalFormatRule => rule !== undefined);
-      for (const rule of sheet.conditionalFormats) if (!item.params.ruleIds.includes(rule.id)) next.push(rule);
-      sheet.conditionalFormats.splice(0, sheet.conditionalFormats.length, ...next.map((rule, index) => ({ ...structuredClone(rule), priority: index + 1 })));
+      applyConditionalRuleOrder(sheet, item.params.ruleIds);
     },
     metadata: {
-      schema: { name: 'ConditionalFormatReorder', validate: isConditionalFormatReorder },
+      schema: { name: 'ConditionalFormatReorder', validate: (value) => isConditionalFormatReorder(value) && Array.isArray(value.ranges) },
       permission: { capability: 'sheet.conditional-format.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: (params) => params.ranges?.map((range) => structuredClone(range)) ?? [], mode: 'declared' },
       inverseIds: ['cf.reorder'],
@@ -1646,6 +1686,7 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
       if (!isConditionalFormatReorder(params)) throw new Error('Invalid conditional format reorder parameters');
       const sheet = context.workbook.getSheet(params.sheetId);
       const previousIds = sheet.conditionalFormats.map((rule) => rule.id);
+      orderConditionalRules(sheet, params.ruleIds);
       const affectedRanges = allConditionalRanges(sheet);
       context.applyMutation({
         id: 'cf.reorder',
@@ -1654,12 +1695,7 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
         params: { ...params, ranges: affectedRanges },
         affectedRanges,
         inverse: [{ id: 'cf.reorder', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, ruleIds: previousIds, ranges: affectedRanges }, affectedRanges }],
-        apply: () => {
-          const byId = new Map(sheet.conditionalFormats.map((rule) => [rule.id, rule] as const));
-          const next = params.ruleIds.map((id) => byId.get(id)).filter((rule): rule is ConditionalFormatRule => rule !== undefined);
-          for (const rule of sheet.conditionalFormats) if (!params.ruleIds.includes(rule.id)) next.push(rule);
-          sheet.conditionalFormats.splice(0, sheet.conditionalFormats.length, ...next);
-        },
+        apply: () => applyConditionalRuleOrder(sheet, params.ruleIds),
       });
       return homeResult(context, affectedRanges, 1);
     },

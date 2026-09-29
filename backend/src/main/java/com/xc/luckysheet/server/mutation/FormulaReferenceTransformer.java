@@ -2,7 +2,11 @@ package com.xc.luckysheet.server.mutation;
 
 import com.xc.luckysheet.server.service.ServiceException;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
+import java.util.Objects;
+import java.util.TreeSet;
 
 /**
  * Token-level formula reference syntax tree used by structural reducers.
@@ -11,11 +15,11 @@ import java.util.Locale;
  * syntax while preserving string literals, function names, table references,
  * operators, union/intersection whitespace, implicit-intersection and spill
  * operators. Only parsed A1 references and ranges are offered to a typed
- * mapper; a deleted endpoint becomes one `#REF!` node.
+ * mapper; a deleted or out-of-bounds formula reference becomes one `#REF!` node.
  */
 final class FormulaReferenceTransformer {
-    private static final int MAX_ROW = 1_048_575;
-    private static final int MAX_COLUMN = 16_383;
+    private static final int MAX_ROW = ReferenceTransformDomain.MAX_ROW_INDEX;
+    private static final int MAX_COLUMN = ReferenceTransformDomain.MAX_COLUMN_INDEX;
 
     private FormulaReferenceTransformer() {
     }
@@ -29,27 +33,172 @@ final class FormulaReferenceTransformer {
             int count,
             Direction direction
     ) {
+        return remapAxis(formula, owner, target, axis, at, count, direction, List.of(owner, target));
+    }
+
+    static String remapAxis(
+            String formula,
+            SheetIdentity owner,
+            SheetIdentity target,
+            Axis axis,
+            int at,
+            int count,
+            Direction direction,
+            List<SheetIdentity> sheetOrder
+    ) {
         validateAxis(at, count);
+        assertStructuralThreeDimensionalReferences(formula, target, sheetOrder);
         return rewrite(formula, reference -> {
             if (!belongsToTarget(reference, owner, target)) return reference;
             int position = axis == Axis.ROW ? reference.row() : reference.column();
-            if (direction == Direction.INSERT) {
-                if (position < at) return reference;
-                return axis == Axis.ROW ? reference.withRow(reference.row() + count) : reference.withColumn(reference.column() + count);
-            }
-            int end = at + count - 1;
-            if (position < at) return reference;
-            if (position > end) return axis == Axis.ROW ? reference.withRow(reference.row() - count) : reference.withColumn(reference.column() - count);
-            return null;
+            int mapped = mapAxisPoint(position, axis, at, count, direction);
+            return mapped < 0 ? null : withAxisCoordinate(reference, axis, mapped);
+        }, parsed -> remapAxisRange(parsed, owner, target, axis, at, count, direction), true, (reference, prefix) -> {
+            boolean targetsSheet = prefix == null ? owner.id().equals(target.id()) : sameName(prefix.name(), target.name());
+            if (!targetsSheet || reference.axis() != axis) return null;
+            int[] interval = remapFormulaAxisIntervalCoordinates(reference.start(), reference.end(), axis, at, count, direction);
+            return interval == null ? "#REF!" : (prefix == null ? "" : prefix.raw() + "!")
+                    + renderWholeAxisReference(formula, reference, interval);
         });
     }
 
-    static String offset(String formula, int rowOffset, int columnOffset) {
+    static String remapCellShift(
+            String formula,
+            SheetIdentity owner,
+            SheetIdentity target,
+            Range selection,
+            Axis axis,
+            Direction direction
+    ) {
+        return remapCellShift(formula, owner, target, selection, axis, direction, List.of(owner, target));
+    }
+
+    static String remapCellShift(
+            String formula,
+            SheetIdentity owner,
+            SheetIdentity target,
+            Range selection,
+            Axis axis,
+            Direction direction,
+            List<SheetIdentity> sheetOrder
+    ) {
+        assertStructuralThreeDimensionalReferences(formula, target, sheetOrder);
         return rewrite(formula, reference -> {
-            int row = reference.absoluteRow() ? reference.row() : Math.max(0, reference.row() + rowOffset);
-            int column = reference.absoluteColumn() ? reference.column() : Math.max(0, reference.column() + columnOffset);
-            return reference.withCoordinates(row, column);
-        });
+            if (!belongsToTarget(reference, owner, target)) return reference;
+            return mapCellShiftPoint(reference, selection, axis, direction);
+        }, parsed -> remapCellShiftRange(parsed, owner, target, selection, axis, direction), true, null);
+    }
+
+    static Range remapCellShiftRangeCoordinates(Range range, Range selection, Axis axis, Direction direction) {
+        Reference start = new Reference(null, null, range.startRow(), range.startColumn(), false, false);
+        Reference end = new Reference(null, null, range.endRow(), range.endColumn(), false, false);
+        ParsedReference parsed = new ParsedReference(start, end, false, 0);
+        SheetIdentity local = new SheetIdentity("__structural_range__", "__structural_range__");
+        RangeMapping mapped = remapCellShiftRange(parsed, local, local, selection, axis, direction);
+        if (!mapped.handled()) throw ServiceException.validation("Cell-shift range transform did not resolve its local range");
+        if (mapped.start() == null || mapped.end() == null) return null;
+        return new Range(mapped.start().row(), mapped.end().row(), mapped.start().column(), mapped.end().column());
+    }
+
+    static int[] remapAxisIntervalCoordinates(int start, int end, Axis axis, int at, int count, Direction direction) {
+        ReferenceTransformDomain.IntervalMapping mapped = mapAxisInterval(start, end, axis, at, count, direction);
+        if (mapped.kind() == ReferenceTransformDomain.IntervalKind.OUT_OF_BOUNDS) {
+            throw ServiceException.validation("Structural reference interval exceeds worksheet bounds");
+        }
+        return mapped.kind() == ReferenceTransformDomain.IntervalKind.MAPPED
+                ? new int[]{Math.toIntExact(mapped.start()), Math.toIntExact(mapped.end())}
+                : null;
+    }
+
+    private static int[] remapFormulaAxisIntervalCoordinates(int start, int end, Axis axis, int at, int count, Direction direction) {
+        ReferenceTransformDomain.IntervalMapping mapped = mapAxisInterval(start, end, axis, at, count, direction);
+        return mapped.kind() == ReferenceTransformDomain.IntervalKind.MAPPED
+                ? new int[]{Math.toIntExact(mapped.start()), Math.toIntExact(mapped.end())}
+                : null;
+    }
+
+    private static ReferenceTransformDomain.IntervalMapping mapAxisInterval(
+            int start, int end, Axis axis, int at, int count, Direction direction) {
+        validateAxis(at, count);
+        int maximum = axis == Axis.ROW ? MAX_ROW : MAX_COLUMN;
+        return ReferenceTransformDomain.mapInterval(start, end, at, count, direction == Direction.INSERT, maximum);
+    }
+
+    static Range remapAxisRangeCoordinates(Range range, Axis axis, int at, int count, Direction direction) {
+        int startCoordinate = axis == Axis.ROW ? range.startRow() : range.startColumn();
+        int endCoordinate = axis == Axis.ROW ? range.endRow() : range.endColumn();
+        int[] interval = remapAxisIntervalCoordinates(startCoordinate, endCoordinate, axis, at, count, direction);
+        if (interval == null) return null;
+        boolean reversed = startCoordinate > endCoordinate;
+        int mappedStart = reversed ? interval[1] : interval[0];
+        int mappedEnd = reversed ? interval[0] : interval[1];
+        return axis == Axis.ROW
+                ? new Range(mappedStart, mappedEnd, range.startColumn(), range.endColumn())
+                : new Range(range.startRow(), range.endRow(), mappedStart, mappedEnd);
+    }
+
+    static int[] remapCellShiftCoordinate(int row, int column, Range selection, Axis axis, Direction direction) {
+        return mapCellShiftCoordinate(row, column, selection, axis, direction);
+    }
+
+    static String offsetForPermutation(String formula, int rowOffset) {
+        return rewrite(formula, reference -> {
+            long row = reference.absoluteRow() ? reference.row() : (long) reference.row() + rowOffset;
+            if (row < 0 || row > MAX_ROW) {
+                throw ServiceException.unsupportedFeature("UNSUPPORTED_STRUCTURAL_REFERENCE: row permutation would move a formula reference outside worksheet bounds");
+            }
+            return reference.withCoordinates((int) row, reference.column());
+        }, null, false, null);
+    }
+
+    static void assertRowOffsetSupported(String formula) {
+        if (formula == null) return;
+        int index = 0;
+        while (index < formula.length()) {
+            if (formula.charAt(index) == '"') {
+                index = consumeString(formula, index);
+                continue;
+            }
+            if (formula.charAt(index) == '[') {
+                int externalEnd = consumeExternalReference(formula, index);
+                if (externalEnd > index) {
+                    throw ServiceException.unsupportedFeature("UNSUPPORTED_STRUCTURAL_REFERENCE: row permutation cannot offset an external-workbook formula reference");
+                }
+                index = consumeBracketedReference(formula, index);
+                continue;
+            }
+
+            SheetPrefix prefix = parseSheetPrefix(formula, index);
+            if (prefix != null) {
+                if (prefix.name().indexOf('[') >= 0 && prefix.name().indexOf(']') > prefix.name().indexOf('[')) {
+                    throw ServiceException.unsupportedFeature("UNSUPPORTED_STRUCTURAL_REFERENCE: row permutation cannot offset an external-workbook formula reference");
+                }
+                if (prefix.afterPrefix() < formula.length() && formula.charAt(prefix.afterPrefix()) == '!') {
+                    WholeAxisReference qualified = parseWholeAxisReference(formula, prefix.afterPrefix() + 1);
+                    if (qualified != null) {
+                        assertRowAxisOffsetSupported(qualified);
+                        index = qualified.endIndex();
+                        continue;
+                    }
+                }
+            }
+
+            if (prefix == null || (prefix.afterPrefix() < formula.length() && formula.charAt(prefix.afterPrefix()) == ':')) {
+                WholeAxisReference wholeAxis = parseWholeAxisReference(formula, index);
+                if (wholeAxis != null) {
+                    assertRowAxisOffsetSupported(wholeAxis);
+                    index = wholeAxis.endIndex();
+                    continue;
+                }
+            }
+            index = nextReferenceCandidate(formula, index, prefix);
+        }
+    }
+
+    private static void assertRowAxisOffsetSupported(WholeAxisReference reference) {
+        if (reference.axis() == Axis.ROW) {
+            throw ServiceException.unsupportedFeature("UNSUPPORTED_STRUCTURAL_REFERENCE: row permutation cannot offset a whole-row formula reference");
+        }
     }
 
     static String remapMovedRegion(
@@ -58,33 +207,321 @@ final class FormulaReferenceTransformer {
             SheetIdentity target,
             Range selection,
             int rowDelta,
-            int columnDelta
+            int columnDelta,
+            List<SheetIdentity> sheetOrder
     ) {
+        assertMovedThreeDimensionalReferences(formula, target, sheetOrder);
+        assertMovedWholeAxisReferences(formula, owner, target, selection, rowDelta, columnDelta);
         return rewrite(formula, reference -> {
             if (!belongsToTarget(reference, owner, target) || !selection.contains(reference.row(), reference.column())) return reference;
             return reference.withCoordinates(reference.row() + rowDelta, reference.column() + columnDelta);
-        });
+        }, parsed -> remapMovedRange(parsed, owner, target, selection, rowDelta, columnDelta), true, null);
+    }
+
+    private static RangeMapping remapMovedRange(
+            ParsedReference parsed,
+            SheetIdentity owner,
+            SheetIdentity target,
+            Range selection,
+            int rowDelta,
+            int columnDelta
+    ) {
+        if (hasDifferentSheetEndpoints(parsed)) {
+            throw ServiceException.unsupportedFeature("UNSUPPORTED_STRUCTURAL_REFERENCE: moving cells cannot rewrite a cross-worksheet range");
+        }
+        boolean startTargets = belongsToTarget(parsed.start(), owner, target);
+        boolean endTargets = belongsToTarget(parsed.end(), owner, target);
+        if (!startTargets && !endTargets) return RangeMapping.notHandled();
+        if (!startTargets || !endTargets) {
+            throw ServiceException.unsupportedFeature("UNSUPPORTED_STRUCTURAL_REFERENCE: moved range has a partially qualified formula reference");
+        }
+
+        int lowRow = Math.min(parsed.start().row(), parsed.end().row());
+        int highRow = Math.max(parsed.start().row(), parsed.end().row());
+        int lowColumn = Math.min(parsed.start().column(), parsed.end().column());
+        int highColumn = Math.max(parsed.start().column(), parsed.end().column());
+        boolean intersects = lowRow <= selection.endRow() && highRow >= selection.startRow()
+                && lowColumn <= selection.endColumn() && highColumn >= selection.startColumn();
+        if (!intersects) return RangeMapping.notHandled();
+        boolean contained = lowRow >= selection.startRow() && highRow <= selection.endRow()
+                && lowColumn >= selection.startColumn() && highColumn <= selection.endColumn();
+        if (!contained) {
+            throw ServiceException.unsupportedFeature("UNSUPPORTED_STRUCTURAL_REFERENCE: moving cells would make a formula reference non-contiguous");
+        }
+        Reference start = parsed.start().withCoordinates(parsed.start().row() + rowDelta, parsed.start().column() + columnDelta);
+        Reference end = parsed.end().withCoordinates(parsed.end().row() + rowDelta, parsed.end().column() + columnDelta);
+        return RangeMapping.handled(start, end);
+    }
+
+    private static void assertMovedThreeDimensionalReferences(String formula, SheetIdentity target, List<SheetIdentity> sheetOrder) {
+        assertStructuralThreeDimensionalReferences(formula, target, sheetOrder);
+    }
+
+    private static void assertStructuralThreeDimensionalReferences(String formula, SheetIdentity target, List<SheetIdentity> sheetOrder) {
+        if (formula == null) return;
+        int index = 0;
+        while (index < formula.length()) {
+            if (formula.charAt(index) == '"') {
+                index = consumeString(formula, index);
+                continue;
+            }
+            if (formula.charAt(index) == '[') {
+                int externalEnd = consumeExternalReference(formula, index);
+                index = externalEnd > index ? externalEnd : consumeBracketedReference(formula, index);
+                continue;
+            }
+            SheetPrefix first = parseSheetPrefix(formula, index);
+            if (first != null && first.afterPrefix() < formula.length() && formula.charAt(first.afterPrefix()) == '!'
+                    && first.name().contains(":")) {
+                int separator = first.name().indexOf(':');
+                if (separator == 0 || separator == first.name().length() - 1 || first.name().indexOf(':', separator + 1) >= 0) {
+                    throw ServiceException.unsupportedFeature("UNSUPPORTED_STRUCTURAL_REFERENCE: 3D reference boundary is invalid");
+                }
+                assertTargetOutsideThreeDimensionalRange(
+                        first.name().substring(0, separator), first.name().substring(separator + 1), target, sheetOrder);
+                index = first.afterPrefix() + 1;
+                continue;
+            }
+            if (first != null && first.afterPrefix() < formula.length() && formula.charAt(first.afterPrefix()) == ':'
+                    && !isUnqualifiedCellRangeStart(formula, index, first)) {
+                int secondStart = first.afterPrefix() + 1;
+                SheetPrefix second = secondStart < formula.length() ? parseSheetPrefix(formula, secondStart) : null;
+                if (second != null && second.afterPrefix() < formula.length() && formula.charAt(second.afterPrefix()) == '!') {
+                    assertTargetOutsideThreeDimensionalRange(first.name(), second.name(), target, sheetOrder);
+                    index = second.afterPrefix() + 1;
+                    continue;
+                }
+            }
+            index = nextReferenceCandidate(formula, index, first);
+        }
+    }
+
+    private static void assertTargetOutsideThreeDimensionalRange(
+            String startName,
+            String endName,
+            SheetIdentity target,
+            List<SheetIdentity> sheetOrder
+    ) {
+        int start = sheetIndex(sheetOrder, startName);
+        int end = sheetIndex(sheetOrder, endName);
+        int moved = sheetIndexById(sheetOrder, target.id());
+        if (start < 0 || end < 0 || moved < 0) {
+            throw ServiceException.unsupportedFeature("UNSUPPORTED_STRUCTURAL_REFERENCE: 3D reference boundary is unresolved");
+        }
+        if (moved >= Math.min(start, end) && moved <= Math.max(start, end)) {
+            throw ServiceException.unsupportedFeature("UNSUPPORTED_STRUCTURAL_REFERENCE: structural edits cannot rewrite one sheet inside a 3D reference");
+        }
+    }
+
+    private static int sheetIndex(List<SheetIdentity> sheets, String value) {
+        for (int index = 0; index < sheets.size(); index++) {
+            if (sameName(sheets.get(index).name(), value)) return index;
+        }
+        for (int index = 0; index < sheets.size(); index++) {
+            if (sheets.get(index).id().equals(value)) return index;
+        }
+        return -1;
+    }
+
+    private static int sheetIndexById(List<SheetIdentity> sheets, String id) {
+        for (int index = 0; index < sheets.size(); index++) {
+            if (sheets.get(index).id().equals(id)) return index;
+        }
+        return -1;
+    }
+
+    private static boolean isUnqualifiedCellRangeStart(String formula, int start, SheetPrefix prefix) {
+        if (prefix == null || prefix.afterPrefix() >= formula.length() || formula.charAt(prefix.afterPrefix()) != ':') return false;
+        ParsedCell cell = parseCell(formula, start, null, null);
+        return cell != null && cell.endIndex() == prefix.afterPrefix();
+    }
+
+    private static void assertMovedWholeAxisReferences(
+            String formula,
+            SheetIdentity owner,
+            SheetIdentity target,
+            Range selection,
+            int rowDelta,
+            int columnDelta
+    ) {
+        if (formula == null) return;
+        int index = 0;
+        while (index < formula.length()) {
+            if (formula.charAt(index) == '"') {
+                index = consumeString(formula, index);
+                continue;
+            }
+            if (formula.charAt(index) == '[') {
+                int externalEnd = consumeExternalReference(formula, index);
+                index = externalEnd > index ? externalEnd : consumeBracketedReference(formula, index);
+                continue;
+            }
+            int threeDimensionalEnd = threeDimensionalReferenceEnd(formula, index);
+            if (threeDimensionalEnd > index) {
+                index = threeDimensionalEnd;
+                continue;
+            }
+            SheetPrefix prefix = parseSheetPrefix(formula, index);
+            String sheetName = null;
+            int referenceStart = index;
+            if (prefix != null && prefix.afterPrefix() < formula.length() && formula.charAt(prefix.afterPrefix()) == '!') {
+                sheetName = prefix.name();
+                referenceStart = prefix.afterPrefix() + 1;
+            }
+            WholeAxisReference reference = parseWholeAxisReference(formula, referenceStart);
+            if (reference == null) {
+                index = nextReferenceCandidate(formula, index, prefix);
+                continue;
+            }
+            boolean targets = sheetName == null
+                    ? owner.id().equals(target.id())
+                    : sameName(sheetName, target.name());
+            if (targets && reference.axis() == Axis.ROW && rowDelta != 0) {
+                assertWholeAxisMoveIsRepresentable(reference.start(), reference.end(), selection.startRow(), selection.endRow(), rowDelta, "row");
+            } else if (targets && reference.axis() == Axis.COLUMN && columnDelta != 0) {
+                assertWholeAxisMoveIsRepresentable(reference.start(), reference.end(), selection.startColumn(), selection.endColumn(), columnDelta, "column");
+            }
+            index = Math.max(reference.endIndex(), referenceStart + 1);
+        }
+    }
+
+    private static int threeDimensionalReferenceEnd(String formula, int index) {
+        SheetPrefix first = parseSheetPrefix(formula, index);
+        if (first == null) return -1;
+        int coordinateStart = -1;
+        if (first.name().contains(":") && first.afterPrefix() < formula.length() && formula.charAt(first.afterPrefix()) == '!') {
+            coordinateStart = first.afterPrefix() + 1;
+        } else if (first.afterPrefix() < formula.length() && formula.charAt(first.afterPrefix()) == ':'
+                && !isUnqualifiedCellRangeStart(formula, index, first)) {
+            int secondStart = first.afterPrefix() + 1;
+            SheetPrefix second = secondStart < formula.length() ? parseSheetPrefix(formula, secondStart) : null;
+            if (second != null && second.afterPrefix() < formula.length() && formula.charAt(second.afterPrefix()) == '!') {
+                coordinateStart = second.afterPrefix() + 1;
+            }
+        }
+        if (coordinateStart < 0) return -1;
+        WholeAxisReference wholeAxis = parseWholeAxisReference(formula, coordinateStart);
+        if (wholeAxis != null) return wholeAxis.endIndex();
+        ParsedReference reference = parseReference(formula, coordinateStart, null, null);
+        return reference == null ? coordinateStart : reference.endIndex();
+    }
+
+    private static void assertWholeAxisMoveIsRepresentable(int referenceStart, int referenceEnd,
+            int sourceStart, int sourceEnd, int delta, String label) {
+        int low = Math.min(referenceStart, referenceEnd);
+        int high = Math.max(referenceStart, referenceEnd);
+        int targetStart = sourceStart + delta;
+        int targetEnd = sourceEnd + delta;
+        boolean sourceIntersects = sourceStart <= high && sourceEnd >= low;
+        boolean targetIntersects = targetStart <= high && targetEnd >= low;
+        boolean bothCovered = sourceStart >= low && sourceEnd <= high && targetStart >= low && targetEnd <= high;
+        if (!bothCovered && (sourceIntersects || targetIntersects)) {
+            throw ServiceException.unsupportedFeature("UNSUPPORTED_STRUCTURAL_REFERENCE: moving cells would make a whole-" + label + " reference non-contiguous");
+        }
     }
 
     static String renameSheet(String formula, String oldName, String newName) {
         if (oldName == null || oldName.isBlank() || newName == null || newName.isBlank()) throw ServiceException.validation("Worksheet names are required for formula rename");
-        return rewrite(formula, reference -> {
+        String rewritten = rewrite(formula, reference -> {
             if (reference.sheetName() == null || !sameName(reference.sheetName(), oldName)) return reference;
             return reference.withSheetName(newName);
-        });
+        }, null, true, (reference, prefix) -> prefix != null && sameName(prefix.name(), oldName)
+                ? renderSheetName(newName) + "!" + formula.substring(reference.startIndex(), reference.endIndex())
+                : null);
+        return rewriteThreeDimensionalSheetNames(rewritten, oldName, newName);
+    }
+
+    static String renameTableReferences(String formula, String oldName, String newName) {
+        if (formula == null || formula.isEmpty() || oldName == null || oldName.isBlank()
+                || newName == null || newName.isBlank() || sameName(oldName, newName)) return formula;
+        StringBuilder output = new StringBuilder(formula.length());
+        int copied = 0;
+        int index = 0;
+        while (index < formula.length()) {
+            char current = formula.charAt(index);
+            if (current == '"') {
+                index = consumeString(formula, index);
+                continue;
+            }
+            if (current == '[') {
+                int externalEnd = consumeExternalReference(formula, index);
+                if (externalEnd > index) {
+                    index = externalEnd;
+                    continue;
+                }
+                int closingBook = formula.indexOf(']', index + 1);
+                if (closingBook > index + 1 && closingBook + 1 < formula.length()
+                        && isTableIdentifierStart(formula.charAt(closingBook + 1))) {
+                    int externalTableEnd = scanTableIdentifier(formula, closingBook + 1);
+                    int externalReferenceStart = externalTableEnd;
+                    while (externalReferenceStart < formula.length()
+                            && Character.isWhitespace(formula.charAt(externalReferenceStart))) externalReferenceStart += 1;
+                    if (externalReferenceStart < formula.length() && formula.charAt(externalReferenceStart) == '[') {
+                        index = requireStructuredReferenceEnd(formula, externalReferenceStart);
+                        continue;
+                    }
+                }
+                index = consumeBracketedReference(formula, index);
+                continue;
+            }
+            if (isTableIdentifierStart(current)
+                    && (index == 0 || !isReferenceNamePart(formula.codePointBefore(index)))) {
+                int nameEnd = scanTableIdentifier(formula, index);
+                int referenceStart = nameEnd;
+                while (referenceStart < formula.length() && Character.isWhitespace(formula.charAt(referenceStart))) referenceStart += 1;
+                if (formula.substring(index, nameEnd).equalsIgnoreCase(oldName)
+                        && referenceStart < formula.length() && formula.charAt(referenceStart) == '[') {
+                    int referenceEnd = requireStructuredReferenceEnd(formula, referenceStart);
+                    output.append(formula, copied, index).append(newName).append(formula, nameEnd, referenceEnd);
+                    copied = referenceEnd;
+                    index = referenceEnd;
+                    continue;
+                }
+                index = nameEnd;
+                continue;
+            }
+            index += 1;
+        }
+        if (copied == 0) return formula;
+        output.append(formula, copied, formula.length());
+        return output.toString();
+    }
+
+    private static int requireStructuredReferenceEnd(String formula, int openingBracket) {
+        int end = consumeBracketedReference(formula, openingBracket);
+        if (end <= openingBracket || formula.charAt(end - 1) != ']') {
+            throw ServiceException.unsupportedFeature("UNSUPPORTED_STRUCTURAL_REFERENCE: structured table reference is unclosed");
+        }
+        return end;
+    }
+
+    private static int scanTableIdentifier(String formula, int start) {
+        int firstCodePoint = formula.codePointAt(start);
+        int end = start + Character.charCount(firstCodePoint);
+        while (end < formula.length()) {
+            int codePoint = formula.codePointAt(end);
+            if (!isReferenceNamePart(codePoint)) break;
+            end += Character.charCount(codePoint);
+        }
+        return end;
+    }
+
+    private static boolean isTableIdentifierStart(char value) {
+        return isAsciiLetter(value) || value == '_';
     }
 
     static String invalidateSheet(String formula, String sheetId, String sheetName) {
         if (sheetId == null || sheetId.isBlank() || sheetName == null || sheetName.isBlank()) throw ServiceException.validation("Worksheet identity is required for formula invalidation");
+        assertNoThreeDimensionalReference(formula);
         return rewrite(formula, reference -> {
             if (reference.sheetName() == null) return reference;
-            return sameName(reference.sheetName(), sheetId) || sameName(reference.sheetName(), sheetName) ? null : reference;
-        });
+            return sameName(reference.sheetName(), sheetName) ? null : reference;
+        }, null, false, (reference, prefix) -> prefix != null && sameName(prefix.name(), sheetName) ? "#REF!" : null);
     }
 
     private static boolean belongsToTarget(Reference reference, SheetIdentity owner, SheetIdentity target) {
         if (reference.sheetName() == null) return owner.id().equals(target.id());
-        return sameName(reference.sheetName(), target.id()) || sameName(reference.sheetName(), target.name());
+        return sameName(reference.sheetName(), target.name());
     }
 
     private static boolean sameName(String left, String right) {
@@ -95,8 +532,14 @@ final class FormulaReferenceTransformer {
         if (at < 0 || count < 1) throw ServiceException.validation("Structural formula transform bounds are invalid");
     }
 
-    private static String rewrite(String formula, ReferenceMapper mapper) {
-        if (formula == null || !formula.stripLeading().startsWith("=")) return formula;
+    private static String rewrite(String formula, ReferenceMapper mapper, ReferenceRangeMapper rangeMapper,
+            boolean preserveThreeDimensionalReferences, WholeAxisMapper wholeAxisMapper) {
+        return rewrite(formula, mapper, rangeMapper, preserveThreeDimensionalReferences, wholeAxisMapper, false);
+    }
+
+    private static String rewrite(String formula, ReferenceMapper mapper, ReferenceRangeMapper rangeMapper,
+            boolean preserveThreeDimensionalReferences, WholeAxisMapper wholeAxisMapper, boolean renderUnchangedReferences) {
+        if (formula == null) return null;
         StringBuilder output = new StringBuilder(formula.length());
         int index = 0;
         while (index < formula.length()) {
@@ -107,12 +550,57 @@ final class FormulaReferenceTransformer {
                 index = end;
                 continue;
             }
-            ParsedReference parsed = parseQualifiedReference(formula, index);
+            if (current == '[') {
+                int externalEnd = consumeExternalReference(formula, index);
+                int end = externalEnd > index ? externalEnd : consumeBracketedReference(formula, index);
+                output.append(formula, index, end);
+                index = end;
+                continue;
+            }
+            if (preserveThreeDimensionalReferences) {
+                int threeDimensionalEnd = threeDimensionalReferenceEnd(formula, index);
+                if (threeDimensionalEnd > index) {
+                    output.append(formula, index, threeDimensionalEnd);
+                    index = threeDimensionalEnd;
+                    continue;
+                }
+            }
+            if (index > 0 && isReferenceNamePart(formula.codePointBefore(index))) {
+                output.append(current);
+                index += 1;
+                continue;
+            }
+            SheetPrefix prefix = parseSheetPrefix(formula, index);
+            boolean qualified = prefix != null && prefix.afterPrefix() < formula.length()
+                    && formula.charAt(prefix.afterPrefix()) == '!';
+            WholeAxisReference wholeAxis = parseWholeAxisReference(formula, qualified ? prefix.afterPrefix() + 1 : index);
+            if (wholeAxis != null) {
+                boolean external = qualified && prefix.name().indexOf('[') >= 0
+                        && prefix.name().indexOf(']') > prefix.name().indexOf('[');
+                String replacement = wholeAxisMapper == null || external ? null : wholeAxisMapper.map(wholeAxis, qualified ? prefix : null);
+                if (replacement == null) output.append(formula, index, wholeAxis.endIndex());
+                else output.append(replacement);
+                index = wholeAxis.endIndex();
+                continue;
+            }
+            ParsedReference parsed = qualified ? parseReference(formula, prefix.afterPrefix() + 1, prefix.name(), prefix.raw()) : null;
+            if (parsed == null && qualified) {
+                // A qualifier belongs to the following reference/name as a whole;
+                // cell-looking text inside a quoted worksheet name is never a cell.
+                output.append(formula, index, prefix.afterPrefix() + 1);
+                index = prefix.afterPrefix() + 1;
+                continue;
+            }
             if (parsed == null) parsed = parseReference(formula, index, null, null);
             if (parsed == null) {
-                if (isSheetIdentifierStart(current)) {
-                    int end = index + 1;
-                    while (end < formula.length() && isSheetIdentifierPart(formula.charAt(end))) end += 1;
+                int codePoint = formula.codePointAt(index);
+                if (isSheetIdentifierStart(codePoint)) {
+                    int end = index + Character.charCount(codePoint);
+                    while (end < formula.length()) {
+                        int nextCodePoint = formula.codePointAt(end);
+                        if (!isSheetIdentifierPart(nextCodePoint)) break;
+                        end += Character.charCount(nextCodePoint);
+                    }
                     output.append(formula, index, end);
                     index = end;
                     continue;
@@ -121,13 +609,390 @@ final class FormulaReferenceTransformer {
                 index += 1;
                 continue;
             }
-            Reference start = mapper.map(parsed.start());
-            Reference end = parsed.end() == null ? null : mapper.map(parsed.end());
-            if (start == null || (parsed.end() != null && end == null)) output.append("#REF!");
-            else output.append(render(parsed, start, end));
+            RangeMapping mappedRange = parsed.end() == null || rangeMapper == null
+                    ? RangeMapping.notHandled()
+                    : rangeMapper.map(parsed);
+            if (mappedRange.handled()) {
+                if (mappedRange.start() == null || mappedRange.end() == null) output.append("#REF!");
+                else if (!renderUnchangedReferences
+                        && Objects.equals(parsed.start(), mappedRange.start())
+                        && Objects.equals(parsed.end(), mappedRange.end())) output.append(formula, index, parsed.endIndex());
+                else output.append(render(parsed, mappedRange.start(), mappedRange.end()));
+            } else {
+                Reference start = mapper.map(parsed.start());
+                Reference end = parsed.end() == null ? null : mapper.map(parsed.end());
+                if (start == null || (parsed.end() != null && end == null)) output.append("#REF!");
+                else if (!renderUnchangedReferences
+                        && Objects.equals(parsed.start(), start)
+                        && Objects.equals(parsed.end(), end)) output.append(formula, index, parsed.endIndex());
+                else output.append(render(parsed, start, end));
+            }
             index = parsed.endIndex();
         }
         return output.toString();
+    }
+
+    static String canonicalizeFormulaReferences(String formula) {
+        return rewrite(formula, reference -> reference,
+                parsed -> RangeMapping.handled(parsed.start(), parsed.end()), true,
+                (reference, prefix) -> (prefix == null ? "" : prefix.raw() + "!")
+                        + renderWholeAxisReference(formula, reference,
+                        new int[]{Math.min(reference.start(), reference.end()), Math.max(reference.start(), reference.end())}), true);
+    }
+
+    private static String renderWholeAxisReference(String formula, WholeAxisReference reference, int[] interval) {
+        StringBuilder output = new StringBuilder();
+        boolean firstAbsolute = reference.firstCoordinateStart() > reference.startIndex();
+        boolean secondAbsolute = formula.charAt(reference.secondCoordinateStart() - 1) == '$';
+        boolean reversed = reference.start() > reference.end();
+        if (reversed ? secondAbsolute : firstAbsolute) output.append('$');
+        if (reference.axis() == Axis.ROW) output.append(interval[0] + 1);
+        else output.append(columnLabel(interval[0]));
+        output.append(':');
+        if (reversed ? firstAbsolute : secondAbsolute) output.append('$');
+        if (reference.axis() == Axis.ROW) output.append(interval[1] + 1);
+        else output.append(columnLabel(interval[1]));
+        return output.toString();
+    }
+
+    private static String rewriteThreeDimensionalSheetNames(String formula, String oldName, String newName) {
+        if (formula == null || formula.isEmpty()) return formula;
+        StringBuilder output = new StringBuilder(formula.length());
+        int copied = 0;
+        int index = 0;
+        while (index < formula.length()) {
+            char current = formula.charAt(index);
+            if (current == '"') {
+                index = consumeString(formula, index);
+                continue;
+            }
+            if (current == '[') {
+                int externalEnd = consumeExternalReference(formula, index);
+                index = externalEnd > index ? externalEnd : consumeBracketedReference(formula, index);
+                continue;
+            }
+            int referenceEnd = threeDimensionalReferenceEnd(formula, index);
+            if (referenceEnd <= index) {
+                index = nextReferenceCandidate(formula, index, parseSheetPrefix(formula, index));
+                continue;
+            }
+
+            SheetPrefix first = parseSheetPrefix(formula, index);
+            String replacement = null;
+            int prefixEnd = -1;
+            if (first != null && first.name().contains(":")
+                    && first.afterPrefix() < formula.length() && formula.charAt(first.afterPrefix()) == '!') {
+                int separator = first.name().indexOf(':');
+                if (separator > 0 && separator == first.name().lastIndexOf(':') && separator < first.name().length() - 1) {
+                    String startName = first.name().substring(0, separator);
+                    String endName = first.name().substring(separator + 1);
+                    String renamedStart = renamedSheetName(startName, oldName, newName);
+                    String renamedEnd = renamedSheetName(endName, oldName, newName);
+                    if (!startName.equals(renamedStart) || !endName.equals(renamedEnd)) {
+                        replacement = renderSheetName(renamedStart + ":" + renamedEnd) + "!";
+                        prefixEnd = first.afterPrefix() + 1;
+                    }
+                }
+            } else if (first != null && first.afterPrefix() < formula.length() && formula.charAt(first.afterPrefix()) == ':') {
+                int secondStart = first.afterPrefix() + 1;
+                SheetPrefix second = secondStart < formula.length() ? parseSheetPrefix(formula, secondStart) : null;
+                if (second != null && second.afterPrefix() < formula.length() && formula.charAt(second.afterPrefix()) == '!') {
+                    String renamedStart = renamedSheetName(first.name(), oldName, newName);
+                    String renamedEnd = renamedSheetName(second.name(), oldName, newName);
+                    if (!first.name().equals(renamedStart) || !second.name().equals(renamedEnd)) {
+                        String renderedStart = first.name().equals(renamedStart) ? first.raw() : renderSheetName(renamedStart);
+                        String renderedEnd = second.name().equals(renamedEnd) ? second.raw() : renderSheetName(renamedEnd);
+                        replacement = renderedStart + ":" + renderedEnd + "!";
+                        prefixEnd = second.afterPrefix() + 1;
+                    }
+                }
+            }
+            if (replacement != null) {
+                output.append(formula, copied, index).append(replacement);
+                copied = prefixEnd;
+            }
+            index = referenceEnd;
+        }
+        if (copied == 0) return formula;
+        output.append(formula, copied, formula.length());
+        return output.toString();
+    }
+
+    private static String renamedSheetName(String current, String oldName, String newName) {
+        return sameName(current, oldName) ? newName : current;
+    }
+
+    private static int consumeExternalReference(String formula, int start) {
+        int closingBook = formula.indexOf(']', start + 1);
+        if (closingBook <= start + 1 || closingBook + 1 >= formula.length()) return -1;
+        int firstCodePoint = formula.codePointAt(closingBook + 1);
+        if (!isSheetIdentifierStart(firstCodePoint)) return -1;
+        int cursor = closingBook + 1 + Character.charCount(firstCodePoint);
+        while (cursor < formula.length()) {
+            int codePoint = formula.codePointAt(cursor);
+            if (!isSheetIdentifierPart(codePoint)) break;
+            cursor += Character.charCount(codePoint);
+        }
+        if (cursor >= formula.length() || formula.charAt(cursor) != '!') return -1;
+        ParsedReference external = parseReference(formula, cursor + 1, null, null);
+        if (external != null) return external.endIndex();
+        WholeAxisReference wholeAxis = parseWholeAxisReference(formula, cursor + 1);
+        return wholeAxis == null ? -1 : wholeAxis.endIndex();
+    }
+
+    private static int consumeBracketedReference(String formula, int start) {
+        int depth = 0;
+        for (int index = start; index < formula.length(); index += 1) {
+            if (formula.charAt(index) == '[') depth += 1;
+            else if (formula.charAt(index) == ']') {
+                depth -= 1;
+                if (depth == 0) return index + 1;
+            }
+        }
+        return formula.length();
+    }
+
+    private static RangeMapping remapAxisRange(
+            ParsedReference parsed,
+            SheetIdentity owner,
+            SheetIdentity target,
+            Axis axis,
+            int at,
+            int count,
+            Direction direction
+    ) {
+        boolean startTargets = belongsToTarget(parsed.start(), owner, target);
+        boolean endTargets = belongsToTarget(parsed.end(), owner, target);
+        if (!startTargets && !endTargets) return RangeMapping.notHandled();
+        if (hasDifferentSheetEndpoints(parsed)) throw ServiceException.unsupportedFeature("UNSUPPORTED_FEATURE: structural transform cannot rewrite a cross-worksheet range");
+        if (!startTargets || !endTargets) throw ServiceException.unsupportedFeature("UNSUPPORTED_STRUCTURAL_REFERENCE: structural transform cannot rewrite a partially qualified range");
+
+        int startPosition = axis == Axis.ROW ? parsed.start().row() : parsed.start().column();
+        int endPosition = axis == Axis.ROW ? parsed.end().row() : parsed.end().column();
+        int[] interval = remapFormulaAxisIntervalCoordinates(startPosition, endPosition, axis, at, count, direction);
+        if (interval == null) return RangeMapping.handled(null, null);
+        boolean reversed = startPosition > endPosition;
+        Reference start = withAxisCoordinate(parsed.start(), axis, reversed ? interval[1] : interval[0]);
+        Reference end = withAxisCoordinate(parsed.end(), axis, reversed ? interval[0] : interval[1]);
+        return RangeMapping.handled(start, end);
+    }
+
+    private static RangeMapping remapCellShiftRange(
+            ParsedReference parsed,
+            SheetIdentity owner,
+            SheetIdentity target,
+            Range selection,
+            Axis axis,
+            Direction direction
+    ) {
+        boolean startTargets = belongsToTarget(parsed.start(), owner, target);
+        boolean endTargets = belongsToTarget(parsed.end(), owner, target);
+        if (!startTargets && !endTargets) return RangeMapping.notHandled();
+        if (hasDifferentSheetEndpoints(parsed)) throw ServiceException.unsupportedFeature("UNSUPPORTED_FEATURE: cell shift cannot rewrite a cross-worksheet range");
+        if (!startTargets || !endTargets) throw ServiceException.unsupportedFeature("UNSUPPORTED_STRUCTURAL_REFERENCE: cell shift cannot rewrite a partially qualified range");
+
+        int lowRow = Math.min(parsed.start().row(), parsed.end().row());
+        int highRow = Math.max(parsed.start().row(), parsed.end().row());
+        int lowColumn = Math.min(parsed.start().column(), parsed.end().column());
+        int highColumn = Math.max(parsed.start().column(), parsed.end().column());
+        List<Integer> rowCuts = axis == Axis.ROW
+                ? (direction == Direction.DELETE ? List.of(selection.startRow(), selection.endRow() + 1) : List.of(selection.startRow()))
+                : List.of(selection.startRow(), selection.endRow() + 1);
+        List<Integer> columnCuts = axis == Axis.COLUMN
+                ? (direction == Direction.DELETE ? List.of(selection.startColumn(), selection.endColumn() + 1) : List.of(selection.startColumn()))
+                : List.of(selection.startColumn(), selection.endColumn() + 1);
+        List<Rectangle> rectangles = new ArrayList<>();
+        for (int[] rows : splitInterval(lowRow, highRow, rowCuts)) {
+            for (int[] columns : splitInterval(lowColumn, highColumn, columnCuts)) {
+                int[] mappedStart = mapCellShiftCoordinate(rows[0], columns[0], selection, axis, direction);
+                int[] mappedEnd = mapCellShiftCoordinate(rows[1], columns[1], selection, axis, direction);
+                if (mappedStart == null || mappedEnd == null) continue;
+                rectangles.add(new Rectangle(
+                        Math.min(mappedStart[0], mappedEnd[0]), Math.max(mappedStart[0], mappedEnd[0]),
+                        Math.min(mappedStart[1], mappedEnd[1]), Math.max(mappedStart[1], mappedEnd[1])));
+            }
+        }
+        List<Rectangle> merged = mergeRectangles(rectangles);
+        if (merged.size() > 1) throw ServiceException.unsupportedFeature("UNSUPPORTED_FEATURE: cell shift makes a formula range non-contiguous");
+        if (merged.isEmpty()) return RangeMapping.handled(null, null);
+        Rectangle rectangle = merged.get(0);
+        boolean reverseRows = parsed.start().row() > parsed.end().row();
+        boolean reverseColumns = parsed.start().column() > parsed.end().column();
+        Reference start = parsed.start().withCoordinates(
+                reverseRows ? rectangle.endRow() : rectangle.startRow(),
+                reverseColumns ? rectangle.endColumn() : rectangle.startColumn());
+        Reference end = parsed.end().withCoordinates(
+                reverseRows ? rectangle.startRow() : rectangle.endRow(),
+                reverseColumns ? rectangle.startColumn() : rectangle.endColumn());
+        return RangeMapping.handled(start, end);
+    }
+
+    private static Reference mapCellShiftPoint(Reference reference, Range selection, Axis axis, Direction direction) {
+        ReferenceTransformDomain.CellPointMapping mapped = ReferenceTransformDomain.mapCellShiftPoint(
+                reference.row(), reference.column(), selection.startRow(), selection.endRow(),
+                selection.startColumn(), selection.endColumn(),
+                axis == Axis.ROW ? ReferenceTransformDomain.CellAxis.ROW : ReferenceTransformDomain.CellAxis.COLUMN,
+                direction == Direction.INSERT ? ReferenceTransformDomain.Operation.INSERT : ReferenceTransformDomain.Operation.DELETE);
+        if (mapped.kind() == ReferenceTransformDomain.CellPointKind.DELETED) return null;
+        if (mapped.kind() == ReferenceTransformDomain.CellPointKind.OUT_OF_BOUNDS) {
+            throw ServiceException.unsupportedFeature("UNSUPPORTED_FEATURE: cell shift moves a reference outside worksheet "
+                    + (axis == Axis.ROW ? "row" : "column") + " bounds");
+        }
+        if (mapped.row() == reference.row() && mapped.column() == reference.column()) return reference;
+        return reference.withCoordinates(mapped.row(), mapped.column());
+    }
+
+    private static int[] mapCellShiftCoordinate(int row, int column, Range selection, Axis axis, Direction direction) {
+        ReferenceTransformDomain.CellPointMapping mapped = ReferenceTransformDomain.mapCellShiftPoint(
+                row, column, selection.startRow(), selection.endRow(), selection.startColumn(), selection.endColumn(),
+                axis == Axis.ROW ? ReferenceTransformDomain.CellAxis.ROW : ReferenceTransformDomain.CellAxis.COLUMN,
+                direction == Direction.INSERT ? ReferenceTransformDomain.Operation.INSERT : ReferenceTransformDomain.Operation.DELETE);
+        if (mapped.kind() == ReferenceTransformDomain.CellPointKind.DELETED) return null;
+        if (mapped.kind() == ReferenceTransformDomain.CellPointKind.OUT_OF_BOUNDS) {
+            throw ServiceException.unsupportedFeature("UNSUPPORTED_FEATURE: cell shift moves a reference outside worksheet "
+                    + (axis == Axis.ROW ? "row" : "column") + " bounds");
+        }
+        return new int[]{mapped.row(), mapped.column()};
+    }
+
+    private static List<int[]> splitInterval(int start, int end, List<Integer> boundaries) {
+        TreeSet<Integer> cuts = new TreeSet<>();
+        cuts.add(start);
+        for (int boundary : boundaries) if (boundary > start && boundary <= end) cuts.add(boundary);
+        cuts.add(end + 1);
+        List<Integer> ordered = new ArrayList<>(cuts);
+        List<int[]> result = new ArrayList<>();
+        for (int index = 0; index + 1 < ordered.size(); index++) {
+            result.add(new int[]{ordered.get(index), ordered.get(index + 1) - 1});
+        }
+        return result;
+    }
+
+    private static List<Rectangle> mergeRectangles(List<Rectangle> rectangles) {
+        List<Rectangle> result = new ArrayList<>(rectangles);
+        boolean merged = true;
+        while (merged) {
+            merged = false;
+            for (int leftIndex = 0; leftIndex < result.size() && !merged; leftIndex++) {
+                for (int rightIndex = leftIndex + 1; rightIndex < result.size(); rightIndex++) {
+                    Rectangle left = result.get(leftIndex);
+                    Rectangle right = result.get(rightIndex);
+                    boolean sameRows = left.startRow() == right.startRow() && left.endRow() == right.endRow();
+                    boolean sameColumns = left.startColumn() == right.startColumn() && left.endColumn() == right.endColumn();
+                    if (sameRows && (left.endColumn() + 1 == right.startColumn() || right.endColumn() + 1 == left.startColumn())) {
+                        result.set(leftIndex, new Rectangle(left.startRow(), left.endRow(),
+                                Math.min(left.startColumn(), right.startColumn()), Math.max(left.endColumn(), right.endColumn())));
+                    } else if (sameColumns && (left.endRow() + 1 == right.startRow() || right.endRow() + 1 == left.startRow())) {
+                        result.set(leftIndex, new Rectangle(Math.min(left.startRow(), right.startRow()),
+                                Math.max(left.endRow(), right.endRow()), left.startColumn(), left.endColumn()));
+                    } else continue;
+                    result.remove(rightIndex);
+                    merged = true;
+                    break;
+                }
+            }
+        }
+        return result;
+    }
+
+    private static int mapAxisPoint(int position, Axis axis, int at, int count, Direction direction) {
+        int maximum = axis == Axis.ROW ? MAX_ROW : MAX_COLUMN;
+        ReferenceTransformDomain.PointMapping mapped = ReferenceTransformDomain.mapPoint(
+                position, at, count, direction == Direction.INSERT, maximum);
+        return mapped.kind() == ReferenceTransformDomain.PointKind.MAPPED ? Math.toIntExact(mapped.position()) : -1;
+    }
+
+    private static Reference withAxisCoordinate(Reference reference, Axis axis, int coordinate) {
+        return axis == Axis.ROW ? reference.withRow(coordinate) : reference.withColumn(coordinate);
+    }
+
+    private static boolean hasDifferentSheetEndpoints(ParsedReference parsed) {
+        return parsed.start().sheetName() != null && parsed.end().sheetName() != null
+                && !sameName(parsed.start().sheetName(), parsed.end().sheetName());
+    }
+
+    private static void assertNoThreeDimensionalReference(String formula) {
+        if (formula == null) return;
+        int index = 0;
+        while (index < formula.length()) {
+            if (formula.charAt(index) == '"') {
+                index = consumeString(formula, index);
+                continue;
+            }
+            if (formula.charAt(index) == '[') {
+                int externalEnd = consumeExternalReference(formula, index);
+                index = externalEnd > index ? externalEnd : consumeBracketedReference(formula, index);
+                continue;
+            }
+            SheetPrefix first = parseSheetPrefix(formula, index);
+            if (first != null && first.name().contains(":")
+                    && first.afterPrefix() < formula.length() && formula.charAt(first.afterPrefix()) == '!') {
+                throw ServiceException.unsupportedFeature("UNSUPPORTED_FEATURE: quoted 3-D references require an ordered worksheet transform");
+            }
+            if (first != null && first.afterPrefix() < formula.length() && formula.charAt(first.afterPrefix()) == ':'
+                    && !isUnqualifiedCellRangeStart(formula, index, first)) {
+                int secondStart = first.afterPrefix() + 1;
+                SheetPrefix second = secondStart < formula.length() ? parseSheetPrefix(formula, secondStart) : null;
+                if (second != null && second.afterPrefix() < formula.length() && formula.charAt(second.afterPrefix()) == '!') {
+                    throw ServiceException.unsupportedFeature("UNSUPPORTED_FEATURE: 3-D references require an ordered worksheet transform");
+                }
+            }
+            index = nextReferenceCandidate(formula, index, first);
+        }
+    }
+
+    private static WholeAxisReference parseWholeAxisReference(String formula, int start) {
+        if (start < 0 || start >= formula.length()) return null;
+        if (start > 0 && isReferenceNamePart(formula.codePointBefore(start))) return null;
+
+        int cursor = start;
+        if (formula.charAt(cursor) == '$') cursor += 1;
+        int firstStart = cursor;
+        if (cursor < formula.length() && isAsciiLetter(formula.charAt(cursor))) {
+            while (cursor < formula.length() && isAsciiLetter(formula.charAt(cursor))) cursor += 1;
+            if (cursor - firstStart > 3 || columnIndex(formula, firstStart, cursor) > MAX_COLUMN
+                    || cursor >= formula.length() || formula.charAt(cursor) != ':') return null;
+            int firstEnd = cursor;
+            int startColumn = columnIndex(formula, firstStart, firstEnd);
+            cursor += 1;
+            if (cursor < formula.length() && formula.charAt(cursor) == '$') cursor += 1;
+            int secondStart = cursor;
+            while (cursor < formula.length() && isAsciiLetter(formula.charAt(cursor))) cursor += 1;
+            if (secondStart == cursor || cursor - secondStart > 3 || columnIndex(formula, secondStart, cursor) > MAX_COLUMN
+                    || (cursor < formula.length() && isReferenceNamePart(formula.codePointAt(cursor)))) return null;
+            return new WholeAxisReference(Axis.COLUMN, startColumn, columnIndex(formula, secondStart, cursor),
+                    start, firstStart, secondStart, cursor);
+        }
+
+        cursor = start;
+        if (formula.charAt(cursor) == '$') cursor += 1;
+        int rowStart = cursor;
+        while (cursor < formula.length() && isAsciiDigit(formula.charAt(cursor))) cursor += 1;
+        if (rowStart == cursor || cursor >= formula.length() || formula.charAt(cursor) != ':') return null;
+        if (!validWholeRowIndex(formula, rowStart, cursor)) return null;
+        int firstEnd = cursor;
+        int startRow = (int) Long.parseLong(formula.substring(rowStart, firstEnd)) - 1;
+        cursor += 1;
+        if (cursor < formula.length() && formula.charAt(cursor) == '$') cursor += 1;
+        int secondStart = cursor;
+        while (cursor < formula.length() && isAsciiDigit(formula.charAt(cursor))) cursor += 1;
+        if (secondStart == cursor || !validWholeRowIndex(formula, secondStart, cursor)
+                || (cursor < formula.length() && isReferenceNamePart(formula.codePointAt(cursor)))) return null;
+        int endRow = (int) Long.parseLong(formula.substring(secondStart, cursor)) - 1;
+        return new WholeAxisReference(Axis.ROW, startRow, endRow, start, rowStart, secondStart, cursor);
+    }
+
+    private static boolean validWholeRowIndex(String formula, int start, int end) {
+        try {
+            long row = Long.parseLong(formula.substring(start, end));
+            return row >= 1 && row <= MAX_ROW + 1L;
+        } catch (NumberFormatException ignored) {
+            return false;
+        }
+    }
+
+    private static boolean isReferenceNamePart(int codePoint) {
+        return isUnicodeLetterOrNumber(codePoint) || codePoint == '_' || codePoint == '.' || codePoint == '$';
     }
 
     private static int consumeString(String formula, int start) {
@@ -146,12 +1011,6 @@ final class FormulaReferenceTransformer {
         // Formula parsing will surface an unterminated literal elsewhere. A
         // structural rewrite must not reinterpret the literal as references.
         return formula.length();
-    }
-
-    private static ParsedReference parseQualifiedReference(String formula, int start) {
-        SheetPrefix prefix = parseSheetPrefix(formula, start);
-        if (prefix == null || prefix.afterPrefix() >= formula.length() || formula.charAt(prefix.afterPrefix()) != '!') return null;
-        return parseReference(formula, prefix.afterPrefix() + 1, prefix.name(), prefix.raw());
     }
 
     private static SheetPrefix parseSheetPrefix(String formula, int start) {
@@ -174,10 +1033,42 @@ final class FormulaReferenceTransformer {
             }
             return null;
         }
-        if (!isSheetIdentifierStart(formula.charAt(start))) return null;
-        int index = start + 1;
-        while (index < formula.length() && isSheetIdentifierPart(formula.charAt(index))) index += 1;
+        int firstCodePoint = formula.codePointAt(start);
+        if (!isSheetIdentifierStart(firstCodePoint)) return null;
+        int index = start + Character.charCount(firstCodePoint);
+        while (index < formula.length()) {
+            int codePoint = formula.codePointAt(index);
+            if (!isSheetIdentifierPart(codePoint)) break;
+            index += Character.charCount(codePoint);
+        }
         return new SheetPrefix(formula.substring(start, index), formula.substring(start, index), index);
+    }
+
+    private static int nextReferenceCandidate(String formula, int start, SheetPrefix prefix) {
+        if (prefix != null) return Math.max(start + 1, prefix.afterPrefix());
+        char current = formula.charAt(start);
+        if (current == '\'') {
+            int index = start + 1;
+            while (index < formula.length()) {
+                if (formula.charAt(index) != '\'') {
+                    index += 1;
+                } else if (index + 1 < formula.length() && formula.charAt(index + 1) == '\'') {
+                    index += 2;
+                } else {
+                    return index + 1;
+                }
+            }
+            return formula.length();
+        }
+        int firstCodePoint = formula.codePointAt(start);
+        if (!isSheetIdentifierStart(firstCodePoint)) return start + Character.charCount(firstCodePoint);
+        int index = start + Character.charCount(firstCodePoint);
+        while (index < formula.length()) {
+            int codePoint = formula.codePointAt(index);
+            if (!isSheetIdentifierPart(codePoint)) break;
+            index += Character.charCount(codePoint);
+        }
+        return index;
     }
 
     private static ParsedReference parseReference(String formula, int start, String sheetName, String rawPrefix) {
@@ -215,7 +1106,7 @@ final class FormulaReferenceTransformer {
             index += 1;
         }
         int rowStart = index;
-        while (index < formula.length() && Character.isDigit(formula.charAt(index))) index += 1;
+        while (index < formula.length() && isAsciiDigit(formula.charAt(index))) index += 1;
         if (rowStart == index) return null;
         long rowOneBased;
         try {
@@ -224,7 +1115,7 @@ final class FormulaReferenceTransformer {
             return null;
         }
         if (rowOneBased < 1 || rowOneBased > MAX_ROW + 1L) return null;
-        if (index < formula.length() && (isAsciiLetter(formula.charAt(index)) || formula.charAt(index) == '_' || Character.isDigit(formula.charAt(index)))) return null;
+        if (index < formula.length() && isReferenceNamePart(formula.codePointAt(index))) return null;
         String coordinate = formula.substring(start, index);
         return new ParsedCell(new Reference(sheetName, rawPrefix, (int) rowOneBased - 1, column, absoluteRow, absoluteColumn), coordinate, index);
     }
@@ -252,7 +1143,8 @@ final class FormulaReferenceTransformer {
     private static String renderReference(Reference reference, String originalSheetName, String originalPrefix) {
         StringBuilder output = new StringBuilder();
         if (reference.sheetName() != null) {
-            if (sameName(reference.sheetName(), originalSheetName == null ? reference.sheetName() : originalSheetName) && originalPrefix != null) output.append(originalPrefix).append('!');
+            if (reference.sheetName().equals(originalSheetName == null ? reference.sheetName() : originalSheetName)
+                    && originalPrefix != null) output.append(originalPrefix).append('!');
             else output.append(renderSheetName(reference.sheetName())).append('!');
         }
         if (reference.absoluteColumn()) output.append('$');
@@ -273,12 +1165,10 @@ final class FormulaReferenceTransformer {
 
     private static String renderSheetName(String name) {
         boolean simple = !name.isEmpty();
-        for (int index = 0; index < name.length(); index++) {
+        if (simple && !isAsciiLetter(name.charAt(0)) && name.charAt(0) != '_') simple = false;
+        for (int index = 1; simple && index < name.length(); index++) {
             char current = name.charAt(index);
-            if (!isSheetIdentifierPart(current)) {
-                simple = false;
-                break;
-            }
+            if (!isAsciiLetter(current) && !isAsciiDigit(current) && current != '_' && current != '.') simple = false;
         }
         return simple ? name : "'" + name.replace("'", "''") + "'";
     }
@@ -298,12 +1188,23 @@ final class FormulaReferenceTransformer {
         return (value >= 'A' && value <= 'Z') || (value >= 'a' && value <= 'z');
     }
 
-    private static boolean isSheetIdentifierStart(char value) {
-        return isAsciiLetter(value) || value == '_';
+    private static boolean isAsciiDigit(char value) {
+        return value >= '0' && value <= '9';
     }
 
-    private static boolean isSheetIdentifierPart(char value) {
-        return isAsciiLetter(value) || Character.isDigit(value) || value == '_' || value == '.';
+    private static boolean isUnicodeLetterOrNumber(int codePoint) {
+        return Character.isLetter(codePoint) || switch (Character.getType(codePoint)) {
+            case Character.DECIMAL_DIGIT_NUMBER, Character.LETTER_NUMBER, Character.OTHER_NUMBER -> true;
+            default -> false;
+        };
+    }
+
+    private static boolean isSheetIdentifierStart(int codePoint) {
+        return Character.isLetter(codePoint) || codePoint == '_' || codePoint == '$';
+    }
+
+    private static boolean isSheetIdentifierPart(int codePoint) {
+        return isUnicodeLetterOrNumber(codePoint) || codePoint == '_' || codePoint == '.' || codePoint == '$';
     }
 
     enum Axis { ROW, COLUMN }
@@ -328,6 +1229,27 @@ final class FormulaReferenceTransformer {
 
     private interface ReferenceMapper {
         Reference map(Reference reference);
+    }
+
+    private interface ReferenceRangeMapper {
+        RangeMapping map(ParsedReference parsed);
+    }
+
+    private interface WholeAxisMapper {
+        /** Return null only when this complete reference token is unchanged. */
+        String map(WholeAxisReference reference, SheetPrefix prefix);
+    }
+
+    private record RangeMapping(boolean handled, Reference start, Reference end) {
+        static RangeMapping notHandled() { return new RangeMapping(false, null, null); }
+        static RangeMapping handled(Reference start, Reference end) { return new RangeMapping(true, start, end); }
+    }
+
+    private record Rectangle(int startRow, int endRow, int startColumn, int endColumn) {
+    }
+
+    private record WholeAxisReference(Axis axis, int start, int end, int startIndex,
+            int firstCoordinateStart, int secondCoordinateStart, int endIndex) {
     }
 
     private record Reference(String sheetName, String rawPrefix, int row, int column, boolean absoluteRow, boolean absoluteColumn) {

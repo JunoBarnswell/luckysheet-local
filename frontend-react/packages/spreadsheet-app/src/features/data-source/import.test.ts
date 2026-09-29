@@ -28,6 +28,7 @@ function makeSheet(
     sparklines: [],
     drawings: [],
     drawingPayloads: {},
+    hyperlinks: [],
     review: { notesByCell: {}, notesById: {}, threadIdsByCell: {}, threadsById: {} },
   };
 }

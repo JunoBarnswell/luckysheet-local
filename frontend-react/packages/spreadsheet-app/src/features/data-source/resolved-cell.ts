@@ -39,8 +39,6 @@ export interface CellPatch {
   richText?: CellPatchField<NonNullable<CellData['richText']>>;
   formulaMetadata?: CellPatchField<NonNullable<CellData['formulaMetadata']>>;
   formulaValue?: CellPatchField<NonNullable<CellData['formulaValue']>>;
-  hyperlink?: CellPatchField<NonNullable<CellData['hyperlink']>>;
-  hyperlinkDetail?: CellPatchField<NonNullable<CellData['hyperlinkDetail']>>;
   filterMetadata?: CellPatchField<NonNullable<CellData['filterMetadata']>>;
 }
 
@@ -112,8 +110,6 @@ const PATCH_FIELDS: readonly CellDataField[] = [
   'richText',
   'formulaValue',
   'formulaMetadata',
-  'hyperlink',
-  'hyperlinkDetail',
   'filterMetadata',
   'phonetic',
 ];

@@ -353,6 +353,23 @@ export class OperationJournalStore {
     this.journals.set(unitId, journal);
   }
 
+  adoptSnapshotCheckpoint(unitId: string, checkpoint: PendingOperationJournal): PendingOperationJournal {
+    if (checkpoint.unitId !== unitId || !verifyPendingOperationJournal(checkpoint)) {
+      throw new Error('Snapshot checkpoint journal failed validation');
+    }
+    const current = this.journals.get(unitId);
+    if (current && current.snapshotRevision > checkpoint.snapshotRevision) {
+      throw new Error(`STALE_SNAPSHOT_CHECKPOINT: ${unitId} journal is already based on revision ${current.snapshotRevision}`);
+    }
+    this.write(
+      unitId,
+      current?.operations ?? checkpoint.operations,
+      Math.max(current?.nextClientSequence ?? 0, checkpoint.nextClientSequence),
+      checkpoint.snapshotRevision,
+    );
+    return this.read(unitId)!;
+  }
+
   read(unitId: string): PendingOperationJournal | null {
     const journal = this.journals.get(unitId);
     return journal ? clone(journal) : null;

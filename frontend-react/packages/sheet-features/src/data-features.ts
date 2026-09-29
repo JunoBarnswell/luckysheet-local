@@ -10,11 +10,14 @@ import type {
   FilterCriterion,
   FilterScalar,
   RangeRef,
+  StructuralTransformResult,
+  WorkbookModel,
   WorksheetModel,
 } from "@react-sheets/core-model";
-import { clearFormulaProvenance, StructuralTransform, applyRowPermutation, columnLabel, createRowPermutationPlan, isDynamicFilterType, resolveFilterCellValue, sheetRuleRegistry } from "@react-sheets/core-model";
+import { MAX_CHANGED_CELLS, MAX_SHEET_COLUMN_COUNT, MAX_SHEET_ROW_COUNT, clearFormulaProvenance, hasFormulaGroupMetadata, StructuralMutationApplyError, StructuralTransform, applyRowPermutation, columnLabel, createRowPermutationPlan, isDynamicFilterType, resolveFilterCellValue, rowPermutationAffectedColumnEnd, sheetRuleRegistry } from "@react-sheets/core-model";
 import { canonicalExcelDateDayOfWeek, canonicalExcelDateFromParts, canonicalExcelDateFromUtcDate, canonicalExcelDateFromValue, canonicalExcelDateToUtcDate, shiftCanonicalExcelDate, type CanonicalExcelDate, type CanonicalExcelDateParts } from '@react-sheets/formula-engine';
-import { compareWorkbookValues } from '@react-sheets/formula-engine';
+import { compareWorkbookValues, MAX_COLUMN_INDEX, type WorkbookCollationContext } from '@react-sheets/formula-engine';
+import { clearCellContents } from './clear-planner';
 import { resolveAutoFilters } from './sheet-table-features';
 import { assertDataRegionContextMatches, resolveDataRegionContext, type DataRegionContext } from './data-region-context';
 import type { CommandContext, CommandRuntime } from "@react-sheets/command-runtime";
@@ -24,6 +27,8 @@ import {
   isArrayValue,
   isFormulaError,
   mapAstReferences,
+  offsetWholeAxisReferences,
+  offsetReference,
   offsetAst,
   parseFormula,
   type ParsedCellReference,
@@ -77,6 +82,61 @@ function rowsPermutedAffectedRanges(params: RowsPermutedMutationParams): RangeRe
   }];
 }
 
+function rowPermutationCalculationEffect(
+  range: RangeRef,
+  ownerChanges: ReturnType<typeof applyRowPermutation>,
+): StructuralTransformResult {
+  const inputRange = structuredClone(range);
+  return {
+    kind: 'structural-transform',
+    removedCells: [],
+    clearInputRanges: [inputRange],
+    populateInputRanges: [structuredClone(inputRange)],
+    rewrittenFormulaOwners: [],
+    ...(ownerChanges.formulaOwnerDeltas.length === 0 ? {} : { formulaOwnerDeltas: ownerChanges.formulaOwnerDeltas }),
+    definedNameOwnerDeltas: ownerChanges.definedNameOwnerDeltas,
+    rangeOwnerDeltas: ownerChanges.rangeOwnerDeltas,
+  };
+}
+
+function assertRowPermutationVisibilityAndOutlines(
+  sheet: WorksheetModel,
+  plan: ReturnType<typeof createRowPermutationPlan>,
+): void {
+  const { range, targetRowsBySource } = plan;
+  const outerGroups = resolveOuterRowOutlineGroups(sheet, range.startRow, range.endRow);
+  const hasMultiRowOutlineUnit = outerGroups.some((group) => group.end > group.start);
+  for (const group of outerGroups) {
+    const targetStart = targetRowsBySource[group.start - range.startRow]!;
+    for (let sourceRow = group.start; sourceRow <= group.end; sourceRow += 1) {
+      const sourceOffset = sourceRow - range.startRow;
+      if (targetRowsBySource[sourceOffset] !== targetStart + sourceRow - group.start) {
+        throw new Error('Row permutation cannot reorder rows within an outline group');
+      }
+    }
+  }
+  for (const hiddenRow of sheet.hiddenRows) {
+    if (hiddenRow < range.startRow || hiddenRow > range.endRow) continue;
+    const offset = hiddenRow - range.startRow;
+    if (hasMultiRowOutlineUnit) {
+      throw new Error('UNSUPPORTED_FEATURE: sorting a multi-row outline group together with separately hidden rows is unsupported');
+    }
+    if (targetRowsBySource[offset] !== hiddenRow) {
+      throw new Error('Row permutation cannot move a hidden row');
+    }
+  }
+}
+
+function assertRangeWithinSheet(sheet: WorksheetModel, range: RangeRef, operation: string): void {
+  if (range.sheetId !== sheet.id
+    || ![range.startRow, range.endRow, range.startColumn, range.endColumn].every(Number.isSafeInteger)
+    || range.startRow < 0 || range.startColumn < 0
+    || range.endRow < range.startRow || range.endColumn < range.startColumn
+    || range.endRow >= MAX_SHEET_ROW_COUNT || range.endColumn >= MAX_SHEET_COLUMN_COUNT) {
+    throw new Error(`${operation} range is outside worksheet bounds`);
+  }
+}
+
 function isRowsPermutedMutation(value: unknown): value is RowsPermutedMutationParams {
   if (!value || typeof value !== 'object') return false;
   const params = value as Record<string, unknown>;
@@ -90,8 +150,9 @@ function isRowsPermutedMutation(value: unknown): value is RowsPermutedMutationPa
     && Number(candidate.startRow) >= 0 && Number(candidate.endRow) >= Number(candidate.startRow)
     && Number(candidate.startColumn) >= 0 && Number(candidate.endColumn) >= Number(candidate.startColumn)
     && Array.isArray(params.sourceRows)
-    && Number.isInteger(params.affectedColumnEnd)
+    && Number.isSafeInteger(params.affectedColumnEnd)
     && Number(params.affectedColumnEnd) >= Number(candidate.endColumn)
+    && Number(params.affectedColumnEnd) <= MAX_COLUMN_INDEX
     && params.sourceRows.length === Number(candidate.endRow) - Number(candidate.startRow) + 1
     && new Set(params.sourceRows).size === params.sourceRows.length
     && params.sourceRows.every((row) => Number.isInteger(row) && Number(row) >= Number(candidate.startRow) && Number(row) <= Number(candidate.endRow));
@@ -103,8 +164,35 @@ function setAppliedSortState(sheet: WorksheetModel, state: AppliedSortState | un
   else target.appliedSortState = structuredClone(state);
 }
 
-function rowsPermutedAffectedColumnEnd(sheet: WorksheetModel, range: RangeRef): number {
-  return sheetRuleRegistry.affectedColumnEnd(sheet, range.endColumn);
+function applyRowsPermutedWithSortState(
+  workbook: WorkbookModel,
+  sheet: WorksheetModel,
+  range: RangeRef,
+  sourceRows: readonly number[],
+  affectedColumnEnd: number,
+  referenceOwners: CommandContext['structuralReferenceOwners'],
+  sortState: AppliedSortState | undefined,
+): ReturnType<typeof rowPermutationCalculationEffect> {
+  const plan = createRowPermutationPlan(range, sourceRows, affectedColumnEnd);
+  assertRowPermutationVisibilityAndOutlines(sheet, plan);
+  let permutationApplied = false;
+  try {
+    const ownerChanges = applyRowPermutation(workbook, plan, referenceOwners);
+    permutationApplied = true;
+    setAppliedSortState(sheet, sortState);
+    return rowPermutationCalculationEffect(range, ownerChanges);
+  } catch (error) {
+    if (error instanceof StructuralMutationApplyError || !permutationApplied) throw error;
+    throw new StructuralMutationApplyError(error);
+  }
+}
+
+function rowsPermutedAffectedColumnEnd(
+  workbook: WorkbookModel,
+  range: RangeRef,
+  referenceOwners: CommandContext['structuralReferenceOwners'],
+): number {
+  return rowPermutationAffectedColumnEnd(workbook, range, referenceOwners);
 }
 
 function inRange(range: RangeRef, row: number, column: number): boolean {
@@ -116,37 +204,63 @@ function cellRange(sheetId: string, row: number, column: number): RangeRef {
   return { sheetId, startRow: row, endRow: row, startColumn: column, endColumn: column };
 }
 
-function snapshotCells(sheet: WorksheetModel, range: RangeRef): Array<{ row: number; column: number; previous?: CellData }> {
-  const result: Array<{ row: number; column: number; previous?: CellData }> = [];
-  for (let row = range.startRow; row <= range.endRow; row += 1) {
-    for (let column = range.startColumn; column <= range.endColumn; column += 1) {
-      result.push({ row, column, previous: structuredClone(sheet.cells.get(row, column)) });
-    }
-  }
+function snapshotOccupiedCells(sheet: WorksheetModel, range: RangeRef): Array<{ row: number; column: number; previous: CellData }> {
+  const result: Array<{ row: number; column: number; previous: CellData }> = [];
+  sheet.cells.forEachInRange(range.startRow, range.endRow, range.startColumn, range.endColumn,
+    (cell, row, column) => result.push({ row, column, previous: structuredClone(cell) }));
   return result;
+}
+
+function assertBoundedMutationArea(range: RangeRef, operation: string): void {
+  const rows = range.endRow - range.startRow + 1;
+  const columns = range.endColumn - range.startColumn + 1;
+  const cells = rows * columns;
+  if (!Number.isSafeInteger(rows) || !Number.isSafeInteger(columns)
+    || rows < 1 || columns < 1 || !Number.isSafeInteger(cells) || cells > MAX_CHANGED_CELLS) {
+    throw new Error(`${operation} exceeds the ${MAX_CHANGED_CELLS}-cell mutation limit`);
+  }
 }
 
 function applyRangeValues(
   context: CommandContext,
-  params: { sheetId: string; startRow: number; startColumn: number; values: CellData[][] },
+  params: {
+    sheetId: string;
+    startRow: number;
+    startColumn: number;
+    values: CellData[][];
+    formulaProvenance?: 'clear' | 'preserve';
+  },
 ): void {
+  const { formulaProvenance = 'clear', ...mutationParams } = params;
   const sheet = context.workbook.getSheet(params.sheetId);
+  let maxColumns = 0;
+  let changedCells = 0;
+  for (const row of params.values) {
+    maxColumns = Math.max(maxColumns, row.length);
+    changedCells += row.length;
+    if (!Number.isSafeInteger(changedCells) || changedCells > MAX_CHANGED_CELLS) {
+      throw new Error(`Range values exceed the ${MAX_CHANGED_CELLS}-cell mutation limit`);
+    }
+  }
   const range: RangeRef = {
     sheetId: params.sheetId,
     startRow: params.startRow,
     endRow: params.startRow + Math.max(0, params.values.length - 1),
     startColumn: params.startColumn,
-    endColumn: params.startColumn + Math.max(0, Math.max(0, ...params.values.map((line) => line.length)) - 1),
+    endColumn: params.startColumn + Math.max(0, maxColumns - 1),
   };
-  const values = params.values.map((row) => row.map((value) => value ? clearFormulaProvenance(value) : value));
-  const previous = snapshotCells(sheet, range);
+  assertRangeWithinSheet(sheet, range, 'Range values');
+  const previous = snapshotOccupiedCells(sheet, range);
+  const values = formulaProvenance === 'preserve'
+    ? params.values
+    : params.values.map((row) => row.map((value) => value ? clearFormulaProvenance(value) : value));
   const affectedRanges = [range];
   context.applyMutation({
     id: 'range.set',
     unitId: context.workbook.unitId,
     sheetId: params.sheetId,
     params: {
-      ...params,
+      ...mutationParams,
       values,
     },
     affectedRanges,
@@ -170,7 +284,9 @@ function applyRangeValues(
 
 function clearRangeContents(context: CommandContext, range: RangeRef): void {
   const sheet = context.workbook.getSheet(range.sheetId);
-  const previous = snapshotCells(sheet, range);
+  assertRangeWithinSheet(sheet, range, 'Range clear');
+  assertBoundedMutationArea(range, 'Range clear');
+  const previous = snapshotOccupiedCells(sheet, range);
   const affectedRanges = [structuredClone(range)];
   context.applyMutation({
     id: 'range.clear',
@@ -185,18 +301,13 @@ function clearRangeContents(context: CommandContext, range: RangeRef): void {
       params: { sheetId: range.sheetId, row: entry.row, column: entry.column, previous: entry.previous },
       affectedRanges: [cellRange(range.sheetId, entry.row, entry.column)],
     })),
-    apply: () => {
-      for (let row = range.startRow; row <= range.endRow; row += 1) {
-        for (let column = range.startColumn; column <= range.endColumn; column += 1) {
-          const current = sheet.cells.get(row, column);
-          if (!current) continue;
-          const next = { ...current, value: null };
-          delete next.formula;
-          delete next.displayValue;
-          sheet.cells.set(row, column, next);
-        }
-      }
-    },
+    apply: () => sheet.cells.forEachInRange(
+      range.startRow,
+      range.endRow,
+      range.startColumn,
+      range.endColumn,
+      (current, row, column) => sheet.cells.set(row, column, clearCellContents(current)),
+    ),
   });
 }
 
@@ -211,7 +322,7 @@ function applyRowsInsert(context: CommandContext, sheetId: string, at: number, c
     params: { sheetId, at, count },
     affectedRanges,
     inverse: [{ id: 'rows.deleted', unitId: context.workbook.unitId, sheetId, params: { sheetId, at, count }, affectedRanges }],
-    apply: () => StructuralTransform.apply(context.workbook, { kind: 'insert-rows', sheetId, at, count }),
+    apply: () => StructuralTransform.apply(context.workbook, { kind: 'insert-rows', sheetId, at, count }, context.structuralReferenceOwners),
   });
 }
 
@@ -219,7 +330,7 @@ function applyRowsDelete(context: CommandContext, sheetId: string, at: number, c
   if (count <= 0) return;
   const sheet = context.workbook.getSheet(sheetId);
   const end = at + count - 1;
-  const removed = snapshotCells(sheet, { sheetId, startRow: at, endRow: end, startColumn: 0, endColumn: Math.max(0, sheet.columnCount - 1) });
+  const removed = snapshotOccupiedCells(sheet, { sheetId, startRow: at, endRow: end, startColumn: 0, endColumn: Math.max(0, sheet.columnCount - 1) });
   const affectedRanges: RangeRef[] = [{ sheetId, startRow: at, endRow: end, startColumn: 0, endColumn: Math.max(0, sheet.columnCount - 1) }];
   context.applyMutation({
     id: 'rows.deleted',
@@ -237,7 +348,7 @@ function applyRowsDelete(context: CommandContext, sheetId: string, at: number, c
         affectedRanges: [cellRange(sheetId, entry.row, entry.column)],
       })),
     ],
-    apply: () => StructuralTransform.apply(context.workbook, { kind: 'delete-rows', sheetId, at, count }),
+    apply: () => StructuralTransform.apply(context.workbook, { kind: 'delete-rows', sheetId, at, count }, context.structuralReferenceOwners),
   });
 }
 
@@ -330,8 +441,32 @@ function cellText(resolved: FilterCellValue | undefined): string {
   return resolved?.text ?? '';
 }
 
-function cellStorageText(cell: CellData | undefined): string {
-  return resolveFilterCellValue(cell).text;
+function cellStorageText(cell: CellData | undefined, evaluated?: unknown): string {
+  return resolveFilterCellValue(cell, evaluated).text;
+}
+
+function duplicateCellIdentity(cell: CellData | undefined, evaluated?: unknown): readonly unknown[] {
+  const resolved = resolveFilterCellValue(cell, evaluated);
+  if (resolved.errorCode !== undefined) return ['error', resolved.errorCode];
+  if (resolved.value === null || resolved.value === '') return ['blank'];
+  if (typeof resolved.value === 'number' && !Number.isFinite(resolved.value)) return ['number', String(resolved.value)];
+  return [typeof resolved.value, resolved.value];
+}
+
+function resolvedDataCellValue(
+  sheet: WorksheetModel,
+  row: number,
+  column: number,
+  resolver: ((sheet: WorksheetModel, row: number, column: number) => unknown) | undefined,
+  operation: string,
+): unknown {
+  const cell = sheet.cells.get(row, column);
+  const evaluated = resolver?.(sheet, row, column);
+  if (cell && (cell.formula !== undefined || cell.formulaMetadata?.sourceFormula !== undefined)
+    && evaluated === undefined && cell.formulaValue === undefined) {
+    throw new Error(`${operation} formula result unavailable at ${sheet.id}!${row}:${column}`);
+  }
+  return evaluated;
 }
 
 /** Formula/spill/data-block results arrive through this typed carrier only. */
@@ -357,12 +492,9 @@ function canonicalFilterDate(resolved: FilterCellValue | undefined, dateSystem: 
   return null;
 }
 
-function numericOf(cell: CellData | undefined): number | undefined {
-  const text = cellStorageText(cell);
-  if (!text) return undefined;
-  const cleaned = text.replace(/[$,%\s]/g, "");
-  const numeric = Number(cleaned);
-  return Number.isFinite(numeric) ? numeric : undefined;
+function numericOf(cell: CellData | undefined, evaluated?: unknown): number | undefined {
+  const value = resolveFilterCellValue(cell, evaluated).value;
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }
 
 function hexToRgb(color: string): [number, number, number] {
@@ -605,6 +737,7 @@ function evaluateCfFormula(formula: string, sheet: WorksheetModel, row: number, 
     const ast = anchor ? offsetAst(parsed, row - anchor.row, column - anchor.column) : parsed;
     const result = evaluateFormula(ast, {
       currentCell: { sheetId: sheet.id, row, column },
+      sheetOrder: [{ id: sheet.id, name: sheet.name }],
       readCell: (address): FormulaValue => {
         if (address.sheetId !== sheet.id) return null;
         const target = sheet.cells.get(address.row, address.column);
@@ -1222,6 +1355,8 @@ export interface DataValidationResult {
   alertStyle?: 'stop' | 'warning' | 'information';
 }
 
+export type ValidationWorksheetResolver = (sheetId: string) => WorksheetModel | undefined;
+
 export function findValidationRule(sheet: WorksheetModel, row: number, column: number): DataValidationRule | undefined {
   return sheet.dataValidations.find((rule) =>
     rule.ranges.some((range) =>
@@ -1229,28 +1364,39 @@ export function findValidationRule(sheet: WorksheetModel, row: number, column: n
       && column >= range.startColumn && column <= range.endColumn));
 }
 
-export function validationList(rule: DataValidationRule, sheet?: WorksheetModel): string[] | undefined {
+export function validationList(
+  rule: DataValidationRule,
+  sheet?: WorksheetModel,
+  resolveSheet?: ValidationWorksheetResolver,
+): string[] | undefined {
   if (rule.type !== "list") return undefined;
   if (rule.listSource?.kind === 'values') return [...rule.listSource.values];
-  if (rule.listSource?.kind === 'range' && sheet && rule.listSource.range.sheetId === sheet.id) {
+  if (rule.listSource?.kind === 'range') {
+    const sourceSheet = rule.listSource.range.sheetId === sheet?.id
+      ? sheet
+      : resolveSheet?.(rule.listSource.range.sheetId);
+    if (!sourceSheet || sourceSheet.id !== rule.listSource.range.sheetId) return undefined;
     const values: string[] = [];
     const range = normalizeRangeRef(rule.listSource.range);
-    for (let row = range.startRow; row <= range.endRow; row += 1) {
-      for (let column = range.startColumn; column <= range.endColumn; column += 1) {
-        const value = sheet.cells.get(row, column)?.value;
-        if (value != null && String(value) !== '') values.push(String(value));
-      }
-    }
+    sourceSheet.cells.forEachInRangeWithoutHydration(range.startRow, range.endRow, range.startColumn, range.endColumn, (cell) => {
+      const value = cell.formulaValue !== undefined ? cell.formulaValue : cell.value;
+      if (value == null || value === '' || isFormulaError(value)
+        || (typeof value !== 'string' && typeof value !== 'number' && typeof value !== 'boolean')) return;
+      values.push(String(value));
+    });
     return values;
   }
-  const formula = rule.listSource?.kind === 'formula' ? rule.listSource.formula : rule.formula1;
+  const listFormula = rule.listSource?.kind === 'formula' ? rule.listSource.formula : undefined;
+  const formulaSource = listFormula !== undefined;
+  const formula = listFormula ?? rule.formula1;
   if (!formula) return undefined;
-  if (sheet && formula.trim().startsWith('=')) {
+  if (formulaSource || formula.trim().startsWith('=')) {
+    if (!sheet) return undefined;
     const evaluated = evaluateValidationFormula(formula, sheet, 0, 0, undefined, rule.formulaAnchor ?? (rule.ranges[0] ? { sheetId: rule.ranges[0].sheetId, row: rule.ranges[0].startRow, column: rule.ranges[0].startColumn } : undefined));
-    if (isArrayValue(evaluated)) {
-      return evaluated.flat().filter((value): value is string | number | boolean =>
-        value !== null && !isFormulaError(value)).map(String);
-    }
+    if (evaluated === null || isFormulaError(evaluated)) return undefined;
+    const values = isArrayValue(evaluated) ? evaluated.flat() : [evaluated];
+    return values.filter((value): value is string | number | boolean =>
+      value !== null && !isFormulaError(value)).map(String);
   }
   return splitListLiteral(formula);
 }
@@ -1285,6 +1431,7 @@ function evaluateValidationFormula(
     const ast = anchor ? offsetAst(parsed, row - anchor.row, column - anchor.column) : parsed;
     return evaluateFormula(ast, {
       currentCell: { sheetId: sheet.id, row, column },
+      sheetOrder: [{ id: sheet.id, name: sheet.name }],
       readCell: (address): FormulaValue => {
         if (address.sheetId !== sheet.id) return null;
         if (address.row === row && address.column === column && candidate !== undefined) return candidate as FormulaValue;
@@ -1317,6 +1464,7 @@ export function validateDataInput(
   row: number,
   column: number,
   value: CellData["value"],
+  resolveSheet?: ValidationWorksheetResolver,
 ): DataValidationResult {
   const rule = findValidationRule(sheet, row, column);
   if (!rule) return { valid: true, blocking: false };
@@ -1329,8 +1477,15 @@ export function validateDataInput(
     const valid = Boolean(rule.allowBlank ?? true);
     return withRule({ valid, blocking: !valid && (rule.alertStyle ?? 'stop') === 'stop', message: valid ? undefined : validationMessage(rule, "该单元格不允许为空") });
   }
-  const list = validationList(rule, sheet);
-  if (list) {
+  const list = validationList(rule, sheet, resolveSheet);
+  if (rule.type === 'list') {
+    if (!list) {
+      return withRule({
+        valid: false,
+        blocking: (rule.alertStyle ?? 'stop') === 'stop',
+        message: validationMessage(rule, '列表来源不可用'),
+      });
+    }
     const candidateValues = rule.multiSelect ? String(value).split(',').map((item) => item.trim()).filter(Boolean) : [String(value)];
     const ok = candidateValues.length > 0 && candidateValues.every((candidate) =>
       list.some((item) => item.toLowerCase() === candidate.toLowerCase()));
@@ -1475,6 +1630,99 @@ export interface TextToColumnsParams {
   maxColumns?: number;
 }
 
+export function preflightTextToColumns(workbook: WorkbookModel, params: TextToColumnsParams): {
+  sheet: WorksheetModel;
+  range: RangeRef;
+  clearRange: RangeRef;
+  maxColumns: number;
+} {
+  if (typeof params.delimiter !== 'string' || params.delimiter.length === 0) throw new Error('Text to Columns delimiter is required');
+  const sheet = workbook.getSheet(params.sheetId);
+  const range = selectedRange(params);
+  assertRangeWithinSheet(sheet, range, 'Text to Columns source');
+  if (range.startColumn !== range.endColumn) throw new Error('Text to Columns requires exactly one source column');
+  const requestedMaxColumns = params.maxColumns ?? 8;
+  if (!Number.isSafeInteger(requestedMaxColumns) || requestedMaxColumns < 1) throw new Error('Text to Columns maxColumns must be a positive safe integer');
+  const maxColumns = Math.max(2, requestedMaxColumns);
+  if (range.startColumn + maxColumns > MAX_SHEET_COLUMN_COUNT) throw new Error('Text to Columns exceeds worksheet bounds');
+  const clearRange: RangeRef = {
+    sheetId: params.sheetId,
+    startRow: range.startRow,
+    endRow: range.endRow,
+    startColumn: range.startColumn,
+    endColumn: range.startColumn + maxColumns - 1,
+  };
+  assertBoundedMutationArea(clearRange, 'Text to Columns');
+  return { sheet, range, clearRange, maxColumns };
+}
+
+function preflightRemoveDuplicates(workbook: WorkbookModel, params: RemoveDuplicatesParams): void {
+  const sheet = workbook.getSheet(params.sheetId);
+  const range = selectedRange(params);
+  assertRangeWithinSheet(sheet, range, 'Remove Duplicates');
+  if (!Array.isArray(params.columns) || params.columns.length === 0
+    || params.columns.some((column) => !Number.isSafeInteger(column) || column < range.startColumn || column > range.endColumn)
+    || new Set(params.columns).size !== params.columns.length) {
+    throw new Error('Remove Duplicates columns must be inside the selected range');
+  }
+  if (params.hasHeader !== undefined && typeof params.hasHeader !== 'boolean') {
+    throw new Error('Remove Duplicates hasHeader must be a boolean');
+  }
+}
+
+function preflightSubtotal(workbook: WorkbookModel, params: SubtotalParams): void {
+  if (!['SUM', 'COUNT', 'AVERAGE'].includes(params.functionName)) throw new Error('Unsupported Subtotal function');
+  const sheet = workbook.getSheet(params.sheetId);
+  const range = selectedRange(params);
+  assertRangeWithinSheet(sheet, range, 'Subtotal');
+  if (!Number.isSafeInteger(params.groupColumn) || params.groupColumn < range.startColumn || params.groupColumn > range.endColumn) {
+    throw new Error('Subtotal group column is outside the range');
+  }
+  if (!Number.isSafeInteger(params.valueColumn) || params.valueColumn < range.startColumn || params.valueColumn > range.endColumn) {
+    throw new Error('Subtotal value column is outside the range');
+  }
+}
+
+function preflightSplitColumn(workbook: WorkbookModel, params: SplitColumnParams): void {
+  workbook.getSheet(params.sheetId);
+  if (!Number.isSafeInteger(params.row) || !Number.isSafeInteger(params.column)
+    || params.row < 0 || params.row >= MAX_SHEET_ROW_COUNT || params.column < 0 || params.column >= MAX_SHEET_COLUMN_COUNT) {
+    throw new Error('Split Column source cell is outside worksheet bounds');
+  }
+  if (typeof params.delimiter !== 'string' || params.delimiter.length === 0) throw new Error('Split Column delimiter is required');
+  const requestedMaxColumns = params.maxColumns ?? 4;
+  if (!Number.isSafeInteger(requestedMaxColumns) || requestedMaxColumns < 1) throw new Error('Split Column maxColumns must be a positive safe integer');
+  const maxColumns = Math.max(2, requestedMaxColumns);
+  if (params.column + maxColumns > MAX_SHEET_COLUMN_COUNT) throw new Error('Split Column exceeds worksheet bounds');
+}
+
+export function preflightDataToolCommand(workbook: WorkbookModel, commandId: string, params: unknown): void {
+  switch (commandId) {
+    case 'data.textToColumns':
+      preflightTextToColumns(workbook, params as TextToColumnsParams);
+      return;
+    case 'data.removeDuplicates':
+      preflightRemoveDuplicates(workbook, params as RemoveDuplicatesParams);
+      return;
+    case 'data.subtotal':
+      preflightSubtotal(workbook, params as SubtotalParams);
+      return;
+    case 'data.splitColumn':
+      preflightSplitColumn(workbook, params as SplitColumnParams);
+      return;
+    default:
+      return;
+  }
+}
+
+interface SplitColumnParams {
+  sheetId: string;
+  row: number;
+  column: number;
+  delimiter: string;
+  maxColumns?: number;
+}
+
 export interface RemoveDuplicatesParams {
   sheetId: string;
   range: RangeRef;
@@ -1516,8 +1764,12 @@ function normalizeSortCellValue(value: unknown): SortCellValue {
   throw new Error(`Sort key has unsupported resolved value type: ${typeof value}`);
 }
 
-export function compareSortValues(left: SortCellValue, right: SortCellValue): number {
-  return compareWorkbookValues(left, right);
+export function compareSortValues(
+  left: SortCellValue,
+  right: SortCellValue,
+  collationContext?: WorkbookCollationContext,
+): number {
+  return compareWorkbookValues(left, right, collationContext);
 }
 
 export function resolveSortCellValue(
@@ -1526,40 +1778,144 @@ export function resolveSortCellValue(
   column: number,
   resolver?: (sheet: WorksheetModel, row: number, column: number) => unknown,
 ): SortCellValue {
-  const cell = sheet.cells.get(row, column);
   const resolved = resolver?.(sheet, row, column);
   if (resolved !== undefined) return normalizeSortCellValue(resolved);
-  if (cell?.formula !== undefined && cell.formulaValue === undefined) {
-    throw new Error(`Sort formula result unavailable at ${sheet.id}!${row}:${column}`);
+  const cell = sheet.cells.getWithoutHydration(row, column);
+  if (cell?.formula !== undefined) {
+    if (cell.formulaValue === undefined) throw new Error(`Sort formula result unavailable at ${sheet.id}!${row}:${column}`);
+    return normalizeSortCellValue(cell.formulaValue);
   }
   return normalizeSortCellValue(cell?.formulaValue ?? cell?.value ?? null);
+}
+
+function resolveOuterRowOutlineGroups(sheet: WorksheetModel, startRow: number, endRow: number) {
+  const rowGroups = (sheet.outline?.groups ?? []).filter((group) => group.axis === 'row');
+  for (const group of rowGroups) {
+    if (!Number.isSafeInteger(group.start) || !Number.isSafeInteger(group.end)
+      || group.start < 0 || group.end < group.start || group.end >= MAX_SHEET_ROW_COUNT) {
+      throw new Error('Worksheet outline group row bounds are invalid');
+    }
+  }
+  const groups = rowGroups
+    .filter((group) => group.start <= endRow && group.end >= startRow)
+    .slice()
+    .sort((left, right) => left.start - right.start || right.end - left.end);
+  const outerGroups: typeof groups = [];
+  const stack: typeof groups = [];
+  for (const group of groups) {
+    if (group.start < startRow || group.end > endRow) {
+      throw new Error('UNSUPPORTED_FEATURE: sort range must contain each intersecting outline group in full');
+    }
+    while (stack.length > 0 && group.start > stack[stack.length - 1]!.end) stack.pop();
+    const parent = stack[stack.length - 1];
+    if (parent) {
+      if (group.end > parent.end || (group.start === parent.start && group.end === parent.end)) {
+        throw new Error('Worksheet outline groups overlap without a valid nesting order');
+      }
+    } else {
+      outerGroups.push(group);
+    }
+    stack.push(group);
+  }
+  return outerGroups;
 }
 
 function sortedSourceRows(
   sheet: WorksheetModel,
   params: DataSortParams,
   resolver?: (sheet: WorksheetModel, row: number, column: number) => unknown,
+  collationContext?: WorkbookCollationContext,
 ): number[] {
   const range = normalizeRangeRef(params.range);
   const startRow = (params.hasHeader ?? false) ? range.startRow + 1 : range.startRow;
-  if (startRow > range.endRow) return [];
+  const criterionColumns = new Set<number>();
   for (const criterion of params.criteria) {
-    if (!Number.isInteger(criterion.column) || criterion.column < range.startColumn || criterion.column > range.endColumn) {
+    if (!Number.isSafeInteger(criterion.column) || criterion.column < range.startColumn || criterion.column > range.endColumn) {
       throw new Error('Sort criterion is outside the selected range');
     }
+    if (typeof criterion.ascending !== 'boolean') throw new Error('Sort direction must be a boolean');
+    if (criterionColumns.has(criterion.column)) throw new Error('Sort criteria cannot repeat a column');
+    criterionColumns.add(criterion.column);
   }
-  const rows = Array.from({ length: range.endRow - startRow + 1 }, (_, offset) => startRow + offset);
-  rows.sort((leftRow, rightRow) => {
-    for (const criterion of params.criteria) {
-      const result = compareSortValues(
-        resolveSortCellValue(sheet, leftRow, criterion.column, resolver),
-        resolveSortCellValue(sheet, rightRow, criterion.column, resolver),
-      );
-      if (result !== 0) return criterion.ascending ? result : -result;
+  if (startRow > range.endRow) return [];
+  const rowCount = range.endRow - startRow + 1;
+  const outerGroups = resolveOuterRowOutlineGroups(sheet, startRow, range.endRow);
+  const hasMultiRowOutlineUnit = outerGroups.some((group) => group.end > group.start);
+  const fixedHiddenRows = new Set<number>();
+  for (const row of sheet.hiddenRows) {
+    if (row >= startRow && row <= range.endRow) fixedHiddenRows.add(row);
+  }
+  if (hasMultiRowOutlineUnit && fixedHiddenRows.size > 0) {
+    throw new Error('UNSUPPORTED_FEATURE: sorting a multi-row outline group together with separately hidden rows is unsupported');
+  }
+
+  const sourceRows = Array.from({ length: rowCount }, (_, offset) => startRow + offset);
+  if (!hasMultiRowOutlineUnit) {
+    if (fixedHiddenRows.size === 0) {
+      const keys = new Array<SortCellValue>(rowCount);
+      for (let criterionIndex = params.criteria.length - 1; criterionIndex >= 0; criterionIndex -= 1) {
+        const criterion = params.criteria[criterionIndex]!;
+        for (let offset = 0; offset < rowCount; offset += 1) {
+          keys[offset] = resolveSortCellValue(sheet, startRow + offset, criterion.column, resolver);
+        }
+        sourceRows.sort((leftRow, rightRow) => {
+          const result = compareSortValues(keys[leftRow - startRow]!, keys[rightRow - startRow]!, collationContext);
+          return criterion.ascending ? result : -result;
+        });
+      }
+      return sourceRows;
     }
-    return leftRow - rightRow;
-  });
-  return rows;
+
+    const sortableOffsets: number[] = [];
+    for (let offset = 0; offset < rowCount; offset += 1) {
+      if (!fixedHiddenRows.has(startRow + offset)) sortableOffsets.push(offset);
+    }
+    const keys = new Array<SortCellValue>(rowCount);
+    for (let criterionIndex = params.criteria.length - 1; criterionIndex >= 0; criterionIndex -= 1) {
+      const criterion = params.criteria[criterionIndex]!;
+      for (const offset of sortableOffsets) {
+        keys[offset] = resolveSortCellValue(sheet, startRow + offset, criterion.column, resolver);
+      }
+      sortableOffsets.sort((leftOffset, rightOffset) => {
+        const result = compareSortValues(keys[leftOffset]!, keys[rightOffset]!, collationContext);
+        return criterion.ascending ? result : -result;
+      });
+    }
+    let sourceIndex = 0;
+    for (let targetOffset = 0; targetOffset < rowCount; targetOffset += 1) {
+      if (fixedHiddenRows.has(startRow + targetOffset)) continue;
+      sourceRows[targetOffset] = startRow + sortableOffsets[sourceIndex++]!;
+    }
+    return sourceRows;
+  }
+
+  const groupEndsByStart = new Map<number, number>();
+  for (const group of outerGroups) groupEndsByStart.set(group.start - startRow, group.end - startRow);
+  const unitStarts: number[] = [];
+  for (let offset = 0; offset < rowCount;) {
+    unitStarts.push(offset);
+    offset = (groupEndsByStart.get(offset) ?? offset) + 1;
+  }
+  const keys = new Array<SortCellValue>(rowCount);
+  for (let criterionIndex = params.criteria.length - 1; criterionIndex >= 0; criterionIndex -= 1) {
+    const criterion = params.criteria[criterionIndex]!;
+    for (const offset of unitStarts) {
+      keys[offset] = resolveSortCellValue(sheet, startRow + offset, criterion.column, resolver);
+    }
+    unitStarts.sort((leftOffset, rightOffset) => {
+      const result = compareSortValues(keys[leftOffset]!, keys[rightOffset]!, collationContext);
+      return criterion.ascending ? result : -result;
+    });
+  }
+  let targetOffset = 0;
+  for (const unitStart of unitStarts) {
+    const unitEnd = groupEndsByStart.get(unitStart) ?? unitStart;
+    for (let sourceOffset = unitStart; sourceOffset <= unitEnd; sourceOffset += 1) {
+      sourceRows[targetOffset] = startRow + sourceOffset;
+      targetOffset += 1;
+    }
+  }
+  return sourceRows;
 }
 
 function selectedRange(params: { sheetId: string; range: RangeRef }): RangeRef {
@@ -1570,49 +1926,86 @@ function assertNoDataRegionIntersection(sheet: WorksheetModel, range: RangeRef, 
   const region = sheet.dataRegions.find((candidate) => candidate.range.sheetId === range.sheetId
     && candidate.range.startRow <= range.endRow && candidate.range.endRow >= range.startRow
     && candidate.range.startColumn <= range.endColumn && candidate.range.endColumn >= range.startColumn);
-  if (region) throw new Error(`${operation} does not support data-region ${region.id} without the canonical resolved-cell transaction`);
+  if (region) throw new Error(`UNSUPPORTED_FEATURE: ${operation} does not support data-region ${region.id} without the canonical resolved-cell transaction`);
 }
 
 function subtotalFormula(functionName: SubtotalParams['functionName'], column: number, startRow: number, endRow: number): string {
-  const code = functionName === 'SUM' ? 9 : functionName === 'COUNT' ? 3 : 1;
+  const code = functionName === 'SUM' ? 9 : functionName === 'COUNT' ? 2 : 1;
   return `=SUBTOTAL(${code},${columnLabel(column)}${startRow + 1}:${columnLabel(column)}${endRow + 1})`;
 }
 
 function transformMatrixFormula(
   formula: string,
   range: RangeRef,
+  sheetName: string,
+  source: { row: number; column: number },
+  target: { row: number; column: number },
   mapCoordinate: (row: number, column: number) => { row: number; column: number },
 ): string {
   if (!formula.trim().startsWith('=')) return formula;
   const ast = parseFormula(formula);
-  return formatFormula(mapAstReferences(ast, (reference: ParsedCellReference) => {
-    if (reference.sheetId !== undefined && reference.sheetId.toLocaleLowerCase() !== range.sheetId.toLocaleLowerCase()) return reference;
-    if (reference.row < range.startRow || reference.row > range.endRow
-      || reference.column < range.startColumn || reference.column > range.endColumn) return reference;
-    const mapped = mapCoordinate(reference.row, reference.column);
-    return { ...reference, row: mapped.row, column: mapped.column };
-  }));
+  const rowDelta = target.row - source.row;
+  const columnDelta = target.column - source.column;
+  const mapped = mapAstReferences(ast, (reference: ParsedCellReference) => {
+    const qualifiedSheet = reference.sheetId?.toLocaleLowerCase();
+    const refersToTransformedSheet = qualifiedSheet === undefined
+      || qualifiedSheet === range.sheetId.toLocaleLowerCase()
+      || qualifiedSheet === sheetName.toLocaleLowerCase();
+    if (refersToTransformedSheet && reference.row >= range.startRow && reference.row <= range.endRow
+      && reference.column >= range.startColumn && reference.column <= range.endColumn) {
+      const mapped = mapCoordinate(reference.row, reference.column);
+      return { ...reference, row: mapped.row, column: mapped.column };
+    }
+    return offsetReference(reference, rowDelta, columnDelta);
+  });
+  return formatFormula(offsetWholeAxisReferences(mapped, rowDelta, columnDelta));
 }
 
-function assertMatrixTransformSupported(sheet: WorksheetModel, range: RangeRef): void {
+function assertMatrixTransformSupported(sheet: WorksheetModel, range: RangeRef, target: RangeRef): void {
+  const affectedRanges = [range, target];
   const intersects = (candidate: RangeRef): boolean => candidate.sheetId === range.sheetId
-    && candidate.startRow <= range.endRow && candidate.endRow >= range.startRow
-    && candidate.startColumn <= range.endColumn && candidate.endColumn >= range.startColumn;
+    && affectedRanges.some((affected) => candidate.startRow <= affected.endRow && candidate.endRow >= affected.startRow
+      && candidate.startColumn <= affected.endColumn && candidate.endColumn >= affected.startColumn);
+  const affectsPoint = (row: number, column: number): boolean => affectedRanges.some((affected) => inRange(affected, row, column));
+  assertNoDataRegionIntersection(sheet, range, 'Matrix transform');
+  assertNoDataRegionIntersection(sheet, target, 'Matrix transform target');
+  if (sheet.spillRanges.some((spill) => intersects(spill.range))) {
+    throw new Error('UNSUPPORTED_FEATURE: matrix transform cannot rewrite a dynamic-array spill range');
+  }
   if (sheet.merges.some((merge) => intersects(merge.range))) throw new Error('Matrix transform cannot partially or silently rewrite merged cells');
+  sheet.cells.forEachInRange(range.startRow, range.endRow, range.startColumn, range.endColumn, (cell, row, column) => {
+    if (hasFormulaGroupMetadata(cell)) {
+      throw new Error(`UNSUPPORTED_MATRIX_FORMULA_GROUP: formula metadata at ${sheet.id}!${row}:${column} requires an explicit formula-group transform`);
+    }
+  });
   if (sheet.sheetTables.some((table) => intersects(table.range))) throw new Error('Matrix transform cannot rewrite a Sheet Table');
   if (sheet.conditionalFormats.some((rule) => rule.ranges.some(intersects))) throw new Error('Matrix transform cannot rewrite conditional-format ranges');
   if (sheet.dataValidations.some((rule) => rule.ranges.some(intersects))) throw new Error('Matrix transform cannot rewrite validation ranges');
   if (sheet.autoFilter && intersects(sheet.autoFilter.range)) throw new Error('Matrix transform cannot rewrite a filtered range');
-  if (sheet.drawings.some((drawing) => drawing.anchor.kind !== 'absolute'
-    && drawing.anchor.row !== undefined && drawing.anchor.row >= range.startRow && drawing.anchor.row <= range.endRow)) {
+  if (sheet.drawings.some((drawing) => {
+    const anchor = drawing.anchor;
+    if (anchor.kind === 'absolute') return false;
+    const startRow = anchor.row ?? anchor.endRow;
+    const endRow = anchor.endRow ?? anchor.row;
+    const startColumn = anchor.column ?? anchor.endColumn;
+    const endColumn = anchor.endColumn ?? anchor.column;
+    if (startRow === undefined || endRow === undefined || startColumn === undefined || endColumn === undefined) return true;
+    return affectedRanges.some((affected) => Math.min(startRow, endRow) <= affected.endRow && Math.max(startRow, endRow) >= affected.startRow
+      && Math.min(startColumn, endColumn) <= affected.endColumn && Math.max(startColumn, endColumn) >= affected.startColumn);
+  })) {
     throw new Error('Matrix transform cannot rewrite drawing anchors');
   }
-  if (sheet.review.noteCount > 0 || sheet.review.threadEntries().some((thread) => thread.row >= range.startRow && thread.row <= range.endRow)) {
+  if (sheet.review.noteEntries().some((note) => affectsPoint(note.row, note.column))
+    || sheet.review.threadEntries().some((thread) => affectsPoint(thread.row, thread.column))) {
     throw new Error('Matrix transform cannot rewrite review objects');
   }
-  if (sheet.sparklines.some((sparkline) => sparkline.anchor.row >= range.startRow && sparkline.anchor.row <= range.endRow)) {
+  if (sheet.sparklines.some((sparkline) => affectsPoint(sparkline.anchor.row, sparkline.anchor.column))) {
     throw new Error('Matrix transform cannot rewrite sparklines');
   }
+  if ([...sheet.hyperlinks.keys()].some((key) => {
+    const [row, column] = key.split(':').map(Number);
+    return Number.isSafeInteger(row) && Number.isSafeInteger(column) && inRange(range, row!, column!);
+  })) throw new Error('UNSUPPORTED_FEATURE: matrix transform cannot rewrite hyperlink anchors');
 }
 
 function matrixTargetRange(range: RangeRef, transpose: boolean): RangeRef {
@@ -1627,16 +2020,6 @@ function matrixTargetRange(range: RangeRef, transpose: boolean): RangeRef {
     : structuredClone(range);
 }
 
-function matrixClearRange(source: RangeRef, target: RangeRef): RangeRef {
-  return {
-    sheetId: source.sheetId,
-    startRow: Math.min(source.startRow, target.startRow),
-    endRow: Math.max(source.endRow, target.endRow),
-    startColumn: Math.min(source.startColumn, target.startColumn),
-    endColumn: Math.max(source.endColumn, target.endColumn),
-  };
-}
-
 function executeMatrixTransform(
   runtime: CommandRuntime,
   context: CommandContext,
@@ -1644,11 +2027,27 @@ function executeMatrixTransform(
   transpose: boolean,
 ): ReturnType<CommandRuntime['execute']> {
   const sheet = runtime.workbook.getSheet(params.sheetId);
+  if (!transpose && params.direction !== 'horizontal' && params.direction !== 'vertical') {
+    throw new Error('Matrix flip direction must be horizontal or vertical');
+  }
   const range = normalizeRangeRef({ ...params.range, sheetId: params.sheetId });
-  assertMatrixTransformSupported(sheet, range);
+  if (![range.startRow, range.endRow, range.startColumn, range.endColumn].every(Number.isSafeInteger)
+    || range.startRow < 0 || range.startColumn < 0 || range.endRow >= MAX_SHEET_ROW_COUNT || range.endColumn >= MAX_SHEET_COLUMN_COUNT) {
+    throw new Error('Matrix source range is outside worksheet bounds');
+  }
+  assertBoundedMutationArea(range, transpose ? 'Matrix transpose' : 'Matrix flip');
   const target = matrixTargetRange(range, transpose);
-  if (target.endRow >= sheet.rowCount || target.endColumn >= sheet.columnCount) throw new Error('Matrix transform exceeds worksheet bounds');
-  const clearRange = matrixClearRange(range, target);
+  if (![target.startRow, target.endRow, target.startColumn, target.endColumn].every(Number.isSafeInteger)
+    || target.startRow < 0 || target.startColumn < 0 || target.endRow >= MAX_SHEET_ROW_COUNT || target.endColumn >= MAX_SHEET_COLUMN_COUNT) {
+    throw new Error('Matrix target range is outside worksheet bounds');
+  }
+  assertMatrixTransformSupported(sheet, range, target);
+  if ([...sheet.hyperlinks.keys()].some((key) => {
+    const [row, column] = key.split(':').map(Number);
+    return Number.isSafeInteger(row) && Number.isSafeInteger(column)
+      && inRange(target, row!, column!) && !inRange(range, row!, column!);
+  })) throw new Error('UNSUPPORTED_FEATURE: matrix transform would overwrite a hyperlink outside the selected range');
+  const clearRange = range;
   if (target.startRow !== range.startRow || target.startColumn !== range.startColumn
     || target.endRow !== range.endRow || target.endColumn !== range.endColumn) {
     for (let row = target.startRow; row <= target.endRow; row += 1) {
@@ -1659,6 +2058,11 @@ function executeMatrixTransform(
       }
     }
   }
+  const mapFormula = (formula: string, sourceRow: number, sourceColumn: number, row: number, column: number): string => transformMatrixFormula(formula, range, sheet.name, { row: sourceRow, column: sourceColumn }, { row, column }, (refRow, refColumn) => transpose
+    ? { row: range.startRow + (refColumn - range.startColumn), column: range.startColumn + (refRow - range.startRow) }
+    : params.direction === 'horizontal'
+      ? { row: refRow, column: range.startColumn + range.endColumn - refColumn }
+      : { row: range.startRow + range.endRow - refRow, column: refColumn });
   const values: CellData[][] = [];
   for (let row = target.startRow; row <= target.endRow; row += 1) {
     const line: CellData[] = [];
@@ -1668,12 +2072,29 @@ function executeMatrixTransform(
       const sourceColumn = transpose ? range.startColumn + (row - target.startRow) : (
         params.direction === 'horizontal' ? range.endColumn - (column - target.startColumn) : column);
       const source = structuredClone(sheet.cells.get(sourceRow, sourceColumn) ?? { value: null });
-      if (source.formula) {
-        source.formula = transformMatrixFormula(source.formula, range, (refRow, refColumn) => transpose
-          ? { row: range.startRow + (refColumn - range.startColumn), column: range.startColumn + (refRow - range.startRow) }
-          : params.direction === 'horizontal'
-            ? { row: refRow, column: range.startColumn + range.endColumn - refColumn }
-            : { row: range.startRow + range.endRow - refRow, column: refColumn });
+      if (source.formula !== undefined || source.formulaMetadata?.sourceFormula !== undefined) {
+        const formula = source.formula === undefined ? undefined : mapFormula(source.formula, sourceRow, sourceColumn, row, column);
+        const sourceFormula = source.formulaMetadata?.sourceFormula === undefined
+          ? undefined
+          : mapFormula(source.formulaMetadata.sourceFormula, sourceRow, sourceColumn, row, column);
+        const formulaChanged = formula !== undefined && formula !== source.formula;
+        const sourceFormulaChanged = sourceFormula !== undefined
+          && sourceFormula !== source.formulaMetadata?.sourceFormula;
+        const metadata = source.formulaMetadata;
+        if (formulaChanged && formula !== undefined) source.formula = formula;
+        if (formulaChanged || sourceFormulaChanged || (sourceRow !== row || sourceColumn !== column) && (formula !== undefined || sourceFormula !== undefined)) {
+          delete source.formulaValue;
+          delete source.displayValue;
+        }
+        if (sourceFormulaChanged && sourceFormula !== undefined && metadata) {
+          source.formulaMetadata = { ...metadata, sourceFormula };
+        }
+      }
+      if (source.presentation?.kind === 'barcode' && source.presentation.source.kind === 'formula') {
+        source.presentation = {
+          ...source.presentation,
+          source: { ...source.presentation.source, formula: mapFormula(source.presentation.source.formula, sourceRow, sourceColumn, row, column) },
+        };
       }
       line.push(source);
     }
@@ -1685,20 +2106,27 @@ function executeMatrixTransform(
     startRow: target.startRow,
     startColumn: target.startColumn,
     values,
+    formulaProvenance: 'preserve',
   });
   return { operationId: context.operationId, mutationCount: 2, affectedRanges: [clearRange, target] };
 }
 
-function contiguousGroups(sheet: WorksheetModel, params: SubtotalParams): Array<{ start: number; end: number; key: string }> {
+function contiguousGroups(
+  sheet: WorksheetModel,
+  params: SubtotalParams,
+  resolver?: (sheet: WorksheetModel, row: number, column: number) => unknown,
+): Array<{ start: number; end: number; key: string }> {
   const range = normalizeRangeRef(params.range);
-  if (params.groupColumn < range.startColumn || params.groupColumn > range.endColumn) throw new Error('Subtotal group column is outside the range');
-  if (params.valueColumn < range.startColumn || params.valueColumn > range.endColumn) throw new Error('Subtotal value column is outside the range');
+  if (!Number.isSafeInteger(params.groupColumn) || params.groupColumn < range.startColumn || params.groupColumn > range.endColumn) throw new Error('Subtotal group column is outside the range');
+  if (!Number.isSafeInteger(params.valueColumn) || params.valueColumn < range.startColumn || params.valueColumn > range.endColumn) throw new Error('Subtotal value column is outside the range');
   const groups: Array<{ start: number; end: number; key: string }> = [];
   let start = range.startRow + 1;
   if (start > range.endRow) return groups;
-  let key = cellStorageText(sheet.cells.get(start, params.groupColumn));
+  let key = cellStorageText(sheet.cells.get(start, params.groupColumn), resolvedDataCellValue(sheet, start, params.groupColumn, resolver, 'Subtotal'));
   for (let row = start + 1; row <= range.endRow + 1; row += 1) {
-    const next = row <= range.endRow ? cellStorageText(sheet.cells.get(row, params.groupColumn)) : undefined;
+    const next = row <= range.endRow
+      ? cellStorageText(sheet.cells.get(row, params.groupColumn), resolvedDataCellValue(sheet, row, params.groupColumn, resolver, 'Subtotal'))
+      : undefined;
     if (next !== key) {
       groups.push({ start, end: row - 1, key });
       if (next !== undefined) {
@@ -1718,13 +2146,21 @@ export function registerDataToolCommands(runtime: CommandRuntime): void {
       const params = item.params;
       const range = params.range;
       const sheet = context.workbook.getSheet(params.sheetId);
-      applyRowPermutation(sheet, createRowPermutationPlan(range, params.sourceRows));
-      setAppliedSortState(sheet, params.sortState);
+      return applyRowsPermutedWithSortState(
+        context.workbook,
+        sheet,
+        range,
+        params.sourceRows,
+        params.affectedColumnEnd,
+        context.structuralReferenceOwners,
+        params.sortState,
+      );
     },
     metadata: {
       schema: { name: 'RowsPermuted', validate: isRowsPermutedMutation },
       permission: { capability: 'sheet.sort.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: rowsPermutedAffectedRanges, mode: 'exact' },
+      historyRebase: { kind: 'invalidate', reason: 'row permutations have no canonical history transform' },
       inverseIds: ['rows.permuted'],
     },
   });
@@ -1732,8 +2168,11 @@ export function registerDataToolCommands(runtime: CommandRuntime): void {
   runtime.registry.registerCommand<DataSortParams>({
     id: 'data.sort.rows',
     execute: (params, context) => {
+      if (!Array.isArray(params.criteria)) throw new Error('Sort criteria must be an array');
+      if (params.hasHeader !== undefined && typeof params.hasHeader !== 'boolean') throw new Error('Sort hasHeader must be a boolean');
       const requestedRange = selectedRange(params);
       const sheet = context.workbook.getSheet(params.sheetId);
+      assertRangeWithinSheet(sheet, requestedRange, 'Sort');
       const regionContext = params.dataRegionContext ?? resolveDataRegionContext(context.workbook, {
         selection: requestedRange,
         activeRow: requestedRange.startRow,
@@ -1749,9 +2188,17 @@ export function registerDataToolCommands(runtime: CommandRuntime): void {
       }
       const range = normalizeRangeRef(regionContext.range);
       const hasHeader = params.hasHeader ?? regionContext.header.kind === 'present';
+      if (regionContext.owner.kind === 'sheet-table' && hasHeader !== (regionContext.header.kind === 'present')) {
+        throw new Error('Sort header flag does not match Sheet Table metadata');
+      }
       assertNoDataRegionIntersection(sheet, range, 'Sort');
       if (params.criteria.length === 0) return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
-      const sourceRows = sortedSourceRows(sheet, { ...params, range, hasHeader }, context.resolveCellValue);
+      const sourceRows = sortedSourceRows(
+        sheet,
+        { ...params, range, hasHeader },
+        context.resolveCellValue,
+        context.workbook.collationContext,
+      );
       if (sourceRows.length <= 1 || sourceRows.every((row, offset) => row === range.startRow + (hasHeader ? 1 : 0) + offset)) {
         return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
       }
@@ -1759,8 +2206,20 @@ export function registerDataToolCommands(runtime: CommandRuntime): void {
       const bodyRange: RangeRef = { ...range, startRow };
       const inverseRows = new Array<number>(sourceRows.length);
       sourceRows.forEach((sourceRow, offset) => { inverseRows[sourceRow - startRow] = startRow + offset; });
-      const affectedColumnEnd = rowsPermutedAffectedColumnEnd(sheet, bodyRange);
+      const affectedColumnEnd = rowsPermutedAffectedColumnEnd(
+        context.workbook,
+        bodyRange,
+        context.structuralReferenceOwners,
+      );
       const affectedRanges = rowsPermutedAffectedRanges({ sheetId: params.sheetId, range: bodyRange, sourceRows, affectedColumnEnd });
+      const previousSortState = (sheet as WorksheetModel & { appliedSortState?: AppliedSortState }).appliedSortState;
+      const sortState: AppliedSortState = {
+        sheetId: params.sheetId,
+        range,
+        criteria: structuredClone(params.criteria),
+        hasHeader,
+        revision: (previousSortState?.revision ?? 0) + 1,
+      };
       context.applyMutation({
         id: 'rows.permuted',
         unitId: context.workbook.unitId,
@@ -1772,16 +2231,8 @@ export function registerDataToolCommands(runtime: CommandRuntime): void {
           range: bodyRange,
           sourceRows,
           affectedColumnEnd,
-          sortState: {
-            sheetId: params.sheetId,
-            range,
-            criteria: structuredClone(params.criteria),
-            hasHeader,
-            revision: ((sheet as WorksheetModel & { appliedSortState?: AppliedSortState }).appliedSortState?.revision ?? 0) + 1,
-          },
-          previousSortState: ((sheet as WorksheetModel & { appliedSortState?: AppliedSortState }).appliedSortState
-            ? structuredClone((sheet as WorksheetModel & { appliedSortState?: AppliedSortState }).appliedSortState)
-            : undefined),
+          sortState,
+          previousSortState: previousSortState ? structuredClone(previousSortState) : undefined,
         },
         affectedRanges,
         inverse: [{
@@ -1804,7 +2255,15 @@ export function registerDataToolCommands(runtime: CommandRuntime): void {
           },
           affectedRanges,
         }],
-        apply: () => applyRowPermutation(sheet, createRowPermutationPlan(bodyRange, sourceRows)),
+        apply: () => applyRowsPermutedWithSortState(
+            context.workbook,
+            sheet,
+            bodyRange,
+            sourceRows,
+            affectedColumnEnd,
+            context.structuralReferenceOwners,
+            sortState,
+          ),
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },
@@ -1823,48 +2282,41 @@ export function registerDataToolCommands(runtime: CommandRuntime): void {
   runtime.registry.registerCommand<TextToColumnsParams>({
     id: 'data.textToColumns',
     execute: (params, context) => {
-      if (!params.delimiter) throw new Error('Text to Columns delimiter is required');
-      const sheet = context.workbook.getSheet(params.sheetId);
-      const range = normalizeRangeRef(params.range);
-      const maxColumns = Math.max(2, params.maxColumns ?? 8);
-      if (range.startColumn + maxColumns > sheet.columnCount) throw new Error('Text to Columns exceeds worksheet bounds');
+      const { sheet, range, clearRange, maxColumns } = preflightTextToColumns(context.workbook, params);
       const values: CellData[][] = [];
       for (let row = range.startRow; row <= range.endRow; row++) {
         const cell = sheet.cells.get(row, range.startColumn);
-        const text = cell?.value == null ? '' : String(cell.value);
-        const parts = text.split(params.delimiter).slice(0, maxColumns);
+        const text = cellStorageText(cell, resolvedDataCellValue(sheet, row, range.startColumn, context.resolveCellValue, 'Text to Columns'));
+        const parts = text.split(params.delimiter, maxColumns + 1);
+        if (parts.length > maxColumns) throw new Error('Text to Columns output exceeds the configured column limit');
         values.push(parts.map((part) => ({ value: part })));
       }
-      clearRangeContents(context, {
-        sheetId: params.sheetId,
-        startRow: range.startRow,
-        endRow: range.endRow,
-        startColumn: range.startColumn,
-        endColumn: range.startColumn + maxColumns - 1,
-      });
+      clearRangeContents(context, clearRange);
       applyRangeValues(context, {
         sheetId: params.sheetId,
         startRow: range.startRow,
         startColumn: range.startColumn,
         values,
       });
-      return { operationId: context.operationId, mutationCount: 2, affectedRanges: [range] };
+      return { operationId: context.operationId, mutationCount: 2, affectedRanges: [clearRange] };
     },
   });
 
   runtime.registry.registerCommand<RemoveDuplicatesParams>({
     id: 'data.removeDuplicates',
     execute: (params, context) => {
+      preflightRemoveDuplicates(context.workbook, params);
       const sheet = context.workbook.getSheet(params.sheetId);
       const range = selectedRange(params);
-      if (params.columns.length === 0 || params.columns.some((column) => column < range.startColumn || column > range.endColumn)) {
-        throw new Error('Remove Duplicates columns must be inside the selected range');
-      }
       const startRow = params.hasHeader ? range.startRow + 1 : range.startRow;
       const seen = new Set<string>();
       const duplicateRows: number[] = [];
       for (let row = startRow; row <= range.endRow; row++) {
-        const key = params.columns.map((column) => cellStorageText(sheet.cells.get(row, column))).join('\u0001');
+        const key = JSON.stringify(params.columns.map((column) => {
+          const cell = sheet.cells.get(row, column);
+          const value = resolvedDataCellValue(sheet, row, column, context.resolveCellValue, 'Remove Duplicates');
+          return duplicateCellIdentity(cell, value);
+        }));
         if (seen.has(key)) { duplicateRows.push(row); continue; }
         seen.add(key);
       }
@@ -1892,11 +2344,20 @@ export function registerDataToolCommands(runtime: CommandRuntime): void {
   runtime.registry.registerCommand<SubtotalParams>({
     id: 'data.subtotal',
     execute: (params, context) => {
-      if (!['SUM', 'COUNT', 'AVERAGE'].includes(params.functionName)) throw new Error('Unsupported Subtotal function');
+      preflightSubtotal(context.workbook, params);
       const sheet = context.workbook.getSheet(params.sheetId);
       const range = selectedRange(params);
-      const groups = contiguousGroups(sheet, { ...params, range });
+      const groups = contiguousGroups(sheet, { ...params, range }, context.resolveCellValue);
       if (groups.length === 0) return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
+      const summaryRange: RangeRef = {
+        sheetId: params.sheetId,
+        startRow: range.endRow + 2,
+        endRow: range.endRow + 2 + groups.length,
+        startColumn: range.startColumn,
+        endColumn: range.endColumn,
+      };
+      assertRangeWithinSheet(sheet, summaryRange, 'Subtotal output');
+      assertBoundedMutationArea(summaryRange, 'Subtotal output');
       let mutationCount = 0;
       const targetRow = range.endRow + 2;
       const summaryEnd = targetRow + groups.length;
@@ -1921,16 +2382,23 @@ export function registerDataToolCommands(runtime: CommandRuntime): void {
       values.push(header);
       for (const group of groups) {
         const rowValues: CellData[] = [];
-        const numbers: number[] = [];
+        let sum = 0;
+        let count = 0;
         for (let row = group.start; row <= group.end; row += 1) {
-          const numeric = numericOf(sheet.cells.get(row, params.valueColumn));
-          if (numeric !== undefined) numbers.push(numeric);
+          const numeric = numericOf(
+            sheet.cells.get(row, params.valueColumn),
+            resolvedDataCellValue(sheet, row, params.valueColumn, context.resolveCellValue, 'Subtotal'),
+          );
+          if (numeric !== undefined) {
+            sum += numeric;
+            count += 1;
+          }
         }
         const cachedValue = params.functionName === 'SUM'
-          ? numbers.reduce((sum, value) => sum + value, 0)
+          ? sum
           : params.functionName === 'COUNT'
-            ? numbers.length
-            : numbers.length > 0 ? numbers.reduce((sum, value) => sum + value, 0) / numbers.length : null;
+            ? count
+            : count > 0 ? sum / count : null;
         for (let column = range.startColumn; column <= range.endColumn; column += 1) {
           if (column === params.groupColumn) rowValues.push({ value: group.key, style: { bold: true } });
           else if (column === params.valueColumn) rowValues.push({ value: cachedValue, formula: subtotalFormula(params.functionName, params.valueColumn, group.start, group.end), style: { bold: true } });
@@ -1946,26 +2414,29 @@ export function registerDataToolCommands(runtime: CommandRuntime): void {
       });
       mutationCount += 1;
       const affectedRanges: RangeRef[] = [structuredClone(range), { sheetId: params.sheetId, startRow: targetRow, endRow: targetRow + groups.length, startColumn: range.startColumn, endColumn: range.endColumn }];
+      const sheetOutline = sheet.outline ? structuredClone(sheet.outline) : { groups: [] };
+      const nextOutline = structuredClone(sheetOutline);
       for (const group of groups) {
-        const sheetOutline = sheet.outline ? structuredClone(sheet.outline) : { groups: [] };
-        const nextOutline = structuredClone(sheetOutline);
         nextOutline.groups.push({ id: `subtotal-${context.operationId}-${group.start}-${group.end}`, axis: 'row', start: group.start, end: group.end, level: 1, collapsed: false });
-        applyOutline(context, params.sheetId, nextOutline, sheetOutline, [{ sheetId: params.sheetId, startRow: group.start, endRow: group.end, startColumn: range.startColumn, endColumn: range.endColumn }]);
-        mutationCount += 1;
       }
+      applyOutline(context, params.sheetId, nextOutline, sheetOutline,
+        groups.map((group) => ({ sheetId: params.sheetId, startRow: group.start, endRow: group.end, startColumn: range.startColumn, endColumn: range.endColumn })));
+      mutationCount += 1;
       return { operationId: context.operationId, mutationCount, affectedRanges };
     },
   });
 
-  runtime.registry.registerCommand<{ sheetId: string; row: number; column: number; delimiter: string; maxColumns?: number }>({
+  runtime.registry.registerCommand<SplitColumnParams>({
     id: 'data.splitColumn',
     execute: (params, context) => {
+      preflightSplitColumn(context.workbook, params);
       const sheet = context.workbook.getSheet(params.sheetId);
+      const requestedMaxColumns = params.maxColumns ?? 4;
       const cell = sheet.cells.get(params.row, params.column);
-      const text = cell?.value == null ? '' : String(cell.value);
-      const maxColumns = Math.max(2, params.maxColumns ?? 4);
-      if (params.column + maxColumns > sheet.columnCount) throw new Error('Split Column exceeds worksheet bounds');
-      const parts = text.split(params.delimiter).slice(0, maxColumns);
+      const text = cellStorageText(cell, resolvedDataCellValue(sheet, params.row, params.column, context.resolveCellValue, 'Split Column'));
+      const maxColumns = Math.max(2, requestedMaxColumns);
+      const parts = text.split(params.delimiter, maxColumns + 1);
+      if (parts.length > maxColumns) throw new Error('Split Column output exceeds the configured column limit');
       if (parts.length <= 1 && parts[0] === text) return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
       const values = [parts.map((part) => ({ value: coerceDataText(part, cell), style: cell?.style ? structuredClone(cell.style) : undefined }))];
       const range: RangeRef = { sheetId: params.sheetId, startRow: params.row, endRow: params.row, startColumn: params.column, endColumn: params.column + maxColumns - 1 };

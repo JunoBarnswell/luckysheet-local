@@ -77,6 +77,7 @@ import {
   isPivotError,
   pivotSourceIdentity,
 } from '@react-sheets/core-model';
+import { MutationRecoveryRequiredError } from '@react-sheets/command-runtime';
 import type { HistoryEntry, MutationInfo, CommandDescriptor, CommandResult } from '@react-sheets/command-runtime';
 import type {
   AuthTokenProvider,
@@ -86,6 +87,7 @@ import type {
   ServerQueryRequest,
   ShareTokenProvider,
 } from '@react-sheets/protocol';
+import { requiresServerStructuralPlanner, requiresServerStructuralPlannerCommand } from '@react-sheets/protocol';
 import type { WorkbookApiClient } from '@react-sheets/protocol';
 import type { NativeDocumentArtifact } from '@react-sheets/exchange-excel-ooxml';
 import { buildPivotGridProjection, clearPivotResultCache, findPivotProjectionCellAt, getLastValidPivotResult, getPivotFieldCatalog as buildPivotFieldCatalog, getPivotRevisionKey, normalizePivotDefinitionFromCatalog, pivotResultMatchesRevision, preparePivotTaskDescriptor, preparePivotTaskInputAsync } from './features/pivot/engine';
@@ -128,6 +130,7 @@ import {
   type CellInputSourceKind,
   type FormatPainterStylePattern,
   isCellEntryError,
+  preflightDataToolCommand,
 } from '@react-sheets/sheet-features';
 import { compareWorkbookValues, isSpillChild, type CanonicalExcelDateParts, type ExcelDateSystem, type RecalculationMode } from '@react-sheets/formula-engine';
 import {
@@ -215,8 +218,8 @@ import {
 } from './features/pivot-controls';
 import {
   applyCellPatch,
-  canonicalDataSourceManifestIdentity,
   dataSourceCellPatchIdentity,
+  sameCanonicalDataSourceManifest,
   prepareDataRegionMaterialization,
   computeColumnarBlockChecksum,
   createWorkbookCellResolver,
@@ -249,7 +252,7 @@ import {
   type PersistenceSnapshotMeta,
 } from './features/persistence';
 import type { FormulaAuditProjection } from './features/formula-audit';
-import { exchangeImportDocument, exchangeExportDocument, exchangeSaveAsDocument, exchangeSaveDocument, summarizeCompatibilityReport } from './features/native-document';
+import { assertNativeArtifactAllowsStructuralMutation, exchangeImportDocument, exchangeExportDocument, exchangeSaveAsDocument, exchangeSaveDocument, summarizeCompatibilityReport } from './features/native-document';
 import {
   buildPrintSnapshot,
   getPrintDocument,
@@ -867,6 +870,7 @@ export class WorkbookSession {
   /** Compatibility inspection surface for existing projection-cache tests; the owner is ProjectionRuntime. */
   private get sheetProjectionCache(): ReadonlyMap<string, unknown> { return this.projection.cache; }
   private persistenceMetaDirty = true;
+  private readonly handledMutationRecoveryErrors = new WeakSet<MutationRecoveryRequiredError>();
 
   constructor({ unitId, api, recoverySubject, workspacePersistence, assetStore, resolution, onReady, initialPhase = 'ready', authTokenProvider, shareTokenProvider, dateSystem, canonicalReferenceDate, collaborationUrl, nativeDocumentExecution = 'worker', pivotTaskPort, pivotExecution = 'inline-test' }: WorkbookSessionOptions = {}) {
     const sessionUnitId = resolution?.unitId ?? unitId;
@@ -889,6 +893,10 @@ export class WorkbookSession {
     this.cellResolver = createWorkbookCellResolver(this.runtime.dataContent);
     this.permission = new PermissionService();
     this.runtime.commands.setMutationGuard((mutation, source) => {
+      if (requiresServerStructuralPlanner(mutation.id)) {
+        if (source !== 'remote') this.assertServerStructuralPlannerReady();
+        assertNativeArtifactAllowsStructuralMutation(this.nativeArtifact);
+      }
       if (source !== 'remote' && !this.runtime.localOnly && !this.runtime.remoteConnected) throw new Error('COLLABORATION_OFFLINE: 连接尚未就绪，编辑草稿已保留');
       this.permission.syncFromWorkbook(this.runtime.model);
       const result = this.permission.checkMutation(mutation);
@@ -1101,8 +1109,7 @@ export class WorkbookSession {
       this.refresh();
     };
     this.runtime.handlers.onCalculationApplied = (addresses) => {
-      const sheetIds = new Set(addresses.map((address) => address.sheetId));
-      this.projection.invalidateFormulaResultProjections(sheetIds);
+      this.projection.invalidateFormulaResultProjections(addresses);
       this.calculationProjectionInvalidated = true;
     };
     this.runtime.handlers.onPhaseChange = (phase) => {
@@ -1560,7 +1567,8 @@ export class WorkbookSession {
       );
     }
     try {
-      const resolved = this.resolveCommandContext(descriptor.commandId, descriptor.params);
+      const resolved = this.resolveAuthorizedCommandParams(descriptor.commandId, descriptor.params);
+      preflightDataToolCommand(this.runtime.model, descriptor.commandId, resolved);
       const regions = this.dataRegionsRequiredForCommand(descriptor.commandId, resolved);
       if (regions.length > 0 && descriptor.commandId === 'sheet.autoFilter.sort') {
         return this.dispatchDataRegionAutoFilterSort(resolved, regions);
@@ -1637,14 +1645,14 @@ export class WorkbookSession {
 
   private assertDataSourceOperationCurrent(
     sourceId: string,
-    manifestIdentity: string,
+    manifestAtStart: DataSourceManifest,
     query: object,
     region: SheetDataRegion,
   ): void {
     const current = this.runtime.model.getDataSource(sourceId);
     const currentRegion = this.runtime.model.getSheet(region.range.sheetId).dataRegions.find((candidate) => candidate.id === region.id);
     if (this.runtime.dataContent.get(sourceId) !== query
-      || JSON.stringify(canonicalDataSourceManifestIdentity(current)) !== manifestIdentity
+      || !sameCanonicalDataSourceManifest(current, manifestAtStart)
       || !currentRegion
       || currentRegion.sourceId !== region.sourceId
       || currentRegion.revision !== region.revision
@@ -1673,7 +1681,7 @@ export class WorkbookSession {
         const manifest = this.runtime.model.getDataSource(region.sourceId);
         const query = this.runtime.dataContent.get(manifest.id);
         if (!query) throw new Error(`Data source ${manifest.id} is unavailable; cannot filter block-backed data`);
-        return { region: structuredClone(region), manifest, query, identity: JSON.stringify(canonicalDataSourceManifestIdentity(manifest)) };
+        return { region: structuredClone(region), manifest, query };
       });
       const sourceLoads = [...new Map(snapshots.map((snapshot) => [snapshot.manifest.id, snapshot])).values()];
       await Promise.all(sourceLoads.map(async ({ manifest, query }) => {
@@ -1683,7 +1691,7 @@ export class WorkbookSession {
         }
       }));
       for (const snapshot of snapshots) {
-        this.assertDataSourceOperationCurrent(snapshot.manifest.id, snapshot.identity, snapshot.query, snapshot.region);
+        this.assertDataSourceOperationCurrent(snapshot.manifest.id, snapshot.manifest, snapshot.query, snapshot.region);
       }
       const result = this.runCommand(commandId, params);
       return { status: 'committed', result };
@@ -1829,7 +1837,9 @@ export class WorkbookSession {
       throw new Error(`Sort range must cover the complete data region ${region.id}`);
     }
 
-    const manifest = structuredClone(this.runtime.model.getDataSource(region.sourceId));
+    // getDataSource already returns an isolated clone. Cloning it again doubles
+    // the rowOrder allocation for large, virtually-sorted sources.
+    const manifest = this.runtime.model.getDataSource(region.sourceId);
     let criteria: Array<{ column: number; ascending: boolean }>;
     if (commandId === 'data.sort.quick') {
       if (!Number.isSafeInteger(input.sortColumn)
@@ -1856,7 +1866,10 @@ export class WorkbookSession {
     if (criteria.length === 0) {
       return null;
     }
-    const hasHeader = input.hasHeader !== false;
+    if (input.hasHeader !== undefined && typeof input.hasHeader !== 'boolean') {
+      throw new Error('Block-backed sort hasHeader must be a boolean');
+    }
+    const hasHeader = input.hasHeader ?? true;
     if (!hasHeader || region.headerRow !== region.range.startRow) {
       throw new Error(`Block-backed sort requires a header row at the start of data region ${region.id}`);
     }
@@ -1867,14 +1880,13 @@ export class WorkbookSession {
     if (dataSourceCellPatchIdentity(canonical).length > 0) {
       throw new Error(`Data source ${manifest.id} cannot be virtually sorted while value or formula CellPatch overlays exist`);
     }
-    const manifestIdentity = JSON.stringify(canonicalDataSourceManifestIdentity(manifest));
     const loaded = await query.ensureAllBlocksLoaded();
     if (loaded.availability !== 'ready') {
       throw new Error(loaded.error ?? `Data source ${manifest.id} could not be fully loaded for sorting`);
     }
-    this.assertDataSourceOperationCurrent(manifest.id, manifestIdentity, query, region);
-    const currentOrder = manifest.rowOrder ?? Array.from({ length: manifest.rowCount }, (_unused, index) => index);
-    if (currentOrder.length !== manifest.rowCount) {
+    this.assertDataSourceOperationCurrent(manifest.id, manifest, query, region);
+    const currentOrder = manifest.rowOrder;
+    if (currentOrder !== undefined && currentOrder.length !== manifest.rowCount) {
       throw new Error(`Data source ${manifest.id} rowOrder does not match rowCount`);
     }
     const width = manifest.fields.length;
@@ -1887,10 +1899,7 @@ export class WorkbookSession {
       criterionColumns.add(criterion.column);
     }
 
-    const previousPosition = new Uint32Array(manifest.rowCount);
-    for (let logicalRow = 0; logicalRow < currentOrder.length; logicalRow += 1) previousPosition[currentOrder[logicalRow]!] = logicalRow;
-    const sortedOrder = [...currentOrder];
-    sortedOrder.sort((leftPhysicalRow, rightPhysicalRow) => {
+    const compareRows = (leftPhysicalRow: number, rightPhysicalRow: number): number => {
       const leftRow = query.getLoadedPhysicalRow(leftPhysicalRow);
       const rightRow = query.getLoadedPhysicalRow(rightPhysicalRow);
       if (!leftRow || !rightRow) throw new Error(`Data source ${manifest.id} rowOrder references a missing row`);
@@ -1899,20 +1908,35 @@ export class WorkbookSession {
         const comparison = compareWorkbookValues(leftRow[column] ?? null, rightRow[column] ?? null);
         if (comparison !== 0) return criterion.ascending ? comparison : -comparison;
       }
-      return previousPosition[leftPhysicalRow]! - previousPosition[rightPhysicalRow]!;
-    });
+      return 0;
+    };
+    // ES2022 Array#sort is stable, so equal keys retain the current logical
+    // order without an additional rowCount-sized position table. An implicit
+    // identity order is generated only when rows actually need to move.
+    let orderChanged = false;
+    const physicalRowAt = (logicalRow: number): number => currentOrder?.[logicalRow] ?? logicalRow;
+    for (let logicalRow = 1; logicalRow < manifest.rowCount; logicalRow += 1) {
+      if (compareRows(physicalRowAt(logicalRow - 1), physicalRowAt(logicalRow)) > 0) {
+        orderChanged = true;
+        break;
+      }
+    }
+    let sortedOrder: number[] | undefined;
+    if (orderChanged) {
+      sortedOrder = currentOrder ?? Array.from({ length: manifest.rowCount }, (_unused, index) => index);
+      sortedOrder.sort(compareRows);
+    }
     const sortState = {
       criteria: criteria.map((criterion) => ({
         fieldId: manifest.fields[criterion.column - region.range.startColumn]!.id,
         ascending: criterion.ascending,
       })),
     };
-    const orderChanged = sortedOrder.some((physicalRow, index) => physicalRow !== currentOrder[index]);
     const stateChanged = JSON.stringify(sortState) !== JSON.stringify(manifest.sortState);
     if (!orderChanged && !stateChanged) return null;
     return {
       ...manifest,
-      rowOrder: sortedOrder,
+      ...(sortedOrder === undefined ? {} : { rowOrder: sortedOrder }),
       sortState,
     };
   }
@@ -1924,7 +1948,8 @@ export class WorkbookSession {
    */
   private async executeCommandAfterMaterialization(commandId: string, params: unknown): Promise<CommandResult> {
     if (this.phase !== 'ready') throw new Error('Workbook is not ready');
-    const resolved = this.resolveCommandContext(commandId, params);
+    const resolved = this.resolveAuthorizedCommandParams(commandId, params);
+    preflightDataToolCommand(this.runtime.model, commandId, resolved);
     const regions = this.dataRegionsRequiredForCommand(commandId, resolved);
     if (regions.length > 0) await this.materializeDataRegions(regions);
     return this.runCommand(commandId, resolved);
@@ -1971,15 +1996,27 @@ export class WorkbookSession {
     const sheetId = typeof input.sheetId === 'string' ? input.sheetId : this.activeSheetId;
     const sheet = this.runtime.model.getSheet(sheetId);
     const ranges: RangeRef[] = [];
-    const appendRange = (candidate: unknown) => {
+    const appendRange = (candidate: unknown, bindToCommandSheet = false) => {
       if (!candidate || typeof candidate !== 'object') return;
       const range = candidate as RangeRef;
       if (typeof range.sheetId === 'string' && Number.isInteger(range.startRow) && Number.isInteger(range.endRow)
-        && Number.isInteger(range.startColumn) && Number.isInteger(range.endColumn)) ranges.push(range);
+        && Number.isInteger(range.startColumn) && Number.isInteger(range.endColumn)) {
+        ranges.push(bindToCommandSheet ? { ...range, sheetId } : range);
+      }
     };
-    appendRange(input.range);
-    appendRange(input.sourceRange);
-    appendRange(input.targetRange);
+    appendRange(input.range, true);
+    appendRange(input.sourceRange, true);
+    appendRange(input.targetRange, true);
+    if (commandId === 'data.splitColumn'
+      && Number.isSafeInteger(input.row) && Number.isSafeInteger(input.column)) {
+      appendRange({
+        sheetId,
+        startRow: input.row,
+        endRow: input.row,
+        startColumn: input.column,
+        endColumn: input.column,
+      });
+    }
     if (input.targetOrigin && typeof input.targetOrigin === 'object' && !Array.isArray(input.targetOrigin)) {
       const origin = input.targetOrigin as { row?: unknown; column?: unknown };
       const clipboard = input.clipboard && typeof input.clipboard === 'object' && !Array.isArray(input.clipboard)
@@ -2008,10 +2045,10 @@ export class WorkbookSession {
         }
       }
     }
-    if (Array.isArray(input.ranges)) input.ranges.forEach(appendRange);
-    if (input.filter && typeof input.filter === 'object') appendRange((input.filter as { range?: unknown }).range);
+    if (Array.isArray(input.ranges)) input.ranges.forEach((range) => appendRange(range, true));
+    if (input.filter && typeof input.filter === 'object') appendRange((input.filter as { range?: unknown }).range, true);
     if (input.rule && typeof input.rule === 'object' && Array.isArray((input.rule as { ranges?: unknown[] }).ranges)) {
-      (input.rule as { ranges: unknown[] }).ranges.forEach(appendRange);
+      (input.rule as { ranges: unknown[] }).ranges.forEach((range) => appendRange(range, true));
     }
     if (ranges.length === 0) ranges.push(this.getCurrentRegion());
     return sheet.dataRegions.filter((region) => ranges.some((range) => rangesIntersect(range, region.range)));
@@ -2206,13 +2243,25 @@ export class WorkbookSession {
     this.cellEditorRegistry.register(behavior);
   }
 
-  runCommand(commandId: string, params?: unknown): CommandResult {
-    const resolvedParams = this.resolveCommandContext(commandId, params);
+  private resolveAuthorizedCommandParams(commandId: string, params?: unknown): unknown {
     if (!this.runtime.commands.registry.hasCommand(commandId)) {
       throw new Error(`Unknown command: ${commandId}`);
     }
+    if (requiresServerStructuralPlannerCommand(commandId)) this.assertServerStructuralPlannerReady();
+    const resolvedParams = this.resolveCommandContext(commandId, params);
     this.assertPermission(commandId, resolvedParams);
-    const result = this.runtime.commands.execute(commandId, resolvedParams);
+    return resolvedParams;
+  }
+
+  runCommand(commandId: string, params?: unknown): CommandResult {
+    const resolvedParams = this.resolveAuthorizedCommandParams(commandId, params);
+    let result: CommandResult;
+    try {
+      result = this.runtime.commands.execute(commandId, resolvedParams);
+    } catch (error) {
+      this.handleMutationRecovery(error);
+      throw error;
+    }
     if (commandId === 'pivot.refresh') {
       const refreshParams = resolvedParams as { pivotId?: string };
       if (refreshParams.pivotId) this.refreshPivotsForTrigger({ kind: 'explicit', pivotId: refreshParams.pivotId });
@@ -2289,6 +2338,8 @@ export class WorkbookSession {
 
   canExecute(commandId: string, params?: unknown): boolean {
     if (!this.runtime.commands.registry.hasCommand(commandId)) return false;
+    if (this.runtime.commands.isMutationRecoveryRequired) return false;
+    if (requiresServerStructuralPlannerCommand(commandId) && !this.isServerStructuralPlannerAvailable()) return false;
     if (!this.runtime.localOnly && !this.runtime.remoteConnected) return false;
     const resolvedParams = this.resolveCommandContext(commandId, params);
     return canExecuteCommand(
@@ -2553,6 +2604,14 @@ export class WorkbookSession {
     });
   }
 
+  getSortHeaderOptions(context: DataRegionContext): { hasHeader: boolean; fixed: boolean } {
+    const fixed = context.owner.kind === 'sheet-table';
+    return {
+      hasHeader: fixed ? context.header.kind === 'present' : this.inferSortHeader(normalizeRangeRef(context.range)),
+      fixed,
+    };
+  }
+
   async storeDataBlock(ref: DataBlockRef, bytes: ArrayBuffer): Promise<void> {
     await this.runtime.dataBlocks.put(ref, bytes);
     this.notify(`Stored data block ${ref.id}`);
@@ -2669,7 +2728,12 @@ export class WorkbookSession {
         this.notify('Undo is no longer allowed for the protected selection');
         break;
       }
-      if (!this.runtime.commands.undo()) break;
+      try {
+        if (!this.runtime.commands.undo()) break;
+      } catch (error) {
+        if (!this.handleMutationRecovery(error)) throw error;
+        return;
+      }
     }
     this.ensureActiveSheetSession();
     this.reconcileDrawingSessionState();
@@ -2754,6 +2818,16 @@ export class WorkbookSession {
     return this.nativeArtifact?.fileName;
   }
 
+  private isServerStructuralPlannerAvailable(): boolean {
+    return !this.runtime.localOnly && this.runtime.remoteConnected;
+  }
+
+  private assertServerStructuralPlannerReady(): void {
+    if (!this.isServerStructuralPlannerAvailable()) {
+      throw new Error('STRUCTURAL_PLANNER_OFFLINE: 此结构操作需要连接服务端规划器，当前工作簿未修改');
+    }
+  }
+
   /** Commit edits before exporting without rewriting the original native format. */
   async flushPendingChanges(): Promise<void> {
     if (!this.canExecute('document.export')) throw new Error('You do not have permission to export the document');
@@ -2829,18 +2903,47 @@ export class WorkbookSession {
     return mutations.every((mutation) => this.permission.checkMutation(mutation).allowed);
   }
 
+  private handleMutationRecovery(error: unknown): boolean {
+    if (!(error instanceof MutationRecoveryRequiredError)) return false;
+    if (this.handledMutationRecoveryErrors.has(error)) return true;
+    this.handledMutationRecoveryErrors.add(error);
+    if (this.runtime.collab) {
+      this.runtime.collab.requestResynchronization();
+      this.notify(`${error.message}；正在重新同步工作簿。`);
+    } else {
+      this.notify(`${error.message}；请重新加载工作簿以恢复。`);
+    }
+    return true;
+  }
+
   undo(): void {
     const entry = this.runtime.commands.getUndoEntries().at(-1);
+    const hasStructuralMutation = entry?.forwardMutations.some((mutation) => (
+      mutation.id === 'rows.inserted' || mutation.id === 'rows.deleted'
+      || mutation.id === 'columns.inserted' || mutation.id === 'columns.deleted'
+      || mutation.id === 'cells.inserted' || mutation.id === 'cells.deleted'
+    )) ?? false;
+    if (entry?.committedRevision !== undefined
+      && this.runtime.collaboration
+      && hasStructuralMutation
+      && entry.committedRevision !== this.runtime.collaboration.getRevision()) {
+      this.notify('Structural Undo is no longer safe after a later workbook revision');
+      return;
+    }
     if (entry && !this.canReplayHistory(entry.inversePlan)) {
       this.notify('Undo is no longer allowed for the protected selection');
       return;
     }
-    if (this.runtime.commands.undo()) {
-      this.ensureActiveSheetSession();
-      this.reconcileDrawingSessionState();
-      this.syncDraftFromPrimary();
-      this.notify('Undo applied');
-      this.refresh();
+    try {
+      if (this.runtime.commands.undo()) {
+        this.ensureActiveSheetSession();
+        this.reconcileDrawingSessionState();
+        this.syncDraftFromPrimary();
+        this.notify('Undo applied');
+        this.refresh();
+      }
+    } catch (error) {
+      if (!this.handleMutationRecovery(error)) throw error;
     }
   }
 
@@ -2850,12 +2953,16 @@ export class WorkbookSession {
       this.notify('Redo is no longer allowed for the protected selection');
       return;
     }
-    if (this.runtime.commands.redo()) {
-      this.ensureActiveSheetSession();
-      this.reconcileDrawingSessionState();
-      this.syncDraftFromPrimary();
-      this.notify('Redo applied');
-      this.refresh();
+    try {
+      if (this.runtime.commands.redo()) {
+        this.ensureActiveSheetSession();
+        this.reconcileDrawingSessionState();
+        this.syncDraftFromPrimary();
+        this.notify('Redo applied');
+        this.refresh();
+      }
+    } catch (error) {
+      if (!this.handleMutationRecovery(error)) throw error;
     }
   }
 
@@ -3150,7 +3257,7 @@ export class WorkbookSession {
     }
 
     const rule = findValidationRule(canonicalSheet, canonicalAddress.row, canonicalAddress.column);
-    const listValues = rule ? validationList(rule, canonicalSheet) : undefined;
+    const listValues = rule ? validationList(rule, canonicalSheet, (sheetId) => this.runtime.model.getSheet(sheetId)) : undefined;
     const editorContext: CellEditorContext = {
       target,
       source: request.source,
@@ -3258,7 +3365,7 @@ export class WorkbookSession {
       }
 
       const rule = findValidationRule(currentSheet, request.target.canonical.row, request.target.canonical.column);
-      const listValues = rule ? validationList(rule, currentSheet) : undefined;
+      const listValues = rule ? validationList(rule, currentSheet, (sheetId) => this.runtime.model.getSheet(sheetId)) : undefined;
       const behavior = this.cellEditorRegistry.get(request.editorKind);
       const behaviorContext: CellEditorContext = {
         target: request.target,
@@ -3529,7 +3636,7 @@ export class WorkbookSession {
     const sheet = this.runtime.model.getSheet(session.target.canonical.sheetId);
     const cell = this.readResolvedCell(sheet, session.target.canonical.row, session.target.canonical.column);
     const rule = findValidationRule(sheet, session.target.canonical.row, session.target.canonical.column);
-    const validationValues = rule ? validationList(rule, sheet) : undefined;
+    const validationValues = rule ? validationList(rule, sheet, (sheetId) => this.runtime.model.getSheet(sheetId)) : undefined;
     const context: CellEditorContext = {
       target: session.target,
       source: session.source,
@@ -3562,7 +3669,7 @@ export class WorkbookSession {
     return {
       key: `${sheet.id}:${session.target.display.column}`,
       revision: sheet.cells.revision,
-      entries: sheet.cells.entriesInColumn(session.target.display.column),
+      entries: sheet.cells.entriesInColumnWithoutHydration(session.target.display.column),
       excludeRow: session.target.display.row,
       cultureId: this.runtime.model.collationContext.cultureId,
     };
@@ -3809,6 +3916,14 @@ export class WorkbookSession {
       this.dispatch({ commandId: 'sheet.merge.unmerge', params: { sheetId: this.activeSheetId, range } });
       return;
     }
+    const commandId = operation === 'center' ? 'sheet.merge.center' : operation === 'across' ? 'sheet.merge.across' : 'sheet.merge.cells';
+    const commandParams = { sheetId: this.activeSheetId, range, confirmDataLoss: true };
+    try {
+      this.resolveAuthorizedCommandParams(commandId, commandParams);
+    } catch (error) {
+      this.notify(error instanceof Error ? error.message : 'Merge action was rejected');
+      return;
+    }
     const regions = this.dataRegionsIntersectingRanges(this.activeSheetId, [range]);
     if (regions.length > 0) {
       void this.materializeDataRegions(regions)
@@ -3832,7 +3947,7 @@ export class WorkbookSession {
       this.emit();
       return;
     }
-    this.dispatch({ commandId: operation === 'center' ? 'sheet.merge.center' : operation === 'across' ? 'sheet.merge.across' : 'sheet.merge.cells', params: { sheetId: this.activeSheetId, range, confirmDataLoss: true } });
+    this.dispatch({ commandId, params: commandParams });
   }
 
   confirmMergeAction(): void {
@@ -4225,7 +4340,7 @@ export class WorkbookSession {
     table.fields.forEach((field, column) => setCell(0, column, field.name, { bold: true, background: '#eaf2f8', verticalAlignment: 'middle' }));
     if (kind === 'report-sheet') setCell(0, 0, '报表', { bold: true, fontSizePx: 24, textColor: '#1f2937' });
     const sheet: SheetSnapshot = {
-      kind, id, name, rowCount: 1000, columnCount: Math.max(26, table.fields.length), cells, merges: [], pane: { kind: 'none' }, pivots: [], sparklines: [], drawings: [], drawingPayloads: {}, review: { notesByCell: {}, notesById: {}, threadIdsByCell: {}, threadsById: {} },
+      kind, id, name, rowCount: 1000, columnCount: Math.max(26, table.fields.length), cells, merges: [], pane: { kind: 'none' }, pivots: [], sparklines: [], drawings: [], drawingPayloads: {}, hyperlinks: [], review: { notesByCell: {}, notesById: {}, threadIdsByCell: {}, threadsById: {} },
       defaultRowHeightPx: 20, defaultColumnWidthPx: 80,
       ...(kind === 'table-sheet' ? { tableSheet: { viewId: table.id, columns: table.fields.map((field) => ({ fieldId: field.id, caption: field.name, type: field.type })), grouping: [] } } : {}),
       ...(kind === 'gantt-sheet' ? { ganttSheet: { viewId: table.id, fieldMap: { id: table.fields[0]!.id, title: table.fields[1]!.id, start: table.fields[2]!.id, end: table.fields[3]!.id, progress: table.fields[4]!.id, parentId: table.fields[5]?.id, dependencies: table.fields[6]?.id }, calendar: { workingDays: [1, 2, 3, 4, 5], dayStartHour: 9, dayEndHour: 18 }, timeline: { unit: 'week' }, dependencyStyle: { color: '#64748b', width: 1 } } } : {}),
@@ -5381,6 +5496,7 @@ export class WorkbookSession {
 
   async drillDownPivot(pivotId: string, label: string, paths: readonly PivotSourceRowPath[]): Promise<void> {
     if (paths.length === 0) return;
+    this.assertServerStructuralPlannerReady();
     const workbook = this.runtime.model;
     const owner = workbook.getSheets().find((sheet) => sheet.pivots.some((entry) => entry.id === pivotId));
     const pivot = owner?.pivots.find((entry) => entry.id === pivotId);
@@ -6165,7 +6281,7 @@ export class WorkbookSession {
   async splitByDelimiter(delimiter: string): Promise<void> {
     const sel = this.selectionService.getState();
     const sheet = this.getSelectedSheet();
-    await this.executeCommandAfterMaterialization('data.splitColumn', { sheetId: this.activeSheetId, row: sel.activeCell.row, column: sel.activeCell.column, delimiter, maxColumns: Math.min(sheet.columnCount - sel.activeCell.column - 1, 8) });
+    await this.executeCommandAfterMaterialization('data.splitColumn', { sheetId: this.activeSheetId, row: sel.activeCell.row, column: sel.activeCell.column, delimiter, maxColumns: Math.min(MAX_SHEET_COLUMN_COUNT - sel.activeCell.column, 8) });
   }
 
   copy(): Promise<ClipboardExecutionOutcome> {
@@ -7354,7 +7470,8 @@ export class WorkbookSession {
 
   sortRange(criteria: Array<{ colIdx: number; ascending: boolean }>, hasHeader?: boolean): void {
     if (criteria.length === 0) return;
-    const range = normalizeRangeRef(this.getCurrentRegion());
+    const context = this.getDataRegionContext();
+    const range = normalizeRangeRef(context.range);
     if (range.endRow <= range.startRow) {
       this.notify('Select a data region with at least one data row before sorting');
       return;
@@ -7367,12 +7484,21 @@ export class WorkbookSession {
       }
       return { column, ascending: criterion.ascending };
     });
-    const detectedHeader = this.inferSortHeader(range);
+    const headerOptions = {
+      hasHeader: context.owner.kind === 'sheet-table'
+        ? context.header.kind === 'present'
+        : this.inferSortHeader(range),
+      fixed: context.owner.kind === 'sheet-table',
+    };
+    const resolvedHeader = hasHeader ?? headerOptions.hasHeader;
+    if (headerOptions.fixed && resolvedHeader !== headerOptions.hasHeader) {
+      throw new Error('Sort header flag does not match Sheet Table metadata');
+    }
     this.dispatch({ commandId: 'sheet.sort.multi', params: {
       sheetId: this.activeSheetId,
       range,
       criteria: normalizedCriteria,
-      hasHeader: hasHeader ?? detectedHeader,
+      hasHeader: resolvedHeader,
     } });
   }
 
@@ -7756,9 +7882,14 @@ export class WorkbookSession {
   }
 
   async createDataSourceFromSelection(): Promise<void> {
-    const sheet = this.runtime.model.getSheet(this.activeSheetId);
+    const sheetId = this.activeSheetId;
+    const sheet = this.runtime.model.getSheet(sheetId);
     const primaryRange = this.getPrimaryRange();
-    const sourceRange = primaryRange.startRow !== primaryRange.endRow || primaryRange.startColumn !== primaryRange.endColumn ? primaryRange : usedRangeOfSheet(sheet);
+    const sourceRange = normalizeRangeRef({
+      ...(primaryRange.startRow !== primaryRange.endRow || primaryRange.startColumn !== primaryRange.endColumn ? primaryRange : usedRangeOfSheet(sheet)),
+      sheetId,
+    });
+    this.resolveAuthorizedCommandParams('dataSource.add', { sheetId, source: { sourceRange } });
     await this.materializeDataRegions(this.dataRegionsIntersectingRanges(sourceRange.sheetId, [sourceRange]));
     const sourceId = nextId('data-source');
     const sheetSnapshot = this.runtime.model.snapshot().sheets.find((candidate) => candidate.id === sheet.id);

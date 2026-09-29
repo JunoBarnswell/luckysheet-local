@@ -8,6 +8,7 @@ import com.xc.luckysheet.server.contract.AutoFilterOwnershipValidator;
 import com.xc.luckysheet.server.contract.DataRegionContextValidator;
 import com.xc.luckysheet.server.contract.OperationMutation;
 import com.xc.luckysheet.server.contract.RangeRef;
+import com.xc.luckysheet.server.contract.StructuralPatch;
 import com.xc.luckysheet.server.contract.WorkbookAclRole;
 import com.xc.luckysheet.server.service.ServiceException;
 
@@ -61,6 +62,23 @@ final class SheetDataMutationDescriptor extends CanonicalJsonMutationDescriptor 
 
     @Override
     public JsonNode apply(JsonNode snapshot, OperationMutation mutation) {
+        return applyWithPatch(snapshot, mutation).snapshot();
+    }
+
+    @Override
+    public MutationApplication applyWithPatch(JsonNode snapshot, OperationMutation mutation) {
+        JsonNode updated = applyMetadata(snapshot, mutation);
+        if (!"sheetTable.update".equals(id())) return new MutationApplication(updated, null);
+        ObjectNode params = SnapshotMutationSupport.params(mutation);
+        StructuralPatch patch = StructuralSnapshotReducer.renameSheetTableReferences(
+                snapshot, updated, mutation.sheetId(), SnapshotMutationSupport.text(params, "id"));
+        boolean hasOwnerChanges = patch != null && (!patch.formulaOwnerDeltas().isEmpty()
+                || !patch.definedNameOwnerDeltas().isEmpty() || !patch.rangeOwnerDeltas().isEmpty());
+        JsonNode transformed = hasOwnerChanges ? StructuralSnapshotReducer.applyStructuralOwnerPatch(updated, patch) : updated;
+        return new MutationApplication(transformed, patch);
+    }
+
+    private JsonNode applyMetadata(JsonNode snapshot, OperationMutation mutation) {
         ObjectNode root = SnapshotMutationSupport.root(snapshot.deepCopy());
         ObjectNode params = SnapshotMutationSupport.params(mutation);
         switch (id()) {
@@ -68,6 +86,13 @@ final class SheetDataMutationDescriptor extends CanonicalJsonMutationDescriptor 
             default -> applyToSheet(root, mutation, params);
         }
         return root;
+    }
+
+    JsonNode applyMetadataWithoutStructuralPatch(JsonNode snapshot, OperationMutation mutation) {
+        if (!"sheetTable.update".equals(id()) || !"sheetTable.update".equals(mutation.id())) {
+            throw new IllegalArgumentException("Legacy table rename replay requires sheetTable.update");
+        }
+        return applyMetadata(snapshot, mutation);
     }
 
     private void applyToSheet(ObjectNode root, OperationMutation mutation, ObjectNode params) {
@@ -96,14 +121,14 @@ final class SheetDataMutationDescriptor extends CanonicalJsonMutationDescriptor 
                 }
                 sheet.remove("autoFilter");
             }
-            case "cf.add" -> upsertRule(root, sheet, mutation.sheetId(), params, "conditionalFormats");
+            case "cf.add" -> addRule(root, sheet, mutation.sheetId(), params, "conditionalFormats");
             case "cf.remove" -> removeRule(sheet, params, "conditionalFormats");
             case "cf.clear" -> sheet.set("conditionalFormats", JsonNodeFactory.instance.arrayNode());
-            case "dv.add" -> upsertRule(root, sheet, mutation.sheetId(), params, "dataValidations");
+            case "dv.add" -> addRule(root, sheet, mutation.sheetId(), params, "dataValidations");
             case "dv.remove" -> removeRule(sheet, params, "dataValidations");
             case "banded.set" -> setBanded(root, sheet, mutation.sheetId(), params);
             case "outline.set" -> setOutline(root, sheet, mutation.sheetId(), params);
-            case "sheetTable.add", "sheetTable.update" -> upsertSheetTable(root, sheet, mutation.sheetId(), params);
+            case "sheetTable.add", "sheetTable.update" -> upsertSheetTable(root, sheet, mutation.sheetId(), params, "sheetTable.update".equals(id()));
             case "tableSheet.update" -> updateTableSheet(root, sheet, mutation.sheetId(), params);
             case "ganttSheet.update" -> updateGanttSheet(root, sheet, mutation.sheetId(), params);
             case "reportSheet.update" -> updateReportSheet(root, sheet, mutation.sheetId(), params);
@@ -274,7 +299,7 @@ final class SheetDataMutationDescriptor extends CanonicalJsonMutationDescriptor 
     private RangeRef validatedTableRange(ObjectNode root, String sheetId, ObjectNode params) {
         ObjectNode sheet = SnapshotMutationSupport.sheet(root, sheetId);
         RangeRef range = tableRange(root, sheetId, params);
-        validateSheetTable(root, sheet, sheetId, params, range);
+        validateSheetTable(root, sheet, sheetId, params, range, "sheetTable.update".equals(id()));
         return range;
     }
 
@@ -298,14 +323,36 @@ final class SheetDataMutationDescriptor extends CanonicalJsonMutationDescriptor 
         return tableRange;
     }
 
-    private void upsertRule(ObjectNode root, ObjectNode sheet, String sheetId, ObjectNode params, String collection) {
+    private void addRule(ObjectNode root, ObjectNode sheet, String sheetId, ObjectNode params, String collection) {
         ObjectNode rule = SnapshotMutationSupport.requiredObject(params, "rule");
         validateRule(root, sheetId, rule, collection);
-        SnapshotMutationSupport.upsertById(SnapshotMutationSupport.array(sheet, collection), rule);
+        ArrayNode rules = SnapshotMutationSupport.array(sheet, collection);
+        String ruleId = SnapshotMutationSupport.text(rule, "id");
+        if (uniqueRuleIndex(rules, ruleId, collection) >= 0) {
+            throw ServiceException.conflict("Rule already exists; remove it before adding a replacement: " + ruleId);
+        }
+        rules.add(rule.deepCopy());
     }
 
     private void removeRule(ObjectNode sheet, ObjectNode params, String collection) {
-        SnapshotMutationSupport.removeById(SnapshotMutationSupport.array(sheet, collection), SnapshotMutationSupport.text(params, "ruleId"));
+        ArrayNode rules = SnapshotMutationSupport.array(sheet, collection);
+        String ruleId = SnapshotMutationSupport.text(params, "ruleId");
+        int index = uniqueRuleIndex(rules, ruleId, collection);
+        if (index < 0) throw ServiceException.notFound("Rule not found: " + ruleId);
+        rules.remove(index);
+    }
+
+    private int uniqueRuleIndex(ArrayNode rules, String ruleId, String collection) {
+        int found = -1;
+        for (int index = 0; index < rules.size(); index++) {
+            JsonNode rule = rules.get(index);
+            if (!rule.isObject()) throw ServiceException.validation(collection + " contains an invalid rule");
+            String existingId = SnapshotMutationSupport.text((ObjectNode) rule, "id");
+            if (!ruleId.equals(existingId)) continue;
+            if (found >= 0) throw ServiceException.conflict(collection + " contains duplicate rule identity: " + ruleId);
+            found = index;
+        }
+        return found;
     }
 
     private void validateRule(ObjectNode root, String sheetId, ObjectNode rule, String collection) {
@@ -318,17 +365,24 @@ final class SheetDataMutationDescriptor extends CanonicalJsonMutationDescriptor 
 
     private List<RangeRef> existingRuleRanges(ObjectNode root, String sheetId, String property, String ruleId) {
         ObjectNode sheet = SnapshotMutationSupport.sheet(root, sheetId);
-        ObjectNode rule = SnapshotMutationSupport.findById(SnapshotMutationSupport.array(sheet, property), ruleId);
-        return rule == null ? List.of() : ruleRanges(root, sheetId, rule);
+        ArrayNode rules = SnapshotMutationSupport.array(sheet, property);
+        int index = uniqueRuleIndex(rules, ruleId, property);
+        if (index < 0) throw ServiceException.notFound("Rule not found: " + ruleId);
+        return ruleRanges(root, sheetId, (ObjectNode) rules.get(index));
     }
 
     private List<RangeRef> allRuleRanges(ObjectNode root, String sheetId, String property) {
         ObjectNode sheet = SnapshotMutationSupport.sheet(root, sheetId);
+        ArrayNode rules = SnapshotMutationSupport.array(sheet, property);
         List<RangeRef> ranges = new ArrayList<>();
-        for (JsonNode rule : SnapshotMutationSupport.array(sheet, property)) {
+        Set<String> ids = new java.util.HashSet<>();
+        for (JsonNode rule : rules) {
             if (!rule.isObject()) throw ServiceException.validation(property + " contains an invalid rule");
+            String ruleId = SnapshotMutationSupport.text((ObjectNode) rule, "id");
+            if (!ids.add(ruleId)) throw ServiceException.conflict(property + " contains duplicate rule identity: " + ruleId);
             ranges.addAll(ruleRanges(root, sheetId, (ObjectNode) rule));
         }
+        if (ranges.isEmpty()) throw ServiceException.notFound("No rules to clear: " + property);
         return List.copyOf(ranges);
     }
 
@@ -385,14 +439,33 @@ final class SheetDataMutationDescriptor extends CanonicalJsonMutationDescriptor 
         return ownRange(root, sheetId, params.get("range"));
     }
 
-    private void upsertSheetTable(ObjectNode root, ObjectNode sheet, String sheetId, ObjectNode params) {
+    private void upsertSheetTable(ObjectNode root, ObjectNode sheet, String sheetId, ObjectNode params, boolean replacingExisting) {
         RangeRef range = tableRange(root, sheetId, params);
-        validateSheetTable(root, sheet, sheetId, params, range);
+        validateSheetTable(root, sheet, sheetId, params, range, replacingExisting);
         SnapshotMutationSupport.upsertById(SnapshotMutationSupport.array(sheet, "sheetTables"), params);
     }
 
-    private void validateSheetTable(ObjectNode root, ObjectNode sheet, String sheetId, ObjectNode table, RangeRef range) {
+    private void validateSheetTable(ObjectNode root, ObjectNode sheet, String sheetId, ObjectNode table, RangeRef range, boolean replacingExisting) {
         AutoFilterOwnershipValidator.resolveOwners(sheet, sheetId);
+        String tableId = SnapshotMutationSupport.text(table, "id");
+        String tableName = SnapshotMutationSupport.text(table, "name");
+        if (!tableId.equals(tableId.trim()) || !tableName.matches("^[A-Za-z_][A-Za-z0-9_.]*$")) throw ServiceException.validation("Sheet Table identity is invalid");
+        boolean existingIdentityFound = false;
+        for (JsonNode candidateSheet : root.path("sheets")) {
+            String candidateSheetId = candidateSheet.path("id").asText();
+            for (JsonNode existing : candidateSheet.path("sheetTables")) {
+                String existingId = existing.path("id").asText();
+                if (replacingExisting && sheetId.equals(candidateSheetId) && tableId.equals(existingId)) {
+                    existingIdentityFound = true;
+                    continue;
+                }
+                if (tableId.equals(existingId)) throw ServiceException.validation("Sheet Table id already exists in workbook");
+                if (tableName.equalsIgnoreCase(existing.path("name").asText())) {
+                    throw ServiceException.validation("Sheet Table name already exists in workbook");
+                }
+            }
+        }
+        if (replacingExisting && !existingIdentityFound) throw ServiceException.notFound("Sheet Table not found: " + tableId);
         for (String key : List.of("hasHeaderRow", "hasTotalRow", "showBandedRows", "showBandedColumns", "showFirstColumn", "showLastColumn", "showFilterButton")) {
             if (!table.path(key).isBoolean()) throw ServiceException.validation("Sheet Table " + key + " must be boolean");
         }

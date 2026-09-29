@@ -18,6 +18,7 @@ import {
   validateDataInput,
 } from './index';
 import { compareSortValues, resolveSortCellValue } from './data-features';
+import { resolveDataRegionContext } from './data-region-context';
 
 function runtime(): { workbook: WorkbookModel; commands: CommandRuntime } {
   const workbook = new WorkbookModel('m3-m4', 'M3/M4');
@@ -40,6 +41,12 @@ test('sorting uses resolved formula results, keeps stable ties, and replays/undo
       [{ formula: '=B4+10', value: null }, { value: 'third' }],
     ],
   });
+  sheet.cells.set(1, 0, { ...sheet.cells.get(1, 0)!, formulaValue: 11 });
+  sheet.cells.set(2, 0, { ...sheet.cells.get(2, 0)!, formulaValue: 22 });
+  sheet.cells.set(3, 0, { ...sheet.cells.get(3, 0)!, formulaValue: 33 });
+  const primarySheetReference = sheet.name.replaceAll("'", "''");
+  const dependentSheet = workbook.addSheet('sheet-2', 'Dependent');
+  dependentSheet.cells.set(0, 0, { value: null, formula: `='${primarySheetReference}'!A2`, formulaValue: 99 });
   const beforeSort = workbook.snapshot();
   const formulaResults = new Map([[1, 20], [2, 5], [3, 5]]);
   commands.setCellValueResolver((_currentSheet, row, column) => column === 0 ? formulaResults.get(row) ?? null : undefined);
@@ -58,6 +65,11 @@ test('sorting uses resolved formula results, keeps stable ties, and replays/undo
   assert.equal(sheet.cells.get(1, 1)?.value, 'second');
   assert.equal(sheet.cells.get(2, 1)?.value, 'third');
   assert.equal(sheet.cells.get(3, 1)?.value, 'first');
+  assert.equal(sheet.cells.get(3, 0)?.formula, '=B4+10');
+  assert.equal(sheet.cells.get(1, 0)?.formulaValue, undefined);
+  assert.equal(sheet.cells.get(2, 0)?.formulaValue, undefined);
+  assert.equal(sheet.cells.get(3, 0)?.formulaValue, undefined);
+  assert.equal(dependentSheet.cells.get(0, 0)?.formulaValue, undefined);
 
   const remoteWorkbook = WorkbookModel.fromSnapshot(beforeSort);
   const remoteCommands = new CommandRuntime(remoteWorkbook);
@@ -71,9 +83,148 @@ test('sorting uses resolved formula results, keeps stable ties, and replays/undo
   assert.equal(sheet.cells.get(1, 1)?.value, 'first');
   assert.equal(sheet.cells.get(2, 1)?.value, 'second');
   assert.equal(sheet.cells.get(3, 1)?.value, 'third');
+  assert.equal(sheet.cells.get(1, 0)?.formula, '=B2+10');
   assert.equal(commands.redo(), true);
   assert.equal(sheet.cells.get(1, 1)?.value, 'second');
   assert.equal(sheet.cells.get(3, 1)?.value, 'first');
+  assert.equal(sheet.cells.get(3, 0)?.formula, '=B4+10');
+});
+
+test('worksheet sorting honors an explicit header override while Sheet Table headers stay fixed', () => {
+  const { workbook, commands } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  const range = { sheetId: sheet.id, startRow: 0, endRow: 2, startColumn: 0, endColumn: 0 };
+  sheet.cells.set(0, 0, { value: 'Z' });
+  sheet.cells.set(1, 0, { value: 'A' });
+  sheet.cells.set(2, 0, { value: 'B' });
+  const worksheetContext = resolveDataRegionContext(workbook, { selection: range, activeRow: 0, activeColumn: 0 });
+  assert.equal(worksheetContext.header.kind, 'present');
+  commands.execute('data.sort.rows', {
+    sheetId: sheet.id, range, criteria: [{ column: 0, ascending: true }], hasHeader: false,
+    dataRegionContext: worksheetContext,
+  });
+  assert.deepEqual([0, 1, 2].map((row) => sheet.cells.get(row, 0)?.value), ['A', 'B', 'Z']);
+
+  const { workbook: tableWorkbook, commands: tableCommands } = runtime();
+  const tableSheet = tableWorkbook.getSheet(tableWorkbook.primarySheetId);
+  tableSheet.cells.set(0, 0, { value: 'Z' });
+  tableSheet.cells.set(1, 0, { value: 'A' });
+  tableSheet.cells.set(2, 0, { value: 'B' });
+  const tableRange = { ...range, sheetId: tableSheet.id };
+  tableCommands.execute('sheetTable.add', {
+    id: 'table-sort-header', sheetId: tableSheet.id, name: 'SortHeader', range: tableRange,
+    hasHeaderRow: true, hasTotalRow: false, showBandedRows: false, showBandedColumns: false,
+    showFirstColumn: false, showLastColumn: false, showFilterButton: true, autoExpand: 'both',
+    columns: [{ id: 'value', name: 'Value' }],
+  });
+  const tableContext = resolveDataRegionContext(tableWorkbook, { selection: tableRange, activeRow: 0, activeColumn: 0 });
+  assert.equal(tableContext.owner.kind, 'sheet-table');
+  const before = [0, 1, 2].map((row) => tableSheet.cells.get(row, 0)?.value);
+  assert.throws(() => tableCommands.execute('data.sort.rows', {
+    sheetId: tableSheet.id, range: tableRange, criteria: [{ column: 0, ascending: true }], hasHeader: false,
+    dataRegionContext: tableContext,
+  }), /Sheet Table metadata/);
+  assert.deepEqual([0, 1, 2].map((row) => tableSheet.cells.get(row, 0)?.value), before);
+});
+
+test('sorting leaves manually hidden rows at their original row while sorting visible rows across them', () => {
+  const { workbook, commands } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, { value: 'Key' });
+  sheet.cells.set(1, 0, { value: 'C' });
+  sheet.cells.set(2, 0, { value: 'B' });
+  sheet.cells.set(3, 0, { value: 'A' });
+  sheet.hiddenRows.add(2);
+
+  commands.execute('data.sort.rows', {
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 3, startColumn: 0, endColumn: 0 },
+    criteria: [{ column: 0, ascending: true }],
+    hasHeader: true,
+  });
+
+  assert.deepEqual([1, 2, 3].map((row) => sheet.cells.get(row, 0)?.value), ['A', 'B', 'C']);
+  assert.deepEqual([...sheet.hiddenRows], [2]);
+  assert.deepEqual((commands.getUndoEntries().at(-1)?.redo[0]?.params as { sourceRows: number[] }).sourceRows, [3, 2, 1]);
+});
+
+test('sorting honors workbook custom-list order', () => {
+  const { workbook, commands } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  workbook.collationContext = { ...workbook.collationContext, customLists: [['Z', 'A']] };
+  sheet.cells.set(0, 0, { value: 'Order' });
+  sheet.cells.set(1, 0, { value: 'A' });
+  sheet.cells.set(2, 0, { value: 'Z' });
+
+  commands.execute('data.sort.rows', {
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 2, startColumn: 0, endColumn: 0 },
+    criteria: [{ column: 0, ascending: true }],
+    hasHeader: true,
+  });
+
+  assert.deepEqual([1, 2].map((row) => sheet.cells.get(row, 0)?.value), ['Z', 'A']);
+});
+
+test('sorting moves worksheet outline groups as stable units', () => {
+  const { workbook, commands } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, { value: 'Key' });
+  sheet.cells.set(1, 0, { value: 'B' });
+  sheet.cells.set(2, 0, { value: 'B detail' });
+  sheet.cells.set(3, 0, { value: 'A' });
+  sheet.cells.set(4, 0, { value: 'A detail' });
+  sheet.outline = { groups: [
+    { id: 'group-b', axis: 'row', start: 1, end: 2, level: 1, collapsed: true },
+    { id: 'group-a', axis: 'row', start: 3, end: 4, level: 1, collapsed: true },
+  ] };
+
+  commands.execute('data.sort.rows', {
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 4, startColumn: 0, endColumn: 0 },
+    criteria: [{ column: 0, ascending: true }],
+    hasHeader: true,
+  });
+
+  assert.deepEqual([1, 2, 3, 4].map((row) => sheet.cells.get(row, 0)?.value), ['A', 'A detail', 'B', 'B detail']);
+  assert.deepEqual(sheet.outline.groups.map(({ id, start, end }) => [id, start, end]), [
+    ['group-b', 3, 4],
+    ['group-a', 1, 2],
+  ]);
+});
+
+test('sorting fails closed when a multi-row outline group shares the range with manually hidden rows', () => {
+  const { workbook, commands } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  for (const [row, value] of [[0, 'Key'], [1, 'B'], [2, 'B detail'], [3, 'hidden'], [4, 'A'], [5, 'A detail']] as const) {
+    sheet.cells.set(row, 0, { value });
+  }
+  sheet.hiddenRows.add(3);
+  sheet.outline = { groups: [
+    { id: 'group-b', axis: 'row', start: 1, end: 2, level: 1, collapsed: true },
+    { id: 'group-a', axis: 'row', start: 4, end: 5, level: 1, collapsed: true },
+  ] };
+  const before = [1, 2, 3, 4, 5].map((row) => sheet.cells.get(row, 0)?.value);
+
+  assert.throws(() => commands.execute('data.sort.rows', {
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 5, startColumn: 0, endColumn: 0 },
+    criteria: [{ column: 0, ascending: true }],
+    hasHeader: true,
+  }), /multi-row outline group together with separately hidden rows is unsupported/);
+  assert.deepEqual([1, 2, 3, 4, 5].map((row) => sheet.cells.get(row, 0)?.value), before);
+  assert.deepEqual([...sheet.hiddenRows], [3]);
+
+  sheet.hiddenRows.clear();
+  sheet.hiddenRows.add(2);
+  assert.throws(() => commands.execute('data.sort.rows', {
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 5, startColumn: 0, endColumn: 0 },
+    criteria: [{ column: 0, ascending: true }],
+    hasHeader: true,
+  }), /multi-row outline group together with separately hidden rows is unsupported/);
+  assert.deepEqual([1, 2, 3, 4, 5].map((row) => sheet.cells.get(row, 0)?.value), before);
+  assert.deepEqual([...sheet.hiddenRows], [2]);
 });
 
 test('sort keys retain canonical typed formula results and reject unresolved values', () => {
@@ -83,6 +234,8 @@ test('sort keys retain canonical typed formula results and reject unresolved val
   assert.equal(resolveSortCellValue(sheet, 1, 0), 2);
   sheet.cells.set(2, 0, { formula: '=A1', value: null });
   assert.throws(() => resolveSortCellValue(sheet, 2, 0), /formula result unavailable/);
+  sheet.cells.set(3, 0, { formula: '=A1', value: 'stale', formulaValue: null });
+  assert.equal(resolveSortCellValue(sheet, 3, 0), null);
   assert.equal(compareSortValues(2, 10) < 0, true);
   assert.equal(compareSortValues(true, 'true') > 0, true);
   assert.equal(compareSortValues(createFormulaError('#N/A', 'missing'), null) < 0, true);
@@ -96,6 +249,52 @@ test('sort keys retain canonical typed formula results and reject unresolved val
     () => resolveSortCellValue(sheet, 1, 0, () => Number.POSITIVE_INFINITY),
     /non-finite numeric result/,
   );
+});
+
+test('sort key reads do not materialize deferred cells or inspect storage when a calculation value is available', () => {
+  const { workbook } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.deferJSON({ '2': { '3': { value: 'stored' } } });
+  const revision = sheet.cells.revision;
+
+  assert.equal(resolveSortCellValue(sheet, 2, 3), 'stored');
+  assert.equal(sheet.cells.revision, revision);
+  assert.equal(sheet.cells.isHydrated, false);
+  assert.equal(resolveSortCellValue(sheet, 2, 3, () => 'calculated'), 'calculated');
+  assert.equal(sheet.cells.revision, revision);
+});
+
+test('multi-key sort resolves each key once per row and retains stable lexicographic order', () => {
+  const { workbook, commands } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.deferJSON({
+    '0': { '0': { value: 'Primary' }, '1': { value: 'Secondary' } },
+    '1': { '0': { value: 2 }, '1': { value: 1 } },
+    '2': { '0': { value: 1 }, '1': { value: 3 } },
+    '3': { '0': { value: 1 }, '1': { value: 2 } },
+  });
+  const resolvedValues = new Map([
+    ['1:0', 2], ['1:1', 1],
+    ['2:0', 1], ['2:1', 3],
+    ['3:0', 1], ['3:1', 2],
+  ]);
+  const calls = new Map<number, number>();
+  commands.setCellValueResolver((_currentSheet, row, column) => {
+    calls.set(column, (calls.get(column) ?? 0) + 1);
+    return resolvedValues.get(`${row}:${column}`);
+  });
+
+  commands.execute('data.sort.rows', {
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 3, startColumn: 0, endColumn: 1 },
+    criteria: [{ column: 0, ascending: true }, { column: 1, ascending: false }],
+    hasHeader: true,
+  });
+
+  const sortEntry = commands.getUndoEntries().at(-1)!;
+  assert.deepEqual((sortEntry.redo[0]?.params as { sourceRows: number[] }).sourceRows, [2, 3, 1]);
+  assert.deepEqual([...calls.entries()].sort(([left], [right]) => left - right), [[0, 3], [1, 3]]);
+  assert.equal(sheet.cells.isHydrated, false);
 });
 
 test('rows.permuted rejects a tampered duplicate source order before changing cells', () => {
@@ -117,6 +316,314 @@ test('rows.permuted rejects a tampered duplicate source order before changing ce
   }]), /Invalid mutation history/);
   assert.deepEqual(workbook.snapshot().sheets.find((candidate) => candidate.id === sheet.id)?.cells,
     before.sheets.find((candidate) => candidate.id === sheet.id)?.cells);
+});
+
+test('rows.permuted rejects moving a manually hidden row before changing cells', () => {
+  const { workbook, commands } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(1, 0, { value: 'C' });
+  sheet.cells.set(2, 0, { value: 'B' });
+  sheet.cells.set(3, 0, { value: 'A' });
+  sheet.hiddenRows.add(2);
+  const before = workbook.snapshot();
+
+  assert.throws(() => commands.applyRemoteMutations([{
+    id: 'rows.permuted',
+    unitId: workbook.unitId,
+    sheetId: sheet.id,
+    params: {
+      sheetId: sheet.id,
+      range: { sheetId: sheet.id, startRow: 1, endRow: 3, startColumn: 0, endColumn: 0 },
+      sourceRows: [2, 1, 3],
+      affectedColumnEnd: 0,
+    },
+    affectedRanges: [{ sheetId: sheet.id, startRow: 1, endRow: 3, startColumn: 0, endColumn: 0 }],
+  }]), /Invalid mutation history/);
+  assert.deepEqual(workbook.snapshot().sheets.find((candidate) => candidate.id === sheet.id)?.cells,
+    before.sheets.find((candidate) => candidate.id === sheet.id)?.cells);
+});
+
+test('rows.permuted rejects reordering rows inside an outline group before changing cells', () => {
+  const { workbook, commands } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(1, 0, { value: 'Summary' });
+  sheet.cells.set(2, 0, { value: 'Detail' });
+  sheet.outline = { groups: [{ id: 'group-1', axis: 'row', start: 1, end: 2, level: 1, collapsed: true }] };
+  const before = workbook.snapshot();
+
+  assert.throws(() => commands.applyRemoteMutations([{
+    id: 'rows.permuted',
+    unitId: workbook.unitId,
+    sheetId: sheet.id,
+    params: {
+      sheetId: sheet.id,
+      range: { sheetId: sheet.id, startRow: 1, endRow: 2, startColumn: 0, endColumn: 0 },
+      sourceRows: [2, 1],
+      affectedColumnEnd: 0,
+    },
+    affectedRanges: [{ sheetId: sheet.id, startRow: 1, endRow: 2, startColumn: 0, endColumn: 0 }],
+  }]), /Invalid mutation history/);
+  assert.deepEqual(workbook.snapshot().sheets.find((candidate) => candidate.id === sheet.id)?.cells,
+    before.sheets.find((candidate) => candidate.id === sheet.id)?.cells);
+});
+
+test('remove duplicates keeps delimiter-bearing tuples distinct and rejects invalid columns', () => {
+  const { workbook, commands } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, { value: 'left\u0001middle' });
+  sheet.cells.set(0, 1, { value: 'right' });
+  sheet.cells.set(1, 0, { value: 'left' });
+  sheet.cells.set(1, 1, { value: 'middle\u0001right' });
+
+  commands.execute('data.removeDuplicates', {
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 1, startColumn: 0, endColumn: 1 },
+    columns: [0, 1],
+  });
+
+  assert.equal(sheet.cells.get(1, 0)?.value, 'left');
+  assert.equal(sheet.cells.get(1, 1)?.value, 'middle\u0001right');
+  assert.throws(() => commands.execute('data.removeDuplicates', {
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 1, startColumn: 0, endColumn: 1 },
+    columns: [0.5],
+  }), /columns must be inside the selected range/);
+  assert.throws(() => commands.execute('data.removeDuplicates', {
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 1, startColumn: 0, endColumn: 1 },
+    columns: [0, 0],
+  }), /columns must be inside the selected range/);
+  assert.equal(sheet.cells.get(1, 0)?.value, 'left');
+});
+
+test('remove duplicates preserves distinct typed scalar and formula-error values', () => {
+  const { workbook, commands } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, { value: 1 });
+  sheet.cells.set(1, 0, { value: '1' });
+  sheet.cells.set(2, 0, { value: null, formula: '=NA()', formulaValue: createFormulaError('#N/A', 'first error') });
+  sheet.cells.set(3, 0, { value: null, formula: '=VALUE("x")', formulaValue: createFormulaError('#VALUE!', 'second error') });
+
+  const result = commands.execute('data.removeDuplicates', {
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 3, startColumn: 0, endColumn: 0 },
+    columns: [0],
+    hasHeader: false,
+  });
+
+  assert.equal(result.mutationCount, 0);
+  assert.equal(sheet.cells.get(0, 0)?.value, 1);
+  assert.equal(sheet.cells.get(1, 0)?.value, '1');
+  assert.equal(sheet.cells.get(2, 0)?.formulaValue && typeof sheet.cells.get(2, 0)?.formulaValue, 'object');
+  assert.equal(sheet.cells.get(3, 0)?.formulaValue && typeof sheet.cells.get(3, 0)?.formulaValue, 'object');
+});
+
+test('matrix flip rejects an unknown direction without remapping formula references', () => {
+  const { workbook, commands } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, { value: null, formula: '=B1' });
+  sheet.cells.set(0, 1, { value: 7 });
+  const before = workbook.snapshot();
+
+  assert.throws(() => commands.execute('matrix.flip', {
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 1 },
+    direction: 'diagonal',
+  }), /direction must be horizontal or vertical/);
+  assert.deepEqual(workbook.snapshot(), before);
+});
+
+test('matrix and text-column dense preflights reject oversized ranges before allocating their matrices', () => {
+  const { workbook, commands } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.rowCount = 13_000;
+  sheet.columnCount = 1_000;
+  sheet.cells.set(0, 0, { value: 'unchanged' });
+  const before = workbook.snapshot();
+
+  assert.throws(() => commands.execute('matrix.transpose', {
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 100, startColumn: 0, endColumn: 999 },
+  }), /100000-cell mutation limit/);
+  assert.throws(() => commands.execute('data.textToColumns', {
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 12_500, startColumn: 0, endColumn: 0 },
+    delimiter: ',',
+    maxColumns: 8,
+  }), /100000-cell mutation limit/);
+  assert.deepEqual(workbook.snapshot(), before);
+});
+
+test('subtotal rejects fractional grouping columns before writing summary rows', () => {
+  const { workbook, commands } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, { value: 'Group' });
+  sheet.cells.set(1, 0, { value: 'A' });
+  const before = workbook.snapshot();
+
+  assert.throws(() => commands.execute('data.subtotal', {
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 1, startColumn: 0, endColumn: 1 },
+    groupColumn: 0.5,
+    valueColumn: 1,
+    functionName: 'SUM',
+  }), /group column is outside the range/);
+  assert.deepEqual(workbook.snapshot(), before);
+});
+
+test('Subtotal COUNT counts numeric cells and emits the Excel COUNT aggregate code', () => {
+  const { workbook, commands } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, { value: 'Group' });
+  sheet.cells.set(0, 1, { value: 'Amount' });
+  sheet.cells.set(1, 0, { value: 'A' });
+  sheet.cells.set(1, 1, { value: 5 });
+  sheet.cells.set(2, 0, { value: 'A' });
+  sheet.cells.set(2, 1, { value: '7' });
+
+  commands.execute('data.subtotal', {
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 2, startColumn: 0, endColumn: 1 },
+    groupColumn: 0,
+    valueColumn: 1,
+    functionName: 'COUNT',
+  });
+
+  assert.equal(sheet.cells.get(5, 1)?.value, 1);
+  assert.equal(sheet.cells.get(5, 1)?.formula, '=SUBTOTAL(2,B2:B3)');
+});
+
+test('remove duplicates compares current resolved formula values', () => {
+  const { workbook, commands } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, { value: null, formula: '="first"' });
+  sheet.cells.set(1, 0, { value: null, formula: '="second"' });
+  sheet.cells.set(2, 0, { value: 'survivor' });
+  commands.setCellValueResolver((_currentSheet, row, column) => column === 0 && row < 2 ? 'same-result' : undefined);
+
+  commands.execute('data.removeDuplicates', {
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 1, startColumn: 0, endColumn: 0 },
+    columns: [0],
+    hasHeader: false,
+  });
+
+  assert.equal(sheet.cells.get(0, 0)?.formula, '="first"');
+  assert.equal(sheet.cells.get(1, 0)?.value, 'survivor');
+});
+
+test('text-to-columns and subtotal consume current resolved formula values', () => {
+  const { workbook, commands } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, { value: null, formula: '="unused"' });
+  commands.setCellValueResolver((_currentSheet, row, column) => row === 0 && column === 0 ? 'left,right' : undefined);
+  commands.execute('data.textToColumns', {
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 },
+    delimiter: ',',
+    maxColumns: 2,
+  });
+  assert.equal(sheet.cells.get(0, 0)?.value, 'left');
+  assert.equal(sheet.cells.get(0, 1)?.value, 'right');
+
+  sheet.cells.set(1, 0, { value: 'Group' });
+  sheet.cells.set(1, 1, { value: 'Amount' });
+  sheet.cells.set(2, 0, { value: null, formula: '="A"' });
+  sheet.cells.set(2, 1, { value: null, formula: '=5' });
+  sheet.cells.set(3, 0, { value: null, formula: '="A"' });
+  sheet.cells.set(3, 1, { value: null, formula: '=7' });
+  commands.setCellValueResolver((_currentSheet, row, column) => {
+    if (row === 2 && column === 0 || row === 3 && column === 0) return 'A';
+    if (row === 2 && column === 1) return 5;
+    if (row === 3 && column === 1) return 7;
+    return undefined;
+  });
+  commands.execute('data.subtotal', {
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 1, endRow: 3, startColumn: 0, endColumn: 1 },
+    groupColumn: 0,
+    valueColumn: 1,
+    functionName: 'SUM',
+  });
+  assert.equal(sheet.cells.get(6, 1)?.value, 12);
+});
+
+test('formula-backed data transforms reject unresolved inputs before changing the workbook', () => {
+  const { workbook, commands } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, { value: null, formula: '=A2' });
+  sheet.cells.set(1, 0, { value: null, formula: '=A1' });
+  const before = workbook.snapshot();
+
+  assert.throws(() => commands.execute('data.textToColumns', {
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 },
+    delimiter: ',',
+    maxColumns: 2,
+  }), /formula result unavailable/);
+  assert.deepEqual(workbook.snapshot(), before);
+  assert.throws(() => commands.execute('data.removeDuplicates', {
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 1, startColumn: 0, endColumn: 0 },
+    columns: [0],
+    hasHeader: false,
+  }), /formula result unavailable/);
+  assert.deepEqual(workbook.snapshot(), before);
+  assert.throws(() => commands.execute('data.subtotal', {
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 1, startColumn: 0, endColumn: 0 },
+    groupColumn: 0,
+    valueColumn: 0,
+    functionName: 'SUM',
+  }), /formula result unavailable/);
+  assert.deepEqual(workbook.snapshot(), before);
+});
+
+test('split commands reject output truncation and malformed limits without clearing source cells', () => {
+  const { workbook, commands } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, { value: 'first,second,third' });
+  sheet.cells.set(0, 1, { value: 'keep' });
+  const before = workbook.snapshot();
+
+  assert.throws(() => commands.execute('data.textToColumns', {
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 },
+    delimiter: ',',
+    maxColumns: 2,
+  }), /output exceeds the configured column limit/);
+  assert.throws(() => commands.execute('data.splitColumn', {
+    sheetId: sheet.id,
+    row: 0,
+    column: 0,
+    delimiter: ',',
+    maxColumns: 2,
+  }), /output exceeds the configured column limit/);
+  assert.throws(() => commands.execute('data.splitColumn', {
+    sheetId: sheet.id,
+    row: 0,
+    column: 0,
+    delimiter: ',',
+    maxColumns: 1.5,
+  }), /maxColumns must be a positive safe integer/);
+  assert.deepEqual(workbook.snapshot(), before);
+});
+
+test('column splitting grows the allocated extent without treating it as the Excel grid edge', () => {
+  const { workbook, commands } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 25, { value: 'left,right' });
+
+  commands.execute('data.textToColumns', {
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 25, endColumn: 25 },
+    delimiter: ',',
+    maxColumns: 2,
+  });
+
+  assert.equal(sheet.cells.get(0, 25)?.value, 'left');
+  assert.equal(sheet.cells.get(0, 26)?.value, 'right');
+  assert.equal(sheet.columnCount, 27);
 });
 
 test('Home, worksheet AutoFilter, and table sorting share the resolved-value owner', () => {
@@ -624,6 +1131,93 @@ test('Validation supports custom AST, formula-backed list, time/date, multi-sele
   assert.equal(validateDataInput(sheet, 0, 3, '25:30').blocking, true);
 });
 
+test('conditional formatting and validation resolve qualified same-sheet names to canonical IDs', () => {
+  const { workbook } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, { value: 'Allowed' });
+  const formula = `=${sheet.name}!A1="Allowed"`;
+  sheet.conditionalFormats.push({
+    id: 'qualified-cf',
+    sheetId: sheet.id,
+    ranges: [{ sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 1, endColumn: 1 }],
+    type: 'highlight',
+    operator: 'formula',
+    value1: formula,
+    priority: 1,
+    style: { background: '#abcdef' },
+  });
+  assert.deepEqual(computeConditionalOverlays(sheet).get('0:1')?.style, { background: '#abcdef' });
+
+  const validation = normalizeDataValidationRule({
+    id: 'qualified-validation',
+    sheetId: sheet.id,
+    ranges: [{ sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 2, endColumn: 2 }],
+    type: 'custom',
+    formula1: formula,
+  });
+  sheet.dataValidations.push(validation);
+  assert.equal(validateDataInput(sheet, 0, 2, 'candidate').valid, true);
+});
+
+test('cross-sheet list validation resolves the referenced worksheet for options and write checks', () => {
+  const { workbook } = runtime();
+  const owner = workbook.getSheet(workbook.primarySheetId);
+  const source = workbook.addSheet('validation-source', 'Validation Source');
+  source.cells.deferJSON({
+    '2': { '2': { value: 'Other' } },
+    '0': {
+      '0': { value: 'Allowed' },
+      '1': { value: null, formula: '=1+1', formulaValue: 2 },
+      '2': { value: 'stale cached value', formula: '=""', formulaValue: null },
+      '4': { value: 'outside source range' },
+    },
+  });
+  const rule = normalizeDataValidationRule({
+    id: 'cross-sheet-list', sheetId: owner.id,
+    ranges: [{ sheetId: owner.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }],
+    type: 'list',
+    listSource: { kind: 'range', range: { sheetId: source.id, startRow: 0, endRow: 2, startColumn: 0, endColumn: 2 } },
+  });
+  owner.dataValidations.push(rule);
+  const resolveSheet = (sheetId: string) => workbook.getSheet(sheetId);
+
+  assert.deepEqual(validationList(rule, owner, resolveSheet), ['Allowed', '2', 'Other']);
+  assert.equal(source.cells.isHydrated, false);
+  assert.equal(validateDataInput(owner, 0, 0, 'Allowed', resolveSheet).valid, true);
+  assert.equal(source.cells.isHydrated, false);
+  assert.equal(validateDataInput(owner, 0, 0, 'Rejected', resolveSheet).blocking, true);
+  assert.equal(validateDataInput(owner, 0, 0, 'Allowed').blocking, true);
+  assert.equal(source.cells.isHydrated, false);
+});
+
+test('unresolved formula-backed validation lists never become literal options or allow arbitrary values', () => {
+  const { workbook } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  for (const [id, formula] of [
+    ['unresolved-list', '=MissingSheet!A1:A2'],
+    ['unprefixed-unresolved-list', 'MissingSheet!A1:A2'],
+  ] as const) {
+    const rule = normalizeDataValidationRule({
+      id,
+      sheetId: sheet.id,
+      ranges: [{ sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }],
+      type: 'list',
+      listSource: { kind: 'formula', formula },
+    });
+    sheet.dataValidations.push(rule);
+
+    assert.equal(validationList(rule, sheet), undefined);
+    assert.deepEqual(validateDataInput(sheet, 0, 0, 'arbitrary'), {
+      valid: false,
+      blocking: true,
+      message: '列表来源不可用',
+      ruleId: id,
+      alertStyle: 'stop',
+    });
+    sheet.dataValidations.pop();
+  }
+});
+
 test('Text Columns, Split and Flip are one undoable transaction and clear stale output', () => {
   const { workbook, commands } = runtime();
   const sheet = workbook.getSheet(workbook.primarySheetId);
@@ -631,9 +1225,11 @@ test('Text Columns, Split and Flip are one undoable transaction and clear stale 
   sheet.cells.set(0, 2, { value: 'stale' });
   let commandEvents = 0;
   commands.onCommand(() => { commandEvents += 1; });
-  const textResult = commands.execute('data.textToColumns', { sheetId: sheet.id, range: { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }, delimiter: ',', maxColumns: 3 });
+  const textResult = commands.execute('data.textToColumns', { sheetId: sheet.id, range: { sheetId: 'stale-selection-sheet', startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }, delimiter: ',', maxColumns: 3 });
   assert.equal(commandEvents, 1);
   assert.equal(textResult.mutationCount, 2);
+  assert.deepEqual(textResult.affectedRanges, [{ sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 2 }]);
+  assert.equal(commands.getUndoEntries().at(-1)?.inversePlan.length, 4, 'history stores the two occupied preimages, not every cell in the output rectangle');
   assert.equal(sheet.cells.get(0, 2)?.value, null);
   commands.undo();
   assert.equal(sheet.cells.get(0, 0)?.value, 'a,b');
@@ -645,4 +1241,274 @@ test('Text Columns, Split and Flip are one undoable transaction and clear stale 
   sheet.cells.set(0, 1, { value: 'b' });
   commands.execute('matrix.flip', { sheetId: sheet.id, range: { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 1 }, direction: 'horizontal' });
   assert.equal(sheet.cells.get(0, 0)?.value, 'b');
+});
+
+test('matrix flip remaps barcode formula references with the transformed cell coordinates', () => {
+  const { workbook, commands } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, {
+    value: null,
+    presentation: {
+      kind: 'barcode',
+      symbology: 'qr',
+      source: { kind: 'formula', formula: '=B1' },
+      parameters: { symbology: 'qr' },
+      options: { foreground: '#000000', background: '#ffffff', showText: true, labelPosition: 'below', quietZone: 2 },
+    },
+  });
+  sheet.cells.set(0, 1, { value: 'other' });
+
+  commands.execute('matrix.flip', {
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 1 },
+    direction: 'horizontal',
+  });
+
+  const flippedPresentation = sheet.cells.get(0, 1)?.presentation;
+  assert.equal(flippedPresentation?.kind === 'barcode' && flippedPresentation.source.kind === 'formula' ? flippedPresentation.source.formula : undefined, '=A1');
+});
+
+test('matrix flip shifts relative references outside the transformed cells with the formula owner', () => {
+  const { workbook, commands } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, { value: 'left' });
+  sheet.cells.set(0, 1, { value: null, formula: '=D1+$D$1' });
+
+  commands.execute('matrix.flip', {
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 1 },
+    direction: 'horizontal',
+  });
+
+  assert.equal(sheet.cells.get(0, 0)?.formula, '=C1+$D$1');
+});
+
+test('matrix transforms reject block-backed data regions before writing cells', () => {
+  const { workbook, commands } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.addDataRegion({
+    id: 'matrix-region',
+    sourceId: 'source-1',
+    range: { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 1, endColumn: 1 },
+    headerRow: 0,
+    revision: 0,
+  });
+  sheet.cells.set(2, 0, { value: 'unchanged' });
+  const before = workbook.snapshot();
+
+  assert.throws(() => commands.execute('matrix.transpose', {
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 1, startColumn: 0, endColumn: 0 },
+  }), /data-region/);
+  assert.deepEqual(workbook.snapshot(), before);
+});
+
+test('matrix transpose rejects a spill projection intersecting its expanded target', () => {
+  const { workbook, commands } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, { value: null, formula: '=SEQUENCE(1,2)' });
+  sheet.cells.set(1, 0, { value: 'bottom' });
+  sheet.spillRanges.push({
+    sheetId: sheet.id,
+    anchor: { row: 0, column: 0 },
+    range: { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 1 },
+    values: [[1, 2]],
+    state: 'ok',
+  });
+  const before = workbook.snapshot();
+
+  assert.throws(() => commands.execute('matrix.transpose', {
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 1, startColumn: 0, endColumn: 0 },
+  }), /dynamic-array spill range/);
+  assert.deepEqual(workbook.snapshot(), before);
+});
+
+test('matrix transforms reject invalid source coordinates before clearing any cells', () => {
+  const { workbook, commands } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, { value: 'keep' });
+  const before = workbook.snapshot();
+
+  assert.throws(() => commands.execute('matrix.transpose', {
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: -1, endRow: 0, startColumn: 0, endColumn: 0 },
+  }), /source range is outside worksheet bounds/);
+  assert.deepEqual(workbook.snapshot(), before);
+});
+
+test('matrix transforms reject hyperlink owners rather than leaving anchors behind', () => {
+  const { workbook, commands } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, { value: 'left' });
+  sheet.cells.set(0, 1, { value: 'right' });
+  sheet.hyperlinks.set('0:0', { id: 'matrix-link', target: { kind: 'url', url: 'https://example.com' } });
+  const before = workbook.snapshot();
+
+  assert.throws(() => commands.execute('matrix.flip', {
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 1 },
+    direction: 'horizontal',
+  }), /hyperlink anchors/);
+  assert.deepEqual(workbook.snapshot(), before);
+});
+
+test('matrix transform checks review, drawing, and sparkline anchors by both coordinates', () => {
+  const { workbook, commands } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, { value: 'selected' });
+  sheet.review.setNote(0, 1, { id: 'outside-note', author: 'u', text: 'outside', createdAt: '2026-01-01', visible: true });
+  sheet.review.addThread({ id: 'outside-thread', sheetId: sheet.id, row: 0, column: 1, author: 'u', text: 'outside', createdAt: '2026-01-01', replies: [] });
+  sheet.drawings.push({ id: 'outside-drawing', sheetId: sheet.id, kind: 'shape', anchor: { kind: 'one-cell', row: 0, column: 1 }, transform: { x: 0, y: 0, width: 10, height: 10 }, zIndex: 0, payloadId: 'p1' });
+  sheet.sparklines.push({ id: 'outside-sparkline', sheetId: sheet.id, anchor: { row: 0, column: 1 }, sourceRange: { sheetId: sheet.id, startRow: 1, endRow: 1, startColumn: 0, endColumn: 1 }, type: 'line', color: '#000000' });
+
+  commands.execute('matrix.transpose', {
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 },
+  });
+
+  assert.equal(sheet.cells.get(0, 0)?.value, 'selected');
+  assert.equal(sheet.review.getNoteAt(0, 1)?.text, 'outside');
+});
+
+test('matrix transpose rejects owners in the expanded target range before writing cells', () => {
+  for (const owner of ['note', 'thread', 'drawing', 'sparkline'] as const) {
+    const { workbook, commands } = runtime();
+    const sheet = workbook.getSheet(workbook.primarySheetId);
+    sheet.cells.set(0, 0, { value: 'top' });
+    sheet.cells.set(1, 0, { value: 'bottom' });
+    if (owner === 'note') sheet.review.setNote(0, 1, { id: 'target-note', author: 'u', text: 'target', createdAt: '2026-01-01', visible: true });
+    if (owner === 'thread') sheet.review.addThread({ id: 'target-thread', sheetId: sheet.id, row: 0, column: 1, author: 'u', text: 'target', createdAt: '2026-01-01', replies: [] });
+    if (owner === 'drawing') sheet.drawings.push({ id: 'target-drawing', sheetId: sheet.id, kind: 'shape', anchor: { kind: 'one-cell', row: 0, column: 1 }, transform: { x: 0, y: 0, width: 10, height: 10 }, zIndex: 0, payloadId: 'p1' });
+    if (owner === 'sparkline') sheet.sparklines.push({ id: 'target-sparkline', sheetId: sheet.id, anchor: { row: 0, column: 1 }, sourceRange: { sheetId: sheet.id, startRow: 1, endRow: 1, startColumn: 0, endColumn: 1 }, type: 'line', color: '#000000' });
+    const before = workbook.snapshot();
+
+    assert.throws(() => commands.execute('matrix.transpose', {
+      sheetId: sheet.id,
+      range: { sheetId: sheet.id, startRow: 0, endRow: 1, startColumn: 0, endColumn: 0 },
+    }), /drawing anchors|review objects|sparklines/);
+    assert.deepEqual(workbook.snapshot(), before);
+  }
+});
+
+test('matrix flip keeps OOXML source formula provenance aligned with the canonical formula', () => {
+  const { workbook, commands } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, {
+    value: null,
+    formula: '=B1',
+    formulaMetadata: { kind: 'normal', sourceFormula: '=B1' },
+  });
+  sheet.cells.set(0, 1, { value: 'other' });
+  const before = workbook.snapshot();
+
+  commands.execute('matrix.flip', {
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 1 },
+    direction: 'horizontal',
+  });
+
+  const movedFormula = sheet.cells.get(0, 1);
+  assert.equal(movedFormula?.formula, '=A1');
+  assert.equal(movedFormula?.formulaMetadata?.sourceFormula, '=A1');
+
+  const remoteWorkbook = WorkbookModel.fromSnapshot(before);
+  const remoteCommands = new CommandRuntime(remoteWorkbook);
+  registerSheetCommands(remoteCommands);
+  remoteCommands.applyRemoteMutations(commands.getUndoEntries().at(-1)!.redo);
+  assert.deepEqual(remoteWorkbook.snapshot().sheets.find((candidate) => candidate.id === sheet.id)?.cells,
+    workbook.snapshot().sheets.find((candidate) => candidate.id === sheet.id)?.cells);
+});
+
+test('matrix transpose rejects a preserved-only metadata formula owner atomically', () => {
+  const { workbook, commands } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, {
+    value: null,
+    formulaMetadata: { kind: 'normal', preservedOnly: true, reason: 'unsupported formula', sourceFormula: '=B1' },
+  });
+  sheet.cells.set(0, 1, { value: 'other' });
+
+  assert.throws(() => commands.execute('matrix.transpose', {
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 1, startColumn: 0, endColumn: 1 },
+  }), /UNSUPPORTED_MATRIX_FORMULA_GROUP/);
+
+  assert.equal(sheet.cells.get(0, 0)?.formulaMetadata?.sourceFormula, '=B1');
+  assert.equal(sheet.cells.get(0, 1)?.value, 'other');
+});
+
+test('matrix transpose clears formula cache and provenance from source slots outside the target', () => {
+  const { workbook, commands } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, {
+    value: null,
+    formula: '=A2',
+    formulaValue: 11,
+    formulaMetadata: { kind: 'normal', sourceFormula: '=A2' },
+  });
+  sheet.cells.set(1, 0, {
+    value: null,
+    formula: '=A1',
+    formulaValue: 22,
+    formulaMetadata: { kind: 'normal', sourceFormula: '=A1' },
+  });
+  const before = workbook.snapshot();
+
+  commands.execute('matrix.transpose', {
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 1, startColumn: 0, endColumn: 0 },
+  });
+
+  assert.equal(sheet.cells.get(0, 1)?.formula, '=A1');
+  assert.equal(sheet.cells.get(0, 1)?.formulaValue, undefined);
+  assert.equal(sheet.cells.get(0, 1)?.displayValue, undefined);
+  assert.equal(sheet.cells.get(0, 1)?.formulaMetadata?.sourceFormula, '=A1');
+  assert.equal(sheet.cells.get(1, 0)?.formula, undefined);
+  assert.equal(sheet.cells.get(1, 0)?.formulaValue, undefined);
+  assert.equal(sheet.cells.get(1, 0)?.formulaMetadata, undefined);
+
+  const remoteWorkbook = WorkbookModel.fromSnapshot(before);
+  const remoteCommands = new CommandRuntime(remoteWorkbook);
+  registerSheetCommands(remoteCommands);
+  remoteCommands.applyRemoteMutations(commands.getUndoEntries().at(-1)!.redo);
+  assert.deepEqual(remoteWorkbook.snapshot().sheets.find((candidate) => candidate.id === sheet.id)?.cells,
+    workbook.snapshot().sheets.find((candidate) => candidate.id === sheet.id)?.cells);
+});
+
+test('matrix transpose preserves occupied cells in the corner outside source and target', () => {
+  const { workbook, commands } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, { value: 'top' });
+  sheet.cells.set(1, 0, { value: 'bottom' });
+  sheet.cells.set(1, 1, { value: 'outside both ranges' });
+
+  commands.execute('matrix.transpose', {
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 1, startColumn: 0, endColumn: 0 },
+  });
+
+  assert.equal(sheet.cells.get(0, 0)?.value, 'top');
+  assert.equal(sheet.cells.get(0, 1)?.value, 'bottom');
+  assert.equal(sheet.cells.get(1, 1)?.value, 'outside both ranges');
+});
+
+test('matrix flip rejects formula-group ownership changes before changing any cells', () => {
+  const { workbook, commands } = runtime();
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, {
+    value: null,
+    formula: '=Z100',
+    formulaMetadata: { kind: 'shared', range: 'A1:B1', sourceFormula: '=Z100' },
+  });
+  sheet.cells.set(0, 1, { value: 'other' });
+
+  assert.throws(() => commands.execute('matrix.flip', {
+    sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 1 },
+    direction: 'horizontal',
+  }), /UNSUPPORTED_MATRIX_FORMULA_GROUP/);
+  assert.equal(sheet.cells.get(0, 0)?.formula, '=Z100');
+  assert.equal(sheet.cells.get(0, 0)?.formulaMetadata?.sourceFormula, '=Z100');
+  assert.equal(sheet.cells.get(0, 1)?.value, 'other');
 });

@@ -93,16 +93,16 @@ function formatNode(node: FormulaAst, parentPrecedence = 0): string {
       break;
     case 'whole-column-reference': {
       const prefix = node.sheetId !== undefined ? formatSheetId(node.sheetId) + '!' : '';
-      const start = columnToLabel(node.startColumn);
-      const end = columnToLabel(node.endColumn);
-      content = prefix + (start === end ? start : `${start}:${end}`);
+      const start = (node.absoluteStartColumn ? '$' : '') + columnToLabel(node.startColumn);
+      const end = (node.absoluteEndColumn ? '$' : '') + columnToLabel(node.endColumn);
+      content = prefix + `${start}:${end}`;
       break;
     }
     case 'whole-row-reference': {
       const prefix = node.sheetId !== undefined ? formatSheetId(node.sheetId) + '!' : '';
-      const start = String(node.startRow + 1);
-      const end = String(node.endRow + 1);
-      content = prefix + (start === end ? start : `${start}:${end}`);
+      const start = (node.absoluteStartRow ? '$' : '') + String(node.startRow + 1);
+      const end = (node.absoluteEndRow ? '$' : '') + String(node.endRow + 1);
+      content = prefix + `${start}:${end}`;
       break;
     }
     case 'spill-reference':

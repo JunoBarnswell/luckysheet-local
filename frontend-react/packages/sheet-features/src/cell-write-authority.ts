@@ -1,5 +1,5 @@
 import type { CellData, WorksheetModel } from '@react-sheets/core-model';
-import { validateDataInput } from './data-features';
+import { validateDataInput, type ValidationWorksheetResolver } from './data-features';
 
 export type CellWriteKind = 'direct-entry' | 'paste' | 'fill' | 'formula-result' | 'query-load' | 'script' | 'external-sync';
 
@@ -48,10 +48,11 @@ export function createCellWriteAuthority(
   params: { sheetId: string; row: number; column: number; value: CellData },
   kind: CellWriteKind,
   confirmed = false,
+  resolveSheet?: ValidationWorksheetResolver,
 ): CellWriteAuthority {
   const validation = params.value.formula
     ? { valid: true, blocking: false, ruleId: undefined, alertStyle: undefined }
-    : validateDataInput(sheet, params.row, params.column, params.value.value);
+    : validateDataInput(sheet, params.row, params.column, params.value.value, resolveSheet);
   if (validation.blocking) throw new Error(validation.message ?? 'Cell value failed data validation');
   if (!validation.valid && !confirmed) {
     throw new Error('CELL_ENTRY_CONFIRMATION_REQUIRED: warning/information validation requires explicit confirmation');
@@ -73,8 +74,9 @@ export function createCellSetMutationParams(
   params: { sheetId: string; row: number; column: number; value: CellData },
   kind: CellWriteKind,
   confirmed = false,
+  resolveSheet?: ValidationWorksheetResolver,
 ): CellSetMutationParams {
-  return { ...params, writeAuthority: createCellWriteAuthority(sheet, params, kind, confirmed) };
+  return { ...params, writeAuthority: createCellWriteAuthority(sheet, params, kind, confirmed, resolveSheet) };
 }
 
 export function isCellSetMutationParams(value: unknown): value is CellSetMutationParams {
@@ -96,12 +98,17 @@ export function isCellSetMutationParams(value: unknown): value is CellSetMutatio
     && (authority.validationDecision.alertStyle === undefined || ['stop', 'warning', 'information'].includes(String(authority.validationDecision.alertStyle)));
 }
 
-export function assertCellWriteAuthority(params: CellSetMutationParams, sheet: WorksheetModel): void {
+export function assertCellWriteAuthority(
+  params: CellSetMutationParams,
+  sheet: WorksheetModel,
+  resolveSheet?: ValidationWorksheetResolver,
+): void {
   const expected = createCellWriteAuthority(
     sheet,
     { sheetId: params.sheetId, row: params.row, column: params.column, value: params.value },
     params.writeAuthority.kind,
     params.writeAuthority.validationDecision.status === 'confirmed',
+    resolveSheet,
   );
   if (!sameCanonicalValue(expected, params.writeAuthority)) {
     throw new Error('CELL_ENTRY_VALIDATION_STALE: cell write authority no longer matches the canonical worksheet state');

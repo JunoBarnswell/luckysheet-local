@@ -4,19 +4,21 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.xc.luckysheet.server.contract.GeneratedWorkbookContract;
 import com.xc.luckysheet.server.contract.OperationMutation;
 import com.xc.luckysheet.server.contract.RangeRef;
 import com.xc.luckysheet.server.service.ServiceException;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /** Strict JSON primitives shared by server-side snapshot reducers. */
 final class SnapshotMutationSupport {
     static final int MAX_ROW = 1_048_575;
     static final int MAX_COLUMN = 16_383;
-    static final int MAX_CHANGED_CELLS = 100_000;
+    static final int MAX_CHANGED_CELLS = GeneratedWorkbookContract.MAX_CHANGED_CELLS;
 
     private SnapshotMutationSupport() {
     }
@@ -81,7 +83,10 @@ final class SnapshotMutationSupport {
     }
 
     static ArrayNode dataModelArray(ObjectNode root, String property) {
-        return array(requiredObject(root, "dataModel"), property);
+        JsonNode dataModel = root.get("dataModel");
+        if (dataModel == null || dataModel.isNull()) return JsonNodeFactory.instance.arrayNode();
+        if (!dataModel.isObject()) throw ServiceException.validation("dataModel must be an object");
+        return array((ObjectNode) dataModel, property);
     }
 
     static ArrayNode requiredArray(ObjectNode parent, String property) {
@@ -149,9 +154,19 @@ final class SnapshotMutationSupport {
 
     static void clearCells(ObjectNode sheet, RangeRef range) {
         ObjectNode cells = cells(sheet);
-        for (int row = range.startRow(); row <= range.endRow(); row++) {
-            ObjectNode current = cellRow(cells, row, false);
-            if (current == null) continue;
+        List<String> emptyRows = new ArrayList<>();
+        for (java.util.Iterator<Map.Entry<String, JsonNode>> rows = cells.fields(); rows.hasNext();) {
+            Map.Entry<String, JsonNode> rowEntry = rows.next();
+            int row;
+            try {
+                row = Integer.parseInt(rowEntry.getKey());
+            } catch (NumberFormatException exception) {
+                throw ServiceException.validation("Cell row key is invalid");
+            }
+            if (row < 0 || row > MAX_ROW) throw ServiceException.validation("Cell row key is out of bounds");
+            if (row < range.startRow() || row > range.endRow()) continue;
+            if (!rowEntry.getValue().isObject()) throw ServiceException.validation("Cell row must be an object");
+            ObjectNode current = (ObjectNode) rowEntry.getValue();
             List<String> remove = new ArrayList<>();
             current.fieldNames().forEachRemaining(key -> {
                 try {
@@ -162,8 +177,9 @@ final class SnapshotMutationSupport {
                 }
             });
             remove.forEach(current::remove);
-            if (current.isEmpty()) cells.remove(Integer.toString(row));
+            if (current.isEmpty()) emptyRows.add(rowEntry.getKey());
         }
+        emptyRows.forEach(cells::remove);
     }
 
     static void removeHyperlinks(ObjectNode sheet, RangeRef range) {
@@ -219,7 +235,7 @@ final class SnapshotMutationSupport {
         return new RangeRef(sheetId, 0, canonicalDimension(sheet, "rowCount") - 1, column, column);
     }
 
-    private static int canonicalDimension(ObjectNode sheet, String field) {
+    static int canonicalDimension(ObjectNode sheet, String field) {
         JsonNode value = sheet.get(field);
         if (value == null || !value.isIntegralNumber() || !value.canConvertToInt() || value.intValue() < 1) {
             throw ServiceException.validation("Canonical worksheet " + field + " is required");

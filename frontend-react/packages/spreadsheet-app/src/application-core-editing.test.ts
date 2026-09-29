@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import './cell-edit/domain.test';
 import { copyRangeToClipboardData, createPasteSpecialSpec } from '@react-sheets/sheet-features';
+import { createRemoteReadySessionFixture } from './session-test-fixtures';
 import { WorkbookSession } from './workbook-session';
 
 function selectCell(app: WorkbookSession, row: number, column: number): void {
@@ -338,7 +339,7 @@ describe('WorkbookSession core editing integration', () => {
   });
 
   it('duplicateSheet creates a copy and switches to it', () => {
-    const app = new WorkbookSession();
+    const app = createRemoteReadySessionFixture();
     const sourceId = app.getActiveSheetId();
     app.runCommand('sheet.cell.set', {
       sheetId: sourceId,
@@ -359,7 +360,7 @@ describe('WorkbookSession core editing integration', () => {
   });
 
   it('selectSheet updates only transient workbook session state', () => {
-    const app = new WorkbookSession();
+    const app = createRemoteReadySessionFixture();
     const sourceId = app.getActiveSheetId();
     app.runCommand('sheet.add', { id: 'sheet-2', name: 'Second' });
 
@@ -370,7 +371,7 @@ describe('WorkbookSession core editing integration', () => {
   });
 
   it('builds Canvas projection only for the active sheet until a visible dependency needs another sheet', () => {
-    const app = new WorkbookSession();
+    const app = createRemoteReadySessionFixture();
     const firstSheetId = app.getActiveSheetId();
     app.runCommand('sheet.add', { id: 'sheet-projection-2', name: 'Projection second' });
     app.selectSheet(firstSheetId);
@@ -396,7 +397,7 @@ describe('WorkbookSession core editing integration', () => {
   });
 
   it('evicts stale worksheet projections while retaining the active sheet and visible dependencies', () => {
-    const app = new WorkbookSession();
+    const app = createRemoteReadySessionFixture();
     const firstSheetId = app.getActiveSheetId();
     app.runCommand('sheet.add', { id: 'sheet-lru-2', name: 'Second' });
     app.runCommand('sheet.add', { id: 'sheet-lru-3', name: 'Third' });
@@ -451,7 +452,7 @@ describe('WorkbookSession core editing integration', () => {
   });
 
   it('grouped worksheets commit the same cell through one semantic history transaction', () => {
-    const app = new WorkbookSession();
+    const app = createRemoteReadySessionFixture();
     const firstSheetId = app.getActiveSheetId();
     app.runCommand('sheet.add', { id: 'sheet-grouped-2', name: 'Grouped 2' });
     app.selectSheet(firstSheetId);

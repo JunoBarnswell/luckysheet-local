@@ -3,6 +3,10 @@ import test from 'node:test';
 import {
   FormulaEngine,
   RangeIndex,
+  collectFormulaDependencies,
+  collectFormulaReferenceNodes,
+  mapAstMovedReferences,
+  mapAstStructuralReferences,
   formatFormula,
   formatCellAddress,
   isFormulaError,
@@ -12,6 +16,7 @@ import {
   offsetAst,
   type CellAddress,
   type FormulaValue,
+  type MoveRangeReferenceTransform,
 } from './index';
 
 test('lexer and parser produce a precedence-aware AST without executable code', () => {
@@ -50,18 +55,225 @@ test('AST formatter preserves explicit grouping and qualified sheet names', () =
   assert.equal(formatFormula(offsetAst(parseFormula('=A1+$B$1'), 2, 3)), '=D3+$B$1');
 });
 
-test('structural deletion invalidates references instead of clamping them', () => {
-  const engine = new FormulaEngine({ defaultSheetId: 'Sheet1' });
-  engine.setValue('A1', 10);
-  engine.setValue('A2', 20);
-  engine.setFormula('B1', '=A2+1');
-  const report = engine.remapStructure('Sheet1', { axis: 'row', at: 1, count: 1, op: 'delete' });
+test('structural reference index selects affected owners and retains invalid formulas', () => {
+  const index = new RangeIndex([{ id: 'Sheet1', name: 'Sheet1' }]);
+  const affected = address('Sheet1', 10, 3);
+  const unaffected = address('Sheet1', 11, 3);
+  const invalid = address('Sheet1', 20, 3);
+  index.set(affected, [{
+    kind: 'range',
+    start: address('Sheet1', 2, 0),
+    end: address('Sheet1', 5, 2),
+  }]);
+  index.set(unaffected, [{ kind: 'cell', address: address('Sheet1', 1, 0) }]);
+  index.set(invalid, [], true);
 
-  assert.equal(formatFormula(parseFormula('=#REF!')), '=#REF!');
-  assert.equal(engine.getCellResult('B1')?.formula, '=#REF!+1');
-  assertError(engine.getCellValue('B1'), '#REF!');
-  assert.equal(report.recalculated.some((address) => address.row === 0 && address.column === 1), true);
-  assert.deepEqual(engine.getDependencies('B1'), []);
+  assert.deepEqual(index.getStructuralDependents('Sheet1', 'row', 3), [affected]);
+  assert.deepEqual(index.getRangeDependents('Sheet1', { startRow: 4, endRow: 6, startColumn: 2, endColumn: 3 }), [affected]);
+  assert.throws(
+    () => index.getRangeDependents('Sheet1', { startRow: 6, endRow: 4, startColumn: 0, endColumn: 1 }),
+    /Reference range query bounds are invalid/,
+  );
+  assert.deepEqual(index.getInvalidFormulaOwners(), [invalid]);
+
+  index.set(invalid, [{ kind: 'cell', address: address('Sheet1', 4, 0) }]);
+  assert.deepEqual(index.getInvalidFormulaOwners(), []);
+});
+
+test('whole-row and whole-column references preserve absolute endpoints and offset on copy', () => {
+  assert.equal(formatFormula(parseFormula('=SUM(A:A)')), '=SUM(A:A)');
+  assert.equal(formatFormula(offsetAst(parseFormula('=SUM(A:A)'), 2, 1)), '=SUM(B:B)');
+  assert.equal(formatFormula(offsetAst(parseFormula('=SUM($A:A)'), 0, 1)), '=SUM($A:B)');
+  assert.equal(formatFormula(offsetAst(parseFormula('=SUM(1:1)'), 1, 0)), '=SUM(2:2)');
+  assert.equal(formatFormula(offsetAst(parseFormula('=SUM(1:3)'), 1, 0)), '=SUM(2:4)');
+  assert.equal(formatFormula(offsetAst(parseFormula('=SUM($1:1)'), 1, 0)), '=SUM($1:2)');
+  assert.equal(formatFormula(offsetAst(parseFormula('=SUM(XFD:XFD)'), 0, 1)), '=SUM(#REF!)');
+  assert.equal(formatFormula(mapAstStructuralReferences(parseFormula('=SUM($A:B)'), {
+    shift: { axis: 'column', at: 0, count: 2, op: 'insert' },
+    ownerSheetId: 'Sheet1',
+    targetSheetId: 'Sheet1',
+  })), '=SUM($C:D)');
+});
+
+test('structural-only formula sources coexist with calculation owners and retain invalid source failures', () => {
+  const index = new RangeIndex([{ id: 'Sheet1', name: 'Sheet1' }]);
+  const owner = address('Sheet1', 8, 5);
+  const calculationTarget = address('Sheet1', 1, 0);
+  const structuralTarget = address('Sheet1', 4, 2);
+  index.set(owner, [{ kind: 'cell', address: calculationTarget }]);
+  index.setStructuralReference(owner, 'structural:barcode', [{ kind: 'cell', address: structuralTarget }]);
+  index.setStructuralReference(owner, 'structural:formula-provenance', [{ kind: 'cell', address: structuralTarget }]);
+
+  assert.deepEqual(index.getDependents(calculationTarget), [owner]);
+  assert.deepEqual(index.getDependents(structuralTarget), []);
+  assert.deepEqual(index.getStructuralDependents('Sheet1', 'row', 4), [owner]);
+  assert.deepEqual(index.getStructuralReferenceOwnersInRange('Sheet1', {
+    startRow: owner.row, endRow: owner.row, startColumn: owner.column, endColumn: owner.column,
+  }), [
+    { address: owner, sourceId: 'structural:barcode' },
+    { address: owner, sourceId: 'structural:formula-provenance' },
+  ]);
+
+  const engine = new FormulaEngine({ defaultSheetId: 'Sheet1', sheetOrder: [{ id: 'Sheet1', name: 'Sheet1' }] });
+  engine.setStructuralFormulaReference(owner, 'structural:barcode', '=A1+');
+  assert.deepEqual(engine.dependencies.getInvalidFormulaOwners(), [owner]);
+  engine.setStructuralFormulaReference(owner, 'structural:barcode', '=A1');
+  assert.deepEqual(engine.dependencies.getInvalidFormulaOwners(), []);
+  assert.deepEqual(engine.dependencies.getStructuralDependents('Sheet1', 'row', 0), [owner]);
+});
+
+test('formula-rule reference owners are indexed spatially and remove their recorded failures', () => {
+  const index = new RangeIndex([{ id: 'Sheet1', name: 'Sheet1' }]);
+  const context = address('Sheet1', 0, 0);
+  const owner = { sheetId: 'Sheet1', ruleKind: 'data-validation' as const, ruleId: 'dv-1', field: 'formula1' };
+  index.setFormulaRuleReference(owner, collectFormulaReferenceNodes(parseFormula('=A6')), context);
+
+  assert.deepEqual(index.getStructuralFormulaRuleDependents('Sheet1', 'row', 5), [owner]);
+  assert.deepEqual(index.getRangeFormulaRuleDependents('Sheet1', {
+    startRow: 5, endRow: 5, startColumn: 0, endColumn: 0,
+  }), [owner]);
+  assert.deepEqual(index.getFormulaRuleReferenceFailures(), []);
+
+  const invalidOwner = { ...owner, ruleId: 'dv-invalid' };
+  index.setFormulaRuleReference(invalidOwner, [], context, 'invalid-formula');
+  assert.deepEqual(index.getFormulaRuleReferenceFailures(), [{ owner: invalidOwner, reason: 'invalid-formula' }]);
+  assert.equal(index.removeFormulaRuleReference(invalidOwner), true);
+  assert.deepEqual(index.getFormulaRuleReferenceFailures(), []);
+  assert.equal(index.removeFormulaRuleReference(owner), true);
+  assert.deepEqual(index.getStructuralFormulaRuleDependents('Sheet1', 'row', 5), []);
+
+  const opaqueIdOwner = { ...owner, ruleId: ' dv-padded ' };
+  index.setFormulaRuleReference(opaqueIdOwner, collectFormulaReferenceNodes(parseFormula('=A6')), context);
+  assert.deepEqual(index.getStructuralFormulaRuleDependents('Sheet1', 'row', 5), [opaqueIdOwner]);
+});
+
+test('reference index preserves exact canonical worksheet IDs', () => {
+  const index = new RangeIndex([
+    { id: 'sheet-1', name: 'INTEREST' },
+    { id: 'sheet-2', name: 'Owner' },
+  ]);
+  const owner = address('sheet-2', 8, 5);
+  index.set(owner, [{ kind: 'cell', address: address('sheet-1', 4, 2) }]);
+
+  assert.deepEqual(index.getDependents(address('sheet-1', 4, 2)), [owner]);
+});
+
+test('reference index never remaps a canonical ID that collides with another display name', () => {
+  const index = new RangeIndex([
+    { id: 'owner-id', name: 'Owner' },
+    { id: 'Target', name: 'Other' },
+    { id: 'target-id', name: 'Target' },
+  ]);
+  const owner = address('owner-id', 8, 5);
+  index.set(owner, [{ kind: 'cell', address: address('Target', 4, 2) }]);
+
+  assert.deepEqual(index.getDependents(address('Target', 4, 2)), [owner]);
+  assert.deepEqual(index.getDependents(address('target-id', 4, 2)), []);
+});
+
+test('range moves fail closed when whole-axis references would become non-contiguous', () => {
+  const move: MoveRangeReferenceTransform = {
+    selection: { sheetId: 'sheet-1', startRow: 0, endRow: 1, startColumn: 0, endColumn: 0 },
+    rowDelta: 2,
+    columnDelta: 2,
+    ownerSheetId: 'sheet-1',
+    targetSheetId: 'sheet-1',
+    targetSheetName: 'Sheet1',
+    sheetOrder: [{ id: 'sheet-1', name: 'Sheet1' }],
+  };
+  assert.throws(() => mapAstMovedReferences(parseFormula('=SUM(A:A)'), move), /whole-column reference non-contiguous/);
+  assert.throws(() => mapAstMovedReferences(parseFormula('=SUM(1:1)'), move), /whole-row reference non-contiguous/);
+  assert.equal(formatFormula(mapAstMovedReferences(parseFormula('=SUM(A:A)'), { ...move, columnDelta: 0 })), '=SUM(A:A)');
+});
+
+test('3-D structural references require a resolvable target worksheet identity', () => {
+  const formula = parseFormula('=SUM(Sheet1:Sheet2!A1)');
+  const sheetOrder = [
+    { id: 'sheet-1', name: 'Sheet1' },
+    { id: 'sheet-2', name: 'Sheet2' },
+    { id: 'sheet-3', name: 'Sheet3' },
+  ];
+  const shift = { axis: 'row' as const, at: 0, count: 1, op: 'insert' as const };
+
+  assert.equal(formatFormula(mapAstStructuralReferences(formula, {
+    shift,
+    ownerSheetId: 'sheet-3',
+    targetSheetId: 'sheet-3',
+    sheetOrder,
+  })), '=SUM(Sheet1:Sheet2!A1)');
+  assert.throws(() => mapAstStructuralReferences(formula, {
+    shift,
+    ownerSheetId: 'sheet-3',
+    targetSheetId: 'missing-sheet',
+    sheetOrder,
+  }), /target worksheet identity is unresolved/);
+});
+
+test('structural formula references resolve display names before colliding IDs', () => {
+  const formula = parseFormula('=End!A1');
+  const mapped = mapAstStructuralReferences(formula, {
+    shift: { axis: 'row', at: 0, count: 1, op: 'insert' },
+    ownerSheetId: 'owner-id',
+    targetSheetId: 'End',
+    targetSheetName: 'Target',
+    sheetOrder: [
+      { id: 'owner-id', name: 'Owner' },
+      { id: 'End', name: 'Target' },
+      { id: 'end-id', name: 'End' },
+    ],
+  });
+  assert.equal(formatFormula(mapped), '=End!A1');
+});
+
+test('3-D reference boundaries resolve display names before colliding IDs', () => {
+  const formula = parseFormula('=SUM(Start:End!A1)');
+  assert.throws(() => mapAstStructuralReferences(formula, {
+    shift: { axis: 'row', at: 0, count: 1, op: 'insert' },
+    ownerSheetId: 'target-id',
+    targetSheetId: 'target-id',
+    targetSheetName: 'Target',
+    sheetOrder: [
+      { id: 'start-id', name: 'Start' },
+      { id: 'End', name: 'Other' },
+      { id: 'target-id', name: 'Target' },
+      { id: 'end-id', name: 'End' },
+    ],
+  }), /inside a 3D reference/);
+});
+
+test('FormulaEngine input-address range index follows value, formula, clear and reset lifecycle', () => {
+  const engine = new FormulaEngine({ defaultSheetId: 'Sheet1' });
+  const valueAddress = address('Sheet1', 4, 2);
+  const formulaAddress = address('Sheet1', 8, 5);
+  engine.setValue(valueAddress, 12);
+  engine.setFormula(formulaAddress, '=1+1');
+
+  const range = { sheetId: 'Sheet1', startRow: 4, endRow: 8, startColumn: 2, endColumn: 5 };
+  assert.deepEqual(engine.getInputAddressesInRange(range), [valueAddress, formulaAddress]);
+
+  const middleAddress = address('Sheet1', 6, 2);
+  engine.setValue(middleAddress, 24);
+  assert.deepEqual(engine.getInputAddressesInRange(range), [valueAddress, middleAddress, formulaAddress]);
+  engine.setFormula(valueAddress, '=2+2');
+  assert.deepEqual(engine.getInputAddressesInRange(range), [valueAddress, middleAddress, formulaAddress]);
+  engine.clearCell(valueAddress);
+  assert.deepEqual(engine.getInputAddressesInRange(range), [middleAddress, formulaAddress]);
+  engine.reset();
+  assert.deepEqual(engine.getInputAddressesInRange(range), []);
+});
+
+test('visibility changes enqueue SUBTOTAL and AGGREGATE formulas without dirtying ordinary formulas', () => {
+  const engine = new FormulaEngine({ defaultSheetId: 'Sheet1' });
+  const subtotal = address('Sheet1', 0, 0);
+  const aggregate = address('Sheet1', 1, 0);
+  engine.setDefinedNameModels([{ name: 'VisibleSubtotal', formula: '=SUBTOTAL(9,B1:B3)', scope: 'workbook' }]);
+  engine.setFormula(subtotal, '=VisibleSubtotal');
+  engine.setFormula(aggregate, '=AGGREGATE(9,5,B1:B3)');
+  engine.setFormula(address('Sheet1', 2, 0), '=SUM(B1:B3)');
+
+  engine.notifyVisibilityChanged();
+
+  assert.deepEqual(engine.getPendingRecalculationRoots(), [subtotal, aggregate]);
 });
 
 test('A1 addresses support zero-based engine coordinates and qualified sheets', () => {
@@ -203,7 +415,7 @@ test('calculation task port is versioned and serializable without pretending to 
   const port = engine.createCalculationTaskPort();
   const result = await port.submit({
     protocol: 'react-sheets.formula-calculation',
-    version: 1,
+    version: 3,
     taskId: 'task-1',
     kind: 'recalculate',
     revision: 4,
@@ -212,13 +424,19 @@ test('calculation task port is versioned and serializable without pretending to 
 
   assert.equal(result.status, 'completed');
   assert.equal(result.protocol, 'react-sheets.formula-calculation');
-  assert.equal(result.version, 1);
+  assert.equal(result.version, 2);
   assert.equal(result.revision, 4);
   assert.equal(result.report?.results.some((entry) => entry.value === 6), true);
 });
 
 test('FormulaEngine supports qualified references and detects cycles', () => {
-  const engine = new FormulaEngine({ defaultSheetId: 'Sheet1' });
+  const engine = new FormulaEngine({
+    defaultSheetId: 'Sheet1',
+    sheetOrder: [
+      { id: 'Sheet1', name: 'Sheet1' },
+      { id: 'Sheet2', name: 'Sheet2' },
+    ],
+  });
   engine.setValue({ sheetId: 'Sheet2', row: 0, column: 0 }, 7);
   assert.equal(engine.setFormula('A1', '=Sheet2!A1 + 1').value, 8);
 
@@ -227,6 +445,40 @@ test('FormulaEngine supports qualified references and detects cycles', () => {
   assert.equal(firstCycle, 1);
   assertError(secondCycle, '#NUM!');
   assertError(engine.getCellValue('B1'), '#NUM!');
+});
+
+test('FormulaEngine evaluates qualified display names against canonical worksheet IDs', () => {
+  const engine = new FormulaEngine({
+    defaultSheetId: 'owner-id',
+    sheetOrder: [
+      { id: 'owner-id', name: 'Owner' },
+      { id: 'Target', name: 'Other' },
+      { id: 'target-id', name: 'Target' },
+      { id: 'space-id', name: ' Target ' },
+    ],
+  });
+  const owner = address('owner-id', 0, 1);
+  const targetA1 = address('target-id', 0, 0);
+  const targetA2 = address('target-id', 1, 0);
+  const spacedNameA1 = address('space-id', 0, 0);
+  engine.setValue(address('Target', 0, 0), 100);
+  engine.setValue(targetA1, 7);
+  engine.setValue(targetA2, 11);
+  engine.setValue(spacedNameA1, 4);
+
+  assert.equal(engine.setFormula(owner, '=tArGeT!A1+1').value, 8);
+  assert.deepEqual(engine.getDependencies(owner), [{ kind: 'cell', address: targetA1 }]);
+  assert.deepEqual(engine.getDependents(targetA1), [owner]);
+  assert.equal(engine.setFormula(address('owner-id', 1, 1), '=SUM(Target!A1:A2)').value, 18);
+  assert.equal(engine.setFormula(address('owner-id', 2, 1), "=' Target '!A1+1").value, 5);
+  assertError(engine.setFormula(address('owner-id', 3, 1), '=Missing!A1').value, '#REF!');
+});
+
+test('dependency collection rejects qualified names without worksheet identities', () => {
+  assert.throws(
+    () => collectFormulaDependencies(parseFormula('=Remote!A1'), address('owner-id', 0, 0), { sheetOrder: [] }),
+    /Worksheet identity order is required to resolve/,
+  );
 });
 
 function address(sheetId: string, row: number, column: number): CellAddress {

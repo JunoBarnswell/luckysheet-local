@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import { createRemoteReadySessionFixture } from './session-test-fixtures';
 import { WorkbookSession } from './workbook-session';
 
 function selectRange(
@@ -101,7 +102,7 @@ describe('WorkbookSession data objects integration', () => {
   });
 
   it('sortRange reorders values through sheet.sort.multi', () => {
-    const app = new WorkbookSession();
+    const app = createRemoteReadySessionFixture();
     const sheetId = app.getActiveSheetId();
     app.runCommand('sheet.range.set', {
       sheetId,

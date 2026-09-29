@@ -29,10 +29,8 @@ final class DrawingMutationDescriptor extends CanonicalJsonMutationDescriptor {
     public List<RangeRef> affectedRanges(JsonNode snapshot, OperationMutation mutation) {
         ObjectNode root = SnapshotMutationSupport.root(snapshot);
         SnapshotMutationSupport.params(mutation);
-        // Prepare is the authoritative rejection boundary. Running the reducer
-        // against its own deep copy validates camera ranges, payload ownership,
-        // stale before-images and object identities without mutating the input.
-        apply(snapshot, mutation);
+        // Drawing permissions and conflicts are sheet-scoped. The commit reducer
+        // validates the mutation once against its detached candidate snapshot.
         return List.of(SnapshotMutationSupport.wholeSheetRange(root, mutation.sheetId()));
     }
 

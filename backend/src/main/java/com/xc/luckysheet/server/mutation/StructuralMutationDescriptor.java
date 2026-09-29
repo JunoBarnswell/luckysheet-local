@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.xc.luckysheet.server.contract.OperationMutation;
 import com.xc.luckysheet.server.contract.RangeRef;
+import com.xc.luckysheet.server.contract.StructuralPatch;
 import com.xc.luckysheet.server.contract.DataRegionContextValidator;
 import com.xc.luckysheet.server.contract.WorkbookAclRole;
 import com.xc.luckysheet.server.service.ServiceException;
@@ -12,10 +13,10 @@ import java.util.List;
 import java.util.Set;
 
 /** Server reducers for whole-axis and canonical cell-band structural worksheet mutations. */
-final class StructuralMutationDescriptor extends CanonicalJsonMutationDescriptor {
+final class StructuralMutationDescriptor extends CanonicalJsonMutationDescriptor implements OwnedSnapshotMutationDescriptor {
     static final Set<String> IDS = Set.of(
             "rows.inserted", "rows.deleted", "columns.inserted", "columns.deleted",
-            "cells.inserted", "cells.deleted", "cells.inserted.restore", "cells.deleted.restore", "rows.permuted"
+            "cells.inserted", "cells.deleted", "cells.inserted.restore", "cells.deleted.restore", "rows.permuted", "range.move"
     );
 
     StructuralMutationDescriptor(String id) {
@@ -28,18 +29,26 @@ final class StructuralMutationDescriptor extends CanonicalJsonMutationDescriptor
         ObjectNode root = SnapshotMutationSupport.root(snapshot);
         ObjectNode params = SnapshotMutationSupport.params(mutation);
         return switch (id()) {
-            case "rows.inserted", "rows.deleted", "columns.inserted", "columns.deleted" -> List.of(SnapshotMutationSupport.wholeSheetRange(root, mutation.sheetId()));
+            case "rows.inserted", "rows.deleted" -> List.of(axisAffectedRange(
+                    root, mutation.sheetId(), params, FormulaReferenceTransformer.Axis.ROW, id().equals("rows.inserted")));
+            case "columns.inserted", "columns.deleted" -> List.of(axisAffectedRange(
+                    root, mutation.sheetId(), params, FormulaReferenceTransformer.Axis.COLUMN, id().equals("columns.inserted")));
             case "cells.inserted", "cells.deleted" -> List.of(cellAffectedBand(root, mutation.sheetId(), params));
             case "cells.inserted.restore", "cells.deleted.restore" -> List.of(restoreAffectedBand(root, mutation.sheetId(), params));
             case "rows.permuted" -> {
                 DataRegionContextValidator.validateSort(root, mutation.sheetId(), params);
                 RangeRef selected = ownRange(root, mutation.sheetId(), params);
                 int declaredEndColumn = integer(params.get("affectedColumnEnd"), "Rows permutation affected column end");
-                int canonicalEndColumn = SheetRuleLifecycle.affectedColumnEnd(root, SnapshotMutationSupport.sheet(root, mutation.sheetId()), selected.endColumn());
-                if (declaredEndColumn < canonicalEndColumn || declaredEndColumn > SnapshotMutationSupport.MAX_COLUMN) {
-                    throw ServiceException.validation("Rows permutation affected column extent does not cover current worksheet metadata");
+                int canonicalEndColumn = SheetRuleLifecycle.affectedColumnEnd(root, SnapshotMutationSupport.sheet(root, mutation.sheetId()), selected.endColumn(), selected.startRow(), selected.endRow());
+                if (declaredEndColumn != canonicalEndColumn || declaredEndColumn > SnapshotMutationSupport.MAX_COLUMN) {
+                    throw ServiceException.validation("Rows permutation affected column extent does not match current worksheet metadata");
                 }
                 yield List.of(new RangeRef(selected.sheetId(), selected.startRow(), selected.endRow(), 0, declaredEndColumn));
+            }
+            case "range.move" -> {
+                RangeRef source = ownRangeField(root, mutation.sheetId(), params, "sourceRange");
+                RangeRef target = moveTarget(root, mutation.sheetId(), source, params.get("targetOrigin"));
+                yield List.of(source, target);
             }
             default -> throw ServiceException.validation("Unsupported structural mutation: " + id());
         };
@@ -47,48 +56,115 @@ final class StructuralMutationDescriptor extends CanonicalJsonMutationDescriptor
 
     @Override
     public JsonNode apply(JsonNode snapshot, OperationMutation mutation) {
-        ObjectNode root = SnapshotMutationSupport.root(snapshot.deepCopy());
+        return applyWithPatch(snapshot, mutation).snapshot();
+    }
+
+    @Override
+    public MutationApplication applyWithPatch(JsonNode snapshot, OperationMutation mutation) {
+        return applyWithPatchOnOwnedSnapshot(snapshot.deepCopy(), mutation);
+    }
+
+    @Override
+    public MutationApplication applyWithPatchOnOwnedSnapshot(JsonNode ownedSnapshot, OperationMutation mutation) {
+        if (!id().equals(mutation.id())) {
+            throw ServiceException.validation("Structural mutation descriptor does not match the mutation id");
+        }
+        ObjectNode root = SnapshotMutationSupport.root(ownedSnapshot);
         ObjectNode params = SnapshotMutationSupport.params(mutation);
+        JsonNode rawNameModelsBefore = root.get("definedNameModels");
+        JsonNode nameModelsBefore = rawNameModelsBefore == null ? null : rawNameModelsBefore.deepCopy();
+        JsonNode legacyNameProjection = root.get("definedNames");
+        if ((rawNameModelsBefore == null || rawNameModelsBefore.isNull())
+                && legacyNameProjection != null && !legacyNameProjection.isNull()) {
+            if (!legacyNameProjection.isObject()) throw ServiceException.validation("definedNames must be an object");
+            if (!legacyNameProjection.isEmpty()) {
+                throw ServiceException.unavailable("STRUCTURAL_PATCH_INVARIANT: defined-name owner models are required for structural edits");
+            }
+        }
+        StructuralPatch structuralPatch = null;
         switch (id()) {
-            case "rows.inserted" -> axis(root, mutation.sheetId(), params, FormulaReferenceTransformer.Axis.ROW, FormulaReferenceTransformer.Direction.INSERT);
-            case "rows.deleted" -> axis(root, mutation.sheetId(), params, FormulaReferenceTransformer.Axis.ROW, FormulaReferenceTransformer.Direction.DELETE);
-            case "columns.inserted" -> axis(root, mutation.sheetId(), params, FormulaReferenceTransformer.Axis.COLUMN, FormulaReferenceTransformer.Direction.INSERT);
-            case "columns.deleted" -> axis(root, mutation.sheetId(), params, FormulaReferenceTransformer.Axis.COLUMN, FormulaReferenceTransformer.Direction.DELETE);
-            case "cells.inserted", "cells.deleted" -> applyCellShift(root, mutation.sheetId(), params);
-            case "cells.inserted.restore", "cells.deleted.restore" -> restore(root, mutation.sheetId(), params);
+            case "rows.inserted" -> structuralPatch = axis(root, mutation.sheetId(), mutation.id(), params, FormulaReferenceTransformer.Axis.ROW, FormulaReferenceTransformer.Direction.INSERT);
+            case "rows.deleted" -> structuralPatch = axis(root, mutation.sheetId(), mutation.id(), params, FormulaReferenceTransformer.Axis.ROW, FormulaReferenceTransformer.Direction.DELETE);
+            case "columns.inserted" -> structuralPatch = axis(root, mutation.sheetId(), mutation.id(), params, FormulaReferenceTransformer.Axis.COLUMN, FormulaReferenceTransformer.Direction.INSERT);
+            case "columns.deleted" -> structuralPatch = axis(root, mutation.sheetId(), mutation.id(), params, FormulaReferenceTransformer.Axis.COLUMN, FormulaReferenceTransformer.Direction.DELETE);
+            case "cells.inserted", "cells.deleted" -> structuralPatch = applyCellShift(root, mutation.sheetId(), mutation.id(), params);
+            case "cells.inserted.restore", "cells.deleted.restore" -> restore(root, mutation.sheetId(), mutation.id(), params);
             case "rows.permuted" -> {
                 DataRegionContextValidator.validateSort(root, mutation.sheetId(), params);
                 RangeRef selected = ownRange(root, mutation.sheetId(), params);
                 int declaredEndColumn = integer(params.get("affectedColumnEnd"), "Rows permutation affected column end");
-                int canonicalEndColumn = SheetRuleLifecycle.affectedColumnEnd(root, SnapshotMutationSupport.sheet(root, mutation.sheetId()), selected.endColumn());
-                if (declaredEndColumn < canonicalEndColumn || declaredEndColumn > SnapshotMutationSupport.MAX_COLUMN) {
-                    throw ServiceException.validation("Rows permutation affected column extent does not cover current worksheet metadata");
+                int canonicalEndColumn = SheetRuleLifecycle.affectedColumnEnd(root, SnapshotMutationSupport.sheet(root, mutation.sheetId()), selected.endColumn(), selected.startRow(), selected.endRow());
+                if (declaredEndColumn != canonicalEndColumn || declaredEndColumn > SnapshotMutationSupport.MAX_COLUMN) {
+                    throw ServiceException.validation("Rows permutation affected column extent does not match current worksheet metadata");
                 }
-                StructuralSnapshotReducer.permuteRows(root, mutation.sheetId(), selected, declaredEndColumn, params.get("sourceRows"));
+                structuralPatch = StructuralSnapshotReducer.permuteRows(root, mutation.sheetId(), selected, declaredEndColumn, params.get("sourceRows"));
+            }
+            case "range.move" -> {
+                SnapshotMutationSupport.validateKnownKeys(params, Set.of("sheetId", "sourceRange", "targetOrigin"), "range.move");
+                RangeRef source = ownRangeField(root, mutation.sheetId(), params, "sourceRange");
+                RangeRef target = moveTarget(root, mutation.sheetId(), source, params.get("targetOrigin"));
+                structuralPatch = StructuralSnapshotReducer.moveRange(root, mutation.sheetId(), source, target);
             }
             default -> throw ServiceException.validation("Unsupported structural mutation: " + id());
         }
-        return root;
+        List<StructuralPatch.DefinedNameOwnerDelta> definedNameOwnerDeltas = StructuralSnapshotReducer.definedNameOwnerDeltas(
+                nameModelsBefore, root.get("definedNameModels"));
+        if (structuralPatch != null || !definedNameOwnerDeltas.isEmpty()) {
+            structuralPatch = new StructuralPatch(
+                    StructuralPatch.VERSION,
+                    mutation.id(),
+                    structuralPatch == null ? List.of() : structuralPatch.formulaOwnerDeltas(),
+                    definedNameOwnerDeltas,
+                    structuralPatch == null ? List.of() : structuralPatch.rangeOwnerDeltas());
+        }
+        return new MutationApplication(root, structuralPatch);
     }
 
-    private void axis(ObjectNode root, String sheetId, ObjectNode params, FormulaReferenceTransformer.Axis axis, FormulaReferenceTransformer.Direction direction) {
+    private StructuralPatch axis(ObjectNode root, String sheetId, String mutationId, ObjectNode params, FormulaReferenceTransformer.Axis axis, FormulaReferenceTransformer.Direction direction) {
         int at = integer(params.get("at"), "Structural at");
         int count = integer(params.get("count"), "Structural count");
         if (count < 1) throw ServiceException.validation("Structural count must be positive");
-        StructuralSnapshotReducer.applyAxis(root, sheetId, axis, at, count, direction);
+        return StructuralSnapshotReducer.applyAxis(root, sheetId, mutationId, axis, at, count, direction);
     }
 
-    private void restore(ObjectNode root, String sheetId, ObjectNode params) {
+    private RangeRef axisAffectedRange(
+            ObjectNode root,
+            String sheetId,
+            ObjectNode params,
+            FormulaReferenceTransformer.Axis axis,
+            boolean insert
+    ) {
+        ObjectNode sheet = SnapshotMutationSupport.sheet(root, sheetId);
+        int at = integer(params.get("at"), "Structural at");
+        int count = integer(params.get("count"), "Structural count");
+        if (at < 0 || count < 1) throw ServiceException.validation("Structural axis range is invalid");
+
+        boolean rows = axis == FormulaReferenceTransformer.Axis.ROW;
+        int dimension = SnapshotMutationSupport.canonicalDimension(sheet, rows ? "rowCount" : "columnCount");
+        int orthogonalEnd = SnapshotMutationSupport.canonicalDimension(sheet, rows ? "columnCount" : "rowCount") - 1;
+        int maximumIndex = rows ? SnapshotMutationSupport.MAX_ROW : SnapshotMutationSupport.MAX_COLUMN;
+        long end = (long) at + count - 1;
+        boolean valid = insert
+                ? at <= dimension && (long) dimension + count <= (long) maximumIndex + 1
+                : at < dimension && count <= dimension - at;
+        if (!valid || end > maximumIndex) throw ServiceException.validation("Structural axis range exceeds worksheet bounds");
+
+        return rows
+                ? new RangeRef(sheetId, at, (int) end, 0, orthogonalEnd)
+                : new RangeRef(sheetId, 0, orthogonalEnd, at, (int) end);
+    }
+
+    private void restore(ObjectNode root, String sheetId, String mutationId, ObjectNode params) {
         JsonNode spec = params.get("spec");
-        StructuralSnapshotReducer.restoreShiftedCells(root, sheetId, spec, params.get("cells"));
+        StructuralSnapshotReducer.restoreShiftedCells(root, sheetId, mutationId, spec, params.get("cells"));
     }
 
-    private void applyCellShift(ObjectNode root, String sheetId, ObjectNode params) {
+    private StructuralPatch applyCellShift(ObjectNode root, String sheetId, String mutationId, ObjectNode params) {
         RangeRef range = ownRange(root, sheetId, params);
         RangeRef band = ownRangeField(root, sheetId, params, "affectedBand");
         String operation = text(params.get("operation"), "Cell shift operation");
         String axis = text(params.get("axis"), "Cell shift axis");
-        StructuralSnapshotReducer.shiftCells(root, sheetId, range, operation, axis, band);
+        return StructuralSnapshotReducer.shiftCells(root, sheetId, mutationId, range, operation, axis, band);
     }
 
     private RangeRef cellAffectedBand(ObjectNode root, String sheetId, ObjectNode params) {
@@ -111,6 +187,21 @@ final class StructuralMutationDescriptor extends CanonicalJsonMutationDescriptor
         RangeRef range = SnapshotMutationSupport.range(root, params.get(field));
         SnapshotMutationSupport.requireSheet(range, sheetId);
         return range;
+    }
+
+    private RangeRef moveTarget(ObjectNode root, String sheetId, RangeRef source, JsonNode rawOrigin) {
+        if (rawOrigin == null || !rawOrigin.isObject()) throw ServiceException.validation("Move target origin must be an object");
+        ObjectNode origin = (ObjectNode) rawOrigin;
+        SnapshotMutationSupport.validateKnownKeys(origin, Set.of("row", "column"), "Move target origin");
+        int row = integer(origin.get("row"), "Move target row");
+        int column = integer(origin.get("column"), "Move target column");
+        long endRow = (long) row + source.endRow() - source.startRow();
+        long endColumn = (long) column + source.endColumn() - source.startColumn();
+        if (endRow > SnapshotMutationSupport.MAX_ROW || endColumn > SnapshotMutationSupport.MAX_COLUMN) {
+            throw ServiceException.validation("Move target exceeds worksheet bounds");
+        }
+        SnapshotMutationSupport.sheet(root, sheetId);
+        return new RangeRef(sheetId, row, (int) endRow, column, (int) endColumn);
     }
 
     private String text(JsonNode value, String label) {

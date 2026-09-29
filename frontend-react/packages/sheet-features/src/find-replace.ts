@@ -138,10 +138,6 @@ function fullRange(sheet: WorksheetModel): RangeRef {
   return { sheetId: sheet.id, startRow: 0, endRow: sheet.rowCount - 1, startColumn: 0, endColumn: sheet.columnCount - 1 };
 }
 
-function inRange(row: number, column: number, range: RangeRef): boolean {
-  return row >= range.startRow && row <= range.endRow && column >= range.startColumn && column <= range.endColumn;
-}
-
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -188,10 +184,9 @@ function scalarText(value: unknown): string {
   throw new Error(`Find resolved value has unsupported type: ${typeof value}`);
 }
 
-function cellValueText(sheet: WorksheetModel, row: number, column: number, resolveCellValue?: FindResolveCellValue): string {
+function cellValueText(sheet: WorksheetModel, row: number, column: number, cell: CellData, resolveCellValue?: FindResolveCellValue): string {
   const resolved = resolveCellValue?.(sheet, row, column);
-  const cell = sheet.cells.get(row, column);
-  return scalarText(resolved === undefined ? (cell?.formulaValue ?? cell?.value) : resolved);
+  return scalarText(resolved === undefined ? (cell.formulaValue ?? cell.value) : resolved);
 }
 
 export type FindResolveCellValue = (sheet: WorksheetModel, row: number, column: number) => unknown;
@@ -217,11 +212,11 @@ interface FindMetadataComment {
 }
 
 interface FindMetadataBucket {
-  note?: CellNote;
+  note?: Pick<CellNote, 'id' | 'text'>;
   comments: FindMetadataComment[];
 }
 
-function buildFindMetadataIndex(sheet: WorksheetModel): Map<string, FindMetadataBucket> {
+function buildFindMetadataIndex(sheet: WorksheetModel, range: RangeRef): Map<string, FindMetadataBucket> {
   const index = new Map<string, FindMetadataBucket>();
   const bucketFor = (key: string): FindMetadataBucket => {
     const existing = index.get(key);
@@ -230,9 +225,10 @@ function buildFindMetadataIndex(sheet: WorksheetModel): Map<string, FindMetadata
     index.set(key, created);
     return created;
   };
-  for (const entry of sheet.review.noteEntries()) bucketFor(entry.key).note = entry.note;
-  for (const thread of sheet.review.threadEntries()) {
-    bucketFor(`${thread.row}:${thread.column}`).comments.push({ id: thread.id, text: thread.text });
+  for (const entry of sheet.review.textEntriesInRange(range.startRow, range.endRow, range.startColumn, range.endColumn)) {
+    const bucket = bucketFor(`${entry.row}:${entry.column}`);
+    if (entry.note) bucket.note = entry.note;
+    for (const thread of entry.threads) bucket.comments.push({ id: thread.id, text: thread.text });
   }
   return index;
 }
@@ -246,55 +242,53 @@ function scanSheet(
   resolveCellValue?: FindResolveCellValue,
 ): void {
   const targetSet = new Set(targets);
-  const metadataIndex = buildFindMetadataIndex(sheet);
-  const cells = new Map<string, CellData>();
-  sheet.cells.forEach((cell, row, column) => {
-    if (inRange(row, column, range)) cells.set(`${row}:${column}`, cell);
-  });
-  const coordinates = [...cells.keys()].map((key) => key.split(':').map(Number) as [number, number]);
-  for (const [row, column] of coordinates.sort(([ar, ac], [br, bc]) => ar - br || ac - bc)) {
-    const cell = cells.get(`${row}:${column}`)!;
-    // In the canonical "values + formulas" family a formula cell is one
-    // logical search item: formula text takes precedence over its result.
-    // A values-only search still searches the resolved formula result.
-    if (targetSet.has('values') && (cell.formula === undefined || !targetSet.has('formulas'))) {
-      const text = cellValueText(sheet, row, column, resolveCellValue);
-      if (matchesFindText(text, params)) addMatch(matches, sheet, row, column, 'values', text);
-    }
-    if (targetSet.has('formulas') && cell.formula !== undefined && matchesFindText(cell.formula, params)) {
-      addMatch(matches, sheet, row, column, 'formulas', cell.formula);
-    }
+  const hasCellTargets = targetSet.has('values') || targetSet.has('formulas');
+  const metadataIndex = targetSet.has('notes') || targetSet.has('comments')
+    ? buildFindMetadataIndex(sheet, range)
+    : undefined;
+  const expression = matcher(params);
+  const matchesText = (text: string) => {
+    expression.lastIndex = 0;
+    return expression.test(text);
+  };
+  const appendMetadataMatches = (row: number, column: number, metadata: FindMetadataBucket | undefined) => {
     if (targetSet.has('notes')) {
-      const note = metadataIndex.get(`${row}:${column}`)?.note;
-      if (note && matchesFindText(note.text, params)) addMatch(matches, sheet, row, column, 'notes', note.text, note.id);
+      const note = metadata?.note;
+      if (note && matchesText(note.text)) addMatch(matches, sheet, row, column, 'notes', note.text, note.id);
     }
     if (targetSet.has('comments')) {
-      const comments = metadataIndex.get(`${row}:${column}`)?.comments ?? [];
-      for (const comment of comments) if (matchesFindText(comment.text, params)) addMatch(matches, sheet, row, column, 'comments', comment.text, comment.id);
+      for (const comment of metadata?.comments ?? []) {
+        if (matchesText(comment.text)) addMatch(matches, sheet, row, column, 'comments', comment.text, comment.id);
+      }
     }
-  }
+  };
+
+  if (hasCellTargets) sheet.cells.forEachInRangeWithoutHydration(
+    range.startRow, range.endRow, range.startColumn, range.endColumn,
+    (cell, row, column) => {
+      // In the canonical "values + formulas" family a formula cell is one
+      // logical search item: formula text takes precedence over its result.
+      // A values-only search still searches the resolved formula result.
+      if (targetSet.has('values') && (cell.formula === undefined || !targetSet.has('formulas'))) {
+        const text = cellValueText(sheet, row, column, cell, resolveCellValue);
+        if (matchesText(text)) addMatch(matches, sheet, row, column, 'values', text);
+      }
+      if (targetSet.has('formulas') && cell.formula !== undefined && matchesText(cell.formula)) {
+        addMatch(matches, sheet, row, column, 'formulas', cell.formula);
+      }
+    },
+  );
+
   // Notes/comments may be attached to an otherwise empty cell and therefore
-  // are not present in CellMatrix. Include them in the same row/column order.
-  const metadataCoordinates = new Set(coordinates.map(([row, column]) => `${row}:${column}`));
-  const extras: Array<{ row: number; column: number }> = [];
-  for (const [key] of metadataIndex) {
+  // are not present in CellMatrix. Cell matches are globally sorted by planFind,
+  // so no per-sheet coordinate copy or sort is needed here.
+  if (!metadataIndex) return;
+  for (const [key, metadata] of metadataIndex) {
     const parts = key.split(':').map(Number);
     const row = parts[0];
     const column = parts[1];
     if (row === undefined || column === undefined) continue;
-    if (!metadataCoordinates.has(key) && inRange(row, column, range)) extras.push({ row, column });
-  }
-  for (const { row, column } of extras.sort((a, b) => a.row - b.row || a.column - b.column)) {
-    const metadata = metadataIndex.get(`${row}:${column}`);
-    if (targetSet.has('notes')) {
-      const note = metadata?.note;
-      if (note && matchesFindText(note.text, params)) addMatch(matches, sheet, row, column, 'notes', note.text, note.id);
-    }
-    if (targetSet.has('comments')) {
-      for (const comment of metadata?.comments ?? []) {
-        if (matchesFindText(comment.text, params)) addMatch(matches, sheet, row, column, 'comments', comment.text, comment.id);
-      }
-    }
+    appendMetadataMatches(row, column, metadata);
   }
 }
 
@@ -308,6 +302,7 @@ export function planFind(workbook: WorkbookModel, params: FindSearchParams, reso
   const selectedSheet = workbook.getSheet(params.sheetId);
   const sheets = params.scope === 'workbook' ? workbook.getSheets() : [selectedSheet];
   const matches: FindMatch[] = [];
+  const sheetOrder = new Map(sheets.map((sheet, index) => [sheet.id, index] as const));
   for (const sheet of sheets) {
     const range = params.scope === 'selection' || (params.range && sheet.id === params.sheetId)
       ? normalizeRange(params.range ?? params.dataRegionContext?.range ?? fullRange(sheet), sheet)
@@ -321,8 +316,8 @@ export function planFind(workbook: WorkbookModel, params: FindSearchParams, reso
     ? (a: FindMatch, b: FindMatch) => a.row - b.row || a.column - b.column
     : (a: FindMatch, b: FindMatch) => a.column - b.column || a.row - b.row;
   matches.sort((a, b) => {
-    const sheetOrder = sheets.indexOf(workbook.getSheet(a.sheetId)) - sheets.indexOf(workbook.getSheet(b.sheetId));
-    return sheetOrder || compareCoordinates(a, b) || (targetRank.get(a.target)! - targetRank.get(b.target)!) || a.key.localeCompare(b.key);
+    const sheetOrderDifference = sheetOrder.get(a.sheetId)! - sheetOrder.get(b.sheetId)!;
+    return sheetOrderDifference || compareCoordinates(a, b) || (targetRank.get(a.target)! - targetRank.get(b.target)!) || a.key.localeCompare(b.key);
   });
   return { matches, total: matches.length };
 }

@@ -32,8 +32,14 @@ public final class DataRegionContextValidator {
         validateOwnerAndHeader(root, sheetId, context, contextRange);
         JsonNode hasHeader = params.get("hasHeader");
         JsonNode header = context.get("header");
-        if (hasHeader != null && (!hasHeader.isBoolean() || hasHeader.asBoolean() != "present".equals(header.path("kind").asText()))) {
-            throw ServiceException.validation("Sort header flag does not match DataRegionContext");
+        if (hasHeader != null && !hasHeader.isBoolean()) {
+            throw ServiceException.validation("Sort header flag must be a boolean");
+        }
+        ObjectNode owner = (ObjectNode) context.get("owner");
+        // Worksheet detection is advisory; a Sheet Table header is canonical metadata.
+        if (hasHeader != null && "sheet-table".equals(owner.path("kind").asText())
+                && hasHeader.asBoolean() != "present".equals(header.path("kind").asText())) {
+            throw ServiceException.validation("Sort header flag does not match Sheet Table metadata");
         }
     }
 
@@ -85,9 +91,9 @@ public final class DataRegionContextValidator {
                 RangeRef tableRange = range(raw.get("range"), sheetId, "Sheet Table range");
                 if (contains(tableRange, range.startRow(), range.startColumn())) throw ServiceException.validation("Worksheet DataRegionContext points into a Sheet Table");
             }
-            boolean inferredHeader = inferWorksheetHeader(sheet, range);
-            if (inferredHeader != "present".equals(headerKind)) throw ServiceException.validation("DataRegionContext worksheet header is stale");
-            if (inferredHeader && header.path("row").asInt(-1) != range.startRow()) throw ServiceException.validation("Worksheet DataRegionContext header row is invalid");
+            if ("present".equals(headerKind) && header.path("row").asInt(-1) != range.startRow()) {
+                throw ServiceException.validation("Worksheet DataRegionContext header row is invalid");
+            }
         } else {
             throw ServiceException.validation("DataRegionContext owner kind is invalid");
         }
@@ -121,17 +127,4 @@ public final class DataRegionContextValidator {
         return row >= range.startRow() && row <= range.endRow() && column >= range.startColumn() && column <= range.endColumn();
     }
 
-    private static boolean inferWorksheetHeader(ObjectNode sheet, RangeRef range) {
-        JsonNode row = sheet.path("cells").path(Integer.toString(range.startRow()));
-        int populated = 0;
-        int textual = 0;
-        for (int column = range.startColumn(); column <= range.endColumn(); column++) {
-            JsonNode cell = row.path(Integer.toString(column));
-            JsonNode value = cell.get("value");
-            if (value == null || value.isNull() || (value.isTextual() && value.asText().isEmpty())) continue;
-            populated++;
-            if (value.isTextual()) textual++;
-        }
-        return populated > 0 && populated == textual;
-    }
 }

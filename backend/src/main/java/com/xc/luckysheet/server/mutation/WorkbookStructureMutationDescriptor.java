@@ -6,7 +6,9 @@ import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.xc.luckysheet.server.contract.OperationMutation;
 import com.xc.luckysheet.server.contract.RangeRef;
+import com.xc.luckysheet.server.contract.StructuralPatch;
 import com.xc.luckysheet.server.contract.WorkbookAclRole;
+import com.xc.luckysheet.server.contract.WorkbookSnapshotValidator;
 import com.xc.luckysheet.server.service.ServiceException;
 
 import java.net.URI;
@@ -20,6 +22,11 @@ import java.util.Set;
 
 /** Canonical snapshot reducers for worksheet lifecycle and persisted hyperlinks. */
 final class WorkbookStructureMutationDescriptor extends CanonicalJsonMutationDescriptor {
+    private static final List<String> CHART_TEXT_FORMULA_FIELDS = List.of(
+            "titleText.linkedFormula", "legend.text.linkedFormula",
+            "categoryAxis.titleText.linkedFormula", "valueAxis.titleText.linkedFormula",
+            "secondaryCategoryAxis.titleText.linkedFormula", "secondaryValueAxis.titleText.linkedFormula",
+            "dataTable.font.linkedFormula");
     static final Set<String> IDS = Set.of(
             "sheet.add", "sheet.remove", "sheet.rename", "sheet.duplicated", "sheet.restore",
             "hyperlink.set", "hyperlink.remove"
@@ -41,19 +48,25 @@ final class WorkbookStructureMutationDescriptor extends CanonicalJsonMutationDes
 
     @Override
     public JsonNode apply(JsonNode snapshot, OperationMutation mutation) {
+        return applyWithPatch(snapshot, mutation).snapshot();
+    }
+
+    @Override
+    public MutationApplication applyWithPatch(JsonNode snapshot, OperationMutation mutation) {
         ObjectNode root = SnapshotMutationSupport.root(snapshot.deepCopy());
         ObjectNode params = SnapshotMutationSupport.params(mutation);
+        StructuralPatch structuralPatch = null;
         switch (id()) {
             case "sheet.add" -> add(root, mutation.sheetId(), params);
             case "sheet.remove" -> remove(root, params);
-            case "sheet.rename" -> rename(root, mutation.sheetId(), params);
+            case "sheet.rename" -> structuralPatch = rename(root, mutation.sheetId(), params);
             case "sheet.duplicated" -> duplicate(root, params);
             case "sheet.restore" -> restore(root, params);
             case "hyperlink.set" -> setHyperlink(root, mutation.sheetId(), params);
             case "hyperlink.remove" -> removeHyperlink(root, mutation.sheetId(), params);
             default -> throw ServiceException.validation("Unsupported workbook structure mutation: " + id());
         }
-        return root;
+        return new MutationApplication(root, structuralPatch);
     }
 
     private void add(ObjectNode root, String mutationSheetId, ObjectNode params) {
@@ -64,6 +77,7 @@ final class WorkbookStructureMutationDescriptor extends CanonicalJsonMutationDes
         int rows = params.has("rowCount") ? dimension(params.get("rowCount"), "rowCount") : 1000;
         int columns = params.has("columnCount") ? dimension(params.get("columnCount"), "columnCount") : 26;
         ArrayNode sheets = SnapshotMutationSupport.sheets(root);
+        WorkbookSnapshotValidator.requireWorksheetNameAvailable(sheets, name, null);
         ObjectNode sheet = JsonNodeFactory.instance.objectNode();
         sheet.put("kind", "worksheet");
         sheet.put("id", id);
@@ -102,14 +116,18 @@ final class WorkbookStructureMutationDescriptor extends CanonicalJsonMutationDes
         removeSheetScopedDocuments(root, id);
     }
 
-    private void rename(ObjectNode root, String mutationSheetId, ObjectNode params) {
+    private StructuralPatch rename(ObjectNode root, String mutationSheetId, ObjectNode params) {
         String sheetId = SnapshotMutationSupport.text(params, "sheetId");
         String name = SnapshotMutationSupport.text(params, "name").trim();
         if (!mutationSheetId.equals(sheetId) || name.isBlank()) throw ServiceException.validation("sheet.rename identity is invalid");
         ObjectNode sheet = SnapshotMutationSupport.sheet(root, sheetId);
         String previousName = sheet.path("name").asText();
-        if (!previousName.equals(name)) rewriteSheetReferences(root, previousName, name);
+        WorkbookSnapshotValidator.requireWorksheetNameAvailable(SnapshotMutationSupport.sheets(root), name, sheetId);
+        StructuralPatch patch = previousName.equals(name)
+                ? new StructuralPatch(StructuralPatch.VERSION, "sheet.rename", List.of(), List.of(), List.of())
+                : StructuralSnapshotReducer.renameSheetReferences(root, sheetId, previousName, name);
         sheet.put("name", name);
+        return patch;
     }
 
     private void duplicate(ObjectNode root, ObjectNode params) {
@@ -119,6 +137,7 @@ final class WorkbookStructureMutationDescriptor extends CanonicalJsonMutationDes
         if (newName.isBlank() || findSheetIndex(root, newId) >= 0) throw ServiceException.conflict("Duplicate sheet identity is invalid");
         int sourceIndex = findSheetIndex(root, sourceSheetId);
         if (sourceIndex < 0) throw ServiceException.notFound("Sheet not found: " + sourceSheetId);
+        WorkbookSnapshotValidator.requireWorksheetNameAvailable(SnapshotMutationSupport.sheets(root), newName, null);
         ObjectNode source = (ObjectNode) SnapshotMutationSupport.sheets(root).get(sourceIndex);
         String sourceName = source.path("name").asText();
         ObjectNode copy = source.deepCopy();
@@ -136,6 +155,7 @@ final class WorkbookStructureMutationDescriptor extends CanonicalJsonMutationDes
         String id = sheet.path("id").asText().trim();
         if (id.isBlank() || findSheetIndex(root, id) >= 0) throw ServiceException.conflict("Restored sheet identity is invalid");
         requireSheetShape(sheet);
+        WorkbookSnapshotValidator.requireWorksheetNameAvailable(SnapshotMutationSupport.sheets(root), sheet.path("name").asText(), null);
         int index = params.path("index").isInt() ? params.path("index").intValue() : SnapshotMutationSupport.sheets(root).size();
         int bounded = Math.max(0, Math.min(index, SnapshotMutationSupport.sheets(root).size()));
         SnapshotMutationSupport.sheets(root).insert(bounded, sheet);
@@ -279,7 +299,8 @@ final class WorkbookStructureMutationDescriptor extends CanonicalJsonMutationDes
     }
 
     private void requireSheetShape(ObjectNode sheet) {
-        if (sheet.path("name").asText().isBlank() || !sheet.path("cells").isObject()
+        if (!sheet.path("id").isTextual() || !sheet.path("id").asText().equals(sheet.path("id").asText().trim())
+                || !sheet.path("name").isTextual() || sheet.path("name").asText().isBlank() || !sheet.path("cells").isObject()
                 || !sheet.path("merges").isArray() || !sheet.path("pivots").isArray() || !sheet.path("sparklines").isArray()
                 || !sheet.path("drawings").isArray() || !sheet.path("drawingPayloads").isObject()) {
             throw ServiceException.validation("Restored sheet is not canonical");
@@ -305,6 +326,8 @@ final class WorkbookStructureMutationDescriptor extends CanonicalJsonMutationDes
                 ObjectNode copy = ((ObjectNode) raw).deepCopy();
                 copy.put("sheetId", targetSheetId);
                 if (copy.path("formula").isTextual()) copy.put("formula", FormulaReferenceTransformer.renameSheet(copy.path("formula").asText(), sourceName, targetName));
+                JsonNode anchor = copy.get("anchor");
+                if (anchor != null && anchor.isObject() && sourceSheetId.equals(anchor.path("sheetId").asText())) ((ObjectNode) anchor).put("sheetId", targetSheetId);
                 copies.add(copy);
             }
             for (JsonNode copy : copies) ((ArrayNode) names).add(copy);
@@ -347,6 +370,10 @@ final class WorkbookStructureMutationDescriptor extends CanonicalJsonMutationDes
 
     private void validateNoExternalSheetReferences(ObjectNode root, String sourceSheetId, String sourceName) {
         List<String> references = new ArrayList<>();
+        ObjectNode deletedSheet = SnapshotMutationSupport.sheet(root, sourceSheetId);
+        Set<String> deletedPivotIds = collectIds(deletedSheet.get("pivots"));
+        Set<String> deletedSheetTableIds = collectIds(deletedSheet.get("sheetTables"));
+        Set<String> deletedDrawingIds = collectIds(deletedSheet.get("drawings"));
         for (JsonNode rawSheet : SnapshotMutationSupport.sheets(root)) {
             ObjectNode sheet = (ObjectNode) rawSheet;
             if (sourceSheetId.equals(sheet.path("id").asText())) continue;
@@ -354,28 +381,247 @@ final class WorkbookStructureMutationDescriptor extends CanonicalJsonMutationDes
             if (cells != null && cells.isObject()) cells.fields().forEachRemaining(row -> {
                 if (!row.getValue().isObject()) return;
                 row.getValue().fields().forEachRemaining(cell -> {
+                    if (!cell.getValue().isObject()) return;
                     JsonNode formula = cell.getValue().get("formula");
-                    if (formula != null && formula.isTextual() && !formula.asText().equals(FormulaReferenceTransformer.renameSheet(formula.asText(), sourceName, sourceName + "__deleted__"))) references.add("cell-formula:" + formula.asText());
+                    addFormulaReference(references, "cell-formula", formula, sourceName);
+                    addFormulaReference(references, "cell-source-formula", cell.getValue().path("formulaMetadata").get("sourceFormula"), sourceName);
+                    JsonNode presentation = cell.getValue().get("presentation");
+                    if (presentation != null && "barcode".equals(presentation.path("kind").asText())) {
+                        JsonNode barcodeSource = presentation.get("source");
+                        if (barcodeSource != null && "formula".equals(barcodeSource.path("kind").asText())) {
+                            addFormulaReference(references, "barcode-formula", barcodeSource.get("formula"), sourceName);
+                        }
+                    }
                 });
             });
+            JsonNode tableSheet = sheet.get("tableSheet");
+            if (tableSheet != null && tableSheet.isObject()) {
+                JsonNode columns = optionalArray(tableSheet, "columns");
+                if (columns != null) for (JsonNode column : columns) {
+                    addFormulaReference(references, "table-sheet-formula:" + column.path("fieldId").asText(), column.get("formula"), sourceName);
+                }
+            }
             JsonNode hyperlinks = sheet.get("hyperlinks");
             if (hyperlinks != null && hyperlinks.isArray()) for (JsonNode hyperlink : hyperlinks) if (sourceSheetId.equals(hyperlink.path("hyperlink").path("target").path("sheetId").asText())) references.add("hyperlink:" + hyperlink.path("hyperlink").path("id").asText());
-            for (String field : List.of("merges", "conditionalFormats", "dataValidations", "dataRegions", "sheetTables", "spillRanges", "protectionRules")) {
+            for (String field : List.of("merges", "conditionalFormats", "dataValidations", "dataRegions", "sheetTables", "spillRanges", "protectionRules", "sparklines")) {
                 JsonNode values = sheet.get(field);
                 if (values != null && values.isArray()) for (JsonNode value : values) if (containsDeletedRange(value, sourceSheetId)) references.add(field + ":" + value.path("id").asText());
             }
+            for (String field : List.of("conditionalFormats", "dataValidations")) {
+                JsonNode values = sheet.get(field);
+                if (values != null && values.isArray()) for (JsonNode value : values) inspectRuleReferences(references, value, sourceName, sourceSheetId, field);
+            }
+            for (String field : List.of("bandedRule", "autoFilter")) {
+                JsonNode value = sheet.get(field);
+                if (containsDeletedRange(value, sourceSheetId)) references.add(field + ":" + value.path("id").asText());
+            }
             JsonNode pivots = sheet.get("pivots");
-            if (pivots != null && pivots.isArray()) for (JsonNode pivot : pivots) if (containsDeletedPivotReference(pivot, sourceSheetId)) references.add("pivot:" + pivot.path("id").asText());
-            JsonNode sparklines = sheet.get("sparklines");
-            if (sparklines != null && sparklines.isArray()) for (JsonNode sparkline : sparklines) if (containsDeletedRange(sparkline, sourceSheetId)) references.add("sparkline:" + sparkline.path("id").asText());
+            if (pivots != null && pivots.isArray()) for (JsonNode pivot : pivots) if (containsDeletedPivotReference(pivot, sourceSheetId, deletedSheetTableIds)) references.add("pivot:" + pivot.path("id").asText());
+            JsonNode drawings = sheet.get("drawings");
+            if (drawings != null && drawings.isArray()) for (JsonNode drawing : drawings) {
+                if (sourceSheetId.equals(drawing.path("sheetId").asText())) references.add("drawing-owner:" + drawing.path("id").asText());
+            }
+            JsonNode drawingGroups = sheet.get("drawingGroups");
+            if (drawingGroups != null && drawingGroups.isArray()) for (JsonNode group : drawingGroups) {
+                if (sourceSheetId.equals(group.path("sheetId").asText())) references.add("drawing-group-owner:" + group.path("id").asText());
+                JsonNode members = group.get("memberDrawingIds");
+                if (members != null && members.isArray()) for (JsonNode member : members) {
+                    if (deletedDrawingIds.contains(member.asText())) references.add("drawing-group-member:" + group.path("id").asText());
+                }
+            }
+            inspectDrawingPayloadReferences(references, sheet.get("drawingPayloads"), sourceSheetId, sourceName, deletedPivotIds, deletedSheetTableIds, deletedDrawingIds);
+            if (sourceSheetId.equals(sheet.path("reportSheet").path("templateSheetId").asText())) references.add("report-template:" + sheet.path("id").asText());
         }
         JsonNode names = root.get("definedNameModels");
-        if (names != null && names.isArray()) for (JsonNode name : names) if (!("sheet".equals(name.path("scope").asText()) && sourceSheetId.equals(name.path("sheetId").asText())) && name.path("formula").isTextual() && !name.path("formula").asText().equals(FormulaReferenceTransformer.renameSheet(name.path("formula").asText(), sourceName, sourceName + "__deleted__"))) references.add("defined-name:" + name.path("name").asText());
+        if (names != null && names.isArray()) for (JsonNode name : names) {
+            if ("sheet".equals(name.path("scope").asText()) && sourceSheetId.equals(name.path("sheetId").asText())) continue;
+            addFormulaReference(references, "defined-name:" + name.path("name").asText(), name.get("formula"), sourceName);
+            if (sourceSheetId.equals(name.path("anchor").path("sheetId").asText())) references.add("defined-name-anchor:" + name.path("name").asText());
+        }
+        JsonNode legacyNames = root.get("definedNames");
+        if (legacyNames != null && legacyNames.isObject()) legacyNames.fields().forEachRemaining(entry ->
+                addFormulaReference(references, "defined-name-projection:" + entry.getKey(), entry.getValue(), sourceName));
+        inspectWorkbookDataModelReferences(references, root, sourceSheetId, sourceName);
+        inspectWorkbookStyleTemplateReferences(references, root, sourceSheetId, sourceName);
+        inspectQueryReferences(references, root, sourceSheetId, deletedPivotIds, deletedSheetTableIds);
+        inspectPrintDocumentReferences(references, root, sourceSheetId);
         if (!references.isEmpty()) throw ServiceException.conflict("Cannot delete sheet with external references: " + String.join(", ", references));
     }
 
+    private Set<String> collectIds(JsonNode values) {
+        Set<String> ids = new HashSet<>();
+        if (values == null || values.isNull()) return ids;
+        if (!values.isArray()) throw ServiceException.validation("Worksheet reference owner must be an array");
+        for (JsonNode value : values) if (value.path("id").isTextual()) ids.add(value.path("id").asText());
+        return ids;
+    }
+
+    private void addFormulaReference(List<String> references, String participant, JsonNode formula, String sourceName) {
+        if (formula == null || !formula.isTextual()) return;
+        String value = formula.asText();
+        if (!value.equals(FormulaReferenceTransformer.renameSheet(value, sourceName, sourceName + "__deleted__"))) {
+            references.add(participant + ":" + value);
+        }
+    }
+
+    private void inspectRuleReferences(List<String> references, JsonNode rule, String sourceName, String sourceSheetId, String ownerKind) {
+        if (!rule.isObject()) return;
+        String ruleId = rule.path("id").asText(ownerKind);
+        if (sourceSheetId.equals(rule.path("formulaAnchor").path("sheetId").asText())) references.add(ownerKind + "-formula-anchor:" + ruleId);
+        JsonNode listSource = rule.get("listSource");
+        if (listSource != null && sourceSheetId.equals(listSource.path("range").path("sheetId").asText())) references.add(ownerKind + "-list-range:" + ruleId);
+        for (String field : List.of("value1", "value2", "formula1", "formula2")) {
+            addFormulaReference(references, ownerKind + "." + field + ":" + ruleId, rule.get(field), sourceName);
+        }
+        if (listSource != null && "formula".equals(listSource.path("kind").asText())) {
+            addFormulaReference(references, ownerKind + ".listSource:" + ruleId, listSource.get("formula"), sourceName);
+        }
+    }
+
+    private void inspectDrawingPayloadReferences(
+            List<String> references,
+            JsonNode payloads,
+            String sourceSheetId,
+            String sourceName,
+            Set<String> deletedPivotIds,
+            Set<String> deletedSheetTableIds,
+            Set<String> deletedDrawingIds
+    ) {
+        if (payloads == null || payloads.isNull()) return;
+        if (!payloads.isObject()) throw ServiceException.validation("drawingPayloads must be an object");
+        payloads.fields().forEachRemaining(entry -> {
+            JsonNode payload = entry.getValue();
+            if (!payload.isObject()) throw ServiceException.validation("Drawing payload must be an object: " + entry.getKey());
+            String participant = "drawing-payload:" + entry.getKey();
+            String kind = payload.path("kind").asText();
+            if ("camera".equals(kind) || "screenshot".equals(kind)) {
+                if (sourceSheetId.equals(payload.path("sourceRange").path("sheetId").asText())) references.add(participant + ":sourceRange");
+            } else if ("form-control".equals(kind)) {
+                if (sourceSheetId.equals(payload.path("cellLink").path("sheetId").asText())) references.add(participant + ":cellLink");
+                if (sourceSheetId.equals(payload.path("inputRange").path("sheetId").asText())) references.add(participant + ":inputRange");
+            } else if ("connector".equals(kind)) {
+                for (String endpoint : List.of("start", "end")) {
+                    if (deletedDrawingIds.contains(payload.path(endpoint).path("drawingId").asText())) references.add(participant + ":" + endpoint);
+                }
+            } else if ("shape".equals(kind)) {
+                JsonNode hyperlink = payload.get("hyperlink");
+                if (hyperlink != null && "sheet".equals(hyperlink.path("kind").asText())
+                        && sourceSheetId.equals(hyperlink.path("sheetId").asText())) references.add(participant + ":hyperlink");
+                addFormulaReference(references, participant + ".propertyFormula", payload.get("propertyFormula"), sourceName);
+            } else if ("chart".equals(kind)) {
+                for (String field : CHART_TEXT_FORMULA_FIELDS) {
+                    addFormulaReference(references, participant + "." + field,
+                            readChartTextFormula((ObjectNode) payload, field), sourceName);
+                }
+                JsonNode source = payload.get("source");
+                if (source == null || !source.isObject()) throw ServiceException.validation("Chart source must be canonical");
+                String sourceKind = source.path("kind").asText();
+                if ("worksheet-ranges".equals(sourceKind)) {
+                    JsonNode ranges = optionalArray(source, "ranges");
+                    if (ranges != null) for (JsonNode range : ranges) if (sourceSheetId.equals(range.path("sheetId").asText())) references.add(participant + ":source");
+                } else if ("report-range".equals(sourceKind)) {
+                    if (sourceSheetId.equals(source.path("range").path("sheetId").asText())) references.add(participant + ":source");
+                } else if ("pivot".equals(sourceKind) && deletedPivotIds.contains(source.path("pivotId").asText())) {
+                    references.add(participant + ":pivot-source");
+                } else if ("table".equals(sourceKind) && deletedSheetTableIds.contains(source.path("tableId").asText())) {
+                    references.add(participant + ":table-source");
+                }
+                if (sourceSheetId.equals(payload.path("categoryRange").path("sheetId").asText())) references.add(participant + ":categoryRange");
+                JsonNode seriesValues = optionalArray(payload, "series");
+                if (seriesValues != null) for (JsonNode series : seriesValues) {
+                    for (String field : List.of("range", "xRange", "yRange", "sizeRange", "categoryRange")) {
+                        if (sourceSheetId.equals(series.path(field).path("sheetId").asText())) references.add(participant + ".series." + field);
+                    }
+                    JsonNode stockRoles = series.get("stockRoles");
+                    if (stockRoles != null && stockRoles.isObject()) for (String field : List.of("open", "high", "low", "close", "volume")) {
+                        if (sourceSheetId.equals(stockRoles.path(field).path("sheetId").asText())) references.add(participant + ".series.stockRoles." + field);
+                    }
+                    JsonNode errorBars = series.get("errorBars");
+                    if (errorBars != null && errorBars.isObject()) for (String field : List.of("plusRange", "minusRange")) {
+                        if (sourceSheetId.equals(errorBars.path(field).path("sheetId").asText())) references.add(participant + ".series.errorBars." + field);
+                    }
+                    JsonNode dataLabels = series.get("dataLabels");
+                    if (dataLabels != null && sourceSheetId.equals(dataLabels.path("valuesFromCells").path("sheetId").asText())) references.add(participant + ".series.dataLabels.valuesFromCells");
+                }
+            } else if ("slicer".equals(kind) || "timeline".equals(kind)) {
+                if (deletedPivotIds.contains(payload.path("pivotId").asText())) references.add(participant + ":pivot");
+                JsonNode connections = optionalArray(payload, "connections");
+                if (connections != null) for (JsonNode connection : connections) {
+                    if (deletedPivotIds.contains(connection.path("pivotId").asText())) references.add(participant + ":connection");
+                }
+            }
+        });
+    }
+
+    private void inspectWorkbookDataModelReferences(List<String> references, ObjectNode root, String sourceSheetId, String sourceName) {
+        JsonNode dataModel = root.get("dataModel");
+        if (dataModel == null || dataModel.isNull()) return;
+        if (!dataModel.isObject()) throw ServiceException.validation("dataModel must be an object");
+        for (String collection : List.of("sources", "tables")) {
+            JsonNode values = optionalArray(dataModel, collection);
+            if (values == null) continue;
+            for (JsonNode value : values) {
+                if (sourceSheetId.equals(value.path("sourceSheetId").asText())
+                        || sourceSheetId.equals(value.path("sourceRange").path("sheetId").asText())) references.add("workbook-" + collection + ":" + value.path("id").asText());
+            }
+        }
+        JsonNode views = optionalArray(dataModel, "views");
+        if (views != null) for (JsonNode view : views) {
+            JsonNode fields = optionalArray(view, "fields");
+            if (fields == null) continue;
+            for (JsonNode field : fields) addFormulaReference(references, "data-view:" + view.path("id").asText() + "." + field.path("fieldId").asText(), field.get("formula"), sourceName);
+        }
+    }
+
+    private void inspectWorkbookStyleTemplateReferences(List<String> references, ObjectNode root, String sourceSheetId, String sourceName) {
+        JsonNode templates = optionalArray(root, "cellStyleTemplates");
+        if (templates == null) return;
+        for (JsonNode template : templates) {
+            JsonNode validation = template.get("dataValidation");
+            if (validation == null || !validation.isObject()) continue;
+            String templateId = template.path("id").asText();
+            if (sourceSheetId.equals(validation.path("formulaAnchor").path("sheetId").asText())) references.add("cell-style-template-anchor:" + templateId);
+            JsonNode listSource = validation.get("listSource");
+            if (listSource != null && sourceSheetId.equals(listSource.path("range").path("sheetId").asText())) references.add("cell-style-template-list-range:" + templateId);
+            for (String field : List.of("formula1", "formula2")) addFormulaReference(references, "cell-style-template." + field + ":" + templateId, validation.get(field), sourceName);
+            if (listSource != null && "formula".equals(listSource.path("kind").asText())) {
+                addFormulaReference(references, "cell-style-template.listSource:" + templateId, listSource.get("formula"), sourceName);
+            }
+        }
+    }
+
+    private void inspectQueryReferences(List<String> references, ObjectNode root, String sourceSheetId, Set<String> deletedPivotIds, Set<String> deletedSheetTableIds) {
+        JsonNode queries = optionalArray(root, "queryDefinitions");
+        if (queries == null) return;
+        for (JsonNode query : queries) {
+            JsonNode target = query.get("lastTarget");
+            if (target == null || !target.isObject()) continue;
+            String queryId = query.path("id").asText();
+            if (sourceSheetId.equals(target.path("sheetId").asText())) references.add("query-load-target:" + queryId);
+            if ("pivot-source".equals(target.path("kind").asText()) && deletedPivotIds.contains(target.path("pivotId").asText())) references.add("query-pivot-target:" + queryId);
+            if ("sheet-table".equals(target.path("kind").asText()) && deletedSheetTableIds.contains(target.path("tableId").asText())) references.add("query-sheet-table-target:" + queryId);
+        }
+    }
+
+    private void inspectPrintDocumentReferences(List<String> references, ObjectNode root, String sourceSheetId) {
+        JsonNode documents = optionalArray(root, "printDocuments");
+        if (documents == null) return;
+        for (JsonNode document : documents) {
+            if (sourceSheetId.equals(document.path("sheetId").asText())) continue;
+            String ownerId = document.path("sheetId").asText();
+            JsonNode areas = optionalArray(document, "printAreas");
+            if (areas != null) for (JsonNode area : areas) {
+                if (sourceSheetId.equals(area.path("sheetId").asText()) || sourceSheetId.equals(area.path("range").path("sheetId").asText())) references.add("print-document-area:" + ownerId);
+            }
+            JsonNode breaks = optionalArray(document, "pageBreaks");
+            if (breaks != null) for (JsonNode pageBreak : breaks) {
+                if (sourceSheetId.equals(pageBreak.path("sheetId").asText())) references.add("print-document-page-break:" + ownerId);
+            }
+        }
+    }
+
     private boolean containsDeletedRange(JsonNode value, String sourceSheetId) {
-        if (!value.isObject()) return false;
+        if (value == null || value.isNull() || !value.isObject()) return false;
         if (sourceSheetId.equals(value.path("sheetId").asText())) return true;
         if (sourceSheetId.equals(value.path("range").path("sheetId").asText())) return true;
         if (sourceSheetId.equals(value.path("sourceRange").path("sheetId").asText())) return true;
@@ -386,11 +632,12 @@ final class WorkbookStructureMutationDescriptor extends CanonicalJsonMutationDes
         return sourceSheetId.equals(listSource.path("range").path("sheetId").asText());
     }
 
-    private boolean containsDeletedPivotReference(JsonNode value, String sourceSheetId) {
+    private boolean containsDeletedPivotReference(JsonNode value, String sourceSheetId, Set<String> deletedSheetTableIds) {
         if (!value.isObject()) return false;
         if (sourceSheetId.equals(value.path("target").path("sheetId").asText())) return true;
         JsonNode source = value.get("source");
         if (source == null || !source.isObject()) return false;
+        if (deletedSheetTableIds.contains(source.path("tableId").asText())) return true;
         if (sourceSheetId.equals(source.path("range").path("sheetId").asText()) || sourceSheetId.equals(source.path("sheetId").asText())) return true;
         JsonNode ranges = source.get("ranges");
         if (ranges != null && ranges.isArray()) for (JsonNode range : ranges) if (sourceSheetId.equals(range.path("range").path("sheetId").asText())) return true;
@@ -618,7 +865,7 @@ final class WorkbookStructureMutationDescriptor extends CanonicalJsonMutationDes
         if (raw == null || !raw.isObject()) return;
         ObjectNode payload = (ObjectNode) raw;
         String kind = payload.path("kind").asText();
-        if ("camera".equals(kind)) remapRange(payload.get("sourceRange"), sourceSheetId, targetSheetId);
+        if ("camera".equals(kind) || "screenshot".equals(kind)) remapRange(payload.get("sourceRange"), sourceSheetId, targetSheetId);
         if ("chart".equals(kind)) {
             remapRange(payload.get("categoryRange"), sourceSheetId, targetSheetId);
             JsonNode source = payload.get("source");
@@ -657,7 +904,15 @@ final class WorkbookStructureMutationDescriptor extends CanonicalJsonMutationDes
             remapRange(payload.get("cellLink"), sourceSheetId, targetSheetId);
             remapRange(payload.get("inputRange"), sourceSheetId, targetSheetId);
         }
-        if ("slicer".equals(kind) || "timeline".equals(kind)) if (payload.path("pivotId").isTextual()) payload.put("pivotId", pivotIds.getOrDefault(payload.path("pivotId").asText(), payload.path("pivotId").asText()));
+        if ("slicer".equals(kind) || "timeline".equals(kind)) {
+            if (payload.path("pivotId").isTextual()) payload.put("pivotId", pivotIds.getOrDefault(payload.path("pivotId").asText(), payload.path("pivotId").asText()));
+            JsonNode connections = payload.get("connections");
+            if (connections != null && connections.isArray()) for (JsonNode connection : connections) {
+                if (connection.isObject() && connection.path("pivotId").isTextual()) {
+                    ((ObjectNode) connection).put("pivotId", pivotIds.getOrDefault(connection.path("pivotId").asText(), connection.path("pivotId").asText()));
+                }
+            }
+        }
     }
 
     private void remapDrawingGroups(ObjectNode copy, String sourceSheetId, String targetSheetId, Map<String, String> groupIds, Map<String, String> drawingIds) {
@@ -752,43 +1007,35 @@ final class WorkbookStructureMutationDescriptor extends CanonicalJsonMutationDes
         if (cells != null && cells.isObject()) cells.fields().forEachRemaining(row -> {
             if (!row.getValue().isObject()) return;
             row.getValue().fields().forEachRemaining(cell -> {
-                if (cell.getValue().isObject() && cell.getValue().path("formula").isTextual()) ((ObjectNode) cell.getValue()).put("formula", FormulaReferenceTransformer.renameSheet(cell.getValue().path("formula").asText(), sourceName, targetName));
+                if (!cell.getValue().isObject()) return;
+                ObjectNode owner = (ObjectNode) cell.getValue();
+                rewriteFormulaField(owner, "formula", sourceName, targetName);
+                JsonNode metadata = owner.get("formulaMetadata");
+                if (metadata != null && metadata.isObject()) rewriteFormulaMetadataSource((ObjectNode) metadata, sourceName, targetName, "duplicated");
+                JsonNode presentation = owner.get("presentation");
+                JsonNode barcodeSource = presentation == null ? null : presentation.get("source");
+                if (presentation != null && "barcode".equals(presentation.path("kind").asText())
+                        && barcodeSource != null && "formula".equals(barcodeSource.path("kind").asText())) {
+                    rewriteFormulaField((ObjectNode) barcodeSource, "formula", sourceName, targetName);
+                }
             });
         });
-    }
-
-    private void rewriteSheetReferences(ObjectNode root, String previousName, String nextName) {
-        for (JsonNode rawSheet : SnapshotMutationSupport.sheets(root)) {
-            ObjectNode sheet = (ObjectNode) rawSheet;
-            ObjectNode cells = SnapshotMutationSupport.cells(sheet);
-            cells.fields().forEachRemaining(row -> {
-                if (!row.getValue().isObject()) return;
-                ((ObjectNode) row.getValue()).fields().forEachRemaining(cellEntry -> {
-                    if (!cellEntry.getValue().isObject()) return;
-                    ObjectNode cell = (ObjectNode) cellEntry.getValue();
-                    JsonNode formula = cell.get("formula");
-                    if (formula != null && formula.isTextual()) {
-                        cell.put("formula", FormulaReferenceTransformer.renameSheet(formula.asText(), previousName, nextName));
-                    }
-                });
-            });
-            rewriteRuleFormulaFields(sheet.get("conditionalFormats"), previousName, nextName);
-            rewriteRuleFormulaFields(sheet.get("dataValidations"), previousName, nextName);
+        JsonNode tableSheet = copy.get("tableSheet");
+        if (tableSheet != null && tableSheet.isObject()) {
+            JsonNode columns = optionalArray(tableSheet, "columns");
+            if (columns != null) for (JsonNode column : columns) if (column.isObject()) rewriteFormulaField((ObjectNode) column, "formula", sourceName, targetName);
         }
-        JsonNode names = root.get("definedNameModels");
-        if (names != null && names.isArray()) {
-            for (JsonNode raw : names) {
-                if (raw.isObject() && raw.path("formula").isTextual()) {
-                    ((ObjectNode) raw).put("formula", FormulaReferenceTransformer.renameSheet(raw.path("formula").asText(), previousName, nextName));
-                }
+        JsonNode payloads = copy.get("drawingPayloads");
+        if (payloads != null && payloads.isObject()) payloads.fields().forEachRemaining(entry -> {
+            JsonNode payload = entry.getValue();
+            if (payload.isObject() && "shape".equals(payload.path("kind").asText())) {
+                rewriteFormulaField((ObjectNode) payload, "propertyFormula", sourceName, targetName);
+            } else if (payload.isObject() && "chart".equals(payload.path("kind").asText())) {
+                rewriteChartTextFormulas((ObjectNode) payload, sourceName, targetName);
             }
-        }
-        JsonNode legacy = root.get("definedNames");
-        if (legacy != null && legacy.isObject()) {
-            ((ObjectNode) legacy).fields().forEachRemaining(entry -> {
-                if (entry.getValue().isTextual()) ((ObjectNode) legacy).put(entry.getKey(), FormulaReferenceTransformer.renameSheet(entry.getValue().asText(), previousName, nextName));
-            });
-        }
+        });
+        rewriteRuleFormulaFields(copy.get("conditionalFormats"), sourceName, targetName);
+        rewriteRuleFormulaFields(copy.get("dataValidations"), sourceName, targetName);
     }
 
     private void rewriteRuleFormulaFields(JsonNode values, String previousName, String nextName) {
@@ -796,11 +1043,81 @@ final class WorkbookStructureMutationDescriptor extends CanonicalJsonMutationDes
         for (JsonNode raw : values) {
             if (!raw.isObject()) continue;
             ObjectNode rule = (ObjectNode) raw;
-            for (String field : List.of("value1", "value2", "formula1", "formula2")) {
-                if (rule.path(field).isTextual()) rule.put(field, FormulaReferenceTransformer.renameSheet(rule.path(field).asText(), previousName, nextName));
-            }
+            for (String field : List.of("value1", "value2", "formula1", "formula2")) rewriteFormulaField(rule, field, previousName, nextName);
             JsonNode listSource = rule.get("listSource");
-            if (listSource != null && listSource.isObject() && listSource.path("kind").asText().equals("formula") && listSource.path("formula").isTextual()) ((ObjectNode) listSource).put("formula", FormulaReferenceTransformer.renameSheet(listSource.path("formula").asText(), previousName, nextName));
+            if (listSource != null && listSource.isObject() && listSource.path("kind").asText().equals("formula")) rewriteFormulaField((ObjectNode) listSource, "formula", previousName, nextName);
         }
+    }
+
+    private void rewriteFormulaField(ObjectNode owner, String field, String previousName, String nextName) {
+        JsonNode formula = owner.get(field);
+        if (formula != null && formula.isTextual()) owner.put(field, renameFormula(formula.asText(), previousName, nextName));
+    }
+
+    private void rewriteChartTextFormulas(ObjectNode payload, String previousName, String nextName) {
+        for (String field : CHART_TEXT_FORMULA_FIELDS) {
+            JsonNode formula = readChartTextFormula(payload, field);
+            if (formula != null) {
+                chartTextFormulaModel(payload, field).put("linkedFormula", renameFormula(formula.asText(), previousName, nextName));
+            }
+        }
+    }
+
+    private JsonNode readChartTextFormula(ObjectNode payload, String field) {
+        JsonNode formula = chartTextFormulaModel(payload, field).get("linkedFormula");
+        if (formula == null || formula.isNull()) return null;
+        if (!formula.isTextual() || formula.asText().isBlank()) {
+            throw ServiceException.validation("drawing:" + payload.path("chartId").asText() + "." + field + " must be a non-empty formula");
+        }
+        return formula;
+    }
+
+    private ObjectNode chartTextFormulaModel(ObjectNode payload, String field) {
+        JsonNode rawElements = payload.get("elements");
+        if (rawElements == null || !rawElements.isObject()) {
+            throw ServiceException.validation("Chart elements must be an object when linked text formulas are inspected");
+        }
+        ObjectNode elements = (ObjectNode) rawElements;
+        String ownerField = switch (field) {
+            case "titleText.linkedFormula" -> "titleText";
+            case "legend.text.linkedFormula" -> "legend.text";
+            case "categoryAxis.titleText.linkedFormula" -> "categoryAxis.titleText";
+            case "valueAxis.titleText.linkedFormula" -> "valueAxis.titleText";
+            case "secondaryCategoryAxis.titleText.linkedFormula" -> "secondaryCategoryAxis.titleText";
+            case "secondaryValueAxis.titleText.linkedFormula" -> "secondaryValueAxis.titleText";
+            case "dataTable.font.linkedFormula" -> "dataTable.font";
+            default -> throw ServiceException.validation("Unsupported chart text formula field: " + field);
+        };
+        String[] path = ownerField.split("\\.");
+        ObjectNode current = elements;
+        for (String segment : path) {
+            JsonNode child = current.get(segment);
+            if (child == null) return JsonNodeFactory.instance.objectNode();
+            if (child.isNull()) throw ServiceException.validation("Chart text formula owner must not be null: " + field);
+            if (!child.isObject()) throw ServiceException.validation("Chart text formula owner must be an object: " + field);
+            current = (ObjectNode) child;
+        }
+        return current;
+    }
+
+    private String renameFormula(String formula, String previousName, String nextName) {
+        return FormulaReferenceTransformer.renameSheet(formula, previousName, nextName);
+    }
+
+    private void rewriteFormulaMetadataSource(ObjectNode metadata, String previousName, String nextName, String operation) {
+        JsonNode sourceFormula = metadata.get("sourceFormula");
+        if (sourceFormula == null || !sourceFormula.isTextual()) return;
+        String rewritten = renameFormula(sourceFormula.asText(), previousName, nextName);
+        if (!rewritten.equals(sourceFormula.asText()) && metadata.path("preservedOnly").asBoolean(false)) {
+            throw ServiceException.unsupportedFeature("UNSUPPORTED_STRUCTURAL_REFERENCE: preserved-only formula references " + operation + " worksheet");
+        }
+        metadata.put("sourceFormula", rewritten);
+    }
+
+    private JsonNode optionalArray(JsonNode owner, String field) {
+        JsonNode values = owner == null ? null : owner.get(field);
+        if (values == null || values.isNull()) return null;
+        if (!values.isArray()) throw ServiceException.validation(field + " must be an array");
+        return values;
     }
 }

@@ -46,6 +46,7 @@ export * from './features/formula-audit';
 export * from './features/pivot-controls';
 export {
   buildPivotChartData,
+  resolveChartTitleText,
   chartNumericValue,
   resolveChartData,
   resolveChartDataFromSources,
@@ -63,6 +64,7 @@ export {
   type StructuredChartData,
   type StructuredChartSeries,
   type StructuredChartSheet,
+  type ChartFormulaOwnerContext,
 } from './features/chart/data';
 export {
   buildChartLayout,

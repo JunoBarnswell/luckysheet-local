@@ -145,6 +145,15 @@ function copyCell(source: CellData | undefined, rowDelta: number, columnDelta: n
     delete copy.formulaValue;
     delete copy.displayValue;
   }
+  if (copy.presentation?.kind === 'barcode' && copy.presentation.source.kind === 'formula') {
+    copy.presentation = {
+      ...copy.presentation,
+      source: {
+        ...copy.presentation.source,
+        formula: shiftFormula(copy.presentation.source.formula, rowDelta, columnDelta),
+      },
+    };
+  }
   return copy;
 }
 

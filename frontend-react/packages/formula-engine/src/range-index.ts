@@ -1,6 +1,20 @@
 import type { CellAddress, FormulaReferenceNode } from './ast';
 import { assertCellAddress, cellAddressKey, compareCellAddresses } from './address';
 import { FormulaReferenceError } from './errors';
+import {
+  ReferenceIndex,
+  type DefinedNameReferenceFailure,
+  type DefinedNameReferenceFailureReason,
+  type DefinedNameReferenceIndexUpdate,
+  type DefinedNameReferenceOwnerIdentity,
+  type FormulaRuleReferenceFailure,
+  type FormulaRuleReferenceFailureReason,
+  type FormulaRuleReferenceOwnerIdentity,
+  type IndexedReferenceOwnerSource,
+} from './reference-index';
+import type { FormulaSheetIdentity } from './sheet-reference';
+
+export type { FormulaSheetIdentity } from './sheet-reference';
 
 export interface CellDependency {
   readonly kind: 'cell';
@@ -27,48 +41,157 @@ export interface NameDependency {
 export type FormulaDependency = CellDependency | RangeDependency | StructuralReferenceDependency | NameDependency;
 
 interface IndexEntry {
-  readonly owner: CellAddress;
   readonly dependencies: readonly FormulaDependency[];
 }
 
-interface RangeEntry { readonly ownerKey: string; readonly range: RangeDependency; }
-interface RangeTreeNode {
-  readonly center: number;
-  readonly crossing: readonly RangeEntry[];
-  readonly left?: RangeTreeNode;
-  readonly right?: RangeTreeNode;
-}
+export type StructuralReferenceOwnerSource = IndexedReferenceOwnerSource;
 
 export class RangeIndex {
   private readonly entries = new Map<string, IndexEntry>();
-  private readonly cellDependents = new Map<string, Set<string>>();
-  private readonly rangeDependencies = new Map<string, readonly RangeDependency[]>();
-  private readonly rangeTrees = new Map<string, RangeTreeNode | undefined>();
+  private readonly invalidFormulaOwners = new Map<string, CellAddress>();
+  private readonly invalidStructuralFormulaOwners = new Map<string, CellAddress>();
+  private readonly referenceIndex: ReferenceIndex;
 
-  set(owner: CellAddress, dependencies: readonly FormulaDependency[]): void {
+  constructor(sheetOrder: readonly FormulaSheetIdentity[] = []) {
+    this.referenceIndex = new ReferenceIndex(sheetOrder);
+  }
+
+  setSheetOrder(sheetOrder: readonly FormulaSheetIdentity[]): void {
+    this.referenceIndex.setSheetOrder(sheetOrder);
+  }
+
+  set(owner: CellAddress, dependencies: readonly FormulaDependency[], invalidFormula = false): void {
     assertCellAddress(owner);
-    this.remove(owner);
-
     const normalizedDependencies = deduplicateDependencies(dependencies);
     const ownerKey = cellAddressKey(owner);
-    this.entries.set(ownerKey, { owner: copyAddress(owner), dependencies: normalizedDependencies });
+    this.referenceIndex.set(owner, normalizedDependencies);
+    this.entries.set(ownerKey, { dependencies: normalizedDependencies });
+    if (invalidFormula) this.invalidFormulaOwners.set(ownerKey, copyAddress(owner));
+    else this.invalidFormulaOwners.delete(ownerKey);
+  }
 
-    const ranges: RangeDependency[] = [];
-    for (const dependency of normalizedDependencies) {
-      if (dependency.kind === 'cell') {
-        const dependencyKey = cellAddressKey(dependency.address);
-        let dependents = this.cellDependents.get(dependencyKey);
-        if (!dependents) {
-          dependents = new Set<string>();
-          this.cellDependents.set(dependencyKey, dependents);
-        }
-        dependents.add(ownerKey);
-      } else if (dependency.kind === 'range') {
-        ranges.push(dependency);
-      }
+  setStructuralReference(
+    owner: CellAddress,
+    sourceId: string,
+    dependencies: readonly FormulaDependency[],
+    invalidFormula = false,
+  ): void {
+    assertCellAddress(owner);
+    assertStructuralSourceId(sourceId);
+    const normalizedDependencies = deduplicateDependencies(dependencies);
+    const ownerKey = cellAddressKey(owner);
+    const sourceKey = `${ownerKey}\u0000${sourceId}`;
+    this.referenceIndex.set(owner, normalizedDependencies, sourceId);
+    if (invalidFormula) this.invalidStructuralFormulaOwners.set(sourceKey, copyAddress(owner));
+    else this.invalidStructuralFormulaOwners.delete(sourceKey);
+  }
+
+  removeStructuralReference(owner: CellAddress, sourceId: string): boolean {
+    assertCellAddress(owner);
+    assertStructuralSourceId(sourceId);
+    const sourceKey = `${cellAddressKey(owner)}\u0000${sourceId}`;
+    const removed = this.referenceIndex.remove(owner, sourceId);
+    const invalidRemoved = this.invalidStructuralFormulaOwners.delete(sourceKey);
+    if (invalidRemoved && !removed) {
+      throw new Error('REFERENCE_INDEX_INVARIANT: invalid structural formula owner is missing from reference postings');
     }
-    if (ranges.length > 0) this.rangeDependencies.set(ownerKey, ranges);
-    this.rebuildRangeTrees();
+    return removed;
+  }
+
+  getStructuralReferenceOwnersInRange(
+    sheetId: string,
+    range: { readonly startRow: number; readonly endRow: number; readonly startColumn: number; readonly endColumn: number },
+  ): readonly StructuralReferenceOwnerSource[] {
+    return this.referenceIndex.getOwnersInRange(sheetId, range)
+      .filter(({ sourceId }) => sourceId.startsWith('structural:'));
+  }
+
+  setDefinedNameReference(
+    owner: DefinedNameReferenceOwnerIdentity,
+    references: readonly FormulaReferenceNode[],
+    context?: CellAddress,
+    anchor?: CellAddress,
+    failure?: DefinedNameReferenceFailureReason,
+  ): void {
+    this.referenceIndex.setDefinedName(owner, references, context, anchor, failure);
+  }
+
+  setFormulaRuleReference(
+    owner: FormulaRuleReferenceOwnerIdentity,
+    references: readonly FormulaReferenceNode[],
+    context: CellAddress,
+    failure?: FormulaRuleReferenceFailureReason,
+  ): void {
+    this.referenceIndex.setFormulaRule(owner, references, context, failure);
+  }
+
+  removeFormulaRuleReference(owner: FormulaRuleReferenceOwnerIdentity): boolean {
+    return this.referenceIndex.removeFormulaRule(owner);
+  }
+
+  hasFormulaRuleReference(owner: FormulaRuleReferenceOwnerIdentity): boolean {
+    return this.referenceIndex.hasFormulaRule(owner);
+  }
+
+  getStructuralFormulaRuleDependents(
+    sheetId: string,
+    axis: 'row' | 'column',
+    at: number,
+  ): readonly FormulaRuleReferenceOwnerIdentity[] {
+    return this.referenceIndex.getStructuralFormulaRuleDependents(sheetId, axis, at);
+  }
+
+  getRangeFormulaRuleDependents(
+    sheetId: string,
+    range: { readonly startRow: number; readonly endRow: number; readonly startColumn: number; readonly endColumn: number },
+  ): readonly FormulaRuleReferenceOwnerIdentity[] {
+    return this.referenceIndex.getRangeFormulaRuleDependents(sheetId, range);
+  }
+
+  getFormulaRuleReferenceFailures(): readonly FormulaRuleReferenceFailure[] {
+    return this.referenceIndex.getFormulaRuleReferenceFailures();
+  }
+
+  removeDefinedNameReference(owner: DefinedNameReferenceOwnerIdentity): boolean {
+    return this.referenceIndex.removeDefinedName(owner);
+  }
+
+  updateDefinedNameReferences(updates: readonly DefinedNameReferenceIndexUpdate[]): void {
+    this.referenceIndex.updateDefinedNames(updates);
+  }
+
+  getStructuralDefinedNameDependents(
+    sheetId: string,
+    axis: 'row' | 'column',
+    at: number,
+  ): readonly DefinedNameReferenceOwnerIdentity[] {
+    return this.referenceIndex.getStructuralDefinedNameDependents(sheetId, axis, at);
+  }
+
+  getRangeDefinedNameDependents(
+    sheetId: string,
+    range: { readonly startRow: number; readonly endRow: number; readonly startColumn: number; readonly endColumn: number },
+  ): readonly DefinedNameReferenceOwnerIdentity[] {
+    return this.referenceIndex.getRangeDefinedNameDependents(sheetId, range);
+  }
+
+  getDefinedNamesAnchoredInRange(
+    sheetId: string,
+    range: { readonly startRow: number; readonly endRow: number; readonly startColumn: number; readonly endColumn: number },
+  ): readonly DefinedNameReferenceOwnerIdentity[] {
+    return this.referenceIndex.getDefinedNamesAnchoredInRange(sheetId, range);
+  }
+
+  getDefinedNamesAnchoredAtOrAfter(
+    sheetId: string,
+    axis: 'row' | 'column',
+    at: number,
+  ): readonly DefinedNameReferenceOwnerIdentity[] {
+    return this.referenceIndex.getDefinedNamesAnchoredAtOrAfter(sheetId, axis, at);
+  }
+
+  getDefinedNameReferenceFailures(): readonly DefinedNameReferenceFailure[] {
+    return this.referenceIndex.getDefinedNameReferenceFailures();
   }
 
   add(owner: CellAddress, dependencies: readonly FormulaDependency[]): void {
@@ -79,17 +202,11 @@ export class RangeIndex {
     const ownerKey = cellAddressKey(owner);
     const entry = this.entries.get(ownerKey);
     if (!entry) return false;
-
-    for (const dependency of entry.dependencies) {
-      if (dependency.kind !== 'cell') continue;
-      const dependencyKey = cellAddressKey(dependency.address);
-      const dependents = this.cellDependents.get(dependencyKey);
-      dependents?.delete(ownerKey);
-      if (dependents?.size === 0) this.cellDependents.delete(dependencyKey);
+    if (!this.referenceIndex.remove(owner)) {
+      throw new Error('REFERENCE_INDEX_INVARIANT: formula owner is missing from reference postings');
     }
     this.entries.delete(ownerKey);
-    this.rangeDependencies.delete(ownerKey);
-    this.rebuildRangeTrees();
+    this.invalidFormulaOwners.delete(ownerKey);
     return true;
   }
 
@@ -99,48 +216,42 @@ export class RangeIndex {
   }
 
   getDependents(address: CellAddress): readonly CellAddress[] {
-    const addressKey = cellAddressKey(address);
-    const dependentKeys = new Set<string>(this.cellDependents.get(addressKey) ?? []);
-
-    const tree = this.rangeTrees.get(address.sheetId);
-    for (const ownerKey of queryRangeTree(tree, address)) dependentKeys.add(ownerKey);
-    for (const entry of this.entries.values()) {
-      if (entry.dependencies.some((dependency) => dependency.kind === 'reference' && referenceContainsAddress(dependency.reference, address))) {
-        dependentKeys.add(cellAddressKey(entry.owner));
-      }
-    }
-
-    const dependents: CellAddress[] = [];
-    for (const dependentKey of dependentKeys) {
-      const entry = this.entries.get(dependentKey);
-      if (entry) dependents.push(copyAddress(entry.owner));
-    }
-    dependents.sort(compareCellAddresses);
-    return dependents;
+    return this.referenceIndex.getDependents(address);
   }
 
   clear(): void {
     this.entries.clear();
-    this.cellDependents.clear();
-    this.rangeDependencies.clear();
-    this.rangeTrees.clear();
+    this.invalidFormulaOwners.clear();
+    this.invalidStructuralFormulaOwners.clear();
+    this.referenceIndex.clear();
   }
 
   get size(): number {
     return this.entries.size;
   }
 
-  private rebuildRangeTrees(): void {
-    const bySheet = new Map<string, RangeEntry[]>();
-    for (const [ownerKey, ranges] of this.rangeDependencies) {
-      for (const range of ranges) {
-        const entries = bySheet.get(range.start.sheetId) ?? [];
-        entries.push({ ownerKey, range });
-        bySheet.set(range.start.sheetId, entries);
-      }
-    }
-    this.rangeTrees.clear();
-    for (const [sheetId, entries] of bySheet) this.rangeTrees.set(sheetId, buildRangeTree(entries));
+  getStructuralDependents(sheetId: string, axis: 'row' | 'column', at: number): readonly CellAddress[] {
+    return this.referenceIndex.getStructuralDependents(sheetId, axis, at);
+  }
+
+  getRangeDependents(
+    sheetId: string,
+    range: { readonly startRow: number; readonly endRow: number; readonly startColumn: number; readonly endColumn: number },
+  ): readonly CellAddress[] {
+    return this.referenceIndex.getRangeDependents(sheetId, range);
+  }
+
+  getInvalidFormulaOwners(): readonly CellAddress[] {
+    const owners = new Map<string, CellAddress>();
+    for (const owner of this.invalidFormulaOwners.values()) owners.set(cellAddressKey(owner), owner);
+    for (const owner of this.invalidStructuralFormulaOwners.values()) owners.set(cellAddressKey(owner), owner);
+    return [...owners.values()].map(copyAddress).sort(compareCellAddresses);
+  }
+}
+
+function assertStructuralSourceId(sourceId: string): void {
+  if (typeof sourceId !== 'string' || !sourceId.startsWith('structural:') || sourceId.length === 'structural:'.length) {
+    throw new FormulaReferenceError('Structural reference owner source identity is invalid');
   }
 }
 
@@ -165,59 +276,6 @@ export function normalizeRange(start: CellAddress, end: CellAddress): RangeDepen
   };
 }
 
-function containsAddress(range: RangeDependency, address: CellAddress): boolean {
-  return (
-    range.start.sheetId === address.sheetId &&
-    address.row >= range.start.row &&
-    address.row <= range.end.row &&
-    address.column >= range.start.column &&
-    address.column <= range.end.column
-  );
-}
-
-function buildRangeTree(entries: readonly RangeEntry[]): RangeTreeNode | undefined {
-  if (entries.length === 0) return undefined;
-  const coordinates = entries.flatMap((entry) => [entry.range.start.row, entry.range.end.row]).sort((left, right) => left - right);
-  const center = coordinates[Math.floor(coordinates.length / 2)]!;
-  const left: RangeEntry[] = [];
-  const right: RangeEntry[] = [];
-  const crossing: RangeEntry[] = [];
-  for (const entry of entries) {
-    if (entry.range.end.row < center) left.push(entry);
-    else if (entry.range.start.row > center) right.push(entry);
-    else crossing.push(entry);
-  }
-  return {
-    center,
-    crossing: crossing.sort((a, b) => a.range.start.row - b.range.start.row),
-    left: buildRangeTree(left),
-    right: buildRangeTree(right),
-  };
-}
-
-function queryRangeTree(node: RangeTreeNode | undefined, address: CellAddress): Set<string> {
-  const result = new Set<string>();
-  if (!node) return result;
-  if (address.row < node.center) {
-    for (const entry of node.crossing) {
-      if (entry.range.start.row > address.row) break;
-      if (containsAddress(entry.range, address)) result.add(entry.ownerKey);
-    }
-    for (const ownerKey of queryRangeTree(node.left, address)) result.add(ownerKey);
-    return result;
-  }
-  if (address.row > node.center) {
-    for (const entry of node.crossing) {
-      if (entry.range.end.row < address.row) continue;
-      if (containsAddress(entry.range, address)) result.add(entry.ownerKey);
-    }
-    for (const ownerKey of queryRangeTree(node.right, address)) result.add(ownerKey);
-    return result;
-  }
-  for (const entry of node.crossing) if (containsAddress(entry.range, address)) result.add(entry.ownerKey);
-  return result;
-}
-
 function deduplicateDependencies(dependencies: readonly FormulaDependency[]): readonly FormulaDependency[] {
   const seen = new Set<string>();
   const result: FormulaDependency[] = [];
@@ -227,7 +285,7 @@ function deduplicateDependencies(dependencies: readonly FormulaDependency[]): re
       : dependency.kind === 'range'
         ? normalizeRange(dependency.start, dependency.end)
         : dependency.kind === 'reference'
-          ? { kind: 'reference' as const, reference: dependency.reference }
+        ? { kind: 'reference' as const, reference: structuredClone(dependency.reference) }
           : { kind: 'name' as const, name: dependency.name };
     const key = dependencyKey(normalized);
     if (seen.has(key)) continue;
@@ -264,44 +322,4 @@ function copyDependency(dependency: FormulaDependency): FormulaDependency {
       : dependency.kind === 'reference'
         ? { kind: 'reference', reference: structuredClone(dependency.reference) }
         : { kind: 'name', name: dependency.name };
-}
-
-function referenceContainsAddress(reference: FormulaReferenceNode, address: CellAddress): boolean {
-  switch (reference.type) {
-    case 'cell-reference':
-      return (reference.reference.sheetId ?? address.sheetId) === address.sheetId
-        && reference.reference.row === address.row
-        && reference.reference.column === address.column;
-    case 'range-reference':
-      return referenceContainsAddress(reference.start, address) || referenceContainsAddress(reference.end, address)
-        || (reference.start.reference.sheetId ?? address.sheetId) === address.sheetId
-          && address.row >= Math.min(reference.start.reference.row, reference.end.reference.row)
-          && address.row <= Math.max(reference.start.reference.row, reference.end.reference.row)
-          && address.column >= Math.min(reference.start.reference.column, reference.end.reference.column)
-          && address.column <= Math.max(reference.start.reference.column, reference.end.reference.column);
-    case 'whole-column-reference':
-      return (reference.sheetId ?? address.sheetId) === address.sheetId
-        && address.column >= reference.startColumn
-        && address.column <= reference.endColumn;
-    case 'whole-row-reference':
-      return (reference.sheetId ?? address.sheetId) === address.sheetId
-        && address.row >= reference.startRow
-        && address.row <= reference.endRow;
-    case 'reference-union':
-      return reference.references.some((entry) => referenceContainsAddress(entry, address));
-    case 'reference-intersection':
-      return referenceContainsAddress(reference.left, address) && referenceContainsAddress(reference.right, address);
-    case 'sheet-range-reference':
-      return reference.qualifier.startSheetId === address.sheetId || reference.qualifier.endSheetId === address.sheetId
-        ? referenceContainsAddress(reference.reference, address)
-        : false;
-    case 'external-reference':
-      return false;
-    case 'spill-reference':
-      return referenceContainsAddress(reference.operand as FormulaReferenceNode, address);
-    case 'table-reference':
-      return false;
-    case 'invalid-reference':
-      return false;
-  }
 }

@@ -1,10 +1,10 @@
 import type { NativeDocumentArtifact } from '@react-sheets/exchange-excel-ooxml';
-import { loadOpcPackageGraph, verifyNativeDocumentArtifact } from '@react-sheets/exchange-excel-ooxml';
+import { loadOpcPackageGraph, migrateNativeDocumentArtifactV1, verifyNativeDocumentArtifact } from '@react-sheets/exchange-excel-ooxml';
 import { memoryKey, type WorkspaceMemoryCoordinator } from './memory';
 
 export interface NativeDocumentRecord {
   schema: 'NativeDocumentRecord';
-  version: 1;
+  version: 2;
   unitId: string;
   artifact: NativeDocumentArtifact;
   updatedAt: string;
@@ -43,7 +43,7 @@ export async function buildNativeDocumentRecord(unitId: string, artifact: Native
   await verifyNativeDocumentArtifact(artifact);
   return {
     schema: 'NativeDocumentRecord',
-    version: 1,
+    version: 2,
     unitId,
     artifact: compactArtifact(artifact),
     updatedAt: new Date().toISOString(),
@@ -63,18 +63,31 @@ export class LocalNativeDocumentStore {
   }
 
   async load(unitId: string): Promise<NativeDocumentArtifact | null> {
-    return this.coordinator.read((transaction) => {
-      const record = transaction.get<NativeDocumentRecord>('nativeDocuments', unitId);
-      if (!record) return null;
-      if (record.schema !== 'NativeDocumentRecord' || record.version !== 1 || record.unitId !== unitId) {
+    return this.coordinator.transaction(async (transaction) => {
+      const record = transaction.get<unknown>('nativeDocuments', unitId);
+      if (record === undefined) return null;
+      if (record === null || typeof record !== 'object' || Array.isArray(record)
+        || !('schema' in record) || record.schema !== 'NativeDocumentRecord'
+        || !('unitId' in record) || record.unitId !== unitId
+        || !('artifact' in record) || !record.artifact || typeof record.artifact !== 'object' || Array.isArray(record.artifact)
+        || !('updatedAt' in record) || typeof record.updatedAt !== 'string') {
         throw new Error(`NATIVE_DOCUMENT_SCHEMA_INVALID: ${unitId}`);
       }
-      return verifyNativeDocumentArtifact(record.artifact).then(() => {
-        const nativeGraph = record.artifact.nativeGraph.kind === 'opc' && Object.keys(record.artifact.nativeGraph.package.parts).length === 0
-          ? { kind: 'opc' as const, package: loadOpcPackageGraph(record.artifact.sourceBytes, {}, record.artifact.fileName).packageGraph }
-          : record.artifact.nativeGraph;
-        return copyArtifact({ ...record.artifact, nativeGraph });
-      });
+      let canonical: NativeDocumentRecord;
+      if ('version' in record && record.version === 1) {
+        const artifact = await migrateNativeDocumentArtifactV1(record.artifact as NativeDocumentArtifact);
+        canonical = { schema: 'NativeDocumentRecord', version: 2, unitId, artifact, updatedAt: record.updatedAt };
+        transaction.set('nativeDocuments', unitId, copyRecord(canonical));
+      } else if ('version' in record && record.version === 2) {
+        canonical = record as NativeDocumentRecord;
+        await verifyNativeDocumentArtifact(canonical.artifact);
+      } else {
+        throw new Error(`NATIVE_DOCUMENT_SCHEMA_INVALID: ${unitId}`);
+      }
+      const nativeGraph = canonical.artifact.nativeGraph.kind === 'opc' && Object.keys(canonical.artifact.nativeGraph.package.parts).length === 0
+        ? { kind: 'opc' as const, package: loadOpcPackageGraph(canonical.artifact.sourceBytes, {}, canonical.artifact.fileName).packageGraph }
+        : canonical.artifact.nativeGraph;
+      return copyArtifact({ ...canonical.artifact, nativeGraph });
     });
   }
 

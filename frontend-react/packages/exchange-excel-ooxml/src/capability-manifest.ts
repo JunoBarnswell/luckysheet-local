@@ -1,7 +1,8 @@
 import { strFromU8 } from 'fflate';
-import { child, children, descendants, localName, parseXml } from './xml';
+import { child, children, descendants, localName, parseXml, type XmlNode } from './xml';
 import type { CompatibilityFeatureDetection } from './compatibility-report';
-import type { OpcPackageGraph } from './types';
+import type { NativePivotControlDefinition, OpcPackageGraph } from './types';
+import { NATIVE_DOCUMENT_STRUCTURAL_CAPABILITY_POLICY as structuralPolicy } from './generated-structural-capability-policy';
 
 export type NativeCapabilityState = 'full' | 'partial' | 'none';
 
@@ -35,7 +36,7 @@ export const NATIVE_DOCUMENT_CAPABILITY_MANIFEST = {
   protection: capability('protection', 'full', 'partial', 'partial', 'partial', 'full'),
   'print-setup': capability('print-setup', 'full', 'partial', 'partial', 'partial', 'full'),
   charts: capability('charts', 'full', 'full', 'partial', 'full', 'full', 'Canonical chart families are editable; unsupported native identities remain preserved-native.'),
-  'preserved-native-chart': capability('preserved-native-chart', 'full', 'none', 'none', 'none', 'full', 'The native chart part is retained byte-for-byte because this runtime does not own its complete semantic editor.'),
+  [structuralPolicy.features.preservedNativeChart]: capability(structuralPolicy.features.preservedNativeChart, 'full', 'none', 'none', 'none', 'full', 'The native chart part is retained byte-for-byte because this runtime does not own its complete semantic editor.'),
   'pivot-chart': capability('pivot-chart', 'full', 'full', 'partial', 'full', 'full', 'PivotChart uses the same native writer as worksheet Chart and remains linked to its PivotTable/PivotCache.'),
   sparklines: capability('sparklines', 'full', 'full', 'partial', 'full', 'full', 'Sparkline groups use canonical metadata plus native worksheet extensions for Excel round-trip.'),
   images: capability('images', 'full', 'partial', 'partial', 'partial', 'full'),
@@ -71,10 +72,11 @@ export const NATIVE_DOCUMENT_CAPABILITY_MANIFEST = {
   timeline: capability('timeline', 'full', 'partial', 'partial', 'partial', 'full'),
   vba: capability('vba', 'full', 'none', 'none', 'none', 'full'),
   'external-connection': capability('external-connection', 'full', 'none', 'none', 'none', 'full'),
-  'unknown-extension': capability('unknown-extension', 'full', 'none', 'none', 'none', 'full'),
-  'extended-validation': capability('extended-validation', 'full', 'none', 'none', 'none', 'full'),
-  'extended-conditional-format': capability('extended-conditional-format', 'full', 'none', 'none', 'none', 'full'),
-  'unknown-worksheet-node': capability('unknown-worksheet-node', 'full', 'none', 'none', 'none', 'none'),
+  [structuralPolicy.features.unknownExtension]: capability(structuralPolicy.features.unknownExtension, 'full', 'none', 'none', 'none', 'full'),
+  [structuralPolicy.features.extendedValidation]: capability(structuralPolicy.features.extendedValidation, 'full', 'none', 'none', 'none', 'full'),
+  [structuralPolicy.features.extendedConditionalFormat]: capability(structuralPolicy.features.extendedConditionalFormat, 'full', 'none', 'none', 'none', 'full'),
+  [structuralPolicy.features.unknownWorksheetNode]: capability(structuralPolicy.features.unknownWorksheetNode, 'full', 'none', 'none', 'none', 'none'),
+  [structuralPolicy.features.unknownWorkbookNode]: capability(structuralPolicy.features.unknownWorkbookNode, 'full', 'none', 'none', 'none', 'none'),
 } as const satisfies Record<string, NativeCapabilityDeclaration>;
 
 function capability(
@@ -89,18 +91,20 @@ function capability(
   return { feature, detect, read, write, edit, preserve, ...(approximation ? { approximation } : {}) };
 }
 
-const WORKSHEET_NODES = new Map<string, string>([
-  ['sheetData', 'cells'], ['cols', 'styles'], ['mergeCells', 'merges'], ['hyperlinks', 'hyperlinks'],
-  ['conditionalFormatting', 'conditional-format'], ['dataValidations', 'validation'], ['autoFilter', 'filters'],
-  ['sheetProtection', 'protection'], ['printOptions', 'print-setup'], ['pageMargins', 'print-setup'],
-  ['pageSetup', 'print-setup'], ['headerFooter', 'print-setup'], ['rowBreaks', 'print-setup'], ['colBreaks', 'print-setup'],
-  ['tableParts', 'tables'], ['pivotTableParts', 'pivot'],
-]);
-
-const STRUCTURAL_NODES = new Set(['sheetPr', 'dimension', 'sheetViews', 'sheetFormatPr', 'sheetCalcPr', 'phoneticPr', 'extLst', 'drawing', 'legacyDrawing']);
+const WORKSHEET_NODES = new Map<string, string>(Object.entries(structuralPolicy.worksheet.featureNodes));
+const STRUCTURAL_NODES = new Set<string>(structuralPolicy.worksheet.structuralNodes);
+const SPARKLINE_GROUP_ATTRIBUTES = new Set<string>(structuralPolicy.worksheet.sparkline.groupAttributes);
+const SPARKLINE_COLOR_NODES = new Set<string>(structuralPolicy.worksheet.sparkline.colorNodes);
+const WORKBOOK_ROOT_NODES = new Set<string>(structuralPolicy.workbook.rootNodes);
+const WORKSHEET_ROOT_ATTRIBUTES = new Set<string>(structuralPolicy.worksheet.rootAttributes);
+const WORKBOOK_ROOT_ATTRIBUTES = new Set<string>(structuralPolicy.workbook.rootAttributes);
+const WORKBOOK_NODE_ATTRIBUTES = new Map<string, ReadonlySet<string>>(
+  Object.entries(structuralPolicy.workbook.nodes).map(([name, policy]) => [name, new Set<string>(policy.attributes)]),
+);
 
 export function detectWorksheetCapabilities(files: Record<string, Uint8Array>, pkg: OpcPackageGraph): CompatibilityFeatureDetection[] {
   const detections: CompatibilityFeatureDetection[] = [];
+  const worksheetNames = readWorksheetNames(files, pkg);
   // Drawing containers also hold charts and comments. Only an image relationship
   // establishes image ownership, including media at non-standard package paths.
   for (const [part, relationships] of Object.entries(pkg.relationships)) {
@@ -112,9 +116,19 @@ export function detectWorksheetCapabilities(files: Record<string, Uint8Array>, p
   }
   for (const part of new Set(Object.values(pkg.sheetPartById))) {
     const bytes = files[part];
-    if (!bytes) continue;
-    const root = descendants(parseXml(strFromU8(bytes)), 'worksheet')[0];
-    if (!root) continue;
+    if (!bytes) {
+      detections.push({ feature: structuralPolicy.features.unknownWorksheetNode, location: part, reason: 'The package graph references a worksheet part that is missing from the source package' });
+      continue;
+    }
+    const root = packageRoot(bytes, structuralPolicy.worksheet.rootElement);
+    if (!root) {
+      detections.push({ feature: structuralPolicy.features.unknownWorksheetNode, location: part, reason: 'The referenced package part does not have one canonical worksheet root' });
+      continue;
+    }
+    if (!hasOnlyAttributes(root, WORKSHEET_ROOT_ATTRIBUTES)) {
+      detections.push({ feature: structuralPolicy.features.unknownWorksheetNode, location: `${part}#worksheet@attributes`, reason: 'Worksheet root attributes are not represented by the canonical writer' });
+    }
+    detectDuplicateRootNodes(root, structuralPolicy.worksheet.singletonNodes, part, structuralPolicy.features.unknownWorksheetNode, detections);
     const view = child(child(root, 'sheetViews'), 'sheetView');
     const pane = child(view, 'pane');
     if (pane) detections.push({ feature: pane.attrs.state === 'frozen' || pane.attrs.state === 'frozenSplit' ? 'freeze' : 'split', location: part });
@@ -124,11 +138,16 @@ export function detectWorksheetCapabilities(files: Record<string, Uint8Array>, p
       const name = localName(node.name);
       const feature = WORKSHEET_NODES.get(name);
       if (feature) detections.push({ feature, location: part });
-      else if (!STRUCTURAL_NODES.has(name)) detections.push({ feature: 'unknown-worksheet-node', location: `${part}#${name}`, reason: `No validated reader/writer contract exists for worksheet node <${name}>` });
-      if (name === 'extLst') {
-        if (descendants(node, 'dataValidations').length || descendants(node, 'dataValidation').length) detections.push({ feature: 'extended-validation', location: `${part}#extLst`, reason: 'Extended data validation is preserved in the source package but is not editable' });
-        if (descendants(node, 'conditionalFormatting').length) detections.push({ feature: 'extended-conditional-format', location: `${part}#extLst`, reason: 'Extended conditional formatting is preserved in the source package but is not editable' });
-        for (const extension of children(node, 'ext')) detections.push({ feature: 'unknown-extension', location: `${part}#${extension.attrs.uri ?? 'ext'}`, reason: 'Worksheet extension is retained byte-for-byte from the source package' });
+      else if (!STRUCTURAL_NODES.has(name)) detections.push({ feature: structuralPolicy.features.unknownWorksheetNode, location: `${part}#${name}`, reason: `No validated reader/writer contract exists for worksheet node <${name}>` });
+      if (name === 'sheetPr') validateWorksheetPropertiesNode(node, part, detections);
+      if (name === 'sheetFormatPr') validateWorksheetFormatNode(node, part, detections);
+      if (name === structuralPolicy.worksheet.extensionListNode) {
+        const extendedRules = structuralPolicy.worksheet.extendedRuleNodes;
+        if (extendedRules.validation.some((ruleNode) => descendants(node, ruleNode).length > 0)) detections.push({ feature: structuralPolicy.features.extendedValidation, location: `${part}#${structuralPolicy.worksheet.extensionListNode}`, reason: 'Extended data validation is preserved in the source package but is not editable' });
+        if (extendedRules.conditionalFormat.some((ruleNode) => descendants(node, ruleNode).length > 0)) detections.push({ feature: structuralPolicy.features.extendedConditionalFormat, location: `${part}#${structuralPolicy.worksheet.extensionListNode}`, reason: 'Extended conditional formatting is preserved in the source package but is not editable' });
+        for (const extension of children(node, structuralPolicy.worksheet.extensionNode)) {
+          if (!isCanonicallyOwnedWorksheetExtension(extension, worksheetNames, pkg, part)) detections.push({ feature: structuralPolicy.features.unknownExtension, location: `${part}#${extension.attrs.uri ?? 'ext'}`, reason: 'Worksheet extension is retained byte-for-byte from the source package' });
+        }
       }
     }
   }
@@ -137,6 +156,229 @@ export function detectWorksheetCapabilities(files: Record<string, Uint8Array>, p
   const sharedStrings = files[sharedStringsPart];
   if (sharedStrings && /<(?:\w+:)?r(?:\s|>)/.test(strFromU8(sharedStrings))) detections.push({ feature: 'rich-text', location: sharedStringsPart });
   return deduplicateDetections(detections);
+}
+
+export function detectWorkbookCapabilities(files: Record<string, Uint8Array>, pkg: OpcPackageGraph): CompatibilityFeatureDetection[] {
+  const bytes = files[pkg.workbookPart];
+  if (!bytes) return [{ feature: structuralPolicy.features.unknownWorkbookNode, location: pkg.workbookPart, reason: 'The package graph references a workbook part that is missing from the source package' }];
+  const workbook = packageRoot(bytes, structuralPolicy.workbook.rootElement);
+  if (!workbook) return [{ feature: structuralPolicy.features.unknownWorkbookNode, location: pkg.workbookPart, reason: 'The referenced package part does not have one canonical workbook root' }];
+  const detections: CompatibilityFeatureDetection[] = [];
+  detectDuplicateRootNodes(workbook, structuralPolicy.workbook.singletonNodes, pkg.workbookPart, structuralPolicy.features.unknownWorkbookNode, detections);
+  const detectUnownedNode = (location: string, reason: string): void => {
+    detections.push({ feature: structuralPolicy.features.unknownWorkbookNode, location: `${pkg.workbookPart}#${location}`, reason });
+  };
+  if (!hasOnlyAttributes(workbook, WORKBOOK_ROOT_ATTRIBUTES)) detectUnownedNode('workbook@attributes', 'Workbook root attributes are not represented by the canonical writer');
+  for (const node of workbook.children) {
+    const name = localName(node.name);
+    if (!WORKBOOK_ROOT_NODES.has(name)) {
+      detectUnownedNode(name, `No canonical reader/writer owner exists for workbook node <${name}>`);
+      continue;
+    }
+    if (name === 'workbookPr' && (!hasOnlyAttributes(node, WORKBOOK_NODE_ATTRIBUTES.get(name) ?? new Set()) || node.children.length > 0 || !hasOnlyWhitespace(node.text))) {
+      detectUnownedNode('workbookPr', 'Only workbookPr@date1904 is represented by the canonical writer');
+    }
+    if (name === 'pivotCaches') {
+      const policy = structuralPolicy.workbook.nodes.pivotCaches;
+      if (!hasOnlyAttributes(node, WORKBOOK_NODE_ATTRIBUTES.get(name) ?? new Set()) || !hasOnlyWhitespace(node.text)) {
+        detectUnownedNode('pivotCaches', 'Pivot-cache container metadata is not represented by the canonical writer');
+      }
+      for (const cache of node.children) {
+        if (localName(cache.name) !== policy.child.name
+          || !hasOnlyAttributes(cache, new Set(policy.child.attributes))
+          || (policy.child.mustBeLeaf && cache.children.length > 0)
+          || (policy.child.mustHaveWhitespaceText && !hasOnlyWhitespace(cache.text))) {
+          detectUnownedNode('pivotCaches#pivotCache', 'Pivot-cache metadata or child markup is not represented by the canonical writer');
+        }
+      }
+    }
+    if (name === 'sheets') {
+      const policy = structuralPolicy.workbook.nodes.sheets;
+      if (!hasOnlyAttributes(node, WORKBOOK_NODE_ATTRIBUTES.get(name) ?? new Set()) || !hasOnlyWhitespace(node.text)) detectUnownedNode('sheets', 'Workbook sheet-container metadata is not represented by the canonical writer');
+      for (const sheet of node.children) {
+        if (localName(sheet.name) !== policy.child.name
+          || !hasOnlyAttributes(sheet, new Set(policy.child.attributes))
+          || (policy.child.mustBeLeaf && sheet.children.length > 0)
+          || (policy.child.mustHaveWhitespaceText && !hasOnlyWhitespace(sheet.text))
+          || (sheet.attrs.state !== undefined && !(policy.child.stateValues as readonly string[]).includes(sheet.attrs.state))) {
+          detectUnownedNode('sheets#sheet', 'Workbook sheet metadata or visibility state cannot be round-tripped canonically');
+        }
+      }
+    }
+    if (name === 'definedNames') {
+      const policy = structuralPolicy.workbook.nodes.definedNames;
+      if (!hasOnlyAttributes(node, WORKBOOK_NODE_ATTRIBUTES.get(name) ?? new Set()) || !hasOnlyWhitespace(node.text)) detectUnownedNode('definedNames', 'Workbook defined-name container metadata is not represented by the canonical writer');
+      for (const definedName of node.children) {
+        if (localName(definedName.name) !== policy.child.name
+          || !hasOnlyAttributes(definedName, new Set(policy.child.attributes))
+          || (policy.child.mustBeLeaf && definedName.children.length > 0)) {
+          detectUnownedNode('definedNames#definedName', 'Defined-name attributes or child markup are not represented by the canonical writer');
+        }
+      }
+    }
+  }
+  for (const extensionList of children(workbook, structuralPolicy.workbook.extensionListNode)) {
+    for (const extension of children(extensionList, structuralPolicy.workbook.extensionNode)) {
+      if (!isCanonicallyOwnedWorkbookControlExtension(extension, pkg.nativePivotGraph?.controls ?? [])) {
+        detections.push({ feature: structuralPolicy.features.unknownExtension, location: `${pkg.workbookPart}#${extension.attrs.uri ?? 'ext'}`, reason: 'Workbook extension is retained from the source package but has no canonical structural owner' });
+      }
+    }
+  }
+  return deduplicateDetections(detections);
+}
+
+export function isCanonicallyOwnedSparklineExtension(extension: XmlNode, worksheetNames: ReadonlySet<string>): boolean {
+  const policy = structuralPolicy.worksheet.sparkline;
+  if (extension.attrs.uri?.toUpperCase() !== structuralPolicy.worksheet.extensionUris.sparklineGroups.toUpperCase()) return false;
+  if (!hasOnlyAttributes(extension, new Set(structuralPolicy.controlExtensionAttributes)) || !hasOnlyWhitespace(extension.text) || extension.children.length !== 1) return false;
+  const groups = extension.children[0]!;
+  if (localName(groups.name) !== policy.containerNode || !hasOnlyAttributes(groups, new Set()) || !hasOnlyWhitespace(groups.text) || groups.children.length === 0) return false;
+  let sparklineCount = 0;
+  const owned = groups.children.every((group) => {
+    if (localName(group.name) !== policy.groupNode || !hasOnlyAttributes(group, SPARKLINE_GROUP_ATTRIBUTES) || !hasOnlyWhitespace(group.text)) return false;
+    if (group.attrs.type !== undefined && !(policy.types as readonly string[]).includes(group.attrs.type)) return false;
+    if (policy.numericAttributes.some((name) => group.attrs[name] !== undefined && !Number.isFinite(Number(group.attrs[name])))) return false;
+    if ((group.attrs.manualMin === undefined) !== (group.attrs.manualMax === undefined)) return false;
+    if (policy.booleanAttributes.some((name) => group.attrs[name] !== undefined && !/^(?:0|1|true|false)$/.test(group.attrs[name]!))) return false;
+    if (policy.colorAttributes.some((name) => group.attrs[name] !== undefined && !isSparklineColor(group.attrs[name]!))) return false;
+    const names = group.children.map((node) => localName(node.name));
+    if (names.filter((name) => name === policy.collectionNode).length !== 1
+      || names.some((name) => name !== policy.collectionNode && !SPARKLINE_COLOR_NODES.has(name))
+      || names.filter((name) => SPARKLINE_COLOR_NODES.has(name)).length !== new Set(names.filter((name) => SPARKLINE_COLOR_NODES.has(name))).size) return false;
+    return group.children.every((node) => {
+      if (localName(node.name) === policy.collectionNode) {
+        return hasOnlyAttributes(node, new Set()) && hasOnlyWhitespace(node.text) && node.children.every((sparkline) => {
+          if (localName(sparkline.name) !== policy.itemNode || !hasOnlyAttributes(sparkline, new Set()) || !hasOnlyWhitespace(sparkline.text)) return false;
+          const fields = sparkline.children;
+          const valid = fields.length === 2
+            && fields.every((field) => (localName(field.name) === policy.formulaNode || localName(field.name) === policy.cellReferenceNode)
+              && hasOnlyAttributes(field, new Set()) && field.children.length === 0 && field.text.trim().length > 0)
+            && fields.filter((field) => localName(field.name) === policy.formulaNode).length === 1
+            && fields.filter((field) => localName(field.name) === policy.cellReferenceNode).length === 1
+            && isOwnedSparklineFormula(fields.find((field) => localName(field.name) === policy.formulaNode)!.text, worksheetNames)
+            && /^\$?[A-Z]+\$?\d+$/i.test(fields.find((field) => localName(field.name) === policy.cellReferenceNode)!.text.trim());
+          if (valid) sparklineCount += 1;
+          return valid;
+        });
+      }
+      return hasOnlyAttributes(node, new Set(policy.cellColorAttributes)) && node.children.length === 0 && hasOnlyWhitespace(node.text)
+        && isSparklineColor(node.attrs.rgb ?? node.attrs.val ?? '');
+    });
+  });
+  return owned && sparklineCount > 0;
+}
+
+function isOwnedSparklineFormula(formula: string, worksheetNames: ReadonlySet<string>): boolean {
+  const match = /^'?((?:[^']|'')+)'?!\s*(\$?[A-Z]+\$?\d+(?::\$?[A-Z]+\$?\d+)?)$/i.exec(formula.trim());
+  return Boolean(match && worksheetNames.has(match[1]!.replaceAll("''", "'")));
+}
+
+function isCanonicallyOwnedWorksheetExtension(extension: XmlNode, worksheetNames: ReadonlySet<string>, pkg: OpcPackageGraph, sheetPart: string): boolean {
+  if (isCanonicallyOwnedSparklineExtension(extension, worksheetNames)) return true;
+  return isCanonicallyOwnedNativeControlExtension(extension, pkg.nativePivotGraph?.controls?.filter((entry) => entry.sheetPart === sheetPart) ?? []);
+}
+
+export function isCanonicallyOwnedNativeControlExtension(extension: XmlNode, sourceControls: readonly NativePivotControlDefinition[]): boolean {
+  const uri = extension.attrs.uri?.toUpperCase();
+  const control = structuralPolicy.worksheet.controlExtensions.find((entry) => uri === structuralPolicy.worksheet.extensionUris[entry.uriKey].toUpperCase());
+  return control ? isCanonicallyOwnedControlReferenceExtension(extension, sourceControls, control) : false;
+}
+
+export function isCanonicallyOwnedWorkbookControlExtension(extension: XmlNode, sourceControls: readonly NativePivotControlDefinition[]): boolean {
+  const uri = extension.attrs.uri?.toUpperCase();
+  const control = structuralPolicy.workbook.controlExtensions.find((entry) => uri === structuralPolicy.workbook.extensionUris[entry.uriKey].toUpperCase());
+  return control ? isCanonicallyOwnedControlReferenceExtension(extension, sourceControls, control) : false;
+}
+
+function isCanonicallyOwnedControlReferenceExtension(
+  extension: XmlNode,
+  sourceControls: readonly NativePivotControlDefinition[],
+  control: { kind: NativePivotControlDefinition['kind']; containerNode: string; itemNode: string; relationshipField: 'relationshipId' | 'cacheRelationshipId' },
+): boolean {
+  if (!hasOnlyAttributes(extension, new Set(structuralPolicy.controlExtensionAttributes)) || !hasOnlyWhitespace(extension.text) || extension.children.length !== 1) return false;
+  const container = extension.children[0]!;
+  if (localName(container.name) !== control.containerNode || !hasOnlyAttributes(container, new Set()) || !hasOnlyWhitespace(container.text)) return false;
+  const references = container.children;
+  if (!references.every((reference) => localName(reference.name) === control.itemNode
+    && hasOnlyAttributes(reference, new Set(structuralPolicy.controlReferenceAttributes)) && Boolean(reference.attrs['r:id'])
+    && reference.children.length === 0 && hasOnlyWhitespace(reference.text))) return false;
+  const referenceIds = references.map((reference) => reference.attrs['r:id']!);
+  if (new Set(referenceIds).size !== referenceIds.length) return false;
+  const ownedControls = sourceControls.filter((entry) => entry.kind === control.kind);
+  return !ownedControls.some((entry) => !entry.valid)
+    && referenceIds.every((id) => ownedControls.some((entry) => entry[control.relationshipField] === id));
+}
+
+function isSparklineColor(value: string): boolean {
+  return /^#?(?:[0-9a-f]{6}|[0-9a-f]{8})$/i.test(value);
+}
+
+function readWorksheetNames(files: Record<string, Uint8Array>, pkg: OpcPackageGraph): ReadonlySet<string> {
+  const workbookBytes = files[pkg.workbookPart];
+  if (!workbookBytes) return new Set();
+  const workbook = packageRoot(workbookBytes, structuralPolicy.workbook.rootElement);
+  return new Set(children(child(workbook, 'sheets'), structuralPolicy.workbook.nodes.sheets.child.name).flatMap((sheet) => sheet.attrs.name ? [sheet.attrs.name] : []));
+}
+
+function hasOnlyAttributes(node: XmlNode, allowed: ReadonlySet<string>): boolean {
+  return Object.keys(node.attrs).every((name) => name === 'xmlns' || name.startsWith('xmlns:') || allowed.has(name));
+}
+
+function hasOnlyWhitespace(value: string): boolean {
+  return value.trim().length === 0;
+}
+
+function packageRoot(bytes: Uint8Array, expectedName: string): XmlNode | undefined {
+  const document = parseXml(strFromU8(bytes));
+  if (document.children.length !== 1 || !hasOnlyWhitespace(document.text)) return undefined;
+  const root = document.children[0]!;
+  return localName(root.name) === expectedName ? root : undefined;
+}
+
+function detectDuplicateRootNodes(
+  root: XmlNode,
+  singletonNames: readonly string[],
+  part: string,
+  feature: string,
+  detections: CompatibilityFeatureDetection[],
+): void {
+  for (const name of singletonNames) {
+    if (children(root, name).length > 1) detections.push({
+      feature,
+      location: `${part}#${name}`,
+      reason: `Multiple <${name}> root owners cannot be represented by the canonical writer`,
+    });
+  }
+}
+
+function validateWorksheetPropertiesNode(node: XmlNode, part: string, detections: CompatibilityFeatureDetection[]): void {
+  const policy = structuralPolicy.worksheet.nodes.sheetPr;
+  const childNames = node.children.map((childNode) => localName(childNode.name));
+  const invalidChild = new Set(childNames).size !== childNames.length || node.children.some((childNode) => {
+    const childPolicy = policy.children[localName(childNode.name) as keyof typeof policy.children];
+    if (!childPolicy || !hasOnlyAttributes(childNode, new Set(childPolicy.attributes))
+      || (childPolicy.mustBeLeaf && childNode.children.length > 0)
+      || (childPolicy.mustHaveWhitespaceText && !hasOnlyWhitespace(childNode.text))) return true;
+    if (localName(childNode.name) === 'tabColor' && !/^(?:[0-9a-f]{6}|[0-9a-f]{8})$/i.test(childNode.attrs.rgb ?? '')) return true;
+    return localName(childNode.name) === 'outlinePr'
+      && Object.entries(childPolicy.supportedValues ?? {}).some(([attribute, values]) => childNode.attrs[attribute] !== undefined
+        && !(values as readonly string[]).includes(childNode.attrs[attribute]!));
+  });
+  if (!hasOnlyAttributes(node, new Set(policy.attributes)) || !hasOnlyWhitespace(node.text) || invalidChild) {
+    detections.push({ feature: structuralPolicy.features.unknownWorksheetNode, location: `${part}#sheetPr`, reason: 'Worksheet properties contain values not represented by the canonical writer' });
+  }
+}
+
+function validateWorksheetFormatNode(node: XmlNode, part: string, detections: CompatibilityFeatureDetection[]): void {
+  const policy = structuralPolicy.worksheet.nodes.sheetFormatPr;
+  const invalidNumeric = policy.positiveNumericAttributes.some((attribute) => {
+    const value = node.attrs[attribute];
+    return value !== undefined && (!Number.isFinite(Number(value)) || Number(value) <= 0);
+  });
+  if (!hasOnlyAttributes(node, new Set(policy.attributes)) || !hasOnlyWhitespace(node.text)
+    || (policy.mustBeLeaf && node.children.length > 0) || invalidNumeric) {
+    detections.push({ feature: structuralPolicy.features.unknownWorksheetNode, location: `${part}#sheetFormatPr`, reason: 'Worksheet format contains values not represented by the canonical writer' });
+  }
 }
 
 function resolvePart(source: string, target: string): string {

@@ -61,8 +61,10 @@ import {
 import { mapNativePivotDefinition, readNativePivotGraph, serializeNativePivotCaches, synchronizeNativePivotPackage } from './native-pivot';
 import { projectNativeCharts, readNativeChartGraph, synchronizeNativePivotCharts } from './native-chart';
 import type { NativePivotControlDefinition, NativePivotGraph } from './types';
+import { isCanonicallyOwnedNativeControlExtension, isCanonicallyOwnedSparklineExtension, isCanonicallyOwnedWorkbookControlExtension } from './capability-manifest';
 import { builtInNumberFormat, builtInNumberFormatId, collectCustomNumberFormatIds, numberFormatCodeFromSpec } from './native-number-format';
 import { canonicalDateToSerial, isExcelDateFormat, parseDateSystem, serialToCanonicalDate } from './date-system';
+import { NativeDocumentError } from './native-document-error';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -255,12 +257,13 @@ export function parseLoadedOoxml(loaded: LoadedOpcPackageGraph, options: ParseLo
   const sharedStrings = parseSharedStrings(files[sharedStringsPart], styles.themeColors);
   const sheets = descriptors.map((descriptor) => parseSheet(descriptor, files, loaded.packageGraph, sharedStrings, styles, options.canonicalReferenceDate, descriptors));
   const definedNameModels = parseDefinedNames(child(workbook, 'definedNames'), descriptors);
-  const definedNames: Record<string, string> = {};
-  for (const name of definedNameModels) if (name.scope === 'workbook') definedNames[name.name] = name.formula;
+  const definedNames: Record<string, string> = Object.fromEntries(definedNameModels
+    .filter((name) => name.scope === 'workbook')
+    .map((name) => [name.name, name.formula]));
   const unitId = `imported-${randomId()}`;
   const snapshot: WorkbookSnapshot = {
     schema: 'WorkbookSnapshot',
-    version: 9,
+    version: 10,
     unitId,
     name: options.workbookName ?? 'Imported Workbook',
     dimensionMetrics: { normalFontFamily: styles.normalFont.family, normalFontSizePx: pointsToPixels(styles.normalFont.sizePt), maximumDigitWidthPx: styles.maximumDigitWidthPx },
@@ -387,6 +390,9 @@ export function exportSnapshotToOpcPackageGraph(
   }
   const sourceFiles = preserved?.parts ?? {};
   const workbookPart = preserved?.workbookPart ?? 'xl/workbook.xml';
+  const sourceWorksheetNames = preserved?.parts[workbookPart]
+    ? readWorkbookSheetNames(preserved.parts[workbookPart]!)
+    : new Set(snapshot.sheets.map((sheet) => sheet.name));
   const workbookRelationships = options.preserveMacros === false
     ? filterMacroRelationships(workbookPart, preserved?.relationships[workbookPart] ?? [], preserved)
     : preserved?.relationships[workbookPart] ?? [];
@@ -441,7 +447,7 @@ export function exportSnapshotToOpcPackageGraph(
       [...requiredHyperlinks, ...tableParts.required],
     );
     sheetRelationships[part] = relationships;
-    files.set(part, strToU8(buildWorksheetXml(sheet, part, relationships, originalRoot, files, styleIndexes, differentialStyleIndexes, snapshot.dimensionMetrics.maximumDigitWidthPx, options.includeCachedValues ?? true, options.dateSystem, nativeUpdate.displayCellsBySheetPart[part], nativeUpdate.graph.controls ?? [], snapshot.printDocuments?.find((document) => document.sheetId === sheet.id), new Map(snapshot.sheets.map((entry) => [entry.id, entry.name])), sheet.sparklines, sheet.sparklineGroups ?? [])));
+    files.set(part, strToU8(buildWorksheetXml(sheet, part, relationships, originalRoot, files, styleIndexes, differentialStyleIndexes, snapshot.dimensionMetrics.maximumDigitWidthPx, options.includeCachedValues ?? true, options.dateSystem, nativeUpdate.displayCellsBySheetPart[part], nativeUpdate.graph.controls ?? [], snapshot.printDocuments?.find((document) => document.sheetId === sheet.id), new Map(snapshot.sheets.map((entry) => [entry.id, entry.name])), sheet.sparklines, sheet.sparklineGroups ?? [], sourceWorksheetNames, preserved?.nativePivotGraph?.controls?.filter((control) => control.sheetPart === part) ?? [])));
   }
 
   const workbookRelationsSource = nativeUpdate.relationships[workbookPart] ?? workbookRelationships;
@@ -454,7 +460,7 @@ export function exportSnapshotToOpcPackageGraph(
       ...sheetParts.map((part) => ({ id: '', type: REL_WORKSHEET, target: relativeTarget(workbookPart, part) })),
     ],
   );
-  files.set(workbookPart, strToU8(buildWorkbookXml(snapshot, workbookPart, workbookRelations, descriptorsForSnapshot(snapshot), options.dateSystem, nativeUpdate.graph, preserved)));
+  files.set(workbookPart, strToU8(buildWorkbookXml(snapshot, workbookPart, workbookRelations, descriptorsForSnapshot(snapshot, sheetParts), options.dateSystem, nativeUpdate.graph, preserved)));
   files.set(relationshipPartName(workbookPart), strToU8(buildRelationshipsXml(workbookRelations)));
   files.set(REACT_SHEETS_METADATA_PART, strToU8(buildReactSheetsMetadata(snapshot)));
   const rootRelationships = mergeRelationships(
@@ -785,7 +791,7 @@ function parseSheet(
     hiddenRows: manualHiddenRows,
     hiddenColumns,
     tabColor,
-    ...(hyperlinks.length ? { hyperlinks } : {}),
+    hyperlinks,
     review,
     ...(autoFilter ? { autoFilter } : {}),
     ...(outline ? { outline } : {}),
@@ -1737,6 +1743,8 @@ function buildWorksheetXml(
   sheetNames: ReadonlyMap<string, string> = new Map(),
   sparklines: SheetSnapshot['sparklines'] = [],
   sparklineGroups: NonNullable<SheetSnapshot['sparklineGroups']> = [],
+  sourceWorksheetNames: ReadonlySet<string> = new Set(sheetNames.values()),
+  sourceNativeControls: NativePivotControlDefinition[] = nativeControls,
 ): string {
   validateOoxmlExchangeBoundary(sheet);
   let xml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="${NS_MAIN}" xmlns:r="${NS_DOC_REL}">`;
@@ -1787,7 +1795,7 @@ function buildWorksheetXml(
   }
   if (sheet.conditionalFormats?.length) xml += serializeConditionalFormats(sheet.conditionalFormats, differentialStyleIndexes);
   if (sheet.dataValidations?.length) xml += serializeDataValidations(sheet.dataValidations);
-  const hyperlinks = (sheet.hyperlinks ?? []).map((entry) => {
+  const hyperlinks = sheet.hyperlinks.map((entry) => {
     const link = entry.hyperlink;
     const address = `${columnToLetter(entry.column)}${entry.row + 1}`;
     const relation = relationships.find((candidate) => isRelationshipKind(candidate.type, 'hyperlink') && candidate.target === hyperlinkTarget(link));
@@ -1839,10 +1847,10 @@ function buildWorksheetXml(
       if (node) xml += serializeXml(node);
     }
     const extension = preservedNodes.get('extLst');
-    if (extension) xml += serializeWorksheetControlExtensions(extension, nativeControls.filter((control) => control.sheetPart === sourcePart), sparklines, sparklineGroups, sheetNames);
-    else if (nativeControls.some((control) => control.sheetPart === sourcePart && control.valid) || sparklines.length > 0) xml += serializeWorksheetControlExtensions(undefined, nativeControls.filter((control) => control.sheetPart === sourcePart), sparklines, sparklineGroups, sheetNames);
+    if (extension) xml += serializeWorksheetControlExtensions(extension, nativeControls.filter((control) => control.sheetPart === sourcePart), sparklines, sparklineGroups, sheetNames, sourceWorksheetNames, sourceNativeControls);
+    else if (nativeControls.some((control) => control.sheetPart === sourcePart && control.valid) || sparklines.length > 0) xml += serializeWorksheetControlExtensions(undefined, nativeControls.filter((control) => control.sheetPart === sourcePart), sparklines, sparklineGroups, sheetNames, sourceWorksheetNames, sourceNativeControls);
   } else if (nativeControls.some((control) => control.sheetPart === sourcePart && control.valid) || sparklines.length > 0) {
-    xml += serializeWorksheetControlExtensions(undefined, nativeControls.filter((control) => control.sheetPart === sourcePart), sparklines, sparklineGroups, sheetNames);
+    xml += serializeWorksheetControlExtensions(undefined, nativeControls.filter((control) => control.sheetPart === sourcePart), sparklines, sparklineGroups, sheetNames, sourceWorksheetNames, sourceNativeControls);
   }
   xml += '</worksheet>';
   return xml;
@@ -2073,15 +2081,14 @@ function outlineLevelAt(outline: OutlineModel | undefined, axis: 'row' | 'column
   return { level: Math.max(...matches.map((group) => group.level)), collapsed: matches.some((group) => group.collapsed) };
 }
 
-function serializeWorksheetControlExtensions(original: XmlNode | undefined, controls: NativePivotControlDefinition[], sparklines: SheetSnapshot['sparklines'] = [], sparklineGroups: NonNullable<SheetSnapshot['sparklineGroups']> = [], sheetNames: ReadonlyMap<string, string> = new Map()): string {
+function serializeWorksheetControlExtensions(original: XmlNode | undefined, controls: NativePivotControlDefinition[], sparklines: SheetSnapshot['sparklines'] = [], sparklineGroups: NonNullable<SheetSnapshot['sparklineGroups']> = [], sheetNames: ReadonlyMap<string, string> = new Map(), sourceWorksheetNames: ReadonlySet<string> = new Set(sheetNames.values()), sourceNativeControls: NativePivotControlDefinition[] = controls): string {
   const root = original ? structuredClone(original) : firstElement(parseXml('<extLst/>'), 'extLst');
-  if (!controls.some((control) => !control.valid)) {
-    root.children = root.children.flatMap((extension) => {
-      const hasNativeControl = descendants(extension, 'slicerList').length > 0 || descendants(extension, 'timelineRefs').length > 0;
-      const hasNativeSparklines = descendants(extension, 'sparklineGroups').length > 0;
-      return hasNativeControl || (hasNativeSparklines && sparklines.length > 0) ? [] : [extension];
-    });
-  }
+  root.children = root.children.flatMap((extension) => {
+    const hasOwnedNativeControl = isCanonicallyOwnedNativeControlExtension(extension, sourceNativeControls);
+    const hasOwnedSparklines = isCanonicallyOwnedSparklineExtension(extension, sourceWorksheetNames);
+    if (hasOwnedNativeControl || hasOwnedSparklines) return [];
+    return [extension];
+  });
   const slicers = controls.filter((control) => control.kind === 'slicer' && control.valid && control.relationshipId);
   const timelines = controls.filter((control) => control.kind === 'timeline' && control.valid && control.relationshipId);
   if (slicers.length) {
@@ -2131,14 +2138,9 @@ function serializeWorksheetControlExtensions(original: XmlNode | undefined, cont
   return serializeXml(root);
 }
 
-function serializeWorkbookControlExtensions(original: XmlNode | undefined, controls: NativePivotControlDefinition[], relationships: NativeRelationship[]): string {
+function serializeWorkbookControlExtensions(original: XmlNode | undefined, controls: NativePivotControlDefinition[], relationships: NativeRelationship[], sourceControls: NativePivotControlDefinition[] = controls): string {
   const root = original ? structuredClone(original) : firstElement(parseXml('<extLst/>'), 'extLst');
-  if (!controls.some((control) => !control.valid)) {
-    root.children = root.children.flatMap((extension) => {
-      const hasNativeControl = descendants(extension, 'slicerCaches').length > 0 || descendants(extension, 'timelineCacheRefs').length > 0;
-      return hasNativeControl ? [] : [extension];
-    });
-  }
+  root.children = root.children.flatMap((extension) => isCanonicallyOwnedWorkbookControlExtension(extension, sourceControls) ? [] : [extension]);
   const slicerCaches = [...new Map(controls.filter((control) => control.kind === 'slicer' && control.valid && control.cacheRelationshipId).map((control) => [control.cachePart, control])).values()];
   const timelines = [...new Map(controls.filter((control) => control.kind === 'timeline' && control.valid && control.cacheRelationshipId).map((control) => [control.cachePart, control])).values()];
   if (slicerCaches.length) {
@@ -2203,14 +2205,73 @@ function buildWorkbookXml(snapshot: WorkbookSnapshot, workbookPart: string, rela
     let hasExtensionList = false;
     for (const node of originalRoot.children) {
       const name = localName(node.name);
-      if (name === 'bookViews' || name === 'calcPr' || name === 'fileVersion' || name === 'fileSharing' || name === 'workbookProtection') xml += serializeXml(node);
-      else if (name === 'extLst') { hasExtensionList = true; xml += serializeWorkbookControlExtensions(node, nativePivotGraph?.controls ?? [], relationships); }
+      if (name === 'bookViews') xml += preserved ? serializeWorkbookViews(node, originalRoot, preserved, workbookPart, descriptors) : serializeXml(node);
+      else if (name === 'calcPr' || name === 'fileVersion' || name === 'fileSharing' || name === 'workbookProtection') xml += serializeXml(node);
+      else if (name === 'extLst') { hasExtensionList = true; xml += serializeWorkbookControlExtensions(node, nativePivotGraph?.controls ?? [], relationships, preserved?.nativePivotGraph?.controls ?? nativePivotGraph?.controls ?? []); }
     }
     if (!hasExtensionList && nativePivotGraph?.controls?.some((control) => control.valid)) xml += serializeWorkbookControlExtensions(undefined, nativePivotGraph.controls, relationships);
   } else if (nativePivotGraph?.controls?.some((control) => control.valid)) {
     xml += serializeWorkbookControlExtensions(undefined, nativePivotGraph.controls, relationships);
   }
   return `${xml}</workbook>`;
+}
+
+function serializeWorkbookViews(
+  bookViews: XmlNode,
+  originalWorkbook: XmlNode,
+  sourcePackage: OpcPackageGraph,
+  workbookPart: string,
+  outputSheets: SheetDescriptor[],
+): string {
+  const rewritten = structuredClone(bookViews);
+  const views = children(rewritten, 'workbookView');
+  if (!views.some((view) => view.attrs.activeTab !== undefined || view.attrs.firstSheet !== undefined)) return serializeXml(rewritten);
+  const sourceSheets = children(child(originalWorkbook, 'sheets'), 'sheet');
+  const workbookRelationships = sourcePackage.relationships[workbookPart] ?? [];
+  const sourceSheetParts = sourceSheets.map((sheet, index) => {
+    const relationshipId = sheet.attrs['r:id'] ?? sheet.attrs.id;
+    const relationship = workbookRelationships.find((candidate) => candidate.id === relationshipId && isRelationshipKind(candidate.type, 'worksheet'));
+    if (!relationship) {
+      throw new NativeDocumentError({
+        code: 'NATIVE_DOCUMENT_UNCHANGED_SAVE_REQUIRED',
+        message: 'A workbook view references a worksheet whose source relationship cannot be resolved safely.',
+        format: sourcePackage.format,
+        location: `${workbookPart}#sheets[${index}]`,
+        recovery: 'Keep the source package unchanged or repair its worksheet relationship before editing workbook structure.',
+      });
+    }
+    return resolveTarget(workbookPart, relationship.target);
+  });
+  const outputSheetParts = outputSheets.map((sheet) => sheet.part);
+  for (const view of views) {
+    for (const reference of ['activeTab', 'firstSheet']) {
+      const rawIndex = view.attrs[reference];
+      if (rawIndex === undefined) continue;
+      const normalizedIndex = rawIndex.trim();
+      const sourceIndex = Number(normalizedIndex);
+      if (!/^\d+$/.test(normalizedIndex) || !Number.isSafeInteger(sourceIndex) || sourceIndex >= sourceSheetParts.length) {
+        throw new NativeDocumentError({
+          code: 'NATIVE_DOCUMENT_UNCHANGED_SAVE_REQUIRED',
+          message: `Workbook view ${reference} does not identify a source worksheet.`,
+          format: sourcePackage.format,
+          location: `${workbookPart}#bookViews/workbookView@${reference}`,
+          recovery: 'Keep the source package unchanged or repair the workbook view index before editing workbook structure.',
+        });
+      }
+      const outputIndex = outputSheetParts.indexOf(sourceSheetParts[sourceIndex]!);
+      if (outputIndex < 0) {
+        throw new NativeDocumentError({
+          code: 'NATIVE_DOCUMENT_UNCHANGED_SAVE_REQUIRED',
+          message: `Workbook view ${reference} points to a worksheet removed by the structural edit.`,
+          format: sourcePackage.format,
+          location: `${workbookPart}#bookViews/workbookView@${reference}`,
+          recovery: 'Keep the referenced worksheet or explicitly choose a replacement workbook view before exporting.',
+        });
+      }
+      view.attrs[reference] = String(outputIndex);
+    }
+  }
+  return serializeXml(rewritten);
 }
 
 function buildContentTypesXml(files: Map<string, Uint8Array>, preserved: OpcPackageGraph | undefined, workbookPart: string, stylesPart: string, sharedStringsPart: string, themePart: string, corePropertiesPart: string, extendedPropertiesPart: string, targetVariant?: Extract<NativeDocumentFormat, { family: 'ooxml' }>['variant']): string {
@@ -2390,7 +2451,7 @@ function mergeRelationships(existing: NativeRelationship[], required: Array<Pick
 
 function collectHyperlinkRelationships(sheet: SheetSnapshot, existing: NativeRelationship[]): Array<Pick<NativeRelationship, 'type' | 'target' | 'targetMode'>> {
   const links: Array<Pick<NativeRelationship, 'type' | 'target' | 'targetMode'>> = [];
-  for (const entry of sheet.hyperlinks ?? []) {
+  for (const entry of sheet.hyperlinks) {
     const target = entry.hyperlink.target;
     if (target.kind !== 'url' && target.kind !== 'email') continue;
     const href = hyperlinkTarget(entry.hyperlink);
@@ -2433,10 +2494,12 @@ function hyperlinkForCell(root: XmlNode, relationships: NativeRelationship[], ro
     const separator = location.lastIndexOf('!');
     if (separator > 0) {
       const rawSheetName = location.slice(0, separator).replace(/^'(.*)'$/, '$1').replace(/''/g, "'");
-      const targetSheet = sheetDescriptors.find((descriptor) => descriptor.name === rawSheetName);
+      const targetSheet = sheetDescriptors.find((descriptor) => descriptor.name.toLocaleLowerCase('en-US') === rawSheetName.toLocaleLowerCase('en-US'));
       const targetAddress = location.slice(separator + 1);
-      if (!targetSheet || !parseA1(targetAddress)) throw new Error(`Hyperlink worksheet location is invalid: ${location}`);
-      return { id: `hyperlink-${row}-${column}`, target: { kind: 'sheet', sheetId: targetSheet.id, address: targetAddress }, ...(node.attrs.tooltip ? { tooltip: node.attrs.tooltip } : {}) };
+      const parsedAddress = parseA1(targetAddress);
+      if (!targetSheet || !parsedAddress) throw new Error(`Hyperlink worksheet location is invalid: ${location}`);
+      const canonicalAddress = `${columnToLetter(parsedAddress.column)}${parsedAddress.row + 1}`;
+      return { id: `hyperlink-${row}-${column}`, target: { kind: 'sheet', sheetId: targetSheet.id, address: canonicalAddress }, ...(node.attrs.tooltip ? { tooltip: node.attrs.tooltip } : {}) };
     }
     return { id: `hyperlink-${row}-${column}`, target: { kind: 'name', name: location }, ...(node.attrs.tooltip ? { tooltip: node.attrs.tooltip } : {}) };
   }
@@ -3022,6 +3085,11 @@ function readSheetPartMap(files: Record<string, Uint8Array>, relationships: Reco
   return map;
 }
 
+function readWorkbookSheetNames(workbookBytes: Uint8Array): ReadonlySet<string> {
+  const workbook = firstElement(parseXml(strFromU8(workbookBytes)), 'workbook');
+  return new Set(children(child(workbook, 'sheets'), 'sheet').flatMap((node) => node.attrs.name ? [node.attrs.name] : []));
+}
+
 function firstElement(root: XmlNode, name: string): XmlNode {
   const found = root.name === name || localName(root.name) === name ? root : descendants(root, name)[0];
   if (!found) throw new Error(`OOXML part is missing <${name}>`);
@@ -3242,7 +3310,7 @@ function validateOoxmlExchangeBoundary(sheet: SheetSnapshot): void {
   for (const rule of sheet.dataValidations ?? []) {
     if (rule.listSource?.kind === 'range') validateOoxmlRange(rule.listSource.range, `${sheet.name}!validation source`);
   }
-  for (const hyperlink of sheet.hyperlinks ?? []) assertOoxmlAddress(hyperlink.row, hyperlink.column, `${sheet.name}!hyperlink`);
+  for (const hyperlink of sheet.hyperlinks) assertOoxmlAddress(hyperlink.row, hyperlink.column, `${sheet.name}!hyperlink`);
 }
 
 function validateOoxmlRange(range: RangeRef, subject: string): void {
@@ -3353,6 +3421,6 @@ function serializeAlignment(style: CellStyle): string {
   return serialized ? `<alignment${serialized}/>` : '';
 }
 
-function descriptorsForSnapshot(snapshot: WorkbookSnapshot): SheetDescriptor[] {
-  return snapshot.sheets.map((sheet, index) => ({ id: sheet.id, name: sheet.name, part: `xl/worksheets/sheet${index + 1}.xml`, hidden: Boolean(sheet.hidden) }));
+function descriptorsForSnapshot(snapshot: WorkbookSnapshot, sheetParts: readonly string[]): SheetDescriptor[] {
+  return snapshot.sheets.map((sheet, index) => ({ id: sheet.id, name: sheet.name, part: sheetParts[index]!, hidden: Boolean(sheet.hidden) }));
 }

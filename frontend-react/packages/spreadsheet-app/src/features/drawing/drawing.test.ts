@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { CommandRuntime } from '@react-sheets/command-runtime';
 import { StructuralTransform, WorkbookModel, type DrawingObject, type DrawingPayload, type ImageDrawingPayload } from '@react-sheets/core-model';
+import { RangeIndex } from '@react-sheets/formula-engine';
 import { DrawingRuntime, registerDrawingFeature } from '../../index';
 
 const imageAsset = (assetId: string) => ({
@@ -344,7 +345,8 @@ describe('drawing feature', () => {
       },
       payload: { kind: 'shape', type: 'ellipse', fill: '#fff', stroke: '#000' },
     });
-    StructuralTransform.apply(workbook, { kind: 'insert-rows', sheetId: 'sheet-1', at: 1, count: 2 });
+    const sheetOrder = workbook.sheetOrder.map((id) => ({ id, name: workbook.getSheet(id).name }));
+    StructuralTransform.apply(workbook, { kind: 'insert-rows', sheetId: 'sheet-1', at: 1, count: 2 }, new RangeIndex(sheetOrder));
     assert.deepEqual(workbook.getSheet('sheet-1').drawings[0]?.anchor, { kind: 'two-cell', row: 4, column: 2, endRow: 7, endColumn: 4 });
   });
 

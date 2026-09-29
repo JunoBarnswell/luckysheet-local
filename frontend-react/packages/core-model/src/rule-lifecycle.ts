@@ -6,6 +6,8 @@ import type {
   RangeRef,
   WorksheetModel,
 } from './index';
+import { formatFormula, offsetAst, parseFormula } from '@react-sheets/formula-engine';
+import { structuralRuleFormulaFields, type StructuralFormulaRuleField } from './structural-formula-owner';
 
 export type SheetRule = ConditionalFormatRule | DataValidationRule;
 export type SheetRuleKind = 'conditional-format' | 'data-validation';
@@ -111,6 +113,34 @@ function exactlyOneRange(ranges: readonly RangeRef[], label: string): RangeRef {
   return ranges[0]!;
 }
 
+function offsetRuleFormula(formula: string, rowOffset: number, columnOffset: number, ruleId: string, field: StructuralFormulaRuleField): string {
+  const normalized = formula.trimStart();
+  const hasPrefix = normalized.startsWith('=');
+  try {
+    const ast = parseFormula(hasPrefix ? normalized : `=${normalized}`);
+    const shifted = formatFormula(offsetAst(ast, rowOffset, columnOffset));
+    return hasPrefix ? shifted : shifted.slice(1);
+  } catch (error) {
+    const detail = error instanceof Error ? `: ${error.message}` : '';
+    throw new Error(`UNSUPPORTED_PASTE_RULE_FORMULA: ${ruleId}.${field} cannot be safely translated${detail}`);
+  }
+}
+
+function offsetRuleFormulas(rule: SheetRule, rowOffset: number, columnOffset: number): void {
+  if (rowOffset === 0 && columnOffset === 0) return;
+  const formulaFields = structuralRuleFormulaFields(rule);
+  const mutableRule = rule as unknown as Record<string, unknown>;
+  for (const [field, formula] of formulaFields) {
+    const shifted = offsetRuleFormula(formula, rowOffset, columnOffset, rule.id, field);
+    if (field === 'listSource.formula') {
+      if (isConditionalFormat(rule) || rule.listSource?.kind !== 'formula') throw new Error(`STRUCTURAL_REFERENCE_INDEX_INVARIANT: ${rule.id}.${field} is missing`);
+      rule.listSource = { ...rule.listSource, formula: shifted };
+    } else {
+      mutableRule[field] = shifted;
+    }
+  }
+}
+
 /**
  * Canonical lifecycle owner for worksheet rules. Every caller uses this
  * registry for range normalization, structural transforms, Clear cropping,
@@ -157,11 +187,14 @@ export class SheetRuleRegistry {
     if ((rule.type === 'whole' || rule.type === 'decimal' || rule.type === 'textLength') && rule.formula1 === undefined) throw new Error(`Data validation ${rule.id} requires a lower bound`);
     if (rule.type === 'checkbox' && rule.operator !== undefined) throw new Error('Checkbox validation does not accept a comparison operator');
     if (rule.alertStyle !== undefined && !['stop', 'warning', 'information'].includes(rule.alertStyle)) throw new Error('Data validation alert style is invalid');
-    if (rule.listSource?.kind === 'range' && rule.listSource.range.sheetId !== rule.sheetId) throw new Error('Validation list range must target the validation sheet');
+    const normalizedRule = structuredClone(rule);
+    if (normalizedRule.listSource?.kind === 'range') {
+      normalizedRule.listSource = { ...normalizedRule.listSource, range: normalizeRange(normalizedRule.listSource.range) };
+    }
     const formula = rule.type === 'custom' ? rule.formula1 : rule.listSource?.kind === 'formula' ? rule.listSource.formula : undefined;
     if (formula?.trim().startsWith('=')) validateFormula?.(formula.trim());
     return {
-      ...structuredClone(rule),
+      ...normalizedRule,
       ranges,
       formulaAnchor: normalizeAnchor(rule.sheetId, ranges, rule.formulaAnchor),
       alertStyle: rule.alertStyle ?? 'stop',
@@ -208,16 +241,37 @@ export class SheetRuleRegistry {
     next.id = transform.id(rule);
     next.sheetId = transform.target.sheetId;
     next.ranges = rule.ranges.map((range) => remapPasteRange(range, transform));
-    if (rule.formulaAnchor) {
-      const formulaAnchor = {
-        sheetId: transform.target.sheetId,
-        row: transform.target.startRow + (transform.transpose ? rule.formulaAnchor.column - transform.source.startColumn : rule.formulaAnchor.row - transform.source.startRow),
-        column: transform.target.startColumn + (transform.transpose ? rule.formulaAnchor.row - transform.source.startRow : rule.formulaAnchor.column - transform.source.startColumn),
-      };
-      if (formulaAnchor.row < 0 || formulaAnchor.column < 0) throw new Error(`Rule ${rule.id} formula anchor cannot be represented at paste target`);
-      next.formulaAnchor = formulaAnchor;
+    const sourceAnchor = rule.formulaAnchor ?? {
+      sheetId: rule.sheetId,
+      row: rule.ranges[0]?.startRow ?? transform.source.startRow,
+      column: rule.ranges[0]?.startColumn ?? transform.source.startColumn,
+    };
+    const sourceAnchorIsCopied = sourceAnchor.row >= transform.source.startRow && sourceAnchor.row <= transform.source.endRow
+      && sourceAnchor.column >= transform.source.startColumn && sourceAnchor.column <= transform.source.endColumn
+      && rule.ranges.some((range) => range.sheetId === sourceAnchor.sheetId
+      && sourceAnchor.row >= range.startRow && sourceAnchor.row <= range.endRow
+      && sourceAnchor.column >= range.startColumn && sourceAnchor.column <= range.endColumn);
+    const mappedSourceAnchor = sourceAnchorIsCopied ? sourceAnchor : {
+      sheetId: transform.source.sheetId,
+      row: rule.ranges[0]?.startRow ?? transform.source.startRow,
+      column: rule.ranges[0]?.startColumn ?? transform.source.startColumn,
+    };
+    const targetAnchor = {
+      sheetId: transform.target.sheetId,
+      row: transform.target.startRow + (transform.transpose
+        ? mappedSourceAnchor.column - transform.source.startColumn
+        : mappedSourceAnchor.row - transform.source.startRow),
+      column: transform.target.startColumn + (transform.transpose
+        ? mappedSourceAnchor.row - transform.source.startRow
+        : mappedSourceAnchor.column - transform.source.startColumn),
+    };
+    if (targetAnchor.row < 0 || targetAnchor.column < 0) {
+      throw new Error(`Rule ${rule.id} formula anchor cannot be represented at paste target`);
     }
-    if (!isConditionalFormat(rule) && rule.listSource?.kind === 'range') {
+    if (rule.formulaAnchor || structuralRuleFormulaFields(rule).size > 0) next.formulaAnchor = targetAnchor;
+    offsetRuleFormulas(next, targetAnchor.row - sourceAnchor.row, targetAnchor.column - sourceAnchor.column);
+    if (!isConditionalFormat(rule) && rule.listSource?.kind === 'range'
+      && rule.listSource.range.sheetId === rule.sheetId) {
       const validation = next as unknown as DataValidationRule;
       validation.listSource = { ...rule.listSource, range: remapPasteRange(rule.listSource.range, transform) };
     }

@@ -5,6 +5,67 @@ import path from 'node:path';
 const contractsRoot = path.dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = path.dirname(contractsRoot);
 const source = JSON.parse(await readFile(path.join(contractsRoot, 'workbook-contract.json'), 'utf8'));
+const nativeDocumentStructuralCapabilityPolicy = JSON.parse(await readFile(
+  path.join(contractsRoot, 'native-document-structural-capability.json'),
+  'utf8',
+));
+function requireUniqueStrings(values, label) {
+  if (!Array.isArray(values) || values.some((value) => typeof value !== 'string' || !value.trim())
+    || new Set(values).size !== values.length) {
+    throw new Error(`${label} must be an array of unique non-empty strings`);
+  }
+}
+if (nativeDocumentStructuralCapabilityPolicy.policyRevision !== 1) {
+  throw new Error('Unsupported native document structural capability policy revision');
+}
+requireUniqueStrings(nativeDocumentStructuralCapabilityPolicy.blockingFeatures, 'blockingFeatures');
+requireUniqueStrings(Object.values(nativeDocumentStructuralCapabilityPolicy.features), 'features');
+if (nativeDocumentStructuralCapabilityPolicy.blockingFeatures.some(
+  (feature) => !Object.values(nativeDocumentStructuralCapabilityPolicy.features).includes(feature),
+)) {
+  throw new Error('blockingFeatures must reference declared feature ids');
+}
+requireUniqueStrings(nativeDocumentStructuralCapabilityPolicy.worksheet.structuralNodes, 'worksheet.structuralNodes');
+requireUniqueStrings(nativeDocumentStructuralCapabilityPolicy.worksheet.rootAttributes, 'worksheet.rootAttributes');
+requireUniqueStrings(nativeDocumentStructuralCapabilityPolicy.worksheet.singletonNodes, 'worksheet.singletonNodes');
+requireUniqueStrings(nativeDocumentStructuralCapabilityPolicy.worksheet.extendedRuleNodes.validation, 'worksheet.extendedRuleNodes.validation');
+requireUniqueStrings(nativeDocumentStructuralCapabilityPolicy.worksheet.extendedRuleNodes.conditionalFormat, 'worksheet.extendedRuleNodes.conditionalFormat');
+requireUniqueStrings(nativeDocumentStructuralCapabilityPolicy.workbook.singletonNodes, 'workbook.singletonNodes');
+requireUniqueStrings(nativeDocumentStructuralCapabilityPolicy.workbook.rootNodes, 'workbook.rootNodes');
+requireUniqueStrings(nativeDocumentStructuralCapabilityPolicy.workbook.rootAttributes, 'workbook.rootAttributes');
+for (const [node, feature] of Object.entries(nativeDocumentStructuralCapabilityPolicy.worksheet.featureNodes)) {
+  if (!node.trim() || typeof feature !== 'string' || !feature.trim()) {
+    throw new Error('worksheet.featureNodes must map non-empty node names to feature ids');
+  }
+}
+if (Object.keys(nativeDocumentStructuralCapabilityPolicy.workbook.nodes)
+  .some((node) => !nativeDocumentStructuralCapabilityPolicy.workbook.rootNodes.includes(node))) {
+  throw new Error('workbook.nodes must be contained by workbook.rootNodes');
+}
+for (const [scope, policy] of [
+  ['worksheet', nativeDocumentStructuralCapabilityPolicy.worksheet],
+  ['workbook', nativeDocumentStructuralCapabilityPolicy.workbook],
+]) {
+  const keys = Object.keys(policy.extensionUris);
+  const rules = policy.controlExtensions;
+  requireUniqueStrings(rules.map((rule) => rule.uriKey), `${scope}.controlExtensions.uriKey`);
+  if (rules.some((rule) => !keys.includes(rule.uriKey)
+    || !['slicer', 'timeline'].includes(rule.kind)
+    || !rule.containerNode?.trim() || !rule.itemNode?.trim()
+    || !['relationshipId', 'cacheRelationshipId'].includes(rule.relationshipField))) {
+    throw new Error(`${scope}.controlExtensions contains an invalid owner rule`);
+  }
+}
+for (const [node, policy] of Object.entries(nativeDocumentStructuralCapabilityPolicy.worksheet.nodes)) {
+  if (!nativeDocumentStructuralCapabilityPolicy.worksheet.structuralNodes.includes(node)) {
+    throw new Error(`worksheet.nodes.${node} must have a structural node reader/writer entry`);
+  }
+  requireUniqueStrings(policy.attributes, `worksheet.nodes.${node}.attributes`);
+  if (policy.children) for (const [child, childPolicy] of Object.entries(policy.children)) {
+    requireUniqueStrings(childPolicy.attributes, `worksheet.nodes.${node}.children.${child}.attributes`);
+  }
+  if (policy.positiveNumericAttributes) requireUniqueStrings(policy.positiveNumericAttributes, `worksheet.nodes.${node}.positiveNumericAttributes`);
+}
 const errors = source.errors.map((value) => JSON.stringify(value)).join(', ');
 const entries = Object.entries(source.mutations);
 const permissionSource = source.permissions;
@@ -21,6 +82,38 @@ for (const [id] of entries) {
 const permissionEntries = Object.entries(permissionSource.mutations);
 const commandEntries = Object.entries(permissionSource.commands);
 const commandPrefixEntries = permissionSource.commandPrefixes;
+const serverStructuralPlannerMutations = source.serverStructuralPlannerMutations;
+const structuralPatchMutations = source.structuralPatchMutations;
+const serverStructuralPlannerCommands = source.serverStructuralPlannerCommands;
+if (!Array.isArray(serverStructuralPlannerMutations)
+  || new Set(serverStructuralPlannerMutations).size !== serverStructuralPlannerMutations.length) {
+  throw new Error('serverStructuralPlannerMutations must be a unique array of mutation ids');
+}
+for (const id of serverStructuralPlannerMutations) {
+  if (typeof id !== 'string' || !permissionSource.mutations[id]) {
+    throw new Error(`Server structural planner mutation ${String(id)} is missing a canonical mutation permission policy`);
+  }
+}
+if (!Array.isArray(structuralPatchMutations)
+  || new Set(structuralPatchMutations).size !== structuralPatchMutations.length) {
+  throw new Error('structuralPatchMutations must be a unique array of mutation ids');
+}
+for (const id of structuralPatchMutations) {
+  if (typeof id !== 'string' || !serverStructuralPlannerMutations.includes(id) || !permissionSource.mutations[id]) {
+    throw new Error(`Structural patch mutation ${String(id)} must have a server planner and canonical mutation permission policy`);
+  }
+}
+if (!Array.isArray(serverStructuralPlannerCommands)
+  || new Set(serverStructuralPlannerCommands).size !== serverStructuralPlannerCommands.length) {
+  throw new Error('serverStructuralPlannerCommands must be a unique array of command ids');
+}
+for (const id of serverStructuralPlannerCommands) {
+  const hasExactPermission = typeof id === 'string' && Boolean(permissionSource.commands[id]);
+  const hasPrefixPermission = typeof id === 'string' && commandPrefixEntries.some(({ prefix }) => id.startsWith(prefix));
+  if (!hasExactPermission && !hasPrefixPermission) {
+    throw new Error(`Server structural planner command ${String(id)} is missing a canonical command permission policy`);
+  }
+}
 function normalizePermission(value) {
   const objectScope = value.objectScope ?? (value.protectionAction === 'edit-objects'
     ? 'drawing'
@@ -63,6 +156,21 @@ const tsCommandPrefixes = commandPrefixEntries.map((policy) =>
 const tsMutationPermissions = permissionEntries.map(([id, policy]) =>
   `  ${JSON.stringify(id)}: ${permissionPolicyJson(policy)},`,
 ).join('\n');
+const javaServerStructuralPlannerMutations = serverStructuralPlannerMutations
+  .map((id) => `        ${JSON.stringify(id)}`)
+  .join(',\n');
+const javaStructuralPatchMutations = structuralPatchMutations
+  .map((id) => `        ${JSON.stringify(id)}`)
+  .join(',\n');
+const tsServerStructuralPlannerMutations = serverStructuralPlannerMutations
+  .map((id) => `  ${JSON.stringify(id)},`)
+  .join('\n');
+const tsStructuralPatchMutations = structuralPatchMutations
+  .map((id) => `  ${JSON.stringify(id)},`)
+  .join('\n');
+const tsServerStructuralPlannerCommands = serverStructuralPlannerCommands
+  .map((id) => `  ${JSON.stringify(id)},`)
+  .join('\n');
 
 const java = `// Generated by contracts/generate-contracts.mjs. Do not edit manually.
 package com.xc.luckysheet.server.contract;
@@ -76,7 +184,14 @@ public final class GeneratedWorkbookContract {
     public static final int SNAPSHOT_VERSION = ${source.workbook.snapshotVersion};
     public static final int MAX_WORKBOOK_NAME_LENGTH = ${source.workbook.maxNameLength};
     public static final int MAX_DRAWING_SOURCE_CELLS = ${source.workbook.maxDrawingSourceCells};
+    public static final int MAX_CHANGED_CELLS = ${source.workbook.maxChangedCells};
     public static final Set<String> ERROR_CODES = Set.of(${errors});
+    public static final Set<String> SERVER_STRUCTURAL_PLANNER_MUTATIONS = Set.of(
+${javaServerStructuralPlannerMutations}
+    );
+    public static final Set<String> STRUCTURAL_PATCH_MUTATIONS = Set.of(
+${javaStructuralPatchMutations}
+    );
     public static final Map<String, MutationCapability> MUTATIONS = Map.ofEntries(
 ${javaMutations}
     );
@@ -101,6 +216,10 @@ ${javaAllowFields}
         return PROTECTION_ALLOW_FIELDS.get(action);
     }
 
+    public static boolean requiresServerStructuralPlanner(String mutationId) {
+        return SERVER_STRUCTURAL_PLANNER_MUTATIONS.contains(mutationId);
+    }
+
     public record MutationCapability(String durability, boolean remote, String schema, String minRole, String rebasePolicy, boolean javaReducer, String protectionAction, boolean checksProtection, String affectedRangeMode, String objectScope) {}
     public record PermissionPolicy(String capability, String protectionAction, boolean checksProtection, String affectedRangeMode, String objectScope) {}
 }
@@ -112,6 +231,23 @@ export const WORKBOOK_SNAPSHOT_SCHEMA = ${JSON.stringify(source.workbook.snapsho
 export const WORKBOOK_SNAPSHOT_VERSION = ${source.workbook.snapshotVersion} as const;
 export const MAX_WORKBOOK_NAME_LENGTH = ${source.workbook.maxNameLength} as const;
 export const CONTRACT_ERROR_CODES = [${errors}] as const;
+export const SERVER_STRUCTURAL_PLANNER_MUTATIONS = [
+${tsServerStructuralPlannerMutations}
+] as const;
+export const STRUCTURAL_PATCH_MUTATIONS = [
+${tsStructuralPatchMutations}
+] as const;
+const serverStructuralPlannerMutationIds: ReadonlySet<string> = new Set(SERVER_STRUCTURAL_PLANNER_MUTATIONS);
+export function requiresServerStructuralPlanner(mutationId: string): boolean {
+  return serverStructuralPlannerMutationIds.has(mutationId);
+}
+export const SERVER_STRUCTURAL_PLANNER_COMMANDS = [
+${tsServerStructuralPlannerCommands}
+] as const;
+const serverStructuralPlannerCommandIds: ReadonlySet<string> = new Set(SERVER_STRUCTURAL_PLANNER_COMMANDS);
+export function requiresServerStructuralPlannerCommand(commandId: string): boolean {
+  return serverStructuralPlannerCommandIds.has(commandId);
+}
 export type ContractErrorCode = typeof CONTRACT_ERROR_CODES[number];
 export type MutationDurability = 'transient' | 'local' | 'remote';
 export type PermissionCapability = 'navigate' | 'edit-cell' | 'format' | 'structure' | 'drawing' | 'protect' | 'share' | 'comment' | 'restore' | 'query' | 'script';
@@ -164,6 +300,7 @@ export function commandPermission(id: string): PermissionPolicy | undefined {
 
 const coreLimits = `// Generated by contracts/generate-contracts.mjs. Do not edit manually.
 export const MAX_DRAWING_SOURCE_CELLS = ${source.workbook.maxDrawingSourceCells} as const;
+export const MAX_CHANGED_CELLS = ${source.workbook.maxChangedCells} as const;
 `;
 const coreProtection = `// Generated by contracts/generate-contracts.mjs. Do not edit manually.
 export type ProtectionAction = ${coreProtectionActionUnion};
@@ -171,10 +308,25 @@ export const PROTECTION_ACTION_ALLOW_FIELD = {
 ${coreAllowFields}
 } as const;
 `;
+const nativeDocumentStructuralCapabilityTypescript = `// Generated by contracts/generate-contracts.mjs. Do not edit manually.
+export const NATIVE_DOCUMENT_STRUCTURAL_CAPABILITY_POLICY = ${JSON.stringify(nativeDocumentStructuralCapabilityPolicy, null, 2)} as const;
+`;
+const nativeDocumentStructuralCapabilityJava = `// Generated by contracts/generate-contracts.mjs. Do not edit manually.
+package com.xc.luckysheet.server.contract;
+
+public final class GeneratedNativeDocumentStructuralCapabilityPolicy {
+    public static final int POLICY_REVISION = ${nativeDocumentStructuralCapabilityPolicy.policyRevision};
+    public static final String POLICY_JSON = ${JSON.stringify(JSON.stringify(nativeDocumentStructuralCapabilityPolicy))};
+
+    private GeneratedNativeDocumentStructuralCapabilityPolicy() {}
+}
+`;
 
 await Promise.all([
   writeFile(path.join(repositoryRoot, 'backend/src/main/java/com/xc/luckysheet/server/contract/GeneratedWorkbookContract.java'), java, 'utf8'),
   writeFile(path.join(repositoryRoot, 'frontend-react/packages/protocol/src/generated-contract.ts'), typescript, 'utf8'),
   writeFile(path.join(repositoryRoot, 'frontend-react/packages/core-model/src/generated-workbook-limits.ts'), coreLimits, 'utf8'),
   writeFile(path.join(repositoryRoot, 'frontend-react/packages/core-model/src/generated-protection.ts'), coreProtection, 'utf8'),
+  writeFile(path.join(repositoryRoot, 'frontend-react/packages/exchange-excel-ooxml/src/generated-structural-capability-policy.ts'), nativeDocumentStructuralCapabilityTypescript, 'utf8'),
+  writeFile(path.join(repositoryRoot, 'backend/src/main/java/com/xc/luckysheet/server/contract/GeneratedNativeDocumentStructuralCapabilityPolicy.java'), nativeDocumentStructuralCapabilityJava, 'utf8'),
 ]);

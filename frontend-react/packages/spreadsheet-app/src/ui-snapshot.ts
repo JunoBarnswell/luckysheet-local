@@ -299,12 +299,11 @@ export function buildCanvasSheetSnapshot(
     );
     const effectiveStyle = resolveEffectiveFilterVisual(modelCell, overlay, presentation).style;
     const style = Object.keys(effectiveStyle).length > 0 ? effectiveStyle : undefined;
-    const validation = validateDataInput(sheet, row, column, resolvedFilter.value);
+    const validation = validateDataInput(sheet, row, column, resolvedFilter.value, (sheetId) => workbook.getSheet(sheetId));
     const thread = findCommentThreadAt(sheet, row, column);
     const note = sheet.review.getNoteAt(row, column);
     const comment = thread ? threadToCellComment(thread) : undefined;
-    const hyperlinkDetail = getCellHyperlink(sheet, row, column) ?? modelCell?.hyperlinkDetail;
-    const hyperlink = resolveHyperlinkDisplay(hyperlinkDetail);
+    const hyperlink = resolveHyperlinkDisplay(getCellHyperlink(sheet, row, column));
     return {
       address: cellAddress(row, column),
       formula: modelCell?.formula,
@@ -333,9 +332,9 @@ export function buildCanvasSheetSnapshot(
       if (selection.columns && !selection.columns.has(column)) return;
       visitor(row, column);
     };
-    if (selection.rows) sheet.cells.forEachInRows(selection.rows, visitMaterialized);
-    else if (selection.columns) sheet.cells.forEachInColumns(selection.columns, visitMaterialized);
-    else sheet.cells.forEach(visitMaterialized);
+    if (selection.rows) sheet.cells.forEachInRowsWithoutHydration(selection.rows, visitMaterialized);
+    else if (selection.columns) sheet.cells.forEachInColumnsWithoutHydration(selection.columns, visitMaterialized);
+    else sheet.cells.forEachWithoutHydration(visitMaterialized);
 
     for (const region of sheet.dataRegions) {
       const startRow = Math.max(region.range.startRow, region.headerRow + 1);

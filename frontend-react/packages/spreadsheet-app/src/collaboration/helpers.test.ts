@@ -3,8 +3,9 @@ import { describe, it } from 'node:test';
 import { CommandRuntime } from '@react-sheets/command-runtime';
 import { WorkbookModel } from '@react-sheets/core-model';
 import { createCellSetMutationParams, registerSheetCommands } from '@react-sheets/sheet-features';
-import type { OperationEnvelope } from '@react-sheets/protocol';
+import { ApiRequestError, type OperationEnvelope } from '@react-sheets/protocol';
 import { CollaborationSession } from './collaboration-session';
+import { committedMutationToClassified } from './operation-types';
 import { OfflineQueue } from './offline-queue';
 import {
   buildOperation,
@@ -14,6 +15,19 @@ import {
 } from './helpers';
 
 describe('collaboration helpers', () => {
+  it('classifies server-derived structural impact separately from declared ranges', () => {
+    const declared = { sheetId: 'sheet-1', startRow: 4, endRow: 4, startColumn: 0, endColumn: 51 };
+    const impact = { sheetId: 'sheet-1', startRow: 0, endRow: 0, startColumn: 1, endColumn: 1 };
+    const classified = committedMutationToClassified({
+      id: 'rows.deleted',
+      sheetId: 'sheet-1',
+      params: { sheetId: 'sheet-1', at: 4, count: 1 },
+      affectedRanges: [declared],
+      structuralImpactRanges: [impact],
+    });
+    assert.deepEqual(classified.affectedRanges, [declared, impact]);
+  });
+
   it('builds the single client operation contract without server-owned fields', () => {
     const operation = buildOperation('op-1', 'wb-1', 1, 0, [{ id: 'cell.set', sheetId: 'sheet-1', params: {} }], '2026-08-23T00:00:00.000Z');
     assert.deepEqual(operation, {
@@ -66,6 +80,57 @@ describe('collaboration helpers', () => {
     assert.equal(session.offlineQueue.getStatus('op-ack'), 'acked');
   });
 
+  it('reads a single pending operation without exposing the queued envelope', () => {
+    const operation = buildOperation('op-targeted', 'wb-targeted', 1, 0, [{
+      id: 'cell.set', sheetId: 'sheet-1', params: { value: 'original' },
+    }], '2026-08-23T00:00:00.000Z');
+    const queue = new OfflineQueue({ load: () => [operation] });
+
+    assert.equal(queue.hasPendingOperation(operation.operationId), true);
+    assert.deepEqual(queue.getPendingOperationIds(), [operation.operationId]);
+    const isolated = queue.getPendingOperation(operation.operationId)!;
+    (isolated.mutations[0]!.params as Record<string, unknown>).value = 'changed';
+    assert.equal((queue.getPendingOperation(operation.operationId)!.mutations[0]!.params as Record<string, unknown>).value, 'original');
+  });
+
+  it('persists batched queue acknowledgement and discard only once', () => {
+    const operations = [1, 2].map((sequence) => buildOperation(
+      `op-batch-${sequence}`, 'wb-batch', sequence, 0,
+      [{ id: 'cell.set', sheetId: 'sheet-1', params: { value: sequence } }],
+      '2026-08-23T00:00:00.000Z',
+    ));
+    let writes = 0;
+    const queue = new OfflineQueue({ load: () => operations, persist: () => { writes += 1; } });
+
+    assert.deepEqual(queue.acknowledgeMany(operations.map((operation) => operation.operationId)), operations.map((operation) => operation.operationId));
+    assert.equal(writes, 1);
+    assert.equal(queue.getPendingCount(), 0);
+
+    queue.enqueue(buildOperation('op-discard-1', 'wb-batch', 3, 0, [{ id: 'cell.set', sheetId: 'sheet-1', params: {} }], '2026-08-23T00:00:00.000Z'));
+    queue.enqueue(buildOperation('op-discard-2', 'wb-batch', 4, 0, [{ id: 'cell.set', sheetId: 'sheet-1', params: {} }], '2026-08-23T00:00:00.000Z'));
+    writes = 0;
+    assert.deepEqual(queue.discardMany(queue.getPendingOperationIds()), ['op-discard-1', 'op-discard-2']);
+    assert.equal(writes, 1);
+    assert.equal(queue.getPendingCount(), 0);
+  });
+
+  it('keeps the in-memory queue unchanged when a rewritten journal cannot be persisted', () => {
+    let rejectWrites = false;
+    const queue = new OfflineQueue({
+      persist: () => {
+        if (rejectWrites) throw new Error('journal write failed');
+      },
+    });
+    const original = buildOperation('op-rewrite-failure', 'wb-rewrite-failure', 1, 0, [{
+      id: 'cell.set', sheetId: 'sheet-1', params: { row: 3 },
+    }], '2026-08-23T00:00:00.000Z');
+    queue.enqueue(original);
+    rejectWrites = true;
+
+    assert.throws(() => queue.rewrite([{ ...original, baseRevision: 1 }]), /journal write failed/);
+    assert.deepEqual(queue.getPendingOperation(original.operationId), original);
+  });
+
   it('flushes a REST-style async transport and clears only after the returned revision', async () => {
     const workbook = new WorkbookModel('wb-rest', 'Collab');
     const runtime = new CommandRuntime(workbook);
@@ -93,6 +158,28 @@ describe('collaboration helpers', () => {
     assert.deepEqual(committed, ['op-rest']);
     assert.equal(session.getRevision(), 8);
     assert.equal(session.offlineQueue.getPendingCount(), 0);
+  });
+
+  it('rejects unsupported operations without retrying or requesting an ambiguous-result lookup', async () => {
+    const operation = buildOperation('op-unsupported', 'wb-unsupported', 1, 0, [{
+      id: 'rows.inserted', sheetId: 'sheet-1', params: { sheetId: 'sheet-1', at: 1, count: 1 },
+    }], '2026-08-23T00:00:00.000Z');
+    let attempts = 0;
+    const queue = new OfflineQueue({
+      flush: async () => {
+        attempts += 1;
+        throw new ApiRequestError('Unsupported structural reference', 422, 'UNSUPPORTED_FEATURE');
+      },
+    });
+    queue.enqueue(operation);
+
+    const result = await queue.flushAll();
+
+    assert.deepEqual(result, { flushed: 0, failed: 1 });
+    assert.equal(attempts, 1);
+    assert.equal(queue.getStatus(operation.operationId), 'rejected');
+    assert.equal(queue.requiresResultLookup(operation.operationId), false);
+    assert.equal(queue.getPendingCount(), 1);
   });
 
   it('rejects unknown mutations and unmatched acknowledgements', () => {
@@ -193,10 +280,128 @@ describe('collaboration helpers', () => {
         sheetId: 'sheet-1',
         params: { sheetId: 'sheet-1', at: 5, count: 1 },
         affectedRanges: [{ sheetId: 'sheet-1', startRow: 5, endRow: 5, startColumn: 0, endColumn: 0 }],
+        structuralPatch: {
+          version: 9,
+          mutationId: 'rows.inserted',
+          formulaOwnerDeltas: [],
+          definedNameOwnerDeltas: [],
+          rangeOwnerDeltas: [],
+        },
       }],
       createdAt: '2026-08-23T00:00:00.000Z',
     });
     assert.equal(persisted[0]?.baseRevision, 2);
     assert.equal((persisted[0]?.mutations[0]?.params as { row: number }).row, 10);
+  });
+
+  it('rebases a new local operation only against remote changes committed after it was created', () => {
+    const workbook = new WorkbookModel('wb-rebase-new-local', 'Collab');
+    const runtime = new CommandRuntime(workbook);
+    registerSheetCommands(runtime);
+    const session = new CollaborationSession(runtime, { clientSessionId: 'local-session' });
+    session.setRevision(1);
+    const commitRowInsert = (operationId: string, clientSequence: number, baseRevision: number, revision: number, at: number) => session.applyRemote({
+      schema: 'OperationEnvelope',
+      clientSessionId: 'peer-session',
+      operationId,
+      unitId: workbook.unitId,
+      actorId: 'peer',
+      origin: 'client',
+      clientSequence,
+      baseRevision,
+      revision,
+      committedAt: '2026-08-23T00:00:00.000Z',
+      mutations: [{
+        id: 'rows.inserted',
+        sheetId: workbook.primarySheetId,
+        params: { sheetId: workbook.primarySheetId, at, count: 1 },
+        affectedRanges: [{ sheetId: workbook.primarySheetId, startRow: at, endRow: at, startColumn: 0, endColumn: 0 }],
+        structuralPatch: {
+          version: 9,
+          mutationId: 'rows.inserted',
+          formulaOwnerDeltas: [],
+          definedNameOwnerDeltas: [],
+          rangeOwnerDeltas: [],
+        },
+      }],
+      createdAt: '2026-08-23T00:00:00.000Z',
+    });
+
+    commitRowInsert('remote-before-edit', 1, 1, 2, 5);
+    session.enqueueLocalMutations([{
+      id: 'cell.set',
+      unitId: workbook.unitId,
+      sheetId: workbook.primarySheetId,
+      params: createCellSetMutationParams(
+        workbook.getSheet(workbook.primarySheetId),
+        { sheetId: workbook.primarySheetId, row: 10, column: 0, value: { value: 2 } },
+        'script',
+      ),
+      affectedRanges: [{ sheetId: workbook.primarySheetId, startRow: 10, endRow: 10, startColumn: 0, endColumn: 0 }],
+    }], workbook.unitId, 'op-created-after-remote');
+
+    commitRowInsert('remote-after-edit', 2, 2, 3, 0);
+
+    const pending = session.offlineQueue.getPendingOperation('op-created-after-remote')!;
+    assert.equal((pending.mutations[0]?.params as { row: number }).row, 11);
+  });
+
+  it('does not double-rebase pending classifications after a journal write failure', () => {
+    const workbook = new WorkbookModel('wb-rebase-journal-failure', 'Collab');
+    const runtime = new CommandRuntime(workbook);
+    registerSheetCommands(runtime);
+    let rejectWrites = false;
+    const session = new CollaborationSession(runtime, {
+      persistPending: () => {
+        if (rejectWrites) throw new Error('journal write failed');
+      },
+    });
+    session.setRevision(1);
+    session.enqueueLocalMutations([{
+      id: 'cell.set',
+      unitId: workbook.unitId,
+      sheetId: workbook.primarySheetId,
+      params: createCellSetMutationParams(
+        workbook.getSheet(workbook.primarySheetId),
+        { sheetId: workbook.primarySheetId, row: 9, column: 0, value: { value: 2 } },
+        'script',
+      ),
+      affectedRanges: [{ sheetId: workbook.primarySheetId, startRow: 9, endRow: 9, startColumn: 0, endColumn: 0 }],
+    }], workbook.unitId, 'op-rebase-journal-failure');
+
+    const committedInsert = (operationId: string, clientSequence: number, baseRevision: number, revision: number, at: number) => session.applyRemote({
+      schema: 'OperationEnvelope',
+      clientSessionId: 'fixture-session',
+      operationId,
+      unitId: workbook.unitId,
+      actorId: 'peer',
+      origin: 'client',
+      clientSequence,
+      baseRevision,
+      revision,
+      committedAt: '2026-08-23T00:00:00.000Z',
+      mutations: [{
+        id: 'rows.inserted',
+        sheetId: workbook.primarySheetId,
+        params: { sheetId: workbook.primarySheetId, at, count: 1 },
+        affectedRanges: [{ sheetId: workbook.primarySheetId, startRow: at, endRow: at, startColumn: 0, endColumn: 0 }],
+        structuralPatch: {
+          version: 9,
+          mutationId: 'rows.inserted',
+          formulaOwnerDeltas: [],
+          definedNameOwnerDeltas: [],
+          rangeOwnerDeltas: [],
+        },
+      }],
+      createdAt: '2026-08-23T00:00:00.000Z',
+    });
+
+    rejectWrites = true;
+    assert.throws(() => committedInsert('remote-insert-1', 1, 1, 2, 5), /journal write failed/);
+    rejectWrites = false;
+    committedInsert('remote-insert-2', 2, 2, 3, 0);
+
+    const pending = session.offlineQueue.getPendingOperation('op-rebase-journal-failure')!;
+    assert.equal((pending.mutations[0]?.params as { row: number }).row, 11);
   });
 });

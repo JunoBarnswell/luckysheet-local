@@ -3,6 +3,7 @@ import { describe, it } from 'node:test';
 import { WorkbookSession } from './workbook-session';
 import { createInlineJsonQuery } from './features/query';
 import { QueryLoadError } from './features/query/query-load-error';
+import { createRemoteReadySessionFixture } from './session-test-fixtures';
 
 describe('WorkbookSession query integration', () => {
   it('rejects an overlapping load of the same query without losing the first result', async () => {
@@ -55,7 +56,7 @@ describe('WorkbookSession query integration', () => {
   });
 
   it('refreshes one query without discarding another sheet data source reader', async () => {
-    const app = new WorkbookSession();
+    const app = createRemoteReadySessionFixture();
     try {
       const firstSheetId = app.getActiveSheetId();
       await app.loadQuery(createInlineJsonQuery('cache-first', 'First', [{ Value: 1 }]));
@@ -153,6 +154,86 @@ describe('WorkbookSession query integration', () => {
     const loaded = await app['runtime'].dataContent.get(source.id)!.getRows(0, source.rowCount);
     assert.equal(loaded.state.availability, 'ready');
     assert.deepEqual(loaded.value?.map((row) => row[0]), ['a', 'b']);
+  });
+
+  it('does not persist an identity row order when a sorted block source only changes sort state', async () => {
+    const app = new WorkbookSession();
+    await app.loadQuery(createInlineJsonQuery('already-sorted-query', 'Already sorted', [
+      { Key: 'a', Value: 1 },
+      { Key: 'b', Value: 2 },
+    ]));
+    const sheetId = app.getActiveSheetId();
+    const region = app['runtime'].model.getSheet(sheetId).dataRegions[0]!;
+    const sourceBefore = app['runtime'].model.getDataSource(region.sourceId);
+    assert.equal(sourceBefore.rowOrder, undefined);
+
+    const result = await app.dispatch({
+      commandId: 'data.sort.rows',
+      params: {
+        sheetId,
+        range: region.range,
+        criteria: [{ column: region.range.startColumn, ascending: true }],
+        hasHeader: true,
+      },
+    });
+
+    assert.equal(result.status, 'committed');
+    const sourceAfter = app['runtime'].model.getDataSource(region.sourceId);
+    assert.equal(sourceAfter.rowOrder, undefined);
+    assert.deepEqual(sourceAfter.sortState?.criteria, [{ fieldId: sourceAfter.fields[0]!.id, ascending: true }]);
+  });
+
+  it('rejects a non-boolean header flag before virtually sorting a block-backed source', async () => {
+    const app = new WorkbookSession();
+    await app.loadQuery(createInlineJsonQuery('invalid-header-sort-query', 'Invalid header sort', [
+      { Key: 'b', Value: 2 },
+      { Key: 'a', Value: 1 },
+    ]));
+    const sheetId = app.getActiveSheetId();
+    const region = app['runtime'].model.getSheet(sheetId).dataRegions[0]!;
+    const sourceBefore = app['runtime'].model.getDataSource(region.sourceId);
+
+    const result = await app.dispatch({
+      commandId: 'data.sort.rows',
+      params: {
+        sheetId,
+        range: region.range,
+        criteria: [{ column: region.range.startColumn, ascending: true }],
+        hasHeader: 'false',
+      },
+    });
+
+    assert.equal(result.status, 'rejected');
+    const sourceAfter = app['runtime'].model.getDataSource(region.sourceId);
+    assert.deepEqual(sourceAfter.rowOrder, sourceBefore.rowOrder);
+    assert.deepEqual(sourceAfter.sortState, sourceBefore.sortState);
+  });
+
+  it('keeps the current logical order for equal keys in a block-backed stable sort', async () => {
+    const app = new WorkbookSession();
+    await app.loadQuery(createInlineJsonQuery('stable-sort-query', 'Stable sort', [
+      { Key: 'b', Value: 'first' },
+      { Key: 'a', Value: 'middle' },
+      { Key: 'b', Value: 'last' },
+    ]));
+    const sheetId = app.getActiveSheetId();
+    const region = app['runtime'].model.getSheet(sheetId).dataRegions[0]!;
+
+    const result = await app.dispatch({
+      commandId: 'data.sort.rows',
+      params: {
+        sheetId,
+        range: region.range,
+        criteria: [{ column: region.range.startColumn, ascending: true }],
+        hasHeader: true,
+      },
+    });
+
+    assert.equal(result.status, 'committed');
+    const source = app['runtime'].model.getDataSource(region.sourceId);
+    assert.deepEqual(source.rowOrder, [1, 0, 2]);
+    const loaded = await app['runtime'].dataContent.get(source.id)!.getRows(0, source.rowCount);
+    assert.deepEqual(loaded.value?.map((row) => row[1]), ['middle', 'first', 'last']);
   });
 
   it('anchors the AutoFilter sort context to the full region after selecting a filter column', async () => {

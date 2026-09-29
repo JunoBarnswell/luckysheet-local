@@ -22,6 +22,13 @@ export const DEFAULT_WORKBOOK_COLLATION: WorkbookCollationContext = Object.freez
   customLists: [],
 });
 
+interface TextComparerEntry {
+  signature: string;
+  compare: (left: string, right: string) => number;
+}
+
+const textComparerCache = new WeakMap<WorkbookCollationContext, TextComparerEntry>();
+
 export function normalizeWorkbookCollation(context?: Partial<WorkbookCollationContext>): WorkbookCollationContext {
   const next = {
     ...DEFAULT_WORKBOOK_COLLATION,
@@ -51,20 +58,19 @@ export function compareWorkbookValues(
 }
 
 export function compareWorkbookText(left: string, right: string, context: WorkbookCollationContext = DEFAULT_WORKBOOK_COLLATION): number {
-  const leftCustom = customListRank(left, context);
-  const rightCustom = customListRank(right, context);
+  const compareText = workbookTextComparer(context);
+  const leftCustom = customListRank(left, context, compareText);
+  const rightCustom = customListRank(right, context, compareText);
   if (leftCustom !== rightCustom) {
     if (leftCustom === undefined) return 1;
     if (rightCustom === undefined) return -1;
     return leftCustom - rightCustom;
   }
-  const normalizedLeft = normalizeText(left, context);
-  const normalizedRight = normalizeText(right, context);
   if (context.numericTextMode === 'numeric') {
-    const numeric = compareNumericText(normalizedLeft, normalizedRight);
+    const numeric = compareNumericText(left, right, compareText);
     if (numeric !== undefined) return numeric;
   }
-  return compareInvariant(normalizedLeft, normalizedRight);
+  return compareText(left, right);
 }
 
 function collationType(value: unknown): WorkbookCollationType {
@@ -87,7 +93,7 @@ function compareNumbers(left: number, right: number): number {
 }
 
 function normalizeText(value: string, context: WorkbookCollationContext): string {
-  const accentNormalized = context.accentSensitive ? value : value.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  const accentNormalized = context.accentSensitive ? value : value.normalize('NFD').replace(/\p{M}/gu, '');
   return context.caseSensitive ? accentNormalized : accentNormalized.toLocaleLowerCase('en-US');
 }
 
@@ -95,20 +101,58 @@ function compareInvariant(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
 }
 
-function compareNumericText(left: string, right: string): number | undefined {
-  const leftMatch = /^(.*?)(\d+)(.*?)$/.exec(left);
-  const rightMatch = /^(.*?)(\d+)(.*?)$/.exec(right);
-  if (!leftMatch || !rightMatch || leftMatch[1] !== rightMatch[1]) return undefined;
-  const prefix = compareInvariant(leftMatch[1]!, rightMatch[1]!);
-  if (prefix !== 0) return prefix;
-  const numeric = compareInvariant(String(Number(leftMatch[2])), String(Number(rightMatch[2])));
-  return numeric !== 0 ? numeric : compareInvariant(leftMatch[3]!, rightMatch[3]!);
+function workbookTextComparer(context: WorkbookCollationContext): (left: string, right: string) => number {
+  const cultureId = context.cultureId.trim();
+  const sensitivity = context.caseSensitive
+    ? context.accentSensitive ? 'variant' : 'case'
+    : context.accentSensitive ? 'accent' : 'base';
+  const signature = `${cultureId}\u0000${sensitivity}`;
+  const cached = textComparerCache.get(context);
+  if (cached?.signature === signature) return cached.compare;
+
+  let compare: (left: string, right: string) => number;
+  if (cultureId.toLowerCase() === 'invariant') {
+    compare = (left, right) => compareInvariant(normalizeText(left, context), normalizeText(right, context));
+  } else {
+    try {
+      const collator = new Intl.Collator(cultureId, { sensitivity, usage: 'sort', numeric: false });
+      compare = collator.compare;
+    } catch {
+      throw new Error(`Workbook collation cultureId is not supported: ${cultureId}`);
+    }
+  }
+  textComparerCache.set(context, { signature, compare });
+  return compare;
 }
 
-function customListRank(value: string, context: WorkbookCollationContext): number | undefined {
-  const normalized = normalizeText(value, context);
+function compareNumericText(
+  left: string,
+  right: string,
+  compareText: (left: string, right: string) => number,
+): number | undefined {
+  const leftMatch = /^(.*?)(\d+)(.*?)$/.exec(left);
+  const rightMatch = /^(.*?)(\d+)(.*?)$/.exec(right);
+  if (!leftMatch || !rightMatch) return undefined;
+  const prefix = compareText(leftMatch[1]!, rightMatch[1]!);
+  if (prefix !== 0) return prefix;
+  const numeric = compareIntegerText(leftMatch[2]!, rightMatch[2]!);
+  return numeric !== 0 ? numeric : compareText(leftMatch[3]!, rightMatch[3]!);
+}
+
+function compareIntegerText(left: string, right: string): number {
+  const leftSignificant = left.replace(/^0+(?=\d)/, '');
+  const rightSignificant = right.replace(/^0+(?=\d)/, '');
+  if (leftSignificant.length !== rightSignificant.length) return leftSignificant.length - rightSignificant.length;
+  return compareInvariant(leftSignificant, rightSignificant);
+}
+
+function customListRank(
+  value: string,
+  context: WorkbookCollationContext,
+  compareText: (left: string, right: string) => number,
+): number | undefined {
   for (const list of context.customLists) {
-    const index = list.findIndex((entry) => normalizeText(entry, context) === normalized);
+    const index = list.findIndex((entry) => compareText(entry, value) === 0);
     if (index >= 0) return index;
   }
   return undefined;

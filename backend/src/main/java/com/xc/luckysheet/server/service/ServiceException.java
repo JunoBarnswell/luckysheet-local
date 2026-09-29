@@ -32,6 +32,14 @@ public class ServiceException extends RuntimeException {
         return new ServiceException("VALIDATION_ERROR", 400, message);
     }
 
+    public static ServiceException unsupportedFeature(String message) {
+        return new ServiceException("UNSUPPORTED_FEATURE", 422, message);
+    }
+
+    public static ServiceException unsupportedFeature(String message, Throwable cause) {
+        return new ServiceException("UNSUPPORTED_FEATURE", 422, message, cause);
+    }
+
     public static ServiceException conflict(String message) {
         return new ServiceException("CONFLICT", 409, message);
     }

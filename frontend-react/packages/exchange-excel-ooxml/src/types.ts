@@ -4,7 +4,7 @@ import type { XmlNode } from './xml';
 
 export type CompatibilityLevel = 'A' | 'B' | 'C';
 export type NativeCompatibilityMode = 'strict' | 'balanced' | 'best-effort';
-export const NATIVE_DOCUMENT_CODEC_REVISION = 1 as const;
+export const NATIVE_DOCUMENT_CODEC_REVISION = 2 as const;
 
 export type NativeDocumentFormat =
   | { family: 'ooxml'; profile: 'transitional' | 'strict'; variant: 'xlsx' | 'xlsm' | 'xltx' | 'xltm' | 'xlam' }
@@ -101,7 +101,7 @@ export interface NativeDocumentArtifact {
   dateSystem: DateSystem;
   detectedFeatures: string[];
   nativeGraph: NativeGraph;
-  /** Stable projection identity used to prove an untouched Save can return source bytes. */
+  /** SHA-256 projection identity used to decide whether source bytes can be reused. */
   sourceSnapshotHash?: string;
   ownership: FeatureOwnershipResult[];
   codecRevision: number;

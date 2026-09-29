@@ -4,6 +4,7 @@ import type {
   AutoFilterModel,
   RangeRef,
   SheetTableModel,
+  WorkbookModel,
   WorksheetModel,
 } from '@react-sheets/core-model';
 import { normalizeRangeRef } from './data-features';
@@ -109,7 +110,7 @@ const TABLE_BAND_DARK = '#D9E1F2';
 
 export function validateSheetTableModel(table: SheetTableModel, sheet?: WorksheetModel): SheetTableModel {
   const range = normalizeRangeRef(table.range);
-  if (!table.id.trim() || !table.name.trim()) throw new Error('Sheet Table id and name are required');
+  if (!table.id.trim() || table.id !== table.id.trim() || !table.name.trim()) throw new Error('Sheet Table id and name are required and canonical');
   if (!/^[A-Za-z_][A-Za-z0-9_.]*$/.test(table.name)) throw new Error(`Invalid Sheet Table name: ${table.name}`);
   if (range.sheetId !== table.sheetId) throw new Error('Sheet Table range must target its sheetId');
   if (range.startRow < 0 || range.startColumn < 0 || range.endRow < range.startRow || range.endColumn < range.startColumn) {
@@ -140,6 +141,22 @@ export function validateSheetTableModel(table: SheetTableModel, sheet?: Workshee
     normalized.autoFilter = createAutoFilterModelForTable(normalized);
   }
   return normalized;
+}
+
+export function assertWorkbookSheetTableIdentityAvailable(
+  workbook: WorkbookModel,
+  candidate: SheetTableModel,
+  replacingExisting = false,
+): void {
+  const tableId = candidate.id.trim();
+  const tableName = candidate.name.trim().toUpperCase();
+  for (const sheet of workbook.getSheets()) {
+    for (const table of sheet.sheetTables) {
+      if (replacingExisting && sheet.id === candidate.sheetId && table.id === tableId) continue;
+      if (table.id === tableId) throw new Error(`Sheet Table id already exists in workbook: ${tableId}`);
+      if (table.name.trim().toUpperCase() === tableName) throw new Error(`Sheet Table name already exists in workbook: ${candidate.name}`);
+    }
+  }
 }
 
 /**
@@ -329,7 +346,8 @@ export function validateFilterModelOwnership(
   if (filter.sheetId !== sheetId || range.sheetId !== sheetId) throw new Error(`${label} must target its worksheet`);
   if (!rangesEqual(range, normalizeRangeRef(ownerRange))) throw new Error(`${label} range must equal its owner range`);
   for (const [key, column] of Object.entries(filter.columns)) {
-    if (Number(key) !== column.column || column.column < range.startColumn || column.column > range.endColumn) {
+    if (!Number.isSafeInteger(column.column) || key !== String(column.column)
+      || column.column < range.startColumn || column.column > range.endColumn) {
       throw new Error(`${label} column is outside its range`);
     }
   }
@@ -343,14 +361,16 @@ export function validateFilterOwnership(
 ): AutoFilterModel {
   const normalized = normalizeRangeRef(candidate.range);
   if (normalized.sheetId !== sheet.id || candidate.sheetId !== sheet.id) throw new Error('AutoFilter must target its worksheet');
+  let validated: AutoFilterModel;
   if (owner.kind === 'worksheet') {
+    validated = validateFilterModelOwnership(candidate, sheet.id, normalized, 'Worksheet AutoFilter');
     if (sheet.sheetTables.some((table) => table.sheetId === sheet.id && table.autoFilter && rangesOverlap(normalized, table.autoFilter.range))) {
       throw new Error('Worksheet AutoFilter cannot overlap a Table AutoFilter');
     }
   } else {
     const table = sheet.sheetTables.find((entry) => entry.id === owner.tableId && entry.sheetId === sheet.id);
     if (!table) throw new Error(`Sheet Table not found: ${owner.tableId}`);
-    validateFilterModelOwnership(candidate, sheet.id, table.range, 'Table AutoFilter');
+    validated = validateFilterModelOwnership(candidate, sheet.id, table.range, 'Table AutoFilter');
     if (sheet.autoFilter && rangesOverlap(normalized, sheet.autoFilter.range)) {
       throw new Error('Table AutoFilter cannot overlap a Worksheet AutoFilter');
     }
@@ -358,7 +378,7 @@ export function validateFilterOwnership(
       throw new Error('Table AutoFilter cannot overlap another Table AutoFilter');
     }
   }
-  return { ...structuredClone(candidate), range: normalized };
+  return validated;
 }
 
 export function tableFilterColumns(table: SheetTableModel): number[] {

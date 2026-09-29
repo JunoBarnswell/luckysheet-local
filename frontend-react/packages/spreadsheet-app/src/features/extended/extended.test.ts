@@ -74,4 +74,31 @@ describe('M18 deterministic what-if commands', () => {
     assert.equal(workbook.getSheet(sheetId).cells.get(0, 1), undefined);
     assert.match((result as { plan?: { result?: { message?: string } } }).plan?.result?.message ?? '', /spill/i);
   });
+
+  it('allows scenario inputs in an unprojected blocked spill range', () => {
+    const workbook = new WorkbookModel('what-if-blocked-spill', 'What-if');
+    const runtime = new CommandRuntime(workbook);
+    registerSheetCommands(runtime);
+    registerExtendedCommands(runtime.registry);
+    const sheetId = workbook.primarySheetId;
+    workbook.getSheet(sheetId).spillRanges.push({
+      sheetId,
+      anchor: { row: 0, column: 0 },
+      range: { sheetId, startRow: 0, endRow: 1, startColumn: 0, endColumn: 1 },
+      values: [],
+      state: 'blocked',
+    });
+
+    const result = runtime.execute('extended.whatIf.scenario', {
+      sheetId,
+      scenario: {
+        id: 'blocked-spill-recovery',
+        name: 'Blocked Spill Recovery',
+        changingCells: [{ row: 1, column: 1, value: 5 }],
+      },
+    });
+
+    assert.equal(result.mutationCount, 1);
+    assert.equal(workbook.getSheet(sheetId).cells.get(1, 1)?.value, 5);
+  });
 });

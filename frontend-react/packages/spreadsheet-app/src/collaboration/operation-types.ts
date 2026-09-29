@@ -15,9 +15,12 @@ export type CollaborationOperationKind =
   | 'sort'
   | 'merge'
   | 'table-resize'
+  | 'sheet-identity'
   | 'drawing'
   | 'comment'
+  | 'visibility'
   | 'pivot-config'
+  | 'defined-name'
   | 'unknown';
 
 export interface ClassifiedMutation {
@@ -39,7 +42,10 @@ export function operationMutationToClassified(
 export function committedMutationToClassified(
   mutation: CommittedOperationEnvelope['mutations'][number],
 ): ClassifiedMutation {
-  return operationMutationToClassified(mutation, mutation.sheetId, [...mutation.affectedRanges]);
+  return operationMutationToClassified(mutation, mutation.sheetId, [
+    ...mutation.affectedRanges,
+    ...(mutation.structuralImpactRanges ?? []),
+  ]);
 }
 
 const MUTATION_KIND_MAP: Readonly<Record<string, CollaborationOperationKind>> = {
@@ -48,13 +54,13 @@ const MUTATION_KIND_MAP: Readonly<Record<string, CollaborationOperationKind>> = 
   'range.set': 'cell-value',
   'fill.applied': 'cell-value',
   'fill.restored': 'cell-value',
-  'range.paste': 'cell-value',
   'range.clear': 'clear',
   'cells.inserted': 'move-range',
   'cells.deleted': 'move-range',
   'cells.inserted.restore': 'move-range',
   'cells.deleted.restore': 'move-range',
   'style.set': 'cell-style',
+  'cell.editor.set': 'cell-style',
   'row.insert': 'insert-rows',
   'row.delete': 'delete-rows',
   'column.insert': 'insert-columns',
@@ -64,24 +70,56 @@ const MUTATION_KIND_MAP: Readonly<Record<string, CollaborationOperationKind>> = 
   'columns.inserted': 'insert-columns',
   'columns.deleted': 'delete-columns',
   'range.move': 'move-range',
-  'dataRegion.materialize.commit': 'cell-value',
-  'dataRegion.materialize.restore': 'cell-value',
   'sort.apply': 'sort',
   'merge.set': 'merge',
   'table.resize': 'table-resize',
+  'sheet.add': 'sheet-identity',
+  'sheet.remove': 'sheet-identity',
+  'sheet.rename': 'sheet-identity',
+  'sheet.duplicated': 'sheet-identity',
+  'sheet.restore': 'sheet-identity',
+  'sheet.reordered': 'sheet-identity',
   'drawing.update': 'drawing',
   'comment.add': 'comment',
   'comment.update': 'comment',
+  'comment.reply': 'comment',
+  'comment.reply.remove': 'comment',
+  'comment.resolve': 'comment',
+  'comment.remove': 'comment',
+  'note.set': 'comment',
+  'note.remove': 'comment',
+  'note.visibility': 'comment',
+  'hyperlink.set': 'comment',
+  'hyperlink.remove': 'comment',
+  'rows.visibility': 'visibility',
+  'columns.visibility': 'visibility',
   'find.replaced': 'cell-value',
   'pivot.layout.set': 'pivot-config',
+  'name.set': 'defined-name',
+  'name.remove': 'defined-name',
 };
 
 export function classifyMutation(mutationId: string, params: unknown, sheetId: string, affectedRanges: RangeRef[]): ClassifiedMutation {
+  const pasteParams = isRecord(params) ? params : undefined;
+  const hasSourceSnapshot = pasteParams !== undefined
+    && (pasteParams.sourceRange !== undefined || pasteParams.sourceSnapshot !== undefined);
+  const pasteKind = mutationId !== 'range.paste'
+    ? undefined
+    : pasteParams?.transfer === 'move' || pasteParams?.clearSource === true || hasSourceSnapshot
+      ? 'move-range'
+      : pasteParams?.transfer === 'copy' && pasteParams.clearSource === false
+        && pasteParams.sourceRange === undefined && pasteParams.sourceSnapshot === undefined
+        ? 'cell-value'
+        : 'unknown';
   return {
     mutationId,
-    kind: mutationCapability(mutationId)?.collaborationKind ?? MUTATION_KIND_MAP[mutationId] ?? 'unknown',
+    kind: pasteKind ?? mutationCapability(mutationId)?.collaborationKind ?? MUTATION_KIND_MAP[mutationId] ?? 'unknown',
     sheetId,
     affectedRanges,
     params,
   };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
 }

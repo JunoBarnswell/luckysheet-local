@@ -28,7 +28,7 @@ export async function createNativeDocumentArtifact(input: {
     dateSystem: input.dateSystem,
     detectedFeatures,
     nativeGraph: input.nativeGraph,
-    ...(input.snapshot ? { sourceSnapshotHash: nativeSnapshotHash(input.snapshot) } : {}),
+    ...(input.snapshot ? { sourceSnapshotHash: await nativeSnapshotHash(input.snapshot) } : {}),
     ownership: structuredClone(input.ownership ?? detectedFeatures.map((feature) => ownershipFor(feature))),
     codecRevision: NATIVE_DOCUMENT_CODEC_REVISION,
     compatibility,
@@ -71,7 +71,7 @@ export async function verifyNativeDocumentArtifact(state: NativeDocumentArtifact
   if (state.schema !== 'NativeDocumentArtifact') throw new Error('Invalid native document artifact schema');
   if (!state.fileName || !(state.sourceBytes instanceof ArrayBuffer) || !/^[a-f0-9]{64}$/i.test(state.checksum)) throw new Error('Invalid native document artifact identity');
   if (!state.format || typeof state.format !== 'object' || !state.format.family) throw new Error('Invalid native document format');
-  if (!Number.isSafeInteger(state.codecRevision) || state.codecRevision < 1) throw new Error('Invalid native codec revision');
+  if (state.codecRevision !== NATIVE_DOCUMENT_CODEC_REVISION) throw new Error('Invalid native codec revision');
   if (state.compatibility.schema !== 'CompatibilityReport') throw new Error('Invalid native compatibility report');
   if (!state.nativeGraph || typeof state.nativeGraph !== 'object' || !('kind' in state.nativeGraph)) throw new Error('Invalid native document graph');
   if (!['opc', 'text', 'xml', 'ods', 'sjs', 'ssjson', 'biff', 'xlsb', 'dbf'].includes(state.nativeGraph.kind)) throw new Error('Invalid native document graph kind');
@@ -88,31 +88,37 @@ export async function verifyNativeDocumentArtifact(state: NativeDocumentArtifact
   const graphFamily = state.nativeGraph.kind === 'opc' ? state.nativeGraph.package.format.family : state.nativeGraph.kind === 'xml' ? 'xmlss' : state.nativeGraph.kind;
   if (state.format.family !== graphFamily) throw new Error(`Native document format/graph mismatch: ${state.format.family}/${graphFamily}`);
   if (!Array.isArray(state.ownership) || state.ownership.some((entry) => !entry || typeof entry.feature !== 'string' || !['full', 'partial', 'none'].includes(entry.read) || !['full', 'partial', 'none'].includes(entry.edit) || !['full', 'partial', 'none'].includes(entry.write) || !['full', 'partial', 'none'].includes(entry.preserve) || !['editable-owned', 'preserved-owned', 'mixed-owned'].includes(entry.ownership))) throw new Error('Invalid native document ownership manifest');
-  if (state.sourceSnapshotHash !== undefined && !/^fnv1a-[a-f0-9]{8}$/i.test(state.sourceSnapshotHash)) throw new Error('Invalid native document source snapshot identity');
+  if (state.sourceSnapshotHash !== undefined && !/^sha256-[a-f0-9]{64}$/i.test(state.sourceSnapshotHash)) throw new Error('Invalid native document source snapshot identity');
   const actual = await sha256Hex(state.sourceBytes);
   if (actual !== state.checksum) throw new Error('Native document checksum does not match source bytes');
 }
 
-/** Compact deterministic identity for proving an untouched Save. */
-export function nativeSnapshotHash(snapshot: WorkbookSnapshot): string {
+/** Collision-resistant identity for deciding whether an untouched Save can reuse source bytes. */
+export async function nativeSnapshotHash(snapshot: WorkbookSnapshot): Promise<string> {
   const identity = structuredClone(snapshot);
   identity.unitId = '';
   identity.printDocuments = (identity.printDocuments ?? []).map((document) => ({ ...document, unitId: '' }));
-  return nativeSnapshotHashValue(JSON.stringify(identity));
+  return `sha256-${await sha256Hex(new TextEncoder().encode(JSON.stringify(identity)))}`;
 }
 
-function nativeSnapshotHashValue(value: string): string {
-  let hash = 0x811c9dc5;
-  for (let index = 0; index < value.length; index += 1) {
-    hash ^= value.charCodeAt(index);
-    hash = Math.imul(hash, 0x01000193);
+/** Upgrade persisted v1 artifacts at the native-document persistence boundary. */
+export async function migrateNativeDocumentArtifactV1(state: NativeDocumentArtifact): Promise<NativeDocumentArtifact> {
+  if (state.schema !== 'NativeDocumentArtifact'
+    || state.codecRevision !== 1
+    || (state.sourceSnapshotHash !== undefined && !/^fnv1a-[a-f0-9]{8}$/i.test(state.sourceSnapshotHash))) {
+    throw new Error('Invalid v1 native document artifact');
   }
-  return `fnv1a-${(hash >>> 0).toString(16).padStart(8, '0')}`;
+  const artifact = { ...state };
+  delete artifact.sourceSnapshotHash;
+  const migrated: NativeDocumentArtifact = { ...artifact, codecRevision: NATIVE_DOCUMENT_CODEC_REVISION };
+  await verifyNativeDocumentArtifact(migrated);
+  return migrated;
 }
 
-async function sha256Hex(buffer: ArrayBuffer): Promise<string> {
+async function sha256Hex(buffer: ArrayBuffer | Uint8Array): Promise<string> {
   const subtle = globalThis.crypto?.subtle;
   if (!subtle) throw new Error('Web Crypto SHA-256 is required for native document artifacts');
-  const digest = await subtle.digest('SHA-256', buffer);
+  const data = buffer instanceof Uint8Array ? buffer.slice().buffer as ArrayBuffer : buffer;
+  const digest = await subtle.digest('SHA-256', data);
   return [...new Uint8Array(digest)].map((value) => value.toString(16).padStart(2, '0')).join('');
 }

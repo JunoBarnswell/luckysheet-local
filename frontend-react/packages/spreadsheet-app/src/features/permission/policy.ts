@@ -71,6 +71,16 @@ export function inferAffectedRanges(commandId: string, params: unknown, sheetId:
         : { sheetId, startRow: endRow, endRow, startColumn: Number(source.startColumn), endColumn: Number(source.startColumn) }];
     }
   }
+  if ((commandId === 'dataSource.add' || commandId === 'dataSource.update')
+    && p.source && typeof p.source === 'object' && !Array.isArray(p.source)) {
+    const sourceRange = (p.source as { sourceRange?: unknown }).sourceRange;
+    if (sourceRange && typeof sourceRange === 'object' && !Array.isArray(sourceRange)) {
+      const range = sourceRange as RangeRef;
+      if (typeof range.sheetId === 'string'
+        && Number.isSafeInteger(range.startRow) && Number.isSafeInteger(range.endRow)
+        && Number.isSafeInteger(range.startColumn) && Number.isSafeInteger(range.endColumn)) return [range];
+    }
+  }
   if (commandId.endsWith('.insert.selected') || commandId.endsWith('.delete.selected')) {
     if (Array.isArray(p.indices) && p.indices.every((index) => Number.isSafeInteger(index) && Number(index) >= 0)) {
       const rowAxis = commandId.startsWith('sheet.rows.');

@@ -41,6 +41,7 @@ export interface EditorCommandController {
   selectedRange: SelectionState["ranges"][number] | undefined;
   currentDataRange: ReturnType<WorkbookSession["getCurrentRegion"]>;
   sortColumns: UiSnapshot["selectedSheet"]["columns"];
+  sortHeaderOptions: ReturnType<WorkbookSession["getSortHeaderOptions"]> | undefined;
   pivotSourceRange: ReturnType<WorkbookSession["getCurrentRegion"]>;
   activePivotId: string | undefined;
   setActivePivotId: (pivotId: string | undefined) => void;
@@ -158,6 +159,7 @@ export function useEditorCommandController({
   const dataRegionContext = session.getDataRegionContext();
   const currentDataRange = dataRegionContext.range;
   const sortColumns = state.selectedSheet.columns.slice(currentDataRange.startColumn, currentDataRange.endColumn + 1);
+  const sortHeaderOptions = state.dialogs.active === 'sort-dialog' ? session.getSortHeaderOptions(dataRegionContext) : undefined;
   const pivotSourceRange = selectedRange && (selectedRange.endRow > selectedRange.startRow || selectedRange.endColumn > selectedRange.startColumn)
     ? selectedRange
     : state.selectedSheet.usedRange;
@@ -481,6 +483,7 @@ export function useEditorCommandController({
     selectedRange,
     currentDataRange,
     sortColumns,
+    sortHeaderOptions,
     pivotSourceRange,
     activePivotId,
     setActivePivotId,

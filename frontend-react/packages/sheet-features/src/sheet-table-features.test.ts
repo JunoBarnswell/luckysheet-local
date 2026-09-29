@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { WorksheetModel } from '@react-sheets/core-model';
-import type { SheetTableModel } from '@react-sheets/core-model';
+import { WorkbookModel, WorksheetModel } from '@react-sheets/core-model';
+import type { SheetTableModel, StructuralRangeOwnerDelta } from '@react-sheets/core-model';
+import { CommandRuntime } from '@react-sheets/command-runtime';
 import {
   buildTotalRowFormula,
   computeSheetTableCellStyle,
@@ -17,9 +18,11 @@ import {
   resolveActiveAutoFilter,
   resolveFilterOwner,
   validateFilterOwnership,
+  validateSheetTableModel,
   subtotalCodeForTotalsFunction,
   tableBodyBounds,
 } from './sheet-table-features';
+import { registerSheetTableCommands } from './sheet-table-commands';
 
 const sampleTable: SheetTableModel = {
   id: 't1',
@@ -36,6 +39,60 @@ const sampleTable: SheetTableModel = {
   autoExpand: 'both',
   columns: [{ id: 'c1', name: 'Product' }, { id: 'c2', name: 'Amount' }],
 };
+
+test('sheetTable.update carries range-owner facts through undo, redo, remote replay, and rejects drift atomically', () => {
+  const workbook = new WorkbookModel('unit-sheet-table-owner', 'Sheet Table Owner');
+  const sheetId = workbook.primarySheetId;
+  const sheet = workbook.getSheet(sheetId);
+  const before = validateSheetTableModel({
+    ...sampleTable, id: 'table-1', sheetId, range: { ...sampleTable.range, sheetId },
+  }, sheet);
+  sheet.sheetTables.push(before);
+  const initialSnapshot = workbook.snapshot();
+  const afterRange = { ...before.range, startRow: 1, endRow: 5 };
+  const after = {
+    ...before,
+    range: afterRange,
+    autoFilter: before.autoFilter ? { ...before.autoFilter, range: afterRange } : undefined,
+  };
+  const expectedDelta: StructuralRangeOwnerDelta = {
+    ownerKind: 'sheet-table', sheetId, ownerId: before.id, before: before.range, after: after.range,
+  };
+  const runtime = new CommandRuntime(workbook);
+  registerSheetTableCommands(runtime);
+
+  runtime.execute('sheetTable.update', after);
+  const entry = runtime.getUndoEntries().at(-1)!;
+  assert.deepEqual(entry.redo[0]?.structuralRangeOwnerDeltas, [expectedDelta]);
+  assert.deepEqual(sheet.sheetTables[0]?.range, after.range);
+
+  const remoteWorkbook = WorkbookModel.fromSnapshot(initialSnapshot);
+  const remoteRuntime = new CommandRuntime(remoteWorkbook);
+  registerSheetTableCommands(remoteRuntime);
+  remoteRuntime.applyRemoteMutations(entry.redo);
+  assert.deepEqual(remoteWorkbook.getSheet(sheetId).sheetTables[0]?.range, after.range);
+
+  assert.equal(runtime.undo(), true);
+  assert.deepEqual(sheet.sheetTables[0]?.range, before.range);
+  assert.equal(runtime.redo(), true);
+  assert.deepEqual(sheet.sheetTables[0]?.range, after.range);
+
+  const rejectedWorkbook = WorkbookModel.fromSnapshot(initialSnapshot);
+  const rejectedTable = rejectedWorkbook.getSheet(sheetId).sheetTables[0]!;
+  rejectedTable.range = { ...rejectedTable.range, startRow: 8, endRow: 12 };
+  if (rejectedTable.autoFilter) rejectedTable.autoFilter.range = structuredClone(rejectedTable.range);
+  const rejectedSnapshot = rejectedWorkbook.snapshot();
+  const rejectedRuntime = new CommandRuntime(rejectedWorkbook);
+  registerSheetTableCommands(rejectedRuntime);
+  assert.throws(() => rejectedRuntime.applyCommittedStructuralPatches('conflicted-range-owner', [{
+    id: 'rows.inserted', unitId: rejectedWorkbook.unitId, sheetId,
+    params: { sheetId, at: 0, count: 1 }, affectedRanges: [before.range, after.range],
+    structuralRangeOwnerDeltas: [expectedDelta],
+  }], 1), /STRUCTURAL_PATCH_PRECONDITION: sheet-table owner table-1 changed/);
+  assert.deepEqual(rejectedWorkbook.snapshot(), rejectedSnapshot);
+  assert.throws(() => rejectedRuntime.applyRemoteMutations(entry.redo), /STRUCTURAL_PATCH_MISMATCH/);
+  assert.deepEqual(rejectedWorkbook.snapshot(), rejectedSnapshot);
+});
 
 test('isPointInRange and findSheetTableAt locate cells inside a sheet table', () => {
   const sheet = new WorksheetModel('s1', 'Sheet1');
@@ -56,6 +113,46 @@ test('createAutoFilterModelForTable uses the table range', () => {
   const filter = createAutoFilterModelForTable(sampleTable);
   assert.deepEqual(filter.range, sampleTable.range);
   assert.equal(filter.sheetId, 's1');
+});
+
+test('sheetTable.update carries range-owner facts through undo, redo, remote replay, and rejects drift atomically', () => {
+  const workbook = new WorkbookModel('unit-sheet-table-owner', 'Sheet Table Owner');
+  const sheetId = workbook.primarySheetId;
+  const sheet = workbook.getSheet(sheetId);
+  const before = { ...sampleTable, id: 'table-1', sheetId, range: { ...sampleTable.range, sheetId } };
+  sheet.sheetTables.push(structuredClone(before));
+  const initialSnapshot = workbook.snapshot();
+  const after = { ...before, range: { ...before.range, startRow: 1, endRow: 4 } };
+  const expectedDelta = {
+    ownerKind: 'sheet-table', sheetId, ownerId: before.id, before: before.range, after: after.range,
+  };
+  const runtime = new CommandRuntime(workbook);
+  registerSheetTableCommands(runtime);
+
+  runtime.execute('sheetTable.update', after);
+  const entry = runtime.getUndoEntries().at(-1)!;
+  assert.deepEqual(entry.redo[0]?.structuralRangeOwnerDeltas, [expectedDelta]);
+  assert.deepEqual(sheet.sheetTables[0]?.range, after.range);
+
+  const remoteWorkbook = WorkbookModel.fromSnapshot(initialSnapshot);
+  const remoteRuntime = new CommandRuntime(remoteWorkbook);
+  registerSheetTableCommands(remoteRuntime);
+  remoteRuntime.applyRemoteMutations(entry.redo);
+  assert.deepEqual(remoteWorkbook.getSheet(sheetId).sheetTables[0]?.range, after.range);
+
+  assert.equal(runtime.undo(), true);
+  assert.deepEqual(sheet.sheetTables[0]?.range, before.range);
+  assert.equal(runtime.redo(), true);
+  assert.deepEqual(sheet.sheetTables[0]?.range, after.range);
+
+  const rejectedWorkbook = WorkbookModel.fromSnapshot(initialSnapshot);
+  const rejectedTable = rejectedWorkbook.getSheet(sheetId).sheetTables[0]!;
+  rejectedTable.range = { ...rejectedTable.range, startRow: 8, endRow: 11 };
+  const rejectedSnapshot = rejectedWorkbook.snapshot();
+  const rejectedRuntime = new CommandRuntime(rejectedWorkbook);
+  registerSheetTableCommands(rejectedRuntime);
+  assert.throws(() => rejectedRuntime.applyRemoteMutations(entry.redo), /STRUCTURAL_PATCH_MISMATCH/);
+  assert.deepEqual(rejectedWorkbook.snapshot(), rejectedSnapshot);
 });
 
 test('planSheetTableCreation preserves body rows when headers are disabled', () => {

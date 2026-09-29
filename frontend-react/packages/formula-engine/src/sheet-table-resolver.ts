@@ -34,8 +34,15 @@ export interface SheetTableReferenceRequest {
 
 export function normalizeSheetTables(tables: readonly SheetTableRef[]): Map<string, SheetTableRef> {
   const index = new Map<string, SheetTableRef>();
+  const ids = new Set<string>();
   for (const table of tables) {
-    index.set(table.name.trim().toUpperCase(), table);
+    const id = table.id.trim();
+    const name = table.name.trim().toUpperCase();
+    if (!id || id !== table.id || !name || name !== table.name || ids.has(id) || index.has(name)) {
+      throw new Error('Sheet Table identities must be unique within a workbook');
+    }
+    ids.add(id);
+    index.set(name, table);
   }
   return index;
 }

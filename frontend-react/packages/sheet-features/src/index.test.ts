@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { WorkbookModel } from '@react-sheets/core-model';
-import { CommandRuntime } from '@react-sheets/command-runtime';
+import { MAX_SHEET_COLUMN_COUNT, MAX_SHEET_ROW_COUNT, StructuralMutationApplyError, WorkbookModel } from '@react-sheets/core-model';
+import { CommandRuntime, MutationRecoveryRequiredError } from '@react-sheets/command-runtime';
 import {
   registerSheetCommands,
   formatTsv,
@@ -14,6 +14,7 @@ import {
   createPasteSpecialSpec,
   createCellSetMutationParams,
   isCellSetMutationParams,
+  createClearRangePlan,
 } from './index';
 import type { CellInputInterpretationContext } from './text-input';
 import { CellEntryError } from './cell-entry-error';
@@ -25,6 +26,36 @@ const TEST_INPUT_CONTEXT: CellInputInterpretationContext = {
 const DIRECT_INPUT_CONTEXT: CellInputInterpretationContext = { ...TEST_INPUT_CONTEXT, sourceKind: 'direct-entry' };
 const parseTsv = (text: string) => parseTsvWithContext(text, TEST_INPUT_CONTEXT);
 const parseClipboardPayload = (payload: Parameters<typeof parseClipboardPayloadWithContext>[0]) => parseClipboardPayloadWithContext(payload, TEST_INPUT_CONTEXT);
+
+test('row sort fail-stops if its post-permutation sort-state owner cannot commit', () => {
+  const workbook = new WorkbookModel('unit-sort-state-commit-failure', 'Sort State Commit Failure');
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, { value: 'B' });
+  sheet.cells.set(1, 0, { value: 'A' });
+  Object.defineProperty(sheet, 'appliedSortState', {
+    configurable: false,
+    enumerable: false,
+    value: undefined,
+    writable: false,
+  });
+
+  assert.throws(
+    () => runtime.execute('data.sort.rows', {
+      sheetId: sheet.id,
+      range: { sheetId: sheet.id, startRow: 0, endRow: 1, startColumn: 0, endColumn: 0 },
+      criteria: [{ column: 0, ascending: true }],
+      hasHeader: false,
+    }),
+    (error: unknown) => error instanceof MutationRecoveryRequiredError
+      && error.originalCause instanceof StructuralMutationApplyError,
+  );
+  assert.equal(sheet.cells.get(0, 0)?.value, 'A');
+  assert.equal(sheet.cells.get(1, 0)?.value, 'B');
+  assert.equal(runtime.isMutationRecoveryRequired, true);
+  assert.equal(runtime.getHistoryDepth().undo, 0);
+});
 
 test('fixed-decimal direct entry uses the canonical interpreter and explicit decimals override it', () => {
   const workbook = new WorkbookModel('unit-fixed-decimal', 'Fixed Decimal');
@@ -532,15 +563,29 @@ test('sheet commands: sort and canonical fill', () => {
 
   // Canonical fill formula copy
   sheet.cells.set(5, 0, { value: null, formula: '=A1+B1' });
+  sheet.cells.set(5, 1, {
+    value: null,
+    presentation: {
+      kind: 'barcode',
+      symbology: 'qr',
+      source: { kind: 'formula', formula: '=A1' },
+      parameters: { symbology: 'qr' },
+      options: { foreground: '#000000', background: '#ffffff', showText: true, labelPosition: 'below', quietZone: 2 },
+    },
+  });
   runtime.execute('sheet.range.fill', {
     sheetId: 'sheet-1',
-    sourceRange: { sheetId: 'sheet-1', startRow: 5, endRow: 5, startColumn: 0, endColumn: 0 },
-    targetRange: { sheetId: 'sheet-1', startRow: 5, endRow: 7, startColumn: 0, endColumn: 0 },
+    sourceRange: { sheetId: 'sheet-1', startRow: 5, endRow: 5, startColumn: 0, endColumn: 1 },
+    targetRange: { sheetId: 'sheet-1', startRow: 5, endRow: 7, startColumn: 0, endColumn: 1 },
     direction: 'down',
     mode: 'copy',
   });
   assert.equal(sheet.cells.get(6, 0)?.formula, '=A2+B2');
   assert.equal(sheet.cells.get(7, 0)?.formula, '=A3+B3');
+  const filledBarcode6 = sheet.cells.get(6, 1)?.presentation;
+  const filledBarcode7 = sheet.cells.get(7, 1)?.presentation;
+  assert.equal(filledBarcode6?.kind === 'barcode' && filledBarcode6.source.kind === 'formula' ? filledBarcode6.source.formula : undefined, '=A2');
+  assert.equal(filledBarcode7?.kind === 'barcode' && filledBarcode7.source.kind === 'formula' ? filledBarcode7.source.formula : undefined, '=A3');
 });
 
 test('clipboard: TSV format, parse, and formula shifting', () => {
@@ -603,6 +648,41 @@ test('clipboard payload carries provenance and PasteSpecialSpec preserves its co
   assert.equal(sheet.cells.get(0, 1)?.numberFormat, '0.00');
 });
 
+test('copy paste translates barcode formula references with the copied cell', () => {
+  const workbook = new WorkbookModel('unit-paste-barcode-formula', 'Paste Barcode Formula');
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const sheet = workbook.getSheet(sheetId(workbook));
+  sheet.cells.set(0, 0, {
+    value: null,
+    presentation: {
+      kind: 'barcode',
+      symbology: 'qr',
+      source: { kind: 'formula', formula: '=A1' },
+      parameters: { symbology: 'qr' },
+      options: { foreground: '#000000', background: '#ffffff', showText: true, labelPosition: 'below', quietZone: 2 },
+    },
+  });
+  const clipboard = copyRangeToClipboardData(workbook, {
+    sheetId: sheet.id,
+    startRow: 0,
+    endRow: 0,
+    startColumn: 0,
+    endColumn: 0,
+  });
+
+  runtime.execute('sheet.range.paste', {
+    sheetId: sheet.id,
+    targetOrigin: { row: 1, column: 1 },
+    clipboard,
+    transfer: 'copy',
+    spec: createPasteSpecialSpec(),
+  });
+
+  const copiedPresentation = sheet.cells.get(1, 1)?.presentation;
+  assert.equal(copiedPresentation?.kind === 'barcode' && copiedPresentation.source.kind === 'formula' ? copiedPresentation.source.formula : undefined, '=B2');
+});
+
 test('clipboard uses quoted TSV and host-neutral HTML representations', () => {
   const text = formatTsv([[{ value: 'a\tb' }, { value: 'line\nnext' }, { value: '"quoted"' }]]);
   assert.deepEqual(parseTsv(text).map((row) => row.map((cell) => cell.value)), [['a\tb', 'line\nnext', '"quoted"']]);
@@ -661,6 +741,330 @@ test('paste special copies range-owned metadata atomically and restores it once'
   runtime.redo();
   assert.equal(source.cells.get(2, 2)?.value, 'source');
   assert.equal(runtime.getHistoryDepth().undo, 1);
+});
+
+test('paste preserves a data-validation list source on its referenced worksheet', () => {
+  const workbook = new WorkbookModel('unit-paste-cross-sheet-validation', 'Cross-sheet validation paste');
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const source = workbook.getSheet('sheet-1');
+  const listSheet = workbook.addSheet('list-source', 'List Source');
+  const target = workbook.addSheet('paste-target', 'Paste Target');
+  source.cells.set(0, 0, { value: 'source cell' });
+  listSheet.cells.set(0, 0, { value: 'Allowed' });
+  source.dataValidations.push({
+    id: 'cross-sheet-list', sheetId: source.id,
+    ranges: [{ sheetId: source.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }],
+    type: 'list',
+    listSource: { kind: 'range', range: { sheetId: listSheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 } },
+  });
+  const clipboard = copyRangeToClipboardData(workbook, { sheetId: source.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 });
+  const invalidClipboard = structuredClone(clipboard);
+  const invalidValidation = invalidClipboard.rangeMetadata.validations[0];
+  assert.ok(invalidValidation?.listSource?.kind === 'range');
+  invalidValidation.listSource.range.sheetId = 'missing-list-sheet';
+  assert.throws(() => runtime.execute('sheet.range.paste', {
+    sheetId: target.id,
+    targetOrigin: { row: 0, column: 0 },
+    clipboard: invalidClipboard,
+    transfer: 'copy',
+    spec: createPasteSpecialSpec({ metadata: { commentsNotes: false, validation: true, columnWidths: false, conditionalFormats: false, hyperlinks: false } }),
+  }), /Unknown sheet/);
+  assert.equal(target.cells.get(0, 0), undefined);
+  assert.equal(target.dataValidations.length, 0);
+
+  runtime.execute('sheet.range.paste', {
+    sheetId: target.id,
+    targetOrigin: { row: 2, column: 3 },
+    clipboard,
+    transfer: 'copy',
+    spec: createPasteSpecialSpec({ metadata: { commentsNotes: false, validation: true, columnWidths: false, conditionalFormats: false, hyperlinks: false } }),
+  });
+
+  const copied = target.dataValidations.find((rule) => rule.id !== 'cross-sheet-list');
+  assert.deepEqual(copied?.listSource, {
+    kind: 'range', range: { sheetId: listSheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 },
+  });
+  assert.deepEqual(copied?.ranges, [{ sheetId: target.id, startRow: 2, endRow: 2, startColumn: 3, endColumn: 3 }]);
+  runtime.undo();
+  assert.equal(target.dataValidations.length, 0);
+  runtime.redo();
+  assert.deepEqual(target.dataValidations.find((rule) => rule.id !== 'cross-sheet-list')?.listSource, copied?.listSource);
+});
+
+test('data-validation range sources resolve to live worksheets on command and remote replay paths', () => {
+  const workbook = new WorkbookModel('unit-dv-range-source-owner', 'Validation Source Owner');
+  const owner = workbook.getSheet(workbook.primarySheetId);
+  const listSource = workbook.addSheet('validation-values', 'Validation Values');
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const appliesTo = { sheetId: owner.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 };
+  const rule = {
+    id: 'external-list', sheetId: owner.id, ranges: [appliesTo], type: 'list' as const,
+    listSource: { kind: 'range' as const, range: { sheetId: listSource.id, startRow: 0, endRow: 2, startColumn: 0, endColumn: 0 } },
+  };
+
+  runtime.execute('sheet.dv.add', { sheetId: owner.id, rule });
+  assert.equal(owner.dataValidations[0]?.listSource?.kind, 'range');
+
+  const unresolved = structuredClone(rule);
+  unresolved.id = 'missing-list-sheet';
+  unresolved.listSource.range.sheetId = 'missing-worksheet';
+  assert.throws(() => runtime.applyRemoteMutations([{
+    id: 'dv.add', unitId: workbook.unitId, sheetId: owner.id,
+    params: { sheetId: owner.id, rule: unresolved }, affectedRanges: [appliesTo],
+  }]), /Unknown sheet/);
+  assert.equal(owner.dataValidations.length, 1);
+
+  assert.throws(() => runtime.execute('sheet.dv.add', {
+    sheetId: listSource.id,
+    rule: { ...rule, id: 'owner-mismatch' },
+  }), /owner sheet/);
+  assert.equal(listSource.dataValidations.length, 0);
+});
+
+test('conditional-format and validation removals bind the declared geometry to current owners', () => {
+  const workbook = new WorkbookModel('unit-rule-owner-ranges', 'Rule Owner Ranges');
+  const owner = workbook.getSheet(workbook.primarySheetId);
+  const other = workbook.addSheet('other-owner', 'Other Owner');
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const appliesTo = { sheetId: owner.id, startRow: 3, endRow: 4, startColumn: 2, endColumn: 2 };
+  owner.conditionalFormats.push({ id: 'protected-format', sheetId: owner.id, ranges: [appliesTo], type: 'highlight' });
+  owner.dataValidations.push({
+    id: 'protected-validation', sheetId: owner.id, ranges: [appliesTo], type: 'list',
+    listSource: { kind: 'values', values: ['Allowed'] },
+  });
+
+  assert.throws(() => runtime.applyRemoteMutations([{
+    id: 'cf.clear', unitId: workbook.unitId, sheetId: owner.id,
+    params: { sheetId: owner.id, ranges: [] }, affectedRanges: [],
+  }]), /changed before clear/);
+  assert.equal(owner.conditionalFormats.length, 1);
+
+  const beforeUpdate = structuredClone(owner.conditionalFormats[0]!);
+  assert.throws(() => runtime.applyRemoteMutations([{
+    id: 'cf.update', unitId: workbook.unitId, sheetId: owner.id,
+    params: {
+      sheetId: owner.id,
+      before: beforeUpdate,
+      after: { ...beforeUpdate, ranges: [{ ...appliesTo, startRow: 5, endRow: 5 }] },
+      ranges: [],
+    },
+    affectedRanges: [],
+  }]), /parameters do not match/);
+  assert.deepEqual(owner.conditionalFormats[0], beforeUpdate);
+
+  assert.throws(() => runtime.applyRemoteMutations([{
+    id: 'cf.update', unitId: workbook.unitId, sheetId: owner.id,
+    params: {
+      sheetId: owner.id,
+      before: beforeUpdate,
+      after: { ...beforeUpdate, id: 'replacement-identity' },
+      ranges: [appliesTo, appliesTo],
+    },
+    affectedRanges: [appliesTo, appliesTo],
+  }]), /parameters do not match/);
+  assert.deepEqual(owner.conditionalFormats[0], beforeUpdate);
+
+  assert.throws(() => runtime.applyRemoteMutations([{
+    id: 'cf.remove', unitId: workbook.unitId, sheetId: owner.id,
+    params: { sheetId: owner.id, ruleId: 'protected-format', ranges: [] }, affectedRanges: [],
+  }]), /parameters do not match|Invalid cf.remove/);
+  assert.equal(owner.conditionalFormats.length, 1);
+
+  assert.throws(() => runtime.applyRemoteMutations([{
+    id: 'dv.remove', unitId: workbook.unitId, sheetId: owner.id,
+    params: { sheetId: owner.id, ruleId: 'protected-validation', ranges: [] }, affectedRanges: [],
+  }]), /parameters do not match|Invalid dv.remove/);
+  assert.equal(owner.dataValidations.length, 1);
+
+  assert.throws(() => runtime.applyRemoteMutations([{
+    id: 'cf.add', unitId: workbook.unitId, sheetId: other.id,
+    params: { sheetId: owner.id, rule: { id: 'cross-envelope', sheetId: owner.id, ranges: [appliesTo], type: 'highlight' } },
+    affectedRanges: [appliesTo],
+  }]), /owner sheet/);
+  assert.equal(owner.conditionalFormats.some((rule) => rule.id === 'cross-envelope'), false);
+
+  runtime.execute('sheet.cf.clear', { sheetId: owner.id });
+  assert.equal(owner.conditionalFormats.length, 0);
+  runtime.undo();
+  assert.equal(owner.conditionalFormats.length, 1);
+  runtime.redo();
+  assert.equal(owner.conditionalFormats.length, 0);
+
+  runtime.execute('sheet.dv.remove', { sheetId: owner.id, ruleId: 'protected-validation' });
+  assert.equal(owner.dataValidations.length, 0);
+  runtime.undo();
+  assert.equal(owner.dataValidations.length, 1);
+});
+
+test('same-id rule additions replace through reversible remove-and-add mutations', () => {
+  const workbook = new WorkbookModel('unit-rule-replacement-history', 'Rule Replacement History');
+  const owner = workbook.getSheet(workbook.primarySheetId);
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const range = { sheetId: owner.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 };
+  const previousFormat = { id: 'format-1', sheetId: owner.id, ranges: [range], type: 'highlight' as const, value1: 'before' };
+  const nextFormat = { ...previousFormat, value1: 'after' };
+  owner.conditionalFormats.push(structuredClone(previousFormat));
+
+  const formatResult = runtime.execute('sheet.cf.add', { sheetId: owner.id, rule: nextFormat });
+  assert.equal(formatResult.mutationCount, 2);
+  assert.equal(owner.conditionalFormats[0]?.value1, 'after');
+  runtime.undo();
+  assert.equal(owner.conditionalFormats[0]?.value1, 'before');
+  runtime.redo();
+  assert.equal(owner.conditionalFormats[0]?.value1, 'after');
+
+  const previousValidation = {
+    id: 'validation-1', sheetId: owner.id, ranges: [range], type: 'list' as const,
+    listSource: { kind: 'values' as const, values: ['before'] },
+  };
+  const nextValidation = { ...previousValidation, listSource: { kind: 'values' as const, values: ['after'] } };
+  owner.dataValidations.push(structuredClone(previousValidation));
+  const validationResult = runtime.execute('sheet.dv.add', { sheetId: owner.id, rule: nextValidation });
+  assert.equal(validationResult.mutationCount, 2);
+  assert.deepEqual(owner.dataValidations[0]?.listSource, { kind: 'values', values: ['after'] });
+  runtime.undo();
+  assert.deepEqual(owner.dataValidations[0]?.listSource, { kind: 'values', values: ['before'] });
+  runtime.redo();
+  assert.deepEqual(owner.dataValidations[0]?.listSource, { kind: 'values', values: ['after'] });
+});
+
+test('duplicate persisted rule identities reject clear and remove without partial writes', () => {
+  const workbook = new WorkbookModel('unit-duplicate-rule-identities', 'Duplicate Rule Identities');
+  const owner = workbook.getSheet(workbook.primarySheetId);
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const firstRange = { sheetId: owner.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 };
+  const secondRange = { sheetId: owner.id, startRow: 1, endRow: 1, startColumn: 0, endColumn: 0 };
+  owner.conditionalFormats.push(
+    { id: 'duplicate-cf', sheetId: owner.id, ranges: [firstRange], type: 'highlight' },
+    { id: 'duplicate-cf', sheetId: owner.id, ranges: [secondRange], type: 'highlight' },
+  );
+  owner.dataValidations.push(
+    { id: 'duplicate-dv', sheetId: owner.id, ranges: [firstRange], type: 'list', listSource: { kind: 'values', values: ['A'] } },
+    { id: 'duplicate-dv', sheetId: owner.id, ranges: [secondRange], type: 'list', listSource: { kind: 'values', values: ['B'] } },
+  );
+
+  assert.throws(() => runtime.execute('sheet.cf.clear', { sheetId: owner.id }), /identity is missing or duplicated/);
+  assert.equal(owner.conditionalFormats.length, 2);
+  assert.throws(() => runtime.execute('sheet.dv.remove', { sheetId: owner.id, ruleId: 'duplicate-dv' }), /identity is duplicated/);
+  assert.equal(owner.dataValidations.length, 2);
+});
+
+test('paste special preserves metadata categories that are not selected', () => {
+  const workbook = new WorkbookModel('unit-paste-metadata-selection', 'Paste Metadata Selection');
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, { value: 'source' });
+  sheet.review.setNote(4, 4, { id: 'kept-note', author: 'u', text: 'keep note', createdAt: '2026-01-01', visible: true });
+  sheet.hyperlinks.set('4:4', { id: 'kept-link', target: { kind: 'url', url: 'https://example.com' } });
+  sheet.review.addThread({ id: 'kept-comment', sheetId: sheet.id, row: 4, column: 4, author: 'u', text: 'keep comment', createdAt: '2026-01-01', replies: [] });
+
+  runtime.execute('sheet.range.paste', {
+    sheetId: sheet.id,
+    targetOrigin: { row: 4, column: 4 },
+    clipboard: copyRangeToClipboardData(workbook, { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }),
+    transfer: 'copy',
+    spec: createPasteSpecialSpec({
+      formatting: 'none',
+      metadata: { commentsNotes: false, validation: true, columnWidths: false, conditionalFormats: false, hyperlinks: false },
+    }),
+  });
+
+  assert.equal(sheet.review.getNoteAt(4, 4)?.text, 'keep note');
+  assert.equal(sheet.hyperlinks.get('4:4')?.id, 'kept-link');
+  assert.equal(sheet.review.getThreadsAt(4, 4)[0]?.id, 'kept-comment');
+});
+
+test('same-sheet cut paste records metadata tombstones and removes newly written cells on undo', () => {
+  const workbook = new WorkbookModel('unit-paste-cut-snapshot', 'Paste Cut Snapshot');
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, { value: 'moving' });
+  sheet.review.setNote(0, 0, { id: 'moving-note', author: 'u', text: 'move note', createdAt: '2026-01-01', visible: true });
+  sheet.hyperlinks.set('0:0', { id: 'moving-link', target: { kind: 'url', url: 'https://example.com' } });
+  const clipboard = copyRangeToClipboardData(workbook, { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 });
+  clipboard.transfer = 'move';
+
+  runtime.execute('sheet.range.paste', {
+    sheetId: sheet.id,
+    targetOrigin: { row: 3, column: 3 },
+    clipboard,
+    transfer: 'move',
+    spec: createPasteSpecialSpec({ skipBlanks: true }),
+  });
+
+  assert.equal(sheet.cells.get(0, 0), undefined);
+  assert.equal(sheet.review.hasNoteAt(0, 0), false);
+  assert.equal(sheet.hyperlinks.has('0:0'), false);
+  assert.equal(sheet.cells.get(3, 3)?.value, 'moving');
+  assert.equal(sheet.review.getNoteAt(3, 3)?.text, 'move note');
+  assert.equal(sheet.hyperlinks.get('3:3')?.id, 'moving-link');
+
+  assert.equal(runtime.undo(), true);
+  assert.equal(sheet.cells.get(0, 0)?.value, 'moving');
+  assert.equal(sheet.review.getNoteAt(0, 0)?.text, 'move note');
+  assert.equal(sheet.hyperlinks.get('0:0')?.id, 'moving-link');
+  assert.equal(sheet.cells.get(3, 3), undefined);
+  assert.equal(sheet.review.hasNoteAt(3, 3), false);
+  assert.equal(sheet.hyperlinks.has('3:3'), false);
+});
+
+test('transposed paste keeps source-offset column-width mapping within its declared columns', () => {
+  const workbook = new WorkbookModel('unit-paste-transposed-widths', 'Paste Transposed Widths');
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.columnWidthsPx[0] = 80;
+  sheet.columnWidthsPx[1] = 90;
+  sheet.columnWidthsPx[2] = 100;
+  const clipboard = copyRangeToClipboardData(workbook, { sheetId: sheet.id, startRow: 0, endRow: 1, startColumn: 0, endColumn: 2 });
+
+  runtime.execute('sheet.range.paste', {
+    sheetId: sheet.id,
+    targetOrigin: { row: 4, column: 4 },
+    clipboard,
+    transfer: 'copy',
+    spec: createPasteSpecialSpec({
+      formatting: 'none',
+      transpose: true,
+      metadata: { commentsNotes: false, validation: false, columnWidths: true, conditionalFormats: false, hyperlinks: false },
+    }),
+  });
+
+  assert.equal(sheet.columnWidthsPx[4], 80);
+  assert.equal(sheet.columnWidthsPx[5], 90);
+  assert.equal(sheet.columnWidthsPx[6], 100);
+});
+
+test('cut paste in the same column does not clear its retained column width', () => {
+  const workbook = new WorkbookModel('unit-paste-same-column-width', 'Paste Same Column Width');
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, { value: 'moving' });
+  sheet.columnWidthsPx[0] = 88;
+  const clipboard = copyRangeToClipboardData(workbook, { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 });
+  clipboard.transfer = 'move';
+
+  runtime.execute('sheet.range.paste', {
+    sheetId: sheet.id,
+    targetOrigin: { row: 4, column: 0 },
+    clipboard,
+    transfer: 'move',
+    spec: createPasteSpecialSpec({
+      skipBlanks: true,
+      formatting: 'none',
+      metadata: { commentsNotes: false, validation: false, columnWidths: true, conditionalFormats: false, hyperlinks: false },
+    }),
+  });
+
+  assert.equal(sheet.columnWidthsPx[0], 88);
 });
 
 test('paste special arithmetic, skip blanks and protected rejection are fail-closed', () => {
@@ -769,7 +1173,7 @@ test('sheet.cell.commitText parses scalars, validates input and protects spill c
   assert.equal(sheet.cells.get(2, 0)?.value, 'anchor');
 });
 
-test('cut paste is one cross-sheet transaction and preserves formula references', () => {
+test('cross-sheet cut paste fails closed before changing either worksheet', () => {
   const workbook = new WorkbookModel('unit-cut', 'Cut');
   const target = workbook.addSheet('sheet-2', 'Target');
   const runtime = new CommandRuntime(workbook);
@@ -785,23 +1189,36 @@ test('cut paste is one cross-sheet transaction and preserves formula references'
     endColumn: 1,
   });
   payload.transfer = 'move';
-  const result = runtime.execute('sheet.range.paste', {
+  assert.throws(() => runtime.execute('sheet.range.paste', {
     sheetId: target.id,
     targetOrigin: { row: 4, column: 4 },
     clipboard: payload,
     transfer: 'move',
     spec: createPasteSpecialSpec(),
-  });
-  assert.equal(result.mutationCount, 1);
-  assert.equal(source.cells.get(1, 1), undefined);
-  assert.equal(target.cells.get(4, 4)?.formula, '=A1+$B$1');
-  assert.equal(target.cells.get(4, 4)?.value, null);
-  runtime.undo();
+  }), /UNSUPPORTED_FEATURE: cross-sheet cut\/paste requires a canonical structural move patch/);
+  const sourceRange = structuredClone(payload.range);
+  const targetRange = { sheetId: target.id, startRow: 4, endRow: 4, startColumn: 4, endColumn: 4 };
+  assert.throws(() => runtime.applyRemoteMutations([{
+    id: 'range.paste',
+    unitId: workbook.unitId,
+    sheetId: target.id,
+    params: {
+      sheetId: target.id,
+      targetOrigin: { row: 4, column: 4 },
+      clipboard: payload,
+      sourceExtent: { rows: 1, columns: 1 },
+      transfer: 'move',
+      clearSource: true,
+      sourceRange,
+      snapshot: { clearRanges: [targetRange], cells: [] },
+      sourceSnapshot: { clearRanges: [sourceRange], cells: [] },
+      spec: createPasteSpecialSpec(),
+    },
+    affectedRanges: [targetRange, sourceRange],
+  }]), /UNSUPPORTED_FEATURE: cross-sheet cut\/paste requires a canonical structural move patch/);
   assert.equal(source.cells.get(1, 1)?.formula, '=A1+$B$1');
   assert.equal(target.cells.get(4, 4)?.value, 'old');
-  runtime.redo();
-  assert.equal(source.cells.get(1, 1), undefined);
-  assert.equal(target.cells.get(4, 4)?.formula, '=A1+$B$1');
+  assert.equal(runtime.getHistoryDepth().undo, 0);
 });
 
 test('copy paste shifts relative references while preserving mixed and absolute references', () => {
@@ -826,6 +1243,231 @@ test('copy paste shifts relative references while preserving mixed and absolute 
   });
   assert.equal(sheet.cells.get(4, 4)?.formula, '=D4+$B$1+F$1+$D4');
   assert.equal(sheet.cells.get(1, 1)?.formula, '=A1+$B$1+C$1+$D1');
+});
+
+test('multi-cell and transposed formula paste offsets references from each source cell', () => {
+  const workbook = new WorkbookModel('unit-copy-multicell-formulas', 'Copy Formulas');
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, { value: null, formula: '=A1+$B$1', formulaValue: 99, displayValue: '99' });
+  sheet.cells.set(0, 1, { value: null, formula: '=A1+$B$1' });
+  sheet.cells.set(1, 1, { value: null, formula: '=A1+$B$1' });
+  const source = { sheetId: sheet.id, startRow: 0, endRow: 1, startColumn: 0, endColumn: 1 };
+  const clipboard = copyRangeToClipboardData(workbook, source);
+
+  runtime.execute('sheet.range.paste', {
+    sheetId: sheet.id,
+    targetOrigin: { row: 4, column: 4 },
+    clipboard,
+    transfer: 'copy',
+    spec: createPasteSpecialSpec(),
+  });
+  assert.equal(sheet.cells.get(4, 4)?.formula, '=E5+$B$1');
+  assert.equal(sheet.cells.get(4, 4)?.formulaValue, undefined);
+  assert.equal(sheet.cells.get(4, 4)?.displayValue, undefined);
+  assert.equal(sheet.cells.get(4, 5)?.formula, '=E5+$B$1');
+  assert.equal(sheet.cells.get(5, 5)?.formula, '=E5+$B$1');
+
+  runtime.execute('sheet.range.paste', {
+    sheetId: sheet.id,
+    targetOrigin: { row: 8, column: 3 },
+    clipboard,
+    transfer: 'copy',
+    spec: createPasteSpecialSpec({ transpose: true }),
+  });
+  assert.equal(sheet.cells.get(9, 3)?.formula, '=C10+$B$1');
+});
+
+test('transposed paste maps comments, notes, and hyperlinks with their source cells', () => {
+  const workbook = new WorkbookModel('unit-paste-transposed-cell-metadata', 'Paste Metadata');
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.review.setNote(0, 1, { id: 'transpose-note', author: 'u', text: 'note', createdAt: '2026-01-01', visible: true });
+  sheet.review.addThread({ id: 'transpose-comment', sheetId: sheet.id, row: 0, column: 1, author: 'u', text: 'comment', createdAt: '2026-01-01', replies: [] });
+  sheet.hyperlinks.set('0:1', { id: 'transpose-link', target: { kind: 'url', url: 'https://example.com' } });
+  const clipboard = copyRangeToClipboardData(workbook, { sheetId: sheet.id, startRow: 0, endRow: 1, startColumn: 0, endColumn: 1 });
+
+  runtime.execute('sheet.range.paste', {
+    sheetId: sheet.id,
+    targetOrigin: { row: 4, column: 4 },
+    clipboard,
+    transfer: 'copy',
+    spec: createPasteSpecialSpec({
+      transpose: true,
+      metadata: { commentsNotes: true, validation: false, columnWidths: false, conditionalFormats: false, hyperlinks: true },
+    }),
+  });
+
+  assert.equal(sheet.review.getNoteAt(5, 4)?.text, 'note');
+  assert.equal(sheet.review.getThreadsAt(5, 4)[0]?.text, 'comment');
+  assert.equal(sheet.hyperlinks.get('5:4')?.id, 'transpose-link');
+  assert.equal(sheet.review.getNoteAt(4, 5), undefined);
+  assert.equal(sheet.hyperlinks.get('4:5'), undefined);
+});
+
+test('paste values materializes the resolved formula result', () => {
+  const workbook = new WorkbookModel('unit-paste-resolved-formula-value', 'Paste Values');
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, { value: null, formula: '=1+2', formulaValue: 3 });
+  sheet.cells.set(1, 0, { value: '=A3', formula: '=A3', formulaValue: null });
+  const clipboard = copyRangeToClipboardData(workbook, { sheetId: sheet.id, startRow: 0, endRow: 1, startColumn: 0, endColumn: 0 });
+
+  runtime.execute('sheet.range.paste', {
+    sheetId: sheet.id,
+    targetOrigin: { row: 0, column: 1 },
+    clipboard,
+    transfer: 'copy',
+    spec: createPasteSpecialSpec({
+      content: 'values',
+      formatting: 'none',
+      metadata: { commentsNotes: false, validation: false, columnWidths: false, conditionalFormats: false, hyperlinks: false },
+    }),
+  });
+
+  assert.equal(sheet.cells.get(0, 1)?.value, 3);
+  assert.equal(sheet.cells.get(0, 1)?.formula, undefined);
+  assert.equal(sheet.cells.get(0, 1)?.formulaValue, undefined);
+  assert.equal(sheet.cells.get(1, 1)?.value, null);
+  assert.equal(sheet.cells.get(1, 1)?.formula, undefined);
+});
+
+test('skip-blanks paste preserves target metadata at blank source offsets', () => {
+  const workbook = new WorkbookModel('unit-paste-skip-blank-metadata', 'Paste Skip Blanks');
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, { value: 'source' });
+  sheet.review.setNote(0, 1, { id: 'source-blank-note', author: 'u', text: 'source blank', createdAt: '2026-01-01', visible: true });
+  sheet.hyperlinks.set('0:1', { id: 'source-blank-link', target: { kind: 'url', url: 'https://source.example' } });
+  sheet.review.setNote(4, 5, { id: 'target-note', author: 'u', text: 'keep target', createdAt: '2026-01-01', visible: true });
+  sheet.hyperlinks.set('4:5', { id: 'target-link', target: { kind: 'url', url: 'https://target.example' } });
+  const clipboard = copyRangeToClipboardData(workbook, { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 1 });
+
+  runtime.execute('sheet.range.paste', {
+    sheetId: sheet.id,
+    targetOrigin: { row: 4, column: 4 },
+    clipboard,
+    transfer: 'copy',
+    spec: createPasteSpecialSpec({
+      skipBlanks: true,
+      metadata: { commentsNotes: true, validation: false, columnWidths: false, conditionalFormats: false, hyperlinks: true },
+    }),
+  });
+
+  assert.equal(sheet.cells.get(4, 4)?.value, 'source');
+  assert.equal(sheet.cells.get(4, 5), undefined);
+  assert.equal(sheet.review.getNoteAt(4, 5)?.text, 'keep target');
+  assert.equal(sheet.hyperlinks.get('4:5')?.id, 'target-link');
+});
+
+test('skip-blanks paste treats a formula-error scalar as occupied content and metadata', () => {
+  const workbook = new WorkbookModel('unit-paste-skip-blank-error', 'Paste Error Value');
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, { value: null, formulaValue: { kind: 'error', code: '#DIV/0!', message: '' } });
+  sheet.cells.set(0, 1, { value: null, formulaValue: { kind: 'error', code: '#VALUE!', message: '' } });
+  sheet.review.setNote(0, 0, { id: 'error-note', author: 'u', text: 'error', createdAt: '2026-01-01', visible: true });
+  sheet.hyperlinks.set('0:0', { id: 'error-link', target: { kind: 'url', url: 'https://example.com/error' } });
+  sheet.review.setNote(4, 4, { id: 'old-note', author: 'u', text: 'old', createdAt: '2026-01-01', visible: true });
+  sheet.hyperlinks.set('4:4', { id: 'old-link', target: { kind: 'url', url: 'https://example.com/old' } });
+  sheet.review.setNote(4, 5, { id: 'old-blank-note', author: 'u', text: 'old blank', createdAt: '2026-01-01', visible: true });
+  sheet.hyperlinks.set('4:5', { id: 'old-blank-link', target: { kind: 'url', url: 'https://example.com/old-blank' } });
+  const clipboard = copyRangeToClipboardData(workbook, { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 1 });
+
+  runtime.execute('sheet.range.paste', {
+    sheetId: sheet.id,
+    targetOrigin: { row: 4, column: 4 },
+    clipboard,
+    transfer: 'copy',
+    spec: createPasteSpecialSpec({
+      skipBlanks: true,
+      metadata: { commentsNotes: true, validation: false, columnWidths: false, conditionalFormats: false, hyperlinks: true },
+    }),
+  });
+
+  assert.deepEqual(sheet.cells.get(4, 4)?.formulaValue, { kind: 'error', code: '#DIV/0!', message: '' });
+  assert.deepEqual(sheet.cells.get(4, 5)?.formulaValue, { kind: 'error', code: '#VALUE!', message: '' });
+  assert.equal(sheet.review.getNoteAt(4, 4)?.text, 'error');
+  assert.equal(sheet.hyperlinks.get('4:4')?.id, 'error-link');
+  assert.equal(sheet.review.getNoteAt(4, 5), undefined);
+  assert.equal(sheet.hyperlinks.get('4:5'), undefined);
+});
+
+test('paste clones formula-bearing validation and conditional-format rules at the target anchor', () => {
+  const workbook = new WorkbookModel('unit-paste-rule-formulas', 'Paste Rule Formulas');
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  const sourceRange = { sheetId: sheet.id, startRow: 0, endRow: 1, startColumn: 0, endColumn: 1 };
+  sheet.conditionalFormats.push({
+    id: 'cf-source', sheetId: sheet.id, ranges: [sourceRange], formulaAnchor: { sheetId: sheet.id, row: 0, column: 0 },
+    type: 'highlight', operator: 'formula', value1: '=A1>0',
+  });
+  sheet.dataValidations.push({
+    id: 'dv-source', sheetId: sheet.id, ranges: [sourceRange], formulaAnchor: { sheetId: sheet.id, row: 0, column: 0 },
+    type: 'custom', formula1: '=A1>0', formula2: '=B1',
+    listSource: { kind: 'formula', formula: '=C1:C2' },
+  });
+  const clipboard = copyRangeToClipboardData(workbook, sourceRange);
+
+  runtime.execute('sheet.range.paste', {
+    sheetId: sheet.id,
+    targetOrigin: { row: 4, column: 4 },
+    clipboard,
+    transfer: 'copy',
+    spec: createPasteSpecialSpec({
+      formatting: 'none',
+      metadata: { commentsNotes: false, validation: true, columnWidths: false, conditionalFormats: true, hyperlinks: false },
+    }),
+  });
+
+  const copiedFormat = sheet.conditionalFormats.find((rule) => rule.id === 'cf-source@paste:4:4');
+  const copiedValidation = sheet.dataValidations.find((rule) => rule.id === 'dv-source@paste:4:4');
+  assert.equal(copiedFormat?.value1, '=E5>0');
+  assert.equal(copiedValidation?.formula1, '=E5>0');
+  assert.equal(copiedValidation?.formula2, '=F5');
+  assert.deepEqual(copiedValidation?.listSource, { kind: 'formula', formula: '=G5:G6' });
+});
+
+test('paste clips and reanchors rule formulas when the original formula anchor is outside the source range', () => {
+  const workbook = new WorkbookModel('unit-paste-rule-formula-clipped-anchor', 'Paste Rule Fragment');
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  const ruleRange = { sheetId: sheet.id, startRow: 0, endRow: 9, startColumn: 0, endColumn: 0 };
+  sheet.conditionalFormats.push({
+    id: 'cf-fragment', sheetId: sheet.id, ranges: [ruleRange], formulaAnchor: { sheetId: sheet.id, row: 0, column: 0 },
+    type: 'highlight', operator: 'formula', value1: '=A1>0',
+  });
+  sheet.dataValidations.push({
+    id: 'dv-fragment', sheetId: sheet.id, ranges: [ruleRange], formulaAnchor: { sheetId: sheet.id, row: 0, column: 0 },
+    type: 'custom', formula1: '=A1>0',
+  });
+  sheet.cells.set(4, 0, { value: 'copy fragment' });
+  const clipboard = copyRangeToClipboardData(workbook, { sheetId: sheet.id, startRow: 4, endRow: 4, startColumn: 0, endColumn: 0 });
+
+  runtime.execute('sheet.range.paste', {
+    sheetId: sheet.id,
+    targetOrigin: { row: 4, column: 2 },
+    clipboard,
+    transfer: 'copy',
+    spec: createPasteSpecialSpec({
+      formatting: 'none',
+      metadata: { commentsNotes: false, validation: true, columnWidths: false, conditionalFormats: true, hyperlinks: false },
+    }),
+  });
+
+  const copiedFormat = sheet.conditionalFormats.find((rule) => rule.id === 'cf-fragment@paste:4:2');
+  const copiedValidation = sheet.dataValidations.find((rule) => rule.id === 'dv-fragment@paste:4:2');
+  assert.equal(copiedFormat?.value1, '=C5>0');
+  assert.deepEqual(copiedFormat?.formulaAnchor, { sheetId: sheet.id, row: 4, column: 2 });
+  assert.equal(copiedValidation?.formula1, '=C5>0');
+  assert.deepEqual(copiedValidation?.formulaAnchor, { sheetId: sheet.id, row: 4, column: 2 });
 });
 
 test('paste replay rejects a transfer mismatch before touching the workbook', () => {
@@ -863,6 +1505,44 @@ test('paste replay rejects a transfer mismatch before touching the workbook', ()
   assert.equal(sheet.cells.get(1, 1), undefined);
 });
 
+test('paste replay rejects a move source range that differs from its clipboard range', () => {
+  const workbook = new WorkbookModel('unit-paste-source-range', 'Paste Source Range');
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const sheet = workbook.getSheet('sheet-1');
+  sheet.cells.set(0, 0, { value: 'source' });
+  const payload = copyRangeToClipboardData(workbook, {
+    sheetId: sheet.id,
+    startRow: 0,
+    endRow: 0,
+    startColumn: 0,
+    endColumn: 0,
+  });
+  payload.transfer = 'move';
+  const targetRange = { sheetId: sheet.id, startRow: 2, endRow: 2, startColumn: 2, endColumn: 2 };
+  const mismatchedSourceRange = { ...payload.range, startRow: 1, endRow: 1 };
+
+  assert.throws(() => runtime.applyRemoteMutations([{
+    id: 'range.paste',
+    unitId: workbook.unitId,
+    sheetId: sheet.id,
+    params: {
+      sheetId: sheet.id,
+      targetOrigin: { row: 2, column: 2 },
+      clipboard: payload,
+      sourceExtent: { rows: 1, columns: 1 },
+      transfer: 'move',
+      clearSource: true,
+      sourceRange: mismatchedSourceRange,
+      snapshot: { clearRanges: [targetRange], cells: [] },
+      spec: createPasteSpecialSpec(),
+    },
+    affectedRanges: [targetRange, mismatchedSourceRange],
+  }]), /Invalid mutation history/);
+  assert.equal(sheet.cells.get(0, 0)?.value, 'source');
+  assert.equal(sheet.cells.get(2, 2), undefined);
+});
+
 test('copy paste rejects a malformed formula before creating a mutation', () => {
   const workbook = new WorkbookModel('unit-paste-fail-close', 'Paste Fail Close');
   const runtime = new CommandRuntime(workbook);
@@ -897,24 +1577,48 @@ test('range clear modes are independent and restore auxiliary metadata', () => {
     value: 10,
     formula: '=A1',
     style: { bold: true },
-    hyperlink: 'https://example.com',
   });
+  const hyperlink = { id: 'clear-link', target: { kind: 'url' as const, url: 'https://example.com' } };
+  sheet.hyperlinks.set('0:0', hyperlink);
   sheet.review.setNote(0, 0, { id: 'note', author: 'u', text: 'standalone', createdAt: '2026-01-01', visible: true });
   const range = { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 };
   runtime.execute('sheet.range.clear', { sheetId: sheet.id, range, family: 'formats' });
   assert.equal(sheet.cells.get(0, 0)?.value, 10);
   assert.equal(sheet.cells.get(0, 0)?.formula, '=A1');
   assert.equal(sheet.cells.get(0, 0)?.style, undefined);
-  assert.equal(sheet.cells.get(0, 0)?.hyperlink, 'https://example.com');
+  assert.deepEqual(sheet.hyperlinks.get('0:0'), hyperlink);
   runtime.execute('sheet.range.clear', { sheetId: sheet.id, range, family: 'comments-and-notes' });
   assert.equal(sheet.review.hasNoteAt(0, 0), false);
   runtime.execute('sheet.range.clear', { sheetId: sheet.id, range, family: 'hyperlinks' });
   assert.equal(sheet.cells.get(0, 0)?.value, 10);
-  assert.equal(sheet.cells.get(0, 0)?.hyperlink, undefined);
+  assert.equal(sheet.hyperlinks.has('0:0'), false);
+  runtime.undo();
+  assert.deepEqual(sheet.hyperlinks.get('0:0'), hyperlink);
   runtime.execute('sheet.range.clear', { sheetId: sheet.id, range, family: 'all' });
   assert.equal(sheet.cells.get(0, 0), undefined);
   runtime.undo();
   assert.equal(sheet.cells.get(0, 0)?.value, 10);
+});
+
+test('metadata-only clear and undo keep deferred cell storage untouched', () => {
+  const workbook = new WorkbookModel('unit-clear-deferred-links', 'Deferred Links');
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.deferJSON({ '0': { '0': { value: 'preserved' } } });
+  const hyperlink = { id: 'deferred-link', target: { kind: 'url' as const, url: 'https://example.com' } };
+  sheet.hyperlinks.set('0:0', hyperlink);
+  const range = { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 };
+  const plan = createClearRangePlan(sheet, { sheetId: sheet.id, range, family: 'hyperlinks' });
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+
+  assert.equal(plan.snapshot.cells, undefined);
+  assert.equal(sheet.cells.isHydrated, false);
+  runtime.execute('sheet.range.clear', { sheetId: sheet.id, range, family: 'hyperlinks' });
+  assert.equal(sheet.hyperlinks.has('0:0'), false);
+  assert.equal(sheet.cells.isHydrated, false);
+  runtime.undo();
+  assert.deepEqual(sheet.hyperlinks.get('0:0'), hyperlink);
+  assert.equal(sheet.cells.isHydrated, false);
 });
 
 test('clear formats/all crop conditional-format intersections and restore atomically', () => {
@@ -1043,6 +1747,216 @@ test('sheet commands: row insert/delete use StructuralTransform and preserve und
   assert.equal(sheet.cells.get(2, 0)?.value, 42);
 });
 
+test('axis deletion retains sparse cell objects for history and clones only when restoring them', () => {
+  for (const axis of ['row', 'column'] as const) {
+    const workbook = new WorkbookModel(`unit-structural-delete-snapshot-${axis}`, 'Structural Delete Snapshot');
+    const runtime = new CommandRuntime(workbook);
+    registerSheetCommands(runtime);
+    const sheet = workbook.getSheet(workbook.primarySheetId);
+    const original = { value: 'retained', style: { bold: true } };
+    sheet.cells.set(3, 2, original);
+
+    runtime.execute(axis === 'row' ? 'sheet.rows.delete' : 'sheet.columns.delete', {
+      sheetId: sheet.id, at: axis === 'row' ? 3 : 2, count: 1,
+    });
+    const restore = runtime.getUndoEntries().at(-1)!.inversePlan.find((mutation) => mutation.id === 'cell.restore');
+    assert.ok(restore);
+    assert.strictEqual((restore.params as { previous?: typeof original }).previous, original);
+
+    assert.equal(runtime.undo(), true);
+    const restored = sheet.cells.get(3, 2)!;
+    assert.notStrictEqual(restored, original);
+    assert.notStrictEqual(restored.style, original.style);
+    restored.style!.bold = false;
+    assert.equal(original.style.bold, true);
+  }
+});
+
+test('remote column insertion rebases worksheet AutoFilter keys with their column addresses for undo and redo', () => {
+  const workbook = new WorkbookModel('unit-autofilter-history-rebase', 'AutoFilter history rebase');
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  const readAutoFilter = () => sheet.autoFilter;
+  runtime.execute('sheet.autoFilter.set', {
+    sheetId: sheet.id,
+    autoFilter: {
+      sheetId: sheet.id,
+      range: { sheetId: sheet.id, startRow: 0, endRow: 5, startColumn: 2, endColumn: 4 },
+      columns: { 2: { column: 2, showButton: true, hiddenButton: false } },
+      sortState: {
+        ref: { sheetId: sheet.id, startRow: 0, endRow: 5, startColumn: 2, endColumn: 4 },
+        conditions: [{ ref: { sheetId: sheet.id, startRow: 0, endRow: 5, startColumn: 2, endColumn: 2 }, descending: false }],
+      },
+    },
+  });
+
+  runtime.applyRemoteMutations([{
+    id: 'columns.inserted',
+    unitId: workbook.unitId,
+    sheetId: sheet.id,
+    params: { sheetId: sheet.id, at: 0, count: 1 },
+    affectedRanges: [{ sheetId: sheet.id, startRow: 0, endRow: sheet.rowCount - 1, startColumn: 0, endColumn: 0 }],
+  }], { revision: 1 });
+  assert.equal(readAutoFilter()?.range.startColumn, 3);
+  assert.deepEqual(Object.keys(readAutoFilter()!.columns), ['3']);
+  assert.equal(readAutoFilter()!.columns[3]?.column, 3);
+  assert.equal(readAutoFilter()!.sortState?.conditions[0]?.ref.startColumn, 3);
+
+  assert.equal(runtime.undo(), true);
+  assert.equal(readAutoFilter(), undefined);
+  assert.equal(runtime.redo(), true);
+  assert.equal(readAutoFilter()?.range.startColumn, 3);
+  assert.deepEqual(Object.keys(readAutoFilter()!.columns), ['3']);
+  assert.equal(readAutoFilter()!.columns[3]?.column, 3);
+  assert.equal(readAutoFilter()!.sortState?.conditions[0]?.ref.startColumn, 3);
+});
+
+test('remote axis history invalidates AutoFilter undo carrying opaque preserved XML', () => {
+  const workbook = new WorkbookModel('unit-autofilter-opaque-history', 'AutoFilter opaque history');
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  runtime.execute('sheet.autoFilter.set', {
+    sheetId: sheet.id,
+    autoFilter: {
+      sheetId: sheet.id,
+      range: { sheetId: sheet.id, startRow: 0, endRow: 5, startColumn: 2, endColumn: 4 },
+      columns: { 2: { column: 2, showButton: true, hiddenButton: false } },
+      preservedXml: { opaqueColumnExtension: { column: 2 } },
+    },
+  });
+  runtime.clearHistory();
+  runtime.execute('sheet.autoFilter.remove', { sheetId: sheet.id });
+
+  runtime.applyRemoteMutations([{
+    id: 'columns.inserted',
+    unitId: workbook.unitId,
+    sheetId: sheet.id,
+    params: { sheetId: sheet.id, at: 0, count: 1 },
+    affectedRanges: [{ sheetId: sheet.id, startRow: 0, endRow: sheet.rowCount - 1, startColumn: 0, endColumn: 0 }],
+  }], { revision: 1 });
+
+  assert.equal(runtime.getHistoryDepth().undo, 0);
+  assert.equal(runtime.getInvalidHistoryEntries().length, 1);
+  assert.equal(runtime.undo(), false);
+  assert.equal(sheet.autoFilter, undefined);
+});
+
+test('remote axis history invalidates AutoFilter undo carrying noncanonical sort-reference coordinates', () => {
+  const workbook = new WorkbookModel('unit-autofilter-sort-ref-history', 'AutoFilter sort reference history');
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  const range = { sheetId: sheet.id, startRow: 0, endRow: 5, startColumn: 2, endColumn: 4 };
+  const noncanonicalSortRef = { ...range, column: 2 };
+  runtime.execute('sheet.autoFilter.set', {
+    sheetId: sheet.id,
+    autoFilter: {
+      sheetId: sheet.id,
+      range,
+      columns: { 2: { column: 2, showButton: true, hiddenButton: false } },
+      sortState: { ref: noncanonicalSortRef, conditions: [] },
+    },
+  });
+  runtime.clearHistory();
+  runtime.execute('sheet.autoFilter.remove', { sheetId: sheet.id });
+
+  runtime.applyRemoteMutations([{
+    id: 'columns.inserted',
+    unitId: workbook.unitId,
+    sheetId: sheet.id,
+    params: { sheetId: sheet.id, at: 0, count: 1 },
+    affectedRanges: [{ sheetId: sheet.id, startRow: 0, endRow: sheet.rowCount - 1, startColumn: 0, endColumn: 0 }],
+  }], { revision: 1 });
+
+  assert.equal(runtime.getHistoryDepth().undo, 0);
+  assert.equal(runtime.getInvalidHistoryEntries().length, 1);
+  assert.equal(runtime.undo(), false);
+  assert.equal(sheet.autoFilter, undefined);
+});
+
+test('sheet.freeze.set enforces the canonical pane contract before recording local history', () => {
+  const workbook = new WorkbookModel('unit-freeze-pane-contract', 'Freeze Pane Contract');
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  const validPane = { kind: 'frozen', state: 'frozen', xSplit: 1, ySplit: 0, startRow: 0, startColumn: 1 } as const;
+
+  runtime.execute('sheet.freeze.set', { sheetId: sheet.id, pane: validPane });
+  assert.deepEqual(sheet.pane, validPane);
+  const paneBeforeReject = structuredClone(sheet.pane);
+  const historyBeforeReject = runtime.getUndoEntries().length;
+  for (const pane of [
+    { ...validPane, xSplit: 1.5 },
+    { ...validPane, startRow: 1_048_576 },
+    { ...validPane, state: 'split' },
+    { ...validPane, activePane: 'center' },
+    { ...validPane, referenceHint: 'A1' },
+    { kind: 'none', state: 'frozen' },
+    { kind: 'none', referenceHint: 'A1' },
+  ]) {
+    assert.throws(() => runtime.execute('sheet.freeze.set', { sheetId: sheet.id, pane }));
+    assert.deepEqual(sheet.pane, paneBeforeReject);
+    assert.equal(runtime.getUndoEntries().length, historyBeforeReject);
+  }
+});
+
+test('sheet.rows.delete undo restores a surviving formula owner changed to #REF!', () => {
+  const workbook = new WorkbookModel('unit-structural-formula-undo', 'Structural Formula Undo');
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(1, 0, { value: 7 });
+  sheet.cells.set(0, 1, { value: null, formula: '=A2' });
+
+  runtime.execute('sheet.rows.delete', { sheetId: sheet.id, at: 1, count: 1 });
+  assert.equal(sheet.cells.get(0, 1)?.formula, '=#REF!');
+  sheet.cells.set(0, 1, { ...sheet.cells.get(0, 1)!, formulaValue: 123 });
+
+  assert.equal(runtime.undo(), true);
+  assert.equal(sheet.cells.get(0, 1)?.formula, '=A2');
+  assert.equal(sheet.cells.get(0, 1)?.formulaValue, undefined);
+  assert.equal(sheet.cells.get(1, 0)?.value, 7);
+});
+
+test('structural formula Undo history is invalidated across a remote axis transform', () => {
+  const workbook = new WorkbookModel('unit-structural-formula-rebase', 'Structural Formula Rebase');
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(1, 0, { value: 7 });
+  sheet.cells.set(0, 1, { value: null, formula: '=A2' });
+  runtime.execute('sheet.rows.delete', { sheetId: sheet.id, at: 1, count: 1 });
+
+  runtime.applyRemoteMutations([{
+    id: 'rows.inserted',
+    unitId: workbook.unitId,
+    sheetId: sheet.id,
+    params: { sheetId: sheet.id, at: 0, count: 1 },
+    affectedRanges: [{ sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: sheet.columnCount - 1 }],
+  }], { revision: 1 });
+
+  assert.equal(runtime.getUndoEntries().length, 0);
+  assert.equal(runtime.getInvalidHistoryEntries().length, 1);
+});
+
+test('sheet.rows.delete undo fails closed if a rewritten formula owner changed afterward', () => {
+  const workbook = new WorkbookModel('unit-structural-formula-undo-conflict', 'Structural Formula Undo Conflict');
+  const runtime = new CommandRuntime(workbook);
+  registerSheetCommands(runtime);
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(1, 0, { value: 7 });
+  sheet.cells.set(0, 1, { value: null, formula: '=A2' });
+
+  runtime.execute('sheet.rows.delete', { sheetId: sheet.id, at: 1, count: 1 });
+  sheet.cells.set(0, 1, { value: null, formula: '=B1' });
+
+  assert.throws(() => runtime.undo(), /STRUCTURAL_PATCH_PRECONDITION/);
+  assert.equal(sheet.rowCount, 999);
+  assert.equal(sheet.cells.get(0, 1)?.formula, '=B1');
+});
+
 test('selected header insert/delete commands apply non-adjacent dimensions in one history transaction', () => {
   const workbook = new WorkbookModel('unit-selected-dimensions', 'Selected dimensions');
   const runtime = new CommandRuntime(workbook);
@@ -1105,3 +2019,59 @@ test('sheet.cells.insert undo restores the complete affected band', () => {
   assert.equal(sheet.cells.get(0, 0)?.value, 'top');
   assert.equal(sheet.cells.get(1, 0)?.value, 'bottom');
 });
+
+for (const axis of ['row', 'column'] as const) {
+  for (const operation of ['insert', 'delete'] as const) {
+    test(`sparse ${axis} cell ${operation} preserves the full tail across undo and redo`, () => {
+      const workbook = new WorkbookModel(`sparse-history-${axis}-${operation}`, 'Sparse history');
+      const runtime = new CommandRuntime(workbook);
+      registerSheetCommands(runtime);
+      const sheet = workbook.getSheet(workbook.primarySheetId);
+      sheet.rowCount = MAX_SHEET_ROW_COUNT;
+      sheet.columnCount = MAX_SHEET_COLUMN_COUNT;
+      const maximum = (axis === 'row' ? MAX_SHEET_ROW_COUNT : MAX_SHEET_COLUMN_COUNT) - 1;
+      const tail = operation === 'insert' ? maximum - 1 : maximum;
+      const tailRow = axis === 'row' ? tail : 2;
+      const tailColumn = axis === 'column' ? tail : 2;
+      const outsideRow = axis === 'row' ? tail : MAX_SHEET_ROW_COUNT - 1;
+      const outsideColumn = axis === 'column' ? tail : MAX_SHEET_COLUMN_COUNT - 1;
+      sheet.cells.set(2, 2, { value: 'selection', style: { bold: true } });
+      sheet.cells.set(tailRow, tailColumn, { value: 'distant tail' });
+      sheet.cells.set(outsideRow, outsideColumn, { value: 'outside band' });
+      const range = axis === 'row'
+        ? { sheetId: sheet.id, startRow: 2, endRow: 2, startColumn: 1, endColumn: MAX_SHEET_COLUMN_COUNT - 2 }
+        : { sheetId: sheet.id, startRow: 1, endRow: MAX_SHEET_ROW_COUNT - 2, startColumn: 2, endColumn: 2 };
+      const before = workbook.snapshot();
+
+      runtime.execute(`sheet.cells.${operation}`, { sheetId: sheet.id, range, operation, axis });
+
+      const delta = operation === 'insert' ? 1 : -1;
+      assert.equal(sheet.cells.get(2, 2), undefined);
+      if (operation === 'insert') assert.equal(sheet.cells.get(axis === 'row' ? 3 : 2, axis === 'column' ? 3 : 2)?.value, 'selection');
+      assert.equal(sheet.cells.get(tailRow + (axis === 'row' ? delta : 0), tailColumn + (axis === 'column' ? delta : 0))?.value, 'distant tail');
+      assert.equal(sheet.cells.get(outsideRow, outsideColumn)?.value, 'outside band');
+      const after = workbook.snapshot();
+      assert.equal(runtime.undo(), true);
+      assert.deepEqual(workbook.snapshot(), before);
+      assert.equal(runtime.redo(), true);
+      assert.deepEqual(workbook.snapshot(), after);
+    });
+  }
+
+  test(`rejects a sparse ${axis} cell insertion that would discard the last cell`, () => {
+    const workbook = new WorkbookModel(`sparse-overflow-${axis}`, 'Sparse overflow');
+    const runtime = new CommandRuntime(workbook);
+    registerSheetCommands(runtime);
+    const sheet = workbook.getSheet(workbook.primarySheetId);
+    sheet.rowCount = MAX_SHEET_ROW_COUNT;
+    sheet.columnCount = MAX_SHEET_COLUMN_COUNT;
+    sheet.cells.set(axis === 'row' ? MAX_SHEET_ROW_COUNT - 1 : 0, axis === 'column' ? MAX_SHEET_COLUMN_COUNT - 1 : 0, { value: 'last cell' });
+    const range = { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 };
+    const before = workbook.snapshot();
+
+    assert.throws(() => runtime.execute('sheet.cells.insert', { sheetId: sheet.id, range, operation: 'insert', axis }), /outside worksheet bounds/);
+
+    assert.deepEqual(workbook.snapshot(), before);
+    assert.deepEqual(runtime.getHistoryDepth(), { undo: 0, redo: 0 });
+  });
+}

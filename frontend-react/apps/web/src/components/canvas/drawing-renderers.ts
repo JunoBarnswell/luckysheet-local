@@ -4,6 +4,7 @@ import {
   pivotMemberKey,
   pivotScalarFromMemberKey,
   buildPivotTimelineTiles,
+  chartTextFormulaEntries,
 } from "@react-sheets/core-model";
 import type {
   ChartDrawingPayload,
@@ -37,7 +38,7 @@ import type {
 } from "@react-sheets/core-model";
 import { isDrawingConnectorPayload } from "@react-sheets/core-model";
 import type { CanvasSheetSnapshot } from "@react-sheets/spreadsheet-app";
-import { buildAnalysisViewProjection, buildChartLayout, resolveChartDataFromSources, resolveSparklineData } from "@react-sheets/spreadsheet-app";
+import { buildAnalysisViewProjection, buildChartLayout, resolveChartDataFromSources, resolveChartTitleText, resolveSparklineData } from "@react-sheets/spreadsheet-app";
 import type { ChartLayout, ResolvedChartData } from "@react-sheets/spreadsheet-app";
 import {
   DEFAULT_RENDER_THEME,
@@ -857,9 +858,9 @@ function paintChartFill(context: CanvasRenderingContext2D, fill: string | { kind
   return true;
 }
 
-function drawChartText(context: CanvasRenderingContext2D, text: string, x: number, y: number, options?: { color?: string; size?: number; bold?: boolean; align?: CanvasTextAlign }): void {
+function drawChartText(context: CanvasRenderingContext2D, text: string, x: number, y: number, options?: { color?: string; size?: number; bold?: boolean; italic?: boolean; fontFamily?: string; align?: CanvasTextAlign }): void {
   context.fillStyle = options?.color ?? '#334155';
-  context.font = `${options?.bold ? '600 ' : ''}${options?.size ?? 11}px Segoe UI, sans-serif`;
+  context.font = `${options?.italic ? 'italic ' : ''}${options?.bold ? '600 ' : ''}${options?.size ?? 11}px ${options?.fontFamily ?? 'Segoe UI'}, sans-serif`;
   context.textAlign = options?.align ?? 'left';
   context.textBaseline = 'middle';
   context.fillText(text, x, y);
@@ -901,15 +902,24 @@ function drawChartMarker(context: CanvasRenderingContext2D, x: number, y: number
 function drawChartLegend(context: CanvasRenderingContext2D, layout: ChartLayout): void {
   if (!layout.legend.visible) return;
   const position = layout.legend.position;
-  const entries = layout.series.filter((series) => series.visible);
+  const entries = layout.kind === 'pie'
+    ? [
+      ...(layout.pieSlices ?? []).filter((slice) => !slice.aggregate && slice.plotPart === 'main'
+        && slice.seriesIndex === layout.series.findIndex((series) => series.visible))
+        .map((slice) => ({ label: slice.label, color: slice.color, pointIndex: slice.pointIndex })),
+      ...(layout.pieSlices ?? []).filter((slice) => !slice.aggregate && slice.plotPart === 'secondary')
+        .map((slice) => ({ label: slice.label, color: slice.color, pointIndex: slice.pointIndex })),
+      ...(layout.pieSecondaryBars ?? []).map((segment) => ({ label: segment.label, color: segment.color, pointIndex: segment.pointIndex })),
+    ].sort((left, right) => left.pointIndex - right.pointIndex)
+    : layout.series.filter((series) => series.visible).map((series) => ({ label: series.name, color: series.color }));
   let x = position === 'left' ? 8 : position === 'right' ? layout.width - 92 : 16;
   let y = position === 'top' || position === 'top-right' ? 22 : layout.height - 16;
   if (position === 'top-right') { x = layout.width - 112; y = 22; }
-  for (const [index, series] of entries.entries()) {
-    context.fillStyle = series.color;
+  for (const [index, entry] of entries.entries()) {
+    context.fillStyle = entry.color;
     context.fillRect(x, y - 5, 10, 10);
-    drawChartText(context, series.name, x + 14, y, { color: '#475569', size: 10 });
-    x += Math.max(54, context.measureText(series.name).width + 32);
+    drawChartText(context, entry.label, x + 14, y, { color: '#475569', size: 10 });
+    x += Math.max(54, context.measureText(entry.label).width + 32);
     if ((position === 'left' || position === 'right') && y + 18 < layout.height - 4) y += 18;
     else if (x > layout.width - 36 && index < entries.length - 1) { x = 16; y += 16; }
   }
@@ -1151,35 +1161,89 @@ function drawChartDataLabels(context: CanvasRenderingContext2D, payload: ChartDr
 function drawChartSpecial(context: CanvasRenderingContext2D, payload: ChartDrawingPayload, layout: ChartLayout): void {
   const { plot } = layout;
   if (layout.kind === 'pie') {
-    const centerX = plot.left + plot.width / 2;
-    const centerY = plot.top + plot.height / 2;
+    const depth = layout.pieDepth ?? 0;
+    const verticalScale = layout.pieVerticalScale ?? 1;
+    for (const connector of layout.pieConnectors ?? []) {
+      context.strokeStyle = '#64748b';
+      context.lineWidth = 1;
+      context.beginPath();
+      context.moveTo(connector.startX, connector.startY);
+      context.lineTo(connector.endX, connector.endY);
+      context.stroke();
+    }
+    if (depth > 0) {
+      const turn = Math.PI * 2;
+      for (const slice of layout.pieSlices ?? []) {
+        const mid = (slice.startAngle + slice.endAngle) / 2;
+        const centerX = slice.centerX + Math.cos(mid) * slice.explosion;
+        const centerY = slice.centerY + Math.sin(mid) * slice.explosion * verticalScale;
+        context.fillStyle = chartPieSideColor(slice.color);
+        const firstCycle = Math.floor(slice.startAngle / turn) - 1;
+        const lastCycle = Math.ceil(slice.endAngle / turn) + 1;
+        for (let cycle = firstCycle; cycle <= lastCycle; cycle += 1) {
+          const start = Math.max(slice.startAngle, cycle * turn);
+          const end = Math.min(slice.endAngle, cycle * turn + Math.PI);
+          if (end <= start) continue;
+          const steps = Math.max(1, Math.ceil((end - start) / (Math.PI / 24)));
+          context.beginPath();
+          for (let step = 0; step <= steps; step += 1) {
+            const angle = start + (end - start) * step / steps;
+            const x = centerX + Math.cos(angle) * slice.outerRadius;
+            const y = centerY + Math.sin(angle) * slice.outerRadius * verticalScale;
+            if (step === 0) context.moveTo(x, y);
+            else context.lineTo(x, y);
+          }
+          for (let step = steps; step >= 0; step -= 1) {
+            const angle = start + (end - start) * step / steps;
+            context.lineTo(centerX + Math.cos(angle) * slice.outerRadius, centerY + Math.sin(angle) * slice.outerRadius * verticalScale + depth);
+          }
+          context.closePath();
+          context.fill();
+        }
+      }
+    }
     for (const slice of layout.pieSlices ?? []) {
       const mid = (slice.startAngle + slice.endAngle) / 2;
       const offsetX = Math.cos(mid) * slice.explosion;
-      const offsetY = Math.sin(mid) * slice.explosion;
+      const offsetY = Math.sin(mid) * slice.explosion * verticalScale;
+      const centerX = slice.centerX + offsetX;
+      const centerY = slice.centerY + offsetY;
       context.save();
-      context.translate(offsetX, offsetY);
       context.fillStyle = slice.color;
       context.beginPath();
-      context.moveTo(centerX + Math.cos(slice.startAngle) * slice.innerRadius, centerY + Math.sin(slice.startAngle) * slice.innerRadius);
-      context.arc(centerX, centerY, slice.outerRadius, slice.startAngle, slice.endAngle);
-      if (slice.innerRadius > 0) context.arc(centerX, centerY, slice.innerRadius, slice.endAngle, slice.startAngle, true);
-      else context.lineTo(centerX, centerY);
+      if (slice.innerRadius > 0) {
+        context.moveTo(centerX + Math.cos(slice.startAngle) * slice.innerRadius, centerY + Math.sin(slice.startAngle) * slice.innerRadius * verticalScale);
+        context.ellipse(centerX, centerY, slice.outerRadius, slice.outerRadius * verticalScale, 0, slice.startAngle, slice.endAngle);
+        context.ellipse(centerX, centerY, slice.innerRadius, slice.innerRadius * verticalScale, 0, slice.endAngle, slice.startAngle, true);
+      } else {
+        context.moveTo(centerX, centerY);
+        context.ellipse(centerX, centerY, slice.outerRadius, slice.outerRadius * verticalScale, 0, slice.startAngle, slice.endAngle);
+      }
       context.closePath();
       context.fill();
       context.restore();
+      if (slice.dataLabelText && slice.dataLabelX !== undefined && slice.dataLabelY !== undefined) {
+        drawChartText(context, slice.dataLabelText, slice.dataLabelX, slice.dataLabelY, { color: '#334155', size: 9, align: 'center' });
+      }
+    }
+    for (const segment of layout.pieSecondaryBars ?? []) {
+      context.fillStyle = segment.color;
+      context.fillRect(segment.x, segment.y, segment.width, segment.height);
+      if (segment.dataLabelText && segment.height >= 16) {
+        drawChartText(context, segment.dataLabelText, segment.x + segment.width / 2, segment.y + segment.height / 2, { color: '#fff', size: 8, align: 'center' });
+      }
     }
     return;
   }
   if (layout.kind === 'histogram') {
     const bins = layout.histogramBins ?? [];
-    const maximum = Math.max(1, ...bins.map((bin) => bin.count));
-    const width = plot.width / Math.max(1, bins.length);
+    const maximumTickLabelWidth = bins.reduce((width, bin) => Math.max(width, bin.label.length * 4.8 + 8), 24);
+    const visibleTickCount = Math.max(1, Math.floor(plot.width / maximumTickLabelWidth));
+    const tickStride = Math.max(1, Math.ceil(bins.length / visibleTickCount));
     bins.forEach((bin, index) => {
-      const barHeight = bin.count / maximum * plot.height;
       context.fillStyle = '#2563eb';
-      context.fillRect(plot.left + index * width, plot.top + plot.height - barHeight, Math.max(1, width - 1), barHeight);
-      drawChartText(context, bin.label, plot.left + (index + 0.5) * width, plot.top + plot.height + 12, { size: 8, align: 'center' });
+      context.fillRect(bin.geometry.x, bin.geometry.y, bin.geometry.width, bin.geometry.height);
+      if (index % tickStride === 0 || index === bins.length - 1) drawChartText(context, bin.label, bin.geometry.x + bin.geometry.width / 2, plot.top + plot.height + 12, { size: 8, align: 'center' });
     });
     if (layout.paretoPoints?.length) {
       context.strokeStyle = '#dc2626';
@@ -1211,25 +1275,19 @@ function drawChartSpecial(context: CanvasRenderingContext2D, payload: ChartDrawi
       context.fillRect(x - slot * 0.24, y(box.q3), slot * 0.48, Math.max(1, y(box.q1) - y(box.q3)));
       context.strokeRect(x - slot * 0.24, y(box.q3), slot * 0.48, Math.max(1, y(box.q1) - y(box.q3)));
       context.beginPath(); context.moveTo(x - slot * 0.24, y(box.median)); context.lineTo(x + slot * 0.24, y(box.median)); context.stroke();
+      for (const value of box.innerPoints) { context.fillStyle = box.color; context.beginPath(); context.arc(x, y(value), 2, 0, Math.PI * 2); context.fill(); }
+      if (box.showMeanMarker) { const meanY = y(box.mean); context.fillStyle = box.color; context.beginPath(); context.moveTo(x, meanY - 4); context.lineTo(x + 4, meanY); context.lineTo(x, meanY + 4); context.lineTo(x - 4, meanY); context.closePath(); context.fill(); }
       for (const outlier of box.outliers) { context.fillStyle = box.color; context.beginPath(); context.arc(x, y(outlier), 2, 0, Math.PI * 2); context.fill(); }
     });
     return;
   }
   if (layout.kind === 'waterfall') {
-    const bars = layout.waterfallBars ?? [];
-    const minimum = Math.min(0, ...bars.map((bar) => bar.start));
-    const maximum = Math.max(1, ...bars.map((bar) => bar.end));
-    const span = Math.max(1, maximum - minimum);
-    const slot = plot.width / Math.max(1, bars.length);
-    bars.forEach((bar) => {
-      if (!bar.visible) return;
-      const x = plot.left + bar.index * slot + slot * 0.16;
-      const top = plot.top + plot.height * (1 - (bar.end - minimum) / span);
-      const bottom = plot.top + plot.height * (1 - (bar.start - minimum) / span);
+    for (const bar of layout.waterfallBars ?? []) {
+      if (!bar.visible) continue;
       context.fillStyle = bar.color;
-      context.fillRect(x, Math.min(top, bottom), slot * 0.68, Math.max(1, Math.abs(bottom - top)));
-      if (payload.waterfallOptions?.connectorLines !== false && bar.index > 0) { context.strokeStyle = '#94a3b8'; context.beginPath(); context.moveTo(x - slot * 0.16, bottom); context.lineTo(x, bottom); context.stroke(); }
-    });
+      context.fillRect(bar.geometry.x, bar.geometry.y, bar.geometry.width, bar.geometry.height);
+      if (payload.waterfallOptions?.connectorLines !== false && bar.connector) { context.strokeStyle = '#94a3b8'; context.beginPath(); context.moveTo(bar.connector.startX, bar.connector.y); context.lineTo(bar.connector.endX, bar.connector.y); context.stroke(); }
+    }
     return;
   }
   if (layout.kind === 'funnel') {
@@ -1255,9 +1313,13 @@ function drawChartSpecial(context: CanvasRenderingContext2D, payload: ChartDrawi
   if (layout.kind === 'stock') {
     const points = layout.stockPoints ?? [];
     const volume = layout.stockVolume;
-    const values = points.flatMap((point) => [point.high, point.low, point.close, point.open ?? point.close]);
-    const minimum = Math.min(...values, 0);
-    const maximum = Math.max(...values, 1);
+    let minimum = 0;
+    let maximum = 1;
+    for (const point of points) {
+      const open = point.open ?? point.close;
+      minimum = Math.min(minimum, point.high, point.low, point.close, open);
+      maximum = Math.max(maximum, point.high, point.low, point.close, open);
+    }
     const span = Math.max(1, maximum - minimum);
     const slot = plot.width / Math.max(1, points.length);
     const priceHeight = volume?.priceHeight ?? plot.height;
@@ -1294,27 +1356,34 @@ function drawChartSpecial(context: CanvasRenderingContext2D, payload: ChartDrawi
   if (layout.kind === 'radar') {
     const radar = layout.radar;
     if (!radar) return;
-    const centerX = plot.left + plot.width / 2;
-    const centerY = plot.top + plot.height / 2;
-    const radius = Math.min(plot.width, plot.height) * 0.42;
     for (let ring = 1; ring <= 4; ring += 1) {
       context.strokeStyle = '#cbd5e1'; context.beginPath();
-      for (let index = 0; index < radar.count; index += 1) { const angle = -Math.PI / 2 + Math.PI * 2 * index / radar.count; const r = radius * ring / 4; const x = centerX + Math.cos(angle) * r; const y = centerY + Math.sin(angle) * r; index === 0 ? context.moveTo(x, y) : context.lineTo(x, y); }
+      for (let index = 0; index < radar.count; index += 1) { const angle = -Math.PI / 2 + Math.PI * 2 * index / radar.count; const r = radar.radius * ring / 4; const x = radar.centerX + Math.cos(angle) * r; const y = radar.centerY + Math.sin(angle) * r; index === 0 ? context.moveTo(x, y) : context.lineTo(x, y); }
       context.closePath(); context.stroke();
     }
     for (const entry of radar.points) {
-      context.strokeStyle = entry.color; context.fillStyle = `${entry.color}22`;
-      if (entry.visible.every(Boolean)) {
+      const vertices = entry.vertices;
+      const complete = vertices.length === radar.count && vertices.every((vertex) => vertex.visible);
+      context.strokeStyle = entry.color;
+      context.fillStyle = `${entry.color}22`;
+      if (complete && payload.subtype === 'radar-filled') {
         context.beginPath();
-        entry.values.forEach((value, index) => { const angle = -Math.PI / 2 + Math.PI * 2 * index / radar.count; const r = radius * Math.abs(value) / radar.maximum; const x = centerX + Math.cos(angle) * r; const y = centerY + Math.sin(angle) * r; index === 0 ? context.moveTo(x, y) : context.lineTo(x, y); });
-        context.closePath(); context.fill(); context.stroke();
-      } else {
-        entry.values.forEach((value, index) => {
-          if (!entry.visible[index]) return;
-          const angle = -Math.PI / 2 + Math.PI * 2 * index / radar.count;
-          const r = radius * Math.abs(value) / radar.maximum;
-          context.beginPath(); context.arc(centerX + Math.cos(angle) * r, centerY + Math.sin(angle) * r, 3, 0, Math.PI * 2); context.fill();
-        });
+        vertices.forEach((vertex, index) => index === 0 ? context.moveTo(vertex.x, vertex.y) : context.lineTo(vertex.x, vertex.y));
+        context.closePath(); context.fill();
+      }
+      context.beginPath();
+      for (let index = 0; index < vertices.length; index += 1) {
+        const current = vertices[index]!;
+        const next = vertices[(index + 1) % vertices.length]!;
+        if (!current.visible || !next.visible) continue;
+        context.moveTo(current.x, current.y);
+        context.lineTo(next.x, next.y);
+      }
+      context.stroke();
+      if (payload.subtype === 'radar-markers') for (const vertex of vertices) {
+        if (!vertex.visible) continue;
+        context.fillStyle = entry.color;
+        context.beginPath(); context.arc(vertex.x, vertex.y, 3, 0, Math.PI * 2); context.fill();
       }
     }
     return;
@@ -1401,10 +1470,7 @@ function drawChartLayoutOnCanvas(options: { context: CanvasRenderingContext2D; p
       drawChartDataLabels(context, payload, series);
     }
   } else drawChartSpecial(context, payload, layout);
-  if (payload.elements.dataTable?.visible) {
-    const y = Math.min(bounds.height - 8, layout.plot.top + layout.plot.height + 28);
-    drawChartText(context, payload.elements.dataTable.showLegendKeys === false ? 'Chart Data Table' : 'Chart Data Table · Legend Keys', 8, y, { color: '#475569', size: 9 });
-  }
+  drawChartDataTable(context, payload, layout);
   drawChartLegend(context, layout);
   context.restore();
 }
@@ -1424,7 +1490,135 @@ function chartPointSelection(series: ChartLayout['series'][number], pointIndex: 
   return { action: 'chart.select-element', data: { kind: 'point', seriesId: series.id, pointIndex, ...(includeCategory ? { category: series.points[pointIndex]?.category ?? null } : {}) } };
 }
 
-function chartHitTest(layout: ChartLayout, point: { x: number; y: number }, dataTableVisible = false): { action: string; data: unknown } | null {
+function fitChartDataTableText(context: CanvasRenderingContext2D, text: string, width: number, font: NonNullable<ChartDrawingPayload['elements']['dataTable']>['font']): string {
+  const fontSize = font?.fontSize ?? 9;
+  context.font = `${font?.italic ? 'italic ' : ''}${font?.bold ? '600 ' : ''}${fontSize}px ${font?.fontFamily ?? 'Segoe UI'}, sans-serif`;
+  const availableWidth = Math.max(0, width - 8);
+  const measure = typeof context.measureText === 'function'
+    ? (candidate: string) => context.measureText(candidate).width
+    : (candidate: string) => candidate.length * fontSize * 0.58;
+  if (measure(text) <= availableWidth) return text;
+  const ellipsis = '…';
+  if (measure(ellipsis) > availableWidth) return '';
+  let low = 0;
+  let high = text.length;
+  while (low < high) {
+    const mid = Math.ceil((low + high) / 2);
+    const end = mid < text.length && mid > 0
+      && text.charCodeAt(mid - 1) >= 0xd800 && text.charCodeAt(mid - 1) <= 0xdbff
+      && text.charCodeAt(mid) >= 0xdc00 && text.charCodeAt(mid) <= 0xdfff
+      ? mid - 1
+      : mid;
+    if (measure(`${text.slice(0, end)}${ellipsis}`) <= availableWidth) low = mid;
+    else high = mid - 1;
+  }
+  const end = low < text.length && low > 0
+    && text.charCodeAt(low - 1) >= 0xd800 && text.charCodeAt(low - 1) <= 0xdbff
+    && text.charCodeAt(low) >= 0xdc00 && text.charCodeAt(low) <= 0xdfff
+    ? low - 1
+    : low;
+  return `${text.slice(0, end)}${ellipsis}`;
+}
+
+function chartPieSideColor(color: string): string {
+  const match = /^#([\da-f]{6})$/i.exec(color);
+  if (!match) return '#334155';
+  const value = Number.parseInt(match[1]!, 16);
+  const red = Math.round(((value >> 16) & 255) * 0.68);
+  const green = Math.round(((value >> 8) & 255) * 0.68);
+  const blue = Math.round((value & 255) * 0.68);
+  return `#${[red, green, blue].map((channel) => channel.toString(16).padStart(2, '0')).join('')}`;
+}
+
+function chartPieSliceContainsPoint(
+  slice: NonNullable<ChartLayout['pieSlices']>[number],
+  point: { x: number; y: number },
+  verticalScale: number,
+  depth: number,
+): boolean {
+  const midpoint = (slice.startAngle + slice.endAngle) / 2;
+  const centerX = slice.centerX + Math.cos(midpoint) * slice.explosion;
+  const centerY = slice.centerY + Math.sin(midpoint) * slice.explosion * verticalScale;
+  const dx = point.x - centerX;
+  const sampleCount = depth > 0 ? 8 : 0;
+  for (let sample = 0; sample <= sampleCount; sample += 1) {
+    const offset = sampleCount > 0 ? depth * sample / sampleCount : 0;
+    const dy = (point.y - centerY - offset) / verticalScale;
+    const radius = Math.hypot(dx, dy);
+    let angle = Math.atan2(dy, dx);
+    while (angle < slice.startAngle) angle += Math.PI * 2;
+    while (angle >= slice.startAngle + Math.PI * 2) angle -= Math.PI * 2;
+    if (sample > 0 && Math.sin(angle) < 0) continue;
+    if (angle >= slice.startAngle && angle <= slice.endAngle && radius >= slice.innerRadius && radius <= slice.outerRadius) return true;
+  }
+  return false;
+}
+
+function chartDataTableValueText(value: PivotScalar | undefined): string {
+  return value === undefined || value === null || value === '' ? '' : formatPivotMember(value);
+}
+
+function drawChartDataTable(context: CanvasRenderingContext2D, payload: ChartDrawingPayload, layout: ChartLayout): void {
+  const dataTableLayout = layout.dataTable;
+  if (!dataTableLayout) return;
+  const { left, top, width, height } = dataTableLayout.bounds;
+  const categoryWidth = Math.max(0, width - dataTableLayout.legendColumnWidth) / dataTableLayout.categoryCount;
+  const font = payload.elements.dataTable?.font;
+  const fontSize = font?.fontSize ?? 9;
+  const textColor = font?.color ?? (typeof font?.fill === 'string' ? font.fill : font?.fill?.color) ?? '#334155';
+  context.save();
+  context.fillStyle = '#fff';
+  context.fillRect(left, top, width, height);
+  context.strokeStyle = payload.elements.dataTable?.border?.color ?? '#94a3b8';
+  context.lineWidth = payload.elements.dataTable?.border?.width ?? 0.75;
+  const borderDash = payload.elements.dataTable?.border?.dash;
+  if (borderDash && borderDash !== 'solid') {
+    context.setLineDash(borderDash === 'dash' ? [4, 3] : borderDash === 'dot' ? [1, 2] : [4, 2, 1, 2]);
+  }
+  const drawCell = (text: string, x: number, y: number, cellWidth: number, row: number, align: CanvasTextAlign): void => {
+    context.fillStyle = row === 0 ? '#f1f5f9' : '#fff';
+    context.fillRect(x, y, cellWidth, dataTableLayout.rowHeight);
+    context.strokeRect(x, y, cellWidth, dataTableLayout.rowHeight);
+    const textX = align === 'left' ? x + 4 : align === 'right' ? x + cellWidth - 4 : x + cellWidth / 2;
+    drawChartText(context, fitChartDataTableText(context, text, cellWidth, font), textX, y + dataTableLayout.rowHeight / 2, {
+      color: textColor,
+      size: fontSize,
+      bold: row === 0 || font?.bold,
+      italic: font?.italic,
+      fontFamily: font?.fontFamily,
+      align: font?.alignment ?? align,
+    });
+  };
+
+  for (let row = 0; row <= dataTableLayout.series.length; row += 1) {
+    const y = top + row * dataTableLayout.rowHeight;
+    drawCell(row === 0 ? 'Series' : '', left, y, dataTableLayout.legendColumnWidth, row, 'left');
+    if (row > 0) {
+      const entry = dataTableLayout.series[row - 1]!;
+      const swatchSize = dataTableLayout.showLegendKeys ? Math.min(8, dataTableLayout.rowHeight - 4, Math.max(0, dataTableLayout.legendColumnWidth - 8)) : 0;
+      if (swatchSize > 0) {
+        context.fillStyle = entry.color;
+        context.fillRect(left + 4, y + (dataTableLayout.rowHeight - swatchSize) / 2, swatchSize, swatchSize);
+      }
+      const inset = swatchSize > 0 ? swatchSize + 10 : 4;
+      const label = fitChartDataTableText(context, entry.name, dataTableLayout.legendColumnWidth - inset - 4, font);
+      drawChartText(context, label, left + inset, y + dataTableLayout.rowHeight / 2, {
+        color: textColor, size: fontSize, bold: font?.bold, italic: font?.italic,
+        fontFamily: font?.fontFamily, align: font?.alignment ?? 'left',
+      });
+    }
+    for (let column = 0; column < dataTableLayout.categoryCount; column += 1) {
+      const x = left + dataTableLayout.legendColumnWidth + column * categoryWidth;
+      const text = row === 0
+        ? chartDataTableValueText(column < dataTableLayout.categories.length ? dataTableLayout.categories[column] : column + 1)
+        : chartDataTableValueText(dataTableLayout.series[row - 1]?.values[column]);
+      drawCell(text, x, y, categoryWidth, row, row === 0 ? 'center' : 'right');
+    }
+  }
+  context.restore();
+}
+
+function chartHitTest(layout: ChartLayout, point: { x: number; y: number }): { action: string; data: unknown } | null {
   const horizontalBar = layout.kind === 'cartesian' && layout.series.some((series) => series.chartType === 'bar');
   if (layout.title && point.x >= layout.title.x - 4 && point.x <= layout.title.x + Math.max(40, layout.title.text.length * 9)
     && point.y >= layout.title.y - 14 && point.y <= layout.title.y + 6) return { action: 'chart.select-element', data: { kind: 'title' } };
@@ -1435,34 +1629,52 @@ function chartHitTest(layout: ChartLayout, point: { x: number; y: number }, data
           : { left: layout.plot.left + layout.plot.width + 8, top: 0, right: layout.width, bottom: layout.height };
     if (point.x >= legendBand.left && point.x <= legendBand.right && point.y >= legendBand.top && point.y <= legendBand.bottom) return { action: 'chart.select-element', data: { kind: 'legend' } };
   }
-  if (dataTableVisible && point.y >= layout.plot.top + layout.plot.height + 18) return { action: 'chart.select-element', data: { kind: 'data-table' } };
+  const dataTable = layout.dataTable?.bounds;
+  if (dataTable && point.x >= dataTable.left && point.x <= dataTable.left + dataTable.width
+    && point.y >= dataTable.top && point.y <= dataTable.top + dataTable.height) {
+    return { action: 'chart.select-element', data: { kind: 'data-table' } };
+  }
   if (layout.kind === 'pie') {
-    const centerX = layout.plot.left + layout.plot.width / 2;
-    const centerY = layout.plot.top + layout.plot.height / 2;
-    for (const slice of layout.pieSlices ?? []) {
-      const mid = (slice.startAngle + slice.endAngle) / 2;
-      const sliceCenterX = centerX + Math.cos(mid) * slice.explosion;
-      const sliceCenterY = centerY + Math.sin(mid) * slice.explosion;
-      const radius = Math.hypot(point.x - sliceCenterX, point.y - sliceCenterY);
-      const angle = Math.atan2(point.y - sliceCenterY, point.x - sliceCenterX);
-      let normalized = angle;
-      while (normalized < slice.startAngle) normalized += Math.PI * 2;
-      if (normalized >= slice.startAngle && normalized <= slice.endAngle && radius >= slice.innerRadius && radius <= slice.outerRadius) {
-        const series = layout.series[slice.seriesIndex];
-        if (series?.visible) return chartPointSelection(series, slice.pointIndex);
+    const bars = layout.pieSecondaryBars ?? [];
+    for (let index = bars.length - 1; index >= 0; index -= 1) {
+      const segment = bars[index]!;
+      if (point.x < segment.x || point.x > segment.x + segment.width || point.y < segment.y || point.y > segment.y + segment.height) continue;
+      const series = layout.series[segment.seriesIndex];
+      if (series?.visible) return chartPointSelection(series, segment.pointIndex);
+    }
+    const verticalScale = layout.pieVerticalScale ?? 1;
+    const depth = layout.pieDepth ?? 0;
+    const slices = layout.pieSlices ?? [];
+    for (let index = slices.length - 1; index >= 0; index -= 1) {
+      const slice = slices[index]!;
+      const series = layout.series[slice.seriesIndex];
+      if (!series?.visible) continue;
+      const labelBounds = slice.dataLabelBounds;
+      if (labelBounds && point.x >= labelBounds.left && point.x <= labelBounds.right && point.y >= labelBounds.top && point.y <= labelBounds.bottom) {
+        return slice.aggregate
+          ? { action: 'chart.select-element', data: { kind: 'series', seriesId: series.id } }
+          : chartPointSelection(series, slice.pointIndex);
+      }
+      if (chartPieSliceContainsPoint(slice, point, verticalScale, depth)) {
+        return slice.aggregate
+          ? { action: 'chart.select-element', data: { kind: 'series', seriesId: series.id } }
+          : chartPointSelection(series, slice.pointIndex);
       }
     }
   }
   if (layout.kind === 'histogram') {
-    const bins = layout.histogramBins ?? [];
-    const maximum = Math.max(1, ...bins.map((bin) => bin.count));
-    const width = layout.plot.width / Math.max(1, bins.length);
-    for (const [index, bin] of bins.entries()) {
-      const height = bin.count / maximum * layout.plot.height;
-      if (point.x >= layout.plot.left + index * width && point.x <= layout.plot.left + (index + 1) * width
-        && point.y >= layout.plot.top + layout.plot.height - height && point.y <= layout.plot.top + layout.plot.height) {
+    for (const [index, bin] of (layout.histogramBins ?? []).entries()) {
+      const { x, y, width, height } = bin.geometry;
+      if (point.x >= x && point.x <= x + width && point.y >= y && point.y <= y + height && height > 0) {
         const series = layout.specialSeriesIndex === undefined ? undefined : layout.series[layout.specialSeriesIndex];
-        if (series?.visible && bin.count > 0) return { action: 'chart.select-element', data: { kind: 'histogram-bin', seriesId: series.id, binIndex: index, start: bin.start, end: bin.end } };
+        if (series?.visible) return {
+          action: 'chart.select-element',
+          data: {
+            kind: 'histogram-bin', seriesId: series.id, binIndex: index,
+            ...(bin.kind === 'category' ? { category: bin.category } : { start: bin.start, end: bin.end, ...(bin.boundary ? { boundary: bin.boundary } : {}) }),
+            label: bin.label,
+          },
+        };
       }
     }
   }
@@ -1475,17 +1687,10 @@ function chartHitTest(layout: ChartLayout, point: { x: number; y: number }, data
     if (series && point.y >= layout.plot.top && point.y <= layout.plot.top + layout.plot.height) return { action: 'chart.select-element', data: { kind: 'series', seriesId: series.id } };
   }
   if (layout.kind === 'waterfall') {
-    const bars = layout.waterfallBars ?? [];
-    const minimum = Math.min(0, ...bars.map((bar) => bar.start));
-    const maximum = Math.max(1, ...bars.map((bar) => bar.end));
-    const span = Math.max(1, maximum - minimum);
-    const slot = layout.plot.width / Math.max(1, bars.length);
-    for (const bar of bars) {
+    for (const bar of layout.waterfallBars ?? []) {
       if (!bar.visible) continue;
-      const left = layout.plot.left + bar.index * slot + slot * 0.16;
-      const top = layout.plot.top + layout.plot.height * (1 - (bar.end - minimum) / span);
-      const bottom = layout.plot.top + layout.plot.height * (1 - (bar.start - minimum) / span);
-      if (point.x >= left && point.x <= left + slot * 0.68 && point.y >= Math.min(top, bottom) && point.y <= Math.max(top, bottom)) {
+      const { x, y, width, height } = bar.geometry;
+      if (point.x >= x && point.x <= x + width && point.y >= y && point.y <= y + height) {
         const series = layout.series[bar.seriesIndex];
         if (series?.visible) return chartPointSelection(series, bar.index);
       }
@@ -1515,9 +1720,13 @@ function chartHitTest(layout: ChartLayout, point: { x: number; y: number }, data
   if (layout.kind === 'stock') {
     const points = layout.stockPoints ?? [];
     const volume = layout.stockVolume;
-    const values = points.flatMap((entry) => [entry.high, entry.low, entry.close, entry.open ?? entry.close]);
-    const minimum = Math.min(...values, 0);
-    const maximum = Math.max(...values, 1);
+    let minimum = 0;
+    let maximum = 1;
+    for (const entry of points) {
+      const open = entry.open ?? entry.close;
+      minimum = Math.min(minimum, entry.high, entry.low, entry.close, open);
+      maximum = Math.max(maximum, entry.high, entry.low, entry.close, open);
+    }
     const span = Math.max(1, maximum - minimum);
     const slot = layout.plot.width / Math.max(1, points.length);
     for (const entry of points) {
@@ -1550,17 +1759,12 @@ function chartHitTest(layout: ChartLayout, point: { x: number; y: number }, data
     if (series && cell?.visible) return chartPointSelection(series, cell.column);
   }
   if (layout.kind === 'radar' && layout.radar) {
-    const centerX = layout.plot.left + layout.plot.width / 2;
-    const centerY = layout.plot.top + layout.plot.height / 2;
-    const radius = Math.min(layout.plot.width, layout.plot.height) * 0.42;
     for (const entry of layout.radar.points) {
-      for (const [index, value] of entry.values.entries()) {
-        if (!entry.visible[index]) continue;
-        const angle = -Math.PI / 2 + Math.PI * 2 * index / layout.radar.count;
-        const target = { x: centerX + Math.cos(angle) * radius * Math.abs(value) / layout.radar.maximum, y: centerY + Math.sin(angle) * radius * Math.abs(value) / layout.radar.maximum };
-        if (Math.hypot(point.x - target.x, point.y - target.y) <= 7) {
+      for (const vertex of entry.vertices) {
+        if (!vertex.visible) continue;
+        if (Math.hypot(point.x - vertex.x, point.y - vertex.y) <= 7) {
           const series = layout.series[entry.seriesIndex];
-          if (series) return chartPointSelection(series, index);
+          if (series) return chartPointSelection(series, vertex.index);
         }
       }
     }
@@ -1659,9 +1863,13 @@ function drawCanonicalSparklineOnCanvas(options: {
   };
   const { x, y, width, height } = rect;
   if (values.every((value) => value === null)) return;
-  const numbers = values.filter((value): value is number => value !== null);
-  const max = options.maximum ?? Math.max(...numbers, 0);
-  const min = options.minimum ?? Math.min(...numbers, 0);
+  let max = options.maximum ?? 1;
+  let min = options.minimum ?? 0;
+  for (const value of values) {
+    if (value === null) continue;
+    if (options.maximum === undefined) max = Math.max(max, value);
+    if (options.minimum === undefined) min = Math.min(min, value);
+  }
   const span = Math.max(1, max - min);
   context.save();
   context.translate(x, y);
@@ -1670,10 +1878,12 @@ function drawCanonicalSparklineOnCanvas(options: {
     context.lineWidth = sparkline.lineWeight ?? 1.5;
     const connect = sparkline.emptyCells === 'connect';
     let started = false;
+    let previousValue: number | undefined;
     values.forEach((value, index) => {
       if (value === null && !connect) { started = false; return; }
-      const previous = value === null ? values.slice(0, index).reverse().find((candidate): candidate is number => candidate !== null) : value;
+      const previous = value === null ? previousValue : value;
       if (previous === undefined) return;
+      if (value !== null) previousValue = value;
       const px = (index / Math.max(1, values.length - 1)) * width;
       const py = height - ((previous - min) / span) * height;
       if (!started) { context.beginPath(); context.moveTo(px, py); started = true; }
@@ -1925,8 +2135,26 @@ export function createCanvasFloatingDrawables(input: CanvasFloatingRendererInput
     if (!payload) continue;
     const bounds = drawing.transform;
     if (payload.kind === "chart") {
-      const data = getChartSeries(payload, getSheet, pivotResults, sheets, tables, analysisViews);
-      const layout = buildChartLayout(payload, data, bounds.width, bounds.height);
+      let data = getChartSeries(payload, getSheet, pivotResults, sheets, tables, analysisViews);
+      let renderPayload = payload;
+      try {
+        const unsupportedText = chartTextFormulaEntries(payload).find(({ field }) => field !== 'titleText.linkedFormula');
+        if (unsupportedText) throw new Error(`UNSUPPORTED_FEATURE: canvas chart text formula ${unsupportedText.field} has no renderer`);
+        const title = resolveChartTitleText(payload, {
+          ownerSheetId: sheet.id,
+          sheetOrder: sheets.map(({ id, name }) => ({ id, name })),
+        }, (range) => {
+          const source = getSheet(range.sheetId);
+          if (!source) throw new Error(`UNSUPPORTED_FEATURE: chart title source worksheet ${range.sheetId} is not projected`);
+          const cell = source.getCell(range.startRow, range.startColumn);
+          return cell?.displayValue ?? cell?.value ?? '';
+        });
+        if (title !== undefined) renderPayload = { ...payload, elements: { ...payload.elements, title } };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        data = { ...data, status: { kind: 'unsupported', code: 'UNSUPPORTED_FEATURE', message } };
+      }
+      const layout = buildChartLayout(renderPayload, data, bounds.width, bounds.height);
       if (layout.status.kind === 'loading') {
         drawables.push({ kind: 'chart', id: drawing.id, bounds, draw: (context, rect) => drawChartLoadingOnCanvas(context, rect, layout.status.message ?? 'Loading chart data…'), hitTest: () => ({ action: 'chart.select-element', data: { kind: 'chart-area' } }) });
         continue;
@@ -1939,8 +2167,8 @@ export function createCanvasFloatingDrawables(input: CanvasFloatingRendererInput
         kind: "chart",
         id: drawing.id,
         bounds,
-        draw: (context, rect) => drawChartLayoutOnCanvas({ context, payload, bounds: rect, layout }),
-        hitTest: (point) => chartHitTest(layout, point, payload.elements.dataTable?.visible === true),
+        draw: (context, rect) => drawChartLayoutOnCanvas({ context, payload: renderPayload, bounds: rect, layout }),
+        hitTest: (point) => chartHitTest(layout, point),
       });
       continue;
     }
@@ -2073,13 +2301,27 @@ export function createCanvasFloatingDrawables(input: CanvasFloatingRendererInput
   }
   const sparklineGroups = sheet.sparklineGroups ?? [];
   const groupBounds = new Map<string, { min: number; max: number }>();
+  const sparklinesById = new Map<string, SparklineModel>();
+  for (const sparkline of sparklines) sparklinesById.set(sparkline.id, sparkline);
   for (const group of sparklineGroups) {
-    const values = group.sparklineIds.flatMap((id) => {
-      const member = sparklines.find((entry) => entry.id === id);
-      if (!member) return [];
-      try { return resolveSparklineData(member, (sheetId) => getSheet(sheetId), group).values.filter((value): value is number => value !== null); } catch { return []; }
-    });
-    if (values.length) groupBounds.set(group.id, { min: Math.min(0, ...values), max: Math.max(0, ...values) });
+    let minimum = 0;
+    let maximum = 0;
+    let hasValue = false;
+    for (const id of group.sparklineIds) {
+      const member = sparklinesById.get(id);
+      if (!member) continue;
+      try {
+        for (const value of resolveSparklineData(member, (sheetId) => getSheet(sheetId), group).values) {
+          if (value === null) continue;
+          minimum = Math.min(minimum, value);
+          maximum = Math.max(maximum, value);
+          hasValue = true;
+        }
+      } catch {
+        continue;
+      }
+    }
+    if (hasValue) groupBounds.set(group.id, { min: minimum, max: maximum });
   }
   for (const sparkline of sparklines) {
     const rect = skeleton.getCellRect(sparkline.anchor.row, sparkline.anchor.column);

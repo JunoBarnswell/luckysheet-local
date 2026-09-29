@@ -55,7 +55,7 @@ export function isArrayValue(value: unknown): value is ArrayValue {
 }
 
 export function spillBlocked(state: SpillState): boolean {
-  return state === 'blocked';
+  return state !== 'ok';
 }
 
 export const STANDARD_FORMULA_ERRORS: readonly FormulaErrorCode[] = [

@@ -254,6 +254,10 @@ describe('canonical drawing UI projection', () => {
       hyperlinkDetail: { id: 'legacy', target: { kind: 'url', url: 'https://legacy.invalid' } },
       comment: { id: 'legacy-comment', author: 'old', text: 'old', createdAt: '2020-01-01' },
     } as unknown as import('@react-sheets/core-model').CellData);
+    sheet.cells.set(0, 1, {
+      value: 'legacy-only',
+      hyperlink: 'https://legacy-only.invalid',
+    } as unknown as import('@react-sheets/core-model').CellData);
     setCellHyperlink(sheet, 0, 0, { id: 'canonical', target: { kind: 'url', url: 'https://canonical.invalid' } });
     sheet.review.addThread({
       id: 'thread-1', sheetId: sheet.id, row: 0, column: 0, author: 'Alice', text: 'Review',
@@ -263,6 +267,7 @@ describe('canonical drawing UI projection', () => {
     const snapshot = buildCanvasSheetSnapshot(workbook, sheet, new FormulaEngine({ defaultSheetId: sheet.id }), true);
     const cell = snapshot.getCell(0, 0);
     assert.equal(cell?.hyperlink, 'https://canonical.invalid');
+    assert.equal(snapshot.getCell(0, 1)?.hyperlink, undefined);
     assert.equal(cell?.comment?.id, 'thread-1');
     assert.equal(cell?.comment?.text, 'Review');
   });

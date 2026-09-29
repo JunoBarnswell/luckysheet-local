@@ -16,6 +16,20 @@ export interface ReviewNoteEntry {
   note: CellNote;
 }
 
+export interface ReviewCellMetadataEntry {
+  row: number;
+  column: number;
+  note?: CellNote;
+  threads: CommentThread[];
+}
+
+export interface ReviewTextMetadataEntry {
+  row: number;
+  column: number;
+  note?: Pick<CellNote, 'id' | 'text'>;
+  threads: Array<Pick<CommentThread, 'id' | 'text'>>;
+}
+
 function cellKey(row: number, column: number): ReviewCellKey {
   if (!Number.isSafeInteger(row) || row < 0 || !Number.isSafeInteger(column) || column < 0) {
     throw new Error(`Review coordinate is invalid: ${row}:${column}`);
@@ -45,8 +59,12 @@ function cloneReply(reply: CommentReply): CommentReply {
 export class ReviewStore {
   private readonly notesByCell = new Map<ReviewCellKey, string>();
   private readonly notesById = new Map<string, CellNote>();
+  private readonly noteCellById = new Map<string, ReviewCellKey>();
   private readonly threadIdsByCell = new Map<ReviewCellKey, string[]>();
   private readonly threadsById = new Map<string, CommentThread>();
+  private readonly reviewCellsByRow = new Map<number, Set<ReviewCellKey>>();
+  private sortedReviewRows?: number[];
+  private readonly sortedReviewCellsByRow = new Map<number, Array<{ column: number; key: ReviewCellKey }>>();
 
   constructor(readonly sheetId: string) {
     if (!sheetId.trim()) throw new Error('ReviewStore requires a sheet id');
@@ -76,11 +94,16 @@ export class ReviewStore {
     const key = cellKey(row, column);
     if (!note.id.trim()) throw new Error('Review note requires an id');
     const previousId = this.notesByCell.get(key);
-    const existingKey = [...this.notesByCell.entries()].find(([, id]) => id === note.id)?.[0];
+    const existingKey = this.noteCellById.get(note.id);
     if (existingKey !== undefined && existingKey !== key) throw new Error(`Review note identity already belongs to ${existingKey}: ${note.id}`);
-    if (previousId !== undefined && previousId !== note.id) this.notesById.delete(previousId);
+    if (previousId !== undefined && previousId !== note.id) {
+      this.notesById.delete(previousId);
+      this.noteCellById.delete(previousId);
+    }
     this.notesByCell.set(key, note.id);
     this.notesById.set(note.id, structuredClone(note));
+    this.noteCellById.set(note.id, key);
+    this.addReviewCellIndex(row, key);
   }
 
   removeNote(row: number, column: number): CellNote | undefined {
@@ -91,6 +114,8 @@ export class ReviewStore {
     if (!note) throw new Error(`Review note index is dangling: ${id}`);
     this.notesByCell.delete(key);
     this.notesById.delete(id);
+    this.noteCellById.delete(id);
+    if (!this.threadIdsByCell.has(key)) this.removeReviewCellIndex(row, key);
     return structuredClone(note);
   }
 
@@ -109,6 +134,38 @@ export class ReviewStore {
       if (!note) throw new Error(`Review note index is dangling: ${id}`);
       return { key, row, column, note: structuredClone(note) };
     });
+  }
+
+  *entriesInRange(startRow: number, endRow: number, startColumn: number, endColumn: number): IterableIterator<ReviewCellMetadataEntry> {
+    for (const { row, column, key } of this.reviewCellAddressesInRange(startRow, endRow, startColumn, endColumn)) {
+      const noteId = this.notesByCell.get(key);
+      const note = noteId === undefined ? undefined : this.notesById.get(noteId);
+      if (noteId !== undefined && !note) throw new Error(`Review note index is dangling: ${noteId}`);
+      const threadIds = this.threadIdsByCell.get(key) ?? [];
+      const threads = threadIds.map((id) => {
+        const thread = this.threadsById.get(id);
+        if (!thread) throw new Error(`Review thread index is dangling: ${id}`);
+        return structuredClone(thread);
+      });
+      if (!note && threads.length === 0) throw new Error(`Review cell index is dangling: ${key}`);
+      yield { row, column, ...(note ? { note: structuredClone(note) } : {}), threads };
+    }
+  }
+
+  *textEntriesInRange(startRow: number, endRow: number, startColumn: number, endColumn: number): IterableIterator<ReviewTextMetadataEntry> {
+    for (const { row, column, key } of this.reviewCellAddressesInRange(startRow, endRow, startColumn, endColumn)) {
+      const noteId = this.notesByCell.get(key);
+      const note = noteId === undefined ? undefined : this.notesById.get(noteId);
+      if (noteId !== undefined && !note) throw new Error(`Review note index is dangling: ${noteId}`);
+      const threadIds = this.threadIdsByCell.get(key) ?? [];
+      const threads = threadIds.map((id) => {
+        const thread = this.threadsById.get(id);
+        if (!thread) throw new Error(`Review thread index is dangling: ${id}`);
+        return { id: thread.id, text: thread.text };
+      });
+      if (!note && threads.length === 0) throw new Error(`Review cell index is dangling: ${key}`);
+      yield { row, column, ...(note ? { note: { id: note.id, text: note.text } } : {}), threads };
+    }
   }
 
   getThread(id: string): CommentThread | undefined {
@@ -135,6 +192,7 @@ export class ReviewStore {
     this.threadsById.set(thread.id, structuredClone(thread));
     ids.push(thread.id);
     this.threadIdsByCell.set(key, ids);
+    this.addReviewCellIndex(thread.row, key);
   }
 
   updateThread(id: string, updater: (thread: CommentThread) => void): CommentThread {
@@ -151,8 +209,10 @@ export class ReviewStore {
       const previousIds = (this.threadIdsByCell.get(previousKey) ?? []).filter((entry) => entry !== id);
       if (previousIds.length > 0) this.threadIdsByCell.set(previousKey, previousIds);
       else this.threadIdsByCell.delete(previousKey);
+      if (previousIds.length === 0 && !this.notesByCell.has(previousKey)) this.removeReviewCellIndex(existing.row, previousKey);
       nextIds.push(id);
       this.threadIdsByCell.set(nextKey, nextIds);
+      this.addReviewCellIndex(current.row, nextKey);
     }
     this.threadsById.set(id, structuredClone(current));
     return structuredClone(current);
@@ -166,6 +226,7 @@ export class ReviewStore {
     const ids = (this.threadIdsByCell.get(key) ?? []).filter((entry) => entry !== id);
     if (ids.length > 0) this.threadIdsByCell.set(key, ids);
     else this.threadIdsByCell.delete(key);
+    if (ids.length === 0 && !this.notesByCell.has(key)) this.removeReviewCellIndex(current.row, key);
     return structuredClone(current);
   }
 
@@ -176,13 +237,98 @@ export class ReviewStore {
   replaceNotes(entries: ReadonlyArray<{ row: number; column: number; note: CellNote }>): void {
     this.notesByCell.clear();
     this.notesById.clear();
+    this.noteCellById.clear();
+    this.rebuildReviewCellIndex();
     for (const entry of entries) this.setNote(entry.row, entry.column, entry.note);
   }
 
   replaceThreads(threads: ReadonlyArray<CommentThread>): void {
     this.threadIdsByCell.clear();
     this.threadsById.clear();
+    this.rebuildReviewCellIndex();
     for (const thread of threads) this.addThread(thread);
+  }
+
+  private addReviewCellIndex(row: number, key: ReviewCellKey): void {
+    let keys = this.reviewCellsByRow.get(row);
+    if (!keys) {
+      keys = new Set();
+      this.reviewCellsByRow.set(row, keys);
+      this.sortedReviewRows = undefined;
+    }
+    if (keys.has(key)) return;
+    keys.add(key);
+    this.sortedReviewCellsByRow.delete(row);
+  }
+
+  private removeReviewCellIndex(row: number, key: ReviewCellKey): void {
+    const keys = this.reviewCellsByRow.get(row);
+    if (!keys || !keys.delete(key)) throw new Error(`Review cell index is missing: ${key}`);
+    this.sortedReviewCellsByRow.delete(row);
+    if (keys.size === 0) {
+      this.reviewCellsByRow.delete(row);
+      this.sortedReviewRows = undefined;
+    }
+  }
+
+  private rebuildReviewCellIndex(): void {
+    this.reviewCellsByRow.clear();
+    this.sortedReviewRows = undefined;
+    this.sortedReviewCellsByRow.clear();
+    for (const key of this.notesByCell.keys()) this.addReviewCellIndex(parseCellKey(key).row, key);
+    for (const key of this.threadIdsByCell.keys()) this.addReviewCellIndex(parseCellKey(key).row, key);
+  }
+
+  private firstRowAtLeast(rows: readonly number[], target: number): number {
+    let low = 0;
+    let high = rows.length;
+    while (low < high) {
+      const middle = (low + high) >>> 1;
+      if (rows[middle]! < target) low = middle + 1;
+      else high = middle;
+    }
+    return low;
+  }
+
+  private *reviewCellAddressesInRange(startRow: number, endRow: number, startColumn: number, endColumn: number): IterableIterator<{ row: number; column: number; key: ReviewCellKey }> {
+    if (![startRow, endRow, startColumn, endColumn].every((coordinate) => Number.isSafeInteger(coordinate) && coordinate >= 0)
+      || endRow < startRow || endColumn < startColumn) {
+      throw new Error('Review range is invalid');
+    }
+    const rowCount = endRow - startRow + 1;
+    const columnCount = endColumn - startColumn + 1;
+    if (rowCount <= 16 && columnCount <= 16 && rowCount * columnCount <= 16) {
+      for (let row = startRow; row <= endRow; row += 1) {
+        const indexedCells = this.reviewCellsByRow.get(row);
+        if (!indexedCells) continue;
+        for (let column = startColumn; column <= endColumn; column += 1) {
+          const key = cellKey(row, column);
+          if (indexedCells.has(key)) yield { row, column, key };
+        }
+      }
+      return;
+    }
+    const rows = this.sortedReviewRows ??= [...this.reviewCellsByRow.keys()].sort((left, right) => left - right);
+    for (let index = this.firstRowAtLeast(rows, startRow); index < rows.length; index += 1) {
+      const row = rows[index]!;
+      if (row > endRow) break;
+      const cellIndex = this.sortedReviewCellsByRow.get(row) ?? [...(this.reviewCellsByRow.get(row) ?? [])]
+        .map((key) => ({ key, column: parseCellKey(key).column }))
+        .sort((left, right) => left.column - right.column);
+      this.sortedReviewCellsByRow.set(row, cellIndex);
+      let low = 0;
+      let high = cellIndex.length;
+      while (low < high) {
+        const middle = (low + high) >>> 1;
+        if (cellIndex[middle]!.column < startColumn) low = middle + 1;
+        else high = middle;
+      }
+      for (let cellIndexPosition = low; cellIndexPosition < cellIndex.length; cellIndexPosition += 1) {
+        const entry = cellIndex[cellIndexPosition]!;
+        if (entry.column > endColumn) break;
+        yield { row, column: entry.column, key: entry.key };
+      }
+    }
   }
 
   remapCoordinates(mapper: (row: number, column: number) => { row: number; column: number } | undefined): void {

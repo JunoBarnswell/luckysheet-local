@@ -1,9 +1,9 @@
 package com.xc.luckysheet.server.coordination;
 
-import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.xc.luckysheet.server.config.CoordinationProperties;
+import com.xc.luckysheet.server.contract.CommittedOperationEnvelope;
 import com.xc.luckysheet.server.store.OutboxRow;
 import org.springframework.data.redis.core.StringRedisTemplate;
 
@@ -21,14 +21,9 @@ public class RedisCoordinationPublisher {
 
     public void publishRevision(OutboxRow event) {
         try {
-            JsonNode operation = mapper.readTree(event.payloadJson());
-            ObjectNode message = mapper.createObjectNode()
-                    .put("kind", "revision")
-                    .put("eventId", event.eventId().toString())
-                    .put("unitId", event.unitId())
-                    .put("operationId", event.operationId())
-                    .put("revision", event.revision());
-            message.set("operation", operation);
+            CommittedOperationEnvelope operation = mapper.readValue(event.payloadJson(), CommittedOperationEnvelope.class);
+            var message = new RevisionCoordinationEvent("revision", event.eventId().toString(), event.unitId(),
+                    event.operationId(), event.revision(), operation);
             redis.convertAndSend(properties.channel(), mapper.writeValueAsString(message));
         } catch (Exception error) {
             throw new IllegalStateException("Unable to publish revision coordination event", error);

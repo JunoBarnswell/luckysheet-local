@@ -45,12 +45,12 @@ export function lexFormula(source: string): readonly Token[] {
   if (source[index] === '=') index += 1;
 
   while (index < source.length) {
-    const character = source[index] ?? '';
+    const character = codePointAt(source, index);
     if (/\s/.test(character)) {
       const whitespaceStart = index;
       index = skipWhitespace(source, index);
       const previous = tokens[tokens.length - 1];
-      const next = source[index] ?? '';
+      const next = codePointAt(source, index);
       if (previous && canEndReference(previous.kind) && canStartReference(next)) {
         tokens.push({
           kind: 'reference-intersection',
@@ -135,8 +135,12 @@ export function lexFormula(source: string): readonly Token[] {
 
     if (isWordStart(character)) {
       const start = index;
-      index += 1;
-      while (index < source.length && isWordCharacter(source[index] ?? '')) index += 1;
+      index += character.length;
+      while (index < source.length) {
+        const nextCharacter = codePointAt(source, index);
+        if (!isWordCharacter(nextCharacter)) break;
+        index += nextCharacter.length;
+      }
       tokens.push({ kind: 'identifier', lexeme: source.slice(start, index), span: { start, end: index } });
       continue;
     }
@@ -285,6 +289,13 @@ function isWordStart(character: string): boolean {
 
 function isWordCharacter(character: string): boolean {
   return /^[\p{L}\p{N}_$.]$/u.test(character);
+}
+
+function codePointAt(source: string, index: number): string {
+  const first = source.charCodeAt(index);
+  if (first < 0xd800 || first > 0xdbff || index + 1 >= source.length) return source[index] ?? '';
+  const second = source.charCodeAt(index + 1);
+  return second >= 0xdc00 && second <= 0xdfff ? source.slice(index, index + 2) : source[index] ?? '';
 }
 
 function canEndReference(kind: TokenKind): boolean {
