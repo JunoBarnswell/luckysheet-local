@@ -203,6 +203,36 @@ describe('WorkbookSession formula integration', () => {
     assert.equal(cellValue(app, 0, 2), '2');
   });
 
+  it('reorders worksheets incrementally and recalculates only live 3-D reference owners', async () => {
+    const app = createRemoteReadySessionFixture();
+    try {
+      const runtime = app['runtime'];
+      runtime.model.renameSheet('sheet-1', 'Jan');
+      runtime.model.addSheet('sheet-feb', 'Feb');
+      runtime.model.addSheet('sheet-mar', 'Mar');
+      runtime.model.addSheet('sheet-dec', 'Dec');
+      runtime.model.addSheet('sheet-summary', 'Summary');
+      runtime.model.getSheet('sheet-1').cells.set(1, 1, { value: 2 });
+      runtime.model.getSheet('sheet-feb').cells.set(1, 1, { value: 3 });
+      runtime.model.getSheet('sheet-mar').cells.set(1, 1, { value: 5 });
+      runtime.model.getSheet('sheet-dec').cells.set(1, 1, { value: 7 });
+      runtime.model.getSheet('sheet-summary').cells.set(0, 0, { value: null, formula: '=SUM(Jan:Dec!B2)' });
+      hydrateRuntime(runtime, { snapshot: runtime.model.snapshot(), revision: 0 });
+      await app.waitForFormulaCalculation();
+
+      const formulaEngine = runtime.formula;
+      const owner = { sheetId: 'sheet-summary', row: 0, column: 0 };
+      assert.equal(formulaEngine.getCellResult(owner)?.value, 17);
+      app.runCommand('sheet.reorder', { sheetId: 'sheet-dec', toIndex: 1 });
+      assert.equal(runtime.formula, formulaEngine);
+      await app.waitForFormulaCalculation();
+      assert.equal(formulaEngine.getCellResult(owner)?.value, 9);
+      assert.equal(formulaEngine.getFormulaCount(), 1);
+    } finally {
+      app.dispose();
+    }
+  });
+
   it('manual recalculation mode defers updates until recalculateFormulas()', async () => {
     const app = new WorkbookSession();
     const sheetId = app.getActiveSheetId();

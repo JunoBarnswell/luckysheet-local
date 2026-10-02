@@ -967,6 +967,10 @@ export function attachCoreListeners(runtime: SpreadsheetRuntime): void {
         runtime.formula.setDefinedNameModels(runtime.model.definedNameModels, false);
       } else if (calculationContextEffect?.action === 'sync-tables') {
         syncWorkbookSheetTables(runtime.formula, runtime.model, false);
+      } else if (calculationContextEffect?.action === 'sync-sheet-order') {
+        runtime.formula.updateSheetOrder(
+          runtime.model.sheetOrder.map((id) => ({ id, name: runtime.model.getSheet(id).name })),
+        );
       }
       // Geometry can change directly (merge/table) or as a side effect of a structural transform.
       const spillBlockerGeometryRanges = mutation.id === 'merge.set' || mutation.id === 'merge.remove'

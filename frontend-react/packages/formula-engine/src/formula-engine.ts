@@ -1,6 +1,6 @@
 import type { CellAddress, FormulaAst, FormulaReferenceNode } from './ast';
 import { cellAddressKey, compareCellAddresses, parseCellAddress } from './address';
-import { collectFormulaDependencies, collectFormulaReferenceNodes } from './dependencies';
+import { collectFormulaDependencies, collectFormulaReferenceNodes, resolveRangeReference } from './dependencies';
 import {
   evaluateFormula,
   evaluateFormulaWithTrace,
@@ -29,7 +29,7 @@ import { canonicalExcelDateFromUtcDate, type CanonicalExcelDateParts, type Excel
 import { DEFAULT_EXCEL_NUMERIC_CONTEXT, normalizeExcelNumericContext, type ExcelNumericContext } from './numeric';
 import { createCalculationEntropyContext, formulaRandom, type CalculationEntropyContext } from './random';
 import { DEFAULT_WORKBOOK_COLLATION, normalizeWorkbookCollation, type WorkbookCollationContext } from './collation';
-import { findFormulaComponents } from './circular';
+import { findFormulaComponents, type CircularComponent } from './circular';
 import { createSnapshotVisibilityResolver, type ReferenceFormulaKind, type RowVisibilityResolver } from './reference-cursor';
 import { DEFAULT_WORKBOOK_CALCULATION_SETTINGS, normalizeWorkbookCalculationSettings, type WorkbookCalculationMode, type WorkbookCalculationSettings } from './calculation-settings';
 import {
@@ -235,7 +235,7 @@ export class FormulaEngine {
   private inputUpdateSequence = 0;
   private pendingInputUpdates = new Map<string, { sequence: number; update: CalculationInputUpdate }>();
   private formulaTopologyGeneration = 0;
-  private cachedCircularComponents: { generation: number; components: ReturnType<typeof findFormulaComponents> } | null = null;
+  private cachedCircularComponents: { generation: number; byCell: ReadonlyMap<string, CircularComponent> } | null = null;
   private nextTaskSequence = 0;
   private activeTaskId: string | null = null;
   private activeTaskPort: CalculationTaskPort | null = null;
@@ -421,10 +421,46 @@ export class FormulaEngine {
       || next.some((sheet, index) => sheet.id !== this.sheetOrder[index]?.id)) {
       throw new Error('FORMULA_SHEET_IDENTITY_ORDER_MISMATCH: sheet-name updates cannot change worksheet identity order');
     }
-    if (next.every((sheet, index) => sheet.name === this.sheetOrder[index]?.name)) return;
+    this.applySheetOrder(next, false);
+  }
+
+  /** Update worksheet order without rebuilding the calculation context. */
+  updateSheetOrder(sheetOrder: readonly FormulaSheetIdentity[]): void {
+    const next = normalizeFormulaSheetOrder(sheetOrder, this.defaultSheetId);
+    const currentIds = new Set(this.sheetOrder.map((sheet) => sheet.id));
+    if (next.length !== currentIds.size || next.some((sheet) => !currentIds.has(sheet.id))) {
+      throw new Error('FORMULA_SHEET_IDENTITY_SET_MISMATCH: order updates cannot add or remove worksheet identities');
+    }
+    this.applySheetOrder(next, true);
+  }
+
+  private applySheetOrder(next: readonly FormulaSheetIdentity[], acceptReorder: boolean): void {
+    const namesChanged = next.some((sheet, index) => sheet.name !== this.sheetOrder[index]?.name);
+    const orderChanged = next.some((sheet, index) => sheet.id !== this.sheetOrder[index]?.id);
+    if (!namesChanged && !orderChanged) return;
     this.sheetOrder = next;
     this.dependencies.setSheetOrder(next);
     this.dependencies.updateDefinedNameReferences(this.getDefinedNameModels().map(definedNameReferenceIndexUpdate));
+    if (orderChanged && acceptReorder) {
+      const roots = this.dependencies.getSheetRangeFormulaOwners();
+      const affectedNameTokens = new Set<string>();
+      for (const definition of this.getDefinedNameModels()) {
+        let ast: FormulaAst;
+        try {
+          ast = parseFormulaSource(definition.formula.trim().startsWith('=') ? definition.formula : `=${definition.formula}`);
+        } catch (error) {
+          if (error instanceof FormulaLexError || error instanceof FormulaSyntaxError) continue;
+          throw error;
+        }
+        if (collectFormulaReferenceNodes(ast).some((reference) => reference.type === 'sheet-range-reference')) {
+          affectedNameTokens.add(definition.name.trim().toUpperCase());
+        }
+      }
+      const namedRoots = this.formulasReferencing(this.nameIndex, affectedNameTokens);
+      for (const [key, address] of namedRoots) this.pendingRecalculationRoots.add(key);
+      for (const address of roots) this.pendingRecalculationRoots.add(cellAddressKey(address));
+      if (roots.length > 0 || namedRoots.size > 0) this.markFormulaTopologyChanged();
+    }
     this.calculationContextGeneration += 1;
     this.markCalculationStateChanged();
   }
@@ -458,6 +494,14 @@ export class FormulaEngine {
   /** Context revisions are stable across ordinary cell edits. */
   getCalculationContextGeneration(): number {
     return this.calculationContextGeneration;
+  }
+
+  getFormulaTopologyRevision(): number {
+    return this.formulaTopologyGeneration;
+  }
+
+  getCalculationInputRevision(): number {
+    return this.inputUpdateSequence;
   }
 
   getFormulaCount(): number {
@@ -1485,9 +1529,13 @@ export class FormulaEngine {
     const recalculated: CellAddress[] = [];
     const results = new Map<string, FormulaResult>();
 
-    const circularComponents = this.getCircularComponents().filter((component) =>
-      component.cyclic && component.members.some((address) => affected.has(cellAddressKey(address))),
-    );
+    const circularByCell = this.getCircularComponentIndex();
+    const selectedCircularComponents = new Map<string, CircularComponent>();
+    for (const key of affected.keys()) {
+      const component = circularByCell.get(key);
+      if (component?.cyclic) selectedCircularComponents.set(cellAddressKey(component.members[0]!), component);
+    }
+    const circularComponents = [...selectedCircularComponents.values()];
     const handledCircularCells = new Set<string>();
     const circularFallback = new Map<string, FormulaValue>();
     for (const component of circularComponents) {
@@ -1537,16 +1585,20 @@ export class FormulaEngine {
     };
   }
 
-  private getCircularComponents(): ReturnType<typeof findFormulaComponents> {
+  private getCircularComponentIndex(): ReadonlyMap<string, CircularComponent> {
     if (this.cachedCircularComponents?.generation === this.formulaTopologyGeneration) {
-      return this.cachedCircularComponents.components;
+      return this.cachedCircularComponents.byCell;
     }
     const graphNodes = [...this.cells.values()]
       .filter((cell) => cell.formula !== undefined)
       .map((cell) => ({ address: cell.address, dependencies: cell.result.dependencies }));
-    const components = findFormulaComponents(graphNodes);
-    this.cachedCircularComponents = { generation: this.formulaTopologyGeneration, components };
-    return components;
+    const byCell = new Map<string, CircularComponent>();
+    for (const component of findFormulaComponents(graphNodes, this.sheetOrder)) {
+      if (!component.cyclic) continue;
+      for (const address of component.members) byCell.set(cellAddressKey(address), component);
+    }
+    this.cachedCircularComponents = { generation: this.formulaTopologyGeneration, byCell };
+    return byCell;
   }
 
   private evaluateCircularComponent(
@@ -2110,12 +2162,60 @@ export class FormulaEngine {
         return ranges.length > 0 ? { kind: 'reference', ranges } : createFormulaError('#NULL!', 'Reference intersection is empty');
       }
       case 'sheet-range-reference':
-        return createFormulaError('#REF!', '3-D reference requires an ordered worksheet resolver');
+        return this.resolveSheetRangeReference(reference, currentCell);
       case 'external-reference':
         return createFormulaError('#REF!', `External workbook is unavailable: ${reference.qualifier.workbookId}`);
       default:
         return createFormulaError('#REF!', `Unsupported structured reference: ${reference.type}`);
     }
+  }
+
+  private resolveSheetRangeReference(
+    reference: Extract<FormulaReferenceNode, { type: 'sheet-range-reference' }>,
+    currentCell: CellAddress,
+  ): FormulaEvaluationReference | FormulaError {
+    const startSheetId = resolveFormulaSheetId(reference.qualifier.startSheetId, currentCell.sheetId, this.sheetOrder);
+    const endSheetId = resolveFormulaSheetId(reference.qualifier.endSheetId, currentCell.sheetId, this.sheetOrder);
+    const startIndex = this.sheetOrder.findIndex((sheet) => sheet.id === startSheetId);
+    const endIndex = this.sheetOrder.findIndex((sheet) => sheet.id === endSheetId);
+    if (startIndex < 0 || endIndex < 0) {
+      return createFormulaError('#REF!', '3-D reference worksheet boundary is unresolved');
+    }
+
+    const ranges: RangeDependency[] = [];
+    for (const sheet of this.sheetOrder.slice(Math.min(startIndex, endIndex), Math.max(startIndex, endIndex) + 1)) {
+      switch (reference.reference.type) {
+        case 'cell-reference': {
+          const address = { ...reference.reference.reference, sheetId: sheet.id };
+          ranges.push({ kind: 'range', start: address, end: { ...address } });
+          break;
+        }
+        case 'range-reference': {
+          const qualified = {
+            ...reference.reference,
+            start: { ...reference.reference.start, reference: { ...reference.reference.start.reference, sheetId: sheet.id } },
+            end: { ...reference.reference.end, reference: { ...reference.reference.end.reference, sheetId: sheet.id } },
+          };
+          ranges.push(resolveRangeReference(qualified, { ...currentCell, sheetId: sheet.id }, this.sheetOrder));
+          break;
+        }
+        case 'whole-column-reference': {
+          const extent = this.spillEnvironments.get(sheet.id);
+          if (!extent || extent.rowCount < 1) return createFormulaError('#REF!', `Worksheet extent unavailable for ${sheet.id}`);
+          ranges.push({ kind: 'range', start: { sheetId: sheet.id, row: 0, column: reference.reference.startColumn }, end: { sheetId: sheet.id, row: extent.rowCount - 1, column: reference.reference.endColumn } });
+          break;
+        }
+        case 'whole-row-reference': {
+          const extent = this.spillEnvironments.get(sheet.id);
+          if (!extent || extent.columnCount < 1) return createFormulaError('#REF!', `Worksheet extent unavailable for ${sheet.id}`);
+          ranges.push({ kind: 'range', start: { sheetId: sheet.id, row: reference.reference.startRow, column: 0 }, end: { sheetId: sheet.id, row: reference.reference.endRow, column: extent.columnCount - 1 } });
+          break;
+        }
+        case 'invalid-reference':
+          return createFormulaError('#REF!', '3-D reference contains a deleted cell');
+      }
+    }
+    return { kind: 'reference', ranges };
   }
 
   private readRangeMatrix(

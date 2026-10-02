@@ -7,6 +7,7 @@ import {
   collectFormulaReferenceNodes,
   mapAstMovedReferences,
   mapAstStructuralReferences,
+  findFormulaComponents,
   formatFormula,
   formatCellAddress,
   isFormulaError,
@@ -424,7 +425,7 @@ test('calculation task port is versioned and serializable without pretending to 
 
   assert.equal(result.status, 'completed');
   assert.equal(result.protocol, 'react-sheets.formula-calculation');
-  assert.equal(result.version, 2);
+  assert.equal(result.version, 3);
   assert.equal(result.revision, 4);
   assert.equal(result.report?.results.some((entry) => entry.value === 6), true);
 });
@@ -445,6 +446,84 @@ test('FormulaEngine supports qualified references and detects cycles', () => {
   assert.equal(firstCycle, 1);
   assertError(secondCycle, '#NUM!');
   assertError(engine.getCellValue('B1'), '#NUM!');
+});
+
+test('3-D references calculate across the live sheet interval and follow reordering', () => {
+  const order = [
+    { id: 'jan', name: 'Jan' },
+    { id: 'feb', name: 'Feb' },
+    { id: 'mar', name: 'Mar' },
+    { id: 'dec', name: 'Dec' },
+    { id: 'summary', name: 'Summary' },
+  ];
+  const engine = new FormulaEngine({ defaultSheetId: 'summary', sheetOrder: order });
+  engine.setValue(address('jan', 1, 1), 2);
+  engine.setValue(address('feb', 1, 1), 3);
+  engine.setValue(address('mar', 1, 1), 5);
+  engine.setValue(address('dec', 1, 1), 7);
+  engine.setValue(address('summary', 1, 1), 101);
+  const owner = address('summary', 0, 0);
+
+  assert.equal(engine.setFormula(owner, '=SUM(Jan:Dec!B2)').value, 17);
+  assert.throws(() => engine.updateSheetOrder([...order, { id: 'extra', name: 'Extra' }]), /FORMULA_SHEET_IDENTITY_SET_MISMATCH/);
+  assert.throws(() => engine.updateSheetOrder(order.slice(1)), /FORMULA_SHEET_IDENTITY_SET_MISMATCH/);
+  assert.deepEqual(engine.getDependents(address('feb', 1, 1)), [owner]);
+  engine.setValue(address('feb', 1, 1), 9);
+  assert.equal(engine.getCellValue(owner), 23);
+
+  engine.updateSheetOrder([order[0]!, order[3]!, order[1]!, order[2]!, order[4]!]);
+  assert.deepEqual(engine.getPendingRecalculationRoots(), [owner]);
+  assert.deepEqual(engine.getDependents(address('dec', 1, 1)), [owner]);
+  assert.deepEqual(engine.getDependents(address('feb', 1, 1)), []);
+  engine.recalculateCell(owner);
+  assert.equal(engine.getCellValue(owner), 9);
+});
+
+test('3-D structural dependency postings are rebuilt only for interval owners after sheet reorder', () => {
+  const before = [
+    { id: 'jan', name: 'Jan' },
+    { id: 'feb', name: 'Feb' },
+    { id: 'mar', name: 'Mar' },
+    { id: 'dec', name: 'Dec' },
+  ];
+  const owner = address('owner', 0, 0);
+  const index = new RangeIndex([...before, { id: 'owner', name: 'Owner' }]);
+  const sheetOrder = [...before, { id: 'owner', name: 'Owner' }];
+  const ast = parseFormula('=SUM(Jan:Dec!B2)');
+  const references = collectFormulaReferenceNodes(ast);
+  index.set(owner, collectFormulaDependencies(ast, owner, { sheetOrder }));
+  assert.equal(index.getSheetIntervalPostingCount(), 1);
+  assert.deepEqual(index.getDependents(address('feb', 1, 1)), [owner]);
+  assert.deepEqual(index.getRangeDependents('feb', { startRow: 1, endRow: 1, startColumn: 1, endColumn: 1 }), [owner]);
+
+  const formulaRule = { sheetId: 'owner', ruleKind: 'conditional-format' as const, ruleId: 'three-d-rule', field: 'formula' };
+  index.setFormulaRuleReference(formulaRule, references, owner);
+  assert.deepEqual(index.getRangeFormulaRuleDependents('feb', { startRow: 1, endRow: 1, startColumn: 1, endColumn: 1 }), [formulaRule]);
+
+  index.setSheetOrder([before[0]!, before[3]!, before[1]!, before[2]!, { id: 'owner', name: 'Owner' }]);
+  assert.deepEqual(index.getDependents(address('dec', 1, 1)), [owner]);
+  assert.deepEqual(index.getDependents(address('feb', 1, 1)), []);
+  assert.deepEqual(index.getRangeFormulaRuleDependents('dec', { startRow: 1, endRow: 1, startColumn: 1, endColumn: 1 }), [formulaRule]);
+  assert.deepEqual(index.getRangeFormulaRuleDependents('feb', { startRow: 1, endRow: 1, startColumn: 1, endColumn: 1 }), []);
+  assert.deepEqual(index.getSheetRangeFormulaOwners(), [owner]);
+  assert.equal(index.getSheetIntervalPostingCount(), 2);
+});
+
+test('formula graph SCC traversal is stack-safe for deep dependencies and detects 3-D cycles', () => {
+  const depth = 30_000;
+  const chain = Array.from({ length: depth }, (_, row) => ({
+    address: address('s', row, 0),
+    dependencies: row === 0 ? [] : [{ kind: 'cell' as const, address: address('s', row - 1, 0) }],
+  }));
+  const components = findFormulaComponents(chain, [{ id: 's', name: 'S' }]);
+  assert.equal(components.length, depth);
+  assert.equal(components.some((component) => component.cyclic), false);
+
+  const threeDimensionalCycle = [
+    { address: address('a', 0, 0), dependencies: collectFormulaDependencies(parseFormula('=SUM(A:B!A1)'), address('a', 0, 0), { sheetOrder: [{ id: 'a', name: 'A' }, { id: 'b', name: 'B' }] }) },
+    { address: address('b', 0, 0), dependencies: [{ kind: 'cell' as const, address: address('a', 0, 0) }] },
+  ];
+  assert.equal(findFormulaComponents(threeDimensionalCycle, [{ id: 'a', name: 'A' }, { id: 'b', name: 'B' }]).some((component) => component.cyclic), true);
 });
 
 test('FormulaEngine evaluates qualified display names against canonical worksheet IDs', () => {

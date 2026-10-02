@@ -1911,7 +1911,7 @@ export function registerEditingCommands(runtime: CommandRuntime): void {
       schema: { name: 'ReorderSheet', validate: isSheetReorderedMutation },
       permission: { capability: 'sheet.structure.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: () => [], mode: 'exact' },
-      calculationContextEffect: CALCULATION_CONTEXT_EFFECTS.rebuild,
+      calculationContextEffect: CALCULATION_CONTEXT_EFFECTS.syncSheetOrder,
       inverseIds: ['sheet.reordered'],
     },
   });

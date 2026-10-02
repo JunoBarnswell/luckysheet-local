@@ -41,6 +41,7 @@ export interface NameDependency {
 export type FormulaDependency = CellDependency | RangeDependency | StructuralReferenceDependency | NameDependency;
 
 interface IndexEntry {
+  readonly address: CellAddress;
   readonly dependencies: readonly FormulaDependency[];
 }
 
@@ -50,6 +51,7 @@ export class RangeIndex {
   private readonly entries = new Map<string, IndexEntry>();
   private readonly invalidFormulaOwners = new Map<string, CellAddress>();
   private readonly invalidStructuralFormulaOwners = new Map<string, CellAddress>();
+  private readonly sheetRangeFormulaOwners = new Map<string, CellAddress>();
   private readonly referenceIndex: ReferenceIndex;
 
   constructor(sheetOrder: readonly FormulaSheetIdentity[] = []) {
@@ -58,6 +60,10 @@ export class RangeIndex {
 
   setSheetOrder(sheetOrder: readonly FormulaSheetIdentity[]): void {
     this.referenceIndex.setSheetOrder(sheetOrder);
+    for (const [ownerKey, owner] of this.sheetRangeFormulaOwners) {
+      const entry = this.entries.get(ownerKey);
+      if (entry) this.referenceIndex.set(owner, entry.dependencies);
+    }
   }
 
   set(owner: CellAddress, dependencies: readonly FormulaDependency[], invalidFormula = false): void {
@@ -65,7 +71,9 @@ export class RangeIndex {
     const normalizedDependencies = deduplicateDependencies(dependencies);
     const ownerKey = cellAddressKey(owner);
     this.referenceIndex.set(owner, normalizedDependencies);
-    this.entries.set(ownerKey, { dependencies: normalizedDependencies });
+    this.entries.set(ownerKey, { address: copyAddress(owner), dependencies: normalizedDependencies });
+    if (normalizedDependencies.some(dependencyHasSheetInterval)) this.sheetRangeFormulaOwners.set(ownerKey, copyAddress(owner));
+    else this.sheetRangeFormulaOwners.delete(ownerKey);
     if (invalidFormula) this.invalidFormulaOwners.set(ownerKey, copyAddress(owner));
     else this.invalidFormulaOwners.delete(ownerKey);
   }
@@ -206,6 +214,7 @@ export class RangeIndex {
       throw new Error('REFERENCE_INDEX_INVARIANT: formula owner is missing from reference postings');
     }
     this.entries.delete(ownerKey);
+    this.sheetRangeFormulaOwners.delete(ownerKey);
     this.invalidFormulaOwners.delete(ownerKey);
     return true;
   }
@@ -223,11 +232,20 @@ export class RangeIndex {
     this.entries.clear();
     this.invalidFormulaOwners.clear();
     this.invalidStructuralFormulaOwners.clear();
+    this.sheetRangeFormulaOwners.clear();
     this.referenceIndex.clear();
   }
 
   get size(): number {
     return this.entries.size;
+  }
+
+  getSheetRangeFormulaOwners(): readonly CellAddress[] {
+    return [...this.sheetRangeFormulaOwners.values()].map(copyAddress).sort(compareCellAddresses);
+  }
+
+  getSheetIntervalPostingCount(): number {
+    return this.referenceIndex.getSheetIntervalPostingCount();
   }
 
   getStructuralDependents(sheetId: string, axis: 'row' | 'column', at: number): readonly CellAddress[] {
@@ -246,6 +264,21 @@ export class RangeIndex {
     for (const owner of this.invalidFormulaOwners.values()) owners.set(cellAddressKey(owner), owner);
     for (const owner of this.invalidStructuralFormulaOwners.values()) owners.set(cellAddressKey(owner), owner);
     return [...owners.values()].map(copyAddress).sort(compareCellAddresses);
+  }
+}
+
+function dependencyHasSheetInterval(dependency: FormulaDependency): boolean {
+  if (dependency.kind !== 'reference') return false;
+  return referenceHasSheetInterval(dependency.reference);
+}
+
+function referenceHasSheetInterval(reference: FormulaReferenceNode): boolean {
+  switch (reference.type) {
+    case 'sheet-range-reference': return true;
+    case 'reference-union': return reference.references.some(referenceHasSheetInterval);
+    case 'reference-intersection': return referenceHasSheetInterval(reference.left) || referenceHasSheetInterval(reference.right);
+    case 'spill-reference': return reference.operand.type === 'sheet-range-reference';
+    default: return false;
   }
 }
 

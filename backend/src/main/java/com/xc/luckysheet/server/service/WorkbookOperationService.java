@@ -37,6 +37,8 @@ import com.xc.luckysheet.server.store.WorkbookStore;
 import org.springframework.stereotype.Service;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -46,6 +48,8 @@ import java.util.HexFormat;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.Supplier;
 
 @Service
 public class WorkbookOperationService {
@@ -63,12 +67,13 @@ public class WorkbookOperationService {
     private final RangeAccessService rangeAccess;
     private final AccessProjectionService accessProjection;
     /**
-     * H2 runs the browser service as one JVM.  Keep commit, checkpoint and
-     * restore writes for one workbook in one local critical section so a
-     * checkpoint cannot race the operation replay entity update.  The
+     * H2 runs the browser service as one JVM. Keep commit, checkpoint and
+     * restore writes serialized through transaction completion so a
+     * checkpoint cannot race the operation replay entity update. The
      * database lock remains authoritative for future instances.
      */
-    private final ConcurrentHashMap<String, Object> workbookLocks = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, ReentrantLock> workbookLocks = new ConcurrentHashMap<>();
+    private final ReentrantLock invalidWorkbookLock = new ReentrantLock();
 
     @Autowired
     public WorkbookOperationService(
@@ -131,7 +136,7 @@ public class WorkbookOperationService {
 
     @Transactional
     public CommitResult commit(String routeUnitId, OperationEnvelope operation, String actor, List<String> groups) {
-        synchronized (workbookLock(routeUnitId)) {
+        return withWorkbookLock(routeUnitId, () -> {
             try {
                 if (operation == null) throw ServiceException.validation("Operation is required");
                 return commitInternal(routeUnitId, operation, actor, groups == null ? List.of() : groups);
@@ -139,7 +144,7 @@ public class WorkbookOperationService {
                 auditRecorder.rejected(operation == null ? null : operation.operationId(), routeUnitId, actor, "OPERATION_COMMIT", error.getMessage());
                 throw error;
             }
-        }
+        });
     }
 
     private CommitResult commitInternal(String routeUnitId, OperationEnvelope operation, String actor, List<String> groups) {
@@ -542,7 +547,7 @@ public class WorkbookOperationService {
 
     @Transactional
     public CheckpointResponse checkpoint(String unitId, String actor) {
-        synchronized (workbookLock(unitId)) {
+        return withWorkbookLock(unitId, () -> {
             access.require(unitId, actor, WorkbookAclRole.EDITOR);
             WorkbookRow row = store.findForUpdate(unitId).orElseThrow(() -> ServiceException.notFound("Workbook not found: " + unitId));
             if (row.lifecycle() != WorkbookLifecycle.ACTIVE) throw ServiceException.trashed("Workbook is in trash and cannot be checkpointed");
@@ -557,12 +562,12 @@ public class WorkbookOperationService {
             store.updateWorkbook(unitId, row.revision(), json, row.revision(), now);
             store.insertCheckpoint(unitId, row.revision(), json, checksum(json), now);
             return new CheckpointResponse(unitId, row.revision(), checksum(json), true);
-        }
+        });
     }
 
     @Transactional
     public RestoreResult restore(String unitId, RestoreRequest request, String actor) {
-        synchronized (workbookLock(unitId)) {
+        return withWorkbookLock(unitId, () -> {
             access.require(unitId, actor, WorkbookAclRole.OWNER);
             WorkbookRow row = store.findForUpdate(unitId).orElseThrow(() -> ServiceException.notFound("Workbook not found: " + unitId));
             if (request.targetRevision() > row.revision()) throw ServiceException.notFound("Revision not found: " + request.targetRevision());
@@ -593,12 +598,29 @@ public class WorkbookOperationService {
             store.insertCheckpoint(unitId, revision, json, checksum(json), now);
             audit(operationId, unitId, actor, "SNAPSHOT_RESTORE", "ACCEPTED", request.reason(), mapper.createObjectNode().put("targetRevision", request.targetRevision()));
             return new RestoreResult(committed, response(unitId, target, revision, checksum(json)));
-        }
+        });
     }
 
-    private Object workbookLock(String unitId) {
-        if (unitId == null || unitId.isBlank()) return this;
-        return workbookLocks.computeIfAbsent(unitId, ignored -> new Object());
+    private <T> T withWorkbookLock(String unitId, Supplier<T> action) {
+        ReentrantLock lock = unitId == null || unitId.isBlank()
+                ? invalidWorkbookLock
+                : workbookLocks.computeIfAbsent(unitId, ignored -> new ReentrantLock());
+        lock.lock();
+        boolean releaseAfterCompletion = false;
+        try {
+            if (TransactionSynchronizationManager.isSynchronizationActive()) {
+                TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                    @Override
+                    public void afterCompletion(int status) {
+                        lock.unlock();
+                    }
+                });
+                releaseAfterCompletion = true;
+            }
+            return action.get();
+        } finally {
+            if (!releaseAfterCompletion) lock.unlock();
+        }
     }
 
     public List<AclEntry> acl(String unitId, String actor) {
