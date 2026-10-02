@@ -1148,7 +1148,6 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
     },
     metadata: {
       schema: { name: 'RemoveSheet', validate: isSheetIdMutation },
-      calculationContextEffect: CALCULATION_CONTEXT_EFFECTS.rebuild,
       permission: { capability: 'sheet.structure.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: () => [], mode: 'declared' },
       historyRebase: { kind: 'invalidate', reason: 'worksheet identity changes have no canonical history transform' },

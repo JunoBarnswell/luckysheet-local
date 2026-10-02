@@ -12,7 +12,7 @@ for (const [names, minimum, maximum] of [
   ['COUNTIF', 2, 2],
   ['COUNTBLANK ROWS COLUMNS', 1, 1],
   ['FIND SEARCH TAKE DROP MATCH', 2, 3],
-  ['SUBSTITUTE VLOOKUP HLOOKUP XMATCH INDEX', 3, 4],
+  ['SUBSTITUTE VLOOKUP HLOOKUP', 3, 4],
   ['INDEX', 2, 4],
   ['XMATCH', 2, 4],
   ['FILTER', 2, 3],

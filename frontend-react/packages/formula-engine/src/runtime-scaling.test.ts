@@ -159,3 +159,19 @@ test('data-table scenarios do not overwrite canonical formula results or nested 
   assert.deepEqual(engine.setFormula('Z1', '=SJS.TABLE(B1,A1:A2,D1)').value, [[4],[8]]);
   assert.equal(engine.getCellValue('B1'), 20); assert.equal(engine.getCellValue('D1'), 10);
 });
+
+
+test('shape queries retain computed control dependencies and can recover from a value cycle', () => {
+  const engine = new FormulaEngine();
+  assert.equal(code(engine.setFormula('A1', '=SUM(A1)').value), '#NUM!');
+  assert.equal(engine.setFormula('A1', '=ROWS(A1)').value, 1);
+  assert.equal(code(engine.setFormula('A1', '=ABS(A1)').value), '#NUM!');
+  assert.equal(engine.setFormula('A1', '=COLUMN(A1)').value, 1);
+  engine.setValue('A2', 2);
+  engine.setFormula('A1', '=ROWS(SEQUENCE(A2))');
+  assert.equal(engine.getCellValue('A1'), 2);
+  engine.setValue('A2', 3); assert.equal(engine.getCellValue('A1'), 3);
+  engine.setFormula('B1', '=ROWS(INDEX(A:A,A2,0))');
+  assert.equal(engine.getCellValue('B1'), 1);
+  engine.setFormula('A2', '=B1'); assert.equal(code(engine.getCellValue('B1')), '#NUM!');
+});

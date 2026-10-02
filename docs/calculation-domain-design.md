@@ -26,7 +26,9 @@ The October 2026 acceptance run exposed failures at these boundaries:
 ## Reference consumption
 
 A reference remains geometry until its consumer chooses an access mode.
-Rectangular functions (FILTER, SUMPRODUCT, INDEX) require shape and blanks.
+Shape-sensitive consumers require dimensions and correct blank semantics. INDEX
+selects reference geometry; SUMPRODUCT and conditional consumers can use a
+virtual sparse range view. FILTER and dense array output still materialize values.
 Sparse aggregates (SUM, AVERAGE, COUNT, COUNTA, MIN, MAX, PRODUCT and variance)
 consume occupied input/spill values without allocating blank coordinates.
 Both modes use the same cell evaluator and permission-projected inputs. Sparse
@@ -97,6 +99,16 @@ Native desktop Excel interoperability remains Blocked without desktop Excel.
 
 This document is a target ownership contract. It does not certify unimplemented
 ExternalLinkDomain or record graph capabilities as complete.
+
+## Current formula runtime checkpoint
+
+The executable catalog, sparse consumers, dependency ordering, benchmark and
+acceptance limits are described in
+[formula-runtime-performance.md](formula-runtime-performance.md). The separately
+merged external-link/Record implementation and explicit snapshot migration are
+described in [linked-calculation-architecture.md](linked-calculation-architecture.md).
+The contracts below remain target requirements; they do not certify complete
+acceptance of every linked-calculation case.
 
 ## 下一步实现所需的完整契约
 

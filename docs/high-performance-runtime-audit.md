@@ -207,3 +207,17 @@ This status records changes made after the baseline audit above.
 - **Verified checks:** formula-engine index tests passed (29/29), focused application reorder tests passed (2/2), TypeScript typecheck, production build, and repository boundary/contract/acceptance gates passed, and the Java backend Maven suite passed (308 tests, 0 failures/errors/skips). The full `npm run test:unit` command remains red on the branch and at baseline: 150 reported failure markers/108 distinct failing names here versus 152/109 at the exact branch-start commit, with no new failing name introduced and the worker protocol test now passing. This includes `recalculates spills when sheet-table and merge blockers change geometry` (`Sheet Table identities must be unique within a workbook`), reproduced on the exact baseline commit.
 
 Phases 3–11 and DoD items outside calculation, 3D references, and the stated runtime groundwork are not complete. The broad cross-workbook, Record/Relation/Rollup, collaboration recovery/logical identity, ScheduleEngine, band report, dashboard projection, unified domain access control, and benchmark CI requirements remain outstanding.
+
+
+## Formula catalog scaling follow-up (2026-10-03)
+
+The formula runtime now covers the complete 136-function executable catalog with
+shared argument contracts and successful/rejected acceptance examples. Sparse
+conditional aggregates, virtual lookup/INDEX consumption, visibility aggregates,
+iterative evaluation order and clean prerequisite reuse extend the earlier SUM
+and SCC work. Formula body edits preserve topology only when value dependencies
+also remain unchanged; volatile and projected target dependencies dirty downstream
+owners. See [formula-runtime-performance.md](formula-runtime-performance.md) for
+30-sample baseline comparisons, million-coordinate sparse cases, verification
+scope and the remaining dense-array/native-Excel limits. The older audit sections
+above describe their original baseline, not the current linked-data implementation.

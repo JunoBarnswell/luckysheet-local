@@ -216,6 +216,7 @@ interface StoredCell {
   parseError?: FormulaError;
   result: FormulaResult;
   evaluated?: boolean;
+  valueDependencies?: readonly FormulaDependency[];
 }
 
 export class FormulaEngine {
@@ -1521,6 +1522,7 @@ export class FormulaEngine {
     this.spills.delete(spillKey(address));
     let ast: FormulaAst | undefined;
     let formulaDependencies: readonly FormulaDependency[] = [];
+    let valueDependencies: readonly FormulaDependency[] = [];
     let parseError: FormulaError | undefined;
 
     try {
@@ -1534,6 +1536,7 @@ export class FormulaEngine {
       this.dependencies.set(address, expandedDependencies);
       ast = parsed;
       formulaDependencies = expandedDependencies;
+      valueDependencies = this.collectValueDependencies(parsed, address);
     } catch (error) {
       parseError = formulaErrorFrom(error);
       this.dependencies.set(address, [], true);
@@ -1542,11 +1545,13 @@ export class FormulaEngine {
     const result: FormulaResult = parseError
       ? { value: parseError, formula, dependencies: [] }
       : { value: null, formula, ast, dependencies: formulaDependencies };
-    this.cells.set(key, { address: { ...address }, formula, ast, parseError, result });
+    this.cells.set(key, { address: { ...address }, formula, ast, parseError, result, valueDependencies });
     this.indexInputAddress(address);
     this.updateFormulaMetadata(key, ast, formulaDependencies);
     if (previous?.formula === undefined) this.formulaCount += 1;
-    if (previous?.formula === undefined || !sameCalculationValue(previous.result.dependencies, formulaDependencies)) this.markFormulaTopologyChanged();
+    if (previous?.formula === undefined
+      || !sameCalculationValue(previous.result.dependencies, formulaDependencies)
+      || !sameCalculationValue(previous.valueDependencies, valueDependencies)) this.markFormulaTopologyChanged();
     return result;
   }
 
@@ -1715,13 +1720,21 @@ export class FormulaEngine {
     };
   }
 
+  private collectValueDependencies(ast: FormulaAst | undefined, address: CellAddress): readonly FormulaDependency[] {
+    if (!ast) return [];
+    return this.expandNameDependencies(collectFormulaDependencies(ast, address, {
+      sheetTables: this.sheetTables, sheetOrder: this.sheetOrder,
+      resolveNameAst: (name, owner) => this.resolveDefinedNameAst(name, owner), valueDependencies: true,
+    }), address, new Set(), true);
+  }
+
   private getCircularComponentIndex(): ReadonlyMap<string, CircularComponent> {
     if (this.cachedCircularComponents?.generation === this.formulaTopologyGeneration) {
       return this.cachedCircularComponents.byCell;
     }
     const graphNodes = [...this.cells.values()]
       .filter((cell) => cell.formula !== undefined)
-      .map((cell) => ({ address: cell.address, dependencies: cell.ast ? this.expandNameDependencies(collectFormulaDependencies(cell.ast, cell.address, { sheetTables: this.sheetTables, sheetOrder: this.sheetOrder, resolveNameAst: (name, owner) => this.resolveDefinedNameAst(name, owner), valueDependencies: true }), cell.address, new Set(), true) : cell.result.dependencies }));
+      .map((cell) => ({ address: cell.address, dependencies: cell.ast ? this.collectValueDependencies(cell.ast, cell.address) : cell.result.dependencies }));
     const byCell = new Map<string, CircularComponent>();
     const graph = analyzeFormulaGraph(graphNodes, this.sheetOrder);
     for (const component of graph.components) {

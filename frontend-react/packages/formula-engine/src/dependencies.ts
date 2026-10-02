@@ -24,7 +24,7 @@ export function collectFormulaDependencies(
   assertCellAddress(owner);
   const dependencies: FormulaDependency[] = [];
   const seen = new Set<string>();
-  visit(ast, owner, dependencies, seen, options.sheetTables, options.sheetOrder, new Set(), options.valueDependencies ?? false);
+  visit(ast, owner, dependencies, seen, options.sheetTables, options.sheetOrder, new Set(), options.valueDependencies ?? false, options.resolveNameAst);
   addProjectedConsumerDependencies(ast, owner, options, dependencies, seen);
   return dependencies;
 }
@@ -148,7 +148,25 @@ function visit(
   sheetOrder: readonly FormulaSheetIdentity[],
   bound: ReadonlySet<string> = new Set(),
   valueDependencies = false,
+  resolveNameAst?: CollectFormulaDependenciesOptions['resolveNameAst'],
 ): void {
+  function visitGeometryInputs(argument: FormulaAst, names = new Set<string>()): void {
+    if (['cell-reference', 'range-reference', 'whole-row-reference', 'whole-column-reference', 'sheet-range-reference', 'external-reference', 'table-reference'].includes(argument.type)) return;
+    if (argument.type === 'reference-union') { for (const reference of argument.references) visitGeometryInputs(reference, names); return; }
+    if (argument.type === 'reference-intersection') { visitGeometryInputs(argument.left, names); visitGeometryInputs(argument.right, names); return; }
+    if (argument.type === 'name-reference' && resolveNameAst) {
+      const id = argument.name.toUpperCase();
+      if (names.has(id)) return;
+      const definition = resolveNameAst(argument.name, owner);
+      if (definition) { visitGeometryInputs(definition, new Set([...names, id])); return; }
+    }
+    if (argument.type === 'function-call' && ['INDEX', 'OFFSET'].includes(argument.name.toUpperCase())) {
+      if (argument.arguments[0]) visitGeometryInputs(argument.arguments[0], names);
+      for (const control of argument.arguments.slice(1)) visit(control, owner, dependencies, seen, sheetTables, sheetOrder, bound, true, resolveNameAst);
+      return;
+    }
+    visit(argument, owner, dependencies, seen, sheetTables, sheetOrder, bound, true, resolveNameAst);
+  }
   switch (node.type) {
     case 'cell-reference': {
       const dependency: CellDependency = { kind: 'cell', address: resolveCellReference(node.reference, owner, sheetOrder) };
@@ -172,21 +190,24 @@ function visit(
       collectNestedTableDependencies(node, owner, dependencies, seen, sheetTables, sheetOrder);
       return;
     case 'unary-expression':
-      visit(node.operand, owner, dependencies, seen, sheetTables, sheetOrder, bound, valueDependencies);
+      visit(node.operand, owner, dependencies, seen, sheetTables, sheetOrder, bound, valueDependencies, resolveNameAst);
       return;
     case 'spill-reference':
-      visit(node.operand, owner, dependencies, seen, sheetTables, sheetOrder, bound, valueDependencies);
+      visit(node.operand, owner, dependencies, seen, sheetTables, sheetOrder, bound, valueDependencies, resolveNameAst);
       return;
     case 'binary-expression':
-      visit(node.left, owner, dependencies, seen, sheetTables, sheetOrder, bound, valueDependencies);
-      visit(node.right, owner, dependencies, seen, sheetTables, sheetOrder, bound, valueDependencies);
+      visit(node.left, owner, dependencies, seen, sheetTables, sheetOrder, bound, valueDependencies, resolveNameAst);
+      visit(node.right, owner, dependencies, seen, sheetTables, sheetOrder, bound, valueDependencies, resolveNameAst);
       return;
     case 'function-call':
-      if (valueDependencies && ['ROW', 'COLUMN', 'ROWS', 'COLUMNS'].includes(node.name.toUpperCase())) return;
-      if (visitLexicalArguments(node, bound, (child, local) => visit(child, owner, dependencies, seen, sheetTables, sheetOrder, local, valueDependencies))) return;
-      if (node.callee) visit(node.callee, owner, dependencies, seen, sheetTables, sheetOrder, bound, valueDependencies);
+      if (valueDependencies && ['ROW', 'COLUMN', 'ROWS', 'COLUMNS'].includes(node.name.toUpperCase())) {
+        for (const argument of node.arguments) visitGeometryInputs(argument);
+        return;
+      }
+      if (visitLexicalArguments(node, bound, (child, local) => visit(child, owner, dependencies, seen, sheetTables, sheetOrder, local, valueDependencies, resolveNameAst))) return;
+      if (node.callee) visit(node.callee, owner, dependencies, seen, sheetTables, sheetOrder, bound, valueDependencies, resolveNameAst);
       if (node.name && !bound.has(node.name.toUpperCase()) && !getFunctionDescriptor(node.name)) addDependency({ kind: 'name', name: node.name.toUpperCase() }, dependencies, seen);
-      for (const argument of node.arguments) visit(argument, owner, dependencies, seen, sheetTables, sheetOrder, bound, valueDependencies);
+      for (const argument of node.arguments) visit(argument, owner, dependencies, seen, sheetTables, sheetOrder, bound, valueDependencies, resolveNameAst);
       return;
     case 'name-reference': {
       if (bound.has(node.name.toUpperCase())) return;

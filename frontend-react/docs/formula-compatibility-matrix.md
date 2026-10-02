@@ -36,7 +36,8 @@
 | 同表 / 跨表 `'Sheet 1'!A1` | Full |
 | 定义名称 | Full |
 | 结构化表引用 `Table1[Col]` / `[@Col]` / `#All` / `#Headers` / `#Data` / `#Totals` | Partial |
-| 3D 引用 / 外部簿 | Preserve |
+| 3D 引用 | Partial：可计算；生命周期以共享结构变换为准 |
+| 外部簿 | Partial：需要显式服务绑定和授权刷新；原生外链部件不自动转换 |
 | 联合 `@` / `#`  spilled range | Partial |
 
 ## 依赖图与重算
@@ -98,7 +99,10 @@
 |------|------|
 | IF / AND / OR | Partial |
 | SUM / AVERAGE / COUNT | Partial |
-| LET / LAMBDA | N/A |
+| LET / LAMBDA | Partial：词法绑定、表达式调用、命名函数已执行验证 |
+| SUMIF(S) / COUNTIF(S) / AVERAGEIF(S) / MINIFS / MAXIFS | Partial：稀疏范围、空值及形状校验 |
+| SUBTOTAL / AGGREGATE / SUMPRODUCT | Partial：统一范围消费和可见性语义 |
+| ROW / COLUMN / ROWS / COLUMNS / ADDRESS | Partial：引用几何及 A1/R1C1 地址 |
 
 ### M18 矩阵
 
@@ -109,6 +113,9 @@
 
 ## 维护说明
 
-- 新增函数必须更新本表与 `packages/formula-engine/src/index.test.ts`
+- 当前注册 136 个函数；每个函数须有参数契约、UI 条目和 `packages/formula-engine/src/fixtures/function-corpus.ts` 验收向量。
+- `npm run test:formula-engine` 执行所有公式测试；CI 的计算门禁同步执行该范围。
+- 逐函数常见路径通过不等于所有 Excel 函数和可选参数完整兼容；原生 Excel 验收仍为 Blocked。
+- 性能数据和剩余限制见 [formula-runtime-performance.md](../../docs/formula-runtime-performance.md)。
 - L2 门禁:优先集标记 **Full** 或 **Partial** 且具备单测
 - 导入 xlsx 时 **Preserve** 项写入 Compatibility Report (M14)
