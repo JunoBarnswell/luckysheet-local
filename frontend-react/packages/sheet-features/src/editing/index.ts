@@ -1812,7 +1812,7 @@ export function registerEditingCommands(runtime: CommandRuntime): void {
     metadata: {
       schema: { name: 'DuplicateSheet', validate: isSheetDuplicateMutation },
       permission: { capability: 'sheet.structure.write', roles: ['owner', 'editor'] },
-      affectedRanges: { resolve: () => [], mode: 'exact' },
+      affectedRanges: { resolve: () => [], mode: 'declared' },
       calculationContextEffect: CALCULATION_CONTEXT_EFFECTS.rebuild,
       inverseIds: ['sheet.remove'],
     },
@@ -1821,14 +1821,15 @@ export function registerEditingCommands(runtime: CommandRuntime): void {
   runtime.registry.registerCommand<{ sourceSheetId: string; newId: string; newName: string }>({
     id: 'sheet.duplicate',
     execute: (params, context) => {
-      const affectedRanges: RangeRef[] = [];
+      const source = context.workbook.getSheet(params.sourceSheetId);
+      const affectedRanges: RangeRef[] = [{ sheetId: source.id, startRow: 0, endRow: source.rowCount - 1, startColumn: 0, endColumn: source.columnCount - 1 }];
       context.applyMutation({
         id: 'sheet.duplicated',
         unitId: context.workbook.unitId,
         sheetId: params.newId,
         params,
         affectedRanges,
-        inverse: [{ id: 'sheet.remove', unitId: context.workbook.unitId, sheetId: params.newId, params: { id: params.newId }, affectedRanges }],
+        inverse: [{ id: 'sheet.remove', unitId: context.workbook.unitId, sheetId: params.newId, params: { id: params.newId }, affectedRanges: affectedRanges.map((range) => ({ ...range, sheetId: params.newId })) }],
         apply: () => { context.workbook.duplicateSheet(params.sourceSheetId, params.newId, params.newName); },
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
@@ -1905,13 +1906,13 @@ export function registerEditingCommands(runtime: CommandRuntime): void {
     handler: (item, context) => {
       if (!isSheetReorderedMutation(item.params)) throw new Error('Invalid sheet.reordered mutation payload');
       const params = item.params;
-      context.workbook.reorderSheet(params.sheetId, params.toIndex);
+      return context.workbook.reorderSheet(params.sheetId, params.toIndex);
     },
     metadata: {
       schema: { name: 'ReorderSheet', validate: isSheetReorderedMutation },
       permission: { capability: 'sheet.structure.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: () => [], mode: 'exact' },
-      calculationContextEffect: CALCULATION_CONTEXT_EFFECTS.rebuild,
+      calculationContextEffect: CALCULATION_CONTEXT_EFFECTS.syncSheetOrder,
       inverseIds: ['sheet.reordered'],
     },
   });
@@ -1929,7 +1930,7 @@ export function registerEditingCommands(runtime: CommandRuntime): void {
         params,
         affectedRanges,
         inverse: [{ id: 'sheet.reordered', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, toIndex: fromIndex }, affectedRanges }],
-        apply: () => { context.workbook.reorderSheet(params.sheetId, params.toIndex); },
+        apply: () => context.workbook.reorderSheet(params.sheetId, params.toIndex),
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },

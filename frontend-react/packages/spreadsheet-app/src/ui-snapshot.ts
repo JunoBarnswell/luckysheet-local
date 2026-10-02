@@ -63,6 +63,7 @@ import {
 } from '@react-sheets/sheet-features';
 import { resolveFilterCellValue } from '@react-sheets/core-model';
 import { FormulaEngine, isFormulaError, isSpillChild, type FormulaValue } from '@react-sheets/formula-engine';
+import { resolveWorkbookViewCell } from './features/data-source/table-sheet-address';
 import { formatValue as formatNumberValue } from '@react-sheets/number-format';
 import {
   buildPivotGridProjection,
@@ -186,9 +187,11 @@ function formatDisplayValue(
   sheetId: string,
   row: number,
   column: number,
+  recordCalculation = false,
 ): string {
   if (cell?.formula) {
-    return toFormulaDisplay(formula.getCellValue({ sheetId, row, column }));
+    const value = formula.getCellValue({ sheetId, row, column });
+    return recordCalculation && Array.isArray(value) ? value.flat().map(value => toFormulaDisplay(value)).join(', ') : toFormulaDisplay(value);
   }
   const spillValue = formula.getSpillValueAt(sheetId, row, column);
   if (spillValue !== undefined) return toFormulaDisplay(spillValue);
@@ -238,12 +241,12 @@ export function buildCanvasSheetSnapshot(
     const cell = cellResolver.resolve(owner, row, column)?.cell;
     const spillValue = formula.getSpillValueAt(owner.id, row, column);
     if (spillValue !== undefined) return resolveFilterCellValue(cell, spillValue, dateSystem);
-    if (cell?.formula !== undefined) {
+    if (cell?.formula !== undefined || formula.getRecordFormulaOwnerAt({ sheetId: owner.id, row, column })) {
       const result = formula.getCellResult({ sheetId: owner.id, row, column });
       // A missing calculation result is not permission to read authored
       // formula text/value.  It is an unresolved filter value until the
       // FormulaEngine publishes the next result.
-      const evaluated = result ? result.value : cell.formulaValue !== undefined ? cell.formulaValue : null;
+      const evaluated = result ? result.value : cell?.formulaValue !== undefined ? cell.formulaValue : null;
       return resolveFilterCellValue(cell, evaluated, dateSystem);
     }
     return resolveFilterCellValue(cell, undefined, dateSystem);
@@ -261,19 +264,7 @@ export function buildCanvasSheetSnapshot(
   const outlineControls = resolveOutlineControls(sheet);
   const viewColumns = Array.from({ length: Math.max(26, sheet.columnCount) }, (_, index) => columnLabel(index));
   const usedRange = sheet.usedRange;
-  const advancedTableId = sheet.kind === 'table-sheet' ? sheet.tableSheet?.viewId : sheet.kind === 'gantt-sheet' ? sheet.ganttSheet?.viewId : sheet.kind === 'report-sheet' ? sheet.reportSheet?.tableId : undefined;
-  const advancedTable = advancedTableId ? workbook.dataModel.tables.get(advancedTableId) : undefined;
-
-  const resolveModelCell = (row: number, column: number): { cell?: CellData; owner: WorksheetModel; row: number; column: number } => {
-    const local = cellResolver.resolve(sheet, row, column)?.cell;
-    if (local || row === 0 || !advancedTable?.sourceRange || sheet.kind === 'report-sheet') return { cell: local, owner: sheet, row, column };
-    const field = advancedTable.fields[column];
-    const sourceSheet = workbook.sheets.get(advancedTable.sourceRange.sheetId);
-    const sourceRow = advancedTable.sourceRange.startRow + row;
-    if (!field || !sourceSheet || sourceRow > advancedTable.sourceRange.endRow) return { owner: sheet, row, column };
-    const sourceColumn = advancedTable.sourceRange.startColumn + field.ordinal;
-    return { cell: cellResolver.resolve(sourceSheet, sourceRow, sourceColumn)?.cell, owner: sourceSheet, row: sourceRow, column: sourceColumn };
-  };
+  const resolveModelCell = (row: number, column: number) => resolveWorkbookViewCell(workbook, sheet, formula, row, column, (owner, sourceRow, sourceColumn) => cellResolver.resolve(owner, sourceRow, sourceColumn)?.cell);
 
   const getCell = (row: number, column: number): CanvasCellSnapshot | undefined => {
     if (row < 0 || row >= sheet.rowCount || column < 0 || column >= sheet.columnCount) return undefined;
@@ -289,7 +280,7 @@ export function buildCanvasSheetSnapshot(
       || isFormulaError(evaluatedFormulaValue)
       ? evaluatedFormulaValue
       : modelCell?.formulaValue;
-    const value = formatDisplayValue(modelCell, formula, resolved.owner, resolved.owner.id, resolved.row, resolved.column);
+    const value = formatDisplayValue(modelCell, formula, resolved.owner, resolved.owner.id, resolved.row, resolved.column, Boolean(resolved.recordField));
     const resolvedFilter = resolveFilterCell(resolved.owner, resolved.row, resolved.column);
     const overlay = conditionalRuntime.resolveCell(row, column);
     const table = findSheetTableAt(sheet, row, column);

@@ -14,7 +14,7 @@ import { isEmbeddedObjectDrawingPayload, isEquationDrawingPayload, isIconDrawing
 import { isCellPhoneticMetadata } from './phonetic';
 import { normalizeFontFamily } from './font-family';
 import type { ReviewStoreSnapshot } from './review-store';
-import { isAnalysisViewDefinition, type AnalysisViewDefinition } from './data-model';
+import { assertExternalLinkBinding, isAnalysisViewDefinition, type AnalysisViewDefinition } from './data-model';
 import { DEFAULT_WORKBOOK_CALCULATION_SETTINGS, isWorkbookCalculationSettings, type WorkbookCalculationSettings, type WorkbookCollationContext } from '@react-sheets/formula-engine';
 import { assertCanonicalWorksheetName } from './worksheet-name';
 import { parseCellMatrixCoordinate } from './cell-coordinates';
@@ -31,7 +31,7 @@ const HYPERLINK_DEFINED_NAME = /^[A-Za-z_\\][A-Za-z0-9_.]*$/;
 export interface WorkbookSnapshot {
   schema: 'WorkbookSnapshot';
   /** Canonical persisted schema revision. Non-matching snapshots are rejected. */
-  version: 10;
+  version: 11;
   unitId: UnitId;
   name: string;
   dimensionMetrics: WorkbookDimensionMetrics;
@@ -60,7 +60,7 @@ export interface WorkbookDimensionMetrics {
   maximumDigitWidthPx: number;
 }
 
-export const WORKBOOK_SNAPSHOT_SCHEMA_REVISION = 10 as const;
+export const WORKBOOK_SNAPSHOT_SCHEMA_REVISION = 11 as const;
 
 /**
  * One-way browser-storage migration. It preserves v2 native geometry exactly
@@ -75,6 +75,11 @@ export function migrateStoredWorkbookSnapshot(value: unknown): WorkbookSnapshot 
     input.version = input.dimensionMetrics && input.sheets.every((sheet: Record<string, unknown>) => sheet.pane && sheet.defaultRowHeightPx && sheet.defaultColumnWidthPx) ? 4 : 2;
   }
   if (input.version === WORKBOOK_SNAPSHOT_SCHEMA_REVISION) return assertCanonicalWorkbookSnapshot(input as WorkbookSnapshot);
+  if (input.dataModel && typeof input.dataModel === 'object') input.dataModel.externalLinks = [];
+  if (input.version === 10 && Array.isArray(input.sheets)) {
+    input.version = WORKBOOK_SNAPSHOT_SCHEMA_REVISION;
+    return assertCanonicalWorkbookSnapshot(input as WorkbookSnapshot);
+  }
   if (input.version === 9 && Array.isArray(input.sheets)) {
     input.version = WORKBOOK_SNAPSHOT_SCHEMA_REVISION;
     migrateLegacyHyperlinks(input.sheets);
@@ -113,6 +118,7 @@ export function migrateStoredWorkbookSnapshot(value: unknown): WorkbookSnapshot 
   if (input.version === 4 && Array.isArray(input.sheets)) {
     input.version = 5;
     input.dataModel = {
+      externalLinks: [],
       sources: Array.isArray(input.dataSources) ? input.dataSources : [],
       tables: Array.isArray(input.tables) ? input.tables : [],
       relationships: [],
@@ -340,6 +346,14 @@ function migrateLegacyFontSizes(value: unknown): void {
  * must be repaired before it enters the workbook runtime.
  */
 export function assertCanonicalWorkbookSnapshot(snapshot: WorkbookSnapshot): WorkbookSnapshot {
+  const links = snapshot.dataModel?.externalLinks;
+  if (!Array.isArray(links)) throw new Error('Canonical workbook requires external link definitions');
+  if (links !== undefined) {
+    if (!Array.isArray(links) || links.length > 100) throw new Error('EXTERNAL_LINK_COLLECTION_INVALID');
+    const ids = new Set<string>(), tokens = new Set<string>();
+    for (const link of links) { assertExternalLinkBinding(link); if (ids.has(link.id) || tokens.has(link.token.toUpperCase())) throw new Error('EXTERNAL_LINK_IDENTITY_CONFLICT'); ids.add(link.id); tokens.add(link.token.toUpperCase()); }
+  }
+
   if (snapshot.version !== WORKBOOK_SNAPSHOT_SCHEMA_REVISION) {
     throw new Error(`Unsupported workbook snapshot version: ${String(snapshot.version)}`);
   }
@@ -612,6 +626,7 @@ export function assertCanonicalWorksheetIdentities(sheets: readonly { readonly i
 /** Map-backed workbook owners must never be silently replaced during snapshot hydration. */
 export function assertCanonicalWorkbookOwnerIdentities(snapshot: {
   readonly dataModel: {
+    readonly externalLinks: readonly { readonly id: string }[];
     readonly sources: readonly { readonly id: string }[];
     readonly tables: readonly { readonly id: string }[];
     readonly relationships: readonly { readonly id: string }[];

@@ -1,3 +1,5 @@
+import { assertCalculationBlockedRanges } from './external-links';
+import { assertExternalCalculationLink, type ExternalCalculationLink } from './external-links';
 import type { CellAddress } from './ast';
 import { cellAddressKey } from './address';
 import { isWorkbookCalculationSettings, type WorkbookCalculationSettings } from './calculation-settings';
@@ -28,6 +30,9 @@ export interface FormulaCalculationSnapshot {
   readonly cells: readonly FormulaCellSnapshot[];
   readonly definedNameModels: readonly FormulaDefinedName[];
   readonly sheetTables: readonly SheetTableRef[];
+  readonly externalLinks?: readonly ExternalCalculationLink[];
+  readonly recordFormulaOwners?: readonly { tableId: string; recordId: string; fieldId: string; address: CellAddress }[];
+  readonly blockedRanges?: readonly { sheetId: string; startRow: number; endRow: number; startColumn: number; endColumn: number }[];
   readonly spillSpaces: readonly FormulaSpillSpaceSnapshot[];
   readonly pendingRoots: readonly CellAddress[];
 }
@@ -56,6 +61,7 @@ export interface FormulaSpillSpaceSnapshot {
 
 export function assertFormulaCalculationSnapshot(value: unknown): asserts value is FormulaCalculationSnapshot {
   if (!isRecord(value)) throw new Error('Calculation snapshot must be an object');
+  if (value.blockedRanges !== undefined) assertCalculationBlockedRanges(value.blockedRanges);
   if (typeof value.defaultSheetId !== 'string' || value.defaultSheetId.length === 0) {
     throw new Error('Calculation snapshot requires a default worksheet id');
   }
@@ -82,6 +88,7 @@ export function assertFormulaCalculationSnapshot(value: unknown): asserts value 
   if (!isExcelNumericContext(value.numericContext)) throw new Error('Calculation snapshot has an invalid numeric context');
   if (!isCalculationEntropyContext(value.calculationEntropy)) throw new Error('Calculation snapshot has an invalid calculation entropy');
   if (!isWorkbookCollationContext(value.collationContext)) throw new Error('Calculation snapshot has an invalid collation context');
+  if (value.externalLinks !== undefined) { if (!Array.isArray(value.externalLinks)) throw new Error('Invalid external calculation links'); for (const link of value.externalLinks) assertExternalCalculationLink(link); }
   if (value.visibility !== undefined) assertFormulaVisibilitySnapshot(value.visibility);
   if (!Array.isArray(value.cells) || !value.cells.every(isFormulaCellSnapshot)) {
     throw new Error('Calculation snapshot has invalid cells');
@@ -96,6 +103,15 @@ export function assertFormulaCalculationSnapshot(value: unknown): asserts value 
   const formulaAddresses = new Set(value.cells
     .filter((cell): cell is FormulaCellSnapshot & { readonly input: { readonly kind: 'formula'; readonly formula: string } } => cell.input.kind === 'formula')
     .map(({ address }) => cellAddressKey(address)));
+  if (value.recordFormulaOwners !== undefined) {
+    if (!Array.isArray(value.recordFormulaOwners)) throw new Error('Invalid record formula owners');
+    const owners = new Set<string>(), identities = new Set<string>();
+    for (const owner of value.recordFormulaOwners) {
+      const key = cellAddressKey(owner.address), identity = JSON.stringify([owner.tableId, owner.recordId, owner.fieldId]);
+      if (!owner.tableId || !owner.recordId || !owner.fieldId || !sheetIds.has(owner.address.sheetId) || !formulaAddresses.has(key) || owners.has(key) || identities.has(identity)) throw new Error('Invalid record formula owner identity');
+      owners.add(key); identities.add(identity);
+    }
+  }
   const spillSpaceSheetIds = new Set<string>();
   const spillAnchorAddresses = new Set<string>();
   for (const spillSpace of value.spillSpaces) {

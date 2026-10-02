@@ -1,3 +1,4 @@
+import { planSheetIdentityTransform } from '@react-sheets/core-model';
 import type {
   BandedRule,
   CellData,
@@ -768,6 +769,8 @@ function normalizeTableSheetDefinition(workbook: WorkbookModel, params: TableShe
   if (!table) throw new Error(`TableSheet binding table is unavailable: ${params.definition.viewId}`);
   const fieldIds = new Set(table.fields.map((field) => field.id));
   if (params.definition.columns.length === 0 || params.definition.columns.some((column) => !fieldIds.has(column.fieldId))) throw new Error('TableSheet columns must reference fields from the binding table');
+  if (params.definition.columns.some((column) => column.formula !== undefined || column.type === 'formula' || column.type === 'lookup')) throw new Error('UNSUPPORTED_FEATURE: TableSheet calculated fields require a canonical record calculation owner');
+  if (params.definition.grouping.some((group) => group.collapsed)) throw new Error('UNSUPPORTED_FEATURE: Collapsed TableSheet groups require group identity');
   if (params.definition.grouping.some((group) => !fieldIds.has(group.fieldId)) || params.definition.sortState?.some((sort) => !fieldIds.has(sort.fieldId))) throw new Error('TableSheet grouping and sorting must reference binding-table fields');
   return structuredClone(params.definition);
 }
@@ -1140,12 +1143,13 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
     id: 'sheet.remove',
     handler: (item, context) => {
       if (!isSheetIdMutation(item.params)) throw new Error('Invalid sheet.remove mutation payload');
-      context.workbook.removeSheet(item.params.id);
+      const source = context.workbook.getSheet(item.params.id);
+      return planSheetIdentityTransform(context.workbook, { kind: 'delete', sourceSheetId: source.id, sourceName: source.name }).apply();
     },
     metadata: {
       schema: { name: 'RemoveSheet', validate: isSheetIdMutation },
       permission: { capability: 'sheet.structure.write', roles: ['owner', 'editor'] },
-      affectedRanges: { resolve: () => [], mode: 'exact' },
+      affectedRanges: { resolve: () => [], mode: 'declared' },
       historyRebase: { kind: 'invalidate', reason: 'worksheet identity changes have no canonical history transform' },
       calculationContextEffect: CALCULATION_CONTEXT_EFFECTS.rebuild,
       inverseIds: ['sheet.restore'],
@@ -1178,7 +1182,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
     metadata: {
       schema: { name: 'RestoreSheet', validate: isSheetRestoreMutation },
       permission: { capability: 'sheet.structure.write', roles: ['owner', 'editor'] },
-      affectedRanges: { resolve: () => [], mode: 'exact' },
+      affectedRanges: { resolve: ({ sheet }) => [{ sheetId: sheet.id, startRow: 0, endRow: sheet.rowCount - 1, startColumn: 0, endColumn: sheet.columnCount - 1 }], mode: 'exact' },
       historyRebase: { kind: 'invalidate', reason: 'worksheet identity changes have no canonical history transform' },
       calculationContextEffect: CALCULATION_CONTEXT_EFFECTS.rebuild,
       inverseIds: ['sheet.remove'],
@@ -1238,7 +1242,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       }
       const index = workbook.sheetOrder.indexOf(params.id);
       const snapshot = workbook.getSheetSnapshot(params.id);
-      const affectedRanges: RangeRef[] = [];
+      const affectedRanges: RangeRef[] = [{ sheetId: snapshot.id, startRow: 0, endRow: snapshot.rowCount - 1, startColumn: 0, endColumn: snapshot.columnCount - 1 }];
       context.applyMutation({
         id: 'sheet.remove',
         unitId: workbook.unitId,
@@ -1254,7 +1258,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
             affectedRanges,
           },
         ],
-        apply: () => { workbook.removeSheet(params.id); },
+        apply: () => planSheetIdentityTransform(workbook, { kind: 'delete', sourceSheetId: params.id, sourceName: snapshot.name }).apply(),
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },

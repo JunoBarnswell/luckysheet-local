@@ -1,3 +1,4 @@
+import { recordSheetTables } from './features/linked-data/record-calculation';
 import type { WorkbookModel, WorksheetModel } from '@react-sheets/core-model';
 import type { FormulaEngine, SheetTableRef, SpillEnvironment } from '@react-sheets/formula-engine';
 
@@ -64,7 +65,7 @@ export function workbookSheetTables(workbook: WorkbookModel): SheetTableRef[] {
       });
     }
   }
-  return tables;
+  return [...tables, ...recordSheetTables(workbook)];
 }
 
 export function syncWorkbookSheetTables(engine: FormulaEngine, workbook: WorkbookModel, recalculate = true): void {

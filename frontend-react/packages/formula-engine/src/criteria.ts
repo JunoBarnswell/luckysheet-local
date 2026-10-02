@@ -15,6 +15,8 @@ export interface CriteriaRange {
   readonly columns: number;
 }
 
+const compiledWildcards = new WeakMap<CriteriaExpression, RegExp>();
+
 export function parseCriteria(value: FormulaValue): CriteriaExpression {
   if (isFormulaError(value)) return { operator: 'eq', operand: value };
   if (value === null) return { operator: 'eq', operand: '' };
@@ -27,8 +29,9 @@ export function parseCriteria(value: FormulaValue): CriteriaExpression {
       : operator === '>=' ? 'ge'
         : operator === '<' ? 'lt'
           : operator === '<=' ? 'le' : 'eq';
-  const wildcard = hasWildcard(operandText) ? operandText : undefined;
+  const wildcard = hasWildcard(operandText) || operandText.includes('~') ? operandText : undefined;
   if (wildcard !== undefined) return { operator: parsedOperator, operand: operandText, wildcard };
+  if (operandText === '') return { operator: parsedOperator, operand: '' };
   const numeric = coerceExcelNumber(operandText);
   return { operator: parsedOperator, operand: isFormulaError(numeric) ? operandText : numeric };
 }
@@ -36,8 +39,14 @@ export function parseCriteria(value: FormulaValue): CriteriaExpression {
 export function matchesCriteria(value: FormulaValue, expression: CriteriaExpression): boolean {
   if (isFormulaError(value) || isFormulaError(expression.operand)) return false;
   if (expression.wildcard !== undefined) {
-    const matched = wildcardMatches(String(value ?? ''), expression.wildcard);
+    let pattern = compiledWildcards.get(expression);
+    if (!pattern) { pattern = compileWildcard(expression.wildcard); compiledWildcards.set(expression, pattern); }
+    const matched = pattern.test(String(value ?? ''));
     return expression.operator === 'ne' ? !matched : expression.operator === 'eq' && matched;
+  }
+  if (expression.operand === '' && (expression.operator === 'eq' || expression.operator === 'ne')) {
+    const blank = value === null || value === '';
+    return expression.operator === 'eq' ? blank : !blank;
   }
   const numericValue = coerceExcelNumber(value);
   const numericOperand = coerceExcelNumber(expression.operand);
@@ -75,7 +84,7 @@ function hasWildcard(value: string): boolean {
   return false;
 }
 
-function wildcardMatches(value: string, pattern: string): boolean {
+function compileWildcard(pattern: string): RegExp {
   let regex = '^';
   for (let index = 0; index < pattern.length; index += 1) {
     const character = pattern[index]!;
@@ -86,7 +95,7 @@ function wildcardMatches(value: string, pattern: string): boolean {
     else regex += escapeRegex(character);
   }
   regex += '$';
-  return new RegExp(regex, 'iu').test(value);
+  return new RegExp(regex, 'isu');
 }
 
 function compareNumbers(operator: CriteriaOperator, left: number, right: number): boolean {

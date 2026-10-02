@@ -4,11 +4,19 @@ export type TableScalar = string | number | boolean | null;
 
 export type TableFieldType = 'text' | 'number' | 'boolean' | 'date' | 'mixed';
 
+export type RecordFieldCalculation =
+  | { kind: 'formula'; formula: string }
+  | { kind: 'lookup'; relationshipId: string; targetFieldId: string; direction: 'forward' | 'reverse' }
+  | { kind: 'rollup'; relationshipId: string; targetFieldId: string; direction: 'forward' | 'reverse'; aggregate: 'SUM' | 'AVERAGE' | 'COUNT' | 'COUNTA' | 'MIN' | 'MAX' | 'PRODUCT' };
+
+export interface RecordFieldAddress { tableId: string; recordId: string; fieldId: string }
+
 export interface WorkbookTableField {
   id: string;
   name: string;
   ordinal: number;
   type: TableFieldType;
+  calculation?: RecordFieldCalculation;
 }
 
 export interface WorkbookTableBlock {
@@ -25,6 +33,8 @@ export interface WorkbookTableModel {
   name: string;
   /** Block-backed query table source. Rows stay outside WorkbookSnapshot. */
   sourceId?: string;
+  /** The immutable identity column in the canonical source, independent of display order. */
+  recordIdFieldId?: string;
   sourceSheetId?: SheetId;
   /** The canonical source range when rows remain sheet-backed in local mode. */
   sourceRange?: RangeRef;
@@ -119,11 +129,20 @@ export function isAnalysisViewDefinition(value: DataViewDefinition): value is An
 }
 
 /** Canonical structured-data graph consumed by TableSheet, GanttSheet and Chart sources. */
+export interface ExternalLinkBinding {
+  id: string;
+  /** Formula workbook qualifier; stable until an explicit binding edit. */
+  token: string;
+  sourceUnitId: string;
+  sheets: Array<{ token: string; sheetId: string }>;
+}
+
 export interface WorkbookDataModel {
   sources: import('./data-source').DataSourceManifest[];
   tables: WorkbookTableModel[];
   relationships: DataRelationship[];
   views: DataViewDefinition[];
+  externalLinks: ExternalLinkBinding[];
 }
 
 export interface TableSheetColumn {
@@ -190,4 +209,17 @@ export interface ReportSheetDefinition {
   renderMode: 'design' | 'preview' | 'paginated';
   layout: ReportLayoutDefinition;
   dataEntry: ReportDataEntryRule[];
+}
+
+export function assertExternalLinkBinding(link: ExternalLinkBinding): void {
+  if (!link || Object.keys(link).some(key => !['id', 'token', 'sourceUnitId', 'sheets'].includes(key))
+    || [link.id, link.token, link.sourceUnitId].some(value => typeof value !== 'string' || !/^[A-Za-z0-9._:-]{1,200}$/.test(value))
+    || !Array.isArray(link.sheets) || link.sheets.length < 1 || link.sheets.length > 1000) throw new Error('EXTERNAL_LINK_BINDING_INVALID');
+  const aliases = new Set<string>(), ids = new Set<string>();
+  for (const sheet of link.sheets) {
+    if (!sheet || Object.keys(sheet).some(key => !['token', 'sheetId'].includes(key)) || typeof sheet.token !== 'string' || !sheet.token.trim() || sheet.token.length > 255
+      || typeof sheet.sheetId !== 'string' || !/^[A-Za-z0-9._:-]{1,200}$/.test(sheet.sheetId)
+      || aliases.has(sheet.token.toUpperCase()) || ids.has(sheet.sheetId)) throw new Error('EXTERNAL_LINK_SHEET_BINDING_INVALID');
+    aliases.add(sheet.token.toUpperCase()); ids.add(sheet.sheetId);
+  }
 }

@@ -188,7 +188,7 @@ class PivotDrillDownMutationDescriptorTest {
 
     private ObjectNode snapshot() throws Exception {
         return (ObjectNode) mapper.readTree("""
-                {"dataModel":{"sources":[],"tables":[],"relationships":[],"views":[]},"sheets":[{"id":"sheet-1","name":"Sheet1","rowCount":1000,"columnCount":26,
+                {"dataModel":{"externalLinks":[],"sources":[],"tables":[],"relationships":[],"views":[]},"sheets":[{"id":"sheet-1","name":"Sheet1","rowCount":1000,"columnCount":26,
                   "cells":{"0":{"0":{"value":"CustomerId"},"1":{"value":"Amount"},"4":{"value":"CustomerId"},"5":{"value":"Region"}},
                     "1":{"0":{"value":"c1"},"1":{"value":100},"4":{"value":"c2"},"5":{"value":"West"}},
                     "2":{"0":{"value":"c2"},"1":{"value":200},"4":{"value":"c1"},"5":{"value":"East"}}},

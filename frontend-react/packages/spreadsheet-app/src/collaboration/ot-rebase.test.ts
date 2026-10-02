@@ -136,6 +136,12 @@ test('fails closed for unanchored workbook-name formulas with relative reference
   assert.throws(() => rebaseMutation(pending, committed, {
     sheetOrder: [{ id: 'target-sheet', name: 'Target' }],
   }), /workbook-scoped defined name has an unqualified reference but no formula anchor/);
+  const callable = classifyMutation('name.set', {
+    model: { name: 'UnanchoredCallable', scope: 'workbook', formula: '=LAMBDA(x,x+A10)(2)' },
+  }, 'primary-sheet', []);
+  assert.throws(() => rebaseMutation(callable, committed, {
+    sheetOrder: [{ id: 'target-sheet', name: 'Target' }],
+  }), /workbook-scoped defined name has an unqualified reference but no formula anchor/);
 });
 
 test('rejects rebasing an anchored defined name when its formula anchor is deleted', () => {

@@ -160,7 +160,7 @@ describe('WorkbookSession collaboration integration', () => {
         params,
         affectedRanges,
         structuralPatch: {
-          version: 9,
+          version: 10,
           mutationId: 'rows.inserted',
           formulaOwnerDeltas: [],
           definedNameOwnerDeltas: [],
@@ -301,7 +301,7 @@ describe('WorkbookSession collaboration integration', () => {
             endColumn: address.column,
           })),
           structuralPatch: {
-            version: 9 as const,
+            version: 10 as const,
             mutationId: 'rows.inserted',
             formulaOwnerDeltas: [{
               kind: 'formula-cell' as const,
@@ -395,7 +395,7 @@ describe('WorkbookSession collaboration integration', () => {
             endColumn: 0,
           }],
           structuralPatch: {
-            version: 9,
+            version: 10,
             mutationId: 'sheet.rename',
             formulaOwnerDeltas: [formulaOwnerDelta],
             definedNameOwnerDeltas: [],
@@ -455,7 +455,7 @@ describe('WorkbookSession collaboration integration', () => {
           affectedRanges,
           structuralImpactRanges: impact,
           structuralPatch: {
-            version: 9 as const,
+            version: 10 as const,
             mutationId: 'rows.inserted',
             formulaOwnerDeltas: [formulaOwnerDelta],
             definedNameOwnerDeltas: [],

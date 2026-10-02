@@ -1,11 +1,13 @@
 import { FormulaLexError } from './errors';
 import type { SourceSpan } from './ast';
+import { STANDARD_FORMULA_ERRORS } from './spill';
 
 export type TokenKind =
   | 'number'
   | 'string'
   | 'identifier'
   | 'error-reference'
+  | 'error-literal'
   | 'plus'
   | 'minus'
   | 'star'
@@ -51,7 +53,8 @@ export function lexFormula(source: string): readonly Token[] {
       index = skipWhitespace(source, index);
       const previous = tokens[tokens.length - 1];
       const next = codePointAt(source, index);
-      if (previous && canEndReference(previous.kind) && canStartReference(next)) {
+      if (previous && canEndReference(previous.kind) && canStartReference(next)
+        && !(previous.kind === 'identifier' && next === '[')) {
         tokens.push({
           kind: 'reference-intersection',
           lexeme: source.slice(whitespaceStart, index),
@@ -111,9 +114,10 @@ export function lexFormula(source: string): readonly Token[] {
 
     if (character === '#') {
       const rest = source.slice(index);
-      if (/^#REF!(?![A-Za-z0-9_])/i.test(rest)) {
-        tokens.push({ kind: 'error-reference', lexeme: '#REF!', span: { start: index, end: index + 5 } });
-        index += 5;
+      const error = STANDARD_FORMULA_ERRORS.find((code) => rest.slice(0, code.length).toUpperCase() === code && !/[A-Za-z0-9_]/.test(rest.charAt(code.length)));
+      if (error) {
+        tokens.push({ kind: error === '#REF!' ? 'error-reference' : 'error-literal', lexeme: error, span: { start: index, end: index + error.length } });
+        index += error.length;
         continue;
       }
       const match = /^#(ALL|HEADERS|DATA|TOTALS)(?![A-Za-z0-9_])/i.exec(rest);

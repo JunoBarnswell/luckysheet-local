@@ -1,3 +1,5 @@
+import { buildCellFromText } from '@react-sheets/sheet-features';
+import { refreshExternalLinks } from './features/linked-data/external-link-host';
 import type {
   CellData,
   FilterCellValue,
@@ -78,6 +80,7 @@ import {
   pivotSourceIdentity,
 } from '@react-sheets/core-model';
 import { MutationRecoveryRequiredError } from '@react-sheets/command-runtime';
+import { resolveWorkbookViewCell, TableSheetAddressError } from './features/data-source/table-sheet-address';
 import type { HistoryEntry, MutationInfo, CommandDescriptor, CommandResult } from '@react-sheets/command-runtime';
 import type {
   AuthTokenProvider,
@@ -842,8 +845,9 @@ export class WorkbookSession {
     const selection = this.selectionService?.getState();
     if (!selection) return '';
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
-    const cell = this.readResolvedCell(sheet, selection.activeCell.row, selection.activeCell.column);
-    if (protectionResolver.isFormulaHidden(sheet.protectionRules, sheet.id, selection.activeCell.row, selection.activeCell.column, cell?.style)) return '';
+    const resolved = this.readWorkbookViewCell(sheet, selection.activeCell.row, selection.activeCell.column);
+    const cell = resolved.cell;
+    if (protectionResolver.isFormulaHidden(resolved.owner.protectionRules, resolved.owner.id, resolved.row, resolved.column, cell?.style)) return '';
     return cell?.formula ?? (cell?.value == null ? '' : String(cell.value));
   }
 
@@ -1322,16 +1326,21 @@ export class WorkbookSession {
 
   /** The sole worksheet read path for session-level Home behavior. */
   private readResolvedCell(sheet: WorksheetModel, row: number, column: number): CellData | undefined {
-    return this.cellResolver.resolve(sheet, row, column)?.cell;
+    return this.readWorkbookViewCell(sheet, row, column).cell;
+  }
+
+  private readWorkbookViewCell(sheet: WorksheetModel, row: number, column: number) {
+    return resolveWorkbookViewCell(this.runtime.model, sheet, this.runtime.formula, row, column, (owner, sourceRow, sourceColumn) => this.cellResolver.resolve(owner, sourceRow, sourceColumn)?.cell);
   }
 
   /** Filter menus use the FormulaEngine/spill result, never authored storage. */
   private readResolvedFilterCell(sheet: WorksheetModel, row: number, column: number): FilterCellValue {
-    const cell = this.readResolvedCell(sheet, row, column);
-    const spillValue = this.runtime.formula.getSpillValueAt(sheet.id, row, column);
+    const resolved = this.readWorkbookViewCell(sheet, row, column);
+    const cell = resolved.cell;
+    const spillValue = this.runtime.formula.getSpillValueAt(resolved.owner.id, resolved.row, resolved.column);
     if (spillValue !== undefined) return resolveFilterCellValue(cell, spillValue, this.runtime.dateSystem);
     if (cell?.formula !== undefined) {
-      const result = this.runtime.formula.getCellResult({ sheetId: sheet.id, row, column });
+      const result = this.runtime.formula.getCellResult({ sheetId: resolved.owner.id, row: resolved.row, column: resolved.column });
       const evaluated = result ? result.value : cell.formulaValue !== undefined ? cell.formulaValue : null;
       return resolveFilterCellValue(cell, evaluated, this.runtime.dateSystem);
     }
@@ -1459,12 +1468,13 @@ export class WorkbookSession {
     const homeRibbon = this.deriveHomeRibbonState(selection);
     const undoEntries = this.runtime.commands.getUndoEntries();
     const redoEntries = this.runtime.commands.getRedoEntries();
-    const activeModelCell = this.readResolvedCell(activeModelSheet, selection.activeCell.row, selection.activeCell.column);
+    const activeResolvedCell = this.readWorkbookViewCell(activeModelSheet, selection.activeCell.row, selection.activeCell.column);
+    const activeModelCell = activeResolvedCell.cell;
     const activeFormulaHidden = protectionResolver.isFormulaHidden(
-      activeModelSheet.protectionRules,
-      activeModelSheet.id,
-      selection.activeCell.row,
-      selection.activeCell.column,
+      activeResolvedCell.owner.protectionRules,
+      activeResolvedCell.owner.id,
+      activeResolvedCell.row,
+      activeResolvedCell.column,
       activeModelCell?.style,
     );
     const activeDrawing = this.selectedFloatingId
@@ -3203,6 +3213,7 @@ export class WorkbookSession {
     if (this.cellEditDomain.getSnapshot().session) return this.cellControlResult(false);
     const displaySheet = this.runtime.model.getSheet(intent.sheetId);
     const displayTarget = resolveSelectionTarget({ rowCount: displaySheet.rowCount, columnCount: displaySheet.columnCount, merges: displaySheet.merges, hiddenRows: [...displaySheet.hiddenRows], hiddenColumns: [...displaySheet.hiddenColumns] }, { row: intent.row, column: intent.column }, 'cells', displaySheet.id);
+    if (!this.readWorkbookViewCell(displaySheet, displayTarget.cell.row, displayTarget.cell.column).writable) return this.cellControlResult(false);
     const canonical = this.resolveCanonicalCellTarget(displaySheet.id, displayTarget.cell.row, displayTarget.cell.column);
     const sheet = this.runtime.model.getSheet(canonical.sheetId);
     const cell = this.readResolvedCell(sheet, canonical.row, canonical.column);
@@ -3249,11 +3260,14 @@ export class WorkbookSession {
     const selection = this.selectionService.getState();
     const displaySheet = this.runtime.model.getSheet(this.activeSheetId);
     const resolvedDisplay = resolveSelectionTarget({ rowCount: displaySheet.rowCount, columnCount: displaySheet.columnCount, merges: displaySheet.merges, hiddenRows: [...displaySheet.hiddenRows], hiddenColumns: [...displaySheet.hiddenColumns] }, selection.activeCell, 'cells', displaySheet.id);
+    const resolvedRecord = this.readWorkbookViewCell(displaySheet, resolvedDisplay.cell.row, resolvedDisplay.cell.column);
+    if (!resolvedRecord.writable) throw new CellEditError({ code: 'CELL_EDIT_PERMISSION_DENIED', message: 'This field is read-only', recovery: 'Edit a stored field.' });
     const canonicalAddress = this.resolveCanonicalCellTarget(displaySheet.id, resolvedDisplay.cell.row, resolvedDisplay.cell.column);
     const canonicalSheet = this.runtime.model.getSheet(canonicalAddress.sheetId);
     const target = {
       display: { sheetId: displaySheet.id, row: resolvedDisplay.cell.row, column: resolvedDisplay.cell.column },
       canonical: canonicalAddress,
+      ...(resolvedRecord.recordField ? { recordField: resolvedRecord.recordField } : {}),
       ...(resolvedDisplay.range.startRow !== resolvedDisplay.range.endRow || resolvedDisplay.range.startColumn !== resolvedDisplay.range.endColumn
         ? { mergedRange: structuredClone(resolvedDisplay.range) }
         : {}),
@@ -3416,8 +3430,17 @@ export class WorkbookSession {
           : [{ sheetId: request.target.display.sheetId, startRow: request.target.display.row, endRow: request.target.display.row, startColumn: request.target.display.column, endColumn: request.target.display.column }];
         const ranges = groupedSheetIds.flatMap((sheetId) => baseRanges.map((range) => ({ ...range, sheetId })));
         this.commitPayloadToSelection(payload, request.validationConfirmation, { ...request.originalSelection, ranges });
+      } else if (request.target.recordField) {
+        let value: import('@react-sheets/core-model').TableScalar;
+        if (payload.kind === 'raw-text') {
+          const interpreted = buildCellFromText(payload.text, currentCell, this.createInputContext('direct-entry', currentCell));
+          if (interpreted.formula) throw new Error('RECORD_STORED_FIELD_FORMULA: configure a shared field formula in the table designer');
+          value = interpreted.value ?? null;
+        } else if (payload.kind === 'typed-value') value = payload.value;
+        else throw new Error('UNSUPPORTED_FEATURE: Record rich text requires a typed field definition');
+        this.runCommand('record.set', { ...request.target.recordField, value });
       } else if (payload.kind === 'raw-text') {
-        this.runCommand('sheet.cell.commitText', { ...request.target.canonical, text: payload.text, inputContext: this.createInputContext('direct-entry', currentCell), style: currentCell?.style, validationConfirmation: request.validationConfirmation });
+        this.runCommand('sheet.cell.commitText' , { ...request.target.canonical, text: payload.text, inputContext: this.createInputContext('direct-entry', currentCell), style: currentCell?.style, validationConfirmation: request.validationConfirmation });
       } else if (payload.kind === 'typed-value') {
         this.runCommand('sheet.cell.commitTypedValue', { ...request.target.canonical, value: payload.value, validationConfirmation: request.validationConfirmation });
       } else {
@@ -4261,13 +4284,9 @@ export class WorkbookSession {
 
   private resolveCanonicalCellTarget(sheetId: string, row: number, column: number): { sheetId: string; row: number; column: number } {
     const sheet = this.runtime.model.getSheet(sheetId);
-    const tableId = sheet.kind === 'table-sheet' ? sheet.tableSheet?.viewId : sheet.kind === 'gantt-sheet' ? sheet.ganttSheet?.viewId : undefined;
-    const table = tableId ? this.runtime.model.dataModel.tables.get(tableId) : undefined;
-    const field = table?.fields[column];
-    if (!table?.sourceRange || !field || row <= 0) return { sheetId, row, column };
-    const sourceRow = table.sourceRange.startRow + row;
-    if (sourceRow > table.sourceRange.endRow) return { sheetId, row, column };
-    return { sheetId: table.sourceRange.sheetId, row: sourceRow, column: table.sourceRange.startColumn + field.ordinal };
+    const resolved = this.readWorkbookViewCell(sheet, row, column);
+    if (!resolved.writable) throw new TableSheetAddressError('TABLE_SHEET_ADDRESS_INVALID', 'Select a bound data cell to edit; headers belong to the view definition');
+    return { sheetId: resolved.owner.id, row: resolved.row, column: resolved.column };
   }
 
   private createInputContext(sourceKind: CellInputSourceKind, cell?: CellData) {
@@ -4283,14 +4302,14 @@ export class WorkbookSession {
 
   commitFormula(overrideValue?: string): boolean {
     if (this.phase !== 'ready') return false;
-    const sel = this.selectionService.getState();
-    const target = this.resolveCanonicalCellTarget(this.activeSheetId, sel.activeCell.row, sel.activeCell.column);
-    const row = target.row;
-    const column = target.column;
-    const text = overrideValue !== undefined ? overrideValue : this.formulaDraft;
-    const cell = this.runtime.model.getSheet(target.sheetId).cells.get(row, column);
-    const style = cell?.style;
     try {
+      const sel = this.selectionService.getState();
+      const target = this.resolveCanonicalCellTarget(this.activeSheetId, sel.activeCell.row, sel.activeCell.column);
+      const row = target.row;
+      const column = target.column;
+      const text = overrideValue !== undefined ? overrideValue : this.formulaDraft;
+      const cell = this.runtime.model.getSheet(target.sheetId).cells.get(row, column);
+      const style = cell?.style;
       this.runCommand('sheet.cell.commitText', {
         sheetId: target.sheetId,
         row,
@@ -4434,6 +4453,36 @@ export class WorkbookSession {
       this.selectSheet(id);
       this.notify(`${name}已创建`);
     });
+  }
+
+  configureRecordTable(input: { tableId: string; identityFieldId: string; fieldId?: string; calculation?: import('@react-sheets/core-model').RecordFieldCalculation }): void {
+    this.runCommand('table.promoteRecords', input);
+  }
+
+  setRecordRelationship(relationship: import('@react-sheets/core-model').DataRelationship): void {
+    this.runCommand('relationship.set', { relationship });
+  }
+
+  async readExternalSourceSheets(unitId: string): Promise<readonly { id: string; name: string }[]> {
+    const response = await this.runtime.api.getSnapshot(unitId);
+    return response.snapshot.sheets.map(({ id, name }) => ({ id, name }));
+  }
+
+  async bindExternalLink(link: import('@react-sheets/core-model').ExternalLinkBinding): Promise<void> {
+    const existing = [...this.runtime.model.dataModel.externalLinks.values()].find(candidate => candidate.token.toUpperCase() === link.token.toUpperCase());
+    if (existing) {
+      if (existing.sourceUnitId !== link.sourceUnitId) throw new Error('EXTERNAL_LINK_TOKEN_CONFLICT: link token already owns another source workbook');
+      link = { ...existing, sheets: [...existing.sheets.filter(sheet => !link.sheets.some(next => next.token.toUpperCase() === sheet.token.toUpperCase())), ...link.sheets] };
+    }
+    this.runCommand('externalLink.set', { link });
+    await this.flushPendingChanges();
+    await refreshExternalLinks(this.runtime);
+  }
+
+  async refreshWorkbookExternalLinks(): Promise<readonly { token: string; state: string; sourceRevision: number; error?: { code: string; message: string } }[]> {
+    await this.flushPendingChanges();
+    await refreshExternalLinks(this.runtime);
+    return this.runtime.formula.getExternalCalculationLinks().map(({ token, state, sourceRevision, error }) => ({ token, state, sourceRevision, ...(error ? { error } : {}) }));
   }
 
   updateTableSheetDefinition(definition: TableSheetDefinition): void {

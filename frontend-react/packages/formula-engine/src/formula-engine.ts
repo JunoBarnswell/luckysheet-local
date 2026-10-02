@@ -1,11 +1,14 @@
+import { assertExternalCalculationLink, externalReferenceRange, externalSheetKey, type ExternalCalculationLink } from './external-links';
 import type { CellAddress, FormulaAst, FormulaReferenceNode } from './ast';
 import { cellAddressKey, compareCellAddresses, parseCellAddress } from './address';
-import { collectFormulaDependencies, collectFormulaReferenceNodes } from './dependencies';
+import { collectFormulaDependencies, collectFormulaReferenceNodes, resolveRangeReference } from './dependencies';
 import {
   evaluateFormula,
+  evaluateFormulaOperand,
   evaluateFormulaWithTrace,
   type FormulaCellOverride,
   type FormulaEvaluationContext,
+  type FormulaEvaluationValue,
   type FormulaEvaluationReference,
   type FormulaEvaluationTrace,
 } from './evaluator';
@@ -22,14 +25,14 @@ import {
 import type { DefinedNameReferenceIndexUpdate, DefinedNameReferenceOwnerIdentity } from './reference-index';
 import { resolveFormulaSheetId } from './sheet-reference';
 import { createFormulaError, isArrayValue, isFormulaError, type ArrayValue, type FormulaError, type FormulaValue, type ScalarValue } from './values';
-import { normalizeDefinedNameModels, normalizeDefinedNames, parseDefinedNameFormula, resolveDefinedNameSource, type FormulaDefinedName } from './defined-names';
+import { normalizeDefinedNameModels, normalizeDefinedNames, parseDefinedNameFormula, type FormulaDefinedName } from './defined-names';
 import { collectNameReferences, collectTableReferences, formulaUsesRowVisibility, formulaUsesVolatile } from './formula-analysis';
 import { normalizeSheetTables, resolveSheetTableReference, type SheetTableRef } from './sheet-table-resolver';
 import { canonicalExcelDateFromUtcDate, type CanonicalExcelDateParts, type ExcelDateSystem } from './excel-date';
 import { DEFAULT_EXCEL_NUMERIC_CONTEXT, normalizeExcelNumericContext, type ExcelNumericContext } from './numeric';
 import { createCalculationEntropyContext, formulaRandom, type CalculationEntropyContext } from './random';
 import { DEFAULT_WORKBOOK_COLLATION, normalizeWorkbookCollation, type WorkbookCollationContext } from './collation';
-import { findFormulaComponents } from './circular';
+import { analyzeFormulaGraph, type CircularComponent, type FormulaGraphAnalysis } from './circular';
 import { createSnapshotVisibilityResolver, type ReferenceFormulaKind, type RowVisibilityResolver } from './reference-cursor';
 import { DEFAULT_WORKBOOK_CALCULATION_SETTINGS, normalizeWorkbookCalculationSettings, type WorkbookCalculationMode, type WorkbookCalculationSettings } from './calculation-settings';
 import {
@@ -193,6 +196,7 @@ export interface FormulaEngineOptions {
   readonly calculationEntropySeed?: string;
   readonly collationContext?: Partial<WorkbookCollationContext>;
   readonly calculationSettings?: Partial<WorkbookCalculationSettings>;
+  readonly blockedRanges?: readonly { sheetId: string; startRow: number; endRow: number; startColumn: number; endColumn: number }[];
   readonly rowVisibilityResolver?: RowVisibilityResolver;
 }
 
@@ -211,6 +215,8 @@ interface StoredCell {
   ast?: FormulaAst;
   parseError?: FormulaError;
   result: FormulaResult;
+  evaluated?: boolean;
+  valueDependencies?: readonly FormulaDependency[];
 }
 
 export class FormulaEngine {
@@ -235,7 +241,8 @@ export class FormulaEngine {
   private inputUpdateSequence = 0;
   private pendingInputUpdates = new Map<string, { sequence: number; update: CalculationInputUpdate }>();
   private formulaTopologyGeneration = 0;
-  private cachedCircularComponents: { generation: number; components: ReturnType<typeof findFormulaComponents> } | null = null;
+  private cachedCircularComponents: { generation: number; byCell: ReadonlyMap<string, CircularComponent>; graph: FormulaGraphAnalysis; order: ReadonlyMap<string, number> } | null = null;
+  private activeEvaluationOwners: ReadonlySet<string> | null = null;
   private nextTaskSequence = 0;
   private activeTaskId: string | null = null;
   private activeTaskPort: CalculationTaskPort | null = null;
@@ -256,14 +263,87 @@ export class FormulaEngine {
   private activeSpillChangeCollector: Map<string, CellAddress> | null = null;
   private activeSpillChangeBaselines: Map<string, ResolvedSpill | undefined> | null = null;
   private pendingSpillRecalculationOwners: Set<string> | null = null;
+  private spillDependentRoots: Map<string, CellAddress> | null = null;
   private pendingSpillChangeBaselines = new Map<string, { address: CellAddress; spill: ResolvedSpill }>();
 
   private readonly cells = new Map<string, StoredCell>();
   private readonly inputRowsBySheet = new Map<string, Map<number, Set<number>>>();
   private readonly sortedInputRowsBySheet = new Map<string, readonly number[]>();
+  private externalLinks = new Map<string, ExternalCalculationLink>();
+  private externalCells = new Map<string, Map<string, { address: CellAddress; value: FormulaValue }>>();
+  private externalOwners = new Map<string, Set<string>>();
+  private cellExternalTokens = new Map<string, Set<string>>();
+  private pendingExternalLinks = new Map<string, { sequence: number; link: ExternalCalculationLink }>();
+
+  getExternalCalculationLinks(): readonly ExternalCalculationLink[] { return [...this.externalLinks.values()].map(link => structuredClone(link)); }
+
+  /** Data comes from a host-authorized read; evaluation never starts network requests. */
+  applyExternalCalculationLinks(links: readonly ExternalCalculationLink[], trackForWorker = true): void {
+    for (const link of links) assertExternalCalculationLink(link);
+    for (const link of links) {
+      const previous = this.externalLinks.get(link.token.toUpperCase());
+      if (previous && previous.id !== link.id) throw new Error('EXTERNAL_LINK_TOKEN_CONFLICT');
+      if (previous && previous.sourceUnitId === link.sourceUnitId && previous.subject === link.subject && (link.accessRevision < previous.accessRevision
+        || link.accessRevision === previous.accessRevision && link.sourceRevision < previous.sourceRevision)) continue;
+      if (sameCalculationValue(previous, link)) continue;
+      for (const sheet of previous?.sheets ?? []) this.externalCells.delete(externalSheetKey(link.id, sheet.id));
+      this.externalLinks.set(link.token.toUpperCase(), structuredClone(link));
+      for (const sheet of link.sheets) this.externalCells.set(externalSheetKey(link.id, sheet.id), new Map());
+      for (const cell of link.cells) {
+        const sheetId = externalSheetKey(link.id, cell.address.sheetId);
+        const address = { ...cell.address, sheetId };
+        this.externalCells.get(sheetId)!.set(`${address.row}:${address.column}`, { address, value: structuredClone(cell.value) });
+      }
+      for (const owner of this.externalOwners.get(link.token.toUpperCase()) ?? []) this.pendingRecalculationRoots.add(owner);
+      if (trackForWorker) {
+        this.inputUpdateSequence += 1;
+        this.pendingExternalLinks.set(link.id, { sequence: this.inputUpdateSequence, link: structuredClone(link) });
+      }
+      this.markCalculationStateChanged();
+    }
+  }
+
+  private isBlockedRange(range: RangeDependency): boolean {
+    return this.blockedRanges.some(blocked => blocked.sheetId === range.start.sheetId && blocked.startRow <= range.end.row && range.start.row <= blocked.endRow && blocked.startColumn <= range.end.column && range.start.column <= blocked.endColumn);
+  }
+
+  private externalRangeValues(range: RangeDependency, sparse: boolean): Iterable<FormulaValue> | undefined {
+    const cells = this.externalCells.get(range.start.sheetId);
+    if (!cells) return undefined;
+    if (sparse) return [...cells.values()].filter(cell => cell.address.row >= range.start.row && cell.address.row <= range.end.row
+      && cell.address.column >= range.start.column && cell.address.column <= range.end.column).map(cell => cell.value);
+    return (function* () {
+      for (let row = range.start.row; row <= range.end.row; row++) for (let column = range.start.column; column <= range.end.column; column++) yield cells.get(`${row}:${column}`)?.value ?? null;
+    })();
+  }
+
+  private externalRangeMatrix(range: RangeDependency): ArrayValue | undefined {
+    const cells = this.externalCells.get(range.start.sheetId);
+    if (!cells) return undefined;
+    if ((range.end.row - range.start.row + 1) * (range.end.column - range.start.column + 1) > 100000) return [[createFormulaError('#NUM!', 'External matrix exceeds calculation limit')]];
+    return Array.from({ length: range.end.row - range.start.row + 1 }, (_, index) => Array.from({ length: range.end.column - range.start.column + 1 }, (_, column) => cells.get(`${range.start.row + index}:${range.start.column + column}`)?.value ?? null));
+  }
+
+  private readonly blockedRanges: NonNullable<FormulaEngineOptions['blockedRanges']>;
+  private recordFormulaOwners = new Map<string, { tableId: string; recordId: string; fieldId: string; address: CellAddress }>();
+
+  setRecordFormulaOwners(owners: readonly { tableId: string; recordId: string; fieldId: string; address: CellAddress }[]): void {
+    const next = new Map(owners.map(owner => [cellAddressKey(owner.address), structuredClone(owner)]));
+    if (JSON.stringify([...next]) === JSON.stringify([...this.recordFormulaOwners])) return;
+    this.recordFormulaOwners = next;
+    this.calculationContextGeneration += 1;
+  }
+  getRecordFormulaOwners(): readonly { tableId: string; recordId: string; fieldId: string; address: CellAddress }[] { return [...this.recordFormulaOwners.values()]; }
+  getRecordFormulaOwnerAt(address: CellAddress): Readonly<{ tableId: string; recordId: string; fieldId: string; address: CellAddress }> | undefined { return this.recordFormulaOwners.get(cellAddressKey(address)); }
+  getRecordFieldResult(tableId: string, recordId: string, fieldId: string): FormulaResult | undefined {
+    const owner = [...this.recordFormulaOwners.values()].find(owner => owner.tableId === tableId && owner.recordId === recordId && owner.fieldId === fieldId);
+    return owner ? this.getCellResult(owner.address) : undefined;
+  }
+
   private formulaCount = 0;
 
   constructor(options: FormulaEngineOptions = {}) {
+    this.blockedRanges = structuredClone(options.blockedRanges ?? []);
     this.defaultSheetId = options.defaultSheetId ?? 'Sheet1';
     this.sheetOrder = normalizeFormulaSheetOrder(options.sheetOrder, this.defaultSheetId);
     this.calculationSettings = normalizeWorkbookCalculationSettings({
@@ -287,6 +367,7 @@ export class FormulaEngine {
     assertFormulaCalculationSnapshot(snapshot);
     const engine = new FormulaEngine({
       defaultSheetId: snapshot.defaultSheetId,
+      blockedRanges: snapshot.blockedRanges,
       sheetOrder: snapshot.sheetOrder,
       recalculationMode: 'manual',
       calculationSettings: { ...snapshot.calculationSettings, mode: 'manual' },
@@ -300,6 +381,8 @@ export class FormulaEngine {
     engine.activeCalculationEntropy = structuredClone(snapshot.calculationEntropy);
     engine.calculationCycleSequence = snapshot.calculationEntropy.cycleId;
     engine.setDefinedNameModels(snapshot.definedNameModels, false);
+    engine.setRecordFormulaOwners(snapshot.recordFormulaOwners ?? []);
+    engine.applyExternalCalculationLinks(snapshot.externalLinks ?? [], false);
     engine.sheetTables = new Map(
       [...normalizeSheetTables(snapshot.sheetTables)].map(([name, table]) => [name, structuredClone(table)] as const),
     );
@@ -376,11 +459,13 @@ export class FormulaEngine {
     this.spills.delete(spillKey(address));
     this.detachNameReferences(key);
     this.detachTableReferences(key);
+    for (const token of this.cellExternalTokens.get(key) ?? []) this.externalOwners.get(token)?.delete(key);
+    this.cellExternalTokens.delete(key);
     this.volatileCells.delete(key);
     this.cells.delete(key);
     this.unindexInputAddress(address);
     if (previous?.formula !== undefined) this.formulaCount = Math.max(0, this.formulaCount - 1);
-    this.markFormulaTopologyChanged();
+    if (previous?.formula !== undefined) this.markFormulaTopologyChanged();
     this.recordInputUpdate(address, null);
     this.markCalculationStateChanged();
     return this.scheduleRecalculation(address) ?? { recalculated: [], results: new Map() };
@@ -421,10 +506,46 @@ export class FormulaEngine {
       || next.some((sheet, index) => sheet.id !== this.sheetOrder[index]?.id)) {
       throw new Error('FORMULA_SHEET_IDENTITY_ORDER_MISMATCH: sheet-name updates cannot change worksheet identity order');
     }
-    if (next.every((sheet, index) => sheet.name === this.sheetOrder[index]?.name)) return;
+    this.applySheetOrder(next, false);
+  }
+
+  /** Update worksheet order without rebuilding the calculation context. */
+  updateSheetOrder(sheetOrder: readonly FormulaSheetIdentity[]): void {
+    const next = normalizeFormulaSheetOrder(sheetOrder, this.defaultSheetId);
+    const currentIds = new Set(this.sheetOrder.map((sheet) => sheet.id));
+    if (next.length !== currentIds.size || next.some((sheet) => !currentIds.has(sheet.id))) {
+      throw new Error('FORMULA_SHEET_IDENTITY_SET_MISMATCH: order updates cannot add or remove worksheet identities');
+    }
+    this.applySheetOrder(next, true);
+  }
+
+  private applySheetOrder(next: readonly FormulaSheetIdentity[], acceptReorder: boolean): void {
+    const namesChanged = next.some((sheet, index) => sheet.name !== this.sheetOrder[index]?.name);
+    const orderChanged = next.some((sheet, index) => sheet.id !== this.sheetOrder[index]?.id);
+    if (!namesChanged && !orderChanged) return;
     this.sheetOrder = next;
     this.dependencies.setSheetOrder(next);
     this.dependencies.updateDefinedNameReferences(this.getDefinedNameModels().map(definedNameReferenceIndexUpdate));
+    if (orderChanged && acceptReorder) {
+      const roots = this.dependencies.getSheetRangeFormulaOwners();
+      const affectedNameTokens = new Set<string>();
+      for (const definition of this.getDefinedNameModels()) {
+        let ast: FormulaAst;
+        try {
+          ast = parseFormulaSource(definition.formula.trim().startsWith('=') ? definition.formula : `=${definition.formula}`);
+        } catch (error) {
+          if (error instanceof FormulaLexError || error instanceof FormulaSyntaxError) continue;
+          throw error;
+        }
+        if (collectFormulaReferenceNodes(ast).some((reference) => reference.type === 'sheet-range-reference')) {
+          affectedNameTokens.add(definition.name.trim().toUpperCase());
+        }
+      }
+      const namedRoots = this.formulasReferencing(this.nameIndex, affectedNameTokens);
+      for (const [key, address] of namedRoots) this.pendingRecalculationRoots.add(key);
+      for (const address of roots) this.pendingRecalculationRoots.add(cellAddressKey(address));
+      if (roots.length > 0 || namedRoots.size > 0) this.markFormulaTopologyChanged();
+    }
     this.calculationContextGeneration += 1;
     this.markCalculationStateChanged();
   }
@@ -458,6 +579,14 @@ export class FormulaEngine {
   /** Context revisions are stable across ordinary cell edits. */
   getCalculationContextGeneration(): number {
     return this.calculationContextGeneration;
+  }
+
+  getFormulaTopologyRevision(): number {
+    return this.formulaTopologyGeneration;
+  }
+
+  getCalculationInputRevision(): number {
+    return this.inputUpdateSequence;
   }
 
   getFormulaCount(): number {
@@ -514,15 +643,16 @@ export class FormulaEngine {
    * calculation Worker.  The sequence is monotonic so newer edits cannot be
    * accidentally removed when an older task completes late.
    */
-  exportPendingCalculationInputs(): { inputs: readonly CalculationInputUpdate[]; inputRevision: number } {
+  exportPendingCalculationInputs(): { inputs: readonly CalculationInputUpdate[]; externalLinks: readonly ExternalCalculationLink[]; inputRevision: number } {
     const entries = [...this.pendingInputUpdates.values()]
       .sort((left, right) => left.sequence - right.sequence)
       .map((entry) => structuredClone(entry.update));
-    return { inputs: entries, inputRevision: this.inputUpdateSequence };
+    return { inputs: entries, externalLinks: [...this.pendingExternalLinks.values()].sort((a, b) => a.sequence - b.sequence).map(entry => structuredClone(entry.link)), inputRevision: this.inputUpdateSequence };
   }
 
   acknowledgeCalculationInputUpdates(inputRevision: number): void {
     if (!Number.isSafeInteger(inputRevision) || inputRevision < 0) return;
+    for (const [key, entry] of this.pendingExternalLinks) if (entry.sequence <= inputRevision) this.pendingExternalLinks.delete(key);
     for (const [key, entry] of this.pendingInputUpdates) {
       if (entry.sequence <= inputRevision) this.pendingInputUpdates.delete(key);
     }
@@ -611,6 +741,7 @@ export class FormulaEngine {
               ...(needsSnapshot ? { snapshot: this.exportCalculationSnapshot() } : {}),
               generation: this.calculationGeneration,
               inputs: pending.inputs,
+              externalLinks: pending.externalLinks,
               inputRevision: pending.inputRevision,
               calculationContextGeneration: this.calculationContextGeneration,
             };
@@ -745,7 +876,7 @@ export class FormulaEngine {
       : new Map<string, CellAddress>();
     for (const key of this.volatileCells) {
       const cell = this.cells.get(key);
-      if (cell?.formula !== undefined) affected.set(key, { ...cell.address });
+      if (cell?.formula !== undefined) for (const [dependentKey, address] of this.collectAffected(cell.address)) affected.set(dependentKey, address);
     }
     const report = this.recalculateAffected(affected);
     this.pendingRecalculationRoots.clear();
@@ -764,7 +895,7 @@ export class FormulaEngine {
       }
       for (const key of this.volatileCells) {
         const cell = this.cells.get(key);
-        if (cell?.formula !== undefined) affected.set(key, { ...cell.address });
+        if (cell?.formula !== undefined) for (const [dependentKey, address] of this.collectAffected(cell.address)) affected.set(dependentKey, address);
       }
       return this.recalculateAffected(affected);
     } finally {
@@ -819,6 +950,7 @@ export class FormulaEngine {
 
     return {
       defaultSheetId: this.defaultSheetId,
+      blockedRanges: this.blockedRanges,
       sheetOrder: this.sheetOrder.map((sheet) => ({ ...sheet })),
       calculationSettings: structuredClone(this.calculationSettings),
       dateSystem: this.dateSystem,
@@ -830,6 +962,8 @@ export class FormulaEngine {
       cells,
       definedNameModels: this.getDefinedNameModels(),
       sheetTables: this.getSheetTables(),
+      externalLinks: this.getExternalCalculationLinks(),
+      recordFormulaOwners: this.getRecordFormulaOwners(),
       spillSpaces,
       pendingRoots: this.pendingCalculationRoots(),
     };
@@ -857,6 +991,7 @@ export class FormulaEngine {
         ast: cell.ast,
         dependencies: entry.dependencies.map(copyDependency),
       };
+      cell.evaluated = true;
     }
     if (result.report.spills !== undefined) {
       const nextSpills = new Map(result.report.spills.map((spill) => [
@@ -1216,7 +1351,7 @@ export class FormulaEngine {
         const affected = this.collectAffected(this.resolveAddress(addressInput));
         for (const key of this.volatileCells) {
           const cell = this.cells.get(key);
-          if (cell?.formula !== undefined) affected.set(key, { ...cell.address });
+          if (cell?.formula !== undefined) for (const [dependentKey, address] of this.collectAffected(cell.address)) affected.set(dependentKey, address);
         }
         return this.recalculateAffected(affected);
       }
@@ -1226,7 +1361,7 @@ export class FormulaEngine {
         : this.allFormulaAddresses();
       for (const key of this.volatileCells) {
         const cell = this.cells.get(key);
-        if (cell?.formula !== undefined) affected.set(key, { ...cell.address });
+        if (cell?.formula !== undefined) for (const [dependentKey, address] of this.collectAffected(cell.address)) affected.set(dependentKey, address);
       }
       const report = this.recalculateAffected(affected);
       this.pendingRecalculationRoots.clear();
@@ -1262,10 +1397,11 @@ export class FormulaEngine {
     const queue: CellAddress[] = [];
     for (const key of roots) {
       const cell = this.cells.get(key);
-      if (!cell) continue;
+      const [sheetId, row, column] = JSON.parse(key) as [string, number, number];
+      const address = cell?.address ?? { sheetId, row, column };
       if (affected.has(key)) continue;
-      affected.set(key, { ...cell.address });
-      queue.push({ ...cell.address });
+      affected.set(key, { ...address });
+      queue.push({ ...address });
     }
     let head = 0;
     while (head < queue.length) {
@@ -1292,13 +1428,15 @@ export class FormulaEngine {
       this.spills.delete(spillKey(address));
       this.detachNameReferences(key);
       this.detachTableReferences(key);
+    for (const token of this.cellExternalTokens.get(key) ?? []) this.externalOwners.get(token)?.delete(key);
+    this.cellExternalTokens.delete(key);
       this.volatileCells.delete(key);
       const previous = this.cells.get(key);
       this.cells.delete(key);
       this.unindexInputAddress(address);
       this.visibilityDependentCells.delete(key);
       if (previous?.formula !== undefined) this.formulaCount = Math.max(0, this.formulaCount - 1);
-      this.markFormulaTopologyChanged();
+      if (previous?.formula !== undefined) this.markFormulaTopologyChanged();
     } else if (update.input.kind === 'formula') {
       this.loadFormula(address, update.input.formula);
     } else {
@@ -1363,6 +1501,8 @@ export class FormulaEngine {
     this.spills.delete(spillKey(address));
     this.detachNameReferences(key);
     this.detachTableReferences(key);
+    for (const token of this.cellExternalTokens.get(key) ?? []) this.externalOwners.get(token)?.delete(key);
+    this.cellExternalTokens.delete(key);
     this.volatileCells.delete(key);
     this.visibilityDependentCells.delete(key);
     const result: FormulaResult = { value, dependencies: [] };
@@ -1382,6 +1522,7 @@ export class FormulaEngine {
     this.spills.delete(spillKey(address));
     let ast: FormulaAst | undefined;
     let formulaDependencies: readonly FormulaDependency[] = [];
+    let valueDependencies: readonly FormulaDependency[] = [];
     let parseError: FormulaError | undefined;
 
     try {
@@ -1389,11 +1530,13 @@ export class FormulaEngine {
       const extractedDependencies = collectFormulaDependencies(parsed, address, {
         sheetTables: this.sheetTables,
         sheetOrder: this.sheetOrder,
+        resolveNameAst: (name, owner) => this.resolveDefinedNameAst(name, owner),
       });
       const expandedDependencies = this.expandNameDependencies(extractedDependencies, address, new Set<string>());
       this.dependencies.set(address, expandedDependencies);
       ast = parsed;
       formulaDependencies = expandedDependencies;
+      valueDependencies = this.collectValueDependencies(parsed, address);
     } catch (error) {
       parseError = formulaErrorFrom(error);
       this.dependencies.set(address, [], true);
@@ -1402,11 +1545,13 @@ export class FormulaEngine {
     const result: FormulaResult = parseError
       ? { value: parseError, formula, dependencies: [] }
       : { value: null, formula, ast, dependencies: formulaDependencies };
-    this.cells.set(key, { address: { ...address }, formula, ast, parseError, result });
+    this.cells.set(key, { address: { ...address }, formula, ast, parseError, result, valueDependencies });
     this.indexInputAddress(address);
     this.updateFormulaMetadata(key, ast, formulaDependencies);
     if (previous?.formula === undefined) this.formulaCount += 1;
-    this.markFormulaTopologyChanged();
+    if (previous?.formula === undefined
+      || !sameCalculationValue(previous.result.dependencies, formulaDependencies)
+      || !sameCalculationValue(previous.valueDependencies, valueDependencies)) this.markFormulaTopologyChanged();
     return result;
   }
 
@@ -1445,11 +1590,13 @@ export class FormulaEngine {
   }
 
   private recalculateAffected(affected: Map<string, CellAddress>): RecalculationReport {
+    const previousEvaluationOwners = this.activeEvaluationOwners;
     const previousCollector = this.activeResultChangeCollector;
     const previousResultBaselines = this.activeResultChangeBaselines;
     const previousSpillCollector = this.activeSpillChangeCollector;
     const previousSpillBaselines = this.activeSpillChangeBaselines;
     const previousPendingSpillOwners = this.pendingSpillRecalculationOwners;
+    const previousSpillDependentRoots = this.spillDependentRoots;
     const resultChanges = new Map<string, CellAddress>();
     const resultBaselines = new Map<string, FormulaValue>();
     const spillChanges = new Map<string, CellAddress>();
@@ -1465,14 +1612,31 @@ export class FormulaEngine {
         .filter((address) => this.cells.get(cellAddressKey(address))?.formula !== undefined)
         .map(spillKey),
     );
+    this.spillDependentRoots = new Map();
     try {
-      return this.recalculateAffectedCore(affected, resultChanges, spillChanges);
+      const report = this.recalculateAffectedCore(affected, resultChanges, spillChanges);
+      const recalculated = new Map(report.recalculated.map((address) => [cellAddressKey(address), address]));
+      const results = new Map(report.results);
+      let passes = 0;
+      while (this.spillDependentRoots.size > 0) {
+        if (++passes > this.formulaCount + 1) throw new Error('CALCULATION_SPILL_DID_NOT_CONVERGE: spill dependency graph failed to stabilize');
+        const roots = [...this.spillDependentRoots.values()];
+        this.spillDependentRoots.clear();
+        const next = new Map<string, CellAddress>();
+        for (const root of roots) for (const [key, address] of this.collectAffected(root)) next.set(key, address);
+        const dependentReport = this.recalculateAffectedCore(next, resultChanges, spillChanges);
+        for (const address of dependentReport.recalculated) recalculated.set(cellAddressKey(address), address);
+        for (const [key, result] of dependentReport.results) results.set(key, result);
+      }
+      return { recalculated: [...recalculated.values()], results, changedAddresses: [...new Map([...resultChanges, ...spillChanges]).values()].sort(compareCellAddresses) };
     } finally {
+      this.activeEvaluationOwners = previousEvaluationOwners;
       this.activeResultChangeCollector = previousCollector;
       this.activeResultChangeBaselines = previousResultBaselines;
       this.activeSpillChangeCollector = previousSpillCollector;
       this.activeSpillChangeBaselines = previousSpillBaselines;
       this.pendingSpillRecalculationOwners = previousPendingSpillOwners;
+      this.spillDependentRoots = previousSpillDependentRoots;
     }
   }
 
@@ -1485,9 +1649,28 @@ export class FormulaEngine {
     const recalculated: CellAddress[] = [];
     const results = new Map<string, FormulaResult>();
 
-    const circularComponents = this.getCircularComponents().filter((component) =>
-      component.cyclic && component.members.some((address) => affected.has(cellAddressKey(address))),
-    );
+    const circularByCell = this.getCircularComponentIndex();
+    const graph = this.cachedCircularComponents!;
+    const dirty = this.collectAffectedFromRoots(this.pendingRecalculationRoots);
+    for (const [key, address] of affected) dirty.set(key, address);
+    const evaluationOwners = new Map(affected);
+    const queue = [...affected.keys()];
+    for (let head = 0; head < queue.length; head++) {
+      for (const prerequisite of graph.graph.prerequisites.get(queue[head]!) ?? []) {
+        const cell = this.cells.get(prerequisite)!;
+        if (evaluationOwners.has(prerequisite) || (cell.evaluated && !dirty.has(prerequisite))) continue;
+        evaluationOwners.set(prerequisite, cell.address);
+        queue.push(prerequisite);
+      }
+    }
+    this.activeEvaluationOwners = new Set(evaluationOwners.keys());
+    for (const address of evaluationOwners.values()) this.pendingSpillRecalculationOwners?.add(spillKey(address));
+    const selectedCircularComponents = new Map<string, CircularComponent>();
+    for (const key of evaluationOwners.keys()) {
+      const component = circularByCell.get(key);
+      if (component?.cyclic) selectedCircularComponents.set(cellAddressKey(component.members[0]!), component);
+    }
+    const circularComponents = [...selectedCircularComponents.values()];
     const handledCircularCells = new Set<string>();
     const circularFallback = new Map<string, FormulaValue>();
     for (const component of circularComponents) {
@@ -1503,14 +1686,14 @@ export class FormulaEngine {
       this.iterationFallbackValues = undefined;
     }
 
-    const affectedEntries = [...affected.entries()]
+    const affectedEntries = [...evaluationOwners.entries()]
       .map(([key, address]) => ({ key, address }))
-      .sort((left, right) => compareCellAddresses(left.address, right.address));
+      .sort((left, right) => (graph.order.get(left.key) ?? -1) - (graph.order.get(right.key) ?? -1));
     for (const { key, address } of affectedEntries) {
       const cell = this.cells.get(key);
       if (cell?.formula === undefined) continue;
       if (!handledCircularCells.has(key)) this.evaluateCell(address, evaluationCache, new Set<string>());
-      recalculated.push({ ...address });
+      if (affected.has(key)) recalculated.push({ ...address });
       const result = this.cells.get(key)?.result;
       if (result) results.set(key, result);
     }
@@ -1537,16 +1720,29 @@ export class FormulaEngine {
     };
   }
 
-  private getCircularComponents(): ReturnType<typeof findFormulaComponents> {
+  private collectValueDependencies(ast: FormulaAst | undefined, address: CellAddress): readonly FormulaDependency[] {
+    if (!ast) return [];
+    return this.expandNameDependencies(collectFormulaDependencies(ast, address, {
+      sheetTables: this.sheetTables, sheetOrder: this.sheetOrder,
+      resolveNameAst: (name, owner) => this.resolveDefinedNameAst(name, owner), valueDependencies: true,
+    }), address, new Set(), true);
+  }
+
+  private getCircularComponentIndex(): ReadonlyMap<string, CircularComponent> {
     if (this.cachedCircularComponents?.generation === this.formulaTopologyGeneration) {
-      return this.cachedCircularComponents.components;
+      return this.cachedCircularComponents.byCell;
     }
     const graphNodes = [...this.cells.values()]
       .filter((cell) => cell.formula !== undefined)
-      .map((cell) => ({ address: cell.address, dependencies: cell.result.dependencies }));
-    const components = findFormulaComponents(graphNodes);
-    this.cachedCircularComponents = { generation: this.formulaTopologyGeneration, components };
-    return components;
+      .map((cell) => ({ address: cell.address, dependencies: cell.ast ? this.collectValueDependencies(cell.ast, cell.address) : cell.result.dependencies }));
+    const byCell = new Map<string, CircularComponent>();
+    const graph = analyzeFormulaGraph(graphNodes, this.sheetOrder);
+    for (const component of graph.components) {
+      if (!component.cyclic) continue;
+      for (const address of component.members) byCell.set(cellAddressKey(address), component);
+    }
+    this.cachedCircularComponents = { generation: this.formulaTopologyGeneration, byCell, graph, order: new Map(graph.calculationOrder.map((key, index) => [key, index])) };
+    return byCell;
   }
 
   private evaluateCircularComponent(
@@ -1555,13 +1751,15 @@ export class FormulaEngine {
   ): void {
     const orderedMembers = [...members].sort(compareCellAddresses);
     if (!this.calculationSettings.iterativeCalculation) {
+      const diagnostic = `Circular reference component: ${orderedMembers.map(cellAddressKey).join(',')}`;
       for (const address of orderedMembers) {
         const key = cellAddressKey(address);
         const cell = this.cells.get(key);
         if (!cell?.formula) continue;
-        const value = createFormulaError('#NUM!', `Circular reference component: ${orderedMembers.map(cellAddressKey).join(',')}`);
+        const value = createFormulaError('#NUM!', diagnostic);
         const previousValue = cell.result.value;
         cell.result = { value, formula: cell.formula, ast: cell.ast, dependencies: cell.result.dependencies };
+        cell.evaluated = true;
         this.recordCalculationResultChange(address, previousValue, value);
         cache.set(key, value);
         this.spills.delete(spillKey(address));
@@ -1581,7 +1779,7 @@ export class FormulaEngine {
         const key = cellAddressKey(address);
         current.set(key, this.cells.get(key)?.result.value ?? null);
       }
-      const delta = Math.max(...orderedMembers.map((address) => formulaValueDelta(previous.get(cellAddressKey(address)), current.get(cellAddressKey(address)))));
+      const delta = orderedMembers.reduce((maximum, address) => Math.max(maximum, formulaValueDelta(previous.get(cellAddressKey(address)), current.get(cellAddressKey(address)))), 0);
       previous = current;
       for (const [key, value] of current) cache.set(key, value);
       if (delta <= this.calculationSettings.maximumChange) break;
@@ -1688,10 +1886,15 @@ export class FormulaEngine {
       cache.set(key, null);
       return null;
     }
+    if (overrides.length === 0 && cell.evaluated && this.activeEvaluationOwners && !this.activeEvaluationOwners.has(key)) {
+      cache.set(key, cell.result.value);
+      return cell.result.value;
+    }
     if (cell.parseError) {
       const previousValue = cell.result.value;
       cache.set(key, cell.parseError);
       cell.result = { value: cell.parseError, formula: cell.formula, dependencies: cell.result.dependencies };
+      cell.evaluated = true;
       this.recordCalculationResultChange(address, previousValue, cell.parseError);
       return cell.parseError;
     }
@@ -1713,7 +1916,9 @@ export class FormulaEngine {
     }
 
     const previousValue = cell.result.value;
+    if (overrides.length > 0) { cache.set(key, value); return value; }
     cell.result = { value, formula: cell.formula, ast: cell.ast, dependencies: cell.result.dependencies };
+    cell.evaluated = true;
     this.refreshSpill(address, value, cache);
     const displayValue = this.cells.get(key)?.result.value ?? value;
     this.recordCalculationResultChange(address, previousValue, displayValue);
@@ -1733,6 +1938,14 @@ export class FormulaEngine {
   }
 
   private recordSpillProjectionChange(address: CellAddress, before: ResolvedSpill | undefined, after: ResolvedSpill | undefined): void {
+    if (!sameCalculationValue(before, after)) {
+      for (const spill of [before, after]) {
+        if (!spill || spill.state !== 'ok') continue;
+        for (const dependent of this.dependencies.getRangeDependents(spill.sheetId, spill.range)) {
+          if (cellAddressKey(dependent) !== cellAddressKey(address)) this.spillDependentRoots?.set(cellAddressKey(dependent), dependent);
+        }
+      }
+    }
     const collector = this.activeSpillChangeCollector;
     const baselines = this.activeSpillChangeBaselines;
     if (!collector || !baselines) return;
@@ -1765,9 +1978,15 @@ export class FormulaEngine {
         rowVisibility: this.rowVisibilityResolver,
         readFormulaKind: (reference) => this.formulaKindAt(reference),
         random: (functionName, occurrence, elementIndex) => this.randomForCell(cell.address, functionName, occurrence, elementIndex),
-        readCell: (reference) => this.readCellWithOverrides(reference, cache, visiting, overrides),
-        readRange: (range) => this.readRange(range, cache, visiting, overrides),
-        readRangeMatrix: (range) => this.readRangeMatrix(range, cache, visiting, overrides),
+        readCell: (reference) => this.blockedRanges.some(range => range.sheetId === reference.sheetId && range.startRow <= reference.row && reference.row <= range.endRow && range.startColumn <= reference.column && reference.column <= range.endColumn) ? createFormulaError('#BLOCKED!', 'Hidden formula input') : this.externalCells.get(reference.sheetId)?.get(`${reference.row}:${reference.column}`)?.value ?? this.readCellWithOverrides(reference, cache, visiting, overrides),
+        readRange: (range) => this.isBlockedRange(range) ? [createFormulaError('#BLOCKED!', 'Hidden formula range')] : this.externalRangeValues(range, false) ?? this.readRange(range, cache, visiting, overrides),
+        readRangeMatrix: (range) => this.isBlockedRange(range) ? [[createFormulaError('#BLOCKED!', 'Hidden formula range')]] : this.externalRangeMatrix(range) ?? this.readRangeMatrix(range, cache, visiting, overrides),
+        readSparseRange: (range) => this.isBlockedRange(range) ? [createFormulaError('#BLOCKED!', 'Hidden formula range')] : this.externalRangeValues(range, true) ?? this.readSparseRange(range, cache, visiting, overrides),
+        readSparseRangeCells: (range) => this.isBlockedRange(range)
+          ? [{ address: range.start, value: createFormulaError('#BLOCKED!', 'Hidden formula range') }]
+          : this.externalCells.has(range.start.sheetId)
+            ? [...this.externalCells.get(range.start.sheetId)!.values()].filter(cell => cell.address.row >= range.start.row && cell.address.row <= range.end.row && cell.address.column >= range.start.column && cell.address.column <= range.end.column).map(cell => ({ address: { ...cell.address, sheetId: range.start.sheetId }, value: cell.value }))
+            : this.readSparseRangeCells(range, cache, visiting, overrides),
         readSpillRange: (anchor) => {
           this.evaluateCell(anchor, cache, visiting, overrides);
           const spill = this.spills.get(spillKey(anchor));
@@ -1781,7 +2000,14 @@ export class FormulaEngine {
           this.evaluateCell(address, cache, visiting, overrides);
           return this.getSpillValueAt(address.sheetId, address.row, address.column);
         },
-        resolveName: (name) => this.resolveDefinedName(name, cell.address, cache, visiting),
+        resolveName: (name) => this.resolveDefinedName(name, cell.address, cache, visiting, overrides),
+        resolveFunction: (name) => {
+          const definition = this.findDefinedName(name, cell.address);
+          if (!definition) return undefined;
+          const source = parseDefinedNameFormula(definition.formula);
+          const parsed = source && definition.anchor ? offsetAst(source, cell.address.row - definition.anchor.row, cell.address.column - definition.anchor.column) : source;
+          return parsed;
+        },
         resolveTableReference: (tableName, request) => {
           const resolved = resolveSheetTableReference(tableName, request, cell.address, this.sheetTables);
           if (isFormulaError(resolved)) return resolved;
@@ -1793,21 +2019,29 @@ export class FormulaEngine {
       };
   }
 
+  private findCellOverride(address: CellAddress, overrides: readonly FormulaCellOverride[]): FormulaCellOverride | undefined {
+    for (let index = overrides.length - 1; index >= 0; index--) {
+      const candidate = overrides[index]!;
+      if (candidate.address.sheetId === address.sheetId && candidate.address.row === address.row && candidate.address.column === address.column) return candidate;
+    }
+    return undefined;
+  }
+
   private readCellWithOverrides(
     address: CellAddress,
     cache: Map<string, FormulaValue>,
     visiting: Set<string>,
     overrides: readonly FormulaCellOverride[],
   ): FormulaValue {
-    const override = overrides.find((candidate) => cellAddressKey(candidate.address) === cellAddressKey(address));
-    return override ? structuredClone(override.value) : this.evaluateCell(address, cache, visiting, overrides);
+    const override = this.findCellOverride(address, overrides);
+    return override ? override.value : this.evaluateCellOrSpill(address, cache, visiting, overrides);
   }
 
   private refreshSpill(address: CellAddress, value: FormulaValue, cache?: Map<string, FormulaValue>): void {
     const key = spillKey(address);
     this.pendingSpillRecalculationOwners?.delete(key);
     const previous = this.spills.get(key);
-    if (!isSpillMatrix(value)) {
+    if (this.recordFormulaOwners.has(cellAddressKey(address)) || !isSpillMatrix(value)) {
       this.spills.delete(key);
       if (previous) this.recordSpillProjectionChange(address, previous, undefined);
       return;
@@ -1818,7 +2052,7 @@ export class FormulaEngine {
       if (previous) this.recordSpillProjectionChange(address, previous, undefined);
       return;
     }
-    environment.ensureExtent?.(address.row + value.length, address.column + Math.max(0, ...value.map((row) => row.length)));
+    environment.ensureExtent?.(address.row + value.length, address.column + value.reduce((maximum, row) => Math.max(maximum, row.length), 0));
     const spill = resolveSpill({
       sheetId: address.sheetId,
       anchor: { row: address.row, column: address.column },
@@ -1858,15 +2092,17 @@ export class FormulaEngine {
   private updateFormulaMetadata(key: string, ast?: FormulaAst, dependencies: readonly FormulaDependency[] = []): void {
     this.detachNameReferences(key);
     this.detachTableReferences(key);
+    for (const token of this.cellExternalTokens.get(key) ?? []) this.externalOwners.get(token)?.delete(key);
+    this.cellExternalTokens.delete(key);
     if (!ast) {
       this.volatileCells.delete(key);
       this.visibilityDependentCells.delete(key);
       return;
     }
-    if (formulaUsesVolatile(ast)) this.volatileCells.add(key);
-    else this.volatileCells.delete(key);
     const cell = this.cells.get(key);
     if (!cell) throw new Error(`FORMULA_INDEX_INVARIANT: formula owner ${key} is missing while indexing row-visibility dependencies`);
+    if (this.formulaDependsOnNamedProperty(ast, cell.address.sheetId, formulaUsesVolatile, new Set())) this.volatileCells.add(key);
+    else this.volatileCells.delete(key);
     if (this.formulaDependsOnRowVisibility(ast, cell.address.sheetId, new Set<string>())) this.visibilityDependentCells.add(key);
     else this.visibilityDependentCells.delete(key);
     const names = [...new Set([
@@ -1881,6 +2117,19 @@ export class FormulaEngine {
       bucket.add(key);
       this.nameIndex.set(name, bucket);
     }
+    const tokens = new Set<string>();
+    const visitExternal = (source: FormulaAst, visited: Set<string>): void => {
+      for (const ref of collectFormulaReferenceNodes(source)) if (ref.type === 'external-reference') tokens.add(ref.qualifier.workbookId.toUpperCase());
+      for (const name of collectNameReferences(source)) {
+        const definition = this.findDefinedName(name, cell.address);
+        if (!definition || visited.has(name.toUpperCase())) continue;
+        visited.add(name.toUpperCase());
+        try { visitExternal(parseFormulaSource(definition.formula.startsWith('=') ? definition.formula : `=${definition.formula}`), visited); } catch { /* The normal formula/name error is retained. */ }
+      }
+    };
+    visitExternal(ast, new Set());
+    this.cellExternalTokens.set(key, tokens);
+    for (const token of tokens) { const owners = this.externalOwners.get(token) ?? new Set<string>(); owners.add(key); this.externalOwners.set(token, owners); }
     const tables = this.collectDefinedNameTableReferences(ast, cell.address, new Set<string>());
     this.cellTableRefs.set(key, tables);
     for (const table of tables) {
@@ -1891,7 +2140,11 @@ export class FormulaEngine {
   }
 
   private formulaDependsOnRowVisibility(ast: FormulaAst, ownerSheetId: string, visitedNames: Set<string>): boolean {
-    if (formulaUsesRowVisibility(ast)) return true;
+    return this.formulaDependsOnNamedProperty(ast, ownerSheetId, formulaUsesRowVisibility, visitedNames);
+  }
+
+  private formulaDependsOnNamedProperty(ast: FormulaAst, ownerSheetId: string, predicate: (ast: FormulaAst) => boolean, visitedNames: Set<string>): boolean {
+    if (predicate(ast)) return true;
     for (const reference of collectNameReferences(ast)) {
       const normalized = reference.trim().toUpperCase();
       const definition = this.findDefinedName(reference, { sheetId: ownerSheetId, row: 0, column: 0 });
@@ -1900,7 +2153,7 @@ export class FormulaEngine {
       if (visitedNames.has(key)) continue;
       visitedNames.add(key);
       const nameAst = parseDefinedNameFormula(definition.formula);
-      if (nameAst && this.formulaDependsOnRowVisibility(nameAst, ownerSheetId, visitedNames)) return true;
+      if (nameAst && this.formulaDependsOnNamedProperty(nameAst, ownerSheetId, predicate, visitedNames)) return true;
     }
     return false;
   }
@@ -1963,6 +2216,7 @@ export class FormulaEngine {
         collectFormulaDependencies(cell.ast, address, {
           sheetTables: this.sheetTables,
           sheetOrder: this.sheetOrder,
+          resolveNameAst: (name, owner) => this.resolveDefinedNameAst(name, owner),
         }),
         address,
         new Set<string>(),
@@ -1980,7 +2234,8 @@ export class FormulaEngine {
     currentCell: CellAddress,
     cache: Map<string, FormulaValue>,
     visiting: Set<string>,
-  ): FormulaValue | undefined {
+    overrides: readonly FormulaCellOverride[],
+  ): FormulaEvaluationValue | undefined {
     const definition = this.findDefinedName(name, currentCell);
     if (!definition) return undefined;
     const identity = this.definedNameIdentity(definition);
@@ -1988,15 +2243,12 @@ export class FormulaEngine {
     if (visiting.has(visitingKey)) return createFormulaError('#NUM!', `Circular defined name dependency: ${identity}`);
     visiting.add(visitingKey);
     try {
-      return resolveDefinedNameSource(definition.formula, {
-        currentCell,
-        sheetOrder: this.sheetOrder,
-        anchor: definition.anchor,
-        readCell: (reference) => this.evaluateCell(reference, cache, visiting),
-        readRangeMatrix: (range) => this.readRangeMatrix(range, cache, visiting),
-        resolveName: (nestedName) => this.resolveDefinedName(nestedName, currentCell, cache, visiting),
-        numericContext: this.numericContext,
-      });
+      const source = definition.formula.trim();
+      const parsed = parseFormulaSource(source.startsWith('=') ? source : `=${source}`);
+      const ast = definition.anchor ? offsetAst(parsed, currentCell.row - definition.anchor.row, currentCell.column - definition.anchor.column) : parsed;
+      return evaluateFormulaOperand(ast, this.createEvaluationContext({ address: currentCell, result: { value: null, dependencies: [] } }, cache, visiting, overrides));
+    } catch (error) {
+      return formulaErrorFrom(error);
     } finally {
       visiting.delete(visitingKey);
     }
@@ -2006,6 +2258,7 @@ export class FormulaEngine {
     dependencies: readonly FormulaDependency[],
     owner: CellAddress,
     visiting: Set<string>,
+    valueDependencies = false,
   ): FormulaDependency[] {
     const expanded = [...dependencies];
     for (const dependency of dependencies) {
@@ -2022,8 +2275,10 @@ export class FormulaEngine {
       const nested = collectFormulaDependencies(projected, owner, {
         sheetTables: this.sheetTables,
         sheetOrder: this.sheetOrder,
+        valueDependencies,
+        resolveNameAst: (name, owner) => this.resolveDefinedNameAst(name, owner),
       });
-      expanded.push(...this.expandNameDependencies(nested, owner, new Set([...visiting, identity])));
+      expanded.push(...this.expandNameDependencies(nested, owner, new Set([...visiting, identity]), valueDependencies));
     }
     return expanded;
   }
@@ -2041,6 +2296,13 @@ export class FormulaEngine {
       : `workbook:${definition.name.trim().toUpperCase()}`;
   }
 
+  private resolveDefinedNameAst(name: string, owner: CellAddress): FormulaAst | undefined {
+    const definition = this.findDefinedName(name, owner);
+    if (!definition) return undefined;
+    const ast = parseDefinedNameFormula(definition.formula);
+    return ast && definition.anchor ? offsetAst(ast, owner.row - definition.anchor.row, owner.column - definition.anchor.column) : ast;
+  }
+
   private formulaKindAt(address: CellAddress): ReferenceFormulaKind {
     const ast = this.cells.get(cellAddressKey(address))?.ast;
     if (ast?.type !== 'function-call') return 'ordinary';
@@ -2050,29 +2312,36 @@ export class FormulaEngine {
 
   private resolveReference(reference: FormulaReferenceNode, currentCell: CellAddress): FormulaEvaluationReference | FormulaError {
     switch (reference.type) {
+      case 'cell-reference': {
+        const address = { ...reference.reference, sheetId: resolveFormulaSheetId(reference.reference.sheetId, currentCell.sheetId, this.sheetOrder) };
+        return { kind: 'reference', ranges: [{ kind: 'range', start: address, end: address }] };
+      }
+      case 'range-reference': return { kind: 'reference', ranges: [resolveRangeReference(reference, currentCell, this.sheetOrder)] };
+      case 'table-reference': {
+        const result = resolveSheetTableReference(reference.tableName, reference, currentCell, this.sheetTables);
+        if (isFormulaError(result)) return result;
+        return { kind: 'reference', ranges: ['start' in result ? result : { kind: 'range', start: result, end: result }] };
+      }
+
       case 'whole-column-reference': {
         const sheetId = resolveFormulaSheetId(reference.sheetId, currentCell.sheetId, this.sheetOrder);
-        const extent = this.spillEnvironments.get(sheetId);
-        if (!extent || extent.rowCount < 1) return createFormulaError('#REF!', `Worksheet extent unavailable for ${sheetId}`);
         return {
           kind: 'reference',
           ranges: [{
             kind: 'range',
             start: { sheetId, row: 0, column: reference.startColumn },
-            end: { sheetId, row: extent.rowCount - 1, column: reference.endColumn },
+            end: { sheetId, row: 1_048_575, column: reference.endColumn },
           }],
         };
       }
       case 'whole-row-reference': {
         const sheetId = resolveFormulaSheetId(reference.sheetId, currentCell.sheetId, this.sheetOrder);
-        const extent = this.spillEnvironments.get(sheetId);
-        if (!extent || extent.columnCount < 1) return createFormulaError('#REF!', `Worksheet extent unavailable for ${sheetId}`);
         return {
           kind: 'reference',
           ranges: [{
             kind: 'range',
             start: { sheetId, row: reference.startRow, column: 0 },
-            end: { sheetId, row: reference.endRow, column: extent.columnCount - 1 },
+            end: { sheetId, row: reference.endRow, column: 16_383 },
           }],
         };
       }
@@ -2110,12 +2379,58 @@ export class FormulaEngine {
         return ranges.length > 0 ? { kind: 'reference', ranges } : createFormulaError('#NULL!', 'Reference intersection is empty');
       }
       case 'sheet-range-reference':
-        return createFormulaError('#REF!', '3-D reference requires an ordered worksheet resolver');
-      case 'external-reference':
-        return createFormulaError('#REF!', `External workbook is unavailable: ${reference.qualifier.workbookId}`);
+        return this.resolveSheetRangeReference(reference, currentCell);
+      case 'external-reference': {
+        const resolved = externalReferenceRange(reference, this.externalLinks.get(reference.qualifier.workbookId.toUpperCase()));
+        return isFormulaError(resolved) ? resolved : { kind: 'reference', ranges: [resolved] };
+      }
       default:
         return createFormulaError('#REF!', `Unsupported structured reference: ${reference.type}`);
     }
+  }
+
+  private resolveSheetRangeReference(
+    reference: Extract<FormulaReferenceNode, { type: 'sheet-range-reference' }>,
+    currentCell: CellAddress,
+  ): FormulaEvaluationReference | FormulaError {
+    const startSheetId = resolveFormulaSheetId(reference.qualifier.startSheetId, currentCell.sheetId, this.sheetOrder);
+    const endSheetId = resolveFormulaSheetId(reference.qualifier.endSheetId, currentCell.sheetId, this.sheetOrder);
+    const startIndex = this.sheetOrder.findIndex((sheet) => sheet.id === startSheetId);
+    const endIndex = this.sheetOrder.findIndex((sheet) => sheet.id === endSheetId);
+    if (startIndex < 0 || endIndex < 0) {
+      return createFormulaError('#REF!', '3-D reference worksheet boundary is unresolved');
+    }
+
+    const ranges: RangeDependency[] = [];
+    for (const sheet of this.sheetOrder.slice(Math.min(startIndex, endIndex), Math.max(startIndex, endIndex) + 1)) {
+      switch (reference.reference.type) {
+        case 'cell-reference': {
+          const address = { ...reference.reference.reference, sheetId: sheet.id };
+          ranges.push({ kind: 'range', start: address, end: { ...address } });
+          break;
+        }
+        case 'range-reference': {
+          const qualified = {
+            ...reference.reference,
+            start: { ...reference.reference.start, reference: { ...reference.reference.start.reference, sheetId: sheet.id } },
+            end: { ...reference.reference.end, reference: { ...reference.reference.end.reference, sheetId: sheet.id } },
+          };
+          ranges.push(resolveRangeReference(qualified, { ...currentCell, sheetId: sheet.id }, this.sheetOrder));
+          break;
+        }
+        case 'whole-column-reference': {
+          ranges.push({ kind: 'range', start: { sheetId: sheet.id, row: 0, column: reference.reference.startColumn }, end: { sheetId: sheet.id, row: 1_048_575, column: reference.reference.endColumn } });
+          break;
+        }
+        case 'whole-row-reference': {
+          ranges.push({ kind: 'range', start: { sheetId: sheet.id, row: reference.reference.startRow, column: 0 }, end: { sheetId: sheet.id, row: reference.reference.endRow, column: 16_383 } });
+          break;
+        }
+        case 'invalid-reference':
+          return createFormulaError('#REF!', '3-D reference contains a deleted cell');
+      }
+    }
+    return { kind: 'reference', ranges };
   }
 
   private readRangeMatrix(
@@ -2140,14 +2455,58 @@ export class FormulaEngine {
     cache: Map<string, FormulaValue>,
     visiting: Set<string>,
     overrides: readonly FormulaCellOverride[] = [],
-  ): readonly FormulaValue[] {
-    const values: FormulaValue[] = [];
+  ): Iterable<FormulaValue> {
+    return (function* (engine: FormulaEngine) {
     for (let row = range.start.row; row <= range.end.row; row += 1) {
       for (let column = range.start.column; column <= range.end.column; column += 1) {
-        values.push(this.evaluateCellOrSpill({ sheetId: range.start.sheetId, row, column }, cache, visiting, overrides));
+        yield engine.evaluateCellOrSpill({ sheetId: range.start.sheetId, row, column }, cache, visiting, overrides);
       }
     }
-    return values;
+    })(this);
+  }
+
+  private *readSparseRange(
+    range: RangeDependency,
+    cache: Map<string, FormulaValue>,
+    visiting: Set<string>,
+    overrides: readonly FormulaCellOverride[] = [],
+  ): Iterable<FormulaValue> {
+    for (const cell of this.readSparseRangeCells(range, cache, visiting, overrides)) yield cell.value;
+  }
+
+  private *readSparseRangeCells(
+    range: RangeDependency,
+    cache: Map<string, FormulaValue>,
+    visiting: Set<string>,
+    overrides: readonly FormulaCellOverride[] = [],
+  ): Iterable<{ readonly address: CellAddress; readonly value: FormulaValue }> {
+    const inside = (address: CellAddress) => address.sheetId === range.start.sheetId
+      && address.row >= range.start.row && address.row <= range.end.row
+      && address.column >= range.start.column && address.column <= range.end.column;
+    const seen = new Set<string>();
+    const addresses = this.getInputAddressesInRange({
+      sheetId: range.start.sheetId, startRow: range.start.row, endRow: range.end.row,
+      startColumn: range.start.column, endColumn: range.end.column,
+    });
+    for (const address of [...addresses, ...overrides.filter(({ address }) => inside(address)).map(({ address }) => address)]) {
+      const key = cellAddressKey(address);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      yield { address, value: this.evaluateCellOrSpill(address, cache, visiting, overrides) };
+    }
+    // Spill cells are projections of their single anchor. They are not inputs.
+    for (const spill of this.spills.values()) {
+      if (spill.sheetId !== range.start.sheetId || spill.state !== 'ok') continue;
+      for (let row = Math.max(spill.range.startRow, range.start.row); row <= Math.min(spill.range.endRow, range.end.row); row += 1) {
+        for (let column = Math.max(spill.range.startColumn, range.start.column); column <= Math.min(spill.range.endColumn, range.end.column); column += 1) {
+          const address = { sheetId: spill.sheetId, row, column };
+          const key = cellAddressKey(address);
+          if (seen.has(key)) continue;
+          seen.add(key);
+          yield { address, value: this.evaluateCellOrSpill(address, cache, visiting, overrides) };
+        }
+      }
+    }
   }
 
   private evaluateCellOrSpill(
@@ -2156,6 +2515,8 @@ export class FormulaEngine {
     visiting: Set<string>,
     overrides: readonly FormulaCellOverride[] = [],
   ): FormulaValue {
+    const override = this.findCellOverride(address, overrides);
+    if (override) return override.value;
     const value = this.evaluateCell(address, cache, visiting, overrides);
     return this.getSpillValueAt(address.sheetId, address.row, address.column) ?? value;
   }

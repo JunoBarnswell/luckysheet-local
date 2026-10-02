@@ -24,6 +24,7 @@ import type {
 } from './ast';
 import { columnNameToIndex, tryParseCellReferenceText } from './address';
 import { FormulaSyntaxError } from './errors';
+import type { FormulaErrorCode } from './values';
 import { lexFormula, type Token, type TokenKind } from './lexer';
 import { MAX_COLUMN_INDEX, MAX_ROW_INDEX } from './reference-transform-domain';
 
@@ -160,7 +161,16 @@ class Parser {
       return node;
     }
     let expr = this.parsePrimary();
-    while (this.check('percent') || this.check('spill-operator')) {
+    while (this.check('percent') || this.check('spill-operator') || this.check('left-paren')) {
+      if (this.match('left-paren')) {
+        const args: FormulaAst[] = [];
+        if (!this.check('right-paren')) {
+          do { args.push(this.parseComparison()); } while (this.match('comma'));
+        }
+        const closing = this.expect('right-paren', 'Expected closing invocation parenthesis');
+        expr = { type: 'function-call', name: '', callee: expr, arguments: args, span: { start: expr.span.start, end: closing.span.end } };
+        continue;
+      }
       const operatorToken = this.advance();
       if (operatorToken.kind === 'spill-operator') {
         const node: SpillReferenceNode = {
@@ -194,6 +204,10 @@ class Parser {
     if (token.kind === 'error-reference') {
       this.advance();
       return { type: 'invalid-reference', code: '#REF!', span: token.span };
+    }
+    if (token.kind === 'error-literal') {
+      this.advance();
+      return { type: 'error-literal', code: token.lexeme as Exclude<FormulaErrorCode, '#REF!'>, span: token.span };
     }
 
     if (token.kind === 'string' && !this.checkNext('bang') && !this.isSheetRangeQualifier(token)) {
@@ -239,7 +253,11 @@ class Parser {
     }
 
     if (token.kind === 'left-bracket') {
-      return this.parseExternalReference();
+      let close = this.index + 1;
+      while (close < this.tokens.length && this.tokens[close]?.kind !== 'right-bracket' && this.tokens[close]?.kind !== 'eof') close++;
+      const next = this.tokens[close + 1]?.kind;
+      if (next === 'identifier' || next === 'string' || next === 'bang') return this.parseExternalReference();
+      return this.parseTableReference({ ...token, lexeme: '' });
     }
 
     if (this.match('left-paren')) {
@@ -362,7 +380,13 @@ class Parser {
       this.advance();
       return columnToken.value ?? '';
     }
-    return this.expect('identifier', 'Expected table column name').lexeme;
+    let name = '';
+    while (!this.check('right-bracket')) {
+      if (this.check('eof') || this.check('left-bracket') || this.check('comma') || this.check('table-specifier')) throw new FormulaSyntaxError('Invalid table column name', this.peek().span.start);
+      name += this.advance().lexeme;
+    }
+    if (!name) throw new FormulaSyntaxError('Expected table column name', columnToken.span.start);
+    return name;
   }
 
   private parseTableSpecifierToken(): TableReferenceSpecifier {
@@ -386,6 +410,27 @@ class Parser {
     const firstToken = this.peek();
     if (firstToken.kind === 'left-bracket') {
       return this.parseExternalReference();
+    }
+
+    if (firstToken.kind === 'string' && this.checkNext('bang')) {
+      const qualifier = firstToken.value ?? '';
+      const externalEnd = qualifier.startsWith('[') ? qualifier.indexOf(']') : -1;
+      const intervalSeparator = qualifier.indexOf(':');
+      if (externalEnd > 1 || intervalSeparator > 0) {
+        this.advance();
+        this.expect('bang', 'Expected separator after qualified worksheet');
+        const start = this.parseReferenceEndpoint(this.peek(), undefined, this.checkNext('colon'));
+        const reference = this.match('colon') ? this.combineReferenceEndpoints(start, this.parseReferenceEndpoint(this.peek(), undefined)) : start;
+        if (externalEnd > 1) {
+          const sheetId = qualifier.slice(externalEnd + 1);
+          if (!sheetId) throw new FormulaSyntaxError('External reference requires a worksheet', firstToken.span.start);
+          return this.parseReferenceOperators({ type: 'external-reference', qualifier: { workbookId: qualifier.slice(1, externalEnd), sheetId }, reference: reference as ExternalReferenceNode['reference'], span: { start: firstToken.span.start, end: reference.span.end } });
+        }
+        const startSheetId = qualifier.slice(0, intervalSeparator);
+        const endSheetId = qualifier.slice(intervalSeparator + 1);
+        if (!endSheetId || endSheetId.includes(':')) throw new FormulaSyntaxError('Invalid worksheet interval', firstToken.span.start);
+        return this.parseReferenceOperators({ type: 'sheet-range-reference', qualifier: { startSheetId, endSheetId, quotedInterval: true }, reference: reference as SheetRangeReferenceNode['reference'], span: { start: firstToken.span.start, end: reference.span.end } });
+      }
     }
 
     if (this.isSheetRangeQualifier(firstToken)) {
@@ -533,10 +578,20 @@ class Parser {
   }
 
   private parseExternalReference(): ExternalReferenceNode {
-    this.expect('left-bracket', 'Expected [ before external workbook');
-    const workbook = this.expect('identifier', 'Expected external workbook identity');
+    const opening = this.expect('left-bracket', 'Expected [ before external workbook');
+    let workbookId = '';
+    while (!this.check('right-bracket')) {
+      const token = this.peek();
+      if (!['identifier', 'number', 'minus'].includes(token.kind)) throw new FormulaSyntaxError('Invalid external workbook identity', token.span.start);
+      workbookId += this.advance().lexeme;
+    }
+    if (!workbookId) throw new FormulaSyntaxError('Expected external workbook identity', opening.span.start);
     this.expect('right-bracket', 'Expected ] after external workbook identity');
     const sheet = this.expectAny(['identifier', 'string'], 'Expected worksheet after external workbook');
+    if (this.check('left-bracket')) {
+      const reference = this.parseTableReference(sheet);
+      return { type: 'external-reference', qualifier: { workbookId }, reference, span: { start: opening.span.start, end: reference.span.end } };
+    }
     this.expect('bang', 'Expected separator after external worksheet');
     const startReference = this.parseReferenceEndpoint(this.peek(), undefined, this.checkNext('colon'));
     const reference = this.match('colon')
@@ -545,16 +600,18 @@ class Parser {
     return {
       type: 'external-reference',
       qualifier: {
-        workbookId: workbook.lexeme,
+        workbookId,
         sheetId: sheet.kind === 'string' ? sheet.value ?? '' : sheet.lexeme,
       },
       reference: reference as ExternalReferenceNode['reference'],
-      span: { start: workbook.span.start - 1, end: reference.span.end },
+      span: { start: opening.span.start, end: reference.span.end },
     };
   }
 
   private isSheetRangeQualifier(token: Token): boolean {
+    const cell = token.kind === 'identifier' ? tryParseCellReferenceText(token.lexeme) : undefined;
     return (token.kind === 'identifier' || token.kind === 'string')
+      && !(cell && cell.row <= MAX_ROW_INDEX && cell.column <= MAX_COLUMN_INDEX)
       && this.tokens[this.index + 1]?.kind === 'colon'
       && (this.tokens[this.index + 2]?.kind === 'identifier' || this.tokens[this.index + 2]?.kind === 'string')
       && this.tokens[this.index + 3]?.kind === 'bang';

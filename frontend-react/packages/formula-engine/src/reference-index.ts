@@ -15,6 +15,7 @@ interface ReferenceGeometry {
   readonly endColumn: number;
   readonly rowStructural: boolean;
   readonly columnStructural: boolean;
+  readonly sheetInterval?: { readonly start: number; readonly end: number };
 }
 
 interface IndexedReference {
@@ -30,6 +31,11 @@ interface IndexedReference {
   readonly end: number;
   readonly crossStart: number;
   readonly crossEnd: number;
+  readonly intervalStartColumn?: number;
+  readonly intervalEndColumn?: number;
+  readonly sheetInterval?: { readonly start: number; readonly end: number };
+  readonly intervalRowStructural?: boolean;
+  readonly intervalColumnStructural?: boolean;
   readonly structural: boolean;
   readonly point: boolean;
 }
@@ -58,6 +64,8 @@ interface OwnerReferences {
   readonly anchorPosition?: IndexedReference;
   readonly failure?: DefinedNameReferenceFailureReason;
   readonly formulaRuleFailure?: FormulaRuleReferenceFailureReason;
+  readonly references?: readonly FormulaReferenceNode[];
+  readonly context?: CellAddress;
 }
 
 export interface IndexedReferenceOwnerSource {
@@ -109,6 +117,7 @@ export interface FormulaRuleReferenceFailure {
 export class ReferenceIndex {
   private readonly owners = new Map<string, OwnerReferences>();
   private readonly sheets = new Map<string, Map<Axis, AxisTrees>>();
+  private sheetIntervalPostings?: IntervalNode;
   private readonly ownerPositions = new Map<string, IntervalNode>();
   private readonly definedNameAnchors = new Map<string, Map<Axis, AxisTrees>>();
   private readonly definedNameFailures = new Map<string, DefinedNameReferenceFailure>();
@@ -118,6 +127,15 @@ export class ReferenceIndex {
 
   setSheetOrder(sheetOrder: readonly FormulaSheetIdentity[]): void {
     this.sheetOrder = sheetOrder;
+    const formulaRules = [...this.owners.values()];
+    for (const entry of formulaRules) {
+      if (!entry.formulaRuleOwner || !entry.context || !entry.references) continue;
+      this.setFormulaRule(entry.formulaRuleOwner, entry.references, entry.context, entry.formulaRuleFailure);
+    }
+  }
+
+  getSheetIntervalPostingCount(): number {
+    return countNodes(this.sheetIntervalPostings);
   }
 
   set(owner: CellAddress, dependencies: readonly FormulaDependency[], sourceId = 'formula'): void {
@@ -132,6 +150,28 @@ export class ReferenceIndex {
       const geometries = dependencyGeometries(dependency, owner, this.sheetOrder);
       const point = dependency.kind !== 'name';
       for (const geometry of geometries) {
+        if (geometry.sheetInterval) {
+          postings.push({
+            id: `${storageKey}\u0000${sequence++}`,
+            ownerKey,
+            sourceId,
+            owner: copyAddress(owner),
+            sheetId: geometry.sheetId,
+            axis: 'row',
+            start: geometry.sheetInterval.start,
+            end: geometry.sheetInterval.end,
+            crossStart: geometry.startRow,
+            crossEnd: geometry.endRow,
+            intervalStartColumn: geometry.startColumn,
+            intervalEndColumn: geometry.endColumn,
+            sheetInterval: geometry.sheetInterval,
+            intervalRowStructural: geometry.rowStructural,
+            intervalColumnStructural: geometry.columnStructural,
+            structural: geometry.rowStructural || geometry.columnStructural,
+            point,
+          });
+          continue;
+        }
         for (const axis of ['row', 'column'] as const) {
           const structural = axis === 'row' ? geometry.rowStructural : geometry.columnStructural;
           const posting: IndexedReference = {
@@ -211,9 +251,10 @@ export class ReferenceIndex {
     const tree = this.getTrees(address.sheetId, 'row', false)?.byStart;
     const matches: IndexedReference[] = [];
     queryPoint(tree, address.row, matches);
+    matches.push(...this.getSheetIntervalPostings(address.sheetId));
     const owners = new Map<string, CellAddress>();
     for (const posting of matches) {
-      if (posting.sourceId !== 'formula' || !posting.point || address.column < posting.crossStart || address.column > posting.crossEnd) continue;
+      if (posting.sourceId !== 'formula' || !posting.point || !postingCoversAddress(posting, address)) continue;
       if (posting.owner) owners.set(posting.ownerKey, posting.owner);
     }
     return [...owners.values()].map(copyAddress).sort(compareCellAddresses);
@@ -227,9 +268,15 @@ export class ReferenceIndex {
     const tree = this.getTrees(sheetId, axis, false)?.byEnd;
     const matches: IndexedReference[] = [];
     queryEndAtLeast(tree, at, matches);
+    matches.push(...this.getSheetIntervalPostings(sheetId));
     const owners = new Map<string, CellAddress>();
     for (const posting of matches) {
-      if (posting.structural && posting.owner) owners.set(posting.ownerKey, posting.owner);
+      const structural = posting.sheetInterval
+        ? axis === 'row'
+          ? posting.intervalRowStructural === true && posting.crossEnd >= at
+          : posting.intervalColumnStructural === true && (posting.intervalEndColumn ?? -1) >= at
+        : posting.structural;
+      if (structural && posting.owner) owners.set(posting.ownerKey, posting.owner);
     }
     return [...owners.values()].map(copyAddress).sort(compareCellAddresses);
   }
@@ -262,6 +309,28 @@ export class ReferenceIndex {
           break;
         }
         for (const geometry of geometries) {
+          if (geometry.sheetInterval) {
+            postings.push({
+              id: `${storageKey}\u0000${sequence++}`,
+              ownerKey,
+              sourceId: 'defined-name',
+              definedNameOwner: owner,
+              sheetId: geometry.sheetId,
+              axis: 'row',
+              start: geometry.sheetInterval.start,
+              end: geometry.sheetInterval.end,
+              crossStart: geometry.startRow,
+              crossEnd: geometry.endRow,
+              intervalStartColumn: geometry.startColumn,
+              intervalEndColumn: geometry.endColumn,
+              sheetInterval: geometry.sheetInterval,
+              intervalRowStructural: geometry.rowStructural,
+              intervalColumnStructural: geometry.columnStructural,
+              structural: geometry.rowStructural || geometry.columnStructural,
+              point: false,
+            });
+            continue;
+          }
           for (const axis of ['row', 'column'] as const) {
             postings.push({
               id: `${storageKey}\u0000${sequence++}`,
@@ -351,6 +420,28 @@ export class ReferenceIndex {
           break;
         }
         for (const geometry of geometries) {
+          if (geometry.sheetInterval) {
+            postings.push({
+              id: `${storageKey}\u0000${sequence++}`,
+              ownerKey: formulaRuleOwnerKey(owner),
+              sourceId: 'structural:formula-rule',
+              formulaRuleOwner: owner,
+              sheetId: geometry.sheetId,
+              axis: 'row',
+              start: geometry.sheetInterval.start,
+              end: geometry.sheetInterval.end,
+              crossStart: geometry.startRow,
+              crossEnd: geometry.endRow,
+              intervalStartColumn: geometry.startColumn,
+              intervalEndColumn: geometry.endColumn,
+              sheetInterval: geometry.sheetInterval,
+              intervalRowStructural: geometry.rowStructural,
+              intervalColumnStructural: geometry.columnStructural,
+              structural: geometry.rowStructural || geometry.columnStructural,
+              point: false,
+            });
+            continue;
+          }
           for (const axis of ['row', 'column'] as const) {
             postings.push({
               id: `${storageKey}\u0000${sequence++}`,
@@ -383,6 +474,8 @@ export class ReferenceIndex {
         formulaRuleOwner: owner,
         sourceId: 'structural:formula-rule',
         postings,
+        references: references.map((reference) => structuredClone(reference)),
+        context: copyAddress(context),
         ...(failure ? { formulaRuleFailure: failure } : {}),
       });
       if (failure) this.formulaRuleFailures.set(storageKey, { owner, reason: failure });
@@ -455,7 +548,12 @@ export class ReferenceIndex {
     }
     const matches: IndexedReference[] = [];
     queryEndAtLeast(this.getTrees(sheetId, axis, false)?.byEnd, at, matches);
-    return uniqueDefinedNameOwners(matches.filter((posting) => posting.structural && posting.definedNameOwner));
+    matches.push(...this.getSheetIntervalPostings(sheetId));
+    return uniqueDefinedNameOwners(matches.filter((posting) => posting.definedNameOwner && (posting.sheetInterval
+      ? axis === 'row'
+        ? posting.intervalRowStructural === true && posting.crossEnd >= at
+        : posting.intervalColumnStructural === true && (posting.intervalEndColumn ?? -1) >= at
+      : posting.structural)));
   }
 
   getStructuralFormulaRuleDependents(sheetId: string, axis: Axis, at: number): readonly FormulaRuleReferenceOwnerIdentity[] {
@@ -464,7 +562,12 @@ export class ReferenceIndex {
     }
     const matches: IndexedReference[] = [];
     queryEndAtLeast(this.getTrees(sheetId, axis, false)?.byEnd, at, matches);
-    return uniqueFormulaRuleOwners(matches.filter((posting) => posting.structural && posting.formulaRuleOwner));
+    matches.push(...this.getSheetIntervalPostings(sheetId));
+    return uniqueFormulaRuleOwners(matches.filter((posting) => posting.formulaRuleOwner && (posting.sheetInterval
+      ? axis === 'row'
+        ? posting.intervalRowStructural === true && posting.crossEnd >= at
+        : posting.intervalColumnStructural === true && (posting.intervalEndColumn ?? -1) >= at
+      : posting.structural)));
   }
 
   getRangeFormulaRuleDependents(
@@ -474,8 +577,9 @@ export class ReferenceIndex {
     assertReferenceRange(sheetId, range);
     const matches: IndexedReference[] = [];
     queryOverlap(this.getTrees(sheetId, 'row', false)?.byStart, range.startRow, range.endRow, matches);
+    matches.push(...this.getSheetIntervalPostings(sheetId));
     return uniqueFormulaRuleOwners(matches.filter((posting) => posting.formulaRuleOwner
-      && posting.crossStart <= range.endColumn && posting.crossEnd >= range.startColumn));
+      && postingOverlapsRange(posting, range)));
   }
 
   getFormulaRuleReferenceFailures(): readonly FormulaRuleReferenceFailure[] {
@@ -491,8 +595,9 @@ export class ReferenceIndex {
     assertReferenceRange(sheetId, range);
     const matches: IndexedReference[] = [];
     queryOverlap(this.getTrees(sheetId, 'row', false)?.byStart, range.startRow, range.endRow, matches);
+    matches.push(...this.getSheetIntervalPostings(sheetId));
     return uniqueDefinedNameOwners(matches.filter((posting) => posting.definedNameOwner
-      && posting.crossStart <= range.endColumn && posting.crossEnd >= range.startColumn));
+      && postingOverlapsRange(posting, range)));
   }
 
   getDefinedNamesAnchoredInRange(
@@ -535,9 +640,10 @@ export class ReferenceIndex {
     const tree = this.getTrees(sheetId, 'row', false)?.byStart;
     const matches: IndexedReference[] = [];
     queryOverlap(tree, range.startRow, range.endRow, matches);
+    matches.push(...this.getSheetIntervalPostings(sheetId));
     const owners = new Map<string, CellAddress>();
     for (const posting of matches) {
-      if (posting.crossStart > range.endColumn || posting.crossEnd < range.startColumn) continue;
+      if (!postingOverlapsRange(posting, range)) continue;
       if (posting.owner) owners.set(posting.ownerKey, posting.owner);
     }
     return [...owners.values()].map(copyAddress).sort(compareCellAddresses);
@@ -570,6 +676,7 @@ export class ReferenceIndex {
   clear(): void {
     this.owners.clear();
     this.sheets.clear();
+    this.sheetIntervalPostings = undefined;
     this.ownerPositions.clear();
     this.definedNameAnchors.clear();
     this.definedNameFailures.clear();
@@ -684,6 +791,10 @@ export class ReferenceIndex {
   }
 
   private insert(posting: IndexedReference): void {
+    if (posting.sheetInterval) {
+      this.sheetIntervalPostings = insertNode(this.sheetIntervalPostings, posting, 'start');
+      return;
+    }
     const trees = this.getTrees(posting.sheetId, posting.axis, true)!;
     const byStart = insertNode(trees.byStart, posting, 'start');
     const byEnd = insertNode(trees.byEnd, posting, 'end');
@@ -692,6 +803,11 @@ export class ReferenceIndex {
   }
 
   private erase(posting: IndexedReference): void {
+    if (posting.sheetInterval) {
+      if (!this.sheetIntervalPostings) throw new Error('REFERENCE_INDEX_INVARIANT: sheet interval posting has no interval index');
+      this.sheetIntervalPostings = removeNode(this.sheetIntervalPostings, posting, 'start');
+      return;
+    }
     const trees = this.getTrees(posting.sheetId, posting.axis, false);
     if (!trees) throw new Error('REFERENCE_INDEX_INVARIANT: owner posting has no sheet index');
     const byStart = removeNode(trees.byStart, posting, 'start');
@@ -718,6 +834,14 @@ export class ReferenceIndex {
       axes.set(axis, trees);
     }
     return trees;
+  }
+
+  private getSheetIntervalPostings(sheetId: string): IndexedReference[] {
+    const sheetIndex = this.sheetOrder.findIndex((sheet) => sheet.id === sheetId);
+    if (sheetIndex < 0) return [];
+    const matches: IndexedReference[] = [];
+    queryPoint(this.sheetIntervalPostings, sheetIndex, matches);
+    return matches;
   }
 
   private getDefinedNameAnchorTrees(sheetId: string, axis: Axis, create: boolean): AxisTrees | undefined {
@@ -885,7 +1009,7 @@ function referenceGeometries(
       const intersections: ReferenceGeometry[] = [];
       for (const leftRange of left) {
         for (const rightRange of right) {
-          const intersection = intersectGeometry(leftRange, rightRange);
+          const intersection = intersectGeometry(leftRange, rightRange, sheetOrder);
           if (intersection) intersections.push(intersection);
         }
       }
@@ -897,9 +1021,11 @@ function referenceGeometries(
       const start = sheetOrder.findIndex((sheet) => sheet.id === startSheetId);
       const end = sheetOrder.findIndex((sheet) => sheet.id === endSheetId);
       if (start < 0 || end < 0) throw new FormulaReferenceError('3-D reference sheet boundary is unresolved');
-      return sheetOrder
-        .slice(Math.min(start, end), Math.max(start, end) + 1)
-        .flatMap((sheet) => referenceGeometries(reference.reference, owner ? { ...owner, sheetId: sheet.id } : { sheetId: sheet.id, row: 0, column: 0 }, sheetOrder));
+      const interval = { start: Math.min(start, end), end: Math.max(start, end) };
+      const boundarySheetId = sheetOrder[interval.start]!.id;
+      const context = owner ? { ...owner, sheetId: boundarySheetId } : { sheetId: boundarySheetId, row: 0, column: 0 };
+      return referenceGeometries(reference.reference, context, sheetOrder)
+        .map((geometry) => ({ ...geometry, sheetId: boundarySheetId, sheetInterval: interval }));
     }
     case 'spill-reference':
       return isReferenceNode(reference.operand) ? referenceGeometries(reference.operand, owner, sheetOrder) : [];
@@ -971,15 +1097,36 @@ function rectangleGeometry(
   };
 }
 
-function intersectGeometry(left: ReferenceGeometry, right: ReferenceGeometry): ReferenceGeometry | undefined {
-  if (left.sheetId !== right.sheetId) return undefined;
+function intersectGeometry(
+  left: ReferenceGeometry,
+  right: ReferenceGeometry,
+  sheetOrder: readonly FormulaSheetIdentity[],
+): ReferenceGeometry | undefined {
+  let sheetId: string;
+  let sheetInterval: ReferenceGeometry['sheetInterval'];
+  if (left.sheetInterval && right.sheetInterval) {
+    const start = Math.max(left.sheetInterval.start, right.sheetInterval.start);
+    const end = Math.min(left.sheetInterval.end, right.sheetInterval.end);
+    if (start > end) return undefined;
+    sheetInterval = { start, end };
+    sheetId = sheetOrder[start]?.id ?? left.sheetId;
+  } else if (left.sheetInterval || right.sheetInterval) {
+    const interval = left.sheetInterval ?? right.sheetInterval!;
+    const concrete = left.sheetInterval ? right.sheetId : left.sheetId;
+    const index = sheetOrder.findIndex((sheet) => sheet.id === concrete);
+    if (index < interval.start || index > interval.end) return undefined;
+    sheetId = concrete;
+  } else {
+    if (left.sheetId !== right.sheetId) return undefined;
+    sheetId = left.sheetId;
+  }
   const startRow = Math.max(left.startRow, right.startRow);
   const endRow = Math.min(left.endRow, right.endRow);
   const startColumn = Math.max(left.startColumn, right.startColumn);
   const endColumn = Math.min(left.endColumn, right.endColumn);
   if (startRow > endRow || startColumn > endColumn) return undefined;
-  return rectangleGeometry(
-    left.sheetId,
+  const geometry = rectangleGeometry(
+    sheetId,
     startRow,
     endRow,
     startColumn,
@@ -987,6 +1134,7 @@ function intersectGeometry(left: ReferenceGeometry, right: ReferenceGeometry): R
     left.rowStructural || right.rowStructural,
     left.columnStructural || right.columnStructural,
   );
+  return sheetInterval ? { ...geometry, sheetInterval } : geometry;
 }
 
 function copyAddress(address: CellAddress): CellAddress {
@@ -1071,6 +1219,29 @@ function removeNode(root: IntervalNode | undefined, value: IndexedReference, key
 
 function minimum(root: IntervalNode): IntervalNode {
   return root.left ? minimum(root.left) : root;
+}
+
+function postingCoversAddress(posting: IndexedReference, address: CellAddress): boolean {
+  return posting.sheetInterval
+    ? address.row >= posting.crossStart && address.row <= posting.crossEnd
+      && address.column >= (posting.intervalStartColumn ?? Number.MAX_SAFE_INTEGER)
+      && address.column <= (posting.intervalEndColumn ?? Number.MIN_SAFE_INTEGER)
+    : address.column >= posting.crossStart && address.column <= posting.crossEnd;
+}
+
+function postingOverlapsRange(
+  posting: IndexedReference,
+  range: { readonly startRow: number; readonly endRow: number; readonly startColumn: number; readonly endColumn: number },
+): boolean {
+  return posting.sheetInterval
+    ? posting.crossStart <= range.endRow && posting.crossEnd >= range.startRow
+      && (posting.intervalStartColumn ?? Number.MAX_SAFE_INTEGER) <= range.endColumn
+      && (posting.intervalEndColumn ?? Number.MIN_SAFE_INTEGER) >= range.startColumn
+    : posting.crossStart <= range.endColumn && posting.crossEnd >= range.startColumn;
+}
+
+function countNodes(root: IntervalNode | undefined): number {
+  return root ? 1 + countNodes(root.left) + countNodes(root.right) : 0;
 }
 
 function queryPoint(root: IntervalNode | undefined, point: number, result: IndexedReference[]): void {

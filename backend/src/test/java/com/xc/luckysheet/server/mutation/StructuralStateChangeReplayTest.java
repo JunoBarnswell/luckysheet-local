@@ -202,7 +202,7 @@ class StructuralStateChangeReplayTest {
 
     private ObjectNode workbook() throws Exception {
         return (ObjectNode) mapper.readTree("""
-                {"schema":"WorkbookSnapshot","version":10,"unitId":"book","name":"Facts",
+                {"schema":"WorkbookSnapshot","version":11,"unitId":"book","name":"Facts",
                  "definedNameModels":[],"definedNames":{},
                  "sheets":[
                    {"id":"data","name":"Data Sheet","rowCount":20,"columnCount":10,

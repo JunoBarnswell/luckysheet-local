@@ -79,6 +79,7 @@ public class AccessProjectionService {
     public boolean canDeliver(CommittedOperationEnvelope operation, RangeAccessResolver access) {
         if (access.hiddenRegions().isEmpty()) return true;
         for (CommittedOperationMutation mutation : operation.mutations()) {
+            if (mutation.structuralPatch() != null && mutation.structuralPatch().formulaOwnerDeltas().stream().anyMatch(delta -> "record-field".equals(delta.ownerKind()))) return false;
             List<RangeRef> ranges = new ArrayList<>(mutation.affectedRanges());
             ranges.addAll(mutation.structuralImpactRanges());
             if (ranges.isEmpty() && mutation.params() != null && !mutation.params().isNull() && !mutation.params().isEmpty()

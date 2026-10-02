@@ -3,7 +3,7 @@ import { isFormulaError, type FormulaValue } from '../values';
 export const informationFunctions: Record<string, (args: FormulaValue[]) => FormulaValue> = {
   ISBLANK: (args) => {
     const val = args[0];
-    return val === null || val === undefined || val === '';
+    return val === null || val === undefined;
   },
 
   ISNUMBER: (args) => {
@@ -43,6 +43,7 @@ export const informationFunctions: Record<string, (args: FormulaValue[]) => Form
 
   N: (args) => {
     const val = args[0];
+    if (isFormulaError(val)) return val;
     if (typeof val === 'number') return val;
     if (typeof val === 'boolean') return val ? 1 : 0;
     return 0;
@@ -50,6 +51,7 @@ export const informationFunctions: Record<string, (args: FormulaValue[]) => Form
 
   T: (args) => {
     const val = args[0];
+    if (isFormulaError(val)) return val;
     return typeof val === 'string' ? val : '';
   },
 };

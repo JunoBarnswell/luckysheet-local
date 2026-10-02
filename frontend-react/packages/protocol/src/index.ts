@@ -1,4 +1,4 @@
-import { assertCanonicalWorkbookHyperlinks, createPivotCollator, normalizePivotRefreshPolicy, parsePivotCalculatedItemFormula, PIVOT_MAX_MEMBER_COUNT, structuralRangeOwnerAffectedRanges } from '@react-sheets/core-model';
+import { assertExternalLinkBinding, assertCanonicalWorkbookHyperlinks, createPivotCollator, normalizePivotRefreshPolicy, parsePivotCalculatedItemFormula, PIVOT_MAX_MEMBER_COUNT, structuralRangeOwnerAffectedRanges } from '@react-sheets/core-model';
 import type {
   DataSourceManifest,
   ChartTextFormulaField,
@@ -93,7 +93,7 @@ export interface OperationIntent {
 
 /** Server-derived reference-owner effects for one committed structural mutation. */
 export interface StructuralPatch {
-  version: 9;
+  version: 10;
   mutationId: string;
   formulaOwnerDeltas: StructuralFormulaOwnerDelta[];
   definedNameOwnerDeltas: StructuralDefinedNameOwnerDelta[];
@@ -1064,7 +1064,7 @@ export function validateDataSourceMutationParams(
 export function validateStructuralPatch(value: unknown, mutationId: string): StructuralPatch {
   const patch = requireRecord(value, 'Committed structural patch');
   validateExactKeys(patch, ['version', 'mutationId', 'formulaOwnerDeltas', 'definedNameOwnerDeltas', 'rangeOwnerDeltas'], 'Committed structural patch');
-  if (patch.version !== 9 || patch.mutationId !== mutationId || !Array.isArray(patch.formulaOwnerDeltas)
+  if (patch.version !== 10 || patch.mutationId !== mutationId || !Array.isArray(patch.formulaOwnerDeltas)
     || !Array.isArray(patch.definedNameOwnerDeltas) || !Array.isArray(patch.rangeOwnerDeltas)) {
     throw new Error('Committed structural patch header is invalid');
   }
@@ -1186,6 +1186,11 @@ export function validateStructuralPatch(value: unknown, mutationId: string): Str
         return { kind: 'formula-object' as const, ownerKind: 'table-sheet-column' as const, sheetId: delta.sheetId,
           fieldId: delta.fieldId, beforeFormula: delta.beforeFormula as string, afterFormula: delta.afterFormula as string };
       }
+      if (delta.ownerKind === 'record-field') {
+        validateExactKeys(delta, ['kind', 'ownerKind', 'tableId', 'fieldId', 'beforeFormula', 'afterFormula'], label);
+        if (!isNonEmptyString(delta.tableId) || !isNonEmptyString(delta.fieldId)) throw new Error(`${label} record field owner is invalid`);
+        return { kind: 'formula-object' as const, ownerKind: 'record-field' as const, tableId: delta.tableId, fieldId: delta.fieldId, beforeFormula: delta.beforeFormula as string, afterFormula: delta.afterFormula as string };
+      }
       if (delta.ownerKind === 'data-view-field') {
         validateExactKeys(delta, ['kind', 'ownerKind', 'viewId', 'fieldId', 'beforeFormula', 'afterFormula'], label);
         if (!isNonEmptyString(delta.viewId) || !isNonEmptyString(delta.fieldId)) throw new Error(`${label} data-view formula-object owner is invalid`);
@@ -1257,6 +1262,8 @@ export function validateStructuralPatch(value: unknown, mutationId: string): Str
             ? JSON.stringify([delta.kind, delta.ownerKind, delta.sheetId, delta.payloadId])
             : delta.ownerKind === 'table-sheet-column'
               ? JSON.stringify([delta.kind, delta.ownerKind, delta.sheetId, delta.fieldId])
+              : delta.ownerKind === 'record-field'
+                ? JSON.stringify([delta.kind, delta.ownerKind, delta.tableId, delta.fieldId])
               : delta.ownerKind === 'data-view-field'
                 ? JSON.stringify([delta.kind, delta.ownerKind, delta.viewId, delta.fieldId])
                 : JSON.stringify([delta.kind, delta.ownerKind, delta.templateId, delta.field]);
@@ -1446,7 +1453,7 @@ export function validateStructuralPatch(value: unknown, mutationId: string): Str
     if (rangeOwnerKeys.has(key)) throw new Error('Committed structural patch contains duplicate range-owner deltas');
     rangeOwnerKeys.add(key);
   }
-  return { version: 9, mutationId, formulaOwnerDeltas, definedNameOwnerDeltas, rangeOwnerDeltas };
+  return { version: 10, mutationId, formulaOwnerDeltas, definedNameOwnerDeltas, rangeOwnerDeltas };
 }
 
 /** Validate the shared dashboard state before it enters a recovery journal. */
@@ -1561,10 +1568,11 @@ export function validateWorkbookSnapshot(value: unknown): WorkbookSnapshot {
     throw new Error('WorkbookSnapshot requires at least one sheet');
   }
   const dataModel = input.dataModel as Record<string, unknown> | undefined;
-  if (!dataModel || !Array.isArray(dataModel.sources) || !Array.isArray(dataModel.tables)
+  if (!dataModel || !Array.isArray(dataModel.externalLinks) || !Array.isArray(dataModel.sources) || !Array.isArray(dataModel.tables)
     || !Array.isArray(dataModel.relationships) || !Array.isArray(dataModel.views)) {
     throw new Error('WorkbookSnapshot dataModel is invalid');
   }
+  for (const link of dataModel.externalLinks as import("@react-sheets/core-model").ExternalLinkBinding[]) assertExternalLinkBinding(link);
   if (input.cellStyleTemplates !== undefined) {
     if (!Array.isArray(input.cellStyleTemplates)) throw new Error('WorkbookSnapshot cellStyleTemplates must be an array');
     const templateIds = new Set<string>();
@@ -2479,6 +2487,27 @@ export class WorkbookApiClient {
       `/api/workbooks/${encodeURIComponent(unitId)}/snapshot`,
       options,
     ), unitId);
+  }
+
+  async getExternalLinkInputs(unitId: string, linkId: string): Promise<{
+    binding: import('@react-sheets/core-model').ExternalLinkBinding;
+    snapshot: import('@react-sheets/core-model').WorkbookSnapshot;
+    subject: string; sourceRevision: number; accessRevision: number;
+    blockedRanges: import('@react-sheets/core-model').RangeRef[];
+  }> {
+    const raw = await this.json<unknown>(`/api/workbooks/${encodeURIComponent(unitId)}/external-links/${encodeURIComponent(linkId)}/inputs`);
+    const value = requireRecord(raw, 'External link inputs');
+    validateExactKeys(value, ['binding', 'snapshot', 'subject', 'sourceRevision', 'accessRevision', 'blockedRanges'], 'External link inputs');
+    const binding = value.binding as import('@react-sheets/core-model').ExternalLinkBinding;
+    assertExternalLinkBinding(binding);
+    const snapshot = validateWorkbookSnapshot(value.snapshot);
+    if (binding.id !== linkId || snapshot.unitId !== binding.sourceUnitId || !isNonEmptyString(value.subject) || !Number.isSafeInteger(value.sourceRevision) || Number(value.sourceRevision) < 0 || !Number.isSafeInteger(value.accessRevision) || Number(value.accessRevision) < 0 || !Array.isArray(value.blockedRanges)) throw new Error('EXTERNAL_LINK_INPUT_CONTEXT_INVALID');
+    const blockedRanges = value.blockedRanges.map(range => {
+      const item = requireRecord(range, 'External blocked range');
+      if (!isNonEmptyString(item.sheetId) || !['startRow', 'endRow', 'startColumn', 'endColumn'].every(key => Number.isSafeInteger(item[key]) && Number(item[key]) >= 0) || Number(item.endRow) < Number(item.startRow) || Number(item.endColumn) < Number(item.startColumn)) throw new Error('EXTERNAL_LINK_BLOCKED_RANGE_INVALID');
+      return item as unknown as import('@react-sheets/core-model').RangeRef;
+    });
+    return { binding, snapshot, subject: value.subject, sourceRevision: Number(value.sourceRevision), accessRevision: Number(value.accessRevision), blockedRanges };
   }
 
   async getAccess(unitId: string, options: ApiRequestOptions = {}): Promise<WorkbookAccessResponse> {

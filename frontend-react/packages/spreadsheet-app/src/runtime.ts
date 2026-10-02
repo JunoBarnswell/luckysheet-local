@@ -1,3 +1,5 @@
+import { synchronizeRecordCalculations } from './features/linked-data/record-calculation';
+import { refreshExternalLinks } from './features/linked-data/external-link-host';
 import { RecoveryJournal } from './features/persistence/recovery-journal';
 import { CheckpointCoordinator } from './features/persistence/checkpoint-coordinator';
 import { WorkbookModel, isWorkbookCalculationContextEffect, type CellData, type DataSourceManifest, type StructuralTransformResult } from '@react-sheets/core-model';
@@ -289,6 +291,7 @@ function installCommandCellValueResolver(runtime: SpreadsheetRuntime): void {
 }
 
 const FORMULA_SYNC_MUTATIONS = new Set([
+  'record.set',
   'cell.set',
   'cell.restore',
   'range.set',
@@ -340,6 +343,7 @@ const VISIBILITY_MUTATIONS = new Set([
 ]);
 
 const DIRECT_CELL_WRITE_MUTATIONS = new Set([
+  'record.set',
   'cell.set',
   'cell.restore',
   'range.set',
@@ -574,6 +578,8 @@ function loadFormulaInputs(engine: FormulaEngine, workbook: WorkbookModel): numb
       indexAuxiliaryFormulaOwners(engine, address, cell);
     });
   }
+  synchronizeRecordCalculations(engine, workbook);
+  formulaCount = engine.getFormulaCount();
   // A value-only workbook has no formula dependency graph. Keeping tens of
   // thousands of ordinary cells in FormulaEngine duplicates CellMatrix and
   // makes native-document open proportional to every imported value for no calculation
@@ -582,7 +588,7 @@ function loadFormulaInputs(engine: FormulaEngine, workbook: WorkbookModel): numb
     for (const sheet of workbook.getSheets()) {
       sheet.cells.forEachWithoutHydration((cell, row, column) => {
         const update = calculationInputUpdate(sheet.id, row, column, cell);
-        if (update.input?.kind === 'value') engine.setValue(update.address, update.input.value);
+        if (update.input?.kind === 'value' && !engine.getRecordFormulaOwnerAt(update.address)) engine.setValue(update.address, update.input.value);
       });
     }
   }
@@ -927,6 +933,11 @@ function collectAssetReferences(snapshot: unknown, pending: readonly unknown[]):
 export function attachCoreListeners(runtime: SpreadsheetRuntime): void {
   detachCoreListeners(runtime);
 
+  const refreshTimer = setInterval(() => {
+    if (!runtime.disposed && runtime.remoteDataAvailable && runtime.pendingMutations.length === 0 && runtime.model.dataModel.externalLinks.size) void refreshExternalLinks(runtime).catch(error => runtime.handlers.onNotice?.(error instanceof Error ? error.message : 'External refresh failed'));
+  }, 5000);
+  (refreshTimer as unknown as { unref?: () => void }).unref?.();
+  runtime.detachers.push(() => clearInterval(refreshTimer));
   runtime.detachers.push(
     runtime.commands.onMutation((mutation, source, appliedEffect) => {
       if (runtime.disposed) return;
@@ -934,8 +945,8 @@ export function attachCoreListeners(runtime: SpreadsheetRuntime): void {
       const structuralEffect = isStructuralTransformResult(appliedEffect) ? appliedEffect : undefined;
       const calculationContextEffect = isWorkbookCalculationContextEffect(appliedEffect)
         ? appliedEffect
-        : structuralEffect?.calculationContextEffect;
-      const rebuildsCalculationContext = calculationContextEffect?.action === 'rebuild';
+        : structuralEffect?.calculationContextEffect ?? runtime.commands.registry.getMutationMetadata(mutation.id)?.calculationContextEffect;
+      const rebuildsCalculationContext = calculationContextEffect?.action === 'rebuild' || Boolean(structuralEffect && [...runtime.model.dataModel.tables.values()].some(table => table.recordIdFieldId));
       const changesVisibilityProjection = VISIBILITY_MUTATIONS.has(mutation.id)
         || rebuildsCalculationContext
         || structuralEffect !== undefined
@@ -952,6 +963,7 @@ export function attachCoreListeners(runtime: SpreadsheetRuntime): void {
         rebuildFormulaCalculation(runtime);
         runtime.formula.notifyVisibilityChanged();
       } else if (structuralEffect) {
+        if (mutation.id === 'sheet.reordered') runtime.formula.updateSheetOrder(runtime.model.getSheets().map(({ id, name }) => ({ id, name })));
         if (mutation.id === 'sheet.rename') {
           runtime.formula.updateSheetNames(
             runtime.model.sheetOrder.map((id) => ({ id, name: runtime.model.getSheet(id).name })),
@@ -967,6 +979,10 @@ export function attachCoreListeners(runtime: SpreadsheetRuntime): void {
         runtime.formula.setDefinedNameModels(runtime.model.definedNameModels, false);
       } else if (calculationContextEffect?.action === 'sync-tables') {
         syncWorkbookSheetTables(runtime.formula, runtime.model, false);
+      } else if (calculationContextEffect?.action === 'sync-sheet-order') {
+        runtime.formula.updateSheetOrder(
+          runtime.model.sheetOrder.map((id) => ({ id, name: runtime.model.getSheet(id).name })),
+        );
       }
       // Geometry can change directly (merge/table) or as a side effect of a structural transform.
       const spillBlockerGeometryRanges = mutation.id === 'merge.set' || mutation.id === 'merge.remove'
@@ -1010,6 +1026,13 @@ export function attachCoreListeners(runtime: SpreadsheetRuntime): void {
         assertNoSpillChildWrite(runtime.model, mutation);
       }
 
+      const relationMembershipChanged = !rebuildsCalculationContext && [...runtime.model.dataModel.relationships.values()].some(relation => {
+        const table = runtime.model.getTable(relation.fromTableId), range = table.sourceRange, field = table.fields.find(field => field.id === relation.fromFieldId);
+        if (!table.recordIdFieldId || !range || !field) return false;
+        const column = range.startColumn + field.ordinal;
+        return mutation.affectedRanges.some(affected => affected.sheetId === range.sheetId && affected.startRow <= range.endRow && affected.endRow > range.startRow && affected.startColumn <= column && affected.endColumn >= column);
+      });
+      if (relationMembershipChanged) structuralRoots = [...(structuralRoots ?? []), ...synchronizeRecordCalculations(runtime.formula, runtime.model)];
       const formulaOwnerDeltas = structuralEffect?.formulaOwnerDeltas ?? [];
       const definedNameOwnerDeltas = structuralEffect?.definedNameOwnerDeltas ?? [];
       const projectionMutation = formulaOwnerDeltas.length > 0 || definedNameOwnerDeltas.length > 0
@@ -1187,7 +1210,10 @@ function scheduleOperation(
   // may start a flush; disconnected edits remain in the journal.
   if (!runtime.localOnly && runtime.collab && runtime.collaboration.offlineQueue.getState() !== 'offline') {
     void runtime.collaboration.offlineQueue.flushAll().then(({ failed }) => {
-      if (failed > 0) runtime.handlers.onNotice?.('Some offline changes could not be synced');
+      if (failed > 0) {
+        const rejected = runtime.collaboration?.offlineQueue.getPending().find(item => item.rejection);
+        runtime.handlers.onNotice?.(rejected ? `${rejected.operation.operationId}: ${rejected.rejection!.message}` : 'OPERATION_SYNC_FAILED: change remains in the recovery journal');
+      }
     });
   } else {
     runtime.handlers.onSaveState?.(runtime.remoteSyncRequested ? 'offline' : 'saved');
@@ -1238,6 +1264,10 @@ export function setRuntimeDateContext(runtime: SpreadsheetRuntime, dateSystem: E
 function rebuildFormulaEngine(workbook: WorkbookModel, dateSystem: ExcelDateSystem = '1900', canonicalReferenceDate?: CanonicalExcelDateParts, rowVisibilityResolver?: WorkbookRowVisibilityResolver): FormulaEngine {
   const engine = new FormulaEngine({ defaultSheetId: workbook.primarySheetId, sheetOrder: workbook.sheetOrder.map((id) => ({ id, name: workbook.getSheet(id).name })), dateSystem, canonicalReferenceDate, collationContext: workbook.collationContext, calculationSettings: workbook.calculationSettings, rowVisibilityResolver });
   loadFormulaInputs(engine, workbook);
+  engine.applyExternalCalculationLinks([...workbook.dataModel.externalLinks.values()].map(binding => ({
+    id: binding.id, token: binding.token, sourceUnitId: binding.sourceUnitId, subject: 'unresolved',
+    sourceRevision: 0, accessRevision: 0, state: 'refreshing', sheets: [], cells: [],
+  })));
   return engine;
 }
 
@@ -1625,6 +1655,7 @@ export function startCollaborationSession(
         runtime.accessProjection = access;
         runtime.handlers.onAccessProjection?.(access);
         hydrateRuntime(runtime, snapshot);
+        runtime.remoteDataAvailable = true;
         runtime.collaboration?.setRevision(snapshot.revision);
         await loadHistoryAndReplayPending(runtime, snapshot.revision);
         if (!active || runtime.disposed) return;
@@ -1636,6 +1667,7 @@ export function startCollaborationSession(
         runtime.collaboration?.offlineQueue.setOnline(true);
         runtime.handlers.onMutationsApplied?.();
         runtime.handlers.onSaveState?.(runtime.collaboration?.getPendingOperations().length ? 'saving' : 'saved');
+        if (runtime.model.dataModel.externalLinks.size) await refreshExternalLinks(runtime);
       })().catch((error: Error) => {
         if (!active || runtime.disposed) return;
         synchronizing = false;
@@ -1836,6 +1868,7 @@ async function initializePersistence(runtime: SpreadsheetRuntime, isActive: () =
         // callback so immediate tab interaction cannot be reverted by startup.
         runtime.handlers.onPhaseChange?.('ready');
         runtime.handlers.onWorkspacePersisted?.();
+        if (runtime.model.dataModel.externalLinks.size) await refreshExternalLinks(runtime);
       }
   } catch (error) {
     // Authentication, authorization and an unknown shared workbook are

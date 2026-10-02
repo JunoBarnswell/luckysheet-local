@@ -65,6 +65,10 @@ function referenceTokenAt(node: FormulaAst, caret: CellEditCaret): FormulaRefere
     case 'binary-expression':
       return referenceTokenAt(node.left, caret) ?? referenceTokenAt(node.right, caret);
     case 'function-call':
+      if (node.callee) {
+        const token = referenceTokenAt(node.callee, caret);
+        if (token) return token;
+      }
       for (const argument of node.arguments) {
         const token = referenceTokenAt(argument, caret);
         if (token) return token;
@@ -146,6 +150,7 @@ function collectReferenceDescriptors(node: FormulaAst, output: ParsedFormulaRefe
       collectReferenceDescriptors(node.right, output);
       return;
     case 'function-call':
+      if (node.callee) collectReferenceDescriptors(node.callee, output);
       for (const argument of node.arguments) collectReferenceDescriptors(argument, output);
       return;
     default:

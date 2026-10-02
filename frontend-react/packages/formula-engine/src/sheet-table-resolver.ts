@@ -20,6 +20,7 @@ export interface SheetTableRef {
     readonly startColumn: number;
     readonly endColumn: number;
   };
+  readonly recordIdFieldId?: string;
   readonly hasHeaderRow: boolean;
   readonly hasTotalRow: boolean;
   readonly columns: readonly SheetTableColumnRef[];
@@ -38,7 +39,7 @@ export function normalizeSheetTables(tables: readonly SheetTableRef[]): Map<stri
   for (const table of tables) {
     const id = table.id.trim();
     const name = table.name.trim().toUpperCase();
-    if (!id || id !== table.id || !name || name !== table.name || ids.has(id) || index.has(name)) {
+    if (!id || id !== table.id || !name || table.name.trim() !== table.name || ids.has(id) || index.has(name)) {
       throw new Error('Sheet Table identities must be unique within a workbook');
     }
     ids.add(id);
@@ -58,7 +59,7 @@ function tableBounds(table: SheetTableRef) {
 
 function columnIndexOf(table: SheetTableRef, columnName: string): number | FormulaError {
   const columnIndex = table.columns.findIndex(
-    (column) => column.name.trim().toUpperCase() === columnName.trim().toUpperCase(),
+    (column) => (column.id === columnName || column.name.trim().toUpperCase() === columnName.trim().toUpperCase()),
   );
   if (columnIndex < 0) return createFormulaError('#NAME?', `Unknown table column: ${columnName}`);
   return columnIndex;
@@ -114,7 +115,9 @@ export function resolveSheetTableReference(
   currentCell: CellAddress,
   tables: ReadonlyMap<string, SheetTableRef>,
 ): RangeDependency | CellAddress | FormulaError {
-  const table = tables.get(tableName.trim().toUpperCase());
+  const contextual = [...tables.values()].filter(table => table.recordIdFieldId && table.sheetId === currentCell.sheetId
+    && currentCell.row > table.range.startRow && currentCell.row <= table.range.endRow && currentCell.column >= table.range.startColumn && currentCell.column <= table.range.endColumn);
+  const table = tableName ? tables.get(tableName.trim().toUpperCase()) : contextual.length === 1 ? contextual[0] : undefined;
   if (!table) return createFormulaError('#NAME?', `Unknown table: ${tableName}`);
 
   const columnIndex = request.columnName === undefined
@@ -141,7 +144,7 @@ export function resolveSheetTableReference(
   const endColumn = table.range.startColumn + (endColumnIndex ?? columnIndex);
   const { bodyStartRow, bodyEndRow } = tableBounds(table);
 
-  if (request.thisRow) {
+  if (request.thisRow || !tableName && table.recordIdFieldId) {
     if (currentCell.sheetId !== table.sheetId) {
       return createFormulaError('#REF!', 'Structured table row reference requires the same worksheet');
     }

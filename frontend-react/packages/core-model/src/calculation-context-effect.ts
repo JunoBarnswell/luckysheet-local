@@ -1,4 +1,4 @@
-export type WorkbookCalculationContextAction = 'rebuild' | 'sync-defined-names' | 'sync-tables';
+export type WorkbookCalculationContextAction = 'rebuild' | 'sync-defined-names' | 'sync-tables' | 'sync-sheet-order';
 
 export interface WorkbookCalculationContextEffect {
   readonly kind: 'calculation-context';
@@ -9,6 +9,7 @@ export const CALCULATION_CONTEXT_EFFECTS = {
   rebuild: { kind: 'calculation-context', action: 'rebuild' },
   syncDefinedNames: { kind: 'calculation-context', action: 'sync-defined-names' },
   syncTables: { kind: 'calculation-context', action: 'sync-tables' },
+  syncSheetOrder: { kind: 'calculation-context', action: 'sync-sheet-order' },
 } as const satisfies Record<string, WorkbookCalculationContextEffect>;
 
 export function isWorkbookCalculationContextEffect(value: unknown): value is WorkbookCalculationContextEffect {
@@ -16,5 +17,5 @@ export function isWorkbookCalculationContextEffect(value: unknown): value is Wor
   const effect = value as Record<string, unknown>;
   return Object.keys(effect).length === 2
     && effect.kind === 'calculation-context'
-    && (effect.action === 'rebuild' || effect.action === 'sync-defined-names' || effect.action === 'sync-tables');
+    && (effect.action === 'rebuild' || effect.action === 'sync-defined-names' || effect.action === 'sync-tables' || effect.action === 'sync-sheet-order');
 }

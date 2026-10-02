@@ -77,7 +77,7 @@ final class WorkbookStructureMutationDescriptor extends CanonicalJsonMutationDes
         StructuralPatch structuralPatch = null;
         switch (id()) {
             case "sheet.add" -> add(root, mutation.sheetId(), params);
-            case "sheet.remove" -> remove(root, params);
+            case "sheet.remove" -> structuralPatch = remove(root, params);
             case "sheet.rename" -> structuralPatch = rename(root, mutation.sheetId(), params);
             case "sheet.duplicated" -> duplicate(root, params);
             case "sheet.restore" -> restore(root, params);
@@ -85,6 +85,7 @@ final class WorkbookStructureMutationDescriptor extends CanonicalJsonMutationDes
             case "hyperlink.remove" -> removeHyperlink(root, mutation.sheetId(), params);
             default -> throw ServiceException.validation("Unsupported workbook structure mutation: " + id());
         }
+        if (structuralPatch == null && Set.of("sheet.add", "sheet.duplicated", "sheet.restore").contains(id())) structuralPatch = new StructuralPatch(StructuralPatch.VERSION, id(), List.of(), List.of(), List.of());
         return new MutationApplication(root, structuralPatch);
     }
 
@@ -116,6 +117,10 @@ final class WorkbookStructureMutationDescriptor extends CanonicalJsonMutationDes
         sheet.putArray("drawings");
         sheet.putObject("drawingPayloads");
         sheet.putArray("hyperlinks");
+        // Match WorksheetModel.snapshot(): deletion undo must restore an exact preimage.
+        for (String field : List.of("conditionalFormats", "dataValidations", "hiddenRows", "hiddenColumns", "sheetTables", "sparklineGroups", "drawingGroups", "spillRanges", "protectionRules")) sheet.putArray(field);
+        sheet.put("showGridlines", true).put("showHeaders", true).put("zoom", 100).put("hidden", false);
+        sheet.putObject("snapSettings").put("enabled", true).put("snapToGrid", true).put("snapToShape", true).put("gridSize", 8);
         ObjectNode review = sheet.putObject("review");
         review.putObject("notesByCell");
         review.putObject("notesById");
@@ -124,15 +129,27 @@ final class WorkbookStructureMutationDescriptor extends CanonicalJsonMutationDes
         sheets.add(sheet);
     }
 
-    private void remove(ObjectNode root, ObjectNode params) {
+    private StructuralPatch remove(ObjectNode root, ObjectNode params) {
         String id = SnapshotMutationSupport.text(params, "id");
         ArrayNode sheets = SnapshotMutationSupport.sheets(root);
         if (sheets.size() <= 1) throw ServiceException.validation("A workbook must keep at least one worksheet");
         int index = findSheetIndex(root, id);
         if (index < 0) throw ServiceException.notFound("Sheet not found: " + id);
+        List<FormulaReferenceTransformer.SheetIdentity> before = sheetIdentities(root);
+        List<FormulaReferenceTransformer.SheetIdentity> after = before.stream().filter(sheet -> !sheet.id().equals(id)).toList();
+        StructuralPatch patch = StructuralSnapshotReducer.rewriteSheetFormulaReferences(root, id,
+                formula -> FormulaReferenceTransformer.sheetLifecycle(formula, before, after, id, true), "sheet.remove", id);
         validateNoExternalSheetReferences(root, id, sheets.get(index).path("name").asText());
         sheets.remove(index);
         removeSheetScopedDocuments(root, id);
+        return patch;
+    }
+
+    static List<FormulaReferenceTransformer.SheetIdentity> sheetIdentities(ObjectNode root) {
+        List<FormulaReferenceTransformer.SheetIdentity> result = new ArrayList<>();
+        for (JsonNode sheet : SnapshotMutationSupport.sheets(root)) result.add(new FormulaReferenceTransformer.SheetIdentity(
+                sheet.path("id").asText(), sheet.path("name").asText()));
+        return result;
     }
 
     private StructuralPatch rename(ObjectNode root, String mutationSheetId, ObjectNode params) {

@@ -37,6 +37,8 @@ import com.xc.luckysheet.server.store.WorkbookStore;
 import org.springframework.stereotype.Service;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -44,8 +46,11 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.Supplier;
 
 @Service
 public class WorkbookOperationService {
@@ -63,12 +68,13 @@ public class WorkbookOperationService {
     private final RangeAccessService rangeAccess;
     private final AccessProjectionService accessProjection;
     /**
-     * H2 runs the browser service as one JVM.  Keep commit, checkpoint and
-     * restore writes for one workbook in one local critical section so a
-     * checkpoint cannot race the operation replay entity update.  The
+     * H2 runs the browser service as one JVM. Keep commit, checkpoint and
+     * restore writes serialized through transaction completion so a
+     * checkpoint cannot race the operation replay entity update. The
      * database lock remains authoritative for future instances.
      */
-    private final ConcurrentHashMap<String, Object> workbookLocks = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, ReentrantLock> workbookLocks = new ConcurrentHashMap<>();
+    private final ReentrantLock invalidWorkbookLock = new ReentrantLock();
 
     @Autowired
     public WorkbookOperationService(
@@ -124,6 +130,51 @@ public class WorkbookOperationService {
         return response(unitId, snapshot, row.revision(), checksum(json));
     }
 
+    /** A subject-safe, revision-consistent input graph for one persisted external binding. */
+    public JsonNode readExternalLink(String targetUnitId, String linkId, String actor, List<String> groups) {
+        WorkbookSnapshotResponse target = readSnapshot(targetUnitId, actor, groups);
+        JsonNode binding = null;
+        for (JsonNode link : target.snapshot().path("dataModel").path("externalLinks")) {
+            if (link.path("id").asText().equals(linkId)) { binding = link; break; }
+        }
+        if (binding == null) throw ServiceException.notFound("External link binding not found");
+        final JsonNode selected = binding.deepCopy();
+        String sourceId = selected.path("sourceUnitId").asText();
+        return withWorkbookLock(sourceId, () -> {
+            var resolver = rangeAccess.resolver(sourceId, actor, groups);
+            long accessRevision = resolver.accessRevision();
+            WorkbookSnapshotResponse source = readSnapshot(sourceId, actor, groups);
+            ObjectNode graph = ((ObjectNode) source.snapshot()).deepCopy();
+            int inputCount = 0;
+            for (JsonNode sheet : graph.path("sheets")) for (JsonNode row : sheet.path("cells")) inputCount += row.size();
+            if (inputCount > 100000) throw new ServiceException("UNSUPPORTED_FEATURE", 422, "External input graph exceeds the bounded calculation limit");
+            // Only calculation inputs cross this boundary. Drawings, review, and opaque blocks remain source-owned.
+            for (JsonNode rawSheet : graph.path("sheets")) {
+                ObjectNode sheet = (ObjectNode) rawSheet;
+                sheet.put("kind", "worksheet");
+                for (String key : List.of("drawings", "drawingGroups", "pivots", "sparklines", "hyperlinks", "dataRegions", "conditionalFormats", "dataValidations")) sheet.putArray(key);
+                sheet.putObject("drawingPayloads");
+                ObjectNode review = sheet.putObject("review");
+                for (String key : List.of("notesByCell", "notesById", "threadIdsByCell", "threadsById")) review.putObject(key);
+                sheet.remove(List.of("tableSheet", "ganttSheet", "reportSheet", "lifecycleDefinedNames", "lifecyclePrintDocument"));
+            }
+            for (String key : List.of("printDocuments", "queryDefinitions", "cellStyleTemplates")) graph.putArray(key);
+            ObjectNode data = (ObjectNode) graph.path("dataModel");
+            data.putArray("views");
+            data.putArray("externalLinks");
+            ObjectNode response = mapper.createObjectNode();
+            response.set("binding", selected);
+            response.set("snapshot", graph);
+            response.put("subject", actor);
+            response.put("sourceRevision", source.revision());
+            response.put("accessRevision", accessRevision);
+            var blocked = response.putArray("blockedRanges");
+            for (var region : resolver.hiddenRegions()) blocked.add(mapper.valueToTree(region.range()));
+            if (rangeAccess.resolver(sourceId, actor, groups).accessRevision() != accessRevision) throw new ServiceException("ACCESS_REVISION_CHANGED", 409, "External source access changed during refresh");
+            return response;
+        });
+    }
+
     @Transactional
     public CommitResult commit(String routeUnitId, OperationEnvelope operation, String actor) {
         return commit(routeUnitId, operation, actor, List.of());
@@ -131,7 +182,7 @@ public class WorkbookOperationService {
 
     @Transactional
     public CommitResult commit(String routeUnitId, OperationEnvelope operation, String actor, List<String> groups) {
-        synchronized (workbookLock(routeUnitId)) {
+        return withWorkbookLock(routeUnitId, () -> {
             try {
                 if (operation == null) throw ServiceException.validation("Operation is required");
                 return commitInternal(routeUnitId, operation, actor, groups == null ? List.of() : groups);
@@ -139,7 +190,7 @@ public class WorkbookOperationService {
                 auditRecorder.rejected(operation == null ? null : operation.operationId(), routeUnitId, actor, "OPERATION_COMMIT", error.getMessage());
                 throw error;
             }
-        }
+        });
     }
 
     private CommitResult commitInternal(String routeUnitId, OperationEnvelope operation, String actor, List<String> groups) {
@@ -183,6 +234,10 @@ public class WorkbookOperationService {
         List<CommittedOperationMutation> committedMutations = new ArrayList<>();
         long changedAccessRevision = -1;
         for (OperationMutation mutation : operation.mutations()) {
+            if ("table.configure".equals(mutation.id()) && undoTarget == null) {
+                JsonNode previousTable = com.xc.luckysheet.server.contract.RecordTableValidator.table(next, mutation.params().path("table").path("id").asText());
+                if (previousTable.has("recordIdFieldId") && !previousTable.path("recordIdFieldId").equals(mutation.params().path("table").path("recordIdFieldId"))) throw ServiceException.conflict("RECORD_IDENTITY_IMMUTABLE");
+            }
             RangeAccessResolver accessResolver = rangeAccess.resolver(routeUnitId, actor, actorRole, groups);
             JsonNode authorizationSnapshot = next;
             MutationPreparation prepared = registry.prepare(authorizationSnapshot, mutation, actorRole, ranges -> {
@@ -214,6 +269,13 @@ public class WorkbookOperationService {
                 throw ServiceException.unavailable("STRUCTURAL_PATCH_UNAVAILABLE: structural mutation did not produce server-owned reference facts");
             }
             WorkbookSnapshotValidator.requireCanonicalWorksheetNames(candidate.path("sheets"));
+            if (committedPatch != null) for (var delta : committedPatch.formulaOwnerDeltas()) {
+                if ("record-field".equals(delta.ownerKind())) {
+                    JsonNode table = com.xc.luckysheet.server.contract.RecordTableValidator.table(candidate, delta.tableId());
+                    JsonNode range = table.path("sourceRange");
+                    accessResolver.requireCanEdit(List.of(new RangeRef(range.path("sheetId").asText(), range.path("startRow").asInt(), range.path("endRow").asInt(), range.path("startColumn").asInt(), range.path("endColumn").asInt())));
+                }
+            }
             List<RangeRef> committedRanges = registry.committedRanges(protectionPreimage, prepared, actorRole, committedPatch);
             List<RangeRef> structuralImpactRanges = registry.structuralImpactRanges(committedPatch);
             if (ownedSnapshotCommit) {
@@ -397,6 +459,12 @@ public class WorkbookOperationService {
     private static boolean isInverseStructuralMutation(CommittedOperationMutation original, OperationMutation inverse) {
         String originalId = original.id();
         String inverseId = inverse.id();
+        if ("sheet.reordered".equals(originalId) && originalId.equals(inverseId)) return original.params().path("sheetId").equals(inverse.params().path("sheetId"));
+        if ("sheet.remove".equals(originalId) && "sheet.restore".equals(inverseId)) return original.params().path("id").equals(inverse.params().path("sheet").path("id"));
+        if (Set.of("sheet.add", "sheet.restore", "sheet.duplicated").contains(originalId) && "sheet.remove".equals(inverseId)) {
+            String id = originalId.equals("sheet.restore") ? original.params().path("sheet").path("id").asText() : original.params().path(originalId.equals("sheet.duplicated") ? "newId" : "id").asText();
+            return id.equals(inverse.params().path("id").asText());
+        }
         if (isInverseAxisMutation(originalId, inverseId)) {
             return sameAxisRange(original.params(), inverse.params());
         }
@@ -542,7 +610,7 @@ public class WorkbookOperationService {
 
     @Transactional
     public CheckpointResponse checkpoint(String unitId, String actor) {
-        synchronized (workbookLock(unitId)) {
+        return withWorkbookLock(unitId, () -> {
             access.require(unitId, actor, WorkbookAclRole.EDITOR);
             WorkbookRow row = store.findForUpdate(unitId).orElseThrow(() -> ServiceException.notFound("Workbook not found: " + unitId));
             if (row.lifecycle() != WorkbookLifecycle.ACTIVE) throw ServiceException.trashed("Workbook is in trash and cannot be checkpointed");
@@ -557,12 +625,12 @@ public class WorkbookOperationService {
             store.updateWorkbook(unitId, row.revision(), json, row.revision(), now);
             store.insertCheckpoint(unitId, row.revision(), json, checksum(json), now);
             return new CheckpointResponse(unitId, row.revision(), checksum(json), true);
-        }
+        });
     }
 
     @Transactional
     public RestoreResult restore(String unitId, RestoreRequest request, String actor) {
-        synchronized (workbookLock(unitId)) {
+        return withWorkbookLock(unitId, () -> {
             access.require(unitId, actor, WorkbookAclRole.OWNER);
             WorkbookRow row = store.findForUpdate(unitId).orElseThrow(() -> ServiceException.notFound("Workbook not found: " + unitId));
             if (request.targetRevision() > row.revision()) throw ServiceException.notFound("Revision not found: " + request.targetRevision());
@@ -593,12 +661,29 @@ public class WorkbookOperationService {
             store.insertCheckpoint(unitId, revision, json, checksum(json), now);
             audit(operationId, unitId, actor, "SNAPSHOT_RESTORE", "ACCEPTED", request.reason(), mapper.createObjectNode().put("targetRevision", request.targetRevision()));
             return new RestoreResult(committed, response(unitId, target, revision, checksum(json)));
-        }
+        });
     }
 
-    private Object workbookLock(String unitId) {
-        if (unitId == null || unitId.isBlank()) return this;
-        return workbookLocks.computeIfAbsent(unitId, ignored -> new Object());
+    private <T> T withWorkbookLock(String unitId, Supplier<T> action) {
+        ReentrantLock lock = unitId == null || unitId.isBlank()
+                ? invalidWorkbookLock
+                : workbookLocks.computeIfAbsent(unitId, ignored -> new ReentrantLock());
+        lock.lock();
+        boolean releaseAfterCompletion = false;
+        try {
+            if (TransactionSynchronizationManager.isSynchronizationActive()) {
+                TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                    @Override
+                    public void afterCompletion(int status) {
+                        lock.unlock();
+                    }
+                });
+                releaseAfterCompletion = true;
+            }
+            return action.get();
+        } finally {
+            if (!releaseAfterCompletion) lock.unlock();
+        }
     }
 
     public List<AclEntry> acl(String unitId, String actor) {

@@ -68,6 +68,15 @@ final class SheetDataMutationDescriptor extends CanonicalJsonMutationDescriptor 
     @Override
     public MutationApplication applyWithPatch(JsonNode snapshot, OperationMutation mutation) {
         JsonNode updated = applyMetadata(snapshot, mutation);
+        if ("sheet.reordered".equals(id())) {
+            ObjectNode root = SnapshotMutationSupport.root(updated);
+            var before = WorkbookStructureMutationDescriptor.sheetIdentities(SnapshotMutationSupport.root(snapshot));
+            var after = WorkbookStructureMutationDescriptor.sheetIdentities(root);
+            StructuralPatch lifecycle = StructuralSnapshotReducer.rewriteSheetFormulaReferences(root, mutation.sheetId(),
+                    formula -> FormulaReferenceTransformer.sheetLifecycle(formula, before, after, mutation.sheetId(), false),
+                    "sheet.reordered", null);
+            return new MutationApplication(root, lifecycle);
+        }
         if (!"sheetTable.update".equals(id())) return new MutationApplication(updated, null);
         ObjectNode params = SnapshotMutationSupport.params(mutation);
         StructuralPatch patch = StructuralSnapshotReducer.renameSheetTableReferences(
@@ -525,8 +534,14 @@ final class SheetDataMutationDescriptor extends CanonicalJsonMutationDescriptor 
             if (type != null && !type.isTextual()) throw ServiceException.validation("TableSheet column type is invalid");
             JsonNode formula = column.get("formula");
             if (formula != null && !formula.isTextual()) throw ServiceException.validation("TableSheet column formula is invalid");
+            if (formula != null || "formula".equals(column.path("type").asText()) || "lookup".equals(column.path("type").asText())) {
+                throw ServiceException.unsupportedFeature("TableSheet calculated fields require a canonical record calculation owner");
+            }
         }
         validateTableSheetFieldList(definition, visibleIds, "grouping");
+        for (JsonNode group : definition.path("grouping")) {
+            if (group.path("collapsed").asBoolean(false)) throw ServiceException.unsupportedFeature("Collapsed TableSheet groups require group identity");
+        }
         JsonNode sortState = definition.get("sortState");
         if (sortState != null) {
             if (!sortState.isArray()) throw ServiceException.validation("TableSheet sortState is invalid");

@@ -28,7 +28,7 @@ class CanonicalFlywayMigrationIntegrationTest {
         String url = database();
         Flyway flyway = canonical(url);
         CanonicalFlywayMigrationConfiguration.migrate(flyway);
-        assertEquals("12", flyway.info().current().getVersion().getVersion());
+        assertEquals("13", flyway.info().current().getVersion().getVersion());
         int historyCount = flyway.info().applied().length;
         CanonicalFlywayMigrationConfiguration.migrate(canonical(url));
         assertEquals(historyCount, flyway.info().applied().length);

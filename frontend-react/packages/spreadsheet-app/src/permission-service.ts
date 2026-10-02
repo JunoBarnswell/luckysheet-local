@@ -1,3 +1,4 @@
+import { guardRecordWorksheetWrites } from '@react-sheets/core-model';
 import {
   MAX_SHEET_COLUMN_COUNT,
   MAX_SHEET_ROW_COUNT,
@@ -260,6 +261,7 @@ export class PermissionService {
   }
 
   checkMutation(mutation: { id: string; affectedRanges: readonly RangeRef[]; params?: unknown; permission?: { capability: string; protectionAction: ProtectionAction | 'none'; checksProtection: boolean; affectedRangeMode: 'none' | 'declared' | 'exact'; objectScope: 'cell' | 'range' | 'row' | 'column' | 'drawing' | 'worksheet' | 'workbook' } }): PermissionResult {
+    if (this.workbook) { try { guardRecordWorksheetWrites(this.workbook, mutation.id, mutation.affectedRanges); } catch (error) { return { allowed: false, reason: error instanceof Error ? error.message : 'Record field is read-only', blockedBy: 'range-access' }; } }
     const policy = mutation.permission ? mutationPolicyOverride(mutation.permission) : mutationPermission(mutation.id);
     if (!policy) return { allowed: false, reason: `Unknown mutation permission contract: ${mutation.id}`, blockedBy: 'share-role' };
     if (!capabilityAllowed(this.getCapabilities(), policy.capability)) {

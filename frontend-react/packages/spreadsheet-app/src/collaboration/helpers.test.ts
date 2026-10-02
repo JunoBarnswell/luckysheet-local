@@ -281,7 +281,7 @@ describe('collaboration helpers', () => {
         params: { sheetId: 'sheet-1', at: 5, count: 1 },
         affectedRanges: [{ sheetId: 'sheet-1', startRow: 5, endRow: 5, startColumn: 0, endColumn: 0 }],
         structuralPatch: {
-          version: 9,
+          version: 10,
           mutationId: 'rows.inserted',
           formulaOwnerDeltas: [],
           definedNameOwnerDeltas: [],
@@ -317,7 +317,7 @@ describe('collaboration helpers', () => {
         params: { sheetId: workbook.primarySheetId, at, count: 1 },
         affectedRanges: [{ sheetId: workbook.primarySheetId, startRow: at, endRow: at, startColumn: 0, endColumn: 0 }],
         structuralPatch: {
-          version: 9,
+          version: 10,
           mutationId: 'rows.inserted',
           formulaOwnerDeltas: [],
           definedNameOwnerDeltas: [],
@@ -386,7 +386,7 @@ describe('collaboration helpers', () => {
         params: { sheetId: workbook.primarySheetId, at, count: 1 },
         affectedRanges: [{ sheetId: workbook.primarySheetId, startRow: at, endRow: at, startColumn: 0, endColumn: 0 }],
         structuralPatch: {
-          version: 9,
+          version: 10,
           mutationId: 'rows.inserted',
           formulaOwnerDeltas: [],
           definedNameOwnerDeltas: [],

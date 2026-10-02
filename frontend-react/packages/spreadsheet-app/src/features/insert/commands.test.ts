@@ -11,6 +11,16 @@ function blankTableSheet(): SheetSnapshot {
 }
 
 describe('insert feature', () => {
+  it('replays a server restore ACK with its full worksheet scope and rejects an empty scope', () => {
+    const workbook = new WorkbookModel('restore-ack-test', 'Proof');
+    const runtime = new CommandRuntime(workbook);
+    registerSheetCommands(runtime);
+    const sheet = blankTableSheet();
+    const mutation = { id: 'sheet.restore', unitId: workbook.unitId, sheetId: sheet.id, params: { sheet }, affectedRanges: [{ sheetId: sheet.id, startRow: 0, endRow: 99, startColumn: 0, endColumn: 9 }] };
+    assert.doesNotThrow(() => runtime.applyRemoteMutations([mutation]));
+    assert.equal(workbook.getSheet(sheet.id).kind, 'table-sheet');
+    assert.throws(() => runtime.applyRemoteMutations([{ ...mutation, affectedRanges: [] }]), /affected ranges differ/);
+  });
   it('creates an advanced sheet and its data table in one undo transaction', () => {
     const workbook = new WorkbookModel('insert-test', 'Insert');
     const runtime = new CommandRuntime(workbook);

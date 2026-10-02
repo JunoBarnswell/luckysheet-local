@@ -1,3 +1,5 @@
+import type { FormulaErrorCode } from './values';
+
 export interface SourceSpan {
   readonly start: number;
   readonly end: number;
@@ -35,6 +37,14 @@ export interface StringLiteralNode {
 export interface BooleanLiteralNode {
   readonly type: 'boolean-literal';
   readonly value: boolean;
+  readonly span: SourceSpan;
+  readonly parenthesized?: boolean;
+}
+
+/** Authored or permission-projected error, distinct from deleted geometry. */
+export interface ErrorLiteralNode {
+  readonly type: 'error-literal';
+  readonly code: Exclude<FormulaErrorCode, '#REF!'>;
   readonly span: SourceSpan;
   readonly parenthesized?: boolean;
 }
@@ -122,6 +132,7 @@ export interface ReferenceIntersectionNode {
 export interface SheetRangeQualifier {
   readonly startSheetId: string;
   readonly endSheetId: string;
+  readonly quotedInterval?: boolean;
 }
 
 type QualifiedReferenceNode = CellReferenceNode | InvalidReferenceNode | RangeReferenceNode | WholeColumnReferenceNode | WholeRowReferenceNode;
@@ -142,7 +153,7 @@ export interface ExternalWorkbookQualifier {
 export interface ExternalReferenceNode {
   readonly type: 'external-reference';
   readonly qualifier: ExternalWorkbookQualifier;
-  readonly reference: QualifiedReferenceNode;
+  readonly reference: QualifiedReferenceNode | TableReferenceNode;
   readonly span: SourceSpan;
   readonly parenthesized?: boolean;
 }
@@ -188,6 +199,8 @@ export interface BinaryExpressionNode {
 export interface FunctionCallNode {
   readonly type: 'function-call';
   readonly name: string;
+  /** Expression invocation (e.g. LAMBDA(x,x+1)(2)); name is empty. */
+  readonly callee?: FormulaAst;
   readonly arguments: readonly FormulaAst[];
   readonly span: SourceSpan;
   readonly parenthesized?: boolean;
@@ -214,6 +227,7 @@ export interface TableReferenceNode {
 }
 
 export type FormulaAst =
+  | ErrorLiteralNode
   | NumberLiteralNode
   | StringLiteralNode
   | BooleanLiteralNode

@@ -136,6 +136,8 @@ export function FeaturePanelHost({
           onClearCompatibilityReport={session.clearCompatibilityReport.bind(session)}
           tables={state.tables}
           relationships={state.relationships}
+          onConfigureRecord={input => session.configureRecordTable(input)}
+          onSetRecordRelationship={relationship => session.setRecordRelationship(relationship)}
           onUpdateTableSheet={(definition) => session.updateTableSheetDefinition(definition)}
           onUpdateGanttSheet={(definition) => session.updateGanttSheetDefinition(definition)}
           onUpdateReportSheet={(definition) => session.updateReportSheetDefinition(definition)}

@@ -40,6 +40,7 @@ export interface CalculationTaskState {
   /** Changes not yet acknowledged as applied by the persistent Worker. */
   readonly inputs: readonly import('./calculation-task-port').CalculationInputUpdate[];
   readonly inputRevision: number;
+  readonly externalLinks?: readonly import('./external-links').ExternalCalculationLink[];
   /** Context changes require one explicit Worker rebootstrap. */
   readonly calculationContextGeneration: number;
 }
@@ -84,6 +85,7 @@ export class BrowserCalculationTaskPort implements CalculationTaskPort {
         ...request,
         ...(includesSnapshot ? { snapshot: state.snapshot } : {}),
         ...(state.inputs.length > 0 ? { inputs: state.inputs } : {}),
+        ...(state.externalLinks?.length ? { externalLinks: state.externalLinks } : {}),
       };
       return new Promise<CalculationTaskResult>((resolve) => {
         this.pending.set(request.taskId, {

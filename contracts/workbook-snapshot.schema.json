@@ -6,7 +6,7 @@
   "required": ["schema", "version", "unitId", "name", "dimensionMetrics", "calculationSettings", "editingOptions", "dataModel", "sheets"],
   "properties": {
     "schema": { "const": "WorkbookSnapshot" },
-    "version": { "const": 10 },
+    "version": { "const": 11 },
     "unitId": { "type": "string", "minLength": 1, "maxLength": 200 },
     "name": { "type": "string", "minLength": 1, "maxLength": 255 },
     "dimensionMetrics": {
@@ -35,11 +35,12 @@
     },
     "dataModel": {
       "type": "object",
-      "required": ["sources", "tables", "relationships", "views"],
+      "required": ["sources", "tables", "relationships", "views", "externalLinks"],
       "properties": {
         "sources": { "type": "array" },
         "tables": { "type": "array" },
         "relationships": { "type": "array" },
+        "externalLinks": {"type": "array", "items": {"type": "object", "required": ["id", "token", "sourceUnitId", "sheets"], "additionalProperties": false, "properties": {"id": {"type": "string", "minLength": 1}, "token": {"type": "string", "minLength": 1}, "sourceUnitId": {"type": "string", "minLength": 1}, "sheets": {"type": "array", "minItems": 1, "items": {"type": "object", "required": ["token", "sheetId"], "additionalProperties": false, "properties": {"token": {"type": "string", "minLength": 1}, "sheetId": {"type": "string", "minLength": 1}}}}}}},
         "views": { "type": "array" }
       },
       "additionalProperties": false

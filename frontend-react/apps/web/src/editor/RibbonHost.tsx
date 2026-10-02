@@ -168,6 +168,7 @@ export function RibbonHost({
       onToggleBandedRows={() => session.toggleBandedRows()}
       onSetRecalculationMode={(mode: "automatic" | "manual" | "partial") => session.setRecalculationMode(mode)}
       onOpenDefinedNames={() => dispatchSessionIntent({ type: "panel.open", panel: "definedNames" })}
+      externalLinkActions={{ onReadSheets: unitId => session.readExternalSourceSheets(unitId), onBind: link => session.bindExternalLink(link), onRefresh: () => session.refreshWorkbookExternalLinks() }}
       onCreateAdvancedSheet={(kind) => session.createAdvancedSheet(kind)}
       onApplyBarcode={(symbology) => session.openBarcodePanel(symbology)}
       onCreateCamera={() => session.insertCamera()}

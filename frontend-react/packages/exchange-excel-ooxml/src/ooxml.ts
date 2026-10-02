@@ -263,7 +263,7 @@ export function parseLoadedOoxml(loaded: LoadedOpcPackageGraph, options: ParseLo
   const unitId = `imported-${randomId()}`;
   const snapshot: WorkbookSnapshot = {
     schema: 'WorkbookSnapshot',
-    version: 10,
+    version: 11,
     unitId,
     name: options.workbookName ?? 'Imported Workbook',
     dimensionMetrics: { normalFontFamily: styles.normalFont.family, normalFontSizePx: pointsToPixels(styles.normalFont.sizePt), maximumDigitWidthPx: styles.maximumDigitWidthPx },
@@ -275,7 +275,7 @@ export function parseLoadedOoxml(loaded: LoadedOpcPackageGraph, options: ParseLo
     },
     definedNames,
     definedNameModels,
-    dataModel: { sources: [], tables: [], relationships: [], views: [] },
+    dataModel: { externalLinks: [], sources: [], tables: [], relationships: [], views: [] },
     cellStyleTemplates: styles.namedCellStyles,
     printDocuments: sheets.flatMap((sheet, index) => parsePrintDocument(
       firstElement(parseXml(strFromU8(files[descriptors[index]!.part]!)), 'worksheet'),
@@ -2349,7 +2349,7 @@ function buildRootRelationshipsXml(existing: NativeRelationship[], workbookPart 
 
 interface ReactSheetsPackageMetadata {
   schema: 'ReactSheetsWorkbookMetadata';
-  version: 2;
+  version: 3;
   editingOptions: WorkbookSnapshot['editingOptions'];
   dataModel: WorkbookSnapshot['dataModel'];
   sheets: Array<Pick<SheetSnapshot, 'id' | 'kind' | 'tableSheet' | 'ganttSheet' | 'reportSheet' | 'sparklines' | 'sparklineGroups' | 'drawings' | 'drawingPayloads' | 'drawingGroups' | 'snapSettings'> & { cellMetadata: Array<{ row: number; column: number; presentation?: CellData['presentation']; editor?: CellData['editor'] }> }>;
@@ -2357,7 +2357,7 @@ interface ReactSheetsPackageMetadata {
 
 function buildReactSheetsMetadata(snapshot: WorkbookSnapshot): string {
   const metadata: ReactSheetsPackageMetadata = {
-    schema: 'ReactSheetsWorkbookMetadata', version: 2, editingOptions: structuredClone(snapshot.editingOptions), dataModel: structuredClone(snapshot.dataModel),
+    schema: 'ReactSheetsWorkbookMetadata', version: 3, editingOptions: structuredClone(snapshot.editingOptions), dataModel: structuredClone(snapshot.dataModel),
     sheets: snapshot.sheets.map((sheet) => {
       const cellMetadata: ReactSheetsPackageMetadata['sheets'][number]['cellMetadata'] = [];
       for (const [rowKey, columns] of Object.entries(sheet.cells)) for (const [columnKey, cell] of Object.entries(columns)) if (cell.presentation || cell.editor) cellMetadata.push({ row: Number(rowKey), column: Number(columnKey), presentation: cell.presentation ? structuredClone(cell.presentation) : undefined, editor: cell.editor ? structuredClone(cell.editor) : undefined });
@@ -2392,7 +2392,13 @@ function applyReactSheetsMetadata(snapshot: WorkbookSnapshot, bytes: Uint8Array 
       raw.version = 2;
       raw.editingOptions = structuredClone(DEFAULT_WORKBOOK_EDITING_OPTIONS);
     }
-    if (raw.version !== 2) throw new Error(`React Sheets workbook metadata version is unsupported: ${String(raw.version)}`);
+    if (raw.version === 2) {
+      raw.version = 3;
+      const data = raw.dataModel as Record<string, unknown> | undefined;
+      if (!data) throw new Error('React Sheets workbook metadata data model is missing');
+      data.externalLinks = [];
+    }
+    if (raw.version !== 3) throw new Error(`React Sheets workbook metadata version is unsupported: ${String(raw.version)}`);
     const parsed = raw as unknown as ReactSheetsPackageMetadata;
     if (!parsed.dataModel || !Array.isArray(parsed.sheets) || !parsed.editingOptions) throw new Error('React Sheets workbook metadata payload is incomplete');
     snapshot.editingOptions = structuredClone(parsed.editingOptions);

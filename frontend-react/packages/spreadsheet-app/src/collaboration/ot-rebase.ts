@@ -516,13 +516,14 @@ function hasUnqualifiedFormulaReference(node: FormulaAst): boolean {
     case 'unary-expression': return hasUnqualifiedFormulaReference(node.operand);
     case 'binary-expression':
       return hasUnqualifiedFormulaReference(node.left) || hasUnqualifiedFormulaReference(node.right);
-    case 'function-call': return node.arguments.some(hasUnqualifiedFormulaReference);
+    case 'function-call': return (node.callee !== undefined && hasUnqualifiedFormulaReference(node.callee)) || node.arguments.some(hasUnqualifiedFormulaReference);
     case 'number-literal':
     case 'string-literal':
     case 'boolean-literal':
     case 'name-reference':
     case 'table-reference':
     case 'invalid-reference':
+    case 'error-literal':
     case 'sheet-range-reference':
     case 'external-reference':
       return false;

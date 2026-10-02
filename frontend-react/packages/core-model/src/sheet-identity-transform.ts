@@ -3,6 +3,7 @@ import {
   mapAstTableReferences,
   parseFormula,
   renameAstSheetReferences,
+  rewriteSheetLifecycleFormula,
 } from '@react-sheets/formula-engine';
 import type {
   CellStyleTemplate,
@@ -14,6 +15,7 @@ import type {
   ConditionalFormatRule,
   DataValidationRule,
 } from './index';
+import { planWorkbookFormulaRewrite } from './structural-transform';
 import { CALCULATION_CONTEXT_EFFECTS } from './calculation-context-effect';
 import type {
   DrawingPayload,
@@ -481,7 +483,8 @@ function cloneWorksheetWithIdentity(
   return copy;
 }
 
-function collectDeletedSheetReferences(workbook: WorkbookModel, sourceSheetId: SheetId, sourceName: string): SheetReferenceInvalidation[] {
+function collectDeletedSheetReferences(workbook: WorkbookModel, sourceSheetId: SheetId, sourceName: string, inspectFormulas = true): SheetReferenceInvalidation[] {
+  const inspectFormula: typeof formulaReferencesSheet = (...args) => inspectFormulas && formulaReferencesSheet(...args);
   const invalidations: SheetReferenceInvalidation[] = [];
   const deletedSheet = workbook.getSheet(sourceSheetId);
   const deletedPivotIds = new Set(deletedSheet.pivots.map((pivot) => pivot.id));
@@ -499,20 +502,20 @@ function collectDeletedSheetReferences(workbook: WorkbookModel, sourceSheetId: S
   for (const sheet of workbook.getSheets()) {
     if (sheet.id === sourceSheetId) continue;
     sheet.cells.forEachFormulaOwner((cell) => {
-      if (cell.formula && formulaReferencesSheet(cell.formula, sourceName, 'cell-formula', sheet.id)) invalidations.push({ participant: 'cell-formula', ownerSheetId: sheet.id, reference: cell.formula, reason: 'deleted-sheet-reference' });
+      if (cell.formula && inspectFormula(cell.formula, sourceName, 'cell-formula', sheet.id)) invalidations.push({ participant: 'cell-formula', ownerSheetId: sheet.id, reference: cell.formula, reason: 'deleted-sheet-reference' });
       const barcodeFormula = cell.presentation?.kind === 'barcode' && cell.presentation.source.kind === 'formula'
         ? cell.presentation.source.formula
         : undefined;
-      if (barcodeFormula && formulaReferencesSheet(barcodeFormula, sourceName, 'barcode-formula', sheet.id)) {
+      if (barcodeFormula && inspectFormula(barcodeFormula, sourceName, 'barcode-formula', sheet.id)) {
         invalidate('barcode-formula', sheet.id, barcodeFormula);
       }
       const sourceFormula = cell.formulaMetadata?.sourceFormula;
-      if (sourceFormula && formulaReferencesSheet(sourceFormula, sourceName, 'preserved-cell-formula', sheet.id)) {
+      if (sourceFormula && inspectFormula(sourceFormula, sourceName, 'preserved-cell-formula', sheet.id)) {
         invalidate('preserved-cell-formula', sheet.id, sourceFormula);
       }
     });
     for (const column of sheet.tableSheet?.columns ?? []) {
-      if (column.formula && formulaReferencesSheet(column.formula, sourceName, `table-sheet:${sheet.id}.${column.fieldId}`, sheet.id)) {
+      if (column.formula && inspectFormula(column.formula, sourceName, `table-sheet:${sheet.id}.${column.fieldId}`, sheet.id)) {
         invalidate('table-sheet-column-formula', sheet.id, `${column.fieldId}:${column.formula}`);
       }
     }
@@ -527,7 +530,7 @@ function collectDeletedSheetReferences(workbook: WorkbookModel, sourceSheetId: S
         'formula1' in rule ? rule.formula1 : undefined,
         'formula2' in rule ? rule.formula2 : undefined,
         'listSource' in rule && rule.listSource?.kind === 'formula' ? rule.listSource.formula : undefined,
-      ]) if (formula && formulaReferencesSheet(formula, sourceName, `${rule.id}.formula`, sheet.id)) invalidations.push({ participant: 'range-rule-formula', ownerSheetId: sheet.id, reference: formula, reason: 'deleted-sheet-reference' });
+      ]) if (formula && inspectFormula(formula, sourceName, `${rule.id}.formula`, sheet.id)) invalidations.push({ participant: 'range-rule-formula', ownerSheetId: sheet.id, reference: formula, reason: 'deleted-sheet-reference' });
     }
     const ranges: Array<{ participant: string; range: RangeRef }> = [
       ...sheet.merges.map((entry) => ({ participant: 'merge', range: entry.range })),
@@ -573,13 +576,13 @@ function collectDeletedSheetReferences(workbook: WorkbookModel, sourceSheetId: S
           if (payload.hyperlink?.kind === 'sheet' && payload.hyperlink.sheetId === sourceSheetId) {
             invalidate(participant, sheet.id, `hyperlink:${JSON.stringify(payload.hyperlink)}`);
           }
-          if (payload.propertyFormula && formulaReferencesSheet(payload.propertyFormula, sourceName, `${participant}.propertyFormula`, sheet.id)) {
+          if (payload.propertyFormula && inspectFormula(payload.propertyFormula, sourceName, `${participant}.propertyFormula`, sheet.id)) {
             invalidate(`${participant}.propertyFormula`, sheet.id, payload.propertyFormula);
           }
           break;
         case 'chart':
           for (const { field, formula } of chartTextFormulaEntries(payload)) {
-            if (formulaReferencesSheet(formula, sourceName, `${participant}.${field}`, sheet.id)) {
+            if (inspectFormula(formula, sourceName, `${participant}.${field}`, sheet.id)) {
               invalidate(`${participant}.${field}`, sheet.id, formula);
             }
           }
@@ -634,7 +637,7 @@ function collectDeletedSheetReferences(workbook: WorkbookModel, sourceSheetId: S
   for (const name of workbook.definedNameModels) {
     if (name.scope === 'sheet' && name.sheetId === sourceSheetId) continue;
     inspectFormulaAnchor(`defined-name:${name.name}.anchor`, name.sheetId, name.anchor);
-    if (formulaReferencesSheet(name.formula, sourceName, `defined-name:${name.name}`, name.sheetId)) invalidate('defined-name', name.sheetId, name.name);
+    if (inspectFormula(name.formula, sourceName, `defined-name:${name.name}`, name.sheetId)) invalidate('defined-name', name.sheetId, name.name);
   }
   for (const source of workbook.dataModel.sources.values()) {
     if (source.sourceSheetId === sourceSheetId || source.sourceRange?.sheetId === sourceSheetId) {
@@ -648,7 +651,7 @@ function collectDeletedSheetReferences(workbook: WorkbookModel, sourceSheetId: S
   }
   for (const view of workbook.dataModel.views.values()) {
     for (const field of view.fields) {
-      if (field.formula && formulaReferencesSheet(field.formula, sourceName, `data-view:${view.id}.${field.fieldId}`)) {
+      if (field.formula && inspectFormula(field.formula, sourceName, `data-view:${view.id}.${field.fieldId}`)) {
         invalidate('workbook-data-view-formula', undefined, `${view.id}:${field.fieldId}`);
       }
     }
@@ -673,7 +676,7 @@ function collectDeletedSheetReferences(workbook: WorkbookModel, sourceSheetId: S
       validation.formula2,
       validation.listSource?.kind === 'formula' ? validation.listSource.formula : undefined,
     ]) {
-      if (formula && formulaReferencesSheet(formula, sourceName, `cell-style-template:${template.id}`)) {
+      if (formula && inspectFormula(formula, sourceName, `cell-style-template:${template.id}`)) {
         invalidate('cell-style-template-formula', undefined, template.id);
       }
     }
@@ -771,6 +774,12 @@ export function planSheetIdentityTransform(workbook: WorkbookModel, input: Sheet
           return formulaOwnerDeltas.length === 0 ? [] : [{ sheetId: sheet.id, payloadId, payload: next, formulaOwnerDeltas }];
         }));
     const drawingFormulaOwnerDeltas = drawingPayloadChanges.flatMap((change) => change.formulaOwnerDeltas);
+    const recordFieldChanges = targetName === sourceName ? [] : [...workbook.dataModel.tables.values()].flatMap(table => table.fields.flatMap(field => {
+      if (field.calculation?.kind !== 'formula') return [];
+      const beforeFormula = field.calculation.formula;
+      const afterFormula = mapFormula(beforeFormula, sourceName, targetName, `record-field:${table.id}.${field.id}`);
+      return afterFormula === beforeFormula ? [] : [{ kind: 'formula-object' as const, ownerKind: 'record-field' as const, tableId: table.id, fieldId: field.id, beforeFormula, afterFormula }];
+    }));
     return {
       spec: { ...spec, targetName },
       invalidations: [],
@@ -786,6 +795,10 @@ export function planSheetIdentityTransform(workbook: WorkbookModel, input: Sheet
           }
           return { change, sheet, cell };
         });
+        for (const change of recordFieldChanges) {
+          const field = workbook.getTable(change.tableId).fields.find(field => field.id === change.fieldId);
+          if (field?.calculation?.kind !== 'formula' || field.calculation.formula !== change.beforeFormula) throw new SheetIdentityTransformInvariantError('Record formula changed during rename');
+        }
         source.name = targetName;
         for (const { change, sheet, cell } of formulaOwners) {
           const next = { ...cell };
@@ -807,6 +820,10 @@ export function planSheetIdentityTransform(workbook: WorkbookModel, input: Sheet
         for (const change of dataViewChanges) workbook.dataModel.views.set(change.id, change.view);
         for (const template of cellStyleTemplateChanges) workbook.cellStyleTemplates.set(template.id, template);
         for (const change of drawingPayloadChanges) workbook.getSheet(change.sheetId).drawingPayloads.set(change.payloadId, change.payload);
+        for (const change of recordFieldChanges) {
+          const calculation = workbook.getTable(change.tableId).fields.find(field => field.id === change.fieldId)!.calculation!;
+          if (calculation.kind === 'formula') calculation.formula = change.afterFormula;
+        }
         return {
           kind: 'structural-transform',
           removedCells: [],
@@ -817,8 +834,8 @@ export function planSheetIdentityTransform(workbook: WorkbookModel, input: Sheet
             row: change.row,
             column: change.column,
           })),
-          ...(drawingFormulaOwnerDeltas.length > 0 ? { formulaOwnerDeltas: drawingFormulaOwnerDeltas } : {}),
-          ...(formulaChangePlan.requiresCalculationContextRebuild || definedNameResolvesToRenamedSheet
+          ...([ ...drawingFormulaOwnerDeltas, ...recordFieldChanges ].length > 0 ? { formulaOwnerDeltas: [...drawingFormulaOwnerDeltas, ...recordFieldChanges] } : {}),
+          ...(recordFieldChanges.length > 0 || formulaChangePlan.requiresCalculationContextRebuild || definedNameResolvesToRenamedSheet
             ? { calculationContextEffect: CALCULATION_CONTEXT_EFFECTS.rebuild }
             : {}),
         };
@@ -857,13 +874,19 @@ export function planSheetIdentityTransform(workbook: WorkbookModel, input: Sheet
       },
     };
   }
-  const invalidations = collectDeletedSheetReferences(workbook, source.id, source.name);
+  const before = workbook.getSheets().map(({ id, name }) => ({ id, name }));
+  const after = before.filter(sheet => sheet.id !== source.id);
+  const formulas = planWorkbookFormulaRewrite(workbook, source,
+    formula => rewriteSheetLifecycleFormula(formula, { before, after, sheetId: source.id, kind: 'delete' }),
+    undefined, source.id, false);
+  const invalidations = collectDeletedSheetReferences(workbook, source.id, source.name, false);
   if (invalidations.length > 0) throw new SheetIdentityTransformError(`Cannot delete sheet ${source.id}; external references must be resolved first`, invalidations);
   return {
     spec,
     invalidations: [],
     apply: () => {
       if (workbook.sheets.size <= 1) throw new SheetIdentityTransformError('A workbook must keep at least one worksheet');
+      const effect = formulas.apply();
       workbook.sheets.delete(source.id);
       workbook.sheetOrder = workbook.sheetOrder.filter((id) => id !== source.id);
       workbook.printDocuments.delete(source.id);
@@ -872,6 +895,7 @@ export function planSheetIdentityTransform(workbook: WorkbookModel, input: Sheet
           workbook.removeDefinedName(entry.name, entry.scope, entry.sheetId);
         }
       }
+      return effect;
     },
   };
 }

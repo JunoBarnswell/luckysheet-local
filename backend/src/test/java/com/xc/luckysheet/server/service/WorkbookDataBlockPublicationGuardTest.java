@@ -49,7 +49,7 @@ class WorkbookDataBlockPublicationGuardTest {
 
     private ObjectNode snapshot(String checksum) throws Exception {
         return (ObjectNode) mapper.readTree("""
-                {"dataModel":{"sources":[{"id":"source-1","blocks":[{"id":"block-1","dataSourceId":"source-1","byteLength":10,"checksum":"%s"}]}]}}
+                {"dataModel":{"externalLinks":[],"sources":[{"id":"source-1","blocks":[{"id":"block-1","dataSourceId":"source-1","byteLength":10,"checksum":"%s"}]}]}}
                 """.formatted(checksum));
     }
 }

@@ -16,11 +16,18 @@ import com.xc.luckysheet.server.store.WorkbookRow;
 import com.xc.luckysheet.server.store.WorkbookStore;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
@@ -109,6 +116,94 @@ class WorkbookOperationServiceTest {
 
         assertEquals("CONFLICT", error.code());
         assertTrue(error.getMessage().contains("UNDO_RESULT_MISMATCH"));
+    }
+
+    @Test
+    void checkpointLockRemainsHeldUntilTransactionCompletion() throws Exception {
+        WorkbookStore store = mock(WorkbookStore.class);
+        AccessControlService access = mock(AccessControlService.class);
+        Instant now = Instant.now();
+        String snapshot = mapper.writeValueAsString(
+                com.xc.luckysheet.server.migration.SnapshotUpgrade.migrateStored(mapper.readTree(canonicalSnapshot()), "book-1"));
+        String checksum = java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
+                .digest(snapshot.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+        when(access.require("book-1", "actor-1", WorkbookAclRole.EDITOR)).thenReturn(WorkbookAclRole.EDITOR);
+        when(store.findForUpdate("book-1")).thenReturn(Optional.of(new WorkbookRow(
+                "book-1", "Book", snapshot, 0, 0, WorkbookLifecycle.ACTIVE, now, now)));
+        when(store.findCheckpoint("book-1", 0)).thenReturn(Optional.of(
+                new com.xc.luckysheet.server.store.CheckpointRow("book-1", 0, snapshot, checksum, now)));
+        WorkbookOperationService service = serviceWithAccess(store, access, new MutationDescriptorRegistry(), mapper,
+                new AuditRecorder(store, mapper), new CoordinationProperties(false, false, null, "coordination",
+                        Duration.ofSeconds(1), Duration.ofSeconds(30), 10, Duration.ofSeconds(45)),
+                mock(WorkbookDataBlockPublicationGuard.class));
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        TransactionSynchronizationManager.initSynchronization();
+        try {
+            assertFalse(service.checkpoint("book-1", "actor-1").created());
+            CountDownLatch secondRequestStarted = new CountDownLatch(1);
+            var secondRequest = executor.submit(() -> {
+                secondRequestStarted.countDown();
+                return service.checkpoint("book-1", "actor-1");
+            });
+            assertTrue(secondRequestStarted.await(1, TimeUnit.SECONDS));
+            assertThrows(TimeoutException.class, () -> secondRequest.get(100, TimeUnit.MILLISECONDS));
+
+            for (TransactionSynchronization synchronization : TransactionSynchronizationManager.getSynchronizations()) {
+                synchronization.afterCompletion(TransactionSynchronization.STATUS_COMMITTED);
+            }
+            TransactionSynchronizationManager.clearSynchronization();
+
+            assertFalse(secondRequest.get(2, TimeUnit.SECONDS).created());
+        } finally {
+            if (TransactionSynchronizationManager.isSynchronizationActive()) {
+                for (TransactionSynchronization synchronization : TransactionSynchronizationManager.getSynchronizations()) {
+                    synchronization.afterCompletion(TransactionSynchronization.STATUS_ROLLED_BACK);
+                }
+                TransactionSynchronizationManager.clearSynchronization();
+            }
+            executor.shutdownNow();
+        }
+    }
+
+    @Test
+    void rejectedWriteKeepsWorkbookLockUntilRollbackCompletion() throws Exception {
+        WorkbookStore store = mock(WorkbookStore.class);
+        AccessControlService access = mock(AccessControlService.class);
+        when(access.require("book-1", "actor-1", WorkbookAclRole.EDITOR)).thenReturn(WorkbookAclRole.EDITOR);
+        when(store.findForUpdate("book-1")).thenReturn(Optional.empty());
+        WorkbookOperationService service = serviceWithAccess(store, access, new MutationDescriptorRegistry(), mapper,
+                mock(AuditRecorder.class), new CoordinationProperties(false, false, null, "coordination",
+                        Duration.ofSeconds(1), Duration.ofSeconds(30), 10, Duration.ofSeconds(45)),
+                mock(WorkbookDataBlockPublicationGuard.class));
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        TransactionSynchronizationManager.initSynchronization();
+        try {
+            assertThrows(ServiceException.class, () -> service.checkpoint("book-1", "actor-1"));
+            CountDownLatch secondRequestStarted = new CountDownLatch(1);
+            var secondRequest = executor.submit(() -> {
+                secondRequestStarted.countDown();
+                return service.checkpoint("book-1", "actor-1");
+            });
+            assertTrue(secondRequestStarted.await(1, TimeUnit.SECONDS));
+            assertThrows(TimeoutException.class, () -> secondRequest.get(100, TimeUnit.MILLISECONDS));
+
+            for (TransactionSynchronization synchronization : TransactionSynchronizationManager.getSynchronizations()) {
+                synchronization.afterCompletion(TransactionSynchronization.STATUS_ROLLED_BACK);
+            }
+            TransactionSynchronizationManager.clearSynchronization();
+
+            java.util.concurrent.ExecutionException error = assertThrows(java.util.concurrent.ExecutionException.class,
+                    () -> secondRequest.get(2, TimeUnit.SECONDS));
+            assertTrue(error.getCause() instanceof ServiceException);
+        } finally {
+            if (TransactionSynchronizationManager.isSynchronizationActive()) {
+                for (TransactionSynchronization synchronization : TransactionSynchronizationManager.getSynchronizations()) {
+                    synchronization.afterCompletion(TransactionSynchronization.STATUS_ROLLED_BACK);
+                }
+                TransactionSynchronizationManager.clearSynchronization();
+            }
+            executor.shutdownNow();
+        }
     }
 
     @Test

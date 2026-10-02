@@ -22,6 +22,7 @@ export interface CellEditAddress {
 export interface CanonicalCellEditTarget {
   display: CellEditAddress;
   canonical: CellEditAddress;
+  recordField?: import('@react-sheets/core-model').RecordFieldAddress;
   mergedRange?: RangeRef;
 }
 

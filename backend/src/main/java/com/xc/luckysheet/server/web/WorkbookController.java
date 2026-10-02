@@ -200,6 +200,11 @@ public class WorkbookController {
         return operations.readSnapshot(unitId, ActorIdentity.subject(authentication), ActorIdentity.groups(authentication));
     }
 
+    @GetMapping("/{unitId}/external-links/{linkId}/inputs")
+    public JsonNode externalLinkInputs(@PathVariable String unitId, @PathVariable String linkId, Authentication authentication) {
+        return operations.readExternalLink(unitId, linkId, ActorIdentity.subject(authentication), ActorIdentity.groups(authentication));
+    }
+
     @PostMapping("/{unitId}/operations")
     public ResponseEntity<CommitResponse> commit(@PathVariable String unitId, @Valid @RequestBody OperationEnvelope operation, Authentication authentication) {
         WorkbookOperationService.CommitResult result = operations.commit(unitId, operation, ActorIdentity.subject(authentication), ActorIdentity.groups(authentication));

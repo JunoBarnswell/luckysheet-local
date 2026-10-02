@@ -5,10 +5,15 @@ import { normalizeRange, type CellDependency, type FormulaDependency, type NameD
 import { resolveSheetTableReference, type SheetTableRef } from './sheet-table-resolver';
 import { resolveFormulaSheetId, type FormulaSheetIdentity } from './sheet-reference';
 import { isFormulaError } from './values';
+import { getFunctionDescriptor } from './functions';
+import { visitLexicalArguments } from './lexical-scope';
 
 export interface CollectFormulaDependenciesOptions {
   readonly sheetTables?: ReadonlyMap<string, SheetTableRef>;
   readonly sheetOrder: readonly FormulaSheetIdentity[];
+  readonly resolveNameAst?: (name: string, owner: CellAddress) => FormulaAst | undefined;
+  /** Geometry owners remain indexed for structure, but do not create value cycles. */
+  readonly valueDependencies?: boolean;
 }
 
 export function collectFormulaDependencies(
@@ -19,8 +24,54 @@ export function collectFormulaDependencies(
   assertCellAddress(owner);
   const dependencies: FormulaDependency[] = [];
   const seen = new Set<string>();
-  visit(ast, owner, dependencies, seen, options.sheetTables, options.sheetOrder);
+  visit(ast, owner, dependencies, seen, options.sheetTables, options.sheetOrder, new Set(), options.valueDependencies ?? false, options.resolveNameAst);
+  addProjectedConsumerDependencies(ast, owner, options, dependencies, seen);
   return dependencies;
+}
+
+/** SUMIF projects the target using criteria dimensions, including beyond its authored endpoint. */
+function addProjectedConsumerDependencies(ast: FormulaAst, owner: CellAddress, options: CollectFormulaDependenciesOptions, dependencies: FormulaDependency[], seen: Set<string>): void {
+  function envelope(node: FormulaAst, bindings: ReadonlyMap<string, FormulaAst>, names = new Set<string>()): RangeDependency | undefined {
+    if (node.type === 'cell-reference') { const address = resolveCellReference(node.reference, owner, options.sheetOrder); return { kind: 'range', start: address, end: address }; }
+    if (node.type === 'range-reference') return resolveRangeReference(node, owner, options.sheetOrder);
+    if (node.type === 'whole-column-reference') { const sheetId = resolveFormulaSheetId(node.sheetId, owner.sheetId, options.sheetOrder); return { kind: 'range', start: { sheetId, row: 0, column: node.startColumn }, end: { sheetId, row: 1_048_575, column: node.endColumn } }; }
+    if (node.type === 'whole-row-reference') { const sheetId = resolveFormulaSheetId(node.sheetId, owner.sheetId, options.sheetOrder); return { kind: 'range', start: { sheetId, row: node.startRow, column: 0 }, end: { sheetId, row: node.endRow, column: 16_383 } }; }
+    if (node.type === 'table-reference' && options.sheetTables) { const resolved = resolveSheetTableReference(node.tableName, node, owner, options.sheetTables); return isFormulaError(resolved) ? undefined : 'start' in resolved ? resolved : { kind: 'range', start: resolved, end: resolved }; }
+    if (node.type === 'name-reference') {
+      const id = node.name.toUpperCase();
+      if (names.has(id)) return undefined;
+      names.add(id);
+      const definition = bindings.get(id) ?? options.resolveNameAst?.(node.name, owner);
+      return definition ? envelope(definition, bindings, names) : undefined;
+    }
+    if (node.type === 'function-call' && node.name.toUpperCase() === 'INDEX' && node.arguments[0]) return envelope(node.arguments[0], bindings, names);
+    return undefined;
+  }
+  function walk(node: FormulaAst, bindings: ReadonlyMap<string, FormulaAst> = new Map()): void {
+    if (node.type === 'function-call') {
+      const id = node.name.toUpperCase();
+      if (id === 'LET') {
+        const local = new Map(bindings);
+        for (let index = 0; index < node.arguments.length - 1; index += 2) {
+          const variable = node.arguments[index]!;
+          const value = node.arguments[index + 1]!;
+          walk(value, local);
+          if (variable.type === 'name-reference') local.set(variable.name.toUpperCase(), value);
+        }
+        if (node.arguments.length) walk(node.arguments[node.arguments.length - 1]!, local);
+        return;
+      }
+      if ((id === 'SUMIF' || id === 'AVERAGEIF') && node.arguments.length === 3) {
+        const criteria = envelope(node.arguments[0]!, bindings);
+        const target = envelope(node.arguments[2]!, bindings);
+        if (criteria && target) addDependency({ kind: 'range', start: target.start, end: { sheetId: target.start.sheetId, row: Math.min(1_048_575, target.end.row + criteria.end.row - criteria.start.row), column: Math.min(16_383, target.end.column + criteria.end.column - criteria.start.column) } }, dependencies, seen);
+      }
+      if (node.callee) walk(node.callee, bindings);
+      for (const argument of node.arguments) walk(argument, bindings);
+    } else if (node.type === 'binary-expression') { walk(node.left, bindings); walk(node.right, bindings); }
+    else if (node.type === 'unary-expression') walk(node.operand, bindings);
+  }
+  walk(ast);
 }
 
 export function collectFormulaReferenceNodes(ast: FormulaAst): readonly FormulaReferenceNode[] {
@@ -46,8 +97,10 @@ export function collectFormulaReferenceNodes(ast: FormulaAst): readonly FormulaR
         visitNode(node.right);
         return;
       case 'function-call':
+        if (node.callee) visitNode(node.callee);
         for (const argument of node.arguments) visitNode(argument);
         return;
+      case 'error-literal':
       case 'number-literal':
       case 'string-literal':
       case 'boolean-literal':
@@ -93,7 +146,27 @@ function visit(
   seen: Set<string>,
   sheetTables: ReadonlyMap<string, SheetTableRef> | undefined,
   sheetOrder: readonly FormulaSheetIdentity[],
+  bound: ReadonlySet<string> = new Set(),
+  valueDependencies = false,
+  resolveNameAst?: CollectFormulaDependenciesOptions['resolveNameAst'],
 ): void {
+  function visitGeometryInputs(argument: FormulaAst, names = new Set<string>()): void {
+    if (['cell-reference', 'range-reference', 'whole-row-reference', 'whole-column-reference', 'sheet-range-reference', 'external-reference', 'table-reference'].includes(argument.type)) return;
+    if (argument.type === 'reference-union') { for (const reference of argument.references) visitGeometryInputs(reference, names); return; }
+    if (argument.type === 'reference-intersection') { visitGeometryInputs(argument.left, names); visitGeometryInputs(argument.right, names); return; }
+    if (argument.type === 'name-reference' && resolveNameAst) {
+      const id = argument.name.toUpperCase();
+      if (names.has(id)) return;
+      const definition = resolveNameAst(argument.name, owner);
+      if (definition) { visitGeometryInputs(definition, new Set([...names, id])); return; }
+    }
+    if (argument.type === 'function-call' && ['INDEX', 'OFFSET'].includes(argument.name.toUpperCase())) {
+      if (argument.arguments[0]) visitGeometryInputs(argument.arguments[0], names);
+      for (const control of argument.arguments.slice(1)) visit(control, owner, dependencies, seen, sheetTables, sheetOrder, bound, true, resolveNameAst);
+      return;
+    }
+    visit(argument, owner, dependencies, seen, sheetTables, sheetOrder, bound, true, resolveNameAst);
+  }
   switch (node.type) {
     case 'cell-reference': {
       const dependency: CellDependency = { kind: 'cell', address: resolveCellReference(node.reference, owner, sheetOrder) };
@@ -117,19 +190,27 @@ function visit(
       collectNestedTableDependencies(node, owner, dependencies, seen, sheetTables, sheetOrder);
       return;
     case 'unary-expression':
-      visit(node.operand, owner, dependencies, seen, sheetTables, sheetOrder);
+      visit(node.operand, owner, dependencies, seen, sheetTables, sheetOrder, bound, valueDependencies, resolveNameAst);
       return;
     case 'spill-reference':
-      visit(node.operand, owner, dependencies, seen, sheetTables, sheetOrder);
+      visit(node.operand, owner, dependencies, seen, sheetTables, sheetOrder, bound, valueDependencies, resolveNameAst);
       return;
     case 'binary-expression':
-      visit(node.left, owner, dependencies, seen, sheetTables, sheetOrder);
-      visit(node.right, owner, dependencies, seen, sheetTables, sheetOrder);
+      visit(node.left, owner, dependencies, seen, sheetTables, sheetOrder, bound, valueDependencies, resolveNameAst);
+      visit(node.right, owner, dependencies, seen, sheetTables, sheetOrder, bound, valueDependencies, resolveNameAst);
       return;
     case 'function-call':
-      for (const argument of node.arguments) visit(argument, owner, dependencies, seen, sheetTables, sheetOrder);
+      if (valueDependencies && ['ROW', 'COLUMN', 'ROWS', 'COLUMNS'].includes(node.name.toUpperCase())) {
+        for (const argument of node.arguments) visitGeometryInputs(argument);
+        return;
+      }
+      if (visitLexicalArguments(node, bound, (child, local) => visit(child, owner, dependencies, seen, sheetTables, sheetOrder, local, valueDependencies, resolveNameAst))) return;
+      if (node.callee) visit(node.callee, owner, dependencies, seen, sheetTables, sheetOrder, bound, valueDependencies, resolveNameAst);
+      if (node.name && !bound.has(node.name.toUpperCase()) && !getFunctionDescriptor(node.name)) addDependency({ kind: 'name', name: node.name.toUpperCase() }, dependencies, seen);
+      for (const argument of node.arguments) visit(argument, owner, dependencies, seen, sheetTables, sheetOrder, bound, valueDependencies, resolveNameAst);
       return;
     case 'name-reference': {
+      if (bound.has(node.name.toUpperCase())) return;
       const dependency: NameDependency = { kind: 'name', name: node.name.trim().toUpperCase() };
       addDependency(dependency, dependencies, seen);
       return;
@@ -161,6 +242,7 @@ function visit(
       addDependency(dependency, dependencies, seen);
       return;
     }
+    case 'error-literal':
     case 'number-literal':
     case 'string-literal':
     case 'boolean-literal':
