@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { FormulaEngine, FUNCTION_DESCRIPTORS, FUNCTION_LIBRARY, FUNCTION_ARGUMENT_CONTRACTS, isFormulaError, type FormulaValue } from './index';
+import { CALCULATION_TASK_PROTOCOL, CALCULATION_TASK_VERSION } from './calculation-task-port';
 import { FUNCTION_CORPUS } from './fixtures/function-corpus';
 
 function equalValue(actual: FormulaValue, expected: FormulaValue): void {
@@ -20,7 +21,7 @@ function engineForCase() {
   return engine;
 }
 const entropy = { cycleId: 1, entropySeed: 'function-corpus', passIndex: 0, calculationTimeUtcMs: Date.UTC(2024, 0, 2, 12), calculationTimeZoneOffsetMinutes: 0 };
-const request = { protocol: 'react-sheets.formula-calculation' as const, version: 4 as const, taskId: 'corpus', kind: 'recalculate' as const, revision: 1, full: true, calculationEntropy: entropy };
+const request = { protocol: CALCULATION_TASK_PROTOCOL, version: CALCULATION_TASK_VERSION, taskId: 'corpus', kind: 'recalculate' as const, revision: 1, full: true, calculationEntropy: entropy };
 
 test('every executable function is discoverable, has an argument contract and a concrete acceptance vector', () => {
   const ids = [...FUNCTION_DESCRIPTORS.keys()].sort();
