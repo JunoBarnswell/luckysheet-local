@@ -5,7 +5,7 @@ import { PermissionService } from './permission-service';
 
 test('PermissionService blocks viewer from editing cells', () => {
   const perm = new PermissionService();
-  perm.applyServerAccess('viewer');
+  perm.applyServerAccess({ unitId: 'wb-test', role: 'viewer', accessRevision: 1, regions: [] });
   perm.setOnline(true);
   const result = perm.canCheck({
     commandId: 'sheet.cell.set',
@@ -18,7 +18,7 @@ test('PermissionService blocks viewer from editing cells', () => {
 
 test('PermissionService allows navigation commands for viewers', () => {
   const perm = new PermissionService();
-  perm.applyServerAccess('viewer');
+  perm.applyServerAccess({ unitId: 'wb-test', role: 'viewer', accessRevision: 1, regions: [] });
   perm.setOnline(true);
   const result = perm.canCheck({
     commandId: 'ui.panel.open',
@@ -50,7 +50,7 @@ test('PermissionService recognizes data-region materialization mutations', () =>
 
 test('PermissionService blocks locked range', () => {
   const perm = new PermissionService();
-  perm.applyServerAccess('editor');
+  perm.applyServerAccess({ unitId: 'wb-test', role: 'editor', accessRevision: 1, regions: [] });
   perm.setOnline(true);
   const workbook = new WorkbookModel('wb', 'Protection');
   const sheet = workbook.getSheet('sheet-1');
@@ -69,5 +69,6 @@ test('PermissionService blocks locked range', () => {
     actor: { actorId: 'user-1' },
   });
   assert.equal(result.allowed, false);
-  assert.equal(result.blockedBy !== 'share-role' && result.blockedBy?.id, 'r1');
+  assert.ok(result.blockedBy && typeof result.blockedBy === 'object');
+  if (result.blockedBy && typeof result.blockedBy === 'object') assert.equal(result.blockedBy.id, 'r1');
 });

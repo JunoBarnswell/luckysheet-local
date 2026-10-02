@@ -16,7 +16,7 @@ class WorkbookDataBlockServiceTest {
     private final WorkbookDataBlockStore store = mock(WorkbookDataBlockStore.class);
     private final WorkbookDataBlockCommitService commits = mock(WorkbookDataBlockCommitService.class);
     private final WorkbookDataBlockService service = new WorkbookDataBlockService(
-            store, commits, mock(AccessControlService.class), mock(WorkbookLifecycleService.class));
+            store, commits, mock(AccessControlService.class), mock(WorkbookLifecycleService.class), mock(RangeAccessService.class));
 
     @Test
     void rejectsDeclaredOversizedBodyBeforeOpeningStream() {

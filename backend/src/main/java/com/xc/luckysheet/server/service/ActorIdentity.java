@@ -6,6 +6,8 @@ import com.xc.luckysheet.server.security.GuestShareAuthentication;
 import com.xc.luckysheet.server.security.LocalUserAuthentication;
 
 import java.security.Principal;
+import java.util.Collection;
+import java.util.List;
 
 public final class ActorIdentity {
     private ActorIdentity() {
@@ -26,6 +28,19 @@ public final class ActorIdentity {
         if (authentication instanceof GuestShareAuthentication) {
             throw ServiceException.forbidden("Guest shares cannot create workbooks or manage ACL");
         }
+    }
+
+    /** Group identifiers are accepted only from the verified JWT claim set. */
+    public static List<String> groups(Authentication authentication) {
+        if (!(authentication instanceof JwtAuthenticationToken token)) return List.of();
+        Object raw = token.getToken().getClaims().get("groups");
+        if (!(raw instanceof Collection<?> values)) return List.of();
+        return values.stream().filter(String.class::isInstance).map(String.class::cast)
+                .map(String::trim).filter(value -> !value.isEmpty()).distinct().toList();
+    }
+
+    public static List<String> groups(Principal principal) {
+        return principal instanceof Authentication authentication ? groups(authentication) : List.of();
     }
 
     public static String subject(Principal principal) {

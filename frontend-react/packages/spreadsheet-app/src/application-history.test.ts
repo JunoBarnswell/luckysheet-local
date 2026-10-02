@@ -122,7 +122,7 @@ describe('WorkbookSession history integration', () => {
 
   it('blocks history.restore for viewers', () => {
     const app = new WorkbookSession();
-    app['permission'].applyServerAccess('viewer');
+    app['permission'].applyServerAccess({ unitId: 'wb-test', role: 'viewer', accessRevision: 1, regions: [] });
     app['permission'].setOnline(true);
     const snapshot = app['runtime'].model.snapshot();
     app.restoreFromSnapshot(snapshot, 0, 'blocked');

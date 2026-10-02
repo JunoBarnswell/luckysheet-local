@@ -30,6 +30,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyCollection;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -158,8 +159,17 @@ class WorkbookIntegrityAndConflictTest {
                                              MutationDescriptorRegistry registry) {
         CoordinationProperties coordination = new CoordinationProperties(
                 false, false, null, "coordination", Duration.ofSeconds(1), Duration.ofSeconds(30), 10, Duration.ofSeconds(45));
+        RangeAccessService rangeAccess = mock(RangeAccessService.class);
+        when(rangeAccess.resolver(anyString(), anyString(), any(WorkbookAclRole.class), anyCollection()))
+                .thenAnswer(invocation -> new RangeAccessResolver(new RangeAccessIndex(List.of()), List.of(),
+                        new RangeAccessContext(invocation.getArgument(1), invocation.getArgument(2),
+                                invocation.getArgument(3), 0)));
+        AccessProjectionService accessProjection = mock(AccessProjectionService.class);
+        when(accessProjection.formulaDependenciesReadable(any(com.fasterxml.jackson.databind.JsonNode.class),
+                any(com.fasterxml.jackson.databind.JsonNode.class), anyString(), any(RangeAccessResolver.class))).thenReturn(true);
         return new WorkbookOperationService(store, access, registry, mapper,
-                new AuditRecorder(store, mapper), coordination, mock(WorkbookDataBlockPublicationGuard.class));
+                new AuditRecorder(store, mapper), coordination, mock(WorkbookDataBlockPublicationGuard.class),
+                rangeAccess, accessProjection);
     }
 
     @Test

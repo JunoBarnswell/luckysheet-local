@@ -22,8 +22,8 @@ class WorkbookAclRoleTest {
 
     @Test
     void accessProjectionDoesNotExposeJavaEnumCapitalization() throws Exception {
-        String json = mapper.writeValueAsString(new WorkbookAccessProjection("book-1", WorkbookAclRole.EDITOR));
-        assertEquals("{\"unitId\":\"book-1\",\"role\":\"editor\"}", json);
+        String json = mapper.writeValueAsString(new WorkbookAccessProjection("book-1", WorkbookAclRole.EDITOR, 0, java.util.List.of()));
+        assertEquals("{\"unitId\":\"book-1\",\"role\":\"editor\",\"accessRevision\":0,\"regions\":[]}", json);
     }
 
     @Test

@@ -47,6 +47,7 @@ export type SidebarPanelId =
   | 'query'
   | 'extended'
   | 'history'
+  | 'rangeAccess'
   | 'data'
   | 'quickAnalysis';
 export type SaveState = 'saved' | 'saving' | 'offline' | 'syncing' | 'conflict' | 'calculating' | 'error';

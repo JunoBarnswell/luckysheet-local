@@ -6,6 +6,7 @@ import { registerSpreadsheetFeatures } from '../../feature-registry';
 import type { HistoryEntryMeta, RestoreCommandParams } from './index';
 
 export function describeRevisionMutations(record: RevisionRecord): string {
+  if (!record.payload) return 'Restricted revision';
   const labels = record.payload.mutations.map((mutation) => mutation.id);
   if (labels.length === 0) return 'Workbook metadata';
   const preview = labels.slice(0, 3).join(' · ');
@@ -16,7 +17,7 @@ export function revisionToHistoryMeta(record: RevisionRecord): HistoryEntryMeta 
   return {
     revision: record.revision,
     operationId: record.operationId,
-    actorId: record.payload.actorId,
+    actorId: record.actorId,
     category: 'collaboration',
     description: describeRevisionMutations(record),
     createdAt: record.createdAt,
@@ -50,9 +51,11 @@ export function replayRevisionsToSnapshot(
     .sort((left, right) => left.revision - right.revision);
 
   for (const record of ordered) {
-    runtime.applyRemoteMutations(record.payload.mutations.map((mutation) => ({
+    const payload = record.payload;
+    if (!payload) throw new Error('ACCESS_REVISION_CHANGED: a restricted revision cannot be replayed under the current access projection');
+    runtime.applyRemoteMutations(payload.mutations.map((mutation) => ({
       id: mutation.id,
-      unitId: record.payload.unitId,
+      unitId: payload.unitId,
       sheetId: mutation.sheetId,
       params: mutation.params,
       affectedRanges: mutation.affectedRanges,

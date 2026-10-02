@@ -17,8 +17,14 @@ import com.xc.luckysheet.server.persistence.ShareEntity;
 import com.xc.luckysheet.server.persistence.ShareEntityRepository;
 import com.xc.luckysheet.server.persistence.WorkbookAclEntity;
 import com.xc.luckysheet.server.persistence.WorkbookAclEntityRepository;
+import com.xc.luckysheet.server.persistence.WorkbookAccessRevisionEntity;
+import com.xc.luckysheet.server.persistence.WorkbookAccessRevisionEntityRepository;
 import com.xc.luckysheet.server.persistence.WorkbookEntity;
 import com.xc.luckysheet.server.persistence.WorkbookEntityRepository;
+import com.xc.luckysheet.server.persistence.RangeAccessGrantEntity;
+import com.xc.luckysheet.server.persistence.RangeAccessGrantEntityRepository;
+import com.xc.luckysheet.server.persistence.RangeAccessRegionEntity;
+import com.xc.luckysheet.server.persistence.RangeAccessRegionEntityRepository;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
@@ -41,6 +47,9 @@ import java.util.function.Consumer;
 public class WorkbookStore {
     private final WorkbookEntityRepository workbooks;
     private final WorkbookAclEntityRepository acl;
+    private final WorkbookAccessRevisionEntityRepository accessRevisions;
+    private final RangeAccessRegionEntityRepository accessRegions;
+    private final RangeAccessGrantEntityRepository accessGrants;
     private final ShareEntityRepository shares;
     private final OperationEntityRepository operations;
     private final CheckpointEntityRepository checkpoints;
@@ -51,6 +60,9 @@ public class WorkbookStore {
     public WorkbookStore(
             WorkbookEntityRepository workbooks,
             WorkbookAclEntityRepository acl,
+            WorkbookAccessRevisionEntityRepository accessRevisions,
+            RangeAccessRegionEntityRepository accessRegions,
+            RangeAccessGrantEntityRepository accessGrants,
             ShareEntityRepository shares,
             OperationEntityRepository operations,
             CheckpointEntityRepository checkpoints,
@@ -60,6 +72,9 @@ public class WorkbookStore {
     ) {
         this.workbooks = workbooks;
         this.acl = acl;
+        this.accessRevisions = accessRevisions;
+        this.accessRegions = accessRegions;
+        this.accessGrants = accessGrants;
         this.shares = shares;
         this.operations = operations;
         this.checkpoints = checkpoints;
@@ -148,6 +163,41 @@ public class WorkbookStore {
         if (entity.isEmpty()) return 0;
         acl.delete(entity.get());
         return 1;
+    }
+
+    public List<RangeAccessRegionEntity> listAccessRegions(String unitId) {
+        return accessRegions.findAllForWorkbook(unitId);
+    }
+
+    public Optional<RangeAccessRegionEntity> findAccessRegion(String unitId, String regionId) {
+        return accessRegions.findForWorkbook(unitId, regionId);
+    }
+
+    public List<RangeAccessGrantEntity> listAccessGrants(java.util.Collection<String> regionIds) {
+        return regionIds.isEmpty() ? List.of() : accessGrants.findForRegions(regionIds);
+    }
+
+    public void saveAccessRegion(RangeAccessRegionEntity region, List<RangeAccessGrantEntity> grants) {
+        accessRegions.save(region);
+        accessGrants.deleteForRegion(region.getId());
+        if (!grants.isEmpty()) accessGrants.saveAll(grants);
+    }
+
+    public void deleteAccessRegion(RangeAccessRegionEntity region) {
+        accessGrants.deleteForRegion(region.getId());
+        accessRegions.delete(region);
+    }
+
+    public long accessRevision(String unitId) {
+        return accessRevisions.findById(unitId).map(WorkbookAccessRevisionEntity::getRevision).orElse(0L);
+    }
+
+    public long incrementAccessRevision(String unitId) {
+        WorkbookAccessRevisionEntity entity = accessRevisions.findById(unitId)
+                .orElseGet(() -> new WorkbookAccessRevisionEntity(unitId, 0));
+        long revision = entity.increment();
+        accessRevisions.save(entity);
+        return revision;
     }
 
     public Optional<OperationRow> findOperation(String operationId) {

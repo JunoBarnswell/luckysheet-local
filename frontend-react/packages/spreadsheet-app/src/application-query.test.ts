@@ -281,7 +281,7 @@ describe('WorkbookSession query integration', () => {
 
   it('blocks query.load for viewers', async () => {
     const app = new WorkbookSession();
-    app['permission'].applyServerAccess('viewer');
+    app['permission'].applyServerAccess({ unitId: 'wb-test', role: 'viewer', accessRevision: 1, regions: [] });
     app['permission'].setOnline(true);
     await assert.rejects(() => app.loadQuery(createInlineJsonQuery('blocked', 'Blocked', [{ A: 1 }])));
     assert.equal(app.getUiSnapshot().lastQueryResult, null);

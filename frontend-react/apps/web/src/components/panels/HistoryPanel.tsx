@@ -74,19 +74,23 @@ export function HistoryPanel({
                         <Text size="xs" className="text-amber-700">Previewing</Text>
                       ) : null}
                     </Inline>
-                    <Text size="xs" className="truncate">{revision.payload.mutations.length} mutation(s)</Text>
-                    <Text size="xs" tone="subtle" className="truncate">
-                      {revision.payload.mutations.slice(0, 3).map((mutation) => mutation.id).join(' · ') || 'Workbook metadata'}
+                    <Text size="xs" className="truncate">
+                      {revision.payload ? `${revision.payload.mutations.length} mutation(s)` : 'Restricted revision'}
                     </Text>
-                    <Text size="xs" tone="subtle">{new Date(revision.createdAt).toLocaleString()}</Text>
+                    {revision.payload ? (
+                      <Text size="xs" tone="subtle" className="truncate">
+                        {revision.payload.mutations.slice(0, 3).map((mutation) => mutation.id).join(' · ') || 'Workbook metadata'}
+                      </Text>
+                    ) : null}
+                    <Text size="xs" tone="subtle">{revision.actorId} · {new Date(revision.createdAt).toLocaleString()}</Text>
                   </Stack>
                   <Stack gap="xs" className="shrink-0">
-                    {onPreviewRevision ? (
+                    {onPreviewRevision && revision.payload && !revision.resyncRequired ? (
                       <Button variant="ghost" size="sm" onClick={() => onPreviewRevision(revision.revision)}>
                         Preview
                       </Button>
                     ) : null}
-                    {onRestoreRevision && canRestore ? (
+                    {onRestoreRevision && canRestore && revision.payload && !revision.resyncRequired ? (
                       <Button variant="secondary" size="sm" onClick={() => onRestoreRevision(revision.revision)}>
                         Restore
                       </Button>

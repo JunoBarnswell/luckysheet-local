@@ -25,12 +25,12 @@ describe('permission policy', () => {
   it('blocks viewer edits and protected range writes for editors', () => {
     const workbook = new WorkbookModel('wb', 'Permission');
     const viewerPermission = new PermissionService();
-    viewerPermission.applyServerAccess('viewer');
+    viewerPermission.applyServerAccess({ unitId: 'wb-test', role: 'viewer', accessRevision: 1, regions: [] });
     viewerPermission.setOnline(true);
     assert.equal(canExecuteCommand(viewerPermission, workbook, 'sheet.cell.set', { row: 0, column: 0, value: { value: 1 } }, 'viewer-1', 'sheet-1').allowed, false);
 
     const editorPermission = new PermissionService();
-    editorPermission.applyServerAccess('editor');
+    editorPermission.applyServerAccess({ unitId: 'wb-test', role: 'editor', accessRevision: 1, regions: [] });
     editorPermission.setOnline(true);
     workbook.getSheet('sheet-1').protectionRules.push({
       id: 'rule-1',
@@ -55,7 +55,7 @@ describe('permission policy', () => {
   it('checks the nested source range for data-source permission', () => {
     const workbook = new WorkbookModel('wb-data-source-permission', 'Data source permission');
     const permission = new PermissionService();
-    permission.applyServerAccess('editor');
+    permission.applyServerAccess({ unitId: 'wb-test', role: 'editor', accessRevision: 1, regions: [] });
     permission.setOnline(true);
     workbook.getSheet('sheet-1').protectionRules.push({
       id: 'source-range-protection',
@@ -82,7 +82,7 @@ describe('permission policy', () => {
   it('resolves every selected row or column for structural permission checks', () => {
     const workbook = new WorkbookModel('wb-selected-header', 'Selected header');
     const permission = new PermissionService();
-    permission.applyServerAccess('editor');
+    permission.applyServerAccess({ unitId: 'wb-test', role: 'editor', accessRevision: 1, regions: [] });
     permission.setOnline(true);
     workbook.getSheet('sheet-1').protectionRules.push({
       id: 'column-rule',

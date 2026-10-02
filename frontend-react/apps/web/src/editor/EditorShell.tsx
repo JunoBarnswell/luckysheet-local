@@ -207,6 +207,7 @@ export function EditorShell({
                 onDiscardRecovery={session.discardRecoveryDraft.bind(session)}
                 zoom={state.zoom}
                 peers={state.peers}
+                accessRegions={state.effectiveAccessRegions}
                 selectedFloatingId={state.selectedFloatingId}
                 textBoxPlacementActive={state.textBoxPlacement}
                 textBoxEdit={state.textBoxEdit}

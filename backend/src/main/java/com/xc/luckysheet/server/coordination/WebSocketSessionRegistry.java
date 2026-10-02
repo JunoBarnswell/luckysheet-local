@@ -7,6 +7,10 @@ import com.xc.luckysheet.server.contract.WorkbookAclRole;
 import com.xc.luckysheet.server.service.AccessControlService;
 import com.xc.luckysheet.server.service.ActorIdentity;
 import com.xc.luckysheet.server.service.ServiceException;
+import com.xc.luckysheet.server.service.RangeAccessResolver;
+import com.xc.luckysheet.server.service.RangeAccessService;
+import com.xc.luckysheet.server.service.AccessProjectionService;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.socket.CloseStatus;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -30,13 +34,19 @@ public class WebSocketSessionRegistry {
 
     private final ObjectMapper mapper;
     private final AccessControlService access;
+    private final RangeAccessService rangeAccess;
+    private final AccessProjectionService accessProjection;
     private final Map<String, Set<WebSocketSession>> sessionsByUnit = new ConcurrentHashMap<>();
     private final Map<String, Instant> seenRevisionOperations = new ConcurrentHashMap<>();
     private final Map<String, Instant> seenEphemeralEvents = new ConcurrentHashMap<>();
 
-    public WebSocketSessionRegistry(ObjectMapper mapper, AccessControlService access) {
+    @Autowired
+    public WebSocketSessionRegistry(ObjectMapper mapper, AccessControlService access,
+                                    RangeAccessService rangeAccess, AccessProjectionService accessProjection) {
         this.mapper = mapper;
         this.access = access;
+        this.rangeAccess = rangeAccess;
+        this.accessProjection = accessProjection;
     }
 
     public void join(String unitId, WebSocketSession session) {
@@ -66,11 +76,28 @@ public class WebSocketSessionRegistry {
 
     public void broadcastRevision(CommittedOperationEnvelope operation, WebSocketSession origin) {
         if (operation == null || !markSeen(seenRevisionOperations, operation.operationId())) return;
-        ObjectNode message = mapper.createObjectNode()
-                .put("type", "revision.created")
-                .put("revision", operation.revision());
-        message.set("payload", mapper.valueToTree(operation));
-        broadcast(operation.unitId(), origin, message);
+        Set<WebSocketSession> sessions = sessionsByUnit.getOrDefault(operation.unitId(), Set.of());
+        for (WebSocketSession peer : sessions) {
+            if (peer == origin || !peer.isOpen()) continue;
+            if (!sessionCanRead(operation.unitId(), peer)) {
+                closeRevokedSession(peer);
+                continue;
+            }
+            ObjectNode message = mapper.createObjectNode().put("type", "revision.created")
+                    .put("unitId", operation.unitId()).put("revision", operation.revision()).put("operationId", operation.operationId());
+            try {
+                RangeAccessResolver resolver = resolverFor(operation.unitId(), peer);
+                message.put("accessRevision", resolver.accessRevision());
+                if (accessProjection.canDeliver(operation, resolver)) {
+                    message.set("payload", mapper.valueToTree(operation));
+                } else {
+                    message.put("resyncRequired", true);
+                }
+                sendJson(peer, message);
+            } catch (ServiceException error) {
+                closeRevokedSession(peer);
+            }
+        }
     }
 
     public void broadcastEphemeral(EphemeralEvent event) {
@@ -79,12 +106,33 @@ public class WebSocketSessionRegistry {
 
     public void broadcastEphemeral(EphemeralEvent event, WebSocketSession origin) {
         if (event == null || !markSeen(seenEphemeralEvents, event.eventId())) return;
-        ObjectNode message = mapper.createObjectNode()
-                .put("type", event.type().replace(".updated", ".broadcast"))
-                .put("unitId", event.unitId())
-                .put("actorId", event.actorId());
-        message.set("state", event.state().deepCopy());
-        broadcast(event.unitId(), origin, message);
+        Set<WebSocketSession> sessions = sessionsByUnit.getOrDefault(event.unitId(), Set.of());
+        for (WebSocketSession peer : sessions) {
+            if (peer == origin || !peer.isOpen()) continue;
+            if (!sessionCanRead(event.unitId(), peer)) {
+                closeRevokedSession(peer);
+                continue;
+            }
+            try {
+                RangeAccessResolver resolver = resolverFor(event.unitId(), peer);
+                if (!accessProjection.canDeliverEphemeral(event.state(), resolver)) continue;
+                ObjectNode message = mapper.createObjectNode()
+                        .put("type", event.type().replace(".updated", ".broadcast"))
+                        .put("unitId", event.unitId())
+                        .put("actorId", event.actorId())
+                        .put("accessRevision", resolver.accessRevision());
+                message.set("state", event.state().deepCopy());
+                sendJson(peer, message);
+            } catch (ServiceException error) {
+                closeRevokedSession(peer);
+            }
+        }
+    }
+
+    public void broadcastAccessChanged(String unitId, long accessRevision) {
+        ObjectNode message = mapper.createObjectNode().put("type", "access.changed")
+                .put("unitId", unitId).put("accessRevision", accessRevision);
+        broadcast(unitId, null, message);
     }
 
     private boolean markSeen(Map<String, Instant> seen, String id) {
@@ -98,19 +146,25 @@ public class WebSocketSessionRegistry {
 
     private void broadcast(String unitId, WebSocketSession origin, ObjectNode message) {
         Set<WebSocketSession> sessions = sessionsByUnit.getOrDefault(unitId, Set.of());
-        String json;
-        try {
-            json = mapper.writeValueAsString(message);
-        } catch (Exception error) {
-            throw new IllegalStateException("Unable to encode collaboration message", error);
-        }
         for (WebSocketSession peer : sessions) {
             if (peer == origin || !peer.isOpen()) continue;
             if (!sessionCanRead(unitId, peer)) {
                 closeRevokedSession(peer);
                 continue;
             }
-            sendQuietly(peer, new TextMessage(json));
+            sendJson(peer, message);
+        }
+    }
+
+    private RangeAccessResolver resolverFor(String unitId, WebSocketSession session) {
+        return rangeAccess.resolver(unitId, ActorIdentity.subject(session.getPrincipal()), ActorIdentity.groups(session.getPrincipal()));
+    }
+
+    private void sendJson(WebSocketSession session, ObjectNode message) {
+        try {
+            sendQuietly(session, new TextMessage(mapper.writeValueAsString(message)));
+        } catch (Exception error) {
+            throw new IllegalStateException("Unable to encode collaboration message", error);
         }
     }
 

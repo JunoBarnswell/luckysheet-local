@@ -54,6 +54,7 @@ import { applyHeaderSelection, buildPivotGroupedFilterMembers, expandSelectionRa
 import type { RangeDragMode } from '@react-sheets/spreadsheet-app';
 import type { CanvasCellSnapshot } from "@react-sheets/spreadsheet-app";
 import type { CommandDescriptor } from "@react-sheets/command-runtime";
+import type { EffectiveAccessRegion } from '@react-sheets/protocol';
 import { createCanvasFloatingDrawables } from "./canvas/drawing-renderers";
 import type { PivotControlAction } from "./canvas/drawing-renderers";
 import { useCanvasInteraction } from "./canvas/useCanvasInteraction";
@@ -90,6 +91,7 @@ export interface SheetCanvasProps {
   textBoxPlacementActive?: boolean;
   textBoxEdit?: { sheetId: string; drawingId: string; draftText: string } | null;
   showFormulas?: boolean;
+  accessRegions?: readonly EffectiveAccessRegion[];
   /** Notifies the host when a visible Pivot projection becomes/leaves the active context. */
   onPivotContextHit?: (hit: ResolvedContextHit | null) => void;
   /** Canonical child action from an interactive Slicer/Timeline drawable. */
@@ -394,6 +396,7 @@ export function SheetCanvas({
   analysisViews = [],
   selectedFloatingId,
   showFormulas = false,
+  accessRegions = [],
   onPivotContextHit,
   onPivotControlAction,
   getPivotContextMenuItems,
@@ -1111,6 +1114,18 @@ export function SheetCanvas({
                 }}
                 className="absolute inset-0"
               />
+              {engineReady && engineRef.current ? accessRegions.filter((region) => region.range.sheetId === sheetId && region.access === 'hidden').flatMap((region, regionIndex) =>
+                engineRef.current!.contentRangeToScreenRects(region.range).map((rect, rectIndex) => (
+                  <Box
+                    key={`hidden-${sheetId}-${regionIndex}-${rectIndex}`}
+                    aria-label={locale === 'zh-CN' ? '无权查看此区域' : 'You do not have access to view this range'}
+                    className="pointer-events-none absolute z-10 flex items-center justify-center overflow-hidden border border-slate-400/70 bg-[repeating-linear-gradient(135deg,rgba(148,163,184,0.12),rgba(148,163,184,0.12)_5px,rgba(226,232,240,0.7)_5px,rgba(226,232,240,0.7)_10px)] text-[10px] font-medium text-slate-500"
+                    style={{ left: rect.x, top: rect.y, width: rect.width, height: rect.height }}
+                  >
+                    {rect.width >= 92 && rect.height >= 22 ? (locale === 'zh-CN' ? '无权查看' : 'No access') : null}
+                  </Box>
+                )),
+              ) : null}
             </Box>
             {engineReady && engineRef.current ? (
               <SheetScrollBars engine={engineRef.current} />

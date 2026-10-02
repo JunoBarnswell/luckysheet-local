@@ -83,6 +83,8 @@ import type {
   AuthTokenProvider,
   GuestShareRole,
   RevisionRecord,
+  RangeAccessRegion,
+  RangeAccessRegionRequest,
   ServerQueryColumnType,
   ServerQueryRequest,
   ShareTokenProvider,
@@ -182,6 +184,7 @@ import {
   type SpreadsheetRuntime,
 } from './runtime';
 import { createInitialSelection, SelectionService, parseRangeReference, type SelectionInteractionMode, type SelectionState } from './selection-service';
+import { moveSelection } from './selection-interaction-machine';
 import { resolveSelectionTarget } from './selection-target-resolver';
 import { cellAddress, columnLabel } from './address';
 import { writeSystemClipboard, type SystemClipboardWriteOutcome } from './clipboard-browser';
@@ -460,6 +463,9 @@ export interface UiSnapshot extends DesignerState {
   actorId: string;
   shareRole: ShareRole | null;
   permissions: PermissionCapabilities;
+  accessRevision: number;
+  effectiveAccessRegions: readonly import('@react-sheets/protocol').EffectiveAccessRegion[];
+  canManageRangeAccess: boolean;
   historyEntries: readonly HistoryEntry[];
   remoteRevisions: readonly RevisionRecord[];
   historyPreviewRevision: number | null;
@@ -1137,13 +1143,13 @@ export class WorkbookSession {
       else if (this.permission.getShareRole()) this.permission.setOnline(true);
       this.emit();
     };
-    this.runtime.handlers.onAccessRole = (role) => {
-      if (role) {
-        this.permission.applyServerAccess(role);
+    this.runtime.handlers.onAccessProjection = (access) => {
+      if (access) {
+        this.permission.applyServerAccess(access);
         this.permission.setOnline(true);
       } else {
         this.permission.clearServerAccess();
-        this.permission.setOnline(false);
+        this.permission.setOnline(!this.runtime.localOnly);
       }
       this.emit();
     };
@@ -1512,6 +1518,9 @@ export class WorkbookSession {
       actorId: this.actorId,
       shareRole: this.getShareRole(),
       permissions: this.permission.getCapabilities(),
+      accessRevision: this.permission.getAccessRevision(),
+      effectiveAccessRegions: this.permission.getAccessRegions(),
+      canManageRangeAccess: this.permission.isWorkbookAccessManager(),
       historyEntries: this.runtime.commands.getUndoEntries(),
       remoteRevisions: this.remoteRevisions,
       historyPreviewRevision: this.historyPreview?.revision ?? null,
@@ -2250,7 +2259,22 @@ export class WorkbookSession {
     if (requiresServerStructuralPlannerCommand(commandId)) this.assertServerStructuralPlannerReady();
     const resolvedParams = this.resolveCommandContext(commandId, params);
     this.assertPermission(commandId, resolvedParams);
+    this.assertSelectionPermission(commandId, resolvedParams);
     return resolvedParams;
+  }
+
+  private assertSelectionPermission(commandId: string, params: unknown): void {
+    if (commandId !== 'selection.set') return;
+    const ranges = (params as { ranges?: unknown } | null)?.ranges;
+    if (!Array.isArray(ranges) || ranges.length === 0) {
+      throw new Error('ACCESS_DENIED: selection.set requires at least one canonical range');
+    }
+    this.permission.syncFromWorkbook(this.runtime.model);
+    for (const range of ranges) {
+      if (!range || typeof range !== 'object') throw new Error('ACCESS_DENIED: selection.set range is invalid');
+      const result = this.permission.canSelectRange(range as RangeRef);
+      if (!result.allowed) throw new Error(`ACCESS_HIDDEN: ${result.reason ?? 'This range is hidden from the current subject'}`);
+    }
   }
 
   runCommand(commandId: string, params?: unknown): CommandResult {
@@ -2454,6 +2478,12 @@ export class WorkbookSession {
     }
     const range = parseRangeReference(trimmed);
     if (range) {
+      this.permission.syncFromWorkbook(this.runtime.model);
+      const selectionPermission = this.permission.canSelectRange({ ...range, sheetId: this.activeSheetId });
+      if (!selectionPermission.allowed) {
+        this.notify(selectionPermission.reason ?? 'This range is hidden from the current subject');
+        return false;
+      }
       if (range.endRow >= MAX_SHEET_ROW_COUNT || range.endColumn >= MAX_SHEET_COLUMN_COUNT) {
         this.notify(`Reference exceeds worksheet limits: ${trimmed}`);
         return false;
@@ -3400,7 +3430,7 @@ export class WorkbookSession {
       this.selectionService.setInteractionMode('normal');
       const deltas: Record<CellEditMoveAfter, readonly [number, number]> = { down: [1, 0], up: [-1, 0], left: [0, -1], right: [0, 1], none: [0, 0] };
       const [rowDelta, columnDelta] = deltas[request.moveAfter];
-      if (rowDelta !== 0 || columnDelta !== 0) this.selectionService.movePrimary(rowDelta, columnDelta);
+      if (rowDelta !== 0 || columnDelta !== 0) this.movePrimary(rowDelta, columnDelta);
       this.syncTableContextFromSelection();
       this.setFocusState('grid', 'grid');
       this.emit();
@@ -3758,6 +3788,15 @@ export class WorkbookSession {
   }
 
   selectCell(address: string): void {
+    const parsed = parseRangeReference(address);
+    if (parsed) {
+      this.permission.syncFromWorkbook(this.runtime.model);
+      const rangePermission = this.permission.canSelectRange({ ...parsed, sheetId: this.activeSheetId });
+      if (!rangePermission.allowed) {
+        this.notify(rangePermission.reason ?? 'This range is hidden from the current subject');
+        return;
+      }
+    }
     if (this.cellEditDomain.getSnapshot().status === 'point') {
       this.dispatchFormulaReferenceText(address);
       return;
@@ -3766,7 +3805,6 @@ export class WorkbookSession {
       this.cellEdit.dispatch({ type: 'commit', moveAfter: 'none' });
       if (this.cellEditDomain.getSnapshot().session) return;
     }
-    const parsed = parseRangeReference(address);
     const target = parsed && parsed.startRow === parsed.endRow && parsed.startColumn === parsed.endColumn ? parsed : undefined;
     if (target) {
       this.permission.syncFromWorkbook(this.runtime.model);
@@ -3783,6 +3821,12 @@ export class WorkbookSession {
   }
 
   selectRange(range: { startRow: number; startColumn: number; endRow: number; endColumn: number }, mode: 'replace' | 'add' | 'extend' = 'replace'): void {
+    this.permission.syncFromWorkbook(this.runtime.model);
+    const selectionPermission = this.permission.canSelectRange({ sheetId: this.activeSheetId, ...range });
+    if (!selectionPermission.allowed) {
+      this.notify(selectionPermission.reason ?? 'This range is hidden from the current subject');
+      return;
+    }
     this.selectionService.selectRange(range, mode);
     this.syncDraftFromPrimary();
     this.syncTableContextFromSelection();
@@ -3791,6 +3835,14 @@ export class WorkbookSession {
 
   /** Commit a canvas selection exactly, including its active cell and anchor. */
   applyCanvasSelection(selection: SelectionState): void {
+    this.permission.syncFromWorkbook(this.runtime.model);
+    for (const range of selection.ranges) {
+      const selectionPermission = this.permission.canSelectRange(range);
+      if (!selectionPermission.allowed) {
+        this.notify(selectionPermission.reason ?? 'This range is hidden from the current subject');
+        return;
+      }
+    }
     const edit = this.cellEditDomain.getSnapshot();
     if (edit.session) {
       const targetRange = selection.ranges[selection.primaryRangeIndex] ?? selection.ranges[0];
@@ -3989,13 +4041,30 @@ export class WorkbookSession {
 
   movePrimary(rowDelta: number, columnDelta: number, opts?: { extend?: boolean }): void {
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
-    const active = this.selectionService.getState().activeCell;
+    const current = this.selectionService.getState();
+    const active = current.activeCell;
     const requestedRow = active.row + rowDelta;
     const requestedColumn = active.column + columnDelta;
+    const nextRowCount = Math.max(sheet.rowCount, requestedRow >= sheet.rowCount ? sheet.rowCount + SHEET_ROW_GROWTH_CHUNK : sheet.rowCount);
+    const nextColumnCount = Math.max(sheet.columnCount, requestedColumn >= sheet.columnCount ? sheet.columnCount + SHEET_COLUMN_GROWTH_CHUNK : sheet.columnCount);
+    this.permission.syncFromWorkbook(this.runtime.model);
+    const nextSelection = moveSelection(current, rowDelta, columnDelta, Boolean(opts?.extend), {
+      rowCount: nextRowCount,
+      columnCount: nextColumnCount,
+      hiddenRows: [...sheet.hiddenRows],
+      hiddenColumns: [...sheet.hiddenColumns],
+    });
+    for (const range of nextSelection.ranges) {
+      const result = this.permission.canSelectRange(range);
+      if (!result.allowed) {
+        this.notify(result.reason ?? 'This range is hidden from the current subject');
+        return;
+      }
+    }
     if (requestedRow >= sheet.rowCount || requestedColumn >= sheet.columnCount) {
       this.ensureSheetExtent(
-        requestedRow >= sheet.rowCount ? sheet.rowCount + SHEET_ROW_GROWTH_CHUNK : sheet.rowCount,
-        requestedColumn >= sheet.columnCount ? sheet.columnCount + SHEET_COLUMN_GROWTH_CHUNK : sheet.columnCount,
+        requestedRow >= sheet.rowCount ? nextRowCount : sheet.rowCount,
+        requestedColumn >= sheet.columnCount ? nextColumnCount : sheet.columnCount,
       );
     }
     this.selectionService.movePrimary(rowDelta, columnDelta, opts);
@@ -4042,6 +4111,9 @@ export class WorkbookSession {
 
   selectAll(): void {
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
+    this.permission.syncFromWorkbook(this.runtime.model);
+    const result = this.permission.canSelectRange({ sheetId: this.activeSheetId, startRow: 0, endRow: Math.max(0, sheet.rowCount - 1), startColumn: 0, endColumn: Math.max(0, sheet.columnCount - 1) });
+    if (!result.allowed) { this.notify(result.reason ?? 'This range contains cells hidden from the current subject'); return; }
     this.selectionService.selectAll(sheet.rowCount, sheet.columnCount);
     this.syncDraftFromPrimary();
     this.emit();
@@ -4059,6 +4131,9 @@ export class WorkbookSession {
   selectActiveRow(): void {
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
     const selection = this.selectionService.getState();
+    this.permission.syncFromWorkbook(this.runtime.model);
+    const permission = this.permission.canSelectRange({ sheetId: this.activeSheetId, startRow: selection.activeCell.row, endRow: selection.activeCell.row, startColumn: 0, endColumn: Math.max(0, sheet.columnCount - 1) });
+    if (!permission.allowed) { this.notify(permission.reason ?? 'This row contains cells hidden from the current subject'); return; }
     this.selectionService.selectRow(selection.activeCell.row, sheet.columnCount);
     this.syncDraftFromPrimary();
     this.emit();
@@ -4067,6 +4142,9 @@ export class WorkbookSession {
   selectActiveColumn(): void {
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
     const selection = this.selectionService.getState();
+    this.permission.syncFromWorkbook(this.runtime.model);
+    const permission = this.permission.canSelectRange({ sheetId: this.activeSheetId, startRow: 0, endRow: Math.max(0, sheet.rowCount - 1), startColumn: selection.activeCell.column, endColumn: selection.activeCell.column });
+    if (!permission.allowed) { this.notify(permission.reason ?? 'This column contains cells hidden from the current subject'); return; }
     this.selectionService.selectColumn(selection.activeCell.column, sheet.rowCount);
     this.syncDraftFromPrimary();
     this.emit();
@@ -4752,6 +4830,26 @@ export class WorkbookSession {
   updateChartType(chartId: string, chartType: ChartDrawingPayload['chartType'], subtype: ChartDrawingPayload['subtype'] = defaultChartSubtype(chartType)): void {
     this.runCommand('chart.setType', { sheetId: this.activeSheetId, chartId, chartType, subtype });
     this.refresh();
+  }
+
+  listRangeAccessRegions(): Promise<RangeAccessRegion[]> {
+    if (!this.permission.isWorkbookAccessManager()) throw new Error('ACCESS_DENIED: only the workbook owner can manage range access');
+    return this.runtime.api.listRangeAccessRegions(this.runtime.model.unitId);
+  }
+
+  createRangeAccessRegion(request: RangeAccessRegionRequest): Promise<RangeAccessRegion> {
+    if (!this.permission.isWorkbookAccessManager()) throw new Error('ACCESS_DENIED: only the workbook owner can manage range access');
+    return this.runtime.api.createRangeAccessRegion(this.runtime.model.unitId, request).then((result) => result.region);
+  }
+
+  updateRangeAccessRegion(regionId: string, request: RangeAccessRegionRequest): Promise<RangeAccessRegion> {
+    if (!this.permission.isWorkbookAccessManager()) throw new Error('ACCESS_DENIED: only the workbook owner can manage range access');
+    return this.runtime.api.updateRangeAccessRegion(this.runtime.model.unitId, regionId, request).then((result) => result.region);
+  }
+
+  deleteRangeAccessRegion(regionId: string): Promise<void> {
+    if (!this.permission.isWorkbookAccessManager()) throw new Error('ACCESS_DENIED: only the workbook owner can manage range access');
+    return this.runtime.api.deleteRangeAccessRegion(this.runtime.model.unitId, regionId);
   }
 
   listAnalysisViews(): AnalysisViewDefinition[] {

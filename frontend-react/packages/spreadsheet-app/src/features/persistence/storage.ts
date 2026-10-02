@@ -36,6 +36,7 @@ export interface WorkspaceRecordMetadata {
   folderId?: string;
   locationPath?: string;
   deletedAt?: string;
+  accessRevision?: number;
 }
 
 export interface WorkspaceUserState {

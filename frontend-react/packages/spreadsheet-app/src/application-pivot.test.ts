@@ -248,7 +248,7 @@ describe('WorkbookSession PivotTable integration', () => {
   it('rejects PivotTable creation for a viewer before any worksheet mutation', async () => {
     const app = new WorkbookSession();
     const { sheetId } = seed(app);
-    app['permission'].applyServerAccess('viewer');
+    app['permission'].applyServerAccess({ unitId: 'wb-test', role: 'viewer', accessRevision: 1, regions: [] });
     app['permission'].setOnline(true);
     const before = app.getUiSnapshot();
     assert.equal((await app.createPivotTable({ destination: { kind: 'new-sheet' } })).status, 'rejected');

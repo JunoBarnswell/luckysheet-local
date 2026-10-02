@@ -39,6 +39,7 @@ import type {
 } from '@react-sheets/core-model';
 import type { HistoryEntry } from '@react-sheets/command-runtime';
 import type { RevisionRecord } from '@react-sheets/protocol';
+import type { EffectiveAccessRegion, RangeAccessRegion, RangeAccessRegionRequest } from '@react-sheets/protocol';
 import type { WorkbookTableModel } from '@react-sheets/core-model';
 import type { PrintLayout } from '@react-sheets/spreadsheet-app';
 import type { QueryDefinition, QueryPreview } from '@react-sheets/spreadsheet-app';
@@ -60,6 +61,7 @@ import { PrintPanel } from './panels/PrintPanel';
 import { QueryPanel } from './panels/QueryPanel';
 import { ExtendedPanel } from './panels/ExtendedPanel';
 import { HistoryPanel } from './panels/HistoryPanel';
+import { RangeAccessPanel } from './panels/RangeAccessPanel';
 import { CompatibilityReportPanel } from './panels/CompatibilityReportPanel';
 import { DataSourcePanel } from './panels/DataSourcePanel';
 import { TableSheetDesignerPanel } from './panels/TableSheetDesignerPanel';
@@ -133,6 +135,13 @@ export interface FeatureSidebarProps {
   onPreviewRevision: (revision: number) => void;
   onClearHistoryPreview: () => void;
   onRefreshRevisions: () => void;
+  effectiveAccessRegions: readonly EffectiveAccessRegion[];
+  accessRevision: number;
+  canManageRangeAccess: boolean;
+  onListRangeAccessRegions: () => Promise<RangeAccessRegion[]>;
+  onCreateRangeAccessRegion: (request: RangeAccessRegionRequest) => Promise<RangeAccessRegion>;
+  onUpdateRangeAccessRegion: (regionId: string, request: RangeAccessRegionRequest) => Promise<RangeAccessRegion>;
+  onDeleteRangeAccessRegion: (regionId: string) => Promise<void>;
   compatibilityReport?: import('@react-sheets/exchange-excel-ooxml').CompatibilityReport | null;
   onClearCompatibilityReport: () => void;
   tables: readonly WorkbookTableModel[];
@@ -209,6 +218,7 @@ const panels: Array<{ icon: React.ComponentProps<typeof Icon>['name']; id: Sideb
   { id: 'query', label: 'Query', icon: 'table' },
   { id: 'extended', label: 'Extended', icon: 'sparkles' },
   { id: 'history', label: 'History', icon: 'history' },
+  { id: 'rangeAccess', label: 'Range access', icon: 'lock' },
   { id: 'data', label: 'Tables', icon: 'table' },
   { id: 'quickAnalysis', label: 'Quick Analysis', icon: 'sparkles' },
 ];
@@ -360,6 +370,13 @@ export function FeatureSidebar({
   onPreviewRevision,
   onClearHistoryPreview,
   onRefreshRevisions,
+  effectiveAccessRegions,
+  accessRevision,
+  canManageRangeAccess,
+  onListRangeAccessRegions,
+  onCreateRangeAccessRegion,
+  onUpdateRangeAccessRegion,
+  onDeleteRangeAccessRegion,
   compatibilityReport = null,
   onClearCompatibilityReport,
   tables,
@@ -700,6 +717,21 @@ export function FeatureSidebar({
             onPreviewRevision={onPreviewRevision}
             onClearPreview={onClearHistoryPreview}
             onRefreshRevisions={onRefreshRevisions}
+          />
+        ) : null}
+        {phase === 'ready' && activePanel === 'rangeAccess' ? (
+          <RangeAccessPanel
+            locale={locale}
+            sheetId={sheetId}
+            selectedRange={selectedRange}
+            accessRevision={accessRevision}
+            effectiveRegions={effectiveAccessRegions}
+            canManage={canManageRangeAccess}
+            onList={onListRangeAccessRegions}
+            onCreate={onCreateRangeAccessRegion}
+            onUpdate={onUpdateRangeAccessRegion}
+            onDelete={onDeleteRangeAccessRegion}
+            onClose={onClosePanel}
           />
         ) : null}
         {phase === 'ready' && activePanel === 'data' ? (

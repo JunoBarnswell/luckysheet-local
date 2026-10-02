@@ -2,6 +2,7 @@ package com.xc.luckysheet.server.service;
 
 import com.xc.luckysheet.server.contract.DataBlockMetadata;
 import com.xc.luckysheet.server.contract.WorkbookAclRole;
+import org.springframework.beans.factory.annotation.Autowired;
 import com.xc.luckysheet.server.store.DataBlockRow;
 import com.xc.luckysheet.server.store.WorkbookDataBlockStore;
 import org.springframework.stereotype.Service;
@@ -24,13 +25,17 @@ public class WorkbookDataBlockService {
     private final WorkbookDataBlockCommitService commitService;
     private final AccessControlService access;
     private final WorkbookLifecycleService lifecycle;
+    private final RangeAccessService rangeAccess;
 
+    @Autowired
     public WorkbookDataBlockService(WorkbookDataBlockStore store, WorkbookDataBlockCommitService commitService,
-                                    AccessControlService access, WorkbookLifecycleService lifecycle) {
+                                    AccessControlService access, WorkbookLifecycleService lifecycle,
+                                    RangeAccessService rangeAccess) {
         this.store = store;
         this.commitService = commitService;
         this.access = access;
         this.lifecycle = lifecycle;
+        this.rangeAccess = rangeAccess;
     }
 
     public DataBlockMetadata put(String unitId, String sourceId, String blockId, String checksum, long contentLength,
@@ -51,10 +56,18 @@ public class WorkbookDataBlockService {
     }
 
     public DataBlockRow get(String unitId, String sourceId, String blockId, String actor) {
-        access.require(unitId, actor, WorkbookAclRole.VIEWER);
+        return get(unitId, sourceId, blockId, actor, java.util.List.of());
+    }
+
+    public DataBlockRow get(String unitId, String sourceId, String blockId, String actor, java.util.Collection<String> groups) {
+        WorkbookAclRole role = access.require(unitId, actor, WorkbookAclRole.VIEWER);
         lifecycle.requireActive(unitId);
         validateIdentity(sourceId, "sourceId");
         validateIdentity(blockId, "blockId");
+        if (!rangeAccess.resolver(unitId, actor, role, groups).hiddenRegions().isEmpty()) {
+            throw new ServiceException("ACCESS_HIDDEN", 403,
+                    "Data source blocks are withheld while any workbook range is hidden from the current subject");
+        }
         return store.find(unitId, sourceId, blockId)
                 .orElseThrow(() -> ServiceException.notFound("Data block not found"));
     }

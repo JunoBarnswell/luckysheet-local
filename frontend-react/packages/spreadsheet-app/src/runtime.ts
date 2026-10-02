@@ -10,6 +10,7 @@ import {
   type AuthTokenProvider,
   type ShareTokenProvider,
   type WorkbookAclRole,
+  type WorkbookAccessResponse,
   type OperationMessage,
   type SnapshotResponse,
   mutationCapability,
@@ -53,7 +54,7 @@ export interface RuntimeHandlers {
   onActiveSheetChange?: (sheetId: string) => void;
   onRemoteRevisions?: (revisions: import('@react-sheets/protocol').RevisionRecord[]) => void;
   onCollabStatus?: (status: 'connecting' | 'open' | 'closed') => void;
-  onAccessRole?: (role: WorkbookAclRole | null) => void;
+  onAccessProjection?: (access: WorkbookAccessResponse | null) => void;
   onPeersChange?: (peers: import('./types').PeerCursor[]) => void;
   onWorkspacePersisted?: () => void;
   onDataSourceContentChanged?: (sourceId: string) => void;
@@ -74,6 +75,7 @@ export interface SpreadsheetRuntime {
   /** REST data blocks remain readable after an authorized snapshot while WebSocket sync is connecting. */
   remoteDataAvailable: boolean;
   remoteRevision: number;
+  accessProjection: WorkbookAccessResponse | null;
   pendingMutations: MutationInfo[];
   /** Local-durable geometry changed without producing a remote operation. */
   pendingLocalCheckpoint: boolean;
@@ -196,6 +198,7 @@ export function createSpreadsheetRuntime(options: {
     remoteConnected: false,
     remoteDataAvailable: false,
     remoteRevision: 0,
+    accessProjection: null,
     pendingMutations: [],
     pendingLocalCheckpoint: false,
     pendingPivotMutations: [],
@@ -859,6 +862,7 @@ function writeLocalSnapshotCheckpoint(runtime: SpreadsheetRuntime, artifact?: Na
     lifecycle: resolution.lifecycle,
     source: runtime.workspaceRecord?.metadata.source ?? 'native' as const,
     role: resolution.access?.role ?? runtime.workspaceRecord?.metadata.role ?? 'viewer' as const,
+    ...(runtime.accessProjection ? { accessRevision: runtime.accessProjection.accessRevision } : {}),
   } : undefined;
   const pendingJournal = runtime.operationJournal.read(runtime.model.unitId);
   const previous = checkpointChains.get(runtime) ?? Promise.resolve();
@@ -1270,6 +1274,38 @@ export function hydrateRuntime(runtime: SpreadsheetRuntime, response: SnapshotRe
   void scheduleFormulaRecalculation(runtime);
 }
 
+/** Drop every browser-owned copy before accepting a newer access projection. */
+async function purgeSubjectWorkbookState(runtime: SpreadsheetRuntime): Promise<void> {
+  const unitId = runtime.model.unitId;
+  runtime.remoteConnected = false;
+  runtime.remoteDataAvailable = false;
+  runtime.collaboration?.offlineQueue.setOnline(false);
+  runtime.collaboration?.clearPending();
+  runtime.operationJournal.clear(unitId);
+  runtime.ownOperationIds.clear();
+  runtime.pendingMutations = [];
+  runtime.pendingLocalOperations = [];
+  runtime.workspaceRecord = null;
+  runtime.accessProjection = null;
+  for (const subscription of runtime.dataContentSubscriptions.values()) subscription.unsubscribe();
+  runtime.dataContentSubscriptions.clear();
+  runtime.dataContent.clear();
+  const emptySnapshot = new WorkbookModel(unitId, 'Synchronizing access').snapshot();
+  hydrateRuntime(runtime, { snapshot: emptySnapshot, revision: runtime.remoteRevision });
+  runtime.handlers.onAccessProjection?.(null);
+  runtime.handlers.onActiveSheetChange?.(runtime.model.primarySheetId);
+
+  const cleanups = [
+    runtime.recoveryJournal?.clear(),
+    runtime.workspacePersistence.purge(unitId),
+    runtime.assetStore instanceof LocalAssetStore ? runtime.assetStore.reconcile([]) : Promise.resolve(),
+  ].filter((cleanup): cleanup is Promise<void> => cleanup !== undefined);
+  const results = await Promise.allSettled(cleanups);
+  const failed = results.find((result): result is PromiseRejectedResult => result.status === 'rejected');
+  if (failed) throw failed.reason;
+  runtime.handlers.onMutationsApplied?.();
+}
+
 function initializeDataContent(runtime: SpreadsheetRuntime): void {
   // Canonical mutations replace the affected manifest object. Keep readers
   // and decoded blocks for every unchanged source, including inactive sheets.
@@ -1387,7 +1423,9 @@ export async function loadHistoryAndReplayPending(runtime: SpreadsheetRuntime, h
     await runtime.flushCheckpoint();
   }
 
-  const committedById = new Map(revisions.map(record => [record.payload.operationId, record.payload]));
+  const committedById = new Map(revisions.flatMap((record) => record.payload
+    ? [[record.payload.operationId, record.payload] as const]
+    : []));
   for (const operation of collaboration.getPendingOperations()) {
     const committed = committedById.get(operation.operationId);
     if (!committed) continue;
@@ -1398,8 +1436,8 @@ export async function loadHistoryAndReplayPending(runtime: SpreadsheetRuntime, h
   }
   await runtime.recoveryJournal?.flushed();
 
-  const appliedHistory = revisions.filter(record => record.revision <= runtime.remoteRevision);
-  collaboration.loadCommittedHistory(appliedHistory.map(record => record.payload), runtime.remoteRevision);
+  const appliedHistory = revisions.filter((record) => record.revision <= runtime.remoteRevision && record.payload !== null);
+  collaboration.loadCommittedHistory(appliedHistory.flatMap((record) => record.payload ? [record.payload] : []), runtime.remoteRevision);
   runtime.handlers.onRemoteRevisions?.(revisions);
   const stalePending = collaboration.getPendingOperations().find(operation => operation.baseRevision !== runtime.remoteRevision);
   if (stalePending) {
@@ -1473,19 +1511,59 @@ export function startCollaborationSession(
 
     let synchronizing = false;
     let synchronizationFailed = false;
+    let accessRefreshPending = false;
     const deferredMessages: OperationMessage[] = [];
+    const resynchronizeForAccessChange = async (accessRevision: number) => {
+      if (accessRefreshPending || runtime.disposed || accessRevision <= (runtime.accessProjection?.accessRevision ?? -1)) return;
+      accessRefreshPending = true;
+      synchronizationFailed = true;
+      synchronizing = true;
+      try {
+        await purgeSubjectWorkbookState(runtime);
+        if (!active || runtime.disposed) return;
+        runtime.handlers.onNotice?.('Workbook access changed. Local workbook data and pending drafts were cleared before synchronization.');
+        client.requestResynchronization();
+      } catch (error) {
+        runtime.remoteConnected = false;
+        runtime.handlers.onSaveState?.('error');
+        runtime.handlers.onNotice?.(error instanceof Error ? error.message : 'ACCESS_REVISION_CHANGED: local workbook data could not be cleared');
+        runtime.handlers.onPhaseChange?.('error');
+      } finally {
+        accessRefreshPending = false;
+      }
+    };
     const applyRemote = (message: OperationMessage) => {
       if (synchronizing) { deferredMessages.push(message); return; }
       if (runtime.disposed) return;
-      if (message.type === 'revision.created') {
+      if (message.type === 'access.changed') {
+        if (message.unitId !== runtime.model.unitId) return;
+        void resynchronizeForAccessChange(message.accessRevision);
+      } else if (message.type === 'revision.created') {
+        if (message.unitId !== runtime.model.unitId || message.revision <= runtime.remoteRevision) return;
+        if (message.resyncRequired) {
+          runtime.remoteConnected = false;
+          runtime.collaboration?.offlineQueue.setOnline(false);
+          if (message.accessRevision > (runtime.accessProjection?.accessRevision ?? 0)) {
+            void resynchronizeForAccessChange(message.accessRevision);
+          } else {
+            synchronizationFailed = true;
+            client.requestResynchronization();
+          }
+          return;
+        }
+        const operation = message.payload;
+        if (!operation) {
+          synchronizationFailed = true;
+          client.requestResynchronization();
+          return;
+        }
         if (synchronizationFailed) return;
-        if (message.payload.unitId !== runtime.model.unitId || message.revision <= runtime.remoteRevision) return;
         try {
           const collaboration = runtime.collaboration;
           if (!collaboration) throw new Error('COLLABORATION_SESSION_REQUIRED: revision cannot be applied without a session');
           collaboration.assertNextRevision(message.revision);
-          if (runtime.ownOperationIds.has(message.payload.operationId)) return;
-          collaboration.applyRemote(message.payload);
+          if (runtime.ownOperationIds.has(operation.operationId)) return;
+          collaboration.applyRemote(operation);
         }
         catch (error) {
           synchronizationFailed = true;
@@ -1539,7 +1617,13 @@ export function startCollaborationSession(
       void (async () => {
         const [snapshot, access] = await Promise.all([runtime.api.getSnapshot(runtime.model.unitId), runtime.api.getAccess(runtime.model.unitId)]);
         if (!active || runtime.disposed) return;
-        runtime.handlers.onAccessRole?.(access.role);
+        if ((runtime.workspaceRecord?.metadata.accessRevision ?? -1) !== access.accessRevision
+          || (runtime.accessProjection && runtime.accessProjection.accessRevision !== access.accessRevision)) {
+          await purgeSubjectWorkbookState(runtime);
+          if (!active || runtime.disposed) return;
+        }
+        runtime.accessProjection = access;
+        runtime.handlers.onAccessProjection?.(access);
         hydrateRuntime(runtime, snapshot);
         runtime.collaboration?.setRevision(snapshot.revision);
         await loadHistoryAndReplayPending(runtime, snapshot.revision);
@@ -1678,9 +1762,9 @@ async function initializePersistence(runtime: SpreadsheetRuntime, isActive: () =
     runtime.localRevision = localRecord.localRevision;
     adoptLocalSnapshotBaseline(runtime, localRecord);
     runtime.remoteRevision = resolution?.revision ?? localRecord.serverRevision;
-    runtime.localOnly = runtime.localOnly || localRecord.syncMode === 'local-only';
+    if (resolution?.mode !== 'remote') runtime.localOnly = runtime.localOnly || localRecord.syncMode === 'local-only';
     runtime.remoteSyncRequested = runtime.remoteSyncRequested || localRecord.syncMode === 'remote';
-    if (resolution?.mode !== 'remote') {
+    if (runtime.localOnly && resolution?.mode !== 'remote') {
       if (!isActive()) return;
       hydrateRuntime(runtime, {
         snapshot: resolution?.snapshot ?? localRecord.snapshot,
@@ -1698,7 +1782,7 @@ async function initializePersistence(runtime: SpreadsheetRuntime, isActive: () =
   if (runtime.localOnly) {
     runtime.remoteDataAvailable = false;
     runtime.remoteConnected = false;
-    runtime.handlers.onAccessRole?.(null);
+    runtime.handlers.onAccessProjection?.(null);
     // A StrictMode dispose may have detached the collaboration journal even
     // though the workbook remains local-only. Recreate the journal owner
     // before the first post-remount command so edits remain durable.
@@ -1728,7 +1812,13 @@ async function initializePersistence(runtime: SpreadsheetRuntime, isActive: () =
     const access = resolution?.mode === 'remote' ? resolution.access : await runtime.api.getAccess(runtime.model.unitId);
     if (!access) throw new Error('Remote workbook resolution is missing access metadata');
     if (!isActive()) return;
-    runtime.handlers.onAccessRole?.(access.role);
+    if (localRecord && localRecord.metadata.accessRevision !== access.accessRevision) {
+      await purgeSubjectWorkbookState(runtime);
+      localRecord = null;
+      if (!isActive()) return;
+    }
+    runtime.accessProjection = access;
+    runtime.handlers.onAccessProjection?.(access);
     hydrateRuntime(runtime, { ...snapshotResponse, snapshot: await migrateLegacyImageAssets(snapshotResponse.snapshot, runtime.assetStore) });
     runtime.remoteDataAvailable = true;
     runtime.remoteRevision = snapshotResponse.revision;
@@ -1755,7 +1845,7 @@ async function initializePersistence(runtime: SpreadsheetRuntime, isActive: () =
     runtime.remoteDataAvailable = false;
     if (isAuthoritativeRemoteFailure(error)) {
       runtime.remoteConnected = false;
-      runtime.handlers.onAccessRole?.(null);
+      runtime.handlers.onAccessProjection?.(null);
       if (isActive()) {
         runtime.handlers.onSaveState?.('error');
         runtime.handlers.onNotice?.(error instanceof Error ? error.message : 'Server access was rejected');
@@ -1764,8 +1854,32 @@ async function initializePersistence(runtime: SpreadsheetRuntime, isActive: () =
       return;
     }
 
+    // A first visit with no persisted remote workbook may safely start from a
+    // blank local model while the service is unavailable. Never hydrate an old
+    // remote cache here: its current access revision cannot be verified.
+    if (error instanceof ApiRequestError && error.status >= 500 && !localRecord && !runtime.workspaceRecord) {
+      runtime.localOnly = true;
+      runtime.remoteSyncRequested = true;
+      runtime.remoteDataAvailable = false;
+      runtime.remoteConnected = false;
+      runtime.handlers.onAccessProjection?.(null);
+      replaceCollaborationSession(runtime, null);
+      try {
+        await checkpointStartupLocally(runtime);
+      } catch (storageError) {
+        publishPersistenceFailure(runtime, storageError);
+        return;
+      }
+      if (isActive()) {
+        runtime.handlers.onSaveState?.('offline');
+        runtime.handlers.onActiveSheetChange?.(runtime.model.primarySheetId);
+        runtime.handlers.onPhaseChange?.('ready');
+      }
+      return;
+    }
+
     runtime.remoteConnected = false;
-    runtime.handlers.onAccessRole?.(null);
+    runtime.handlers.onAccessProjection?.(null);
     runtime.handlers.onSaveState?.('error');
     runtime.handlers.onPhaseChange?.('error');
     throw error;
@@ -1793,7 +1907,7 @@ async function checkpointStartupLocally(runtime: SpreadsheetRuntime): Promise<vo
 function publishPersistenceFailure(runtime: SpreadsheetRuntime, error: unknown): void {
   runtime.workspaceRecord = null;
   runtime.remoteConnected = false;
-  runtime.handlers.onAccessRole?.(null);
+  runtime.handlers.onAccessProjection?.(null);
   runtime.handlers.onSaveState?.('error');
   runtime.handlers.onPhaseChange?.('error');
   if (error instanceof WorkspaceStorageError) {

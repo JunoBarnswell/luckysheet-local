@@ -66,6 +66,25 @@ final class StructuralSnapshotReducer {
     private StructuralSnapshotReducer() {
     }
 
+    /** Applies the same canonical whole-axis interval transform used by worksheet metadata. */
+    static RangeRef transformAccessRange(RangeRef range, String structuralSheetId, FormulaReferenceTransformer.Axis axis,
+                                         int at, int count, FormulaReferenceTransformer.Direction direction) {
+        if (!range.sheetId().equals(structuralSheetId)) return range;
+        int maximum = axis == FormulaReferenceTransformer.Axis.ROW
+                ? ReferenceTransformDomain.MAX_ROW_INDEX : ReferenceTransformDomain.MAX_COLUMN_INDEX;
+        int start = axis == FormulaReferenceTransformer.Axis.ROW ? range.startRow() : range.startColumn();
+        int end = axis == FormulaReferenceTransformer.Axis.ROW ? range.endRow() : range.endColumn();
+        ReferenceTransformDomain.IntervalMapping mapped = ReferenceTransformDomain.mapInterval(start, end, at, count,
+                direction == FormulaReferenceTransformer.Direction.INSERT, maximum);
+        if (mapped.kind() == ReferenceTransformDomain.IntervalKind.DELETED) return null;
+        if (mapped.kind() != ReferenceTransformDomain.IntervalKind.MAPPED) {
+            throw ServiceException.validation("Range access region transform exceeds worksheet bounds");
+        }
+        return axis == FormulaReferenceTransformer.Axis.ROW
+                ? new RangeRef(range.sheetId(), Math.toIntExact(mapped.start()), Math.toIntExact(mapped.end()), range.startColumn(), range.endColumn())
+                : new RangeRef(range.sheetId(), range.startRow(), range.endRow(), Math.toIntExact(mapped.start()), Math.toIntExact(mapped.end()));
+    }
+
     private record DefinedNameOwnerKey(String scope, String normalizedName, String sheetId) { }
 
     static JsonNode applyStructuralOwnerPatch(JsonNode snapshot, StructuralPatch patch) {

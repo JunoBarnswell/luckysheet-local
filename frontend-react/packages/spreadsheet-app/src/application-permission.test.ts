@@ -4,7 +4,7 @@ import { WorkbookSession } from './workbook-session';
 
 describe('WorkbookSession permission integration', () => {
   function applyServerRole(app: WorkbookSession, role: 'owner' | 'editor' | 'commenter' | 'viewer'): void {
-    app['permission'].applyServerAccess(role);
+    app['permission'].applyServerAccess({ unitId: app['runtime'].model.unitId, role, accessRevision: 1, regions: [] });
     app['permission'].setOnline(true);
   }
 
@@ -23,6 +23,34 @@ describe('WorkbookSession permission integration', () => {
     app.dispatch({ commandId: 'sheet.cell.set', params: { sheetId: app.getActiveSheetId(), row: 0, column: 0, value: { value: 'blocked' } } });
     assert.equal(app['runtime'].model.getSheet(app.getActiveSheetId()).cells.get(0, 0)?.value, undefined);
     assert.match(app.getUiSnapshot().notice, /viewer|edit-cell|Permission/i);
+  });
+
+  it('blocks keyboard and command-based selection from entering hidden ranges', () => {
+    const app = new WorkbookSession();
+    const sheetId = app.getActiveSheetId();
+    app['permission'].applyServerAccess({
+      unitId: app['runtime'].model.unitId,
+      role: 'editor',
+      accessRevision: 2,
+      regions: [{ range: { sheetId, startRow: 1, endRow: 1, startColumn: 1, endColumn: 1 }, access: 'hidden' }],
+    });
+    app['permission'].setOnline(true);
+
+    app.movePrimary(1, 1);
+    assert.deepEqual(app['selectionService'].getState().activeCell, { row: 0, column: 0 });
+    assert.match(app.getUiSnapshot().notice, /hidden/i);
+
+    assert.throws(() => app.runCommand('selection.set', {
+      sheetId,
+      ranges: [{ sheetId, startRow: 1, endRow: 1, startColumn: 1, endColumn: 1 }],
+      primaryRangeIndex: 0,
+      primaryCell: { row: 1, column: 1 },
+      anchorCell: { row: 1, column: 1 },
+    }), /ACCESS_HIDDEN/);
+    assert.deepEqual(app['selectionService'].getState().activeCell, { row: 0, column: 0 });
+
+    app.selectAll();
+    assert.deepEqual(app['selectionService'].getState().activeCell, { row: 0, column: 0 });
   });
 
   it('allows commenter to add comments but not edit cells', () => {

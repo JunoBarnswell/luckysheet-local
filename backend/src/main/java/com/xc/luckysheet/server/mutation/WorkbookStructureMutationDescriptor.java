@@ -42,8 +42,27 @@ final class WorkbookStructureMutationDescriptor extends CanonicalJsonMutationDes
         ObjectNode params = SnapshotMutationSupport.params(mutation);
         return switch (id()) {
             case "hyperlink.set", "hyperlink.remove" -> List.of(SnapshotMutationSupport.cellRange(root, mutation.sheetId(), params));
+            case "sheet.remove" -> List.of(fullSheetRange(root, SnapshotMutationSupport.text(params, "id")));
+            case "sheet.duplicated" -> List.of(fullSheetRange(root, SnapshotMutationSupport.text(params, "sourceSheetId")));
+            case "sheet.restore" -> List.of(restoredSheetRange(params));
             default -> List.of();
         };
+    }
+
+    private static RangeRef fullSheetRange(ObjectNode root, String sheetId) {
+        ObjectNode sheet = SnapshotMutationSupport.sheet(root, sheetId);
+        int rows = SnapshotMutationSupport.canonicalDimension(sheet, "rowCount");
+        int columns = SnapshotMutationSupport.canonicalDimension(sheet, "columnCount");
+        return new RangeRef(sheetId, 0, rows - 1, 0, columns - 1);
+    }
+
+    private static RangeRef restoredSheetRange(ObjectNode params) {
+        JsonNode sheet = params.get("sheet");
+        if (sheet == null || !sheet.isObject()) throw ServiceException.validation("sheet.restore requires a canonical worksheet");
+        String sheetId = SnapshotMutationSupport.text((ObjectNode) sheet, "id");
+        int rows = SnapshotMutationSupport.canonicalDimension((ObjectNode) sheet, "rowCount");
+        int columns = SnapshotMutationSupport.canonicalDimension((ObjectNode) sheet, "columnCount");
+        return new RangeRef(sheetId, 0, rows - 1, 0, columns - 1);
     }
 
     @Override

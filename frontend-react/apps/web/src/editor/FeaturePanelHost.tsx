@@ -1,4 +1,4 @@
-import { lazy, Suspense, type ReactNode } from "react";
+import { lazy, Suspense, useCallback, type ReactNode } from "react";
 import { Box, SidebarShell } from "@react-sheets/ui-system";
 import type { CommandDescriptor } from "@react-sheets/command-runtime";
 import type { UiSessionIntent, UiSnapshot, WorkbookSession } from "@react-sheets/spreadsheet-app";
@@ -43,6 +43,10 @@ export function FeaturePanelHost({
   commands,
   title,
 }: FeaturePanelHostProps): ReactNode {
+  const listRangeAccessRegions = useCallback(() => session.listRangeAccessRegions(), [session]);
+  const createRangeAccessRegion = useCallback((request: import('@react-sheets/protocol').RangeAccessRegionRequest) => session.createRangeAccessRegion(request), [session]);
+  const updateRangeAccessRegion = useCallback((regionId: string, request: import('@react-sheets/protocol').RangeAccessRegionRequest) => session.updateRangeAccessRegion(regionId, request), [session]);
+  const deleteRangeAccessRegion = useCallback((regionId: string) => session.deleteRangeAccessRegion(regionId), [session]);
   const activeTableId = state.activeContext.kind === 'table' ? state.activeContext.tableId : undefined;
   const analysisChartIds = [...new Set(state.projectionSheets.flatMap((sheet) => sheet.drawings.flatMap((drawing) => {
     if (drawing.kind !== 'chart') return [];
@@ -121,6 +125,13 @@ export function FeaturePanelHost({
           onPreviewRevision={(revision) => { void session.previewRevision(revision); }}
           onClearHistoryPreview={session.clearHistoryPreview.bind(session)}
           onRefreshRevisions={() => { void session.refreshRevisionLog(); }}
+          effectiveAccessRegions={state.effectiveAccessRegions}
+          accessRevision={state.accessRevision}
+          canManageRangeAccess={state.canManageRangeAccess}
+          onListRangeAccessRegions={listRangeAccessRegions}
+          onCreateRangeAccessRegion={createRangeAccessRegion}
+          onUpdateRangeAccessRegion={updateRangeAccessRegion}
+          onDeleteRangeAccessRegion={deleteRangeAccessRegion}
           compatibilityReport={state.compatibilityReport}
           onClearCompatibilityReport={session.clearCompatibilityReport.bind(session)}
           tables={state.tables}

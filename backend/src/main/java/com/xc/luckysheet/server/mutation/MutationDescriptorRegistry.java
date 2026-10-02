@@ -25,6 +25,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Consumer;
 import java.util.function.Function;
 
 /**
@@ -158,11 +159,18 @@ public class MutationDescriptorRegistry {
 
     /** Resolve the client-independent mutation policy before reducing it. */
     public MutationPreparation prepare(JsonNode snapshot, OperationMutation mutation, WorkbookAclRole role) {
+        return prepare(snapshot, mutation, role, ignored -> { });
+    }
+
+    /** Run subject-specific range access after server range resolution and before worksheet protection. */
+    public MutationPreparation prepare(JsonNode snapshot, OperationMutation mutation, WorkbookAclRole role,
+                                       Consumer<List<RangeRef>> rangeAuthorization) {
         MutationDescriptor descriptor = require(mutation.id(), false);
         if (!role.includes(descriptor.requiredRole())) {
             throw ServiceException.forbidden("Workbook role " + descriptor.requiredRole().wireValue() + " is required for mutation " + mutation.id());
         }
         List<RangeRef> ranges = descriptor.affectedRanges(snapshot, mutation);
+        rangeAuthorization.accept(ranges);
         if (descriptor.checksProtection() && role != WorkbookAclRole.OWNER) {
             ProtectionResolver.assertAllowed(snapshot, ranges, descriptor.protectionAction());
         }
@@ -403,6 +411,13 @@ public class MutationDescriptorRegistry {
             patches.add(Optional.ofNullable(patch));
         }
         return new StructuralPatchMigrationReplay(ownsCurrent ? current : snapshot.deepCopy(), patches);
+    }
+
+    /** Reuses the server structural interval transform for external server-owned range domains. */
+    public RangeRef transformAccessRange(RangeRef range, String sheetId, boolean rows, int at, int count, boolean insert) {
+        return StructuralSnapshotReducer.transformAccessRange(range, sheetId,
+                rows ? FormulaReferenceTransformer.Axis.ROW : FormulaReferenceTransformer.Axis.COLUMN,
+                at, count, insert ? FormulaReferenceTransformer.Direction.INSERT : FormulaReferenceTransformer.Direction.DELETE);
     }
 
     public static StructuralPatch mergeStructuralPatches(

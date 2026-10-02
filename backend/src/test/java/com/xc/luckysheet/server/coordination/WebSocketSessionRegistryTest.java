@@ -8,6 +8,8 @@ import com.xc.luckysheet.server.contract.OperationOrigin;
 import com.xc.luckysheet.server.contract.RangeRef;
 import com.xc.luckysheet.server.contract.WorkbookAclRole;
 import com.xc.luckysheet.server.service.AccessControlService;
+import com.xc.luckysheet.server.service.AccessProjectionService;
+import com.xc.luckysheet.server.service.RangeAccessService;
 import com.xc.luckysheet.server.service.ServiceException;
 import org.junit.jupiter.api.Test;
 import org.springframework.web.socket.CloseStatus;
@@ -28,7 +30,8 @@ class WebSocketSessionRegistryTest {
     @Test
     void revokedOrUnauthorizedSessionIsClosedBeforeReceivingRemoteRevision() throws Exception {
         AccessControlService access = mock(AccessControlService.class);
-        WebSocketSessionRegistry registry = new WebSocketSessionRegistry(new ObjectMapper().findAndRegisterModules(), access);
+        WebSocketSessionRegistry registry = new WebSocketSessionRegistry(new ObjectMapper().findAndRegisterModules(), access,
+                mock(RangeAccessService.class), mock(AccessProjectionService.class));
         WebSocketSession session = mock(WebSocketSession.class);
         Principal principal = () -> "editor-1";
         when(session.getAttributes()).thenReturn(new java.util.concurrent.ConcurrentHashMap<>(Map.of()));

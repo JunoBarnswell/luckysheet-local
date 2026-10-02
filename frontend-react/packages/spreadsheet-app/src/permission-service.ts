@@ -7,7 +7,13 @@ import {
   type RangeRef,
   type WorkbookModel,
 } from '@react-sheets/core-model';
-import { mutationPermission, type PermissionPolicy } from '@react-sheets/protocol';
+import {
+  mutationPermission,
+  type EffectiveAccessRegion,
+  type PermissionPolicy,
+  type RangeAccessLevel,
+  type WorkbookAccessResponse,
+} from '@react-sheets/protocol';
 import {
   buildPermissionCapabilities,
   inferAffectedRanges,
@@ -36,7 +42,77 @@ export interface PermissionCheckInput {
 export interface PermissionResult {
   allowed: boolean;
   reason?: string;
-  blockedBy?: ProtectionRule | 'share-role';
+  blockedBy?: ProtectionRule | 'share-role' | 'range-access';
+}
+
+const RANGE_ACCESS_RANK: Readonly<Record<RangeAccessLevel, number>> = Object.freeze({ hidden: 0, read: 1, edit: 2 });
+
+interface RegionNode {
+  minRow: number;
+  maxRow: number;
+  minColumn: number;
+  maxColumn: number;
+  regions: readonly EffectiveAccessRegion[];
+  left?: RegionNode;
+  right?: RegionNode;
+}
+
+class AccessProjectionIndex {
+  private readonly roots = new Map<string, RegionNode>();
+
+  constructor(regions: readonly EffectiveAccessRegion[]) {
+    const bySheet = new Map<string, EffectiveAccessRegion[]>();
+    for (const region of regions) {
+      const list = bySheet.get(region.range.sheetId) ?? [];
+      list.push(region);
+      bySheet.set(region.range.sheetId, list);
+    }
+    for (const [sheetId, source] of bySheet) this.roots.set(sheetId, this.build(source));
+  }
+
+  intersecting(range: RangeRef): readonly EffectiveAccessRegion[] {
+    const root = this.roots.get(range.sheetId);
+    if (!root) return [];
+    const result: EffectiveAccessRegion[] = [];
+    const visit = (node: RegionNode): void => {
+      if (!this.intersectsBounds(node, range)) return;
+      if (node.regions.length) {
+        for (const region of node.regions) if (this.intersects(region.range, range)) result.push(region);
+      } else {
+        if (node.left) visit(node.left);
+        if (node.right) visit(node.right);
+      }
+    };
+    visit(root);
+    return result;
+  }
+
+  private build(source: readonly EffectiveAccessRegion[]): RegionNode {
+    const box = { minRow: Number.POSITIVE_INFINITY, maxRow: -1, minColumn: Number.POSITIVE_INFINITY, maxColumn: -1 };
+    for (const region of source) {
+      box.minRow = Math.min(box.minRow, region.range.startRow);
+      box.maxRow = Math.max(box.maxRow, region.range.endRow);
+      box.minColumn = Math.min(box.minColumn, region.range.startColumn);
+      box.maxColumn = Math.max(box.maxColumn, region.range.endColumn);
+    }
+    if (source.length <= 8) return { ...box, regions: source };
+    const rows = box.maxRow - box.minRow >= box.maxColumn - box.minColumn;
+    const sorted = [...source].sort((a, b) => rows
+      ? (a.range.startRow + a.range.endRow) - (b.range.startRow + b.range.endRow)
+      : (a.range.startColumn + a.range.endColumn) - (b.range.startColumn + b.range.endColumn));
+    const middle = Math.floor(sorted.length / 2);
+    return { ...box, regions: [], left: this.build(sorted.slice(0, middle)), right: this.build(sorted.slice(middle)) };
+  }
+
+  private intersectsBounds(node: RegionNode, range: RangeRef): boolean {
+    return node.minRow <= range.endRow && range.startRow <= node.maxRow
+      && node.minColumn <= range.endColumn && range.startColumn <= node.maxColumn;
+  }
+
+  private intersects(left: RangeRef, right: RangeRef): boolean {
+    return left.startRow <= right.endRow && right.startRow <= left.endRow
+      && left.startColumn <= right.endColumn && right.startColumn <= left.endColumn;
+  }
 }
 
 const LOCAL_CAPABILITIES: PermissionCapabilities = Object.freeze({
@@ -100,15 +176,24 @@ function mutationPolicyOverride(value: { capability: string; protectionAction: P
 export class PermissionService {
   private workbook: WorkbookModel | null = null;
   private serverRole: ShareRole | null = null;
+  private accessRevision = 0;
+  private accessRegions: readonly EffectiveAccessRegion[] = [];
+  private accessIndex = new AccessProjectionIndex([]);
   private online = false;
 
   /** Consume the server-calculated projection; no UI or command can set it. */
-  applyServerAccess(role: ShareRole): void {
-    this.serverRole = role;
+  applyServerAccess(access: WorkbookAccessResponse): void {
+    this.serverRole = access.role;
+    this.accessRevision = access.accessRevision;
+    this.accessRegions = structuredClone(access.regions);
+    this.accessIndex = new AccessProjectionIndex(this.accessRegions);
   }
 
   clearServerAccess(): void {
     this.serverRole = null;
+    this.accessRevision = 0;
+    this.accessRegions = [];
+    this.accessIndex = new AccessProjectionIndex([]);
   }
 
   setOnline(online: boolean): void {
@@ -118,6 +203,12 @@ export class PermissionService {
   getShareRole(): ShareRole | null {
     return this.serverRole;
   }
+
+  getAccessRevision(): number { return this.accessRevision; }
+
+  getAccessRegions(): readonly EffectiveAccessRegion[] { return this.accessRegions; }
+
+  isWorkbookAccessManager(): boolean { return this.serverRole === 'owner'; }
 
   getCapabilities(): PermissionCapabilities {
     if (!this.online) return LOCAL_CAPABILITIES;
@@ -135,6 +226,9 @@ export class PermissionService {
     if (!capabilityAllowed(capabilities, action)) {
       return { allowed: false, reason: `Server role "${role ?? 'unknown'}" cannot perform "${action}"`, blockedBy: 'share-role' };
     }
+
+    const rangeCheck = this.checkRangeAccess(action, input.affectedRanges);
+    if (!rangeCheck.allowed) return rangeCheck;
 
     if (!policy.checksProtection) {
       return { allowed: true };
@@ -171,6 +265,8 @@ export class PermissionService {
     if (!capabilityAllowed(this.getCapabilities(), policy.capability)) {
       return { allowed: false, reason: `Server role "${this.serverRole ?? 'unknown'}" cannot perform "${policy.capability}"`, blockedBy: 'share-role' };
     }
+    const rangeCheck = this.checkRangeAccess(policy.capability, mutation.affectedRanges);
+    if (!rangeCheck.allowed) return rangeCheck;
     if (!policy.checksProtection) return { allowed: true };
     if (policy.protectionAction === 'none') {
       return { allowed: false, reason: `Mutation permission contract requires a protection action: ${mutation.id}`, blockedBy: 'share-role' };
@@ -180,6 +276,9 @@ export class PermissionService {
   }
 
   canSelectCell(sheetId: string, row: number, column: number): PermissionResult {
+    if (this.serverRole && this.effectiveAccess({ sheetId, startRow: row, endRow: row, startColumn: column, endColumn: column }) === 'hidden') {
+      return { allowed: false, reason: 'This range is hidden from the current subject', blockedBy: 'range-access' };
+    }
     if (!this.workbook) return { allowed: true };
     const sheet = this.workbook.getSheet(sheetId);
     const rules = this.workbook.getSheets().flatMap((candidate) => candidate.protectionRules);
@@ -189,6 +288,37 @@ export class PermissionService {
     if (!resolution.active && resolution.rules.length === 0) return { allowed: true };
     const action: ProtectionAction = resolution.locked ? 'select-locked' : 'select-unlocked';
     return this.checkProtection(action, [range]);
+  }
+
+  canSelectRange(range: RangeRef): PermissionResult {
+    if (!this.serverRole) return { allowed: true };
+    const hidden = this.accessIndex.intersecting(range).some((region) => region.access === 'hidden');
+    return hidden
+      ? { allowed: false, reason: 'This range contains cells hidden from the current subject', blockedBy: 'range-access' }
+      : { allowed: true };
+  }
+
+  private checkRangeAccess(action: PermissionAction, ranges: readonly RangeRef[]): PermissionResult {
+    if (!this.serverRole || ranges.length === 0 || action === 'navigate' || action === 'share') return { allowed: true };
+    const required: RangeAccessLevel = action === 'comment' ? 'read' : 'edit';
+    for (const range of ranges) {
+      if (RANGE_ACCESS_RANK[this.effectiveAccess(range)] < RANGE_ACCESS_RANK[required]) {
+        return { allowed: false, reason: required === 'read'
+          ? 'This range is hidden from the current subject'
+          : 'This range is read-only or hidden for the current subject', blockedBy: 'range-access' };
+      }
+    }
+    return { allowed: true };
+  }
+
+  private effectiveAccess(range: RangeRef): RangeAccessLevel {
+    const ceiling: RangeAccessLevel = this.serverRole === 'owner' || this.serverRole === 'editor' ? 'edit' : 'read';
+    let effective: RangeAccessLevel = ceiling;
+    for (const region of this.accessIndex.intersecting(range)) {
+      const nextAccess: RangeAccessLevel = RANGE_ACCESS_RANK[region.access] < RANGE_ACCESS_RANK[effective] ? region.access : effective;
+      effective = nextAccess;
+    }
+    return effective;
   }
 
   private checkProtection(action: Exclude<ProtectionAction, 'none'>, affectedRanges: readonly RangeRef[], allowPendingSheet = false): PermissionResult {

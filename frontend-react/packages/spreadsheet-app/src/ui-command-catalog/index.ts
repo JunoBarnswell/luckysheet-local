@@ -62,6 +62,7 @@ export type RibbonGroupId =
   | 'comments'
   | 'notesLinks'
   | 'protection'
+  | 'rangeAccess'
   | 'historyAudit'
   | 'freezePanes'
   | 'zoom'
@@ -257,6 +258,7 @@ export type RibbonCommandId =
   | 'newNote'
   | 'insertLink'
   | 'protectSelection'
+  | 'rangeAccess'
   | 'unprotect'
   | 'revisionLog'
   | 'freezeTopRow'
@@ -749,6 +751,7 @@ export const RIBBON_TEXT = {
     comments: 'groups.comments',
     notesLinks: 'groups.notesLinks',
     protection: 'groups.protection',
+    rangeAccess: 'groups.rangeAccess',
     historyAudit: 'groups.historyAudit',
     freezePanes: 'groups.freezePanes',
     zoom: 'groups.zoom',
@@ -1006,6 +1009,7 @@ export const RIBBON_TEXT = {
     newNote: 'commands.newNote',
     insertLink: 'commands.insertLink',
     protectSelection: 'commands.protectSelection',
+    rangeAccess: 'commands.rangeAccess',
     unprotect: 'commands.unprotect',
     revisionLog: 'commands.revisionLog',
     freezeTopRow: 'commands.freezeTopRow',
@@ -1065,6 +1069,7 @@ export const RIBBON_GROUP_CATALOG: readonly RibbonGroupDefinition[] = [
   group('comments', 'review', 10),
   group('notesLinks', 'review', 20),
   group('protection', 'review', 40),
+  group('rangeAccess', 'review', 50),
   group('historyAudit', 'review', 60),
   group('freezePanes', 'view', 10),
   group('zoom', 'view', 20),
@@ -2056,6 +2061,7 @@ export const RIBBON_COMMAND_CATALOG: readonly CommandDefinition[] = [
   intent('insertLink', 'review', 'notesLinks', RIBBON_TEXT.commands.insertLink, () => ({ type: 'dialog.open', dialog: 'hyperlink' }), 'share'),
   callback('protectSelection', 'review', 'protection', RIBBON_TEXT.commands.protectSelection, (context) => context.actions.onProtectSelection(), 'lock'),
   callback('unprotect', 'review', 'protection', RIBBON_TEXT.commands.unprotect, (context) => context.actions.onUnprotectSelection(), 'lock'),
+  intent('rangeAccess', 'review', 'rangeAccess', RIBBON_TEXT.commands.rangeAccess, () => ({ type: 'panel.open', panel: 'rangeAccess' }), 'lock'),
   intent('revisionLog', 'review', 'historyAudit', RIBBON_TEXT.commands.revisionLog, () => ({ type: 'panel.open', panel: 'history' }), 'history'),
 
   command('freezeTopRow', 'view', 'freezePanes', 'sheet.freeze.set', RIBBON_TEXT.commands.freezeTopRow, 'freeze', { pane: { kind: 'frozen', xSplit: 0, ySplit: 1, startRow: 1, startColumn: 0, state: 'frozen' } }),

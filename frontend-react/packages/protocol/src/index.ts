@@ -20,6 +20,8 @@ import {
   MAX_WORKBOOK_NAME_LENGTH,
   WORKBOOK_SNAPSHOT_SCHEMA,
   WORKBOOK_SNAPSHOT_VERSION,
+  RANGE_ACCESS_LEVELS,
+  type RangeAccessLevel,
   mutationPermission,
   commandPermission,
   type PermissionCapability,
@@ -49,7 +51,7 @@ export {
   SERVER_STRUCTURAL_PLANNER_COMMANDS,
 } from './generated-contract';
 
-export type { PermissionCapability, PermissionPolicy, ProtectionAction } from './generated-contract';
+export type { PermissionCapability, PermissionPolicy, ProtectionAction, RangeAccessLevel } from './generated-contract';
 
 export type ProtocolErrorCode = ContractErrorCode | 'AUTH_CONFIGURATION_ERROR';
 
@@ -169,6 +171,47 @@ export interface WorkbookAclRecord {
 export interface WorkbookAccessResponse {
   unitId: string;
   role: WorkbookAclRole;
+  accessRevision: number;
+  regions: EffectiveAccessRegion[];
+}
+
+export interface EffectiveAccessRegion {
+  range: RangeRef;
+  access: RangeAccessLevel;
+}
+
+export interface AccessPrincipal {
+  kind: 'subject' | 'group' | 'everyone';
+  id?: string | null;
+}
+
+export interface RangeAccessGrant {
+  principal: AccessPrincipal;
+  access: RangeAccessLevel;
+}
+
+export interface RangeAccessRegion {
+  id: string;
+  unitId: string;
+  sheetId: string;
+  range: RangeRef;
+  defaultAccess: RangeAccessLevel;
+  grants: RangeAccessGrant[];
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface RangeAccessRegionRequest {
+  sheetId: string;
+  range: RangeRef;
+  defaultAccess: RangeAccessLevel;
+  grants: RangeAccessGrant[];
+}
+
+export interface RangeAccessChangeResponse {
+  region: RangeAccessRegion;
+  accessRevision: number;
 }
 
 export interface OperationCommitResponse {
@@ -1687,13 +1730,20 @@ function validateCursorPage<T>(value: unknown, itemValidator: (item: unknown) =>
 
 function validateRevisionRecord(value: unknown): RevisionRecord {
   const input = requireRecord(value, 'Revision record');
-  validateExactKeys(input, ['operationId', 'revision', 'createdAt', 'payload'], 'Revision record');
-  if (!isNonEmptyString(input.operationId)) throw new Error('Revision record operationId is invalid');
+  validateExactKeys(input, ['operationId', 'revision', 'createdAt', 'actorId', 'accessRevision', 'payload', 'resyncRequired'], 'Revision record');
+  if (!isNonEmptyString(input.operationId) || !isNonEmptyString(input.actorId)) throw new Error('Revision record identity is invalid');
   if (!Number.isSafeInteger(input.revision) || Number(input.revision) < 1) throw new Error('Revision record revision is invalid');
+  if (!Number.isSafeInteger(input.accessRevision) || Number(input.accessRevision) < 0 || typeof input.resyncRequired !== 'boolean') throw new Error('Revision record access metadata is invalid');
   validateIsoTimestamp(input.createdAt, 'Revision record createdAt');
+  if (input.resyncRequired) {
+    if (input.payload !== null) throw new Error('Redacted revision must not contain a payload');
+    return { operationId: input.operationId, revision: Number(input.revision), createdAt: input.createdAt as string,
+      actorId: input.actorId, accessRevision: Number(input.accessRevision), payload: null, resyncRequired: true };
+  }
   const payload = validateCommittedOperationEnvelope(input.payload);
-  if (payload.revision !== Number(input.revision)) throw new Error('Revision record payload revision does not match record');
-  return { operationId: input.operationId, revision: Number(input.revision), createdAt: input.createdAt as string, payload };
+  if (payload.revision !== Number(input.revision) || payload.operationId !== input.operationId) throw new Error('Revision record payload identity does not match metadata');
+  return { operationId: input.operationId, revision: Number(input.revision), createdAt: input.createdAt as string,
+    actorId: input.actorId, accessRevision: Number(input.accessRevision), payload, resyncRequired: false };
 }
 
 export function validateUserPreferences(value: unknown): UserPreferences {
@@ -1752,7 +1802,62 @@ function validateWorkbookAccessResponse(value: unknown): WorkbookAccessResponse 
   if (input.role !== 'owner' && input.role !== 'editor' && input.role !== 'commenter' && input.role !== 'viewer') {
     throw new Error('workbook access response has an invalid role');
   }
-  return { unitId: input.unitId, role: input.role };
+  if (!Number.isSafeInteger(input.accessRevision) || Number(input.accessRevision) < 0 || !Array.isArray(input.regions)) {
+    throw new Error('workbook access response has an invalid range projection');
+  }
+  const regions = input.regions.map((entry) => {
+    const region = requireRecord(entry, 'Effective access region');
+    validateExactKeys(region, ['range', 'access'], 'Effective access region');
+    if (!isRangeRef(region.range) || !(RANGE_ACCESS_LEVELS as readonly unknown[]).includes(region.access)) {
+      throw new Error('Effective access region is invalid');
+    }
+    return { range: region.range, access: region.access as RangeAccessLevel };
+  });
+  return { unitId: input.unitId, role: input.role, accessRevision: Number(input.accessRevision), regions };
+}
+
+function validateRangeAccessPrincipal(value: unknown): AccessPrincipal {
+  const principal = requireRecord(value, 'Range access principal');
+  if (principal.kind === 'everyone') {
+    validateExactKeys(principal, ['kind'], 'Everyone principal');
+    return { kind: 'everyone' };
+  }
+  validateExactKeys(principal, ['kind', 'id'], 'Range access principal');
+  if ((principal.kind !== 'subject' && principal.kind !== 'group') || !isNonEmptyString(principal.id)) {
+    throw new Error('Range access principal is invalid');
+  }
+  return { kind: principal.kind, id: principal.id };
+}
+
+function validateRangeAccessGrant(value: unknown): RangeAccessGrant {
+  const grant = requireRecord(value, 'Range access grant');
+  validateExactKeys(grant, ['principal', 'access'], 'Range access grant');
+  if (!(RANGE_ACCESS_LEVELS as readonly unknown[]).includes(grant.access)) throw new Error('Range access grant level is invalid');
+  return { principal: validateRangeAccessPrincipal(grant.principal), access: grant.access as RangeAccessLevel };
+}
+
+function validateRangeAccessRegion(value: unknown, expectedUnitId?: string): RangeAccessRegion {
+  const region = requireRecord(value, 'Range access region');
+  validateExactKeys(region, ['id', 'unitId', 'sheetId', 'range', 'defaultAccess', 'grants', 'createdBy', 'createdAt', 'updatedAt'], 'Range access region');
+  if (!isNonEmptyString(region.id) || !isNonEmptyString(region.unitId) || (expectedUnitId && region.unitId !== expectedUnitId)
+      || !isNonEmptyString(region.sheetId) || !isRangeRef(region.range) || region.range.sheetId !== region.sheetId
+      || !(RANGE_ACCESS_LEVELS as readonly unknown[]).includes(region.defaultAccess) || !Array.isArray(region.grants)
+      || !isNonEmptyString(region.createdBy)) throw new Error('Range access region is invalid');
+  validateIsoTimestamp(region.createdAt, 'Range access region createdAt');
+  validateIsoTimestamp(region.updatedAt, 'Range access region updatedAt');
+  return {
+    id: region.id, unitId: region.unitId, sheetId: region.sheetId, range: region.range,
+    defaultAccess: region.defaultAccess as RangeAccessLevel,
+    grants: region.grants.map(validateRangeAccessGrant),
+    createdBy: region.createdBy, createdAt: region.createdAt as string, updatedAt: region.updatedAt as string,
+  };
+}
+
+function validateRangeAccessChangeResponse(value: unknown, expectedUnitId: string): RangeAccessChangeResponse {
+  const response = requireRecord(value, 'Range access change response');
+  validateExactKeys(response, ['region', 'accessRevision'], 'Range access change response');
+  if (!Number.isSafeInteger(response.accessRevision) || Number(response.accessRevision) < 1) throw new Error('Range access revision is invalid');
+  return { region: validateRangeAccessRegion(response.region, expectedUnitId), accessRevision: Number(response.accessRevision) };
 }
 
 /** Strict runtime validation used at the REST/WebSocket trust boundary. */
@@ -2274,7 +2379,10 @@ export interface RevisionRecord {
   operationId: string;
   revision: number;
   createdAt: string;
-  payload: CommittedOperationEnvelope;
+  actorId: string;
+  accessRevision: number;
+  payload: CommittedOperationEnvelope | null;
+  resyncRequired: boolean;
 }
 
 /** Metadata-only remote representation of a content-addressed data block. */
@@ -2326,6 +2434,7 @@ export class WorkbookApiClient {
   }
 
   private async request(path: string, init: RequestInit = {}): Promise<Response> {
+    if (!this.authTokenProvider && !this.shareTokenProvider) throw new AuthenticationRequiredError();
     const token = (await this.authTokenProvider?.())?.trim();
     const shareToken = token ? undefined : (await this.shareTokenProvider?.())?.trim();
     const headers = new Headers(init.headers);
@@ -2375,6 +2484,28 @@ export class WorkbookApiClient {
   async getAccess(unitId: string, options: ApiRequestOptions = {}): Promise<WorkbookAccessResponse> {
     const result = await this.json<unknown>(`/api/workbooks/${encodeURIComponent(unitId)}/access`, options);
     return validateWorkbookAccessResponse(result);
+  }
+
+  async listRangeAccessRegions(unitId: string, options: ApiRequestOptions = {}): Promise<RangeAccessRegion[]> {
+    const result = await this.json<unknown>(`/api/workbooks/${encodeURIComponent(unitId)}/access-regions`, options);
+    if (!Array.isArray(result)) throw new Error('Range access region list must be an array');
+    return result.map((region) => validateRangeAccessRegion(region, unitId));
+  }
+
+  async createRangeAccessRegion(unitId: string, request: RangeAccessRegionRequest): Promise<RangeAccessChangeResponse> {
+    return validateRangeAccessChangeResponse(await this.json<unknown>(`/api/workbooks/${encodeURIComponent(unitId)}/access-regions`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(request),
+    }), unitId);
+  }
+
+  async updateRangeAccessRegion(unitId: string, regionId: string, request: RangeAccessRegionRequest): Promise<RangeAccessChangeResponse> {
+    return validateRangeAccessChangeResponse(await this.json<unknown>(`/api/workbooks/${encodeURIComponent(unitId)}/access-regions/${encodeURIComponent(regionId)}`, {
+      method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(request),
+    }), unitId);
+  }
+
+  async deleteRangeAccessRegion(unitId: string, regionId: string): Promise<void> {
+    await this.request(`/api/workbooks/${encodeURIComponent(unitId)}/access-regions/${encodeURIComponent(regionId)}`, { method: 'DELETE' });
   }
 
   async listWorkbookAcl(unitId: string, options: ApiRequestOptions = {}): Promise<WorkbookAclRecord[]> {
@@ -2841,7 +2972,9 @@ export class WorkbookApiClient {
  * broadcasts after token verification.
  */
 export type OperationMessage =
-  | { type: 'revision.created'; payload: CommittedOperationEnvelope; revision: number }
+  | { type: 'revision.created'; unitId: string; operationId: string; accessRevision: number; payload: CommittedOperationEnvelope; resyncRequired?: never; revision: number }
+  | { type: 'revision.created'; unitId: string; operationId: string; accessRevision: number; payload?: never; resyncRequired: true; revision: number }
+  | { type: 'access.changed'; unitId: string; accessRevision: number }
   | { type: 'presence.updated'; unitId: string; state: unknown }
   | { type: 'cursor.updated'; unitId: string; state: unknown }
   | { type: 'presence.broadcast'; unitId: string; actorId: string; state: unknown }
@@ -2965,14 +3098,29 @@ export function decodeOperationMessage(input: string): OperationMessage {
       if (!Number.isSafeInteger(message.revision) || Number(message.revision) < 1) throw new Error('revision.created requires revision');
       {
         const revision = Number(message.revision);
+        if (!isNonEmptyString(message.unitId) || !isNonEmptyString(message.operationId)
+            || !Number.isSafeInteger(message.accessRevision) || Number(message.accessRevision) < 0) throw new Error('revision.created metadata is invalid');
+        if (message.resyncRequired === true) {
+          if ('payload' in message) throw new Error('Redacted revision must not contain a payload');
+          return { type: 'revision.created', unitId: message.unitId, operationId: message.operationId,
+            accessRevision: Number(message.accessRevision), resyncRequired: true, revision };
+        }
         const payload = validateCommittedOperationEnvelope(message.payload);
-        if (payload.revision !== revision) throw new Error('revision.created revision must match payload revision');
+        if (payload.revision !== revision || payload.operationId !== message.operationId || payload.unitId !== message.unitId) throw new Error('revision.created identity must match payload');
         return {
           type: 'revision.created',
+          unitId: message.unitId,
+          operationId: message.operationId,
+          accessRevision: Number(message.accessRevision),
           payload,
           revision,
         };
       }
+    case 'access.changed':
+      if (!isNonEmptyString(message.unitId) || !Number.isSafeInteger(message.accessRevision) || Number(message.accessRevision) < 1) {
+        throw new Error('access.changed metadata is invalid');
+      }
+      return { type: 'access.changed', unitId: message.unitId, accessRevision: Number(message.accessRevision) };
     case 'presence.updated':
     case 'cursor.updated':
       if (!isNonEmptyString(message.unitId)) throw new Error(`${message.type} requires unitId`);

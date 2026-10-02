@@ -3,7 +3,7 @@ export const WORKBOOK_CONTRACT_API_VERSION = "2026-09-21" as const;
 export const WORKBOOK_SNAPSHOT_SCHEMA = "WorkbookSnapshot" as const;
 export const WORKBOOK_SNAPSHOT_VERSION = 10 as const;
 export const MAX_WORKBOOK_NAME_LENGTH = 255 as const;
-export const CONTRACT_ERROR_CODES = ["UNAUTHENTICATED", "FORBIDDEN", "VALIDATION_ERROR", "NOT_FOUND", "CONFLICT", "OPERATION_ID_REUSED", "ARTIFACT_REVISION_CONFLICT", "WORKBOOK_TRASHED", "TIMEOUT", "SERVICE_UNAVAILABLE", "INTERNAL_ERROR", "STORAGE_CORRUPT", "UNSUPPORTED_FEATURE"] as const;
+export const CONTRACT_ERROR_CODES = ["UNAUTHENTICATED", "FORBIDDEN", "VALIDATION_ERROR", "NOT_FOUND", "CONFLICT", "OPERATION_ID_REUSED", "ARTIFACT_REVISION_CONFLICT", "WORKBOOK_TRASHED", "TIMEOUT", "SERVICE_UNAVAILABLE", "INTERNAL_ERROR", "STORAGE_CORRUPT", "UNSUPPORTED_FEATURE", "ACCESS_DENIED", "ACCESS_REGION_OVERLAP", "ACCESS_REGION_NOT_FOUND", "ACCESS_REVISION_CHANGED", "ACCESS_PRINCIPAL_INVALID", "ACCESS_HIDDEN"] as const;
 export const SERVER_STRUCTURAL_PLANNER_MUTATIONS = [
   "rows.inserted",
   "rows.deleted",
@@ -91,6 +91,10 @@ export function requiresServerStructuralPlannerCommand(commandId: string): boole
   return serverStructuralPlannerCommandIds.has(commandId);
 }
 export type ContractErrorCode = typeof CONTRACT_ERROR_CODES[number];
+export const RANGE_ACCESS_LEVELS = ["hidden","read","edit"] as const;
+export type RangeAccessLevel = typeof RANGE_ACCESS_LEVELS[number];
+export const ACCESS_PRINCIPAL_KINDS = ["subject","group","everyone"] as const;
+export type AccessPrincipalKind = typeof ACCESS_PRINCIPAL_KINDS[number];
 export type MutationDurability = 'transient' | 'local' | 'remote';
 export type PermissionCapability = 'navigate' | 'edit-cell' | 'format' | 'structure' | 'drawing' | 'protect' | 'share' | 'comment' | 'restore' | 'query' | 'script';
 export type ProtectionAction = "none" | "edit-cell" | "format" | "insert-rows" | "insert-columns" | "delete-rows" | "delete-columns" | "sort" | "auto-filter" | "edit-objects" | "select-locked" | "select-unlocked";

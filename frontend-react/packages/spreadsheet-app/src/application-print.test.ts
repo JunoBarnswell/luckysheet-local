@@ -55,7 +55,7 @@ describe('WorkbookSession print integration', () => {
 
   it('allows viewers to preview print output', () => {
     const app = new WorkbookSession();
-    app['permission'].applyServerAccess('viewer');
+    app['permission'].applyServerAccess({ unitId: 'wb-test', role: 'viewer', accessRevision: 1, regions: [] });
     app['permission'].setOnline(true);
     app.printWorkbook({
       paper: 'A4',

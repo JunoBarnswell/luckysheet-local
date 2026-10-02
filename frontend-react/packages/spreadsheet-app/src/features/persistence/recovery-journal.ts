@@ -121,6 +121,29 @@ export class RecoveryJournal {
     for (const [id, entry] of this.confirmed) if (entry.revision <= revision) this.confirmed.delete(id);
     return this.persist(this.pending);
   }
+  async clear(): Promise<void> {
+    await this.tail;
+    if (!navigator.locks) throw new Error('RECOVERY_LOCKS_UNAVAILABLE: access changes cannot safely clear the recovery journal');
+    await navigator.locks.request(`recovery-catalog:${this.prefix}`, async () => {
+      const db = await this.database;
+      const keys = await new Promise<IDBValidKey[]>((resolve, reject) => {
+        const request = db.transaction('pending').objectStore('pending').getAllKeys();
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(new Error('RECOVERY_READ_FAILED', { cause: request.error }));
+      });
+      const matching = keys.filter((key): key is string => typeof key === 'string' && key.startsWith(this.prefix));
+      await new Promise<void>((resolve, reject) => {
+        const transaction = db.transaction('pending', 'readwrite', { durability: 'strict' });
+        const store = transaction.objectStore('pending');
+        for (const key of matching) store.delete(key);
+        transaction.oncomplete = () => resolve();
+        transaction.onerror = () => reject(new Error('RECOVERY_CLEAR_FAILED: access changes could not clear recovery data', { cause: transaction.error }));
+        transaction.onabort = () => reject(new Error('RECOVERY_CLEAR_ABORTED'));
+      });
+    });
+    this.pending = [];
+    this.confirmed.clear();
+  }
   release(): void {
     const unlock = () => { this.unlock?.(); this.unlock = null; this.ownership = null; };
     const previous = pendingReleases.get(this.prefix) ?? Promise.resolve();

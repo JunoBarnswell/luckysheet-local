@@ -1,6 +1,7 @@
 package com.xc.luckysheet.server.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.xc.luckysheet.server.config.CoordinationProperties;
 import com.xc.luckysheet.server.contract.OperationEnvelope;
 import com.xc.luckysheet.server.contract.OperationMutation;
@@ -118,7 +119,7 @@ class WorkbookOperationServiceTest {
         CoordinationProperties coordination = new CoordinationProperties(
                 false, false, null, "coordination", Duration.ofSeconds(1), Duration.ofSeconds(30), 10, Duration.ofSeconds(45)
         );
-        WorkbookOperationService service = new WorkbookOperationService(
+        WorkbookOperationService service = serviceWithAccess(
                 store, access, new MutationDescriptorRegistry(), mapper, audit, coordination,
                 mock(WorkbookDataBlockPublicationGuard.class)
         );
@@ -153,7 +154,7 @@ class WorkbookOperationServiceTest {
         WorkbookStore store = mock(WorkbookStore.class);
         AccessControlService access = mock(AccessControlService.class);
         AuditRecorder audit = mock(AuditRecorder.class);
-        WorkbookOperationService service = new WorkbookOperationService(
+        WorkbookOperationService service = serviceWithAccess(
                 store,
                 access,
                 new MutationDescriptorRegistry(),
@@ -192,6 +193,24 @@ class WorkbookOperationServiceTest {
         verify(store).insertOperation(captured.capture());
         assertEquals("op-2", captured.getValue().operationId());
         verify(store).updateWorkbookRevisionAndName(eq("book-1"), eq(1L), eq("Book"), any());
+    }
+
+    private WorkbookOperationService serviceWithAccess(WorkbookStore store, AccessControlService access,
+                                                        MutationDescriptorRegistry registry, ObjectMapper mapper,
+                                                        AuditRecorder audit, CoordinationProperties coordination,
+                                                        WorkbookDataBlockPublicationGuard dataBlockPublication) {
+        RangeAccessService rangeAccess = mock(RangeAccessService.class);
+        when(rangeAccess.resolver(org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.any(WorkbookAclRole.class), org.mockito.ArgumentMatchers.anyCollection()))
+                .thenAnswer(invocation -> new RangeAccessResolver(new RangeAccessIndex(List.of()), List.of(),
+                        new RangeAccessContext(invocation.getArgument(1), invocation.getArgument(2),
+                                invocation.getArgument(3), 0)));
+        AccessProjectionService accessProjection = mock(AccessProjectionService.class);
+        when(accessProjection.formulaDependenciesReadable(org.mockito.ArgumentMatchers.any(JsonNode.class),
+                org.mockito.ArgumentMatchers.any(JsonNode.class), org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.any(RangeAccessResolver.class))).thenReturn(true);
+        return new WorkbookOperationService(store, access, registry, mapper, audit, coordination,
+                dataBlockPublication, rangeAccess, accessProjection);
     }
 
     @Test

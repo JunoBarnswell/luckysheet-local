@@ -7,6 +7,10 @@
     "maxDrawingSourceCells": 100000,
     "maxChangedCells": 100000
   },
+  "rangeAccess": {
+    "levels": ["hidden", "read", "edit"],
+    "principalKinds": ["subject", "group", "everyone"]
+  },
   "errors": [
     "UNAUTHENTICATED",
     "FORBIDDEN",
@@ -20,7 +24,13 @@
     "SERVICE_UNAVAILABLE",
     "INTERNAL_ERROR",
     "STORAGE_CORRUPT",
-    "UNSUPPORTED_FEATURE"
+    "UNSUPPORTED_FEATURE",
+    "ACCESS_DENIED",
+    "ACCESS_REGION_OVERLAP",
+    "ACCESS_REGION_NOT_FOUND",
+    "ACCESS_REVISION_CHANGED",
+    "ACCESS_PRINCIPAL_INVALID",
+    "ACCESS_HIDDEN"
   ],
   "serverStructuralPlannerMutations": [
     "rows.inserted",

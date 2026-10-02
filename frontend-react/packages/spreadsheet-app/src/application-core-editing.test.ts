@@ -100,7 +100,7 @@ describe('WorkbookSession core editing integration', () => {
 
     const before = structuredClone(app['runtime'].model.snapshot());
     const historyDepth = app['runtime'].commands.getHistoryDepth();
-    app['permission'].applyServerAccess('viewer');
+    app['permission'].applyServerAccess({ unitId: 'wb-test', role: 'viewer', accessRevision: 1, regions: [] });
     app['permission'].setOnline(true);
     assert.throws(() => app.setRowsHidden([1, 2], false), /cannot perform "structure"/i);
     assert.deepEqual(app['runtime'].model.snapshot(), before);
@@ -165,7 +165,7 @@ describe('WorkbookSession core editing integration', () => {
       rangeMetadata: { columnWidths: [], validations: [], conditionalFormats: [], notes: [], comments: [], hyperlinks: [] },
     });
     const historyDepth = app['runtime'].commands.getHistoryDepth();
-    app['permission'].applyServerAccess('viewer');
+    app['permission'].applyServerAccess({ unitId: 'wb-test', role: 'viewer', accessRevision: 1, regions: [] });
     app['permission'].setOnline(true);
 
     const outcome = await app.paste();

@@ -1,5 +1,6 @@
 package com.xc.luckysheet.server.web;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.xc.luckysheet.server.contract.AclEntry;
 import com.xc.luckysheet.server.contract.AclUpdateRequest;
 import com.xc.luckysheet.server.contract.AuditRecord;
@@ -14,6 +15,9 @@ import com.xc.luckysheet.server.contract.RevisionRecord;
 import com.xc.luckysheet.server.contract.WorkbookSnapshotResponse;
 import com.xc.luckysheet.server.contract.WorkbookSummary;
 import com.xc.luckysheet.server.contract.WorkbookAccessProjection;
+import com.xc.luckysheet.server.contract.RangeAccessChangeResponse;
+import com.xc.luckysheet.server.contract.RangeAccessRegion;
+import com.xc.luckysheet.server.contract.RangeAccessRegionRequest;
 import com.xc.luckysheet.server.contract.CopyWorkbookRequest;
 import com.xc.luckysheet.server.contract.UpdateWorkbookRequest;
 import com.xc.luckysheet.server.contract.UserStateRequest;
@@ -57,6 +61,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.net.URI;
+import java.util.Iterator;
 import java.util.List;
 import java.util.HashSet;
 
@@ -117,7 +122,7 @@ public class WorkbookController {
 
     @GetMapping("/{unitId}/operations/{operationId}")
     public WorkbookOperationService.CommitResult operationResult(@PathVariable String unitId, @PathVariable String operationId, Authentication authentication) {
-        return operations.operationResult(unitId, operationId, ActorIdentity.subject(authentication));
+        return operations.operationResult(unitId, operationId, ActorIdentity.subject(authentication), ActorIdentity.groups(authentication));
     }
 
     @PatchMapping("/{unitId}")
@@ -172,6 +177,11 @@ public class WorkbookController {
 
     @GetMapping(value = "/{unitId}/native-document-artifact", produces = MediaType.APPLICATION_OCTET_STREAM_VALUE)
     public ResponseEntity<byte[]> getSourceArtifact(@PathVariable String unitId, Authentication authentication) {
+        if (operations.accessProjection(unitId, ActorIdentity.subject(authentication), ActorIdentity.groups(authentication))
+                .regions().stream().anyMatch(region -> region.access() == com.xc.luckysheet.server.contract.RangeAccessLevel.HIDDEN)) {
+            throw new com.xc.luckysheet.server.service.ServiceException("ACCESS_HIDDEN", 403,
+                    "The original native document contains data hidden from the current subject");
+        }
         WorkbookSourceArtifactEntity artifact = catalog.getArtifact(unitId, ActorIdentity.subject(authentication));
         return ResponseEntity.ok()
                 .contentType(MediaType.parseMediaType(artifact.getMimeType()))
@@ -187,12 +197,13 @@ public class WorkbookController {
 
     @GetMapping("/{unitId}/snapshot")
     public WorkbookSnapshotResponse snapshot(@PathVariable String unitId, Authentication authentication) {
-        return operations.readSnapshot(unitId, ActorIdentity.subject(authentication));
+        return operations.readSnapshot(unitId, ActorIdentity.subject(authentication), ActorIdentity.groups(authentication));
     }
 
     @PostMapping("/{unitId}/operations")
     public ResponseEntity<CommitResponse> commit(@PathVariable String unitId, @Valid @RequestBody OperationEnvelope operation, Authentication authentication) {
-        WorkbookOperationService.CommitResult result = operations.commit(unitId, operation, ActorIdentity.subject(authentication));
+        WorkbookOperationService.CommitResult result = operations.commit(unitId, operation, ActorIdentity.subject(authentication), ActorIdentity.groups(authentication));
+        if (result.accessRevision() >= 0) sessions.broadcastAccessChanged(unitId, result.accessRevision());
         sessions.broadcastRevision(result.operation());
         return ResponseEntity.status(result.committed() ? 201 : 200).body(new CommitResponse(result.operation()));
     }
@@ -211,12 +222,12 @@ public class WorkbookController {
                 throw ServiceException.validation("revision cursor is invalid");
             }
         }
-        return operations.revisions(unitId, ActorIdentity.subject(authentication), before, CursorPageRequest.limit(limit), cursor);
+        return operations.revisions(unitId, ActorIdentity.subject(authentication), before, CursorPageRequest.limit(limit), cursor, ActorIdentity.groups(authentication));
     }
 
     @GetMapping("/{unitId}/revisions/{revision}/snapshot")
     public WorkbookSnapshotResponse revisionSnapshot(@PathVariable String unitId, @PathVariable long revision, Authentication authentication) {
-        return operations.readRevision(unitId, revision, ActorIdentity.subject(authentication));
+        return operations.readRevision(unitId, revision, ActorIdentity.subject(authentication), ActorIdentity.groups(authentication));
     }
 
     @PostMapping("/{unitId}/checkpoints")
@@ -238,17 +249,51 @@ public class WorkbookController {
 
     @GetMapping("/{unitId}/access")
     public WorkbookAccessProjection access(@PathVariable String unitId, Authentication authentication) {
-        return operations.accessProjection(unitId, ActorIdentity.subject(authentication));
+        return operations.accessProjection(unitId, ActorIdentity.subject(authentication), ActorIdentity.groups(authentication));
+    }
+
+    @GetMapping("/{unitId}/access-regions")
+    public List<RangeAccessRegion> accessRegions(@PathVariable String unitId, Authentication authentication) {
+        return operations.rangeAccessRegions(unitId, ActorIdentity.subject(authentication));
+    }
+
+    @PostMapping("/{unitId}/access-regions")
+    public RangeAccessChangeResponse createAccessRegion(@PathVariable String unitId,
+                                                        @Valid @RequestBody RangeAccessRegionRequest request,
+                                                        Authentication authentication) {
+        RangeAccessChangeResponse result = operations.createRangeAccessRegion(unitId, ActorIdentity.subject(authentication), request);
+        sessions.broadcastAccessChanged(unitId, result.accessRevision());
+        return result;
+    }
+
+    @PutMapping("/{unitId}/access-regions/{regionId}")
+    public RangeAccessChangeResponse updateAccessRegion(@PathVariable String unitId, @PathVariable String regionId,
+                                                        @Valid @RequestBody RangeAccessRegionRequest request,
+                                                        Authentication authentication) {
+        RangeAccessChangeResponse result = operations.updateRangeAccessRegion(unitId, regionId, ActorIdentity.subject(authentication), request);
+        sessions.broadcastAccessChanged(unitId, result.accessRevision());
+        return result;
+    }
+
+    @DeleteMapping("/{unitId}/access-regions/{regionId}")
+    public ResponseEntity<Void> deleteAccessRegion(@PathVariable String unitId, @PathVariable String regionId,
+                                                   Authentication authentication) {
+        long revision = operations.deleteRangeAccessRegion(unitId, regionId, ActorIdentity.subject(authentication));
+        sessions.broadcastAccessChanged(unitId, revision);
+        return ResponseEntity.noContent().build();
     }
 
     @PutMapping("/{unitId}/acl/{subject}")
     public AclEntry grant(@PathVariable String unitId, @PathVariable String subject, @Valid @RequestBody AclUpdateRequest request, Authentication authentication) {
-        return operations.grantAcl(unitId, ActorIdentity.subject(authentication), subject, request.role());
+        AclEntry result = operations.grantAcl(unitId, ActorIdentity.subject(authentication), subject, request.role());
+        sessions.broadcastAccessChanged(unitId, operations.bumpAccessRevision(unitId));
+        return result;
     }
 
     @DeleteMapping("/{unitId}/acl/{subject}")
     public ResponseEntity<Void> revoke(@PathVariable String unitId, @PathVariable String subject, Authentication authentication) {
         operations.revokeAcl(unitId, ActorIdentity.subject(authentication), subject);
+        sessions.broadcastAccessChanged(unitId, operations.bumpAccessRevision(unitId));
         return ResponseEntity.noContent().build();
     }
 
@@ -318,7 +363,9 @@ public class WorkbookController {
             @Valid @RequestBody ShareCreateRequest request,
             Authentication authentication
     ) {
-        return guestShares.create(unitId, request, ActorIdentity.subject(authentication));
+        ShareResponse result = guestShares.create(unitId, request, ActorIdentity.subject(authentication));
+        sessions.broadcastAccessChanged(unitId, operations.bumpAccessRevision(unitId));
+        return result;
     }
 
     @GetMapping("/{unitId}/shares")
@@ -329,6 +376,7 @@ public class WorkbookController {
     @DeleteMapping("/{unitId}/shares/{shareId}")
     public ResponseEntity<Void> revokeShare(@PathVariable String unitId, @PathVariable java.util.UUID shareId, Authentication authentication) {
         guestShares.revoke(unitId, shareId, ActorIdentity.subject(authentication));
+        sessions.broadcastAccessChanged(unitId, operations.bumpAccessRevision(unitId));
         return ResponseEntity.noContent().build();
     }
 
@@ -352,7 +400,7 @@ public class WorkbookController {
             @PathVariable String blockId,
             Authentication authentication
     ) {
-        var block = dataBlocks.get(unitId, sourceId, blockId, ActorIdentity.subject(authentication));
+        var block = dataBlocks.get(unitId, sourceId, blockId, ActorIdentity.subject(authentication), ActorIdentity.groups(authentication));
         return ResponseEntity.ok()
                 .contentType(MediaType.APPLICATION_OCTET_STREAM)
                 .contentLength(block.byteLength())
@@ -389,13 +437,32 @@ public class WorkbookController {
 
     @GetMapping(value = "/{unitId}/assets/{assetId}", produces = MediaType.APPLICATION_OCTET_STREAM_VALUE)
     public ResponseEntity<byte[]> getAsset(@PathVariable String unitId, @PathVariable String assetId, Authentication authentication) {
-        var asset = assets.get(unitId, assetId, ActorIdentity.subject(authentication));
+        String subject = ActorIdentity.subject(authentication);
+        var safeSnapshot = operations.readSnapshot(unitId, subject, ActorIdentity.groups(authentication));
+        if (!snapshotReferencesAsset(safeSnapshot.snapshot(), assetId)) {
+            throw new ServiceException("ACCESS_HIDDEN", 403,
+                    "Asset is not referenced by the current subject-safe workbook projection");
+        }
+        var asset = assets.get(unitId, assetId, subject);
         return ResponseEntity.ok()
                 .contentType(MediaType.parseMediaType(asset.getMimeType()))
                 .contentLength(asset.getByteLength())
                 .header("X-Content-SHA256", asset.getContentHash())
                 .header(HttpHeaders.CACHE_CONTROL, "private, max-age=0")
                 .body(asset.getContent());
+    }
+
+    static boolean snapshotReferencesAsset(JsonNode node, String assetId) {
+        if (node == null || node.isNull()) return false;
+        if (node.isObject()) {
+            if ("AssetRef".equals(node.path("schema").asText())
+                    && assetId.equals(node.path("assetId").asText())) return true;
+            Iterator<JsonNode> children = node.elements();
+            while (children.hasNext()) if (snapshotReferencesAsset(children.next(), assetId)) return true;
+        } else if (node.isArray()) {
+            for (JsonNode child : node) if (snapshotReferencesAsset(child, assetId)) return true;
+        }
+        return false;
     }
 
     @DeleteMapping("/{unitId}/assets/{assetId}")

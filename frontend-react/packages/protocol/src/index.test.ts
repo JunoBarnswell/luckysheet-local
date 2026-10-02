@@ -171,6 +171,9 @@ test('committed structural patches and impact ranges survive collaboration decod
   };
   const decoded = decodeOperationMessage(JSON.stringify({
     type: 'revision.created',
+    unitId: 'unit-1',
+    operationId: 'op-structural',
+    accessRevision: 4,
     revision: 2,
     payload: {
       schema: 'OperationEnvelope',
@@ -199,22 +202,30 @@ test('committed structural patches and impact ranges survive collaboration decod
   }));
   assert.equal(decoded.type, 'revision.created');
   if (decoded.type !== 'revision.created') throw new Error('Expected a revision event');
-  assert.deepEqual(decoded.payload.mutations[0]?.structuralPatch, patch);
-  assert.deepEqual(decoded.payload.mutations[0]?.structuralImpactRanges, [
+  const decodedPayload = decoded.payload;
+  if (!decodedPayload) throw new Error('Expected a visible revision payload');
+  assert.deepEqual(decodedPayload.mutations[0]?.structuralPatch, patch);
+  assert.deepEqual(decodedPayload.mutations[0]?.structuralImpactRanges, [
     impactRange, rangeOwnerBefore, rangeOwnerAfter, validationSourceRange, validationOwnerBefore, validationOwnerAfter,
     ruleRangeBefore, ruleRangeAfter,
   ]);
   assert.throws(() => decodeOperationMessage(JSON.stringify({
     type: 'revision.created',
+    unitId: 'unit-1',
+    operationId: 'op-structural',
+    accessRevision: 4,
     revision: 3,
-    payload: decoded.payload,
-  })), /revision must match payload revision/);
+    payload: decodedPayload,
+  })), /identity must match payload/);
   assert.throws(() => decodeOperationMessage(JSON.stringify({
     type: 'revision.created',
+    unitId: 'unit-1',
+    operationId: 'op-structural',
+    accessRevision: 4,
     revision: 2,
     payload: {
-      ...decoded.payload,
-      mutations: [{ ...decoded.payload.mutations[0]!, structuralPatch: undefined, structuralImpactRanges: [] }],
+      ...decodedPayload,
+      mutations: [{ ...decodedPayload.mutations[0]!, structuralPatch: undefined, structuralImpactRanges: [] }],
     },
   })), /requires a server-derived StructuralPatch/);
 });
@@ -303,7 +314,7 @@ test('StructuralPatch v9 validates exact range-owner facts and rejects incomplet
       beforeOwnerRanges: [validationOwnerRange], afterOwnerRanges: [validationOwnerRange],
     }],
   }, 'rows.inserted'), /owner state is unchanged/);
-  assert.throws(() => validateStructuralPatch({ ...patch, rangeOwnerDeltas: [{ ...table, unexpected: true }] }, 'rows.inserted'), /Unexpected fields/);
+  assert.throws(() => validateStructuralPatch({ ...patch, rangeOwnerDeltas: [{ ...table, unexpected: true }] }, 'rows.inserted'), /contains unsupported field/);
 });
 
 test('StructuralPatch v9 carries formula-rule range-only changes and rejects empty deltas', () => {
@@ -464,7 +475,7 @@ test('Sheet Table rename patches accept every canonical formula-object owner and
   assert.throws(() => validateStructuralPatch({
     ...patch,
     formulaOwnerDeltas: [{ ...formulaOwnerDeltas[3], sheetId: 'sheet-1' }],
-  }, 'sheetTable.update'), /Unexpected fields/);
+  }, 'sheetTable.update'), /contains unsupported field/);
   assert.throws(() => validateStructuralPatch({ ...patch, version: 2 }, 'sheetTable.update'));
 });
 
@@ -504,7 +515,7 @@ test('defined-name structural patches reject identity drift, duplicate owners, a
   assert.throws(() => validateStructuralPatch({
     ...patch,
     definedNameOwnerDeltas: [{ ...workbookName, owner: { ...workbookName.owner, extra: true } }],
-  }, 'rows.inserted'), /Unexpected fields/);
+  }, 'rows.inserted'), /contains unsupported field/);
 });
 
 test('collaboration messages reject actor-bearing presence and legacy changesets', () => {
@@ -641,12 +652,12 @@ test('WorkbookApiClient keeps server query block lifecycle explicit and bounded'
 test('WorkbookApiClient accepts access roles only from the server projection', async () => {
   const api = new WorkbookApiClient({
     authTokenProvider: () => 'server-token',
-    fetchImpl: async () => new Response(JSON.stringify({ unitId: 'unit-access', role: 'editor' }), {
+    fetchImpl: async () => new Response(JSON.stringify({ unitId: 'unit-access', role: 'editor', accessRevision: 0, regions: [] }), {
       status: 200,
       headers: { 'content-type': 'application/json' },
     }),
   });
-  assert.deepEqual(await api.getAccess('unit-access'), { unitId: 'unit-access', role: 'editor' });
+  assert.deepEqual(await api.getAccess('unit-access'), { unitId: 'unit-access', role: 'editor', accessRevision: 0, regions: [] });
 
   const malformed = new WorkbookApiClient({
     authTokenProvider: () => 'server-token',

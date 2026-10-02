@@ -103,7 +103,7 @@ describe('WorkbookSession data tools integration', () => {
       headerRow: 0,
       revision: 0,
     });
-    viewer['permission'].applyServerAccess('viewer');
+    viewer['permission'].applyServerAccess({ unitId: 'wb-test', role: 'viewer', accessRevision: 1, regions: [] });
     viewer['permission'].setOnline(true);
     let viewerMaterializationCalls = 0;
     viewer['materializeDataRegions'] = async () => { viewerMaterializationCalls += 1; };
@@ -154,7 +154,7 @@ describe('WorkbookSession data tools integration', () => {
       headerRow: 0,
       revision: 0,
     });
-    app['permission'].applyServerAccess('viewer');
+    app['permission'].applyServerAccess({ unitId: 'wb-test', role: 'viewer', accessRevision: 1, regions: [] });
     app['permission'].setOnline(true);
     selectRange(app, 0, 0, 1, 1);
     let materializationCalls = 0;
@@ -176,7 +176,7 @@ describe('WorkbookSession data tools integration', () => {
       headerRow: 0,
       revision: 0,
     });
-    app['permission'].applyServerAccess('viewer');
+    app['permission'].applyServerAccess({ unitId: 'wb-test', role: 'viewer', accessRevision: 1, regions: [] });
     app['permission'].setOnline(true);
     let materializationCalls = 0;
     app['materializeDataRegions'] = async () => { materializationCalls += 1; };

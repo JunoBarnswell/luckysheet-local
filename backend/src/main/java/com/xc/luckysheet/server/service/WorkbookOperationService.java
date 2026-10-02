@@ -15,6 +15,9 @@ import com.xc.luckysheet.server.contract.OperationIntent;
 import com.xc.luckysheet.server.contract.OperationMutation;
 import com.xc.luckysheet.server.contract.OperationOrigin;
 import com.xc.luckysheet.server.contract.RangeRef;
+import com.xc.luckysheet.server.contract.RangeAccessChangeResponse;
+import com.xc.luckysheet.server.contract.RangeAccessRegion;
+import com.xc.luckysheet.server.contract.RangeAccessRegionRequest;
 import com.xc.luckysheet.server.contract.RestoreRequest;
 import com.xc.luckysheet.server.contract.RevisionRecord;
 import com.xc.luckysheet.server.contract.StructuralPatch;
@@ -32,6 +35,7 @@ import com.xc.luckysheet.server.store.OutboxRow;
 import com.xc.luckysheet.server.store.WorkbookRow;
 import com.xc.luckysheet.server.store.WorkbookStore;
 import org.springframework.stereotype.Service;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.nio.charset.StandardCharsets;
@@ -56,6 +60,8 @@ public class WorkbookOperationService {
     private final AuditRecorder auditRecorder;
     private final CoordinationProperties coordination;
     private final WorkbookDataBlockPublicationGuard dataBlockPublication;
+    private final RangeAccessService rangeAccess;
+    private final AccessProjectionService accessProjection;
     /**
      * H2 runs the browser service as one JVM.  Keep commit, checkpoint and
      * restore writes for one workbook in one local critical section so a
@@ -64,6 +70,7 @@ public class WorkbookOperationService {
      */
     private final ConcurrentHashMap<String, Object> workbookLocks = new ConcurrentHashMap<>();
 
+    @Autowired
     public WorkbookOperationService(
             WorkbookStore store,
             AccessControlService access,
@@ -71,7 +78,9 @@ public class WorkbookOperationService {
             ObjectMapper mapper,
             AuditRecorder auditRecorder,
             CoordinationProperties coordination,
-            WorkbookDataBlockPublicationGuard dataBlockPublication
+            WorkbookDataBlockPublicationGuard dataBlockPublication,
+            RangeAccessService rangeAccess,
+            AccessProjectionService accessProjection
     ) {
         this.store = store;
         this.access = access;
@@ -80,30 +89,52 @@ public class WorkbookOperationService {
         this.auditRecorder = auditRecorder;
         this.coordination = coordination;
         this.dataBlockPublication = dataBlockPublication;
+        this.rangeAccess = rangeAccess;
+        this.accessProjection = accessProjection;
     }
 
     public CommitResult operationResult(String unitId, String operationId, String actor) {
+        return operationResult(unitId, operationId, actor, List.of());
+    }
+
+    public CommitResult operationResult(String unitId, String operationId, String actor, List<String> groups) {
         access.require(unitId, actor, WorkbookAclRole.VIEWER);
         OperationRow row = store.findOperation(operationId).orElseThrow(() -> ServiceException.notFound("Operation not committed"));
         if (!row.unitId().equals(unitId) || !row.actorSubject().equals(actor)) throw ServiceException.forbidden("Operation belongs to another subject");
-        return new CommitResult(readCommittedHistoryRow(row), false);
+        CommittedOperationEnvelope operation = readCommittedHistoryRow(row);
+        RangeAccessResolver resolver = rangeAccess.resolver(unitId, actor, groups);
+        if (!accessProjection.canDeliver(operation, resolver)) {
+            throw new ServiceException("ACCESS_REVISION_CHANGED", 409, "Access changed after this operation was committed; reload the subject-safe workbook before reconciling it");
+        }
+        return new CommitResult(operation, false);
     }
 
     public WorkbookSnapshotResponse readSnapshot(String unitId, String actor) {
-        access.require(unitId, actor, WorkbookAclRole.VIEWER);
+        return readSnapshot(unitId, actor, List.of());
+    }
+
+    public WorkbookSnapshotResponse readSnapshot(String unitId, String actor, List<String> groups) {
+        WorkbookAclRole role = access.require(unitId, actor, WorkbookAclRole.VIEWER);
         WorkbookRow row = requireWorkbook(unitId);
         JsonNode snapshot = currentSnapshot(row);
         if (snapshot.isObject()) ((ObjectNode) snapshot).put("name", row.name());
+        var resolver = rangeAccess.resolver(unitId, actor, role, groups);
+        snapshot = accessProjection.projectSnapshot(snapshot, resolver);
         String json = writeJson(snapshot);
         return response(unitId, snapshot, row.revision(), checksum(json));
     }
 
     @Transactional
     public CommitResult commit(String routeUnitId, OperationEnvelope operation, String actor) {
+        return commit(routeUnitId, operation, actor, List.of());
+    }
+
+    @Transactional
+    public CommitResult commit(String routeUnitId, OperationEnvelope operation, String actor, List<String> groups) {
         synchronized (workbookLock(routeUnitId)) {
             try {
                 if (operation == null) throw ServiceException.validation("Operation is required");
-                return commitInternal(routeUnitId, operation, actor);
+                return commitInternal(routeUnitId, operation, actor, groups == null ? List.of() : groups);
             } catch (ServiceException error) {
                 auditRecorder.rejected(operation == null ? null : operation.operationId(), routeUnitId, actor, "OPERATION_COMMIT", error.getMessage());
                 throw error;
@@ -111,12 +142,11 @@ public class WorkbookOperationService {
         }
     }
 
-    private CommitResult commitInternal(String routeUnitId, OperationEnvelope operation, String actor) {
+    private CommitResult commitInternal(String routeUnitId, OperationEnvelope operation, String actor, List<String> groups) {
         if (!routeUnitId.equals(operation.unitId())) throw ServiceException.validation("Operation unitId does not match route");
         WorkbookAclRole actorRole = access.require(routeUnitId, actor, WorkbookAclRole.VIEWER);
         WorkbookRow row = store.findForUpdate(routeUnitId).orElseThrow(() -> ServiceException.notFound("Workbook not found: " + routeUnitId));
         if (row.lifecycle() != WorkbookLifecycle.ACTIVE) throw ServiceException.trashed("Workbook is in trash and cannot accept operations");
-
         OperationRow existing = store.findOperation(operation.operationId()).orElse(null);
         if (existing != null) {
             if (!existing.actorSubject().equals(actor) || !existing.unitId().equals(routeUnitId)) {
@@ -151,8 +181,23 @@ public class WorkbookOperationService {
 
         JsonNode next = currentSnapshot(row);
         List<CommittedOperationMutation> committedMutations = new ArrayList<>();
+        long changedAccessRevision = -1;
         for (OperationMutation mutation : operation.mutations()) {
-            MutationPreparation prepared = registry.prepare(next, mutation, actorRole);
+            RangeAccessResolver accessResolver = rangeAccess.resolver(routeUnitId, actor, actorRole, groups);
+            JsonNode authorizationSnapshot = next;
+            MutationPreparation prepared = registry.prepare(authorizationSnapshot, mutation, actorRole, ranges -> {
+                if (!accessProjection.formulaDependenciesReadable(authorizationSnapshot, mutation.params(), mutation.sheetId(), accessResolver)) {
+                    throw new ServiceException("ACCESS_HIDDEN", 403,
+                            "Mutation formula depends on data the current subject cannot view");
+                }
+                if (mutation.id().startsWith("comment.") || mutation.id().startsWith("note.")) {
+                    accessResolver.requireCanRead(ranges);
+                } else if ("sheet.duplicated".equals(mutation.id())) {
+                    accessResolver.requireCanRead(ranges);
+                } else {
+                    accessResolver.requireCanEdit(ranges);
+                }
+            });
             boolean ownedSnapshotCommit = registry.usesOwnedSnapshotCommit(prepared, actorRole);
             JsonNode protectionPreimage = ownedSnapshotCommit
                     ? registry.captureProtectionPreimageForOwnedCommit(next, prepared, actorRole)
@@ -176,6 +221,8 @@ public class WorkbookOperationService {
             } else {
                 dataBlockPublication.requireNewReferences(routeUnitId, next, candidate);
             }
+            Long nextAccessRevision = rangeAccess.applyStructuralMutation(routeUnitId, mutation, candidate);
+            if (nextAccessRevision != null) changedAccessRevision = nextAccessRevision;
             next = candidate;
             committedMutations.add(CommittedOperationMutation.from(mutation, committedRanges, structuralImpactRanges, committedPatch));
         }
@@ -216,7 +263,7 @@ public class WorkbookOperationService {
             store.insertCheckpoint(routeUnitId, nextRevision, nextJson, checksum(nextJson), committedAt);
         }
         audit(operation.operationId(), routeUnitId, actor, "OPERATION_COMMIT", "ACCEPTED", null, mapper.createObjectNode().put("revision", nextRevision));
-        return new CommitResult(committed, true);
+        return new CommitResult(committed, true, changedAccessRevision);
     }
 
     private UndoContext validateIntent(String unitId, OperationEnvelope operation, String actor, WorkbookRow row) {
@@ -465,17 +512,30 @@ public class WorkbookOperationService {
     }
 
     public CursorPage<RevisionRecord> revisions(String unitId, String actor, long beforeRevision, int limit, String nextCursor) {
-        access.require(unitId, actor, WorkbookAclRole.VIEWER);
-        List<RevisionRecord> items = store.listOperationsBefore(unitId, beforeRevision, limit).stream().map(this::revisionRecord).toList();
+        return revisions(unitId, actor, beforeRevision, limit, nextCursor, List.of());
+    }
+
+    public CursorPage<RevisionRecord> revisions(String unitId, String actor, long beforeRevision, int limit, String nextCursor, List<String> groups) {
+        WorkbookAclRole role = access.require(unitId, actor, WorkbookAclRole.VIEWER);
+        RangeAccessResolver resolver = rangeAccess.resolver(unitId, actor, role, groups);
+        long accessRevision = resolver.accessRevision();
+        List<RevisionRecord> items = store.listOperationsBefore(unitId, beforeRevision, limit).stream()
+                .map(row -> revisionRecord(row, resolver, accessRevision)).toList();
         String next = items.size() == limit ? Long.toString(items.get(items.size() - 1).revision()) : null;
         return new CursorPage<>(items, next);
     }
 
     public WorkbookSnapshotResponse readRevision(String unitId, long revision, String actor) {
-        access.require(unitId, actor, WorkbookAclRole.VIEWER);
+        return readRevision(unitId, revision, actor, List.of());
+    }
+
+    public WorkbookSnapshotResponse readRevision(String unitId, long revision, String actor, List<String> groups) {
+        WorkbookAclRole role = access.require(unitId, actor, WorkbookAclRole.VIEWER);
         WorkbookRow current = requireWorkbook(unitId);
         if (revision < 0 || revision > current.revision()) throw ServiceException.notFound("Revision not found: " + revision);
         JsonNode snapshot = snapshotAtRevision(current, revision);
+        var resolver = rangeAccess.resolver(unitId, actor, role, groups);
+        snapshot = accessProjection.projectSnapshot(snapshot, resolver);
         String json = writeJson(snapshot);
         return response(unitId, snapshot, revision, checksum(json));
     }
@@ -547,7 +607,28 @@ public class WorkbookOperationService {
 
     /** Read-only projection; it never accepts a browser-declared actor or role. */
     public WorkbookAccessProjection accessProjection(String unitId, String actor) {
-        return new WorkbookAccessProjection(unitId, access.currentRole(unitId, actor));
+        return accessProjection(unitId, actor, List.of());
+    }
+
+    public WorkbookAccessProjection accessProjection(String unitId, String actor, List<String> groups) {
+        return rangeAccess.projection(unitId, actor, groups);
+    }
+
+    public List<RangeAccessRegion> rangeAccessRegions(String unitId, String actor) {
+        return rangeAccess.list(unitId, actor);
+    }
+
+    public RangeAccessChangeResponse createRangeAccessRegion(String unitId, String actor, RangeAccessRegionRequest request) {
+        return rangeAccess.create(unitId, actor, request);
+    }
+
+    public RangeAccessChangeResponse updateRangeAccessRegion(String unitId, String regionId, String actor,
+                                                             RangeAccessRegionRequest request) {
+        return rangeAccess.update(unitId, regionId, actor, request);
+    }
+
+    public long deleteRangeAccessRegion(String unitId, String regionId, String actor) {
+        return rangeAccess.delete(unitId, regionId, actor);
     }
 
     public AclEntry grantAcl(String unitId, String actor, String target, WorkbookAclRole role) {
@@ -556,6 +637,10 @@ public class WorkbookOperationService {
 
     public void revokeAcl(String unitId, String actor, String target) {
         access.revoke(unitId, actor, target);
+    }
+
+    public long bumpAccessRevision(String unitId) {
+        return rangeAccess.bumpAccessRevision(unitId);
     }
 
     public List<AuditRecord> audit(String unitId, String actor, int limit) {
@@ -577,9 +662,12 @@ public class WorkbookOperationService {
         return mutations;
     }
 
-    private RevisionRecord revisionRecord(OperationRow row) {
+    private RevisionRecord revisionRecord(OperationRow row, RangeAccessResolver resolver, long accessRevision) {
         CommittedOperationEnvelope operation = readCommittedHistoryRow(row);
-        return new RevisionRecord(row.operationId(), row.revision(), row.committedAt(), operation);
+        if (resolver != null && accessProjection != null && !accessProjection.canDeliver(operation, resolver)) {
+            return new RevisionRecord(row.operationId(), row.revision(), row.committedAt(), row.actorSubject(), accessRevision, null, true);
+        }
+        return new RevisionRecord(row.operationId(), row.revision(), row.committedAt(), row.actorSubject(), accessRevision, operation, false);
     }
 
     private CommittedOperationEnvelope readCommitted(OperationRow row) {
@@ -748,7 +836,10 @@ public class WorkbookOperationService {
         }
     }
 
-    public record CommitResult(CommittedOperationEnvelope operation, boolean committed) {
+    public record CommitResult(CommittedOperationEnvelope operation, boolean committed, long accessRevision) {
+        public CommitResult(CommittedOperationEnvelope operation, boolean committed) {
+            this(operation, committed, -1);
+        }
     }
 
     public record RestoreResult(CommittedOperationEnvelope operation, WorkbookSnapshotResponse snapshot) {

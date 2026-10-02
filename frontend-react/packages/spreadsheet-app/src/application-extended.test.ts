@@ -33,7 +33,7 @@ describe('WorkbookSession extended integration', () => {
 
   it('blocks goal seek for viewers', () => {
     const app = new WorkbookSession();
-    app['permission'].applyServerAccess('viewer');
+    app['permission'].applyServerAccess({ unitId: 'wb-test', role: 'viewer', accessRevision: 1, regions: [] });
     app['permission'].setOnline(true);
     const result = app.runGoalSeek({
       setCell: { row: 0, column: 0 },
