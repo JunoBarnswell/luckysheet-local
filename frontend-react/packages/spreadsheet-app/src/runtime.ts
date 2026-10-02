@@ -1649,7 +1649,8 @@ export function startCollaborationSession(
       void (async () => {
         const [snapshot, access] = await Promise.all([runtime.api.getSnapshot(runtime.model.unitId), runtime.api.getAccess(runtime.model.unitId)]);
         if (!active || runtime.disposed) return;
-        if ((runtime.workspaceRecord?.metadata.accessRevision ?? -1) !== access.accessRevision
+        if ((!runtime.workspaceRecord && !runtime.accessProjection)
+          || (runtime.workspaceRecord && runtime.workspaceRecord.metadata.accessRevision !== access.accessRevision)
           || (runtime.accessProjection && runtime.accessProjection.accessRevision !== access.accessRevision)) {
           await purgeSubjectWorkbookState(runtime);
           if (!active || runtime.disposed) return;
