@@ -1,6 +1,23 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { FormulaEngine, formatFormula, parseFormula, renameAstSheetReferences, mapAstStructuralReferences, mapAstMovedReferences, collectNameReferences, isFormulaError } from './index';
+import { FormulaEngine, formatFormula, parseFormula, renameAstSheetReferences, mapAstStructuralReferences, mapAstMovedReferences, collectNameReferences, isFormulaError, STANDARD_FORMULA_ERRORS } from './index';
+
+test('permission-projected and authored error constants keep their identity through Worker calculation', () => {
+  const engine = new FormulaEngine();
+  for (const code of STANDARD_FORMULA_ERRORS) {
+    const ast = parseFormula(`=${code}`);
+    assert.equal(formatFormula(ast), `=${code}`);
+    assert.equal((engine.setFormula('A1', `=${code}`).value as { code: string }).code, code);
+  }
+  engine.setFormula('A1', '=#BLOCKED!');
+  assert.equal((engine.setFormula('B1', '=SUM(A1)').value as { code: string }).code, '#BLOCKED!');
+  assert.equal(engine.setFormula('B2', '=IFERROR(A1,0)').value, 0);
+  const worker = FormulaEngine.fromCalculationSnapshot(structuredClone(engine.exportCalculationSnapshot()));
+  worker.recalculate();
+  assert.equal((worker.getCellValue('A1') as { code: string }).code, '#BLOCKED!');
+  assert.equal((worker.getCellValue('B1') as { code: string }).code, '#BLOCKED!');
+  assert.equal((engine.setFormula('A2', '=#UNKNOWN!').value as { code: string }).code, '#PARSE!');
+});
 
 test('qualified ranges retain one worksheet owner across structural changes', () => {
   const identity = { ownerSheetId: 'summary', targetSheetId: 'source', targetSheetName: 'Source', sheetOrder: [{ id: 'source', name: 'Source' }, { id: 'summary', name: 'Summary' }] };

@@ -1,3 +1,5 @@
+import type { FormulaErrorCode } from './values';
+
 export interface SourceSpan {
   readonly start: number;
   readonly end: number;
@@ -35,6 +37,14 @@ export interface StringLiteralNode {
 export interface BooleanLiteralNode {
   readonly type: 'boolean-literal';
   readonly value: boolean;
+  readonly span: SourceSpan;
+  readonly parenthesized?: boolean;
+}
+
+/** Authored or permission-projected error, distinct from deleted geometry. */
+export interface ErrorLiteralNode {
+  readonly type: 'error-literal';
+  readonly code: Exclude<FormulaErrorCode, '#REF!'>;
   readonly span: SourceSpan;
   readonly parenthesized?: boolean;
 }
@@ -216,6 +226,7 @@ export interface TableReferenceNode {
 }
 
 export type FormulaAst =
+  | ErrorLiteralNode
   | NumberLiteralNode
   | StringLiteralNode
   | BooleanLiteralNode

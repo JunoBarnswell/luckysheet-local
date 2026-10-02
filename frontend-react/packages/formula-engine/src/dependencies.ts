@@ -51,6 +51,7 @@ export function collectFormulaReferenceNodes(ast: FormulaAst): readonly FormulaR
         if (node.callee) visitNode(node.callee);
         for (const argument of node.arguments) visitNode(argument);
         return;
+      case 'error-literal':
       case 'number-literal':
       case 'string-literal':
       case 'boolean-literal':
@@ -169,6 +170,7 @@ function visit(
       addDependency(dependency, dependencies, seen);
       return;
     }
+    case 'error-literal':
     case 'number-literal':
     case 'string-literal':
     case 'boolean-literal':

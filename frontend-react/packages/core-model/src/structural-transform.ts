@@ -1949,7 +1949,8 @@ function sameStructuralFormulaAst(left: FormulaAst, right: FormulaAst): boolean 
         && left.reference.absoluteRow === reference.absoluteRow
         && left.reference.absoluteColumn === reference.absoluteColumn;
     }
-    case 'invalid-reference': return left.code === (right as typeof left).code;
+    case 'invalid-reference':
+    case 'error-literal': return left.code === (right as typeof left).code;
     case 'range-reference': {
       const other = right as typeof left;
       return sameStructuralFormulaAst(left.start, other.start) && sameStructuralFormulaAst(left.end, other.end);

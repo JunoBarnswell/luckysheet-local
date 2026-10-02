@@ -96,6 +96,7 @@ function formatNode(node: FormulaAst, parentPrecedence = 0): string {
       break;
     }
     case 'invalid-reference':
+    case 'error-literal':
       content = node.code;
       break;
     case 'range-reference':

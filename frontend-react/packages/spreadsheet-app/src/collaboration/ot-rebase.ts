@@ -523,6 +523,7 @@ function hasUnqualifiedFormulaReference(node: FormulaAst): boolean {
     case 'name-reference':
     case 'table-reference':
     case 'invalid-reference':
+    case 'error-literal':
     case 'sheet-range-reference':
     case 'external-reference':
       return false;

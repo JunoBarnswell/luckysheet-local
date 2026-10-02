@@ -157,6 +157,9 @@ function evaluateNode(node: FormulaAst, context: FormulaEvaluationContext, trace
     case 'invalid-reference':
       result = createFormulaError('#REF!', 'Reference was deleted by a structural mutation');
       break;
+    case 'error-literal':
+      result = createFormulaError(node.code, `Formula contains ${node.code}`, node.span.start);
+      break;
     case 'cell-reference': {
       const address = resolveCellReference(node.reference, context.currentCell, context.sheetOrder);
       result = { kind: 'range', range: { kind: 'range', start: address, end: address } };

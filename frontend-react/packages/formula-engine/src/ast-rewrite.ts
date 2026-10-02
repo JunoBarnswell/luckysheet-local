@@ -396,6 +396,7 @@ export function mapAstStructuralReferences(
     parenthesized: 'parenthesized' in node ? node.parenthesized : undefined,
   });
   switch (node.type) {
+    case 'error-literal':
     case 'number-literal':
     case 'string-literal':
     case 'boolean-literal':
@@ -536,6 +537,7 @@ export function mapAstMovedReferences(node: FormulaAst, context: MoveRangeRefere
     }
   };
   switch (node.type) {
+    case 'error-literal':
     case 'number-literal':
     case 'string-literal':
     case 'boolean-literal':
@@ -612,6 +614,7 @@ export type FormulaReferenceMapper = (reference: ParsedCellReference) => ParsedC
  */
 export function mapAstReferences(node: FormulaAst, mapper: FormulaReferenceMapper): FormulaAst {
   switch (node.type) {
+    case 'error-literal':
     case 'number-literal':
     case 'string-literal':
     case 'boolean-literal':
@@ -757,6 +760,7 @@ export function offsetWholeAxisReferences(node: FormulaAst, rowOffset: number, c
       };
     case 'function-call':
       return { ...node, ...(node.callee ? { callee: offsetWholeAxisReferences(node.callee, rowOffset, columnOffset) } : {}), arguments: node.arguments.map((argument) => offsetWholeAxisReferences(argument, rowOffset, columnOffset)) };
+    case 'error-literal':
     case 'number-literal':
     case 'string-literal':
     case 'boolean-literal':

@@ -24,6 +24,7 @@ import type {
 } from './ast';
 import { columnNameToIndex, tryParseCellReferenceText } from './address';
 import { FormulaSyntaxError } from './errors';
+import type { FormulaErrorCode } from './values';
 import { lexFormula, type Token, type TokenKind } from './lexer';
 import { MAX_COLUMN_INDEX, MAX_ROW_INDEX } from './reference-transform-domain';
 
@@ -203,6 +204,10 @@ class Parser {
     if (token.kind === 'error-reference') {
       this.advance();
       return { type: 'invalid-reference', code: '#REF!', span: token.span };
+    }
+    if (token.kind === 'error-literal') {
+      this.advance();
+      return { type: 'error-literal', code: token.lexeme as Exclude<FormulaErrorCode, '#REF!'>, span: token.span };
     }
 
     if (token.kind === 'string' && !this.checkNext('bang') && !this.isSheetRangeQualifier(token)) {

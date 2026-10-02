@@ -32,6 +32,10 @@ consume occupied input/spill values without allocating blank coordinates.
 Both modes use the same cell evaluator and permission-projected inputs. Sparse
 reading is an index over canonical inputs, not another value store. Explicit
 cell overrides and spill projections must participate in sparse reads.
+Authored and permission-projected error constants are AST literals. In
+particular, Java's `=#BLOCKED!` projection must evaluate and render as
+`#BLOCKED!`, rather than losing its permission identity as a parse failure.
+Deleted geometry remains the distinct `invalid-reference` AST node.
 
 LET and LAMBDA belong to the existing AST/evaluator. Local bindings form a
 lexical environment; named functions use the existing defined-name owner and
