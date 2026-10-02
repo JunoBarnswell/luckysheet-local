@@ -17,6 +17,7 @@ interface SheetProjectionRevision {
 }
 
 interface CachedSheetProjection {
+  readonly formula: SpreadsheetRuntime['formula'];
   revision: string;
   snapshot: CanvasSheetSnapshot;
 }
@@ -133,6 +134,16 @@ export class ProjectionRuntime {
     const revision = this.sheetProjectionRevisions.get(sheetId) ?? createSheetProjectionRevision();
     for (const domain of domains) revision[domain] += 1;
     this.sheetProjectionRevisions.set(sheetId, revision);
+    // A TableSheet reads cells and calculations from its canonical source worksheet.
+    if (domains.some(domain => domain === 'content' || domain === 'formulaResults' || domain === 'structure')) {
+      for (const view of this.runtime.model.getSheets()) {
+        const table = view.tableSheet && this.runtime.model.dataModel.tables.get(view.tableSheet.viewId);
+        if (view.id === sheetId || table?.sourceRange?.sheetId !== sheetId) continue;
+        const dependent = this.sheetProjectionRevisions.get(view.id) ?? createSheetProjectionRevision();
+        for (const domain of domains) dependent[domain] += 1;
+        this.sheetProjectionRevisions.set(view.id, dependent);
+      }
+    }
   }
 
   invalidateProjectionMutations(mutations: readonly MutationInfo[]): void {
@@ -303,7 +314,7 @@ export class ProjectionRuntime {
   getCanvasProjection(sheet: WorksheetModel): CanvasSheetSnapshot {
     const cached = this.sheetProjectionCache.get(sheet.id);
     const revision = this.projectionRevisionForSheet(sheet.id);
-    if (cached?.revision === revision) {
+    if (cached?.revision === revision && cached.formula === this.runtime.formula) {
       this.touchSheetProjection(sheet.id);
       return cached.snapshot;
     }
@@ -319,7 +330,7 @@ export class ProjectionRuntime {
       this.runtime.pivotErrors,
       referenceDate ? { referenceDate } : undefined,
     );
-    this.sheetProjectionCache.set(sheet.id, { revision, snapshot });
+    this.sheetProjectionCache.set(sheet.id, { revision, snapshot, formula: this.runtime.formula });
     this.touchSheetProjection(sheet.id);
     return snapshot;
   }
@@ -330,6 +341,7 @@ export class ProjectionRuntime {
     const addRange = (range: RangeRef | undefined): void => {
       if (range && this.runtime.model.sheets.has(range.sheetId)) ids.add(range.sheetId);
     };
+    if (activeSheet.tableSheet) addRange(this.runtime.model.dataModel.tables.get(activeSheet.tableSheet.viewId)?.sourceRange);
     for (const sparkline of activeSheet.sparklines) addRange(sparkline.sourceRange);
     for (const payload of activeSheet.drawingPayloads.values()) {
       switch (payload.kind) {

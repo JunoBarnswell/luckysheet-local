@@ -327,17 +327,22 @@ export class FormulaEngine {
   private readonly blockedRanges: NonNullable<FormulaEngineOptions['blockedRanges']>;
   private recordFormulaOwners = new Map<string, { tableId: string; recordId: string; fieldId: string; address: CellAddress }>();
 
+  private recordFieldOwners = new Map<string, CellAddress>();
+
   setRecordFormulaOwners(owners: readonly { tableId: string; recordId: string; fieldId: string; address: CellAddress }[]): void {
     const next = new Map(owners.map(owner => [cellAddressKey(owner.address), structuredClone(owner)]));
+    const fields = new Map(owners.map(owner => [JSON.stringify([owner.tableId, owner.recordId, owner.fieldId]), owner.address]));
+    if (fields.size !== owners.length || next.size !== owners.length) throw new Error('RECORD_CALCULATION_OWNER_CONFLICT');
     if (JSON.stringify([...next]) === JSON.stringify([...this.recordFormulaOwners])) return;
     this.recordFormulaOwners = next;
+    this.recordFieldOwners = fields;
     this.calculationContextGeneration += 1;
   }
   getRecordFormulaOwners(): readonly { tableId: string; recordId: string; fieldId: string; address: CellAddress }[] { return [...this.recordFormulaOwners.values()]; }
   getRecordFormulaOwnerAt(address: CellAddress): Readonly<{ tableId: string; recordId: string; fieldId: string; address: CellAddress }> | undefined { return this.recordFormulaOwners.get(cellAddressKey(address)); }
   getRecordFieldResult(tableId: string, recordId: string, fieldId: string): FormulaResult | undefined {
-    const owner = [...this.recordFormulaOwners.values()].find(owner => owner.tableId === tableId && owner.recordId === recordId && owner.fieldId === fieldId);
-    return owner ? this.getCellResult(owner.address) : undefined;
+    const address = this.recordFieldOwners.get(JSON.stringify([tableId, recordId, fieldId]));
+    return address ? this.getCellResult(address) : undefined;
   }
 
   private formulaCount = 0;

@@ -510,7 +510,12 @@ public abstract class StructuralPatchV2Migration extends BaseJavaMigration {
     private void canonicalizeRestoreSnapshots(ObjectNode envelope, String unitId, long revision) {
         ArrayNode mutations = (ArrayNode) envelope.get("mutations");
         for (JsonNode rawMutation : mutations) {
-            if (!(rawMutation instanceof ObjectNode mutation) || !"workbook.restore".equals(mutation.path("id").asText())) continue;
+            if (!(rawMutation instanceof ObjectNode mutation)) continue;
+            if ("sheet.restore".equals(mutation.path("id").asText())) {
+                if (mutation.path("params").path("sheet") instanceof ObjectNode sheet) SnapshotUpgrade.migrateStoredWorksheetDefaults(sheet);
+                continue;
+            }
+            if (!"workbook.restore".equals(mutation.path("id").asText())) continue;
             JsonNode rawParams = mutation.get("params");
             if (!(rawParams instanceof ObjectNode params) || !(params.get("snapshot") instanceof ObjectNode snapshot)) {
                 throw failure("RESTORE_SNAPSHOT_INVALID", unitId, "restore snapshot is invalid at revision " + revision);
@@ -528,7 +533,12 @@ public abstract class StructuralPatchV2Migration extends BaseJavaMigration {
         canonicalizeRestoreSnapshots(envelope, unitId, revision);
         ArrayNode mutations = (ArrayNode) envelope.get("mutations");
         for (JsonNode rawMutation : mutations) {
-            if (!(rawMutation instanceof ObjectNode mutation) || !"workbook.restore".equals(mutation.path("id").asText())) continue;
+            if (!(rawMutation instanceof ObjectNode mutation)) continue;
+            if ("sheet.restore".equals(mutation.path("id").asText())) {
+                if (mutation.path("params").path("sheet") instanceof ObjectNode sheet) SnapshotUpgrade.migrateStoredWorksheetDefaults(sheet);
+                continue;
+            }
+            if (!"workbook.restore".equals(mutation.path("id").asText())) continue;
             JsonNode rawParams = mutation.get("params");
             if (!(rawParams instanceof ObjectNode params)) {
                 throw failure("RESTORE_SNAPSHOT_INVALID", unitId, "restore parameters are invalid at revision " + revision);

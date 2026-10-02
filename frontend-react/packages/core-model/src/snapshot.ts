@@ -76,6 +76,10 @@ export function migrateStoredWorkbookSnapshot(value: unknown): WorkbookSnapshot 
   }
   if (input.version === WORKBOOK_SNAPSHOT_SCHEMA_REVISION) return assertCanonicalWorkbookSnapshot(input as WorkbookSnapshot);
   if (input.dataModel && typeof input.dataModel === 'object') input.dataModel.externalLinks = [];
+  for (const sheet of input.sheets ?? []) {
+    for (const field of ['dataRegions', 'conditionalFormats', 'dataValidations', 'hiddenRows', 'hiddenColumns', 'sheetTables', 'sparklineGroups', 'drawingGroups', 'spillRanges', 'protectionRules']) if (!(field in sheet)) sheet[field] = [];
+    for (const [field, value] of Object.entries({ rowHeightsPx: {}, columnWidthsPx: {}, showGridlines: true, showHeaders: true, zoom: 100, hidden: false, snapSettings: { enabled: true, snapToGrid: true, snapToShape: true, gridSize: 8 } })) if (!(field in sheet)) sheet[field] = structuredClone(value);
+  }
   if (input.version === 10 && Array.isArray(input.sheets)) {
     input.version = WORKBOOK_SNAPSHOT_SCHEMA_REVISION;
     return assertCanonicalWorkbookSnapshot(input as WorkbookSnapshot);

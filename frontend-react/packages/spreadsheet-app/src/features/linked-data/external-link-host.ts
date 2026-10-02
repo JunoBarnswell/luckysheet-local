@@ -4,13 +4,13 @@ import { FormulaEngine, type ExternalCalculationLink } from '@react-sheets/formu
 import { configureWorkbookSpillEnvironments, syncWorkbookSheetTables } from '../../formula-spill-sync';
 import type { SpreadsheetRuntime } from '../../runtime';
 
-const pending = new WeakMap<SpreadsheetRuntime, Promise<void>>();
+const pending = new WeakMap<SpreadsheetRuntime, { model: WorkbookModel; formula: FormulaEngine; promise: Promise<void> }>();
 
 /** Coalesced host refresh. Source and destination evaluators share the same AST and Worker. */
 export function refreshExternalLinks(runtime: SpreadsheetRuntime): Promise<void> {
   const active = pending.get(runtime);
-  if (active) return active;
   const model = runtime.model, formula = runtime.formula;
+  if (active?.model === model && active.formula === formula) return active.promise;
   const refresh = (async () => {
     const updates = await Promise.all([...model.dataModel.externalLinks.values()].map(async binding => {
       const previous = formula.getExternalCalculationLinks().find(link => link.id === binding.id);
@@ -67,7 +67,7 @@ export function refreshExternalLinks(runtime: SpreadsheetRuntime): Promise<void>
     if (runtime.disposed || runtime.model !== model || runtime.formula !== formula) return;
     runtime.handlers.onCalculationApplied?.(report.changedAddresses ?? report.recalculated);
     runtime.handlers.onMutationsApplied?.();
-  })().finally(() => { if (pending.get(runtime) === refresh) pending.delete(runtime); });
-  pending.set(runtime, refresh);
+  })().finally(() => { if (pending.get(runtime)?.promise === refresh) pending.delete(runtime); });
+  pending.set(runtime, { model, formula, promise: refresh });
   return refresh;
 }

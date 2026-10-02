@@ -41,6 +41,16 @@ public final class RecordTableValidator {
         if (!computed && !table.has("recordIdFieldId")) return;
         Map<String, Integer> rows = rows(root, table);
         JsonNode range = table.path("sourceRange"), source = sheet(root, range.path("sheetId").asText());
+        if (!source.path("kind").asText("worksheet").equals("worksheet") || table.has("sourceId") || !table.path("blocks").isMissingNode() && !table.path("blocks").isEmpty()
+            || table.has("sourceSheetId") && !table.path("sourceSheetId").equals(range.path("sheetId"))
+            || !table.path("rowCount").isIntegralNumber() || table.path("rowCount").asInt() != range.path("endRow").asInt() - range.path("startRow").asInt()
+            || table.path("fields").size() != range.path("endColumn").asInt() - range.path("startColumn").asInt() + 1) throw ServiceException.validation("Record source dimensions and field ownership are inconsistent");
+        for (JsonNode other : root.path("dataModel").path("tables")) {
+            JsonNode otherRange = other.path("sourceRange");
+            if (!other.path("id").equals(table.path("id")) && other.has("recordIdFieldId") && otherRange.path("sheetId").equals(range.path("sheetId"))
+                && otherRange.path("startRow").asInt() <= range.path("endRow").asInt() && otherRange.path("endRow").asInt() >= range.path("startRow").asInt()
+                && otherRange.path("startColumn").asInt() <= range.path("endColumn").asInt() && otherRange.path("endColumn").asInt() >= range.path("startColumn").asInt()) throw ServiceException.validation("Record source ranges must have one table owner");
+        }
         Set<String> ids = new HashSet<>(); Set<Integer> ordinals = new HashSet<>();
         for (JsonNode field : table.path("fields")) {
             String id = field.path("id").asText(); int ordinal = field.path("ordinal").asInt(-1);

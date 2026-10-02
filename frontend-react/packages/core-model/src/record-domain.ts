@@ -32,6 +32,14 @@ export function recordRows(workbook: WorkbookModel, table: WorkbookTableModel): 
 export function assertRecordTable(workbook: WorkbookModel, table: WorkbookTableModel): void {
   if (!table.recordIdFieldId && table.fields.every(field => !field.calculation)) return;
   if (!table.sourceRange || table.sourceRange.endRow - table.sourceRange.startRow > 100000) throw new RecordDomainError('Record table exceeds the bounded worksheet source contract');
+  const range = table.sourceRange, source = workbook.getSheet(range.sheetId);
+  if (source.kind !== 'worksheet' || table.sourceSheetId !== undefined && table.sourceSheetId !== range.sheetId || table.sourceId || table.blocks.length || !Number.isSafeInteger(table.rowCount) || table.rowCount !== range.endRow - range.startRow || table.fields.length !== range.endColumn - range.startColumn + 1) throw new RecordDomainError('Record source dimensions and field ownership are inconsistent');
+  for (const other of workbook.dataModel.tables.values()) {
+    const otherRange = other.sourceRange;
+    if (other.id !== table.id && other.recordIdFieldId && otherRange?.sheetId === range.sheetId
+      && otherRange.startRow <= range.endRow && otherRange.endRow >= range.startRow
+      && otherRange.startColumn <= range.endColumn && otherRange.endColumn >= range.startColumn) throw new RecordDomainError('Record source ranges must have one table owner');
+  }
   const ids = new Set<string>(), ordinals = new Set<number>();
   for (const field of table.fields) {
     if (!field.id || ids.has(field.id) || !Number.isSafeInteger(field.ordinal) || field.ordinal < 0 || ordinals.has(field.ordinal)

@@ -1087,7 +1087,7 @@ class MutationDescriptorRegistryTest {
     void acceptedMutationSurfaceIsExplicitAndAllOtherKnownMutationsRemainFailClosed() {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         assertEquals(Set.of(
-                "externalLink.set", "externalLink.remove", "table.configure", "relationship.set", "relationship.remove", "record.set", "cell.set", "cell.restore", "cell.editor.set", "cellTemplate.set", "cellTemplate.remove", "range.set", "range.paste", "range.clear", "range.clear.restore",
+                "externalLink.set", "externalLink.remove", "table.configure", "relationship.set", "relationship.remove", "record.set", "record.restore", "cell.set", "cell.restore", "cell.editor.set", "cellTemplate.set", "cellTemplate.remove", "range.set", "range.paste", "range.clear", "range.clear.restore",
                 "style.set", "style.preset.set", "merge.set", "merge.remove", "freeze.set", "row.resize", "column.resize", "column.defaultWidth.resize", "columns.visibility", "view.set", "sheet.hidden", "sheet.unhidden", "sheet.tabColor",
                 "note.set", "note.remove", "note.visibility", "comment.add", "comment.reply", "comment.reply.remove", "comment.resolve", "comment.remove",
                 "sheet.protect.set", "sheet.protect.remove", "sheet.extent.grow", "workbook.renamed", "workbook.editing.options.set",

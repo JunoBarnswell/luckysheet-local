@@ -19,9 +19,9 @@ class RecordMutationDescriptorTest {
             "2":{"0":{"value":"o2"},"1":{"value":"c1"},"2":{"value":3}},
             "5":{"0":{"value":"c1"},"1":{"value":"Alpha"}}}}],
           "dataModel":{"tables":[
-            {"id":"orders","name":"Orders","recordIdFieldId":"id","sourceRange":{"sheetId":"source","startRow":0,"endRow":2,"startColumn":0,"endColumn":3},
+            {"id":"orders","name":"Orders","rowCount":2,"recordIdFieldId":"id","sourceRange":{"sheetId":"source","startRow":0,"endRow":2,"startColumn":0,"endColumn":3},
              "fields":[{"id":"id","name":"ID","ordinal":0,"type":"text"},{"id":"customer","name":"Customer","ordinal":1,"type":"text"},{"id":"quantity","name":"Quantity","ordinal":2,"type":"number"},{"id":"amount","name":"Amount","ordinal":3,"type":"number","calculation":{"kind":"formula","formula":"=[@quantity]*10"}}]},
-            {"id":"customers","name":"Customers","recordIdFieldId":"id","sourceRange":{"sheetId":"source","startRow":4,"endRow":5,"startColumn":0,"endColumn":2},
+            {"id":"customers","name":"Customers","rowCount":1,"recordIdFieldId":"id","sourceRange":{"sheetId":"source","startRow":4,"endRow":5,"startColumn":0,"endColumn":2},
              "fields":[{"id":"id","name":"ID","ordinal":0,"type":"text"},{"id":"name","name":"Name","ordinal":1,"type":"text"},{"id":"total","name":"Total","ordinal":2,"type":"number","calculation":{"kind":"rollup","relationshipId":"relation","targetFieldId":"amount","direction":"reverse","aggregate":"SUM"}}]}],
              "relationships":[{"id":"relation","fromTableId":"orders","fromFieldId":"customer","toTableId":"customers","toFieldId":"id","cardinality":"many-to-one"}]}}
           """);
@@ -58,4 +58,29 @@ class RecordMutationDescriptorTest {
           """));
         assertThrows(ServiceException.class, () -> new MutationDescriptorRegistry().prepare(before, physical, WorkbookAclRole.OWNER));
     }
+    @Test void recordRestorePreservesAnAbsentPhysicalCell() throws Exception {
+        ObjectNode before = (ObjectNode) fixture();
+        ((ObjectNode) before.path("sheets").get(0).path("cells").path("2")).remove("2");
+        JsonNode edited = new RecordMutationDescriptor("record.set").apply(before, write("o2", "quantity", 2, 2, mapper.valueToTree(7)));
+        ObjectNode params = mapper.createObjectNode().put("tableId", "orders").put("recordId", "o2").put("fieldId", "quantity"); params.putNull("previous");
+        JsonNode restored = new RecordMutationDescriptor("record.restore").apply(edited, new OperationMutation("record.restore", "source", params));
+        assertEquals(before, restored);
+        params.putObject("previous").put("formula", "=1");
+        assertThrows(ServiceException.class, () -> new RecordMutationDescriptor("record.restore").apply(edited, new OperationMutation("record.restore", "source", params)));
+    }
+
+    @Test void overlappingRecordSourceOwnersAreRejectedAtPersistenceBoundary() throws Exception {
+        ObjectNode before = (ObjectNode) fixture();
+        RecordTableValidator.validateWorkbook(before);
+        ObjectNode duplicate = (ObjectNode) before.path("dataModel").path("tables").get(0).deepCopy();
+        duplicate.put("id", "overlapping");
+        ((com.fasterxml.jackson.databind.node.ArrayNode) before.path("dataModel").path("tables")).add(duplicate);
+        ServiceException failure = assertThrows(ServiceException.class, () -> RecordTableValidator.validateWorkbook(before));
+        assertTrue(failure.getMessage().contains("one table owner"));
+        ObjectNode original = (ObjectNode) fixture();
+        duplicate.put("blockSize", 1024).put("revision", 0).putArray("blocks");
+        assertThrows(ServiceException.class, () -> new WorkbookStateMutationDescriptor("table.add").apply(original, new OperationMutation("table.add", "source", duplicate)));
+        assertEquals(2, original.path("dataModel").path("tables").size());
+    }
+
 }

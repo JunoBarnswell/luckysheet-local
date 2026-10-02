@@ -7,7 +7,9 @@ import { registerRecordCommands } from './commands';
 import { registerSheetCommands } from '@react-sheets/sheet-features';
 import { synchronizeRecordCalculations, recordSheetTables } from './record-calculation';
 import { createRemoteReadySessionFixture } from '../../session-test-fixtures';
-import { hydrateRuntime } from '../../runtime';
+import { hydrateRuntime, startCollaborationSession } from '../../runtime';
+import { CollabSocketClient } from '@react-sheets/protocol';
+import { refreshExternalLinks } from './external-link-host';
 
 function fixture() {
   const workbook = new WorkbookModel('records', 'Records');
@@ -100,4 +102,116 @@ test('a committed deletion ACK recalculates surviving owners without addressing 
     assert.equal(runtime.formula.getRecordFieldResult('Orders', 'o2', 'Orders-amount')?.value, 60);
     assert.equal(runtime.formula.getRecordFieldResult('Customers', 'c1', 'Customers-total')?.value, 80);
   } finally { app.dispose(); }
+});
+
+test('TableSheet projections follow calculated source owners after engine replacement', async () => {
+  const { workbook } = fixture();
+  const view = workbook.addSheet('orders-view', 'Orders View');
+  view.kind = 'table-sheet';
+  view.tableSheet = { viewId: 'Orders', columns: [{ fieldId: 'Orders-amount', caption: 'Amount', type: 'number' }], grouping: [] };
+  const app = createRemoteReadySessionFixture();
+  try {
+    const runtime = app['runtime'];
+    hydrateRuntime(runtime, { snapshot: workbook.snapshot(), revision: 0 });
+    await app.waitForFormulaCalculation();
+    const projection = app['projection'];
+    const owner = runtime.model.getSheet('orders-view');
+    const before = projection.getCanvasProjection(owner);
+    assert.equal(before.getCell(1, 0)?.displayValue, '20');
+    const table = structuredClone(runtime.model.getTable('Orders'));
+    table.fields[4]!.calculation = { kind: 'formula', formula: canonicalRecordFieldFormula(table, '=[Quantity]*[Price]*2') };
+    runtime.commands.execute('table.configure', { table });
+    await app.waitForFormulaCalculation();
+    const after = projection.getCanvasProjection(owner);
+    assert.notEqual(after, before);
+    assert.equal(after.getCell(1, 0)?.displayValue, '40');
+    const invalid = structuredClone(table); invalid.fields[4]!.id = 'replacement';
+    assert.throws(() => runtime.commands.execute('table.configure', { table: invalid }), /IDENTITY_IMMUTABLE/);
+  } finally { app.dispose(); }
+});
+
+test('Record undo restores sparse cell absence and existing cell metadata exactly', () => {
+  const { workbook, orders } = fixture();
+  orders.cells.delete(2, 2);
+  const commands = new CommandRuntime(workbook); registerRecordCommands(commands);
+  const before = workbook.snapshot();
+  commands.execute('record.set', { tableId: 'Orders', recordId: 'o2', fieldId: 'Orders-quantity', value: 7 });
+  commands.undo();
+  assert.deepEqual(workbook.snapshot(), before);
+  commands.redo();
+  assert.equal(orders.cells.getWithoutHydration(2, 2)?.value, 7);
+});
+
+test('Record tables reject overlapping source owners before changing the workbook', () => {
+  const { workbook } = fixture();
+  const before = workbook.snapshot();
+  const overlapping = structuredClone(workbook.getTable('Orders'));
+  overlapping.id = 'overlapping-orders';
+  assert.throws(() => workbook.addTable(overlapping), /one table owner/);
+  assert.deepEqual(workbook.snapshot(), before);
+  assert.deepEqual(WorkbookModel.fromSnapshot(before).getDataModel(), workbook.getDataModel());
+});
+
+test('external refresh coalesces within one model and permits a fresh engine to refresh immediately', async () => {
+  const app = createRemoteReadySessionFixture();
+  try {
+    const runtime = app['runtime'];
+    const binding = { id: 'source-link', token: 'Source.xlsx', sourceUnitId: 'source', sheets: [{ token: 'Sheet1', sheetId: 'sheet-1' }] };
+    runtime.model.dataModel.externalLinks.set(binding.id, binding);
+    const source = new WorkbookModel('source', 'Source'); source.getSheet('sheet-1').cells.set(0, 0, { value: 25 });
+    const result = { binding, snapshot: source.snapshot(), subject: 'reader', sourceRevision: 1, accessRevision: 0, blockedRanges: [] };
+    let resolveOld!: (value: typeof result) => void;
+    let calls = 0;
+    runtime.api.getExternalLinkInputs = async () => {
+      calls += 1;
+      if (calls === 1) return new Promise(resolve => { resolveOld = resolve; });
+      return result;
+    };
+    const old = refreshExternalLinks(runtime);
+    assert.equal(refreshExternalLinks(runtime), old);
+    hydrateRuntime(runtime, { snapshot: runtime.model.snapshot(), revision: 0 });
+    const current = refreshExternalLinks(runtime);
+    assert.notEqual(current, old);
+    await current;
+    assert.equal(calls, 2);
+    assert.equal(runtime.formula.getExternalCalculationLinks()[0]?.state, 'connected');
+    resolveOld({ ...result, sourceRevision: 0 }); await old;
+    assert.equal(runtime.formula.getExternalCalculationLinks()[0]?.sourceRevision, 1);
+  } finally { app.dispose(); }
+});
+
+test('initial collaboration preserves a valid access projection without a persisted cache, and purges a changed projection', async t => {
+  const priorWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: { location: { protocol: 'http:', host: 'localhost' }, setInterval, clearInterval } });
+  t.after(() => { if (priorWindow) Object.defineProperty(globalThis, 'window', priorWindow); else Reflect.deleteProperty(globalThis, 'window'); });
+  let onStatus!: (status: 'connecting' | 'open' | 'closed') => void;
+  t.mock.method(CollabSocketClient.prototype, 'onStatus', (listener: typeof onStatus) => { onStatus = listener; return () => {}; });
+  t.mock.method(CollabSocketClient.prototype, 'open', () => { onStatus('open'); });
+  t.mock.method(CollabSocketClient.prototype, 'send', () => true);
+  t.mock.method(CollabSocketClient.prototype, 'markSynchronized', () => {});
+  t.mock.method(CollabSocketClient.prototype, 'close', () => {});
+  for (const accessRevision of [0, 1]) {
+    const app = createRemoteReadySessionFixture();
+    let detach: (() => void) | undefined;
+    try {
+      const runtime = app['runtime'];
+      runtime.model.addSheet('selected', 'Selected');
+      const snapshot = runtime.model.snapshot();
+      runtime.workspaceRecord = null;
+      runtime.accessProjection = { unitId: snapshot.unitId, role: 'owner', accessRevision: 0, regions: [] };
+      runtime.api.getSnapshot = async () => ({ unitId: snapshot.unitId, snapshot, revision: 0 });
+      runtime.api.getAccess = async () => ({ unitId: snapshot.unitId, role: 'owner', accessRevision, regions: [] });
+      runtime.api.listRevisions = async () => [];
+      const resetSheets: string[] = [];
+      const notices: string[] = [];
+      runtime.handlers.onActiveSheetChange = id => resetSheets.push(id);
+      runtime.handlers.onNotice = message => notices.push(message);
+      const synchronized = new Promise<void>(resolve => { runtime.handlers.onSaveState = state => { if (state === 'saved') resolve(); }; });
+      detach = startCollaborationSession(runtime, () => 'selected:0:0');
+      await synchronized;
+      assert.equal(runtime.remoteConnected, true, notices.join('; '));
+      assert.deepEqual(resetSheets, accessRevision === 0 ? [] : [runtime.model.primarySheetId]);
+      assert.equal(runtime.accessProjection.accessRevision, accessRevision);
+    } finally { detach?.(); app.dispose(); }
+  }
 });
