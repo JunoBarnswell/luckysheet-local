@@ -113,6 +113,13 @@ function reportDefinition(
 }
 
 describe('structural operations', () => {
+  it('rewrites reference owners inside expression callables during row insertion', () => {
+    const workbook = new WorkbookModel('callable-structure', 'Callable');
+    const sheet = workbook.getSheet(workbook.primarySheetId);
+    sheet.cells.set(0, 1, { value: null, formula: '=LAMBDA(x,x+A10)(2)' });
+    StructuralTransform.apply(workbook, { kind: 'insert-rows', sheetId: sheet.id, at: 5, count: 1 });
+    assert.equal(sheet.cells.get(0, 1)?.formula, '=LAMBDA(x,x+A11)(2)');
+  });
   it('canonical row edits move cells below the insertion point', () => {
     const workbook = new WorkbookModel('unit-row-movement', 'Row movement');
     const sheet = workbook.getSheet('sheet-1');

@@ -78,6 +78,7 @@ import {
   pivotSourceIdentity,
 } from '@react-sheets/core-model';
 import { MutationRecoveryRequiredError } from '@react-sheets/command-runtime';
+import { resolveWorkbookViewCell, TableSheetAddressError } from './features/data-source/table-sheet-address';
 import type { HistoryEntry, MutationInfo, CommandDescriptor, CommandResult } from '@react-sheets/command-runtime';
 import type {
   AuthTokenProvider,
@@ -842,8 +843,9 @@ export class WorkbookSession {
     const selection = this.selectionService?.getState();
     if (!selection) return '';
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
-    const cell = this.readResolvedCell(sheet, selection.activeCell.row, selection.activeCell.column);
-    if (protectionResolver.isFormulaHidden(sheet.protectionRules, sheet.id, selection.activeCell.row, selection.activeCell.column, cell?.style)) return '';
+    const resolved = this.readWorkbookViewCell(sheet, selection.activeCell.row, selection.activeCell.column);
+    const cell = resolved.cell;
+    if (protectionResolver.isFormulaHidden(resolved.owner.protectionRules, resolved.owner.id, resolved.row, resolved.column, cell?.style)) return '';
     return cell?.formula ?? (cell?.value == null ? '' : String(cell.value));
   }
 
@@ -1322,16 +1324,21 @@ export class WorkbookSession {
 
   /** The sole worksheet read path for session-level Home behavior. */
   private readResolvedCell(sheet: WorksheetModel, row: number, column: number): CellData | undefined {
-    return this.cellResolver.resolve(sheet, row, column)?.cell;
+    return this.readWorkbookViewCell(sheet, row, column).cell;
+  }
+
+  private readWorkbookViewCell(sheet: WorksheetModel, row: number, column: number) {
+    return resolveWorkbookViewCell(this.runtime.model, sheet, this.runtime.formula, row, column, (owner, sourceRow, sourceColumn) => this.cellResolver.resolve(owner, sourceRow, sourceColumn)?.cell);
   }
 
   /** Filter menus use the FormulaEngine/spill result, never authored storage. */
   private readResolvedFilterCell(sheet: WorksheetModel, row: number, column: number): FilterCellValue {
-    const cell = this.readResolvedCell(sheet, row, column);
-    const spillValue = this.runtime.formula.getSpillValueAt(sheet.id, row, column);
+    const resolved = this.readWorkbookViewCell(sheet, row, column);
+    const cell = resolved.cell;
+    const spillValue = this.runtime.formula.getSpillValueAt(resolved.owner.id, resolved.row, resolved.column);
     if (spillValue !== undefined) return resolveFilterCellValue(cell, spillValue, this.runtime.dateSystem);
     if (cell?.formula !== undefined) {
-      const result = this.runtime.formula.getCellResult({ sheetId: sheet.id, row, column });
+      const result = this.runtime.formula.getCellResult({ sheetId: resolved.owner.id, row: resolved.row, column: resolved.column });
       const evaluated = result ? result.value : cell.formulaValue !== undefined ? cell.formulaValue : null;
       return resolveFilterCellValue(cell, evaluated, this.runtime.dateSystem);
     }
@@ -1459,12 +1466,13 @@ export class WorkbookSession {
     const homeRibbon = this.deriveHomeRibbonState(selection);
     const undoEntries = this.runtime.commands.getUndoEntries();
     const redoEntries = this.runtime.commands.getRedoEntries();
-    const activeModelCell = this.readResolvedCell(activeModelSheet, selection.activeCell.row, selection.activeCell.column);
+    const activeResolvedCell = this.readWorkbookViewCell(activeModelSheet, selection.activeCell.row, selection.activeCell.column);
+    const activeModelCell = activeResolvedCell.cell;
     const activeFormulaHidden = protectionResolver.isFormulaHidden(
-      activeModelSheet.protectionRules,
-      activeModelSheet.id,
-      selection.activeCell.row,
-      selection.activeCell.column,
+      activeResolvedCell.owner.protectionRules,
+      activeResolvedCell.owner.id,
+      activeResolvedCell.row,
+      activeResolvedCell.column,
       activeModelCell?.style,
     );
     const activeDrawing = this.selectedFloatingId
@@ -3203,6 +3211,7 @@ export class WorkbookSession {
     if (this.cellEditDomain.getSnapshot().session) return this.cellControlResult(false);
     const displaySheet = this.runtime.model.getSheet(intent.sheetId);
     const displayTarget = resolveSelectionTarget({ rowCount: displaySheet.rowCount, columnCount: displaySheet.columnCount, merges: displaySheet.merges, hiddenRows: [...displaySheet.hiddenRows], hiddenColumns: [...displaySheet.hiddenColumns] }, { row: intent.row, column: intent.column }, 'cells', displaySheet.id);
+    if (!this.readWorkbookViewCell(displaySheet, displayTarget.cell.row, displayTarget.cell.column).writable) return this.cellControlResult(false);
     const canonical = this.resolveCanonicalCellTarget(displaySheet.id, displayTarget.cell.row, displayTarget.cell.column);
     const sheet = this.runtime.model.getSheet(canonical.sheetId);
     const cell = this.readResolvedCell(sheet, canonical.row, canonical.column);
@@ -4261,13 +4270,9 @@ export class WorkbookSession {
 
   private resolveCanonicalCellTarget(sheetId: string, row: number, column: number): { sheetId: string; row: number; column: number } {
     const sheet = this.runtime.model.getSheet(sheetId);
-    const tableId = sheet.kind === 'table-sheet' ? sheet.tableSheet?.viewId : sheet.kind === 'gantt-sheet' ? sheet.ganttSheet?.viewId : undefined;
-    const table = tableId ? this.runtime.model.dataModel.tables.get(tableId) : undefined;
-    const field = table?.fields[column];
-    if (!table?.sourceRange || !field || row <= 0) return { sheetId, row, column };
-    const sourceRow = table.sourceRange.startRow + row;
-    if (sourceRow > table.sourceRange.endRow) return { sheetId, row, column };
-    return { sheetId: table.sourceRange.sheetId, row: sourceRow, column: table.sourceRange.startColumn + field.ordinal };
+    const resolved = this.readWorkbookViewCell(sheet, row, column);
+    if (!resolved.writable) throw new TableSheetAddressError('TABLE_SHEET_ADDRESS_INVALID', 'Select a bound data cell to edit; headers belong to the view definition');
+    return { sheetId: resolved.owner.id, row: resolved.row, column: resolved.column };
   }
 
   private createInputContext(sourceKind: CellInputSourceKind, cell?: CellData) {
@@ -4283,14 +4288,14 @@ export class WorkbookSession {
 
   commitFormula(overrideValue?: string): boolean {
     if (this.phase !== 'ready') return false;
-    const sel = this.selectionService.getState();
-    const target = this.resolveCanonicalCellTarget(this.activeSheetId, sel.activeCell.row, sel.activeCell.column);
-    const row = target.row;
-    const column = target.column;
-    const text = overrideValue !== undefined ? overrideValue : this.formulaDraft;
-    const cell = this.runtime.model.getSheet(target.sheetId).cells.get(row, column);
-    const style = cell?.style;
     try {
+      const sel = this.selectionService.getState();
+      const target = this.resolveCanonicalCellTarget(this.activeSheetId, sel.activeCell.row, sel.activeCell.column);
+      const row = target.row;
+      const column = target.column;
+      const text = overrideValue !== undefined ? overrideValue : this.formulaDraft;
+      const cell = this.runtime.model.getSheet(target.sheetId).cells.get(row, column);
+      const style = cell?.style;
       this.runCommand('sheet.cell.commitText', {
         sheetId: target.sheetId,
         row,

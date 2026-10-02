@@ -2004,8 +2004,10 @@ function sameStructuralFormulaAst(left: FormulaAst, right: FormulaAst): boolean 
         && sameStructuralFormulaAst(left.right, other.right);
     }
     case 'function-call': {
-      const arguments_ = (right as typeof left).arguments;
+      const other = right as typeof left;
+      const arguments_ = other.arguments;
       return left.name === (right as typeof left).name && left.arguments.length === arguments_.length
+        && (left.callee === undefined ? other.callee === undefined : other.callee !== undefined && sameStructuralFormulaAst(left.callee, other.callee))
         && left.arguments.every((argument, index) => sameStructuralFormulaAst(argument, arguments_[index]!));
     }
     default: return false;

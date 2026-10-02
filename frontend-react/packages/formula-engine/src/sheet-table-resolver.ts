@@ -38,7 +38,7 @@ export function normalizeSheetTables(tables: readonly SheetTableRef[]): Map<stri
   for (const table of tables) {
     const id = table.id.trim();
     const name = table.name.trim().toUpperCase();
-    if (!id || id !== table.id || !name || name !== table.name || ids.has(id) || index.has(name)) {
+    if (!id || id !== table.id || !name || table.name.trim() !== table.name || ids.has(id) || index.has(name)) {
       throw new Error('Sheet Table identities must be unique within a workbook');
     }
     ids.add(id);

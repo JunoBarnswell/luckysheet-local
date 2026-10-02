@@ -63,7 +63,7 @@ export interface FormControlUpdateParams {
 function executeAdvancedSheetCreate(params: AdvancedSheetCreateParams, context: CommandContext) {
   if (!['table-sheet', 'gantt-sheet', 'report-sheet'].includes(params.sheet.kind)) throw new Error('Advanced sheet kind is invalid');
   if (context.workbook.sheets.has(params.sheet.id)) throw new Error(`Sheet already exists: ${params.sheet.id}`);
-  const affectedRanges: RangeRef[] = [];
+  const affectedRanges: RangeRef[] = [{ sheetId: params.sheet.id, startRow: 0, endRow: params.sheet.rowCount - 1, startColumn: 0, endColumn: params.sheet.columnCount - 1 }];
   const table = params.table;
   const addsTable = Boolean(table && !context.workbook.dataModel.tables.has(table.id));
   if (addsTable && table) {

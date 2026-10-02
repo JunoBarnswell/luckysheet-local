@@ -5,6 +5,8 @@ import { normalizeRange, type CellDependency, type FormulaDependency, type NameD
 import { resolveSheetTableReference, type SheetTableRef } from './sheet-table-resolver';
 import { resolveFormulaSheetId, type FormulaSheetIdentity } from './sheet-reference';
 import { isFormulaError } from './values';
+import { getFunctionDescriptor } from './functions';
+import { visitLexicalArguments } from './lexical-scope';
 
 export interface CollectFormulaDependenciesOptions {
   readonly sheetTables?: ReadonlyMap<string, SheetTableRef>;
@@ -46,6 +48,7 @@ export function collectFormulaReferenceNodes(ast: FormulaAst): readonly FormulaR
         visitNode(node.right);
         return;
       case 'function-call':
+        if (node.callee) visitNode(node.callee);
         for (const argument of node.arguments) visitNode(argument);
         return;
       case 'number-literal':
@@ -93,6 +96,7 @@ function visit(
   seen: Set<string>,
   sheetTables: ReadonlyMap<string, SheetTableRef> | undefined,
   sheetOrder: readonly FormulaSheetIdentity[],
+  bound: ReadonlySet<string> = new Set(),
 ): void {
   switch (node.type) {
     case 'cell-reference': {
@@ -117,19 +121,23 @@ function visit(
       collectNestedTableDependencies(node, owner, dependencies, seen, sheetTables, sheetOrder);
       return;
     case 'unary-expression':
-      visit(node.operand, owner, dependencies, seen, sheetTables, sheetOrder);
+      visit(node.operand, owner, dependencies, seen, sheetTables, sheetOrder, bound);
       return;
     case 'spill-reference':
-      visit(node.operand, owner, dependencies, seen, sheetTables, sheetOrder);
+      visit(node.operand, owner, dependencies, seen, sheetTables, sheetOrder, bound);
       return;
     case 'binary-expression':
-      visit(node.left, owner, dependencies, seen, sheetTables, sheetOrder);
-      visit(node.right, owner, dependencies, seen, sheetTables, sheetOrder);
+      visit(node.left, owner, dependencies, seen, sheetTables, sheetOrder, bound);
+      visit(node.right, owner, dependencies, seen, sheetTables, sheetOrder, bound);
       return;
     case 'function-call':
-      for (const argument of node.arguments) visit(argument, owner, dependencies, seen, sheetTables, sheetOrder);
+      if (visitLexicalArguments(node, bound, (child, local) => visit(child, owner, dependencies, seen, sheetTables, sheetOrder, local))) return;
+      if (node.callee) visit(node.callee, owner, dependencies, seen, sheetTables, sheetOrder, bound);
+      if (node.name && !bound.has(node.name.toUpperCase()) && !getFunctionDescriptor(node.name)) addDependency({ kind: 'name', name: node.name.toUpperCase() }, dependencies, seen);
+      for (const argument of node.arguments) visit(argument, owner, dependencies, seen, sheetTables, sheetOrder, bound);
       return;
     case 'name-reference': {
+      if (bound.has(node.name.toUpperCase())) return;
       const dependency: NameDependency = { kind: 'name', name: node.name.trim().toUpperCase() };
       addDependency(dependency, dependencies, seen);
       return;

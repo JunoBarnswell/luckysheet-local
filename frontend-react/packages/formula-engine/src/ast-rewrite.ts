@@ -26,8 +26,9 @@ export function mapAstTableReferences(
         right: mapAstTableReferences(node.right, mapper) as typeof node.right,
       };
     case 'sheet-range-reference':
-    case 'external-reference':
       return { ...node, reference: mapAstTableReferences(node.reference, mapper) as typeof node.reference };
+    case 'external-reference':
+      return node;
     case 'unary-expression':
       return { ...node, operand: mapAstTableReferences(node.operand, mapper) };
     case 'binary-expression':
@@ -37,7 +38,7 @@ export function mapAstTableReferences(
         right: mapAstTableReferences(node.right, mapper),
       };
     case 'function-call':
-      return { ...node, arguments: node.arguments.map((argument) => mapAstTableReferences(argument, mapper)) };
+      return { ...node, ...(node.callee ? { callee: mapAstTableReferences(node.callee, mapper) } : {}), arguments: node.arguments.map((argument) => mapAstTableReferences(argument, mapper)) };
     default:
       return node;
   }
@@ -324,22 +325,19 @@ function transformCellShiftRange(
   return merged[0];
 }
 
+function rangeSheetId(start: ParsedCellReference, end: ParsedCellReference): string | undefined {
+  if (start.sheetId !== undefined && end.sheetId !== undefined && !sameSheet(start.sheetId, end.sheetId)) {
+    throw new Error('UNSUPPORTED_STRUCTURAL_REFERENCE: range endpoints target different worksheets');
+  }
+  return start.sheetId ?? end.sheetId;
+}
+
 function rangeTargetsSheet(
   start: ParsedCellReference,
   end: ParsedCellReference,
   context: StructuralReferenceContext,
 ): boolean {
-  if (start.sheetId !== undefined && end.sheetId !== undefined && !sameSheet(start.sheetId, end.sheetId)) {
-    throw new Error('UNSUPPORTED_STRUCTURAL_REFERENCE: range endpoints target different worksheets');
-  }
-  const startTargets = referenceTargetsSheet(start.sheetId, context);
-  const endTargets = referenceTargetsSheet(end.sheetId, context);
-  if (!startTargets && !endTargets) return false;
-  if (startTargets !== endTargets) {
-    const operation = context.cellShift ? 'cell shift' : 'structural transform';
-    throw new Error(`UNSUPPORTED_STRUCTURAL_REFERENCE: ${operation} cannot rewrite a partially qualified range`);
-  }
-  return true;
+  return referenceTargetsSheet(rangeSheetId(start, end), context);
 }
 
 function transformStructuralRange(
@@ -462,7 +460,7 @@ export function mapAstStructuralReferences(
         right: mapAstStructuralReferences(node.right, context),
       };
     case 'function-call':
-      return { ...node, arguments: node.arguments.map((argument) => mapAstStructuralReferences(argument, context)) };
+      return { ...node, ...(node.callee ? { callee: mapAstStructuralReferences(node.callee, context) } : {}), arguments: node.arguments.map((argument) => mapAstStructuralReferences(argument, context)) };
   }
 }
 
@@ -488,15 +486,7 @@ export function mapAstMovedReferences(node: FormulaAst, context: MoveRangeRefere
     return { ...reference, row: reference.row + context.rowDelta, column: reference.column + context.columnDelta };
   };
   const mapRange = (start: ParsedCellReference, end: ParsedCellReference): { start: ParsedCellReference; end: ParsedCellReference } => {
-    if (start.sheetId !== undefined && end.sheetId !== undefined && !sameSheet(start.sheetId, end.sheetId)) {
-      throw new Error('UNSUPPORTED_STRUCTURAL_REFERENCE: move range endpoints target different worksheets');
-    }
-    const startTargets = targetsSheet(start.sheetId);
-    const endTargets = targetsSheet(end.sheetId);
-    if (!startTargets && !endTargets) return { start, end };
-    if (startTargets !== endTargets) {
-      throw new Error('UNSUPPORTED_STRUCTURAL_REFERENCE: moved range has a partially qualified formula reference');
-    }
+    if (!targetsSheet(rangeSheetId(start, end))) return { start, end };
     const lowRow = Math.min(start.row, end.row);
     const highRow = Math.max(start.row, end.row);
     const lowColumn = Math.min(start.column, end.column);
@@ -508,7 +498,10 @@ export function mapAstMovedReferences(node: FormulaAst, context: MoveRangeRefere
     const contained = lowRow >= selection.startRow && highRow <= selection.endRow
       && lowColumn >= selection.startColumn && highColumn <= selection.endColumn;
     if (!contained) throw new Error('UNSUPPORTED_FEATURE: moving this range would make a formula reference non-contiguous');
-    return { start: mapCell(start), end: mapCell(end) };
+    return {
+      start: { ...start, row: start.row + context.rowDelta, column: start.column + context.columnDelta },
+      end: { ...end, row: end.row + context.rowDelta, column: end.column + context.columnDelta },
+    };
   };
   const map3d = (startSheetId: string, endSheetId: string): void => {
     const sheetIndex = (reference: string): number => sheetReferenceIndex(reference, context.sheetOrder);
@@ -599,7 +592,7 @@ export function mapAstMovedReferences(node: FormulaAst, context: MoveRangeRefere
         right: mapAstMovedReferences(node.right, context),
       };
     case 'function-call':
-      return { ...node, arguments: node.arguments.map((argument) => mapAstMovedReferences(argument, context)) };
+      return { ...node, ...(node.callee ? { callee: mapAstMovedReferences(node.callee, context) } : {}), arguments: node.arguments.map((argument) => mapAstMovedReferences(argument, context)) };
   }
 }
 
@@ -673,7 +666,7 @@ export function mapAstReferences(node: FormulaAst, mapper: FormulaReferenceMappe
         right: mapAstReferences(node.right, mapper),
       };
     case 'function-call':
-      return { ...node, arguments: node.arguments.map((argument) => mapAstReferences(argument, mapper)) };
+      return { ...node, ...(node.callee ? { callee: mapAstReferences(node.callee, mapper) } : {}), arguments: node.arguments.map((argument) => mapAstReferences(argument, mapper)) };
   }
 }
 
@@ -751,6 +744,7 @@ export function offsetWholeAxisReferences(node: FormulaAst, rowOffset: number, c
         right: offsetWholeAxisReferences(node.right, rowOffset, columnOffset) as typeof node.right,
       };
     case 'sheet-range-reference':
+      return { ...node, reference: offsetWholeAxisReferences(node.reference, rowOffset, columnOffset) as typeof node.reference };
     case 'external-reference':
       return { ...node, reference: offsetWholeAxisReferences(node.reference, rowOffset, columnOffset) as typeof node.reference };
     case 'unary-expression':
@@ -762,7 +756,7 @@ export function offsetWholeAxisReferences(node: FormulaAst, rowOffset: number, c
         right: offsetWholeAxisReferences(node.right, rowOffset, columnOffset),
       };
     case 'function-call':
-      return { ...node, arguments: node.arguments.map((argument) => offsetWholeAxisReferences(argument, rowOffset, columnOffset)) };
+      return { ...node, ...(node.callee ? { callee: offsetWholeAxisReferences(node.callee, rowOffset, columnOffset) } : {}), arguments: node.arguments.map((argument) => offsetWholeAxisReferences(argument, rowOffset, columnOffset)) };
     case 'number-literal':
     case 'string-literal':
     case 'boolean-literal':
@@ -812,14 +806,7 @@ function renameQualifiedSheets(node: FormulaAst, normalizedOld: string, newName:
         reference: renameQualifiedSheets(node.reference, normalizedOld, newName) as typeof node.reference,
       };
     case 'external-reference':
-      return {
-        ...node,
-        qualifier: {
-          ...node.qualifier,
-          sheetId: node.qualifier.sheetId?.trim().toLowerCase() === normalizedOld ? newName : node.qualifier.sheetId,
-        },
-        reference: renameQualifiedSheets(node.reference, normalizedOld, newName) as typeof node.reference,
-      };
+      return node;
     case 'reference-union':
       return { ...node, references: node.references.map((reference) => renameQualifiedSheets(reference, normalizedOld, newName) as typeof reference) };
     case 'reference-intersection':
@@ -828,6 +815,12 @@ function renameQualifiedSheets(node: FormulaAst, normalizedOld: string, newName:
       return { ...node, operand: renameQualifiedSheets(node.operand, normalizedOld, newName) };
     case 'range-reference':
       return { ...node, start: renameQualifiedSheets(node.start, normalizedOld, newName) as typeof node.start, end: renameQualifiedSheets(node.end, normalizedOld, newName) as typeof node.end };
+    case 'function-call':
+      return { ...node, ...(node.callee ? { callee: renameQualifiedSheets(node.callee, normalizedOld, newName) } : {}), arguments: node.arguments.map((argument) => renameQualifiedSheets(argument, normalizedOld, newName)) };
+    case 'binary-expression':
+      return { ...node, left: renameQualifiedSheets(node.left, normalizedOld, newName), right: renameQualifiedSheets(node.right, normalizedOld, newName) };
+    case 'unary-expression':
+      return { ...node, operand: renameQualifiedSheets(node.operand, normalizedOld, newName) };
     default:
       return node;
   }

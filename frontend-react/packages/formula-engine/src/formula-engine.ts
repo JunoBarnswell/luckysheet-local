@@ -3,9 +3,11 @@ import { cellAddressKey, compareCellAddresses, parseCellAddress } from './addres
 import { collectFormulaDependencies, collectFormulaReferenceNodes, resolveRangeReference } from './dependencies';
 import {
   evaluateFormula,
+  evaluateFormulaOperand,
   evaluateFormulaWithTrace,
   type FormulaCellOverride,
   type FormulaEvaluationContext,
+  type FormulaEvaluationValue,
   type FormulaEvaluationReference,
   type FormulaEvaluationTrace,
 } from './evaluator';
@@ -22,7 +24,7 @@ import {
 import type { DefinedNameReferenceIndexUpdate, DefinedNameReferenceOwnerIdentity } from './reference-index';
 import { resolveFormulaSheetId } from './sheet-reference';
 import { createFormulaError, isArrayValue, isFormulaError, type ArrayValue, type FormulaError, type FormulaValue, type ScalarValue } from './values';
-import { normalizeDefinedNameModels, normalizeDefinedNames, parseDefinedNameFormula, resolveDefinedNameSource, type FormulaDefinedName } from './defined-names';
+import { normalizeDefinedNameModels, normalizeDefinedNames, parseDefinedNameFormula, type FormulaDefinedName } from './defined-names';
 import { collectNameReferences, collectTableReferences, formulaUsesRowVisibility, formulaUsesVolatile } from './formula-analysis';
 import { normalizeSheetTables, resolveSheetTableReference, type SheetTableRef } from './sheet-table-resolver';
 import { canonicalExcelDateFromUtcDate, type CanonicalExcelDateParts, type ExcelDateSystem } from './excel-date';
@@ -256,6 +258,7 @@ export class FormulaEngine {
   private activeSpillChangeCollector: Map<string, CellAddress> | null = null;
   private activeSpillChangeBaselines: Map<string, ResolvedSpill | undefined> | null = null;
   private pendingSpillRecalculationOwners: Set<string> | null = null;
+  private spillDependentRoots: Map<string, CellAddress> | null = null;
   private pendingSpillChangeBaselines = new Map<string, { address: CellAddress; spill: ResolvedSpill }>();
 
   private readonly cells = new Map<string, StoredCell>();
@@ -1494,6 +1497,7 @@ export class FormulaEngine {
     const previousSpillCollector = this.activeSpillChangeCollector;
     const previousSpillBaselines = this.activeSpillChangeBaselines;
     const previousPendingSpillOwners = this.pendingSpillRecalculationOwners;
+    const previousSpillDependentRoots = this.spillDependentRoots;
     const resultChanges = new Map<string, CellAddress>();
     const resultBaselines = new Map<string, FormulaValue>();
     const spillChanges = new Map<string, CellAddress>();
@@ -1509,14 +1513,30 @@ export class FormulaEngine {
         .filter((address) => this.cells.get(cellAddressKey(address))?.formula !== undefined)
         .map(spillKey),
     );
+    this.spillDependentRoots = new Map();
     try {
-      return this.recalculateAffectedCore(affected, resultChanges, spillChanges);
+      const report = this.recalculateAffectedCore(affected, resultChanges, spillChanges);
+      const recalculated = new Map(report.recalculated.map((address) => [cellAddressKey(address), address]));
+      const results = new Map(report.results);
+      let passes = 0;
+      while (this.spillDependentRoots.size > 0) {
+        if (++passes > this.formulaCount + 1) throw new Error('CALCULATION_SPILL_DID_NOT_CONVERGE: spill dependency graph failed to stabilize');
+        const roots = [...this.spillDependentRoots.values()];
+        this.spillDependentRoots.clear();
+        const next = new Map<string, CellAddress>();
+        for (const root of roots) for (const [key, address] of this.collectAffected(root)) next.set(key, address);
+        const dependentReport = this.recalculateAffectedCore(next, resultChanges, spillChanges);
+        for (const address of dependentReport.recalculated) recalculated.set(cellAddressKey(address), address);
+        for (const [key, result] of dependentReport.results) results.set(key, result);
+      }
+      return { recalculated: [...recalculated.values()], results, changedAddresses: [...new Map([...resultChanges, ...spillChanges]).values()].sort(compareCellAddresses) };
     } finally {
       this.activeResultChangeCollector = previousCollector;
       this.activeResultChangeBaselines = previousResultBaselines;
       this.activeSpillChangeCollector = previousSpillCollector;
       this.activeSpillChangeBaselines = previousSpillBaselines;
       this.pendingSpillRecalculationOwners = previousPendingSpillOwners;
+      this.spillDependentRoots = previousSpillDependentRoots;
     }
   }
 
@@ -1785,6 +1805,14 @@ export class FormulaEngine {
   }
 
   private recordSpillProjectionChange(address: CellAddress, before: ResolvedSpill | undefined, after: ResolvedSpill | undefined): void {
+    if (!sameCalculationValue(before, after)) {
+      for (const spill of [before, after]) {
+        if (!spill || spill.state !== 'ok') continue;
+        for (const dependent of this.dependencies.getRangeDependents(spill.sheetId, spill.range)) {
+          if (cellAddressKey(dependent) !== cellAddressKey(address)) this.spillDependentRoots?.set(cellAddressKey(dependent), dependent);
+        }
+      }
+    }
     const collector = this.activeSpillChangeCollector;
     const baselines = this.activeSpillChangeBaselines;
     if (!collector || !baselines) return;
@@ -1820,6 +1848,7 @@ export class FormulaEngine {
         readCell: (reference) => this.readCellWithOverrides(reference, cache, visiting, overrides),
         readRange: (range) => this.readRange(range, cache, visiting, overrides),
         readRangeMatrix: (range) => this.readRangeMatrix(range, cache, visiting, overrides),
+        readSparseRange: (range) => this.readSparseRange(range, cache, visiting, overrides),
         readSpillRange: (anchor) => {
           this.evaluateCell(anchor, cache, visiting, overrides);
           const spill = this.spills.get(spillKey(anchor));
@@ -1833,7 +1862,14 @@ export class FormulaEngine {
           this.evaluateCell(address, cache, visiting, overrides);
           return this.getSpillValueAt(address.sheetId, address.row, address.column);
         },
-        resolveName: (name) => this.resolveDefinedName(name, cell.address, cache, visiting),
+        resolveName: (name) => this.resolveDefinedName(name, cell.address, cache, visiting, overrides),
+        resolveFunction: (name) => {
+          const definition = this.findDefinedName(name, cell.address);
+          if (!definition) return undefined;
+          const source = parseDefinedNameFormula(definition.formula);
+          const parsed = source && definition.anchor ? offsetAst(source, cell.address.row - definition.anchor.row, cell.address.column - definition.anchor.column) : source;
+          return parsed;
+        },
         resolveTableReference: (tableName, request) => {
           const resolved = resolveSheetTableReference(tableName, request, cell.address, this.sheetTables);
           if (isFormulaError(resolved)) return resolved;
@@ -2032,7 +2068,8 @@ export class FormulaEngine {
     currentCell: CellAddress,
     cache: Map<string, FormulaValue>,
     visiting: Set<string>,
-  ): FormulaValue | undefined {
+    overrides: readonly FormulaCellOverride[],
+  ): FormulaEvaluationValue | undefined {
     const definition = this.findDefinedName(name, currentCell);
     if (!definition) return undefined;
     const identity = this.definedNameIdentity(definition);
@@ -2040,15 +2077,12 @@ export class FormulaEngine {
     if (visiting.has(visitingKey)) return createFormulaError('#NUM!', `Circular defined name dependency: ${identity}`);
     visiting.add(visitingKey);
     try {
-      return resolveDefinedNameSource(definition.formula, {
-        currentCell,
-        sheetOrder: this.sheetOrder,
-        anchor: definition.anchor,
-        readCell: (reference) => this.evaluateCell(reference, cache, visiting),
-        readRangeMatrix: (range) => this.readRangeMatrix(range, cache, visiting),
-        resolveName: (nestedName) => this.resolveDefinedName(nestedName, currentCell, cache, visiting),
-        numericContext: this.numericContext,
-      });
+      const source = definition.formula.trim();
+      const parsed = parseFormulaSource(source.startsWith('=') ? source : `=${source}`);
+      const ast = definition.anchor ? offsetAst(parsed, currentCell.row - definition.anchor.row, currentCell.column - definition.anchor.column) : parsed;
+      return evaluateFormulaOperand(ast, this.createEvaluationContext({ address: currentCell, result: { value: null, dependencies: [] } }, cache, visiting, overrides));
+    } catch (error) {
+      return formulaErrorFrom(error);
     } finally {
       visiting.delete(visitingKey);
     }
@@ -2248,6 +2282,41 @@ export class FormulaEngine {
       }
     }
     return values;
+  }
+
+  private *readSparseRange(
+    range: RangeDependency,
+    cache: Map<string, FormulaValue>,
+    visiting: Set<string>,
+    overrides: readonly FormulaCellOverride[] = [],
+  ): Iterable<FormulaValue> {
+    const inside = (address: CellAddress) => address.sheetId === range.start.sheetId
+      && address.row >= range.start.row && address.row <= range.end.row
+      && address.column >= range.start.column && address.column <= range.end.column;
+    const seen = new Set<string>();
+    const addresses = this.getInputAddressesInRange({
+      sheetId: range.start.sheetId, startRow: range.start.row, endRow: range.end.row,
+      startColumn: range.start.column, endColumn: range.end.column,
+    });
+    for (const address of [...addresses, ...overrides.filter(({ address }) => inside(address)).map(({ address }) => address)]) {
+      const key = cellAddressKey(address);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      yield this.evaluateCellOrSpill(address, cache, visiting, overrides);
+    }
+    // Spill cells are projections of their single anchor. They are not inputs.
+    for (const spill of this.spills.values()) {
+      if (spill.sheetId !== range.start.sheetId || spill.state !== 'ok') continue;
+      for (let row = Math.max(spill.range.startRow, range.start.row); row <= Math.min(spill.range.endRow, range.end.row); row += 1) {
+        for (let column = Math.max(spill.range.startColumn, range.start.column); column <= Math.min(spill.range.endColumn, range.end.column); column += 1) {
+          const address = { sheetId: spill.sheetId, row, column };
+          const key = cellAddressKey(address);
+          if (seen.has(key)) continue;
+          seen.add(key);
+          yield this.evaluateCellOrSpill(address, cache, visiting, overrides);
+        }
+      }
+    }
   }
 
   private evaluateCellOrSpill(

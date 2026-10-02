@@ -142,7 +142,7 @@ export interface ExternalWorkbookQualifier {
 export interface ExternalReferenceNode {
   readonly type: 'external-reference';
   readonly qualifier: ExternalWorkbookQualifier;
-  readonly reference: QualifiedReferenceNode;
+  readonly reference: QualifiedReferenceNode | TableReferenceNode;
   readonly span: SourceSpan;
   readonly parenthesized?: boolean;
 }
@@ -188,6 +188,8 @@ export interface BinaryExpressionNode {
 export interface FunctionCallNode {
   readonly type: 'function-call';
   readonly name: string;
+  /** Expression invocation (e.g. LAMBDA(x,x+1)(2)); name is empty. */
+  readonly callee?: FormulaAst;
   readonly arguments: readonly FormulaAst[];
   readonly span: SourceSpan;
   readonly parenthesized?: boolean;

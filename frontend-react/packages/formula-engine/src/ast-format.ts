@@ -20,6 +20,16 @@ function formatSheetId(sheetId: string): string {
     : `'${sheetId.replaceAll("'", "''")}'`;
 }
 
+function formatSheetInterval(start: string, end: string): string {
+  return formatSheetId(start) === start && formatSheetId(end) === end ? `${start}:${end}` : formatSheetId(`${start}:${end}`);
+}
+
+function formatExternalQualifier(workbook: string, sheet?: string): string {
+  const qualifier = `[${workbook}]${sheet ?? ''}`;
+  return /^[A-Za-z_][A-Za-z0-9_.-]*$/.test(workbook) && sheet !== undefined && formatSheetId(sheet) === sheet
+    ? qualifier : formatSheetId(qualifier);
+}
+
 function formatReference(reference: ParsedCellReference): string {
   const column = (reference.absoluteColumn ? '$' : '') + columnToLabel(reference.column);
   const row = (reference.absoluteRow ? '$' : '') + String(reference.row + 1);
@@ -115,10 +125,12 @@ function formatNode(node: FormulaAst, parentPrecedence = 0): string {
       content = `${formatNode(node.left, precedence(node))} ${formatNode(node.right, precedence(node))}`;
       break;
     case 'sheet-range-reference':
-      content = `${formatSheetId(node.qualifier.startSheetId)}:${formatSheetId(node.qualifier.endSheetId)}!${formatNode(node.reference)}`;
+      content = `${formatSheetInterval(node.qualifier.startSheetId, node.qualifier.endSheetId)}!${formatNode(node.reference)}`;
       break;
     case 'external-reference':
-      content = `[${node.qualifier.workbookId}]${node.qualifier.sheetId === undefined ? '' : formatSheetId(node.qualifier.sheetId) + '!'}${formatNode(node.reference)}`;
+      content = node.reference.type === 'table-reference'
+        ? `[${node.qualifier.workbookId}]${formatNode(node.reference)}`
+        : `${formatExternalQualifier(node.qualifier.workbookId, node.qualifier.sheetId)}!${formatNode(node.reference)}`;
       break;
     case 'name-reference':
       content = node.name;
@@ -142,7 +154,7 @@ function formatNode(node: FormulaAst, parentPrecedence = 0): string {
       content = `${formatBinaryChild(node.left, node, 'left')}${node.operator}${formatBinaryChild(node.right, node, 'right')}`;
       break;
     case 'function-call':
-      content = node.name.toUpperCase() + '(' + node.arguments.map((argument) => formatNode(argument)).join(',') + ')';
+      content = (node.callee ? formatNode(node.callee, precedence(node)) : node.name.toUpperCase()) + '(' + node.arguments.map((argument) => formatNode(argument)).join(',') + ')';
       break;
   }
 

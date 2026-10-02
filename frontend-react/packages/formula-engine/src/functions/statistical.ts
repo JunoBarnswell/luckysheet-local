@@ -2,40 +2,10 @@ import { createFormulaError, isFormulaError, type FormulaValue } from '../values
 import { coerceExcelNumber, normalizeExcelPrecision } from '../numeric';
 import { matchesCriteria, parseCriteria, projectCriteriaRange, toCriteriaRange } from '../criteria';
 import { flattenNumericArgs } from './math';
+import { evaluateAggregate, flattenAggregateValue } from './aggregate';
 
 export const statisticalFunctions: Record<string, (args: FormulaValue[]) => FormulaValue> = {
-  AVERAGE: (args) => {
-    const nums = flattenNumericArgs(args);
-    if (isFormulaError(nums)) return nums;
-    if (nums.length === 0) return createFormulaError('#DIV/0!', 'No numbers to average');
-    return normalizeExcelPrecision(nums.reduce((acc, n) => acc + n, 0) / nums.length);
-  },
-
-  COUNT: (args) => {
-    const nums = flattenNumericArgs(args);
-    if (isFormulaError(nums)) return nums;
-    return nums.length;
-  },
-
-  COUNTA: (args) => {
-    let count = 0;
-    for (const arg of args) {
-      if (Array.isArray(arg)) {
-        for (const row of arg) {
-          if (Array.isArray(row)) {
-            for (const cell of row) {
-              if (cell !== null && cell !== undefined && cell !== '') count += 1;
-            }
-          } else if (row !== null && row !== undefined && row !== '') {
-            count += 1;
-          }
-        }
-      } else if (arg !== null && arg !== undefined && arg !== '') {
-        count += 1;
-      }
-    }
-    return count;
-  },
+  ...Object.fromEntries(['AVERAGE', 'COUNT', 'COUNTA', 'MIN', 'MAX', 'VAR', 'VAR.S', 'VARP', 'VAR.P', 'STDEV', 'STDEV.S', 'STDEVP', 'STDEV.P'].map((name) => [name, (args: FormulaValue[]) => evaluateAggregate(name, args.map((value) => ({ values: flattenAggregateValue(value), reference: Array.isArray(value) })))])),
 
   COUNTBLANK: (args) => {
     let count = 0;
@@ -55,20 +25,6 @@ export const statisticalFunctions: Record<string, (args: FormulaValue[]) => Form
       }
     }
     return count;
-  },
-
-  MIN: (args) => {
-    const nums = flattenNumericArgs(args);
-    if (isFormulaError(nums)) return nums;
-    if (nums.length === 0) return 0;
-    return normalizeExcelPrecision(Math.min(...nums));
-  },
-
-  MAX: (args) => {
-    const nums = flattenNumericArgs(args);
-    if (isFormulaError(nums)) return nums;
-    if (nums.length === 0) return 0;
-    return normalizeExcelPrecision(Math.max(...nums));
   },
 
   MEDIAN: (args) => {

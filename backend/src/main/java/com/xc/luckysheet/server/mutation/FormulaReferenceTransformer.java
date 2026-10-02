@@ -700,9 +700,10 @@ final class FormulaReferenceTransformer {
                     String renamedStart = renamedSheetName(first.name(), oldName, newName);
                     String renamedEnd = renamedSheetName(second.name(), oldName, newName);
                     if (!first.name().equals(renamedStart) || !second.name().equals(renamedEnd)) {
-                        String renderedStart = first.name().equals(renamedStart) ? first.raw() : renderSheetName(renamedStart);
-                        String renderedEnd = second.name().equals(renamedEnd) ? second.raw() : renderSheetName(renamedEnd);
-                        replacement = renderedStart + ":" + renderedEnd + "!";
+                        String renderedStart = renderSheetName(renamedStart);
+                        String renderedEnd = renderSheetName(renamedEnd);
+                        replacement = (renderedStart.equals(renamedStart) && renderedEnd.equals(renamedEnd)
+                                ? renamedStart + ":" + renamedEnd : renderSheetName(renamedStart + ":" + renamedEnd)) + "!";
                         prefixEnd = second.afterPrefix() + 1;
                     }
                 }

@@ -1215,6 +1215,12 @@ class MutationDescriptorRegistryTest {
                 """));
         assertThrows(ServiceException.class, () -> registry.applyPublicMutations(snapshot, List.of(invalid)));
         assertEquals("name", snapshot.path("sheets").get(0).path("tableSheet").path("columns").get(0).path("fieldId").asText());
+        var calculated = new OperationMutation("tableSheet.update", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","definition":{"viewId":"table-1","columns":[{"fieldId":"amount","caption":"Amount","type":"formula","formula":"=[name]*2"}],"grouping":[]}}
+                """));
+        ServiceException unsupported = assertThrows(ServiceException.class, () -> registry.applyPublicMutations(snapshot, List.of(calculated)));
+        assertEquals("UNSUPPORTED_FEATURE", unsupported.code());
+        assertEquals("name", snapshot.path("sheets").get(0).path("tableSheet").path("columns").get(0).path("fieldId").asText());
     }
 
     @Test

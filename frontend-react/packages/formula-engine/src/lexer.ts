@@ -51,7 +51,8 @@ export function lexFormula(source: string): readonly Token[] {
       index = skipWhitespace(source, index);
       const previous = tokens[tokens.length - 1];
       const next = codePointAt(source, index);
-      if (previous && canEndReference(previous.kind) && canStartReference(next)) {
+      if (previous && canEndReference(previous.kind) && canStartReference(next)
+        && !(previous.kind === 'identifier' && next === '[')) {
         tokens.push({
           kind: 'reference-intersection',
           lexeme: source.slice(whitespaceStart, index),

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { CellEditDomain } from './domain';
-import { rewriteAbsoluteReferenceAtCaret } from './formula-edit';
+import { parseFormulaReferences, rewriteAbsoluteReferenceAtCaret } from './formula-edit';
 import { createCellEditorRegistry } from './builtin-editors';
 import { CellEditError } from './error';
 import type { CellEditEntryContext, CellEditIntent } from './contracts';
@@ -19,6 +19,15 @@ function entry(overrides: Partial<CellEditEntryContext> = {}): CellEditEntryCont
 function begin(domain: CellEditDomain, overrides: Partial<CellEditEntryContext> = {}): void {
   assert.equal(domain.dispatch({ type: 'begin', entry: entry(overrides) }).handled, true);
 }
+
+test('formula editing visits references inside expression callables', () => {
+  const text = '=LAMBDA(x,x+A10)(2)';
+  const position = text.indexOf('A10');
+  const rewritten = rewriteAbsoluteReferenceAtCaret(text, { start: position, end: position + 3 });
+  assert.equal(rewritten?.text, '=LAMBDA(x,x+$A$10)(2)');
+  assert.equal(parseFormulaReferences(text).some((reference) => reference.startRow === 9 && reference.startColumn === 0), true);
+  assert.equal(rewriteAbsoluteReferenceAtCaret('=LAMBDA(x,x+)(2)', { start: 10, end: 11 }), null);
+});
 
 function key(domain: CellEditDomain, value: Partial<Extract<CellEditIntent, { type: 'keyboard' }>['gesture']> & { key: string }): ReturnType<CellEditDomain['dispatch']> {
   return domain.dispatch({ type: 'keyboard', gesture: { key: value.key, code: value.code ?? value.key, alt: value.alt ?? false, ctrl: value.ctrl ?? false, meta: value.meta ?? false, shift: value.shift ?? false, repeat: value.repeat ?? false, composing: value.composing ?? false } });

@@ -525,8 +525,14 @@ final class SheetDataMutationDescriptor extends CanonicalJsonMutationDescriptor 
             if (type != null && !type.isTextual()) throw ServiceException.validation("TableSheet column type is invalid");
             JsonNode formula = column.get("formula");
             if (formula != null && !formula.isTextual()) throw ServiceException.validation("TableSheet column formula is invalid");
+            if (formula != null || "formula".equals(column.path("type").asText()) || "lookup".equals(column.path("type").asText())) {
+                throw ServiceException.unsupportedFeature("TableSheet calculated fields require a canonical record calculation owner");
+            }
         }
         validateTableSheetFieldList(definition, visibleIds, "grouping");
+        for (JsonNode group : definition.path("grouping")) {
+            if (group.path("collapsed").asBoolean(false)) throw ServiceException.unsupportedFeature("Collapsed TableSheet groups require group identity");
+        }
         JsonNode sortState = definition.get("sortState");
         if (sortState != null) {
             if (!sortState.isArray()) throw ServiceException.validation("TableSheet sortState is invalid");

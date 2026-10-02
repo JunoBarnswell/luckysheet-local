@@ -2,6 +2,7 @@ import type { BinaryOperator, CellAddress, FormulaAst, FormulaReferenceNode, Spi
 import { formatFormula } from './ast-format';
 import { resolveCellReference, resolveRangeReference } from './dependencies';
 import { getBuiltinFunction } from './functions';
+import { evaluateAggregate, flattenAggregateValue, STREAMING_AGGREGATES, type AggregateArgument } from './functions/aggregate';
 import { evaluateAdvancedFunction, type AdvancedFunctionArgs } from './functions/advanced';
 import { parseFormula } from './parser';
 import type { RangeDependency } from './range-index';
@@ -19,12 +20,17 @@ export interface FormulaEvaluationContext {
   readCell(address: CellAddress): FormulaValue;
   readRange(range: RangeDependency): Iterable<FormulaValue>;
   readRangeMatrix?(range: RangeDependency): ArrayValue;
+  /** Occupied inputs and spill values only, for consumers that ignore blanks. */
+  readSparseRange?(range: RangeDependency): Iterable<FormulaValue>;
   /** Resolve a dynamic-array anchor to its current spill range. */
   readSpillRange?(address: CellAddress): RangeDependency | undefined;
   /** Read a projected value from a dynamic-array spill cell. */
   readSpillValue?(address: CellAddress): FormulaValue | undefined;
   /** 定义名称解析:返回 undefined 视为 #NAME? */
-  resolveName?(name: string): FormulaValue | undefined;
+  resolveName?(name: string): FormulaEvaluationValue | undefined;
+  resolveFunction?(name: string): FormulaAst | undefined;
+  readonly lexicalEnvironment?: ReadonlyMap<string, EvaluationValue>;
+  readonly invocationDepth?: number;
   /** 结构化表引用解析 */
   resolveTableReference?(tableName: string, request: {
     specifier?: import('./ast').TableReferenceSpecifier;
@@ -82,11 +88,28 @@ export interface FormulaEvaluationReference {
   readonly ranges: readonly RangeDependency[];
 }
 
-type EvaluationValue = FormulaValue | EvaluationRange | FormulaEvaluationReference;
+interface LambdaEvaluationValue {
+  readonly kind: 'lambda';
+  readonly parameters: readonly string[];
+  readonly body: FormulaAst;
+  readonly environment: ReadonlyMap<string, EvaluationValue>;
+}
+
+export type FormulaEvaluationValue = FormulaValue | EvaluationRange | FormulaEvaluationReference | LambdaEvaluationValue;
+type EvaluationValue = FormulaEvaluationValue;
+
+function isLambda(value: EvaluationValue | undefined): value is LambdaEvaluationValue {
+  return typeof value === 'object' && value !== null && !Array.isArray(value) && 'kind' in value && value.kind === 'lambda';
+}
 
 export function evaluateFormula(ast: FormulaAst, context: FormulaEvaluationContext): FormulaValue {
-  const result = evaluateNode(ast, context);
+  const result = evaluateFormulaOperand(ast, context);
   return materializeEvaluationValue(result, context);
+}
+
+/** Name and callable resolution preserve reference geometry until consumption. */
+export function evaluateFormulaOperand(ast: FormulaAst, context: FormulaEvaluationContext): FormulaEvaluationValue {
+  return evaluateNode(ast, context);
 }
 
 /** Evaluate a formula and capture every AST node's computed value in order. */
@@ -105,8 +128,14 @@ export function evaluateFormulaWithTrace(ast: FormulaAst, context: FormulaEvalua
 type EvaluationTraceSink = (node: FormulaAst, value: EvaluationValue) => void;
 
 function materializeEvaluationValue(value: EvaluationValue, context: FormulaEvaluationContext): FormulaValue {
+  if (isLambda(value)) return createFormulaError('#CALC!', 'LAMBDA must be invoked to produce a cell value');
   if (isReferenceValue(value)) return createFormulaError('#REF!', 'Reference value requires a workbook resolver');
   if (!isEvaluationRange(value) && !isEvaluationReference(value)) return value;
+  const single = isEvaluationRange(value) ? value.range : value.ranges.length === 1 ? value.ranges[0] : undefined;
+  if (single && single.start.sheetId === single.end.sheetId
+    && single.start.row === single.end.row && single.start.column === single.end.column) {
+    return context.readSpillValue?.(single.start) ?? context.readCell(single.start);
+  }
   const matrix = isEvaluationRange(value)
     ? readRangeAsMatrix(value.range, context)
     : readReferenceAsMatrix(value.ranges, context);
@@ -128,9 +157,11 @@ function evaluateNode(node: FormulaAst, context: FormulaEvaluationContext, trace
     case 'invalid-reference':
       result = createFormulaError('#REF!', 'Reference was deleted by a structural mutation');
       break;
-    case 'cell-reference':
-      result = context.readCell(resolveCellReference(node.reference, context.currentCell, context.sheetOrder));
+    case 'cell-reference': {
+      const address = resolveCellReference(node.reference, context.currentCell, context.sheetOrder);
+      result = { kind: 'range', range: { kind: 'range', start: address, end: address } };
       break;
+    }
     case 'range-reference':
       result = { kind: 'range', range: resolveRangeReference(node, context.currentCell, context.sheetOrder) };
       break;
@@ -159,9 +190,13 @@ function evaluateNode(node: FormulaAst, context: FormulaEvaluationContext, trace
       );
       break;
     case 'function-call':
-      result = evaluateFunction(node.name, node.arguments, context, trace, `${node.span.start}:${node.span.end}`);
+      result = node.callee
+        ? invokeLambda(evaluateNode(node.callee, context, trace), node.arguments, context, trace)
+        : evaluateFunction(node.name, node.arguments, context, trace, `${node.span.start}:${node.span.end}`);
       break;
     case 'name-reference': {
+      const local = context.lexicalEnvironment?.get(node.name.toUpperCase());
+      if (local !== undefined) { result = local; break; }
       const resolved = context.resolveName?.(node.name.toUpperCase());
       result = resolved === undefined ? createFormulaError('#NAME?', 'Unknown name: ' + node.name) : resolved;
       break;
@@ -189,6 +224,7 @@ function evaluateNode(node: FormulaAst, context: FormulaEvaluationContext, trace
 }
 
 function evaluateUnary(operator: '+' | '-' | '%' | '@', operand: EvaluationValue, context: FormulaEvaluationContext): FormulaValue {
+  if (isLambda(operand)) return createFormulaError('#VALUE!', 'A callable cannot be used as a number');
   if (isFormulaError(operand)) return operand;
   if (operator === '@' && (isEvaluationRange(operand) || isEvaluationReference(operand))) {
     const range = isEvaluationRange(operand) ? operand.range : operand.ranges[0];
@@ -200,8 +236,7 @@ function evaluateUnary(operator: '+' | '-' | '%' | '@', operand: EvaluationValue
     return context.readSpillValue?.(address) ?? context.readCell(address);
   }
   if (isEvaluationRange(operand) || isEvaluationReference(operand)) {
-    const matrix = isEvaluationRange(operand) ? readRangeAsMatrix(operand.range, context) : readReferenceAsMatrix(operand.ranges, context);
-    return matrix.map((row) => row.map((value) => evaluateUnary(operator, value, context)));
+    return evaluateUnary(operator, materializeEvaluationValue(operand, context), context);
   }
   if (isArrayValue(operand)) return operand.map((row) => row.map((value) => evaluateUnary(operator, value, context)));
   const number = toNumber(operand);
@@ -230,6 +265,7 @@ function evaluateBinary(
   right: EvaluationValue,
   context: FormulaEvaluationContext,
 ): FormulaValue {
+  if (isLambda(left) || isLambda(right)) return createFormulaError('#VALUE!', 'A callable cannot be used as a scalar');
   if (isFormulaError(left)) return left;
   if (isFormulaError(right)) return right;
   const leftValue = isEvaluationRange(left) || isEvaluationReference(left) ? materializeEvaluationValue(left, context) : left;
@@ -329,10 +365,67 @@ function evaluateFunction(
   context: FormulaEvaluationContext,
   trace?: EvaluationTraceSink,
   volatileOccurrence?: string,
-): FormulaValue | EvaluationRange | FormulaEvaluationReference {
+): EvaluationValue {
+  const id = name.toUpperCase();
+  if (id === 'LET') {
+    if (argumentsList.length < 3 || argumentsList.length % 2 !== 1) return createFormulaError('#VALUE!', 'LET requires name/value pairs and a result');
+    const environment = new Map(context.lexicalEnvironment);
+    for (let index = 0; index < argumentsList.length - 1; index += 2) {
+      const variable = argumentsList[index]!;
+      if (!isLexicalName(variable)) return createFormulaError('#VALUE!', 'LET binding requires a valid name');
+      const value = evaluateNode(argumentsList[index + 1]!, { ...context, lexicalEnvironment: environment }, trace);
+      if (isFormulaError(value)) return value;
+      environment.set(variable.name.toUpperCase(), value);
+    }
+    return evaluateNode(argumentsList[argumentsList.length - 1]!, { ...context, lexicalEnvironment: environment }, trace);
+  }
+  if (id === 'LAMBDA') {
+    if (!argumentsList.length || argumentsList.length > 254) return createFormulaError('#VALUE!', 'LAMBDA requires a body and at most 253 parameters');
+    const parameters: string[] = [];
+    for (const parameter of argumentsList.slice(0, -1)) {
+      if (!isLexicalName(parameter) || parameters.includes(parameter.name.toUpperCase())) return createFormulaError('#VALUE!', 'LAMBDA parameters must be valid unique names');
+      parameters.push(parameter.name.toUpperCase());
+    }
+    return { kind: 'lambda', parameters, body: argumentsList[argumentsList.length - 1]!, environment: new Map(context.lexicalEnvironment) };
+  }
+  if (id === 'IF' && argumentsList.length >= 2 && argumentsList.length <= 3) {
+    const condition = materializeEvaluationValue(evaluateNode(argumentsList[0]!, context, trace), context);
+    if (isFormulaError(condition)) return condition;
+    if (!Array.isArray(condition)) {
+      if (typeof condition === 'string' && condition.toUpperCase() !== 'TRUE' && condition.toUpperCase() !== 'FALSE') return createFormulaError('#VALUE!', 'IF condition is not logical');
+      const truth = typeof condition === 'string' ? condition.toUpperCase() === 'TRUE' : Boolean(condition);
+      const branch = argumentsList[truth ? 1 : 2];
+      return branch ? evaluateNode(branch, context, trace) : false;
+    }
+  }
+  const localFunction = context.lexicalEnvironment?.get(id);
+  if (localFunction !== undefined) return invokeLambda(localFunction, argumentsList, context, trace);
+  if (!getBuiltinFunction(id) && !STREAMING_AGGREGATES.has(id)) {
+    const defined = context.resolveFunction?.(id);
+    if (defined) return invokeLambda(evaluateNode(defined, { ...context, lexicalEnvironment: undefined }, trace), argumentsList, context, trace);
+  }
   // 需要原始 AST / 返回区间的引用类函数:在求值器内原生实现
   const native = evaluateReferenceFunction(name, argumentsList, context, trace);
   if (native !== undefined) return native;
+
+  const normalizedName = name.toUpperCase();
+  if (STREAMING_AGGREGATES.has(normalizedName)) {
+    function* argumentsForAggregate(): Iterable<AggregateArgument> {
+      for (const argument of argumentsList) {
+        const value = evaluateNode(argument, context, trace);
+        if (isEvaluationRange(value) || isEvaluationReference(value)) {
+          const ranges = isEvaluationRange(value) ? [value.range] : value.ranges;
+          function* values(): Iterable<FormulaValue> {
+            for (const range of ranges) yield* (context.readSparseRange?.(range) ?? context.readRange(range));
+          }
+          yield { values: values(), reference: true };
+        } else {
+          yield { values: flattenAggregateValue(materializeEvaluationValue(value, context)), reference: Array.isArray(value) };
+        }
+      }
+    }
+    return evaluateAggregate(normalizedName, argumentsForAggregate());
+  }
 
   const fn = getBuiltinFunction(name);
   const evaluatedArgs: FormulaValue[] = [];
@@ -350,7 +443,7 @@ function evaluateFunction(
     if (isEvaluationRange(value) || isEvaluationReference(value)) {
       evaluatedArgs.push(materializeEvaluationValue(value, context));
     } else {
-      evaluatedArgs.push(value);
+      evaluatedArgs.push(materializeEvaluationValue(value, context));
     }
   }
 
@@ -374,6 +467,21 @@ function evaluateFunction(
   if (advanced !== undefined) return advanced;
 
   return createFormulaError('#NAME?', `Unknown function: ${name}`);
+}
+
+function isLexicalName(node: FormulaAst): node is Extract<FormulaAst, { type: 'name-reference' }> {
+  return node.type === 'name-reference' && /^[\p{L}_][\p{L}\p{N}_]*$/u.test(node.name) && !['R', 'C'].includes(node.name.toUpperCase());
+}
+
+function invokeLambda(value: EvaluationValue, args: readonly FormulaAst[], context: FormulaEvaluationContext, trace?: EvaluationTraceSink): EvaluationValue {
+  if (isFormulaError(value)) return value;
+  if (!isLambda(value)) return createFormulaError('#VALUE!', 'Expression is not callable');
+  if (value.parameters.length !== args.length) return createFormulaError('#VALUE!', 'LAMBDA argument count differs from its parameters');
+  const depth = (context.invocationDepth ?? 0) + 1;
+  if (depth > 128) return createFormulaError('#NUM!', 'LAMBDA recursion limit exceeded');
+  const environment = new Map(value.environment);
+  args.forEach((argument, index) => environment.set(value.parameters[index]!, evaluateNode(argument, context, trace)));
+  return evaluateNode(value.body, { ...context, lexicalEnvironment: environment, invocationDepth: depth }, trace);
 }
 
 function aggregateIdentifierArgument(
@@ -430,7 +538,7 @@ function evaluateReferenceFunction(
       const values: FormulaValue[] = [];
       for (const argument of args) {
         const value = evaluateNode(argument, context, trace);
-        values.push(isEvaluationRange(value) || isEvaluationReference(value) ? createFormulaError('#VALUE!', 'ADDRESS expects scalars') : value);
+        values.push(materializeEvaluationValue(value, context));
       }
       const row = toNumber(values[0] ?? 1);
       const column = toNumber(values[1] ?? 1);
@@ -456,8 +564,7 @@ function evaluateReferenceFunction(
       const scalar = (node: FormulaAst | undefined, fallback: number): number | FormulaError => {
         if (!node) return fallback;
         const value = evaluateNode(node, context, trace);
-        if (isEvaluationRange(value) || isEvaluationReference(value)) return createFormulaError('#VALUE!', 'OFFSET offset must be scalar');
-        const numeric = toNumber(value);
+        const numeric = toNumber(materializeEvaluationValue(value, context));
         return numeric;
       };
       const rows = scalar(args[1], 0);
@@ -486,13 +593,12 @@ function evaluateReferenceFunction(
     case 'INDIRECT': {
       const first = args[0];
       if (!first) return createFormulaError('#REF!', 'INDIRECT expects a text reference');
-      const value = evaluateNode(first, context, trace);
-      if (isEvaluationRange(value) || isEvaluationReference(value)) return createFormulaError('#VALUE!', 'INDIRECT expects text');
+      const value = materializeEvaluationValue(evaluateNode(first, context, trace), context);
       if (typeof value !== 'string') return createFormulaError('#REF!', 'INDIRECT text required');
       try {
         const parsed = parseFormula('=' + value);
         const resolved = evaluateNode(parsed, context, trace);
-        return resolved;
+        return isLambda(resolved) ? createFormulaError('#VALUE!', 'INDIRECT expects a reference') : resolved;
       } catch {
         return createFormulaError('#REF!', 'INDIRECT cannot parse: ' + value);
       }
@@ -558,7 +664,7 @@ function referenceValues(node: FormulaAst, context: FormulaEvaluationContext, tr
   if (isEvaluationReference(value)) return value.ranges.flatMap((range) => [...context.readRange(range)]);
   if (isArrayValue(value)) return value.flat();
   if (isReferenceValue(value)) return createFormulaError('#VALUE!', 'SJS.TABLE inputs must be cell or range references');
-  return [value];
+  return [materializeEvaluationValue(value, context)];
 }
 
 function scalarForTable(value: FormulaValue): ScalarValue {

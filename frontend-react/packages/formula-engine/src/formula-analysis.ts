@@ -1,5 +1,6 @@
 import type { FormulaAst } from './ast';
 import { getFunctionDescriptor } from './functions';
+import { visitLexicalArguments } from './lexical-scope';
 
 export function collectNameReferences(ast: FormulaAst): string[] {
   const names: string[] = [];
@@ -7,39 +8,42 @@ export function collectNameReferences(ast: FormulaAst): string[] {
   visit(ast);
   return names;
 
-  function visit(node: FormulaAst): void {
+  function visit(node: FormulaAst, bound: ReadonlySet<string> = new Set()): void {
     switch (node.type) {
       case 'name-reference': {
         const upper = node.name.toUpperCase();
-        if (!seen.has(upper)) {
+        if (!bound.has(upper) && !seen.has(upper)) {
           seen.add(upper);
           names.push(upper);
         }
         return;
       }
       case 'unary-expression':
-        visit(node.operand);
+        visit(node.operand, bound);
         return;
       case 'spill-reference':
-        visit(node.operand);
+        visit(node.operand, bound);
         return;
       case 'reference-union':
-        for (const reference of node.references) visit(reference);
+        for (const reference of node.references) visit(reference, bound);
         return;
       case 'reference-intersection':
-        visit(node.left);
-        visit(node.right);
+        visit(node.left, bound);
+        visit(node.right, bound);
         return;
       case 'sheet-range-reference':
       case 'external-reference':
-        visit(node.reference);
+        visit(node.reference, bound);
         return;
       case 'binary-expression':
-        visit(node.left);
-        visit(node.right);
+        visit(node.left, bound);
+        visit(node.right, bound);
         return;
       case 'function-call':
-        for (const argument of node.arguments) visit(argument);
+        if (visitLexicalArguments(node, bound, visit)) return;
+        if (node.callee) visit(node.callee, bound);
+        if (node.name && !getFunctionDescriptor(node.name)) visit({ type: 'name-reference', name: node.name, span: node.span }, bound);
+        for (const argument of node.arguments) visit(argument, bound);
         return;
       default:
         return;
@@ -83,6 +87,7 @@ export function collectTableReferences(ast: FormulaAst): string[] {
         visit(node.right);
         return;
       case 'function-call':
+        if (node.callee) visit(node.callee);
         for (const argument of node.arguments) visit(argument);
         return;
       default:
@@ -100,6 +105,7 @@ export function formulaUsesVolatile(ast: FormulaAst): boolean {
     if (volatile) return;
     switch (node.type) {
       case 'function-call': {
+        if (node.callee) visit(node.callee);
         const descriptor = getFunctionDescriptor(node.name);
         if (descriptor?.volatile) volatile = true;
         for (const argument of node.arguments) visit(argument);
@@ -141,6 +147,7 @@ export function formulaUsesRowVisibility(ast: FormulaAst): boolean {
     if (usesVisibility) return;
     switch (node.type) {
       case 'function-call':
+        if (node.callee) visit(node.callee);
         if (node.name.toUpperCase() === 'SUBTOTAL' || node.name.toUpperCase() === 'AGGREGATE') {
           usesVisibility = true;
           return;

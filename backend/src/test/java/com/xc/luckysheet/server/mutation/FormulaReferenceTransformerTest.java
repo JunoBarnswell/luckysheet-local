@@ -206,8 +206,10 @@ class FormulaReferenceTransformerTest {
     void renameUpdatesOnlyMatchingEndpointsOfThreeDimensionalReferences() {
         assertEquals("=SUM('New Name:Sheet3'!A1)+Old!B2",
                 FormulaReferenceTransformer.renameSheet("=SUM('Old Name:Sheet3'!A1)+Old!B2", "Old Name", "New Name"));
-        assertEquals("=SUM(Sheet1:'New Name'!A1)",
+        assertEquals("=SUM('Sheet1:New Name'!A1)",
                 FormulaReferenceTransformer.renameSheet("=SUM(Sheet1:'Old Name'!A1)", "Old Name", "New Name"));
+        assertEquals("=SUM('January:Dec Data'!B2)+SUM('[Source.xlsx]Jan Data'!B2)",
+                FormulaReferenceTransformer.renameSheet("=SUM('Jan Data:Dec Data'!B2)+SUM('[Source.xlsx]Jan Data'!B2)", "Jan Data", "January"));
     }
 
     @Test

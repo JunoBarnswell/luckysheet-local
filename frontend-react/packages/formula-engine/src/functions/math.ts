@@ -1,6 +1,7 @@
 import { createFormulaError, isFormulaError, type FormulaValue } from '../values';
 import { coerceExcelNumber, normalizeExcelPrecision, roundExcel, roundExcelDown, roundExcelUp, truncateExcel } from '../numeric';
 import type { FormulaEvaluationContext } from '../evaluator';
+import { evaluateAggregate, flattenAggregateValue } from './aggregate';
 
 export function flattenNumericArgs(args: FormulaValue[]): number[] | ReturnType<typeof createFormulaError> {
   const numbers: number[] = [];
@@ -30,18 +31,8 @@ export function flattenNumericArgs(args: FormulaValue[]): number[] | ReturnType<
 }
 
 export const mathFunctions: Record<string, (args: FormulaValue[], context?: FormulaEvaluationContext) => FormulaValue> = {
-  SUM: (args) => {
-    const nums = flattenNumericArgs(args);
-    if (isFormulaError(nums)) return nums;
-    return normalizeExcelPrecision(nums.reduce((acc, n) => acc + n, 0));
-  },
-
-  PRODUCT: (args) => {
-    const nums = flattenNumericArgs(args);
-    if (isFormulaError(nums)) return nums;
-    if (nums.length === 0) return 0;
-    return normalizeExcelPrecision(nums.reduce((acc, n) => acc * n, 1));
-  },
+  SUM: (args) => evaluateAggregate('SUM', args.map((value) => ({ values: flattenAggregateValue(value), reference: Array.isArray(value) }))),
+  PRODUCT: (args) => evaluateAggregate('PRODUCT', args.map((value) => ({ values: flattenAggregateValue(value), reference: Array.isArray(value) }))),
 
   ABS: (args) => {
     const arg = args[0];
