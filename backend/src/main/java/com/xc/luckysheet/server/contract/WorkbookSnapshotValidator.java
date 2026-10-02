@@ -129,9 +129,11 @@ public final class WorkbookSnapshotValidator {
         if (sheets == null || !sheets.isArray() || sheets.isEmpty()) {
             throw ServiceException.validation("Workbook snapshot requires at least one sheet");
         }
+        RecordTableValidator.validateWorkbook(snapshot);
         JsonNode dataModel = snapshot.get("dataModel");
+        ExternalLinkDefinitionValidator.validateCollection(dataModel == null ? null : dataModel.get("externalLinks"));
         if (dataModel == null || !dataModel.isObject() || !dataModel.path("sources").isArray()
-                || !dataModel.path("tables").isArray() || !dataModel.path("relationships").isArray() || !dataModel.path("views").isArray()) {
+                || !dataModel.path("externalLinks").isArray() || !dataModel.path("tables").isArray() || !dataModel.path("relationships").isArray() || !dataModel.path("views").isArray()) {
             throw ServiceException.validation("Workbook snapshot dataModel is invalid");
         }
         java.util.Set<String> sheetIds = new java.util.HashSet<>();

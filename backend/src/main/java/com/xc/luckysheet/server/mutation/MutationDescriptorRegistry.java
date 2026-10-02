@@ -135,6 +135,8 @@ public class MutationDescriptorRegistry {
         for (String id : QueryMutationDescriptor.IDS) register(new QueryMutationDescriptor(id));
         for (String id : DataSourceMutationDescriptor.IDS) register(new DataSourceMutationDescriptor(id));
         register(new AnalysisViewMutationDescriptor());
+        for (String id : RecordMutationDescriptor.IDS) register(new RecordMutationDescriptor(id));
+        for (String id : ExternalLinkMutationDescriptor.IDS) register(new ExternalLinkMutationDescriptor(id));
         for (String id : StructuralMutationDescriptor.IDS) register(new StructuralMutationDescriptor(id));
         for (String id : WorkbookStructureMutationDescriptor.IDS) register(new WorkbookStructureMutationDescriptor(id));
         registerUnavailableKnownMutations();
@@ -170,6 +172,7 @@ public class MutationDescriptorRegistry {
             throw ServiceException.forbidden("Workbook role " + descriptor.requiredRole().wireValue() + " is required for mutation " + mutation.id());
         }
         List<RangeRef> ranges = descriptor.affectedRanges(snapshot, mutation);
+        com.xc.luckysheet.server.contract.RecordTableValidator.guardWrites(snapshot, mutation.id(), ranges);
         rangeAuthorization.accept(ranges);
         if (descriptor.checksProtection() && role != WorkbookAclRole.OWNER) {
             ProtectionResolver.assertAllowed(snapshot, ranges, descriptor.protectionAction());

@@ -127,7 +127,7 @@ test('committed structural patches and impact ranges survive collaboration decod
   const ruleRangeBefore = { sheetId: 'sheet-1', startRow: 20, endRow: 22, startColumn: 3, endColumn: 4 };
   const ruleRangeAfter = { ...ruleRangeBefore, startRow: 21, endRow: 23 };
   const patch = {
-    version: 9 as const,
+    version: 10 as const,
     mutationId: 'rows.deleted',
     formulaOwnerDeltas: [{
       kind: 'formula-cell' as const,
@@ -250,7 +250,7 @@ test('StructuralPatch v9 validates exact range-owner facts and rejects incomplet
     beforeOwnerRanges: [validationOwnerRange], afterOwnerRanges: [validationOwnerRangeAfter],
   };
   const patch = {
-    version: 9,
+    version: 10,
     mutationId: 'rows.inserted',
     formulaOwnerDeltas: [],
     definedNameOwnerDeltas: [],
@@ -325,7 +325,7 @@ test('StructuralPatch v9 carries formula-rule range-only changes and rejects emp
     beforeFormula: '=TRUE', afterFormula: '=TRUE', beforeRanges: [beforeRange], afterRanges: [afterRange],
   };
   const patch = {
-    version: 9, mutationId: 'rows.inserted', formulaOwnerDeltas: [delta], definedNameOwnerDeltas: [], rangeOwnerDeltas: [],
+    version: 10, mutationId: 'rows.inserted', formulaOwnerDeltas: [delta], definedNameOwnerDeltas: [], rangeOwnerDeltas: [],
   };
 
   assert.deepEqual(validateStructuralPatch(patch, 'rows.inserted').formulaOwnerDeltas, [delta]);
@@ -339,7 +339,7 @@ test('StructuralPatch v9 carries conditional-format and data-validation range-on
   const before = [{ sheetId: 'sheet-1', startRow: 1, endRow: 2, startColumn: 0, endColumn: 3 }];
   const after = [{ ...before[0]!, startRow: 2, endRow: 3 }];
   const patch = {
-    version: 9,
+    version: 10,
     mutationId: 'rows.inserted',
     formulaOwnerDeltas: [],
     definedNameOwnerDeltas: [],
@@ -376,7 +376,7 @@ test('StructuralPatch v9 carries reversible formula-rule anchors and rejects amb
     afterAddress: { sheetId: 'sheet-1', row: 5, column: 2 },
   };
   const patch = {
-    version: 9,
+    version: 10,
     mutationId: 'rows.inserted',
     formulaOwnerDeltas: [delta],
     definedNameOwnerDeltas: [],
@@ -424,13 +424,13 @@ test('StructuralPatch v9 carries reversible formula-rule anchors and rejects amb
 
 test('committed row-permutation structural patches are accepted by the protocol', () => {
   assert.deepEqual(validateStructuralPatch({
-    version: 9,
+    version: 10,
     mutationId: 'rows.permuted',
     formulaOwnerDeltas: [],
     definedNameOwnerDeltas: [],
     rangeOwnerDeltas: [],
   }, 'rows.permuted'), {
-    version: 9,
+    version: 10,
     mutationId: 'rows.permuted',
     formulaOwnerDeltas: [],
     definedNameOwnerDeltas: [],
@@ -440,7 +440,7 @@ test('committed row-permutation structural patches are accepted by the protocol'
 
 test('committed worksheet-rename structural patches are accepted by the protocol', () => {
   const patch = {
-    version: 9,
+    version: 10,
     mutationId: 'sheet.rename',
     formulaOwnerDeltas: [],
     definedNameOwnerDeltas: [],
@@ -457,16 +457,16 @@ test('Sheet Table rename patches accept every canonical formula-object owner and
     { kind: 'formula-object', ownerKind: 'data-view-field', viewId: 'view-1', fieldId: 'field-1', beforeFormula: '=Sales[Amount]', afterFormula: '=Orders[Amount]' },
     { kind: 'formula-object', ownerKind: 'cell-style-template', templateId: 'template-1', field: 'formula1', beforeFormula: '=Sales[Amount]', afterFormula: '=Orders[Amount]' },
   ];
-  const patch = { version: 9, mutationId: 'sheetTable.update', formulaOwnerDeltas, definedNameOwnerDeltas: [], rangeOwnerDeltas: [] };
+  const patch = { version: 10, mutationId: 'sheetTable.update', formulaOwnerDeltas, definedNameOwnerDeltas: [], rangeOwnerDeltas: [] };
   assert.equal(validateStructuralPatch(patch, 'sheetTable.update').formulaOwnerDeltas.length, formulaOwnerDeltas.length);
   assert.deepEqual(validateStructuralPatch({
-    version: 9,
+    version: 10,
     mutationId: 'sheetTable.update',
     formulaOwnerDeltas: [],
     definedNameOwnerDeltas: [],
     rangeOwnerDeltas: [],
   }, 'sheetTable.update'), {
-    version: 9,
+    version: 10,
     mutationId: 'sheetTable.update',
     formulaOwnerDeltas: [],
     definedNameOwnerDeltas: [],
@@ -485,7 +485,7 @@ test('defined-name structural patches reject identity drift, duplicate owners, a
     before: { name: 'LocalName', formula: '=A1', scope: 'sheet', sheetId: 'sheet-1' },
     after: { name: 'LocalName', formula: '=A2', scope: 'sheet', sheetId: 'sheet-1' },
   };
-  const patch = { version: 9, mutationId: 'rows.inserted', formulaOwnerDeltas: [], definedNameOwnerDeltas: [delta], rangeOwnerDeltas: [] };
+  const patch = { version: 10, mutationId: 'rows.inserted', formulaOwnerDeltas: [], definedNameOwnerDeltas: [delta], rangeOwnerDeltas: [] };
   assert.equal(validateStructuralPatch(patch, 'rows.inserted').definedNameOwnerDeltas.length, 1);
   assert.throws(() => validateStructuralPatch({ version: 1, mutationId: 'rows.inserted', formulaOwnerDeltas: [] }, 'rows.inserted'));
   assert.throws(() => validateStructuralPatch({ ...patch, definedNameOwnerDeltas: [delta, delta] }, 'rows.inserted'), /duplicate defined-name owner/);
@@ -550,13 +550,13 @@ test('WorkbookApiClient injects bearer authentication and fails closed without a
       return new Response(JSON.stringify({
         snapshot: {
           schema: 'WorkbookSnapshot',
-          version: 10,
+          version: 11,
           unitId: 'unit-1',
           name: 'Workbook',
           dimensionMetrics: { normalFontFamily: 'Calibri', normalFontSizePx: 14.6666666667, maximumDigitWidthPx: 7 },
           calculationSettings: { mode: 'automatic', iterativeCalculation: false, maximumIterations: 100, maximumChange: 0.001, precisionAsDisplayed: false, calculateBeforeSave: true, fullCalculationOnLoad: false },
           editingOptions: { allowEditDirectly: true, moveAfterEnter: true, enterDirection: 'down', formulaAutoComplete: true, valueAutoComplete: true, fixedDecimalPlaces: null },
-          dataModel: { sources: [], tables: [], relationships: [], views: [] },
+          dataModel: { externalLinks: [], sources: [], tables: [], relationships: [], views: [] },
           sheets: [{
             kind: 'worksheet', id: 'sheet-1',
             name: 'Sheet1',
@@ -596,13 +596,13 @@ test('WorkbookApiClient uses a server-issued guest share token when no bearer ex
       return new Response(JSON.stringify({
         snapshot: {
           schema: 'WorkbookSnapshot',
-          version: 10,
+          version: 11,
           unitId: 'unit-guest',
           name: 'Guest workbook',
           dimensionMetrics: { normalFontFamily: 'Calibri', normalFontSizePx: 14.6666666667, maximumDigitWidthPx: 7 },
           calculationSettings: { mode: 'automatic', iterativeCalculation: false, maximumIterations: 100, maximumChange: 0.001, precisionAsDisplayed: false, calculateBeforeSave: true, fullCalculationOnLoad: false },
           editingOptions: { allowEditDirectly: true, moveAfterEnter: true, enterDirection: 'down', formulaAutoComplete: true, valueAutoComplete: true, fixedDecimalPlaces: null },
-          dataModel: { sources: [], tables: [], relationships: [], views: [] },
+          dataModel: { externalLinks: [], sources: [], tables: [], relationships: [], views: [] },
           sheets: [{
             kind: 'worksheet', id: 'sheet-1', name: 'Sheet1', rowCount: 10, columnCount: 10,
             cells: {}, merges: [], pane: { kind: 'none' }, defaultRowHeightPx: 20, defaultColumnWidthPx: 64,
@@ -734,13 +734,13 @@ test('snapshot trust boundary rejects versioned or legacy drawing payloads', () 
   assert.throws(() => validateWorkbookSnapshot({ schema: 'LegacyWorkbookSnapshot', unitId: 'unit-1' }), /Unsupported workbook snapshot schema/);
   assert.throws(() => validateWorkbookSnapshot({
     schema: 'WorkbookSnapshot',
-    version: 10,
+    version: 11,
     unitId: 'unit-1',
     name: 'Workbook',
     dimensionMetrics: { normalFontFamily: 'Calibri', normalFontSizePx: 14.6666666667, maximumDigitWidthPx: 7 },
     calculationSettings: { mode: 'automatic', iterativeCalculation: false, maximumIterations: 100, maximumChange: 0.001, precisionAsDisplayed: false, calculateBeforeSave: true, fullCalculationOnLoad: false },
     editingOptions: { allowEditDirectly: true, moveAfterEnter: true, enterDirection: 'down', formulaAutoComplete: true, valueAutoComplete: true, fixedDecimalPlaces: null },
-    dataModel: { sources: [], tables: [], relationships: [], views: [] },
+    dataModel: { externalLinks: [], sources: [], tables: [], relationships: [], views: [] },
     sheets: [{
       kind: 'worksheet', id: 'sheet-1',
       name: 'Sheet1',

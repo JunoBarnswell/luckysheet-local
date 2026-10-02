@@ -1,3 +1,7 @@
+import { assertExternalLinkBinding } from './data-model';
+import { assertRecordTable, assertRecordRelationship, assertRecordCalculations } from './record-domain';
+import { rewriteSheetLifecycleFormula } from '@react-sheets/formula-engine';
+import { planWorkbookFormulaRewrite } from './structural-transform';
 import { parseCellMatrixCoordinate } from './cell-coordinates';
 
 export type UnitId = string;
@@ -2215,6 +2219,7 @@ export class WorkbookModel {
   readonly sheets = new Map<SheetId, WorksheetModel>();
   /** Sole canonical structured-data owner; bytes referenced by sources remain in the block store. */
   readonly dataModel = {
+    externalLinks: new Map<string, import('./data-model').ExternalLinkBinding>(),
     sources: new Map<string, DataSourceManifest>(),
     tables: new Map<string, WorkbookTableModel>(),
     relationships: new Map<string, import('./data-model').DataRelationship>(),
@@ -2350,6 +2355,7 @@ export class WorkbookModel {
 
   getDataModel(): WorkbookDataModel {
     return {
+      externalLinks: [...this.dataModel.externalLinks.values()].map(link => structuredClone(link)),
       sources: [...this.dataModel.sources.values()].map((source) => structuredClone(source)),
       tables: [...this.dataModel.tables.values()].map((table) => structuredClone(table)),
       relationships: [...this.dataModel.relationships.values()].map((relationship) => structuredClone(relationship)),
@@ -2485,6 +2491,7 @@ export class WorkbookModel {
   }
 
   addTable(table: WorkbookTableModel): void {
+    assertRecordTable(this, table);
     if (this.dataModel.tables.has(table.id)) throw new Error(`Table already exists: ${table.id}`);
     this.dataModel.tables.set(table.id, structuredClone(table));
   }
@@ -2556,12 +2563,20 @@ export class WorkbookModel {
     return this.getSheet(newId);
   }
 
-  reorderSheet(sheetId: SheetId, toIndex: number): void {
+  reorderSheet(sheetId: SheetId, toIndex: number): StructuralTransformResult {
     const fromIndex = this.sheetOrder.indexOf(sheetId);
     if (fromIndex < 0) throw new Error(`Unknown sheet: ${sheetId}`);
-    const clamped = Math.max(0, Math.min(toIndex, this.sheetOrder.length - 1));
-    this.sheetOrder.splice(fromIndex, 1);
-    this.sheetOrder.splice(clamped, 0, sheetId);
+    if (!Number.isSafeInteger(toIndex)) throw new Error('Sheet destination index must be an integer');
+    const before = this.getSheets().map(({ id, name }) => ({ id, name }));
+    const order = [...this.sheetOrder];
+    order.splice(fromIndex, 1);
+    order.splice(Math.max(0, Math.min(toIndex, this.sheetOrder.length - 1)), 0, sheetId);
+    const after = order.map(id => ({ id, name: this.getSheet(id).name }));
+    const plan = planWorkbookFormulaRewrite(this, this.getSheet(sheetId),
+      formula => rewriteSheetLifecycleFormula(formula, { before, after, sheetId, kind: 'move' }), undefined, undefined, false);
+    const effect = plan.apply();
+    this.sheetOrder = order;
+    return { ...effect, calculationContextEffect: { kind: 'calculation-context', action: 'sync-sheet-order' } };
   }
 
   removeSheet(sheetId: SheetId): WorksheetModel {
@@ -2647,7 +2662,7 @@ export class WorkbookModel {
   snapshot(): WorkbookSnapshot {
     return {
       schema: 'WorkbookSnapshot',
-      version: 10,
+      version: 11,
       unitId: this.unitId,
       name: this.name,
       dimensionMetrics: structuredClone(this.dimensionMetrics),
@@ -2669,7 +2684,7 @@ export class WorkbookModel {
 
   static fromSnapshot(snapshot: WorkbookSnapshot): WorkbookModel {
     if (snapshot.schema !== 'WorkbookSnapshot') throw new Error('Unsupported workbook snapshot schema');
-    if (snapshot.version !== 10) throw new Error('Unsupported workbook snapshot version');
+    if (snapshot.version !== 11) throw new Error('Unsupported workbook snapshot version');
     if (snapshot.sheets.length === 0) throw new Error('Workbook snapshot must contain at least one sheet');
     assertCanonicalWorksheetIdentities(snapshot.sheets);
     assertCanonicalWorkbookOwnerIdentities(snapshot);
@@ -2691,6 +2706,12 @@ export class WorkbookModel {
     const definedNameModels = snapshot.definedNameModels
       ?? Object.entries(snapshot.definedNames ?? {}).map(([name, formula]) => ({ name, formula, scope: 'workbook' as const }));
     for (const entry of definedNameModels) workbook.setDefinedName(entry);
+    if (!Array.isArray(snapshot.dataModel.externalLinks)) throw new Error('Canonical external link definitions are required');
+    for (const link of snapshot.dataModel.externalLinks) {
+      assertExternalLinkBinding(link);
+      if (link.sourceUnitId === snapshot.unitId) throw new Error('EXTERNAL_LINK_SOURCE_INVALID');
+      workbook.dataModel.externalLinks.set(link.id, structuredClone(link));
+    }
     for (const table of snapshot.dataModel.tables) workbook.dataModel.tables.set(table.id, structuredClone(table));
     for (const source of snapshot.dataModel.sources) workbook.addDataSource(source);
     for (const relationship of snapshot.dataModel.relationships) workbook.dataModel.relationships.set(relationship.id, structuredClone(relationship));
@@ -2703,6 +2724,19 @@ export class WorkbookModel {
     for (const definition of snapshot.queryDefinitions ?? []) workbook.setQueryDefinition(definition);
     for (const template of snapshot.cellStyleTemplates ?? []) workbook.setCellStyleTemplate(template);
     workbook.sheetOrder = snapshot.sheets.map((sheet) => sheet.id);
+    for (const table of workbook.dataModel.tables.values()) assertRecordTable(workbook, table);
+    for (const relation of workbook.dataModel.relationships.values()) if (workbook.getTable(relation.fromTableId).recordIdFieldId) assertRecordRelationship(workbook, relation);
+    assertRecordCalculations(workbook);
     return workbook;
   }
 }
+
+export type { ExternalLinkBinding } from './data-model';
+
+export { assertExternalLinkBinding } from './data-model';
+
+export type { RecordFieldAddress, RecordFieldCalculation } from './data-model';
+
+export { assertRecordCalculations, assertRecordFieldWrite, assertRecordTable, assertRecordRelationship, canonicalRecordFieldFormula, recordRows, resolveRecordField, RecordDomainError } from './record-domain';
+
+export { guardRecordWorksheetWrites } from './record-domain';

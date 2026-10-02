@@ -328,6 +328,7 @@ class WorkbookSnapshotValidatorTest {
                 .put("unitId", "book-1").put("name", "Book");
         snapshot.putObject("dimensionMetrics").put("normalFontFamily", "Calibri").put("normalFontSizePx", 14).put("maximumDigitWidthPx", 7);
         ObjectNode dataModel = snapshot.putObject("dataModel");
+        dataModel.putArray("externalLinks");
         dataModel.putArray("sources"); dataModel.putArray("tables"); dataModel.putArray("relationships"); dataModel.putArray("views");
         ObjectNode sheet = snapshot.putArray("sheets").addObject();
         sheet.put("kind", "worksheet").put("id", "sheet-1").put("name", "Sheet1").put("rowCount", 10).put("columnCount", 10)

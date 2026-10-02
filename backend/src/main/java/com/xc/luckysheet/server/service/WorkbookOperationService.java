@@ -46,6 +46,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.ReentrantLock;
@@ -129,6 +130,51 @@ public class WorkbookOperationService {
         return response(unitId, snapshot, row.revision(), checksum(json));
     }
 
+    /** A subject-safe, revision-consistent input graph for one persisted external binding. */
+    public JsonNode readExternalLink(String targetUnitId, String linkId, String actor, List<String> groups) {
+        WorkbookSnapshotResponse target = readSnapshot(targetUnitId, actor, groups);
+        JsonNode binding = null;
+        for (JsonNode link : target.snapshot().path("dataModel").path("externalLinks")) {
+            if (link.path("id").asText().equals(linkId)) { binding = link; break; }
+        }
+        if (binding == null) throw ServiceException.notFound("External link binding not found");
+        final JsonNode selected = binding.deepCopy();
+        String sourceId = selected.path("sourceUnitId").asText();
+        return withWorkbookLock(sourceId, () -> {
+            var resolver = rangeAccess.resolver(sourceId, actor, groups);
+            long accessRevision = resolver.accessRevision();
+            WorkbookSnapshotResponse source = readSnapshot(sourceId, actor, groups);
+            ObjectNode graph = ((ObjectNode) source.snapshot()).deepCopy();
+            int inputCount = 0;
+            for (JsonNode sheet : graph.path("sheets")) for (JsonNode row : sheet.path("cells")) inputCount += row.size();
+            if (inputCount > 100000) throw new ServiceException("UNSUPPORTED_FEATURE", 422, "External input graph exceeds the bounded calculation limit");
+            // Only calculation inputs cross this boundary. Drawings, review, and opaque blocks remain source-owned.
+            for (JsonNode rawSheet : graph.path("sheets")) {
+                ObjectNode sheet = (ObjectNode) rawSheet;
+                sheet.put("kind", "worksheet");
+                for (String key : List.of("drawings", "drawingGroups", "pivots", "sparklines", "hyperlinks", "dataRegions", "conditionalFormats", "dataValidations")) sheet.putArray(key);
+                sheet.putObject("drawingPayloads");
+                ObjectNode review = sheet.putObject("review");
+                for (String key : List.of("notesByCell", "notesById", "threadIdsByCell", "threadsById")) review.putObject(key);
+                sheet.remove(List.of("tableSheet", "ganttSheet", "reportSheet", "lifecycleDefinedNames", "lifecyclePrintDocument"));
+            }
+            for (String key : List.of("printDocuments", "queryDefinitions", "cellStyleTemplates")) graph.putArray(key);
+            ObjectNode data = (ObjectNode) graph.path("dataModel");
+            data.putArray("views");
+            data.putArray("externalLinks");
+            ObjectNode response = mapper.createObjectNode();
+            response.set("binding", selected);
+            response.set("snapshot", graph);
+            response.put("subject", actor);
+            response.put("sourceRevision", source.revision());
+            response.put("accessRevision", accessRevision);
+            var blocked = response.putArray("blockedRanges");
+            for (var region : resolver.hiddenRegions()) blocked.add(mapper.valueToTree(region.range()));
+            if (rangeAccess.resolver(sourceId, actor, groups).accessRevision() != accessRevision) throw new ServiceException("ACCESS_REVISION_CHANGED", 409, "External source access changed during refresh");
+            return response;
+        });
+    }
+
     @Transactional
     public CommitResult commit(String routeUnitId, OperationEnvelope operation, String actor) {
         return commit(routeUnitId, operation, actor, List.of());
@@ -188,6 +234,10 @@ public class WorkbookOperationService {
         List<CommittedOperationMutation> committedMutations = new ArrayList<>();
         long changedAccessRevision = -1;
         for (OperationMutation mutation : operation.mutations()) {
+            if ("table.configure".equals(mutation.id()) && undoTarget == null) {
+                JsonNode previousTable = com.xc.luckysheet.server.contract.RecordTableValidator.table(next, mutation.params().path("table").path("id").asText());
+                if (previousTable.has("recordIdFieldId") && !previousTable.path("recordIdFieldId").equals(mutation.params().path("table").path("recordIdFieldId"))) throw ServiceException.conflict("RECORD_IDENTITY_IMMUTABLE");
+            }
             RangeAccessResolver accessResolver = rangeAccess.resolver(routeUnitId, actor, actorRole, groups);
             JsonNode authorizationSnapshot = next;
             MutationPreparation prepared = registry.prepare(authorizationSnapshot, mutation, actorRole, ranges -> {
@@ -219,6 +269,13 @@ public class WorkbookOperationService {
                 throw ServiceException.unavailable("STRUCTURAL_PATCH_UNAVAILABLE: structural mutation did not produce server-owned reference facts");
             }
             WorkbookSnapshotValidator.requireCanonicalWorksheetNames(candidate.path("sheets"));
+            if (committedPatch != null) for (var delta : committedPatch.formulaOwnerDeltas()) {
+                if ("record-field".equals(delta.ownerKind())) {
+                    JsonNode table = com.xc.luckysheet.server.contract.RecordTableValidator.table(candidate, delta.tableId());
+                    JsonNode range = table.path("sourceRange");
+                    accessResolver.requireCanEdit(List.of(new RangeRef(range.path("sheetId").asText(), range.path("startRow").asInt(), range.path("endRow").asInt(), range.path("startColumn").asInt(), range.path("endColumn").asInt())));
+                }
+            }
             List<RangeRef> committedRanges = registry.committedRanges(protectionPreimage, prepared, actorRole, committedPatch);
             List<RangeRef> structuralImpactRanges = registry.structuralImpactRanges(committedPatch);
             if (ownedSnapshotCommit) {
@@ -402,6 +459,12 @@ public class WorkbookOperationService {
     private static boolean isInverseStructuralMutation(CommittedOperationMutation original, OperationMutation inverse) {
         String originalId = original.id();
         String inverseId = inverse.id();
+        if ("sheet.reordered".equals(originalId) && originalId.equals(inverseId)) return original.params().path("sheetId").equals(inverse.params().path("sheetId"));
+        if ("sheet.remove".equals(originalId) && "sheet.restore".equals(inverseId)) return original.params().path("id").equals(inverse.params().path("sheet").path("id"));
+        if (Set.of("sheet.add", "sheet.restore", "sheet.duplicated").contains(originalId) && "sheet.remove".equals(inverseId)) {
+            String id = originalId.equals("sheet.restore") ? original.params().path("sheet").path("id").asText() : original.params().path(originalId.equals("sheet.duplicated") ? "newId" : "id").asText();
+            return id.equals(inverse.params().path("id").asText());
+        }
         if (isInverseAxisMutation(originalId, inverseId)) {
             return sameAxisRange(original.params(), inverse.params());
         }

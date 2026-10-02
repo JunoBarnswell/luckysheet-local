@@ -20,6 +20,8 @@ export interface TableSheetDesignerPanelProps {
   definition?: TableSheetDefinition;
   tables: readonly WorkbookTableModel[];
   relationships: readonly DataRelationship[];
+  onConfigureRecord?: (input: { tableId: string; identityFieldId: string; fieldId?: string; calculation?: import('@react-sheets/core-model').RecordFieldCalculation }) => void;
+  onSetRelationship?: (relationship: DataRelationship) => void;
   onUpdate: (definition: TableSheetDefinition) => void;
 }
 
@@ -27,8 +29,18 @@ function cloneDefinition(definition: TableSheetDefinition): TableSheetDefinition
   return structuredClone(definition);
 }
 
-export function TableSheetDesignerPanel({ definition, relationships, tables, onUpdate }: TableSheetDesignerPanelProps) {
+export function TableSheetDesignerPanel({ definition, relationships, tables, onUpdate, onConfigureRecord, onSetRelationship }: TableSheetDesignerPanelProps) {
   const [query, setQuery] = useState('');
+  const [identityFieldId, setIdentity] = useState('');
+  const [calculatedFieldId, setCalculatedField] = useState('');
+  const [calculationKind, setCalculationKind] = useState<'formula' | 'lookup' | 'rollup'>('formula');
+  const [formula, setFormula] = useState('');
+  const [relationshipId, setRelationshipId] = useState('');
+  const [targetFieldId, setTargetFieldId] = useState('');
+  const [aggregate, setAggregate] = useState<'SUM' | 'COUNT' | 'AVERAGE' | 'MIN' | 'MAX'>('SUM');
+  const [foreignFieldId, setForeignFieldId] = useState('');
+  const [targetTableId, setTargetTableId] = useState('');
+  const [error, setError] = useState<string>();
   if (!definition) {
     return <StatePanel kind="error" title="TableSheet definition unavailable" description="The workbook does not contain a canonical TableSheet definition." />;
   }
@@ -89,6 +101,10 @@ export function TableSheetDesignerPanel({ definition, relationships, tables, onU
     });
   };
 
+  const chosenRelation = tableRelationships.find(relation => relation.id === relationshipId);
+  const direction = chosenRelation?.fromTableId === table.id ? 'forward' : 'reverse';
+  const lookupTable = chosenRelation ? tables.find(table => table.id === (direction === 'forward' ? chosenRelation.toTableId : chosenRelation.fromTableId)) : undefined;
+  const perform = (work: () => void) => { setError(undefined); try { work(); } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); } };
   return (
     <Stack gap="md" data-testid="table-sheet-designer">
       <Panel tone="accent" className="shadow-none">
@@ -143,6 +159,31 @@ export function TableSheetDesignerPanel({ definition, relationships, tables, onU
         </PanelBody>
       </Panel>
 
+      {onConfigureRecord ? <Panel className="shadow-none">
+        <PanelHeader><PanelTitle as="h3" size="sm">Record / Field 计算</PanelTitle></PanelHeader>
+        <PanelBody className="space-y-2">
+          <Text size="xs">记录 ID 字段在排序后保持不变。首次启用会为该字段的空值分配 ID。</Text>
+          <Select aria-label="记录 ID 字段" value={identityFieldId || table.recordIdFieldId || ''} onChange={event => setIdentity(event.target.value)} options={[{ value: '', label: '选择记录 ID 字段' }, ...table.fields.filter(field => field.type === 'text' && !field.calculation).map(field => ({ value: field.id, label: field.name }))]} />
+          <Button onClick={() => perform(() => onConfigureRecord({ tableId: table.id, identityFieldId: identityFieldId || table.recordIdFieldId || '' }))}>启用记录身份</Button>
+          <Select aria-label="计算字段" value={calculatedFieldId} onChange={event => setCalculatedField(event.target.value)} options={[{ value: '', label: '选择计算字段' }, ...table.fields.filter(field => field.id !== table.recordIdFieldId).map(field => ({ value: field.id, label: field.name }))]} />
+          <Select aria-label="计算方式" value={calculationKind} onChange={event => setCalculationKind(event.target.value as typeof calculationKind)} options={[{ value: 'formula', label: '字段公式' }, { value: 'lookup', label: 'Lookup 关联值' }, { value: 'rollup', label: 'Rollup 汇总' }]} />
+          {calculationKind === 'formula' ? <TextInput aria-label="字段公式" placeholder="=[数量]*[单价]" value={formula} onChange={event => setFormula(event.target.value)} /> : <>
+            <Select aria-label="计算关联" value={relationshipId} onChange={event => { setRelationshipId(event.target.value); setTargetFieldId(''); }} options={[{ value: '', label: '选择关联' }, ...tableRelationships.map(relation => ({ value: relation.id, label: `${tables.find(table => table.id === relation.fromTableId)?.name} → ${tables.find(table => table.id === relation.toTableId)?.name}` }))]} />
+            <Select aria-label="关联取值字段" value={targetFieldId} onChange={event => setTargetFieldId(event.target.value)} options={[{ value: '', label: '选择取值字段' }, ...(lookupTable?.fields ?? []).map(field => ({ value: field.id, label: field.name }))]} />
+            {calculationKind === 'rollup' ? <Select aria-label="汇总函数" value={aggregate} onChange={event => setAggregate(event.target.value as typeof aggregate)} options={['SUM', 'COUNT', 'AVERAGE', 'MIN', 'MAX'].map(value => ({ value, label: value }))} /> : null}
+          </>}
+          <Button variant="primary" disabled={!calculatedFieldId || calculationKind === 'formula' && !formula.trim() || calculationKind !== 'formula' && (!relationshipId || !targetFieldId)} onClick={() => perform(() => onConfigureRecord({ tableId: table.id, identityFieldId: identityFieldId || table.recordIdFieldId || '', fieldId: calculatedFieldId, calculation: calculationKind === 'formula' ? { kind: 'formula', formula } : calculationKind === 'lookup' ? { kind: 'lookup', relationshipId, targetFieldId, direction } : { kind: 'rollup', relationshipId, targetFieldId, direction, aggregate } }))}>保存计算字段</Button>
+          {error ? <Text tone="danger" size="xs">{error}</Text> : null}
+        </PanelBody>
+      </Panel> : null}
+      {onSetRelationship && table.recordIdFieldId ? <Panel className="shadow-none">
+        <PanelHeader><PanelTitle as="h3" size="sm">创建记录关联</PanelTitle></PanelHeader>
+        <PanelBody className="space-y-2">
+          <Select aria-label="关联 ID 字段" value={foreignFieldId} onChange={event => setForeignFieldId(event.target.value)} options={[{ value: '', label: '存放目标记录 ID 的字段' }, ...table.fields.filter(field => !field.calculation).map(field => ({ value: field.id, label: field.name }))]} />
+          <Select aria-label="关联目标表" value={targetTableId} onChange={event => setTargetTableId(event.target.value)} options={[{ value: '', label: '选择目标表' }, ...tables.filter(table => table.recordIdFieldId).map(table => ({ value: table.id, label: table.name }))]} />
+          <Button disabled={!foreignFieldId || !targetTableId} onClick={() => perform(() => onSetRelationship({ id: `relation-${crypto.randomUUID()}`, fromTableId: table.id, fromFieldId: foreignFieldId, toTableId: targetTableId, toFieldId: tables.find(table => table.id === targetTableId)!.recordIdFieldId!, cardinality: 'many-to-one' }))}>保存关联</Button>
+        </PanelBody>
+      </Panel> : null}
       <Panel className="shadow-none">
         <PanelHeader><PanelTitle as="h3" size="sm">Relationship hierarchy</PanelTitle></PanelHeader>
         <PanelBody>

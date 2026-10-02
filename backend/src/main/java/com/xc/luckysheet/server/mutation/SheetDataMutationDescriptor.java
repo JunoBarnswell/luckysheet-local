@@ -68,6 +68,15 @@ final class SheetDataMutationDescriptor extends CanonicalJsonMutationDescriptor 
     @Override
     public MutationApplication applyWithPatch(JsonNode snapshot, OperationMutation mutation) {
         JsonNode updated = applyMetadata(snapshot, mutation);
+        if ("sheet.reordered".equals(id())) {
+            ObjectNode root = SnapshotMutationSupport.root(updated);
+            var before = WorkbookStructureMutationDescriptor.sheetIdentities(SnapshotMutationSupport.root(snapshot));
+            var after = WorkbookStructureMutationDescriptor.sheetIdentities(root);
+            StructuralPatch lifecycle = StructuralSnapshotReducer.rewriteSheetFormulaReferences(root, mutation.sheetId(),
+                    formula -> FormulaReferenceTransformer.sheetLifecycle(formula, before, after, mutation.sheetId(), false),
+                    "sheet.reordered", null);
+            return new MutationApplication(root, lifecycle);
+        }
         if (!"sheetTable.update".equals(id())) return new MutationApplication(updated, null);
         ObjectNode params = SnapshotMutationSupport.params(mutation);
         StructuralPatch patch = StructuralSnapshotReducer.renameSheetTableReferences(

@@ -7,7 +7,7 @@ import java.util.Set;
 public final class GeneratedWorkbookContract {
     public static final String API_VERSION = "2026-09-21";
     public static final String SNAPSHOT_SCHEMA = "WorkbookSnapshot";
-    public static final int SNAPSHOT_VERSION = 10;
+    public static final int SNAPSHOT_VERSION = 11;
     public static final int MAX_WORKBOOK_NAME_LENGTH = 255;
     public static final int MAX_DRAWING_SOURCE_CELLS = 100000;
     public static final int MAX_CHANGED_CELLS = 100000;
@@ -42,6 +42,8 @@ public final class GeneratedWorkbookContract {
         "reportSheet.update"
     );
     public static final Set<String> STRUCTURAL_PATCH_MUTATIONS = Set.of(
+        "sheet.add",
+        "sheet.duplicated",
         "rows.inserted",
         "rows.deleted",
         "columns.inserted",
@@ -53,6 +55,9 @@ public final class GeneratedWorkbookContract {
         "rows.permuted",
         "range.move",
         "sheet.rename",
+        "sheet.remove",
+        "sheet.reordered",
+        "sheet.restore",
         "sheetTable.update"
     );
     public static final Map<String, MutationCapability> MUTATIONS = Map.ofEntries(
@@ -85,6 +90,12 @@ public final class GeneratedWorkbookContract {
         Map.entry("query.load.workbook-table", new MutationCapability("remote", true, "QueryLoadDataSource", "editor", "exact", true, "none", false, "none", "workbook")),
         Map.entry("dataRegion.materialize.commit", new MutationCapability("local", false, "DataRegionMaterializeCommit", "editor", "none", false, "edit-cell", true, "declared", "range")),
         Map.entry("dataRegion.materialize.restore", new MutationCapability("local", false, "DataRegionMaterializeRestore", "editor", "none", false, "edit-cell", true, "declared", "range")),
+        Map.entry("externalLink.set", new MutationCapability("remote", true, "ExternalLinkSet", "editor", "exact", true, "none", false, "none", "workbook")),
+        Map.entry("externalLink.remove", new MutationCapability("remote", true, "ExternalLinkRemove", "editor", "exact", true, "none", false, "none", "workbook")),
+        Map.entry("table.configure", new MutationCapability("remote", true, "RecordTableConfigure", "editor", "exact", true, "none", false, "declared", "worksheet")),
+        Map.entry("relationship.set", new MutationCapability("remote", true, "RecordRelationshipSet", "editor", "exact", true, "none", false, "declared", "workbook")),
+        Map.entry("relationship.remove", new MutationCapability("remote", true, "RecordRelationshipRemove", "editor", "exact", true, "none", false, "declared", "workbook")),
+        Map.entry("record.set", new MutationCapability("remote", true, "RecordFieldSet", "editor", "exact", true, "edit-cell", true, "declared", "worksheet")),
         Map.entry("analysis.view.replace", new MutationCapability("remote", true, "AnalysisViewReplace", "editor", "exact", true, "none", false, "none", "workbook")),
         Map.entry("range.move", new MutationCapability("remote", true, "RangeMove", "editor", "exact", true, "edit-cell", true, "exact", "range")),
         Map.entry("style.preset.set", new MutationCapability("remote", true, "CellStylePreset", "editor", "range", true, "format", true, "declared", "range")),
@@ -192,6 +203,12 @@ public final class GeneratedWorkbookContract {
         Map.entry("query.load.sheet-table", new PermissionPolicy("query", "edit-cell", true, "declared", "range")),
         Map.entry("query.load.pivot-source", new PermissionPolicy("query", "edit-cell", true, "declared", "range")),
         Map.entry("query.load.workbook-table", new PermissionPolicy("query", "none", false, "none", "workbook")),
+        Map.entry("externalLink.set", new PermissionPolicy("structure", "none", false, "none", "workbook")),
+        Map.entry("externalLink.remove", new PermissionPolicy("structure", "none", false, "none", "workbook")),
+        Map.entry("table.configure", new PermissionPolicy("structure", "none", false, "declared", "worksheet")),
+        Map.entry("relationship.set", new PermissionPolicy("structure", "none", false, "declared", "workbook")),
+        Map.entry("relationship.remove", new PermissionPolicy("structure", "none", false, "declared", "workbook")),
+        Map.entry("record.set", new PermissionPolicy("edit-cell", "edit-cell", true, "declared", "worksheet")),
         Map.entry("analysis.view.replace", new PermissionPolicy("structure", "none", false, "none", "workbook")),
         Map.entry("range.clear", new PermissionPolicy("edit-cell", "edit-cell", true, "declared", "range")),
         Map.entry("range.clear.restore", new PermissionPolicy("edit-cell", "edit-cell", true, "declared", "range")),

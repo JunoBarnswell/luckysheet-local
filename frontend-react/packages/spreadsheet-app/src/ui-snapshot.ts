@@ -187,9 +187,11 @@ function formatDisplayValue(
   sheetId: string,
   row: number,
   column: number,
+  recordCalculation = false,
 ): string {
   if (cell?.formula) {
-    return toFormulaDisplay(formula.getCellValue({ sheetId, row, column }));
+    const value = formula.getCellValue({ sheetId, row, column });
+    return recordCalculation && Array.isArray(value) ? value.flat().map(value => toFormulaDisplay(value)).join(', ') : toFormulaDisplay(value);
   }
   const spillValue = formula.getSpillValueAt(sheetId, row, column);
   if (spillValue !== undefined) return toFormulaDisplay(spillValue);
@@ -239,12 +241,12 @@ export function buildCanvasSheetSnapshot(
     const cell = cellResolver.resolve(owner, row, column)?.cell;
     const spillValue = formula.getSpillValueAt(owner.id, row, column);
     if (spillValue !== undefined) return resolveFilterCellValue(cell, spillValue, dateSystem);
-    if (cell?.formula !== undefined) {
+    if (cell?.formula !== undefined || formula.getRecordFormulaOwnerAt({ sheetId: owner.id, row, column })) {
       const result = formula.getCellResult({ sheetId: owner.id, row, column });
       // A missing calculation result is not permission to read authored
       // formula text/value.  It is an unresolved filter value until the
       // FormulaEngine publishes the next result.
-      const evaluated = result ? result.value : cell.formulaValue !== undefined ? cell.formulaValue : null;
+      const evaluated = result ? result.value : cell?.formulaValue !== undefined ? cell.formulaValue : null;
       return resolveFilterCellValue(cell, evaluated, dateSystem);
     }
     return resolveFilterCellValue(cell, undefined, dateSystem);
@@ -278,7 +280,7 @@ export function buildCanvasSheetSnapshot(
       || isFormulaError(evaluatedFormulaValue)
       ? evaluatedFormulaValue
       : modelCell?.formulaValue;
-    const value = formatDisplayValue(modelCell, formula, resolved.owner, resolved.owner.id, resolved.row, resolved.column);
+    const value = formatDisplayValue(modelCell, formula, resolved.owner, resolved.owner.id, resolved.row, resolved.column, Boolean(resolved.recordField));
     const resolvedFilter = resolveFilterCell(resolved.owner, resolved.row, resolved.column);
     const overlay = conditionalRuntime.resolveCell(row, column);
     const table = findSheetTableAt(sheet, row, column);

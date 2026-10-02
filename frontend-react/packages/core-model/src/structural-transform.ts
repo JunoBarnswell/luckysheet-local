@@ -122,6 +122,14 @@ export type StructuralFormulaObjectOwnerDelta =
   }
   | {
     readonly kind: 'formula-object';
+    readonly ownerKind: 'record-field';
+    readonly tableId: string;
+    readonly fieldId: string;
+    readonly beforeFormula: string;
+    readonly afterFormula: string;
+  }
+  | {
+    readonly kind: 'formula-object';
     readonly ownerKind: 'data-view-field';
     readonly viewId: string;
     readonly fieldId: string;
@@ -390,6 +398,7 @@ type StructuralFormulaOwnerLocator =
   | { readonly kind: 'table-sheet-column'; readonly sheetId: string; readonly columnIndex: number; readonly fieldId: string }
   | { readonly kind: 'shape-drawing-payload'; readonly sheetId: string; readonly payloadId: string }
   | { readonly kind: 'chart-text-drawing-payload'; readonly sheetId: string; readonly payloadId: string; readonly field: ChartTextFormulaField }
+  | { readonly kind: 'record-field'; readonly tableId: string; readonly fieldId: string }
   | { readonly kind: 'data-view-field'; readonly viewId: string; readonly fieldIndex: number; readonly fieldId: string }
   | { readonly kind: 'cell-style-template-formula'; readonly templateId: string; readonly field: 'formula1' | 'formula2' | 'listSource.formula' };
 
@@ -422,6 +431,8 @@ function structuralFormulaObjectDelta(change: StagedStructuralFormulaChange): St
     case 'table-sheet-column':
       return { kind: 'formula-object', ownerKind: 'table-sheet-column', sheetId: change.owner.sheetId,
         fieldId: change.owner.fieldId, beforeFormula: change.before, afterFormula: change.after };
+    case 'record-field':
+      return { kind: 'formula-object', ownerKind: 'record-field', tableId: change.owner.tableId, fieldId: change.owner.fieldId, beforeFormula: change.before, afterFormula: change.after };
     case 'data-view-field':
       return { kind: 'formula-object', ownerKind: 'data-view-field', viewId: change.owner.viewId,
         fieldId: change.owner.fieldId, beforeFormula: change.before, afterFormula: change.after };
@@ -2761,6 +2772,7 @@ function preflightWorkbookFormulaOwners(
   mapFormula: (formula: string, ownerSheetId: string) => string,
   mapFormulaInverse: (formula: string, ownerSheetId: string) => string,
   mapAddress: (address: CellAddress) => CellAddress | null,
+  requireRoundTrip = true,
 ): StagedStructuralFormulaChange[] {
   const changes: StagedStructuralFormulaChange[] = [];
   const sheetIds = new Set(workbook.sheetOrder);
@@ -2772,7 +2784,7 @@ function preflightWorkbookFormulaOwners(
   ): void => {
     if (before === undefined || before.length === 0) return;
     const after = mapFormula(before, ownerSheetId);
-    assertStructuralFormulaRoundTrip(participant, before, after, (value) => mapFormulaInverse(value, ownerSheetId));
+    if (requireRoundTrip) assertStructuralFormulaRoundTrip(participant, before, after, (value) => mapFormulaInverse(value, ownerSheetId));
     if (after === before) return;
     changes.push({ kind: 'formula', owner, participant, before, after });
   };
@@ -2822,6 +2834,10 @@ function preflightWorkbookFormulaOwners(
         }
       }
     }
+  }
+  for (const table of workbook.dataModel.tables.values()) for (const field of table.fields) {
+    if (field.calculation?.kind !== 'formula') continue;
+    stage({ kind: 'record-field', tableId: table.id, fieldId: field.id }, `record-field:${table.id}.${field.id}`, field.calculation.formula, table.sourceRange?.sheetId ?? UNANCHORED_WORKBOOK_FORMULA_OWNER);
   }
   for (const view of workbook.dataModel.views.values()) {
     for (const [fieldIndex, field] of view.fields.entries()) {
@@ -2895,6 +2911,10 @@ function readStructuralFormulaOwner(
       const payload = workbook.getSheet(owner.sheetId).drawingPayloads.get(owner.payloadId);
       return payload?.kind === 'chart' ? readChartTextFormula(payload, owner.field) : undefined;
     }
+    case 'record-field': {
+      const field = workbook.dataModel.tables.get(owner.tableId)?.fields.find(field => field.id === owner.fieldId);
+      return field?.calculation?.kind === 'formula' ? field.calculation.formula : undefined;
+    }
     case 'data-view-field': {
       const field = workbook.dataModel.views.get(owner.viewId)?.fields[owner.fieldIndex];
       return field?.fieldId === owner.fieldId ? field.formula : undefined;
@@ -2935,6 +2955,11 @@ function writeStructuralFormulaOwner(
       if (!payload || payload.kind !== 'chart') return false;
       writeChartTextFormula(payload, owner.field, formula);
       return true;
+    }
+    case 'record-field': {
+      const field = workbook.dataModel.tables.get(owner.tableId)?.fields.find(field => field.id === owner.fieldId);
+      if (field?.calculation?.kind !== 'formula') return false;
+      field.calculation.formula = formula; return true;
     }
     case 'data-view-field': {
       const field = workbook.dataModel.views.get(owner.viewId)?.fields[owner.fieldIndex];
@@ -3272,6 +3297,18 @@ export function planSheetTableRename(
   const inverseFormula = (formula: string): string => changesIdentity
     ? rewriteFormulaTableReferences(formula, nextName, previousName)
     : formula;
+  return planWorkbookFormulaRewrite(workbook, tableSheet, (formula) => mapFormula(formula), (formula) => inverseFormula(formula));
+}
+
+export function planWorkbookFormulaRewrite(
+  workbook: WorkbookModel,
+  targetSheet: WorksheetModel,
+  rewrite: (formula: string, ownerSheetId: string) => string,
+  inverse: (formula: string, ownerSheetId: string) => string = formula => formula,
+  excludedSheetId?: string,
+  requireRoundTrip = true,
+): SheetTableRenamePlan {
+  const mapFormula = (formula: string, ownerSheetId: string): string => ownerSheetId === excludedSheetId ? formula : rewrite(formula, ownerSheetId);
   const cellChanges: Array<{
     readonly address: StructuralReferenceOwnerAddress;
     readonly before: StructuralFormulaOwnerState;
@@ -3281,14 +3318,14 @@ export function planSheetTableRename(
     cellSheet.cells.forEachFormulaOwner((cell, row, column) => {
       const owner = { sheetId: cellSheet.id, row, column };
       const before = formulaOwnerState(cell);
-      const formula = cell.formula === undefined ? undefined : mapFormula(cell.formula);
+      const formula = cell.formula === undefined ? undefined : mapFormula(cell.formula, cellSheet.id);
       const sourceFormula = cell.formulaMetadata?.sourceFormula === undefined
         ? undefined
-        : mapFormula(cell.formulaMetadata.sourceFormula);
+        : mapFormula(cell.formulaMetadata.sourceFormula, cellSheet.id);
       const currentBarcodeFormula = cell.presentation?.kind === 'barcode' && cell.presentation.source.kind === 'formula'
         ? cell.presentation.source.formula
         : undefined;
-      const barcodeFormula = currentBarcodeFormula === undefined ? undefined : mapFormula(currentBarcodeFormula);
+      const barcodeFormula = currentBarcodeFormula === undefined ? undefined : mapFormula(currentBarcodeFormula, cellSheet.id);
       if (formula === cell.formula && sourceFormula === cell.formulaMetadata?.sourceFormula
         && barcodeFormula === currentBarcodeFormula) return;
       const rewritesOnlyPreservedDataTableSource = cell.formulaMetadata?.kind === 'dataTable'
@@ -3326,7 +3363,7 @@ export function planSheetTableRename(
     ] as const) {
       for (const rule of rules) {
         for (const [field, beforeFormula] of structuralRuleFormulaFields(rule)) {
-          const afterFormula = mapFormula(beforeFormula);
+          const afterFormula = mapFormula(beforeFormula, ownerSheet.id);
           if (afterFormula === beforeFormula) continue;
           ruleChanges.push({
             owner: { sheetId: ownerSheet.id, ruleKind, ruleId: rule.id, field },
@@ -3340,15 +3377,16 @@ export function planSheetTableRename(
   }
 
   const nameChanges = workbook.definedNameModels.flatMap((entry) => {
-    const formula = mapFormula(entry.formula);
+    const formula = mapFormula(entry.formula, entry.sheetId ?? UNANCHORED_WORKBOOK_FORMULA_OWNER);
     return formula === entry.formula ? [] : [{ entry, formula }];
   });
   const participantChanges = preflightWorkbookFormulaOwners(
     workbook,
-    tableSheet,
-    (formula) => mapFormula(formula),
-    (formula) => inverseFormula(formula),
+    targetSheet,
+    mapFormula,
+    inverse,
     (address) => address,
+    requireRoundTrip,
   );
   const formulaOwnerDeltas: StructuralFormulaOwnerDelta[] = [
     ...cellChanges.map(({ address, before, after }): StructuralFormulaCellOwnerDelta => ({
@@ -3378,7 +3416,6 @@ export function planSheetTableRename(
 
   return {
     apply: () => {
-      if (table.name !== previousName) throw new Error(`STRUCTURAL_PATCH_PRECONDITION: Sheet Table ${tableId} changed during rename preflight`);
       for (const change of cellChanges) {
         const cell = workbook.getSheet(change.address.sheetId).cells.getFormulaOwnerWithoutHydration(change.address.row, change.address.column);
         if (!cell || JSON.stringify(formulaOwnerState(cell)) !== JSON.stringify(change.before)) {
@@ -3441,6 +3478,7 @@ export function planSheetTableRename(
         rewrittenFormulaOwners: cellChanges.map(({ address }) => ({ ...address })),
         ...(formulaOwnerDeltas.length > 0 ? { formulaOwnerDeltas } : {}),
         ...(definedNameOwnerDeltas.length > 0 ? { definedNameOwnerDeltas } : {}),
+        calculationContextEffect: { kind: 'calculation-context', action: 'rebuild' },
       };
     },
   };

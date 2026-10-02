@@ -1,3 +1,4 @@
+import { assertExternalCalculationLink, type ExternalCalculationLink } from './external-links';
 import type { CellAddress } from './ast';
 import type { FormulaDependency } from './range-index';
 import type { ResolvedSpill } from './spill-resolver';
@@ -7,7 +8,7 @@ import { isValidCalculationTimeUtcMs, type CalculationEntropyContext } from './r
 
 /** Stable wire identity for the calculation task transport. */
 export const CALCULATION_TASK_PROTOCOL = 'react-sheets.formula-calculation' as const;
-export const CALCULATION_TASK_VERSION = 3 as const;
+export const CALCULATION_TASK_VERSION = 4 as const;
 
 export type CalculationTaskKind = 'recalculate';
 
@@ -30,6 +31,7 @@ export interface CalculationTaskRequest {
   readonly full?: boolean;
   /** Incremental authored-input changes applied to the persistent worker. */
   readonly inputs?: readonly CalculationInputUpdate[];
+  readonly externalLinks?: readonly ExternalCalculationLink[];
 }
 
 export interface CalculationInputUpdate {
@@ -117,6 +119,7 @@ export function assertCalculationTaskRequest(request: CalculationTaskRequest): v
   if (request.full !== undefined && typeof request.full !== 'boolean') {
     throw new Error('Calculation task full flag must be boolean');
   }
+  if (request.externalLinks !== undefined) { if (!Array.isArray(request.externalLinks)) throw new Error('Invalid external link deltas'); for (const link of request.externalLinks) assertExternalCalculationLink(link); }
   if (request.inputs !== undefined && !request.inputs.every(isCalculationInputUpdate)) {
     throw new Error('Calculation task inputs must be valid incremental cell updates');
   }

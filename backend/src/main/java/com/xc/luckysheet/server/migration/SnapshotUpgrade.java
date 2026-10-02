@@ -19,6 +19,11 @@ public final class SnapshotUpgrade {
         if (snapshot.path("version").asInt(-1) == GeneratedWorkbookContract.SNAPSHOT_VERSION) {
             return requireCanonical(snapshot, expectedUnitId);
         }
+        if (snapshot.path("dataModel").isObject()) ((ObjectNode) snapshot.get("dataModel")).putArray("externalLinks");
+        if (snapshot.path("version").asInt(-1) == 10 && snapshot.path("sheets").isArray()) {
+            snapshot.put("version", GeneratedWorkbookContract.SNAPSHOT_VERSION);
+            return requireCanonical(snapshot, expectedUnitId);
+        }
         if (snapshot.path("version").asInt(-1) == 9 && snapshot.path("sheets").isArray()) {
             snapshot.put("version", GeneratedWorkbookContract.SNAPSHOT_VERSION);
             for (JsonNode raw : (ArrayNode) snapshot.path("sheets")) {
@@ -53,6 +58,7 @@ public final class SnapshotUpgrade {
         if (snapshot.path("version").asInt(-1) == 4 && snapshot.path("sheets").isArray()) {
             snapshot.put("version", GeneratedWorkbookContract.SNAPSHOT_VERSION);
             ObjectNode dataModel = snapshot.putObject("dataModel");
+            dataModel.putArray("externalLinks");
             dataModel.set("sources", snapshot.path("dataSources").isArray() ? snapshot.path("dataSources").deepCopy() : snapshot.arrayNode());
             dataModel.set("tables", snapshot.path("tables").isArray() ? snapshot.path("tables").deepCopy() : snapshot.arrayNode());
             dataModel.set("relationships", snapshot.arrayNode());

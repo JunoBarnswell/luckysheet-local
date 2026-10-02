@@ -67,7 +67,7 @@ test('v7 snapshot migration moves legacy review into the canonical store and rem
     name: 'Workbook',
     dimensionMetrics: { normalFontFamily: 'Calibri', normalFontSizePx: 14.6666666667, maximumDigitWidthPx: 7 },
     calculationSettings: { mode: 'automatic', iterativeCalculation: false, maximumIterations: 100, maximumChange: 0.001, precisionAsDisplayed: false, calculateBeforeSave: false, fullCalculationOnLoad: false },
-    dataModel: { sources: [], tables: [], relationships: [], views: [] },
+    dataModel: { externalLinks: [], sources: [], tables: [], relationships: [], views: [] },
     sheets: [{
       kind: 'worksheet', id: 'sheet-1', name: 'Sheet1', rowCount: 20, columnCount: 20, cells: { '3': { '4': { value: null, note: note('cell-note'), comment: thread('cell-thread', 0, 0) } } },
       notes: [{ row: 1, column: 2, note: note('sheet-note') }], commentThreads: [], merges: [], pane: { kind: 'none' }, pivots: [], sparklines: [], drawings: [], drawingPayloads: {},
@@ -88,7 +88,7 @@ test('v7 snapshot migration fails closed on conflicting legacy identities', () =
     schema: 'WorkbookSnapshot', version: 7, unitId: 'unit-1', name: 'Workbook',
     dimensionMetrics: { normalFontFamily: 'Calibri', normalFontSizePx: 14.6666666667, maximumDigitWidthPx: 7 },
     calculationSettings: { mode: 'automatic', iterativeCalculation: false, maximumIterations: 100, maximumChange: 0.001, precisionAsDisplayed: false, calculateBeforeSave: false, fullCalculationOnLoad: false },
-    dataModel: { sources: [], tables: [], relationships: [], views: [] },
+    dataModel: { externalLinks: [], sources: [], tables: [], relationships: [], views: [] },
     sheets: [{ kind: 'worksheet', id: 'sheet-1', name: 'Sheet1', rowCount: 2, columnCount: 2, cells: {}, notes: [{ row: 0, column: 0, note: note('duplicate', 'first') }, { row: 0, column: 1, note: note('duplicate', 'second') }], commentThreads: [], merges: [], pane: { kind: 'none' }, pivots: [], sparklines: [], drawings: [], drawingPayloads: {}, defaultRowHeightPx: 20, defaultColumnWidthPx: 64 }],
   } as any;
   assert.throws(() => migrateStoredWorkbookSnapshot(legacy), /REVIEW_MIGRATION_CONFLICT/);

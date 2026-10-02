@@ -253,7 +253,11 @@ class Parser {
     }
 
     if (token.kind === 'left-bracket') {
-      return this.parseExternalReference();
+      let close = this.index + 1;
+      while (close < this.tokens.length && this.tokens[close]?.kind !== 'right-bracket' && this.tokens[close]?.kind !== 'eof') close++;
+      const next = this.tokens[close + 1]?.kind;
+      if (next === 'identifier' || next === 'string' || next === 'bang') return this.parseExternalReference();
+      return this.parseTableReference({ ...token, lexeme: '' });
     }
 
     if (this.match('left-paren')) {
@@ -376,7 +380,13 @@ class Parser {
       this.advance();
       return columnToken.value ?? '';
     }
-    return this.expect('identifier', 'Expected table column name').lexeme;
+    let name = '';
+    while (!this.check('right-bracket')) {
+      if (this.check('eof') || this.check('left-bracket') || this.check('comma') || this.check('table-specifier')) throw new FormulaSyntaxError('Invalid table column name', this.peek().span.start);
+      name += this.advance().lexeme;
+    }
+    if (!name) throw new FormulaSyntaxError('Expected table column name', columnToken.span.start);
+    return name;
   }
 
   private parseTableSpecifierToken(): TableReferenceSpecifier {

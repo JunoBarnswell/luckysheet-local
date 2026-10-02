@@ -1,3 +1,4 @@
+import { assertExternalCalculationLink, externalReferenceRange, externalSheetKey, type ExternalCalculationLink } from './external-links';
 import type { CellAddress, FormulaAst, FormulaReferenceNode } from './ast';
 import { cellAddressKey, compareCellAddresses, parseCellAddress } from './address';
 import { collectFormulaDependencies, collectFormulaReferenceNodes, resolveRangeReference } from './dependencies';
@@ -195,6 +196,7 @@ export interface FormulaEngineOptions {
   readonly calculationEntropySeed?: string;
   readonly collationContext?: Partial<WorkbookCollationContext>;
   readonly calculationSettings?: Partial<WorkbookCalculationSettings>;
+  readonly blockedRanges?: readonly { sheetId: string; startRow: number; endRow: number; startColumn: number; endColumn: number }[];
   readonly rowVisibilityResolver?: RowVisibilityResolver;
 }
 
@@ -264,9 +266,81 @@ export class FormulaEngine {
   private readonly cells = new Map<string, StoredCell>();
   private readonly inputRowsBySheet = new Map<string, Map<number, Set<number>>>();
   private readonly sortedInputRowsBySheet = new Map<string, readonly number[]>();
+  private externalLinks = new Map<string, ExternalCalculationLink>();
+  private externalCells = new Map<string, Map<string, { address: CellAddress; value: FormulaValue }>>();
+  private externalOwners = new Map<string, Set<string>>();
+  private cellExternalTokens = new Map<string, Set<string>>();
+  private pendingExternalLinks = new Map<string, { sequence: number; link: ExternalCalculationLink }>();
+
+  getExternalCalculationLinks(): readonly ExternalCalculationLink[] { return [...this.externalLinks.values()].map(link => structuredClone(link)); }
+
+  /** Data comes from a host-authorized read; evaluation never starts network requests. */
+  applyExternalCalculationLinks(links: readonly ExternalCalculationLink[], trackForWorker = true): void {
+    for (const link of links) assertExternalCalculationLink(link);
+    for (const link of links) {
+      const previous = this.externalLinks.get(link.token.toUpperCase());
+      if (previous && previous.id !== link.id) throw new Error('EXTERNAL_LINK_TOKEN_CONFLICT');
+      if (previous && previous.sourceUnitId === link.sourceUnitId && previous.subject === link.subject && (link.accessRevision < previous.accessRevision
+        || link.accessRevision === previous.accessRevision && link.sourceRevision < previous.sourceRevision)) continue;
+      if (sameCalculationValue(previous, link)) continue;
+      for (const sheet of previous?.sheets ?? []) this.externalCells.delete(externalSheetKey(link.id, sheet.id));
+      this.externalLinks.set(link.token.toUpperCase(), structuredClone(link));
+      for (const sheet of link.sheets) this.externalCells.set(externalSheetKey(link.id, sheet.id), new Map());
+      for (const cell of link.cells) {
+        const sheetId = externalSheetKey(link.id, cell.address.sheetId);
+        const address = { ...cell.address, sheetId };
+        this.externalCells.get(sheetId)!.set(`${address.row}:${address.column}`, { address, value: structuredClone(cell.value) });
+      }
+      for (const owner of this.externalOwners.get(link.token.toUpperCase()) ?? []) this.pendingRecalculationRoots.add(owner);
+      if (trackForWorker) {
+        this.inputUpdateSequence += 1;
+        this.pendingExternalLinks.set(link.id, { sequence: this.inputUpdateSequence, link: structuredClone(link) });
+      }
+      this.markCalculationStateChanged();
+    }
+  }
+
+  private isBlockedRange(range: RangeDependency): boolean {
+    return this.blockedRanges.some(blocked => blocked.sheetId === range.start.sheetId && blocked.startRow <= range.end.row && range.start.row <= blocked.endRow && blocked.startColumn <= range.end.column && range.start.column <= blocked.endColumn);
+  }
+
+  private externalRangeValues(range: RangeDependency, sparse: boolean): Iterable<FormulaValue> | undefined {
+    const cells = this.externalCells.get(range.start.sheetId);
+    if (!cells) return undefined;
+    if (sparse) return [...cells.values()].filter(cell => cell.address.row >= range.start.row && cell.address.row <= range.end.row
+      && cell.address.column >= range.start.column && cell.address.column <= range.end.column).map(cell => cell.value);
+    return (function* () {
+      for (let row = range.start.row; row <= range.end.row; row++) for (let column = range.start.column; column <= range.end.column; column++) yield cells.get(`${row}:${column}`)?.value ?? null;
+    })();
+  }
+
+  private externalRangeMatrix(range: RangeDependency): ArrayValue | undefined {
+    const cells = this.externalCells.get(range.start.sheetId);
+    if (!cells) return undefined;
+    if ((range.end.row - range.start.row + 1) * (range.end.column - range.start.column + 1) > 100000) return [[createFormulaError('#NUM!', 'External matrix exceeds calculation limit')]];
+    return Array.from({ length: range.end.row - range.start.row + 1 }, (_, index) => Array.from({ length: range.end.column - range.start.column + 1 }, (_, column) => cells.get(`${range.start.row + index}:${range.start.column + column}`)?.value ?? null));
+  }
+
+  private readonly blockedRanges: NonNullable<FormulaEngineOptions['blockedRanges']>;
+  private recordFormulaOwners = new Map<string, { tableId: string; recordId: string; fieldId: string; address: CellAddress }>();
+
+  setRecordFormulaOwners(owners: readonly { tableId: string; recordId: string; fieldId: string; address: CellAddress }[]): void {
+    const next = new Map(owners.map(owner => [cellAddressKey(owner.address), structuredClone(owner)]));
+    if (JSON.stringify([...next]) === JSON.stringify([...this.recordFormulaOwners])) return;
+    this.recordFormulaOwners = next;
+    this.calculationContextGeneration += 1;
+  }
+  getRecordFormulaOwners(): readonly { tableId: string; recordId: string; fieldId: string; address: CellAddress }[] { return [...this.recordFormulaOwners.values()]; }
+  getRecordFormulaOwnerAt(address: CellAddress): Readonly<{ tableId: string; recordId: string; fieldId: string; address: CellAddress }> | undefined { return this.recordFormulaOwners.get(cellAddressKey(address)); }
+  getRecordFieldResult(tableId: string, recordId: string, fieldId: string): FormulaResult | undefined {
+    const owner = [...this.recordFormulaOwners.values()].find(owner => owner.tableId === tableId && owner.recordId === recordId && owner.fieldId === fieldId);
+    return owner ? this.getCellResult(owner.address) : undefined;
+  }
+
   private formulaCount = 0;
 
   constructor(options: FormulaEngineOptions = {}) {
+    this.blockedRanges = structuredClone(options.blockedRanges ?? []);
     this.defaultSheetId = options.defaultSheetId ?? 'Sheet1';
     this.sheetOrder = normalizeFormulaSheetOrder(options.sheetOrder, this.defaultSheetId);
     this.calculationSettings = normalizeWorkbookCalculationSettings({
@@ -290,6 +364,7 @@ export class FormulaEngine {
     assertFormulaCalculationSnapshot(snapshot);
     const engine = new FormulaEngine({
       defaultSheetId: snapshot.defaultSheetId,
+      blockedRanges: snapshot.blockedRanges,
       sheetOrder: snapshot.sheetOrder,
       recalculationMode: 'manual',
       calculationSettings: { ...snapshot.calculationSettings, mode: 'manual' },
@@ -303,6 +378,8 @@ export class FormulaEngine {
     engine.activeCalculationEntropy = structuredClone(snapshot.calculationEntropy);
     engine.calculationCycleSequence = snapshot.calculationEntropy.cycleId;
     engine.setDefinedNameModels(snapshot.definedNameModels, false);
+    engine.setRecordFormulaOwners(snapshot.recordFormulaOwners ?? []);
+    engine.applyExternalCalculationLinks(snapshot.externalLinks ?? [], false);
     engine.sheetTables = new Map(
       [...normalizeSheetTables(snapshot.sheetTables)].map(([name, table]) => [name, structuredClone(table)] as const),
     );
@@ -379,6 +456,8 @@ export class FormulaEngine {
     this.spills.delete(spillKey(address));
     this.detachNameReferences(key);
     this.detachTableReferences(key);
+    for (const token of this.cellExternalTokens.get(key) ?? []) this.externalOwners.get(token)?.delete(key);
+    this.cellExternalTokens.delete(key);
     this.volatileCells.delete(key);
     this.cells.delete(key);
     this.unindexInputAddress(address);
@@ -561,15 +640,16 @@ export class FormulaEngine {
    * calculation Worker.  The sequence is monotonic so newer edits cannot be
    * accidentally removed when an older task completes late.
    */
-  exportPendingCalculationInputs(): { inputs: readonly CalculationInputUpdate[]; inputRevision: number } {
+  exportPendingCalculationInputs(): { inputs: readonly CalculationInputUpdate[]; externalLinks: readonly ExternalCalculationLink[]; inputRevision: number } {
     const entries = [...this.pendingInputUpdates.values()]
       .sort((left, right) => left.sequence - right.sequence)
       .map((entry) => structuredClone(entry.update));
-    return { inputs: entries, inputRevision: this.inputUpdateSequence };
+    return { inputs: entries, externalLinks: [...this.pendingExternalLinks.values()].sort((a, b) => a.sequence - b.sequence).map(entry => structuredClone(entry.link)), inputRevision: this.inputUpdateSequence };
   }
 
   acknowledgeCalculationInputUpdates(inputRevision: number): void {
     if (!Number.isSafeInteger(inputRevision) || inputRevision < 0) return;
+    for (const [key, entry] of this.pendingExternalLinks) if (entry.sequence <= inputRevision) this.pendingExternalLinks.delete(key);
     for (const [key, entry] of this.pendingInputUpdates) {
       if (entry.sequence <= inputRevision) this.pendingInputUpdates.delete(key);
     }
@@ -658,6 +738,7 @@ export class FormulaEngine {
               ...(needsSnapshot ? { snapshot: this.exportCalculationSnapshot() } : {}),
               generation: this.calculationGeneration,
               inputs: pending.inputs,
+              externalLinks: pending.externalLinks,
               inputRevision: pending.inputRevision,
               calculationContextGeneration: this.calculationContextGeneration,
             };
@@ -866,6 +947,7 @@ export class FormulaEngine {
 
     return {
       defaultSheetId: this.defaultSheetId,
+      blockedRanges: this.blockedRanges,
       sheetOrder: this.sheetOrder.map((sheet) => ({ ...sheet })),
       calculationSettings: structuredClone(this.calculationSettings),
       dateSystem: this.dateSystem,
@@ -877,6 +959,8 @@ export class FormulaEngine {
       cells,
       definedNameModels: this.getDefinedNameModels(),
       sheetTables: this.getSheetTables(),
+      externalLinks: this.getExternalCalculationLinks(),
+      recordFormulaOwners: this.getRecordFormulaOwners(),
       spillSpaces,
       pendingRoots: this.pendingCalculationRoots(),
     };
@@ -1339,6 +1423,8 @@ export class FormulaEngine {
       this.spills.delete(spillKey(address));
       this.detachNameReferences(key);
       this.detachTableReferences(key);
+    for (const token of this.cellExternalTokens.get(key) ?? []) this.externalOwners.get(token)?.delete(key);
+    this.cellExternalTokens.delete(key);
       this.volatileCells.delete(key);
       const previous = this.cells.get(key);
       this.cells.delete(key);
@@ -1410,6 +1496,8 @@ export class FormulaEngine {
     this.spills.delete(spillKey(address));
     this.detachNameReferences(key);
     this.detachTableReferences(key);
+    for (const token of this.cellExternalTokens.get(key) ?? []) this.externalOwners.get(token)?.delete(key);
+    this.cellExternalTokens.delete(key);
     this.volatileCells.delete(key);
     this.visibilityDependentCells.delete(key);
     const result: FormulaResult = { value, dependencies: [] };
@@ -1845,10 +1933,10 @@ export class FormulaEngine {
         rowVisibility: this.rowVisibilityResolver,
         readFormulaKind: (reference) => this.formulaKindAt(reference),
         random: (functionName, occurrence, elementIndex) => this.randomForCell(cell.address, functionName, occurrence, elementIndex),
-        readCell: (reference) => this.readCellWithOverrides(reference, cache, visiting, overrides),
-        readRange: (range) => this.readRange(range, cache, visiting, overrides),
-        readRangeMatrix: (range) => this.readRangeMatrix(range, cache, visiting, overrides),
-        readSparseRange: (range) => this.readSparseRange(range, cache, visiting, overrides),
+        readCell: (reference) => this.blockedRanges.some(range => range.sheetId === reference.sheetId && range.startRow <= reference.row && reference.row <= range.endRow && range.startColumn <= reference.column && reference.column <= range.endColumn) ? createFormulaError('#BLOCKED!', 'Hidden formula input') : this.externalCells.get(reference.sheetId)?.get(`${reference.row}:${reference.column}`)?.value ?? this.readCellWithOverrides(reference, cache, visiting, overrides),
+        readRange: (range) => this.isBlockedRange(range) ? [createFormulaError('#BLOCKED!', 'Hidden formula range')] : this.externalRangeValues(range, false) ?? this.readRange(range, cache, visiting, overrides),
+        readRangeMatrix: (range) => this.isBlockedRange(range) ? [[createFormulaError('#BLOCKED!', 'Hidden formula range')]] : this.externalRangeMatrix(range) ?? this.readRangeMatrix(range, cache, visiting, overrides),
+        readSparseRange: (range) => this.isBlockedRange(range) ? [createFormulaError('#BLOCKED!', 'Hidden formula range')] : this.externalRangeValues(range, true) ?? this.readSparseRange(range, cache, visiting, overrides),
         readSpillRange: (anchor) => {
           this.evaluateCell(anchor, cache, visiting, overrides);
           const spill = this.spills.get(spillKey(anchor));
@@ -1895,7 +1983,7 @@ export class FormulaEngine {
     const key = spillKey(address);
     this.pendingSpillRecalculationOwners?.delete(key);
     const previous = this.spills.get(key);
-    if (!isSpillMatrix(value)) {
+    if (this.recordFormulaOwners.has(cellAddressKey(address)) || !isSpillMatrix(value)) {
       this.spills.delete(key);
       if (previous) this.recordSpillProjectionChange(address, previous, undefined);
       return;
@@ -1946,6 +2034,8 @@ export class FormulaEngine {
   private updateFormulaMetadata(key: string, ast?: FormulaAst, dependencies: readonly FormulaDependency[] = []): void {
     this.detachNameReferences(key);
     this.detachTableReferences(key);
+    for (const token of this.cellExternalTokens.get(key) ?? []) this.externalOwners.get(token)?.delete(key);
+    this.cellExternalTokens.delete(key);
     if (!ast) {
       this.volatileCells.delete(key);
       this.visibilityDependentCells.delete(key);
@@ -1969,6 +2059,19 @@ export class FormulaEngine {
       bucket.add(key);
       this.nameIndex.set(name, bucket);
     }
+    const tokens = new Set<string>();
+    const visitExternal = (source: FormulaAst, visited: Set<string>): void => {
+      for (const ref of collectFormulaReferenceNodes(source)) if (ref.type === 'external-reference') tokens.add(ref.qualifier.workbookId.toUpperCase());
+      for (const name of collectNameReferences(source)) {
+        const definition = this.findDefinedName(name, cell.address);
+        if (!definition || visited.has(name.toUpperCase())) continue;
+        visited.add(name.toUpperCase());
+        try { visitExternal(parseFormulaSource(definition.formula.startsWith('=') ? definition.formula : `=${definition.formula}`), visited); } catch { /* The normal formula/name error is retained. */ }
+      }
+    };
+    visitExternal(ast, new Set());
+    this.cellExternalTokens.set(key, tokens);
+    for (const token of tokens) { const owners = this.externalOwners.get(token) ?? new Set<string>(); owners.add(key); this.externalOwners.set(token, owners); }
     const tables = this.collectDefinedNameTableReferences(ast, cell.address, new Set<string>());
     this.cellTableRefs.set(key, tables);
     for (const table of tables) {
@@ -2197,8 +2300,10 @@ export class FormulaEngine {
       }
       case 'sheet-range-reference':
         return this.resolveSheetRangeReference(reference, currentCell);
-      case 'external-reference':
-        return createFormulaError('#REF!', `External workbook is unavailable: ${reference.qualifier.workbookId}`);
+      case 'external-reference': {
+        const resolved = externalReferenceRange(reference, this.externalLinks.get(reference.qualifier.workbookId.toUpperCase()));
+        return isFormulaError(resolved) ? resolved : { kind: 'reference', ranges: [resolved] };
+      }
       default:
         return createFormulaError('#REF!', `Unsupported structured reference: ${reference.type}`);
     }

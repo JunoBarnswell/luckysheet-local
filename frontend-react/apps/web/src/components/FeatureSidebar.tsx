@@ -147,6 +147,8 @@ export interface FeatureSidebarProps {
   tables: readonly WorkbookTableModel[];
   dataSources: readonly DataSourceManifest[];
   relationships: readonly DataRelationship[];
+  onConfigureRecord?: import('./panels/TableSheetDesignerPanel').TableSheetDesignerPanelProps['onConfigureRecord'];
+  onSetRecordRelationship?: import('./panels/TableSheetDesignerPanel').TableSheetDesignerPanelProps['onSetRelationship'];
   onUpdateTableSheet: (definition: TableSheetDefinition) => void;
   onUpdateGanttSheet: (definition: GanttSheetDefinition) => void;
   onUpdateReportSheet: (definition: ReportSheetDefinition) => void;
@@ -383,6 +385,8 @@ export function FeatureSidebar({
   dataSources,
   relationships,
   onUpdateTableSheet,
+  onConfigureRecord,
+  onSetRecordRelationship,
   onUpdateGanttSheet,
   onUpdateReportSheet,
   activeTable,
@@ -736,7 +740,7 @@ export function FeatureSidebar({
         ) : null}
         {phase === 'ready' && activePanel === 'data' ? (
           sheet.tableSheet ? (
-            <TableSheetDesignerPanel definition={sheet.tableSheet} tables={tables} relationships={relationships} onUpdate={onUpdateTableSheet} />
+            <TableSheetDesignerPanel definition={sheet.tableSheet} tables={tables} relationships={relationships} onUpdate={onUpdateTableSheet} onConfigureRecord={onConfigureRecord} onSetRelationship={onSetRecordRelationship} />
           ) : sheet.ganttSheet ? (
             <GanttDesignerPanel definition={sheet.ganttSheet} tables={tables} onUpdate={onUpdateGanttSheet} />
           ) : sheet.reportSheet ? (

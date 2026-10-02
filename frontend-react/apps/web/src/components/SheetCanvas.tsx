@@ -1103,9 +1103,9 @@ export function SheetCanvas({
           >
             <Box className="absolute inset-0" data-pointer-gesture-owner="worksheet">
               <CanvasRenderSurface
+                ref={engineRef}
                 options={{ resolveAssetUrl, assetUrlCache: assetUrlCacheRef.current, assetUrlPending: assetUrlPendingRef.current, assetUrlErrors: assetUrlErrorsRef.current }}
                 onReady={(engine) => {
-                  engineRef.current = engine;
                   setEngineReady(true);
                   engine.setCellProvider(cellProvider);
                   engine.setSkeleton(skeleton);

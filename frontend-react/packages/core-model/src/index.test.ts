@@ -168,7 +168,7 @@ test('v8 storage migration creates the single canonical v10 editing options cont
   legacy.version = 8;
   delete legacy.editingOptions;
   const migrated = migrateStoredWorkbookSnapshot(legacy);
-  assert.equal(migrated.version, 10);
+  assert.equal(migrated.version, 11);
   assert.deepEqual(migrated.editingOptions, { allowEditDirectly: true, moveAfterEnter: true, enterDirection: 'down', formulaAutoComplete: true, valueAutoComplete: true, fixedDecimalPlaces: null });
 });
 
@@ -186,7 +186,7 @@ test('v9 migration extracts legacy cell hyperlinks without hydrating deferred sh
 
   const migrated = migrateStoredWorkbookSnapshot(legacy);
   const migratedSheet = migrated.sheets[0]!;
-  assert.equal(migrated.version, 10);
+  assert.equal(migrated.version, 11);
   assert.deepEqual(migratedSheet.hyperlinks, [
     { row: 0, column: 1, hyperlink: { id: 'legacy-detail', target: { kind: 'email', address: 'link@example.com' } } },
     { row: 0, column: 0, hyperlink: { id: 'canonical', target: { kind: 'url', url: 'https://canonical.example' } } },
@@ -990,7 +990,8 @@ test('sheet deletion rejects external formula anchors, validation ranges, chart 
     kind: 'shape', type: 'rectangle', fill: '#ffffff', stroke: '#000000',
     propertyFormula: "='Shape Source'!A1",
   });
-  assertSourceSheetDeletionRejected(shapeWorkbook, shapeSource.id);
+  shapeWorkbook.removeSheet(shapeSource.id);
+  assert.equal((shapeOwner.drawingPayloads.get("formula-shape") as { propertyFormula: string }).propertyFormula, "=#REF!");
 
   const barcodeWorkbook = new WorkbookModel('delete-barcode-source', 'Delete barcode source');
   const barcodeOwner = barcodeWorkbook.getSheet('sheet-1');
@@ -1004,7 +1005,8 @@ test('sheet deletion rejects external formula anchors, validation ranges, chart 
       options: { foreground: '#000000', background: '#ffffff', showText: true, labelPosition: 'below', quietZone: 2 },
     },
   });
-  assertSourceSheetDeletionRejected(barcodeWorkbook, barcodeSource.id);
+  barcodeWorkbook.removeSheet(barcodeSource.id);
+  assert.equal(barcodeOwner.cells.get(0, 0)?.presentation?.kind, "barcode");
 
   const preservedFormulaWorkbook = new WorkbookModel('delete-preserved-formula-source', 'Delete preserved formula source');
   const preservedFormulaOwner = preservedFormulaWorkbook.getSheet('sheet-1');
@@ -1016,7 +1018,8 @@ test('sheet deletion rejects external formula anchors, validation ranges, chart 
       sourceFormula: "='Preserved Formula Source'!A1",
     },
   });
-  assertSourceSheetDeletionRejected(preservedFormulaWorkbook, preservedFormulaSource.id);
+  preservedFormulaWorkbook.removeSheet(preservedFormulaSource.id);
+  assert.equal(preservedFormulaOwner.cells.get(0, 0)?.formulaMetadata?.sourceFormula, "=#REF!");
 
   const tableViewWorkbook = new WorkbookModel('delete-table-view-formula-source', 'Delete table view formula source');
   const tableViewOwner = tableViewWorkbook.getSheet('sheet-1');
@@ -1027,7 +1030,8 @@ test('sheet deletion rejects external formula anchors, validation ranges, chart 
     columns: [{ fieldId: 'calculated', caption: 'Calculated', type: 'formula', formula: "='Table View Source'!A1" }],
     grouping: [],
   };
-  assertSourceSheetDeletionRejected(tableViewWorkbook, tableViewSource.id);
+  tableViewWorkbook.removeSheet(tableViewSource.id);
+  assert.equal(tableViewOwner.tableSheet?.columns[0]?.formula, "=#REF!");
 });
 
 test('sheet rename and duplication preserve every persisted formula owner identity', () => {

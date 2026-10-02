@@ -642,7 +642,7 @@ public abstract class StructuralPatchV2Migration extends BaseJavaMigration {
                 case 6 -> registry.structuralImpactRanges(preV7Patch);
                 case 7 -> registry.structuralImpactRanges(preV8Patch);
                 case 8 -> registry.structuralImpactRanges(preV9Patch);
-                case 9 -> expectedImpact;
+                case 9, 10 -> expectedImpact;
                 default -> throw failure("STRUCTURAL_PATCH_VERSION_UNSUPPORTED", unitId,
                         "stored patch version is unsupported at revision " + revision);
             };
@@ -748,13 +748,15 @@ public abstract class StructuralPatchV2Migration extends BaseJavaMigration {
                 if (!oldPatch.equals(expectedV8Patch)) {
                     throw failure("STRUCTURAL_PATCH_V8_MISMATCH", unitId, "stored v8 owner facts differ from replay at revision " + revision);
                 }
-            } else if (oldVersion == 9) {
+            } else if (oldVersion == 9 || oldVersion == 10) {
                 Set<String> fields = new HashSet<>();
                 oldPatch.fieldNames().forEachRemaining(fields::add);
                 if (!fields.equals(Set.of("version", "mutationId", "formulaOwnerDeltas", "definedNameOwnerDeltas", "rangeOwnerDeltas"))) {
                     throw failure("STRUCTURAL_PATCH_V9_FIELDS", unitId, "stored v9 patch has a non-canonical field set at revision " + revision);
                 }
-                if (!oldPatch.equals(mapper.valueToTree(patch))) {
+                ObjectNode expectedCurrentPatch = mapper.valueToTree(patch);
+                expectedCurrentPatch.put("version", oldVersion);
+                if (!oldPatch.equals(expectedCurrentPatch)) {
                     throw failure("STRUCTURAL_PATCH_V9_MISMATCH", unitId, "stored v9 owner facts differ from replay at revision " + revision);
                 }
             }

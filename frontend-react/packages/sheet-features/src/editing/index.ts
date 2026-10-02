@@ -1906,7 +1906,7 @@ export function registerEditingCommands(runtime: CommandRuntime): void {
     handler: (item, context) => {
       if (!isSheetReorderedMutation(item.params)) throw new Error('Invalid sheet.reordered mutation payload');
       const params = item.params;
-      context.workbook.reorderSheet(params.sheetId, params.toIndex);
+      return context.workbook.reorderSheet(params.sheetId, params.toIndex);
     },
     metadata: {
       schema: { name: 'ReorderSheet', validate: isSheetReorderedMutation },
@@ -1930,7 +1930,7 @@ export function registerEditingCommands(runtime: CommandRuntime): void {
         params,
         affectedRanges,
         inverse: [{ id: 'sheet.reordered', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, toIndex: fromIndex }, affectedRanges }],
-        apply: () => { context.workbook.reorderSheet(params.sheetId, params.toIndex); },
+        apply: () => context.workbook.reorderSheet(params.sheetId, params.toIndex),
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },

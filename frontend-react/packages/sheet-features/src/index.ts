@@ -1,3 +1,4 @@
+import { planSheetIdentityTransform } from '@react-sheets/core-model';
 import type {
   BandedRule,
   CellData,
@@ -1142,10 +1143,12 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
     id: 'sheet.remove',
     handler: (item, context) => {
       if (!isSheetIdMutation(item.params)) throw new Error('Invalid sheet.remove mutation payload');
-      context.workbook.removeSheet(item.params.id);
+      const source = context.workbook.getSheet(item.params.id);
+      return planSheetIdentityTransform(context.workbook, { kind: 'delete', sourceSheetId: source.id, sourceName: source.name }).apply();
     },
     metadata: {
       schema: { name: 'RemoveSheet', validate: isSheetIdMutation },
+      calculationContextEffect: CALCULATION_CONTEXT_EFFECTS.rebuild,
       permission: { capability: 'sheet.structure.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: () => [], mode: 'declared' },
       historyRebase: { kind: 'invalidate', reason: 'worksheet identity changes have no canonical history transform' },
@@ -1256,7 +1259,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
             affectedRanges,
           },
         ],
-        apply: () => { workbook.removeSheet(params.id); },
+        apply: () => planSheetIdentityTransform(workbook, { kind: 'delete', sourceSheetId: params.id, sourceName: snapshot.name }).apply(),
       });
       return { operationId: context.operationId, mutationCount: 1, affectedRanges };
     },

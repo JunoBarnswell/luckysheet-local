@@ -420,6 +420,76 @@ final class FormulaReferenceTransformer {
         }
     }
 
+    static String sheetLifecycle(String formula, List<SheetIdentity> before, List<SheetIdentity> after,
+                                 String sheetId, boolean deleting) {
+        SheetIdentity target = before.stream().filter(sheet -> sheet.id().equals(sheetId)).findFirst()
+                .orElseThrow(() -> ServiceException.validation("Sheet lifecycle source is missing"));
+        StringBuilder output = new StringBuilder();
+        int copied = 0, index = 0;
+        while (index < formula.length()) {
+            char current = formula.charAt(index);
+            if (current == '"') { index = consumeString(formula, index); continue; }
+            if (current == '[') {
+                int externalEnd = consumeExternalReference(formula, index);
+                index = externalEnd > index ? externalEnd : consumeBracketedReference(formula, index);
+                continue;
+            }
+            int referenceEnd = threeDimensionalReferenceEnd(formula, index);
+            if (referenceEnd <= index) { index = nextReferenceCandidate(formula, index, parseSheetPrefix(formula, index)); continue; }
+            SheetPrefix first = parseSheetPrefix(formula, index);
+            String startName, endName;
+            int prefixEnd;
+            if (first == null) { index = referenceEnd; continue; }
+            int colon = first.name().indexOf(':');
+            if (colon >= 0) {
+                startName = first.name().substring(0, colon); endName = first.name().substring(colon + 1);
+                prefixEnd = first.afterPrefix() + 1;
+            } else {
+                SheetPrefix second = parseSheetPrefix(formula, first.afterPrefix() + 1);
+                if (second == null) { index = referenceEnd; continue; }
+                startName = first.name(); endName = second.name(); prefixEnd = second.afterPrefix() + 1;
+            }
+            int start = sheetPosition(before, startName), end = sheetPosition(before, endName);
+            if (start >= 0 && end >= 0) {
+                List<SheetIdentity> survivors = new ArrayList<>();
+                for (SheetIdentity sheet : before.subList(Math.min(start, end), Math.max(start, end) + 1)) {
+                    if (after.stream().anyMatch(next -> next.id().equals(sheet.id()))) survivors.add(sheet);
+                }
+                if (!deleting && (sameName(startName, target.name()) || sameName(endName, target.name()))) {
+                    int moved = sheetPosition(after, target.name());
+                    int other = sheetPosition(after, sameName(startName, target.name()) ? endName : startName);
+                    boolean wasFirst = before.get(Math.min(start, end)).id().equals(sheetId);
+                    if (wasFirst && moved > other || !wasFirst && moved < other) survivors.removeIf(sheet -> sheet.id().equals(sheetId));
+                }
+                String replacement = null;
+                if (survivors.isEmpty()) { replacement = "#REF!"; prefixEnd = referenceEnd; }
+                else {
+                    String nextStart = survivors.get(start <= end ? 0 : survivors.size() - 1).name();
+                    String nextEnd = survivors.get(start <= end ? survivors.size() - 1 : 0).name();
+                    if (!sameName(startName, nextStart) || !sameName(endName, nextEnd)) {
+                        String renderedStart = renderSheetName(nextStart), renderedEnd = renderSheetName(nextEnd);
+                        replacement = (renderedStart.equals(nextStart) && renderedEnd.equals(nextEnd)
+                                ? nextStart + ":" + nextEnd : renderSheetName(nextStart + ":" + nextEnd)) + "!";
+                    }
+                }
+                if (replacement != null) { output.append(formula, copied, index).append(replacement); copied = prefixEnd; }
+            }
+            index = referenceEnd;
+        }
+        output.append(formula, copied, formula.length());
+        String rewritten = output.toString();
+        return deleting ? rewrite(rewritten,
+                reference -> reference.sheetName() != null && sameName(reference.sheetName(), target.name()) ? null : reference,
+                null, true, (reference, prefix) -> prefix != null && sameName(prefix.name(), target.name()) ? "#REF!" : null) : rewritten;
+    }
+
+    private static int sheetPosition(List<SheetIdentity> sheets, String name) {
+        for (int index = 0; index < sheets.size(); index++) {
+            if (sheets.get(index).id().equals(name) || sameName(sheets.get(index).name(), name)) return index;
+        }
+        return -1;
+    }
+
     static String renameSheet(String formula, String oldName, String newName) {
         if (oldName == null || oldName.isBlank() || newName == null || newName.isBlank()) throw ServiceException.validation("Worksheet names are required for formula rename");
         String rewritten = rewrite(formula, reference -> {

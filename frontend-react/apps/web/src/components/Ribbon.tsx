@@ -1,3 +1,4 @@
+import { ExternalLinksDialog, type ExternalLinksDialogProps } from './dialogs/ExternalLinksDialog';
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { pixelsToPoints, pointsToPixels } from '@react-sheets/exchange-excel-ooxml';
 import {
@@ -115,6 +116,7 @@ export interface RibbonProps {
   onToggleBandedRows: () => void;
   onSetRecalculationMode: (mode: 'automatic' | 'manual' | 'partial') => void;
   onOpenDefinedNames: () => void;
+  externalLinkActions?: Omit<ExternalLinksDialogProps, 'open' | 'onClose'>;
   onCreateAdvancedSheet: (kind: 'table-sheet' | 'gantt-sheet' | 'report-sheet') => void;
   onApplyBarcode: (symbology?: BarcodeSymbology) => void;
   onCreateCamera: () => void;
@@ -327,8 +329,10 @@ export function Ribbon({
   canExecute,
   commandPaletteOpen = false,
   onCloseCommandPalette,
+  externalLinkActions,
   onInsertConnectorType,
 }: RibbonProps) {
+  const [externalLinksOpen, setExternalLinksOpen] = useState(false);
   const [keyTipState, setKeyTipState] = useState<KeyTipState>(INITIAL_KEY_TIP_STATE);
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent): void => {
@@ -507,6 +511,7 @@ export function Ribbon({
     };
   });
 
+  if (externalLinkActions) commandPaletteEntries.push({ id: 'workbook.externalLinks', label: '跨工作簿链接', group: '数据', keywords: ['external links', '跨工作簿', '刷新链接'], enabled: true, execute: () => setExternalLinksOpen(true) });
   return (
     <RibbonLocaleContext.Provider value={locale}>
       <RibbonShell
@@ -582,6 +587,7 @@ export function Ribbon({
           </RibbonLayoutContext.Provider>
         )}
       </RibbonShell>
+      {externalLinkActions ? <ExternalLinksDialog {...externalLinkActions} open={externalLinksOpen} onClose={() => setExternalLinksOpen(false)} /> : null}
       <CommandPalette commands={commandPaletteEntries} onClose={onCloseCommandPalette} open={commandPaletteOpen} />
     </RibbonLocaleContext.Provider>
   );

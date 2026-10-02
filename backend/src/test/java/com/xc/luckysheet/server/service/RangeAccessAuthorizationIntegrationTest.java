@@ -158,10 +158,10 @@ class RangeAccessAuthorizationIntegrationTest {
 
     private JsonNode snapshot(String unitId) throws Exception {
         ObjectNode root = (ObjectNode) mapper.readTree("""
-                {"schema":"WorkbookSnapshot","version":10,"unitId":"%s","name":"Range access",
+                {"schema":"WorkbookSnapshot","version":11,"unitId":"%s","name":"Range access",
                  "dimensionMetrics":{"normalFontFamily":"Calibri","normalFontSizePx":14.6666666667,"maximumDigitWidthPx":7},
                  "calculationSettings":{},"editingOptions":{"allowEditDirectly":true,"moveAfterEnter":true,"enterDirection":"down","formulaAutoComplete":true,"valueAutoComplete":true,"fixedDecimalPlaces":null},
-                 "dataModel":{"sources":[],"tables":[],"relationships":[],"views":[]},
+                 "dataModel":{"externalLinks":[],"sources":[],"tables":[],"relationships":[],"views":[]},
                  "sheets":[{"kind":"worksheet","id":"sheet-1","name":"Sheet1","rowCount":1000,"columnCount":26,
                    "cells":{"0":{"0":{"value":"VISIBLE-CELL-VALUE"},"1":{"value":"SECRET-CELL-VALUE"}}},
                    "merges":[],"pane":{"kind":"none"},"defaultRowHeightPx":20,"defaultColumnWidthPx":64,

@@ -2091,6 +2091,7 @@ function formulaOwnerPatchKey(delta: StructuralFormulaOwnerDelta): string {
     case 'chart-text': return JSON.stringify([delta.kind, delta.ownerKind, delta.sheetId, delta.payloadId, delta.field]);
     case 'shape-property': return JSON.stringify([delta.kind, delta.ownerKind, delta.sheetId, delta.payloadId]);
     case 'table-sheet-column': return JSON.stringify([delta.kind, delta.ownerKind, delta.sheetId, delta.fieldId]);
+    case 'record-field': return JSON.stringify([delta.kind, delta.ownerKind, delta.tableId, delta.fieldId]);
     case 'data-view-field': return JSON.stringify([delta.kind, delta.ownerKind, delta.viewId, delta.fieldId]);
     case 'cell-style-template': return JSON.stringify([delta.kind, delta.ownerKind, delta.templateId, delta.field]);
   }
@@ -2363,7 +2364,9 @@ function preflightCommittedStructuralPatches(workbook: WorkbookModel, items: rea
       }
       if (state.kind !== 'formula-object') throw new Error('STRUCTURAL_PATCH_INVARIANT: formula-object owner key collision');
       if (state.formula !== delta.afterFormula && state.formula !== delta.beforeFormula) {
-        const ownerIdentity = delta.ownerKind === 'data-view-field'
+        const ownerIdentity = delta.ownerKind === 'record-field'
+          ? `${delta.tableId}:${delta.fieldId}`
+          : delta.ownerKind === 'data-view-field'
           ? `${delta.viewId}:${delta.fieldId}`
           : delta.ownerKind === 'cell-style-template'
             ? `${delta.templateId}.${delta.field}`
@@ -2886,6 +2889,10 @@ function readFormulaObjectOwner(workbook: WorkbookModel, delta: Extract<Structur
       const columns = workbook.getSheet(delta.sheetId).tableSheet?.columns.filter((column) => column.fieldId === delta.fieldId) ?? [];
       return columns.length === 1 ? columns[0]!.formula : undefined;
     }
+    case 'record-field': {
+      const field = workbook.dataModel.tables.get(delta.tableId)?.fields.find(field => field.id === delta.fieldId);
+      return field?.calculation?.kind === 'formula' ? field.calculation.formula : undefined;
+    }
     case 'data-view-field': {
       const fields = workbook.dataModel.views.get(delta.viewId)?.fields.filter((field) => field.fieldId === delta.fieldId) ?? [];
       return fields.length === 1 ? fields[0]!.formula : undefined;
@@ -2923,6 +2930,11 @@ function writeFormulaObjectOwner(
       columns[0]!.formula = formula;
       return true;
     }
+    case 'record-field': {
+      const field = workbook.dataModel.tables.get(delta.tableId)?.fields.find(field => field.id === delta.fieldId);
+      if (field?.calculation?.kind !== 'formula') return false;
+      field.calculation.formula = formula; return true;
+    }
     case 'data-view-field': {
       const fields = workbook.dataModel.views.get(delta.viewId)?.fields.filter((field) => field.fieldId === delta.fieldId) ?? [];
       if (fields.length !== 1) return false;
@@ -2950,7 +2962,9 @@ function applyFormulaOwnerDelta(
     const expectedFormula = direction === 'undo' ? delta.afterFormula : delta.beforeFormula;
     const targetFormula = direction === 'undo' ? delta.beforeFormula : delta.afterFormula;
     const currentFormula = readFormulaObjectOwner(workbook, delta);
-    const ownerIdentity = delta.ownerKind === 'data-view-field'
+    const ownerIdentity = delta.ownerKind === 'record-field'
+          ? `${delta.tableId}:${delta.fieldId}`
+          : delta.ownerKind === 'data-view-field'
       ? `${delta.viewId}:${delta.fieldId}`
       : delta.ownerKind === 'cell-style-template'
         ? `${delta.templateId}.${delta.field}`

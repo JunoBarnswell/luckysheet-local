@@ -88,6 +88,7 @@ export function consumeBrowserCalculationTaskWithEngine(
       ? FormulaEngine.fromCalculationSnapshot(request.snapshot)
       : existingEngine;
     if (!engine) throw new Error('CALCULATION_WORKER_NOT_INITIALIZED: calculation context is missing');
+    if (!request?.snapshot && request?.externalLinks) engine.applyExternalCalculationLinks(request.externalLinks, false);
     if (!request?.snapshot && request?.inputs && request.inputs.length > 0) engine.applyCalculationTaskInputs(request.inputs);
     return { result: consumeCalculationTask(engine, request), engine };
   } catch (error) {

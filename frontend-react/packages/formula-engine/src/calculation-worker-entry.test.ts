@@ -20,7 +20,7 @@ test('calculation worker entry consumes valid tasks without host indirection', (
 
   const result = consumeCalculationTask(engine, {
     protocol: 'react-sheets.formula-calculation',
-    version: 3,
+    version: 4,
     taskId: 'worker-task-1',
     kind: 'recalculate',
     revision: 9,
@@ -58,7 +58,7 @@ test('calculation worker rejects volatile entropy without a valid calculation cl
   const engine = new FormulaEngine({ defaultSheetId: 'Sheet1' });
   const request = {
     protocol: 'react-sheets.formula-calculation',
-    version: 3,
+    version: 4,
     taskId: 'missing-cycle-clock',
     kind: 'recalculate',
     revision: 1,
@@ -102,7 +102,7 @@ test('calculation worker entry installs and restores a direct message handler', 
   scope.onmessage?.({
     data: {
       protocol: 'react-sheets.formula-calculation',
-      version: 3,
+      version: 4,
       taskId: 'worker-task-2',
       kind: 'recalculate',
       revision: 10,
@@ -124,7 +124,7 @@ test('browser task port posts a calculation snapshot to a Worker and applies a m
   const port = engine.createCalculationTaskPort({ workerFactory: () => worker });
   const result = await port.submit({
     protocol: 'react-sheets.formula-calculation',
-    version: 3,
+    version: 4,
     taskId: 'browser-worker-task',
     kind: 'recalculate',
     revision: 11,
@@ -162,7 +162,7 @@ test('late browser Worker output cannot overwrite a newer formula input generati
   const port = engine.createCalculationTaskPort({ workerFactory: () => worker });
   const pending = port.submit({
     protocol: 'react-sheets.formula-calculation',
-    version: 3,
+    version: 4,
     taskId: 'stale-worker-task',
     kind: 'recalculate',
     revision: 12,
@@ -187,7 +187,7 @@ test('browser task cancellation settles immediately and ignores a late Worker re
   const port = engine.createCalculationTaskPort({ workerFactory: () => worker });
   const pending = port.submit({
     protocol: 'react-sheets.formula-calculation',
-    version: 3,
+    version: 4,
     taskId: 'cancelled-worker-task',
     kind: 'recalculate',
     revision: 13,
@@ -218,7 +218,7 @@ test('browser Worker snapshots calculate GROUPBY with the same default semantics
 
   const result = await port.submit({
     protocol: 'react-sheets.formula-calculation',
-    version: 3,
+    version: 4,
     taskId: 'groupby-worker-task',
     kind: 'recalculate',
     revision: 14,
@@ -241,7 +241,7 @@ test('persistent Worker advances NOW and TODAY from the host clock on each calcu
   const secondTime = Date.UTC(2024, 0, 2, 4);
   const first = consumeBrowserCalculationTaskWithEngine({
     protocol: 'react-sheets.formula-calculation',
-    version: 3,
+    version: 4,
     taskId: 'volatile-clock-1',
     kind: 'recalculate',
     revision: 1,
@@ -259,7 +259,7 @@ test('persistent Worker advances NOW and TODAY from the host clock on each calcu
 
   const second = consumeBrowserCalculationTaskWithEngine({
     protocol: 'react-sheets.formula-calculation',
-    version: 3,
+    version: 4,
     taskId: 'volatile-clock-2',
     kind: 'recalculate',
     revision: 2,

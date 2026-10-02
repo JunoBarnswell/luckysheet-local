@@ -1087,7 +1087,7 @@ class MutationDescriptorRegistryTest {
     void acceptedMutationSurfaceIsExplicitAndAllOtherKnownMutationsRemainFailClosed() {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         assertEquals(Set.of(
-                "cell.set", "cell.restore", "cell.editor.set", "cellTemplate.set", "cellTemplate.remove", "range.set", "range.paste", "range.clear", "range.clear.restore",
+                "externalLink.set", "externalLink.remove", "table.configure", "relationship.set", "relationship.remove", "record.set", "cell.set", "cell.restore", "cell.editor.set", "cellTemplate.set", "cellTemplate.remove", "range.set", "range.paste", "range.clear", "range.clear.restore",
                 "style.set", "style.preset.set", "merge.set", "merge.remove", "freeze.set", "row.resize", "column.resize", "column.defaultWidth.resize", "columns.visibility", "view.set", "sheet.hidden", "sheet.unhidden", "sheet.tabColor",
                 "note.set", "note.remove", "note.visibility", "comment.add", "comment.reply", "comment.reply.remove", "comment.resolve", "comment.remove",
                 "sheet.protect.set", "sheet.protect.remove", "sheet.extent.grow", "workbook.renamed", "workbook.editing.options.set",
@@ -1113,7 +1113,7 @@ class MutationDescriptorRegistryTest {
     void analysisViewReplacePersistsSharedDashboardStateAndRemovesItAtomically() throws Exception {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         var snapshot = mapper.readTree("""
-                {"dataModel":{"sources":[],"tables":[{"id":"table-1","fields":[{"id":"region"},{"id":"amount"}]}],"relationships":[],"views":[]},
+                {"dataModel":{"externalLinks":[],"sources":[],"tables":[{"id":"table-1","fields":[{"id":"region"},{"id":"amount"}]}],"relationships":[],"views":[]},
                  "sheets":[{"id":"sheet-1","rowCount":20,"columnCount":5,"cells":{}}]}
                 """);
         var view = mapper.readTree("""
@@ -1137,7 +1137,7 @@ class MutationDescriptorRegistryTest {
     void analysisViewRejectsUnknownTableFieldWithoutChangingSnapshot() throws Exception {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         var snapshot = mapper.readTree("""
-                {"dataModel":{"sources":[],"tables":[{"id":"table-1","fields":[{"id":"region"}]}],"relationships":[],"views":[]},
+                {"dataModel":{"externalLinks":[],"sources":[],"tables":[{"id":"table-1","fields":[{"id":"region"}]}],"relationships":[],"views":[]},
                  "sheets":[{"id":"sheet-1","rowCount":20,"columnCount":5,"cells":{}}]}
                 """);
         var invalid = new OperationMutation("analysis.view.replace", "sheet-1", mapper.readTree("""
@@ -1152,7 +1152,7 @@ class MutationDescriptorRegistryTest {
     void analysisViewRejectsIncompleteChartFieldMapWithoutChangingSnapshot() throws Exception {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         var snapshot = mapper.readTree("""
-                {"dataModel":{"sources":[],"tables":[{"id":"table-1","fields":[{"id":"region"},{"id":"amount"}]}],"relationships":[],"views":[]},
+                {"dataModel":{"externalLinks":[],"sources":[],"tables":[{"id":"table-1","fields":[{"id":"region"},{"id":"amount"}]}],"relationships":[],"views":[]},
                  "sheets":[{"id":"sheet-1","rowCount":20,"columnCount":5,"cells":{}}]}
                 """);
         var invalid = new OperationMutation("analysis.view.replace", "sheet-1", mapper.readTree("""
@@ -1167,7 +1167,7 @@ class MutationDescriptorRegistryTest {
     void analysisViewExpectedRevisionRejectsStaleDashboardEdit() throws Exception {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         var snapshot = mapper.readTree("""
-                {"dataModel":{"sources":[],"tables":[{"id":"table-1","fields":[{"id":"region"}]}],"relationships":[],"views":[]},
+                {"dataModel":{"externalLinks":[],"sources":[],"tables":[{"id":"table-1","fields":[{"id":"region"}]}],"relationships":[],"views":[]},
                  "sheets":[{"id":"sheet-1","rowCount":20,"columnCount":5,"cells":{}}]}
                 """);
         var create = new OperationMutation("analysis.view.replace", "sheet-1", mapper.readTree("""
@@ -1659,7 +1659,7 @@ class MutationDescriptorRegistryTest {
     void printAndQueryRangeReducersPersistOnlyCanonicalDomainState() throws Exception {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         JsonNode snapshot = mapper.readTree("""
-                {"schema":"WorkbookSnapshot","unitId":"book-1","name":"Book","dataModel":{"sources":[],"tables":[],"relationships":[],"views":[]},"sheets":[{"id":"sheet-1","rowCount":20,"columnCount":10,"cells":{}}],"printDocuments":[],"queryDefinitions":[]}
+                {"schema":"WorkbookSnapshot","unitId":"book-1","name":"Book","dataModel":{"externalLinks":[],"sources":[],"tables":[],"relationships":[],"views":[]},"sheets":[{"id":"sheet-1","rowCount":20,"columnCount":10,"cells":{}}],"printDocuments":[],"queryDefinitions":[]}
                 """);
         OperationMutation print = new OperationMutation("pageLayout.paperSize.set", "sheet-1", mapper.readTree("""
                 {"sheetId":"sheet-1","paperSize":"a4"}
@@ -1679,7 +1679,7 @@ class MutationDescriptorRegistryTest {
     void pivotSparklineAndDrillDownReducersPreserveDefinitionsAndBlockBackedDetailMetadata() throws Exception {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         JsonNode snapshot = mapper.readTree("""
-                {"dataModel":{"sources":[],"tables":[],"relationships":[],"views":[]},"sheets":[{"id":"sheet-1","name":"Sales","rowCount":20,"columnCount":10,"cells":{"0":{"0":{"value":"Region"},"1":{"value":"Amount"}},"1":{"0":{"value":"East"},"1":{"value":42}}},"pivots":[],"sparklines":[],"sparklineGroups":[]}]}
+                {"dataModel":{"externalLinks":[],"sources":[],"tables":[],"relationships":[],"views":[]},"sheets":[{"id":"sheet-1","name":"Sales","rowCount":20,"columnCount":10,"cells":{"0":{"0":{"value":"Region"},"1":{"value":"Amount"}},"1":{"0":{"value":"East"},"1":{"value":42}}},"pivots":[],"sparklines":[],"sparklineGroups":[]}]}
                 """);
         OperationMutation pivot = new OperationMutation("pivot.add", "sheet-1", mapper.readTree("""
                 {"schema":"PivotDefinition","id":"pivot-1","source":{"kind":"worksheet-range","range":{"sheetId":"sheet-1","startRow":0,"endRow":1,"startColumn":0,"endColumn":1}},"target":{"sheetId":"sheet-1","anchor":{"row":4,"column":3}},"fieldCatalog":{"schema":"PivotFieldCatalog","fields":[{"fieldId":"sheet:sheet-1:column:0:range:0","name":"Region","dataType":"text","ordinal":0},{"fieldId":"sheet:sheet-1:column:1:range:0","name":"Amount","dataType":"number","ordinal":1}]},"layout":{"rows":[{"fieldId":"sheet:sheet-1:column:0:range:0","subtotal":{"mode":"automatic"}}],"columns":[],"filters":[{"kind":"manual","family":"manual","fieldId":"sheet:sheet-1:column:0:range:0","scope":"report","mode":"all","memberKeys":[]}],"allowMultipleFiltersPerField":true,"collation":{"locale":"en-US","sensitivity":"variant","numeric":false,"caseFirst":"false"},"values":[{"valueId":"value:amount","fieldId":"sheet:sheet-1:column:1:range:0","summarizeBy":"sum"}],"subtotalLocation":"bottom","showRowGrandTotals":true,"showColumnGrandTotals":true,"reportLayout":"compact"},"refreshPolicy":{"mode":"on-change","preserveFormatting":true,"refreshOnLoad":true}}
@@ -1969,7 +1969,7 @@ class MutationDescriptorRegistryTest {
                   {"id":"sheet-1","name":"Sheet1","rowCount":20,"columnCount":10,"cells":{},"sheetTables":[{"id":"sheet-table-1","name":"Sales","range":{"sheetId":"sheet-1","startRow":0,"endRow":2,"startColumn":0,"endColumn":1}}],"pivots":[]},
                   {"id":"sheet-2","name":"Sheet 2","rowCount":20,"columnCount":10,"cells":{},"sheetTables":[],"pivots":[]}
                 ],
-                "dataModel":{"sources":[{"id":"source-1","fields":[{"id":"source-field"}]}],"tables":[],"relationships":[],"views":[]},
+                "dataModel":{"externalLinks":[],"sources":[{"id":"source-1","fields":[{"id":"source-field"}]}],"tables":[],"relationships":[],"views":[]},
                 "definedNameModels":[
                   {"name":"SalesData","formula":"=Sheet1!A1:B3","scope":"workbook"},
                   {"name":"SalesData","formula":"='Sheet 2'!A1:B3","scope":"sheet","sheetId":"sheet-2"}
@@ -2034,7 +2034,7 @@ class MutationDescriptorRegistryTest {
         JsonNode snapshot = mapper.readTree("""
                 {"sheets":[{"id":"sheet-1","name":"Sheet1","rowCount":20,"columnCount":10,"cells":{},"sheetTables":[{"id":"sheet-table-1","name":"Sales","range":{"sheetId":"sheet-1","startRow":0,"endRow":2,"startColumn":0,"endColumn":0}}],"pivots":[
                   {"schema":"PivotDefinition","id":"pivot-1","source":{"kind":"table","tableId":"sheet-table-1"},"target":{"sheetId":"sheet-1","anchor":{"row":4,"column":3}},"fieldCatalog":{"schema":"PivotFieldCatalog","fields":[{"fieldId":"table:sheet-table-1:column:0","name":"Amount","dataType":"number","ordinal":0}]},"layout":{"rows":[],"columns":[],"filters":[],"allowMultipleFiltersPerField":true,"collation":{"locale":"en-US","sensitivity":"variant","numeric":false,"caseFirst":"false"},"values":[],"subtotalLocation":"bottom","showRowGrandTotals":true,"showColumnGrandTotals":true,"reportLayout":"compact"},"refreshPolicy":{"mode":"on-change","preserveFormatting":true,"refreshOnLoad":true}}
-                ]}],"dataModel":{"sources":[],"tables":[],"relationships":[],"views":[]},"definedNameModels":[{"name":"SalesData","formula":"=Sheet1!A1:A3","scope":"workbook"}]}
+                ]}],"dataModel":{"externalLinks":[],"sources":[],"tables":[],"relationships":[],"views":[]},"definedNameModels":[{"name":"SalesData","formula":"=Sheet1!A1:A3","scope":"workbook"}]}
                 """);
         OperationMutation update = new OperationMutation("pivot.update", "sheet-1", mapper.readTree("""
                 {"sheetId":"sheet-1","pivotId":"pivot-1","source":{"kind":"named-range","name":"SalesData"}}
@@ -2085,7 +2085,7 @@ class MutationDescriptorRegistryTest {
 
     private ObjectNode workbookSourceRangePermutationSnapshot() throws Exception {
         ObjectNode snapshot = (ObjectNode) mapper.readTree("""
-                {"dataModel":{"sources":[],"tables":[],"relationships":[],"views":[]},
+                {"dataModel":{"externalLinks":[],"sources":[],"tables":[],"relationships":[],"views":[]},
                  "sheets":[{"id":"sheet-1","name":"Data","rowCount":4,"columnCount":1,
                    "cells":{"0":{"0":{"value":"first"}},"1":{"0":{"value":"second"}},"2":{"0":{"value":"third"}},"3":{"0":{"value":"fourth"}}},
                    "pane":{"kind":"none"},"review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}},
@@ -2300,7 +2300,7 @@ class MutationDescriptorRegistryTest {
     void structuralAxisRewriteCoversPersistedFormulaOwnersAndRejectsRemovedTemplateAnchors() throws Exception {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         JsonNode snapshot = mapper.readTree("""
-                {"dataModel":{"sources":[],"tables":[],"relationships":[],"views":[
+                {"dataModel":{"externalLinks":[],"sources":[],"tables":[],"relationships":[],"views":[
                   {"id":"formula-view","name":"Formula View","tableId":"source-table","fields":[
                     {"fieldId":"view-calc","caption":"View Calc","formula":"=Sheet1!A1"}]}]},
                  "definedNames":{},"definedNameModels":[],"printDocuments":[],
@@ -2848,7 +2848,7 @@ class MutationDescriptorRegistryTest {
     void rangeMoveRewritesFormulaOwnersAndRejectsOverlappingDestinations() throws Exception {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         JsonNode snapshot = mapper.readTree("""
-                {"dataModel":{"sources":[],"tables":[],"relationships":[],"views":[]},"definedNames":{},"definedNameModels":[],"printDocuments":[],
+                {"dataModel":{"externalLinks":[],"sources":[],"tables":[],"relationships":[],"views":[]},"definedNames":{},"definedNameModels":[],"printDocuments":[],
                  "sheets":[{"id":"sheet-1","name":"Sheet1","rowCount":6,"columnCount":6,
                    "cells":{"0":{"0":{"value":7},"1":{"formula":"=A1","formulaValue":99,"formulaMetadata":{"kind":"normal","sourceFormula":"=A1"},"presentation":{"kind":"barcode","symbology":"qr","source":{"kind":"formula","formula":"=A1"},"parameters":{"symbology":"qr"},"options":{"foreground":"#000000","background":"#ffffff","showText":false,"labelPosition":"none","quietZone":0}}},"4":{"formula":"=A1","formulaMetadata":{"kind":"normal","sourceFormula":"=A1"},"presentation":{"kind":"barcode","symbology":"qr","source":{"kind":"formula","formula":"=A1"},"parameters":{"symbology":"qr"},"options":{"foreground":"#000000","background":"#ffffff","showText":false,"labelPosition":"none","quietZone":0}}},"5":{"value":null,"formulaMetadata":{"kind":"normal","sourceFormula":"=A1"},"presentation":{"kind":"barcode","symbology":"qr","source":{"kind":"formula","formula":"=A1"},"parameters":{"symbology":"qr"},"options":{"foreground":"#000000","background":"#ffffff","showText":false,"labelPosition":"none","quietZone":0}}}},"2":{"3":{"value":"stale"}}},
                    "pane":{"kind":"none"},"defaultRowHeightPx":20,"defaultColumnWidthPx":64,
@@ -2954,7 +2954,7 @@ class MutationDescriptorRegistryTest {
     void rangeMovePreservesGlobalNameReferencesRelativeToAnotherSheet() throws Exception {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         JsonNode snapshot = mapper.readTree("""
-                {"dataModel":{"sources":[],"tables":[],"relationships":[],"views":[]},
+                {"dataModel":{"externalLinks":[],"sources":[],"tables":[],"relationships":[],"views":[]},
                  "definedNames":{"Relative":"=A1"},
                  "definedNameModels":[{"name":"Relative","formula":"=A1","scope":"workbook","anchor":{"sheetId":"sheet-2","row":0,"column":0}}],
                  "sheets":[
@@ -3834,17 +3834,21 @@ class MutationDescriptorRegistryTest {
         formulaChart.putObject("elements").put("hiddenData", "show").putObject("titleText")
                 .put("linkedFormula", "='Source'!A1");
 
-        for (ObjectNode snapshot : List.of(formulaMetadata, barcode, tableSheet, ruleFormula, viewFormula,
-                templateFormula, drawingFormula, tableRange, queryTarget, printArea, definedNameFormula,
-                definedNameAnchor, dataSource, templateAnchor, reportTemplate, shapeHyperlink, chartSeriesRange, chartFormula)) {
+        for (ObjectNode snapshot : List.of(ruleFormula, tableRange, queryTarget, printArea, definedNameAnchor, dataSource, templateAnchor, reportTemplate, shapeHyperlink, chartSeriesRange)) {
             assertSheetRemovalRejected(snapshot);
+        }
+        for (ObjectNode snapshot : List.of(formulaMetadata, barcode, tableSheet, viewFormula, templateFormula, drawingFormula, definedNameFormula, chartFormula)) {
+            var application = new MutationDescriptorRegistry().require("sheet.remove", false).applyWithPatch(snapshot,
+                    new OperationMutation("sheet.remove", "source", mapper.createObjectNode().put("id", "source")));
+            assertTrue(application.structuralPatch().formulaOwnerDeltas().size() + application.structuralPatch().definedNameOwnerDeltas().size() > 0);
+            assertEquals(snapshot, snapshot.deepCopy());
         }
     }
 
     @Test
     void sheetRemovalAllowsUnreferencedSheetAndRemovesItsScopedDocuments() throws Exception {
         ObjectNode snapshot = sheetDeletionSnapshot();
-        snapshot.putArray("definedNameModels").addObject().put("name", "LocalName").put("scope", "sheet").put("sheetId", "source");
+        snapshot.putArray("definedNameModels").addObject().put("name", "LocalName").put("scope", "sheet").put("sheetId", "source").put("formula", "=A1");
         snapshot.putArray("printDocuments").addObject().put("sheetId", "source");
         OperationMutation remove = new OperationMutation("sheet.remove", "source", mapper.createObjectNode().put("id", "source"));
 

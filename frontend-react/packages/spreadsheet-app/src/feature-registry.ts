@@ -1,3 +1,4 @@
+import { registerLinkedDataCommands, registerRecordCommands, registerRecordPromotionCommand } from './features/linked-data/commands';
 import type { CommandRuntime } from '@react-sheets/command-runtime';
 import { registerSheetCommands } from '@react-sheets/sheet-features';
 import { registerPlatformFeatures } from './platform-features';
@@ -44,6 +45,9 @@ let parityReport: ExcelParityReport = buildExcelParityReport();
  */
 export function registerSpreadsheetFeatures(runtime: CommandRuntime, drawingRuntime: DrawingRuntime): SpreadsheetFeatureManifest[] {
   registerSheetCommands(runtime);
+  registerLinkedDataCommands(runtime);
+  registerRecordCommands(runtime);
+  registerRecordPromotionCommand(runtime);
   registerEditingFeatures(runtime);
 
   const drawingManifest = registerDrawingFeature(runtime, drawingRuntime);

@@ -78,6 +78,10 @@ function formatBinaryChild(node: FormulaAst, parent: BinaryNode, side: 'left' | 
   return child;
 }
 
+function formatTableColumnName(name: string): string {
+  return /^[\p{L}_][\p{L}\p{N}_.]*$/u.test(name) ? name : '"' + name.replace(/"/g, '""') + '"';
+}
+
 function formatNode(node: FormulaAst, parentPrecedence = 0): string {
   let content: string;
   switch (node.type) {
@@ -138,14 +142,14 @@ function formatNode(node: FormulaAst, parentPrecedence = 0): string {
       break;
     case 'table-reference':
       if (node.specifier && node.columnName) {
-        const column = node.columnEndName === undefined ? `[${node.columnName}]` : `[${node.columnName}]:[${node.columnEndName}]`;
+        const column = node.columnEndName === undefined ? `[${formatTableColumnName(node.columnName)}]` : `[${formatTableColumnName(node.columnName)}]:[${formatTableColumnName(node.columnEndName)}]`;
         content = `${node.tableName}[[${formatTableSpecifier(node.specifier)}],${column}]`;
       } else if (node.specifier) {
         content = `${node.tableName}[${formatTableSpecifier(node.specifier)}]`;
       } else if (node.columnName && node.columnEndName) {
-        content = `${node.tableName}[[${node.columnName}]:[${node.columnEndName}]]`;
+        content = `${node.tableName}[[${formatTableColumnName(node.columnName)}]:[${formatTableColumnName(node.columnEndName)}]]`;
       } else {
-        content = `${node.tableName}[${node.thisRow ? '@' : ''}${node.columnName ?? ''}]`;
+        content = `${node.tableName}[${node.thisRow ? '@' : ''}${node.columnName ? formatTableColumnName(node.columnName) : ''}]`;
       }
       break;
     case 'unary-expression':

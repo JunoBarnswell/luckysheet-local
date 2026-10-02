@@ -22,6 +22,7 @@ export interface WorkbookViewCell {
   readonly column: number;
   readonly cell?: CellData;
   readonly writable: boolean;
+  readonly recordField?: import('@react-sheets/core-model').RecordFieldAddress;
 }
 
 /** Resolves value, formula, protection owner and edit address together. */
@@ -30,24 +31,29 @@ export function resolveWorkbookViewCell(
   row: number, column: number,
   readCell: (sheet: WorksheetModel, row: number, column: number) => CellData | undefined,
 ): WorkbookViewCell {
+  let owner = sheet, sourceRow = row, sourceColumn = column;
   if (sheet.kind === 'table-sheet') {
     const address = resolveTableSheetCellAddress(workbook, sheet, formula, row, column);
     if (!address) return { owner: sheet, row, column, writable: false };
-    const owner = workbook.getSheet(address.sheetId);
-    return { owner, row: address.row, column: address.column, cell: address.header ?? readCell(owner, address.row, address.column), writable: !address.header };
+    if (address.header) return { owner: sheet, row, column, cell: address.header, writable: false };
+    owner = workbook.getSheet(address.sheetId); sourceRow = address.row; sourceColumn = address.column;
+  } else if (sheet.kind === 'gantt-sheet' && row > 0 && sheet.ganttSheet) {
+    const table = workbook.dataModel.tables.get(sheet.ganttSheet.viewId), range = table?.sourceRange, field = table?.fields[column];
+    if (range && field && range.startRow + row <= range.endRow) { owner = workbook.getSheet(range.sheetId); sourceRow = range.startRow + row; sourceColumn = range.startColumn + field.ordinal; }
   }
-  if (sheet.kind === 'gantt-sheet' && row > 0 && sheet.ganttSheet) {
-    const table = workbook.dataModel.tables.get(sheet.ganttSheet.viewId);
-    const range = table?.sourceRange;
-    const field = table?.fields[column];
-    if (range && field && range.startRow + row <= range.endRow) {
-      const owner = workbook.getSheet(range.sheetId);
-      const sourceRow = range.startRow + row;
-      const sourceColumn = range.startColumn + field.ordinal;
-      return { owner, row: sourceRow, column: sourceColumn, cell: readCell(owner, sourceRow, sourceColumn), writable: true };
-    }
+  const recordTable = [...workbook.dataModel.tables.values()].find(table => table.recordIdFieldId && table.sourceRange?.sheetId === owner.id
+    && sourceRow > table.sourceRange.startRow && sourceRow <= table.sourceRange.endRow && sourceColumn >= table.sourceRange.startColumn && sourceColumn <= table.sourceRange.endColumn);
+  const field = recordTable?.fields.find(field => recordTable.sourceRange!.startColumn + field.ordinal === sourceColumn);
+  let cell = readCell(owner, sourceRow, sourceColumn);
+  if (!recordTable || !field) return { owner, row: sourceRow, column: sourceColumn, cell, writable: true };
+  const identity = recordTable.fields.find(field => field.id === recordTable.recordIdFieldId)!;
+  const recordId = readCell(owner, sourceRow, recordTable.sourceRange!.startColumn + identity.ordinal)?.value;
+  if (typeof recordId !== 'string') throw new TableSheetAddressError('TABLE_SHEET_ADDRESS_INVALID', 'Record identity is unavailable');
+  if (field.calculation) {
+    const result = formula.getCellResult({ sheetId: owner.id, row: sourceRow, column: sourceColumn });
+    cell = { value: null, ...cell, formula: field.calculation.kind === 'formula' ? field.calculation.formula : result?.formula };
   }
-  return { owner: sheet, row, column, cell: readCell(sheet, row, column), writable: true };
+  return { owner, row: sourceRow, column: sourceColumn, cell, writable: field.id !== identity.id && !field.calculation, recordField: { tableId: recordTable.id, recordId, fieldId: field.id } };
 }
 
 interface ProjectionOrder {
@@ -79,7 +85,7 @@ export function resolveTableSheetCellAddress(
   if (!visible) return undefined;
   const field = table.fields.find((field) => field.id === visible.fieldId);
   if (!field) throw new TableSheetAddressError('TABLE_SHEET_ADDRESS_INVALID', `Field ${visible.fieldId} is unavailable`);
-  if (visible.formula !== undefined || visible.type === 'formula' || visible.type === 'lookup') {
+  if (visible.formula !== undefined || (visible.type === 'formula' || visible.type === 'lookup') && !field.calculation) {
     throw new TableSheetAddressError('UNSUPPORTED_FEATURE', `Field ${field.id} requires a canonical record calculation owner`);
   }
   if (row === 0) return { sheetId: sheet.id, row, column, header: { value: visible.caption } };
@@ -106,7 +112,7 @@ export function resolveTableSheetCellAddress(
       });
       const value = (sourceRow: number, sourceColumn: number): FormulaValue | undefined => {
         const cell = source.cells.get(sourceRow, sourceColumn);
-        return formula.getSpillValueAt(source.id, sourceRow, sourceColumn) ?? (cell?.formula ? formula.getCellResult({ sheetId: source.id, row: sourceRow, column: sourceColumn })?.value : cell?.value);
+        return formula.getSpillValueAt(source.id, sourceRow, sourceColumn) ?? (formula.getRecordFormulaOwnerAt({ sheetId: source.id, row: sourceRow, column: sourceColumn }) || cell?.formula ? formula.getCellResult({ sheetId: source.id, row: sourceRow, column: sourceColumn })?.value : cell?.value);
       };
       const collation = formula.getCollationContext();
       rows.sort((left, right) => {

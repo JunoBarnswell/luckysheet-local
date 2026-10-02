@@ -40,3 +40,7 @@ export {
   type ResolvedSpill,
   type SpillBlockerRange,
 } from './spill-resolver';
+
+export { rewriteSheetLifecycleFormula, type SheetLifecycleChange } from './sheet-lifecycle';
+
+export { type ExternalCalculationLink, type ExternalLinkState } from './external-links';
