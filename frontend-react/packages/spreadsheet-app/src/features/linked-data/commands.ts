@@ -48,6 +48,7 @@ export function registerRecordCommands(runtime: CommandRuntime): void {
   const setTable = (workbook: WorkbookModel, table: import('@react-sheets/core-model').WorkbookTableModel) => {
     const previous = workbook.getTable(table.id);
     if (JSON.stringify(previous.sourceRange) !== JSON.stringify(table.sourceRange) || previous.sourceId !== table.sourceId) throw new Error('RECORD_TABLE_SOURCE_CHANGED');
+    if (previous.sourceSheetId !== table.sourceSheetId || previous.rowCount !== table.rowCount || previous.fields.length !== table.fields.length || previous.fields.some(field => table.fields.find(next => next.id === field.id)?.ordinal !== field.ordinal)) throw new Error('RECORD_FIELD_IDENTITY_IMMUTABLE');
     assertRecordTable(workbook, table);
     workbook.dataModel.tables.set(table.id, structuredClone(table));
   };
@@ -80,6 +81,17 @@ export function registerRecordCommands(runtime: CommandRuntime): void {
     context.applyMutation({ id: 'relationship.set', ...base, params, inverse: [previous ? { id: 'relationship.set', ...base, params: { relationship: structuredClone(previous) } } : { id: 'relationship.remove', ...base, params: { relationshipId: params.relationship.id } }], apply: () => { context.workbook.dataModel.relationships.set(params.relationship.id, structuredClone(params.relationship)); } });
     return { operationId: context.operationId, mutationCount: 1, affectedRanges: ranges };
   } });
+  type RecordRestore = import('@react-sheets/core-model').RecordFieldAddress & { previous: import('@react-sheets/core-model').CellData | null };
+  const validRestore = (value: unknown): value is RecordRestore => object(value) && ['tableId', 'recordId', 'fieldId'].every(key => typeof value[key] === 'string') && ('previous' in value) && (value.previous === null || object(value.previous) && value.previous.formula === undefined);
+  runtime.registry.registerMutation<RecordRestore>({ id: 'record.restore', handler: (item, context) => {
+    if (!validRestore(item.params)) throw new Error('Invalid Record field restore');
+    assertRecordFieldWrite(context.workbook, item.params, item.params.previous?.value ?? null);
+    const target = resolveRecordField(context.workbook, item.params), sheet = context.workbook.getSheet(target.sheetId);
+    if (item.params.previous === null) sheet.cells.delete(target.row, target.column);
+    else sheet.cells.set(target.row, target.column, structuredClone(item.params.previous));
+  }, metadata: {
+    schema: { name: 'RecordFieldRestore', validate: validRestore }, permission: { capability: 'sheet.cell.write', roles: ['owner', 'editor'] }, affectedRanges: { resolve: () => [], mode: 'declared' }, inverseIds: ['record.set'],
+  } });
   runtime.registry.registerMutation<import('@react-sheets/core-model').RecordFieldAddress & { value: import('@react-sheets/core-model').TableScalar }>({ id: 'record.set', handler: (item, context) => {
     if (!validSet(item.params)) throw new Error('Invalid record field write');
     assertRecordFieldWrite(context.workbook, item.params, item.params.value);
@@ -88,23 +100,21 @@ export function registerRecordCommands(runtime: CommandRuntime): void {
     context.workbook.getSheet(target.sheetId).cells.set(target.row, target.column, { ...target.cell, value: item.params.value, formula: undefined, formulaValue: undefined });
 
   }, metadata: {
-    schema: { name: 'RecordFieldSet', validate: validSet }, permission: { capability: 'sheet.cell.write', roles: ['owner', 'editor'] }, affectedRanges: { resolve: () => [], mode: 'declared' }, inverseIds: ['record.set'],
+    schema: { name: 'RecordFieldSet', validate: validSet }, permission: { capability: 'sheet.cell.write', roles: ['owner', 'editor'] }, affectedRanges: { resolve: () => [], mode: 'declared' }, inverseIds: ['record.restore'],
   } });
   runtime.registry.registerCommand<import('@react-sheets/core-model').RecordFieldAddress & { value: import('@react-sheets/core-model').TableScalar }>({ id: 'record.set', execute: (params, context) => {
     if (!validSet(params)) throw new Error('Invalid record field write');
     assertRecordFieldWrite(context.workbook, params, params.value);
     const target = resolveRecordField(context.workbook, params), table = context.workbook.getTable(params.tableId);
     if (!target.writable || target.cell?.formula) throw new Error('RECORD_FIELD_READ_ONLY');
-    const idColumn = table.sourceRange!.startColumn + table.fields.find(field => field.id === table.recordIdFieldId)!.ordinal;
-    const ranges = [{ sheetId: target.sheetId, startRow: target.row, endRow: target.row, startColumn: target.column, endColumn: target.column }, { sheetId: target.sheetId, startRow: target.row, endRow: target.row, startColumn: idColumn, endColumn: idColumn }];
+    const ranges = [{ sheetId: target.sheetId, startRow: target.row, endRow: target.row, startColumn: target.column, endColumn: target.column }];
     const base = { unitId: context.workbook.unitId, sheetId: target.sheetId, affectedRanges: ranges };
     const sheet = context.workbook.getSheet(target.sheetId);
     const authority = (value: import('@react-sheets/core-model').TableScalar) => createCellSetMutationParams(sheet, { sheetId: target.sheetId, row: target.row, column: target.column, value: { ...target.cell, value } }, 'direct-entry', false, id => context.workbook.getSheet(id)).writeAuthority;
-    const previousValue = target.cell?.value ?? null;
     const mutationParams = { ...params, writeAuthority: authority(params.value) };
-    const inverseParams = { ...params, value: previousValue, writeAuthority: authority(previousValue) };
-    context.applyMutation({ id: 'record.set', ...base, params: mutationParams, inverse: [{ id: 'record.set', ...base, params: inverseParams }], apply: () => {
-      context.workbook.getSheet(target.sheetId).cells.set(target.row, target.column, { ...target.cell, value: params.value });
+    const inverseParams = { tableId: params.tableId, recordId: params.recordId, fieldId: params.fieldId, previous: target.cell ? structuredClone(target.cell) : null };
+    context.applyMutation({ id: 'record.set', ...base, params: mutationParams, inverse: [{ id: 'record.restore', ...base, params: inverseParams }], apply: () => {
+      context.workbook.getSheet(target.sheetId).cells.set(target.row, target.column, { ...target.cell, value: params.value, formula: undefined, formulaValue: undefined });
   
     } });
     return { operationId: context.operationId, mutationCount: 1, affectedRanges: ranges };

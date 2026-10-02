@@ -101,3 +101,51 @@ test('a committed deletion ACK recalculates surviving owners without addressing 
     assert.equal(runtime.formula.getRecordFieldResult('Customers', 'c1', 'Customers-total')?.value, 80);
   } finally { app.dispose(); }
 });
+
+test('TableSheet projections follow calculated source owners after engine replacement', async () => {
+  const { workbook } = fixture();
+  const view = workbook.addSheet('orders-view', 'Orders View');
+  view.kind = 'table-sheet';
+  view.tableSheet = { viewId: 'Orders', columns: [{ fieldId: 'Orders-amount', caption: 'Amount', type: 'number' }], grouping: [] };
+  const app = createRemoteReadySessionFixture();
+  try {
+    const runtime = app['runtime'];
+    hydrateRuntime(runtime, { snapshot: workbook.snapshot(), revision: 0 });
+    await app.waitForFormulaCalculation();
+    const projection = app['projection'];
+    const owner = runtime.model.getSheet('orders-view');
+    const before = projection.getCanvasProjection(owner);
+    assert.equal(before.getCell(1, 0)?.displayValue, '20');
+    const table = structuredClone(runtime.model.getTable('Orders'));
+    table.fields[4]!.calculation = { kind: 'formula', formula: canonicalRecordFieldFormula(table, '=[Quantity]*[Price]*2') };
+    runtime.commands.execute('table.configure', { table });
+    await app.waitForFormulaCalculation();
+    const after = projection.getCanvasProjection(owner);
+    assert.notEqual(after, before);
+    assert.equal(after.getCell(1, 0)?.displayValue, '40');
+    const invalid = structuredClone(table); invalid.fields[4]!.id = 'replacement';
+    assert.throws(() => runtime.commands.execute('table.configure', { table: invalid }), /IDENTITY_IMMUTABLE/);
+  } finally { app.dispose(); }
+});
+
+test('Record undo restores sparse cell absence and existing cell metadata exactly', () => {
+  const { workbook, orders } = fixture();
+  orders.cells.delete(2, 2);
+  const commands = new CommandRuntime(workbook); registerRecordCommands(commands);
+  const before = workbook.snapshot();
+  commands.execute('record.set', { tableId: 'Orders', recordId: 'o2', fieldId: 'Orders-quantity', value: 7 });
+  commands.undo();
+  assert.deepEqual(workbook.snapshot(), before);
+  commands.redo();
+  assert.equal(orders.cells.getWithoutHydration(2, 2)?.value, 7);
+});
+
+test('Record tables reject overlapping source owners before changing the workbook', () => {
+  const { workbook } = fixture();
+  const before = workbook.snapshot();
+  const overlapping = structuredClone(workbook.getTable('Orders'));
+  overlapping.id = 'overlapping-orders';
+  assert.throws(() => workbook.addTable(overlapping), /one table owner/);
+  assert.deepEqual(workbook.snapshot(), before);
+  assert.deepEqual(WorkbookModel.fromSnapshot(before).getDataModel(), workbook.getDataModel());
+});

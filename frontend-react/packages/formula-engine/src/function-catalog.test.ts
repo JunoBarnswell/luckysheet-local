@@ -20,7 +20,7 @@ function engineForCase() {
   return engine;
 }
 const entropy = { cycleId: 1, entropySeed: 'function-corpus', passIndex: 0, calculationTimeUtcMs: Date.UTC(2024, 0, 2, 12), calculationTimeZoneOffsetMinutes: 0 };
-const request = { protocol: 'react-sheets.formula-calculation' as const, version: 3 as const, taskId: 'corpus', kind: 'recalculate' as const, revision: 1, full: true, calculationEntropy: entropy };
+const request = { protocol: 'react-sheets.formula-calculation' as const, version: 4 as const, taskId: 'corpus', kind: 'recalculate' as const, revision: 1, full: true, calculationEntropy: entropy };
 
 test('every executable function is discoverable, has an argument contract and a concrete acceptance vector', () => {
   const ids = [...FUNCTION_DESCRIPTORS.keys()].sort();

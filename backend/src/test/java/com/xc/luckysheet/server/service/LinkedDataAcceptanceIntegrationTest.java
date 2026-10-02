@@ -46,6 +46,7 @@ class LinkedDataAcceptanceIntegrationTest {
     @Autowired private RangeAccessService rangeAccess;
     @Autowired private WorkbookOperationService operations;
     @Autowired private ObjectMapper mapper;
+    @Autowired private AccessControlService acl;
 
     @Test
     void externalInputsRequireSourceMembershipAndWithholdHiddenInputs() throws Exception {
@@ -82,13 +83,53 @@ class LinkedDataAcceptanceIntegrationTest {
         catalog.create(new CreateWorkbookRequest(unit, "Range access", root), owner);
         var operation = new OperationEnvelope("lifecycle-session", OperationEnvelope.SCHEMA, "delete-endpoint", unit, 1, 0,
             List.of(new OperationMutation("sheet.remove", "sheet-1", mapper.readTree("{\"id\":\"sheet-1\"}"))), Instant.now());
+        JsonNode preimage = operations.readSnapshot(unit, owner).snapshot();
         var result = operations.commit(unit, operation, owner);
         JsonNode persisted = operations.readSnapshot(unit, owner).snapshot();
         assertEquals("=SUM(Sheet2:Sheet3!A1)", persisted.path("sheets").get(2).path("cells").path("0").path("0").path("formula").asText());
         assertEquals(1, operations.readSnapshot(unit, owner).revision());
         assertEquals(10, result.operation().mutations().getFirst().structuralPatch().version());
         assertEquals(1, result.operation().mutations().getFirst().structuralPatch().formulaOwnerDeltas().size());
+        ObjectNode restoreParams = mapper.createObjectNode(); restoreParams.set("sheet", preimage.path("sheets").get(0)); restoreParams.put("index", 0);
+        ObjectNode tampered = restoreParams.deepCopy(); ((ObjectNode) tampered.get("sheet")).put("name", "Tampered");
+        var intent = new com.xc.luckysheet.server.contract.OperationIntent("undo", "delete-endpoint", 0);
+        var invalidUndo = new OperationEnvelope("lifecycle-session", OperationEnvelope.SCHEMA, "tampered-undo", unit, 2, 1,
+            List.of(new OperationMutation("sheet.restore", "sheet-1", tampered)), Instant.now(), intent);
+        assertThrows(ServiceException.class, () -> operations.commit(unit, invalidUndo, owner));
+        assertEquals(1, operations.readSnapshot(unit, owner).revision());
+        var undo = new OperationEnvelope("lifecycle-session", OperationEnvelope.SCHEMA, "undo-endpoint", unit, 3, 1,
+            List.of(new OperationMutation("sheet.restore", "sheet-1", restoreParams)), Instant.now(), intent);
+        operations.commit(unit, undo, owner);
+        assertEquals(preimage, operations.readSnapshot(unit, owner).snapshot());
+        assertEquals(2, operations.readSnapshot(unit, owner).revision());
     }
+    @Test
+    void recordCalculationInputsRequireCompleteSourceRangeReadAccess() throws Exception {
+        String owner = "record-input-owner", reader = "record-input-reader", sourceId = "record-input-source", targetId = "record-input-target";
+        ObjectNode source = (ObjectNode) snapshot(sourceId);
+        ObjectNode cells = (ObjectNode) source.path("sheets").get(0).path("cells"); cells.removeAll();
+        cells.putObject("0").putObject("0").put("value", "ID");
+        ObjectNode row = cells.putObject("1"); row.putObject("0").put("value", "r1"); row.putObject("1").put("value", 2);
+        ((com.fasterxml.jackson.databind.node.ArrayNode) source.path("dataModel").path("tables")).add(mapper.readTree("""
+          {"id":"records","name":"Records","sourceSheetId":"sheet-1","recordIdFieldId":"id","rowCount":1,"blockSize":1024,"blocks":[],"revision":0,
+           "sourceRange":{"sheetId":"sheet-1","startRow":0,"endRow":1,"startColumn":0,"endColumn":2},
+           "fields":[{"id":"id","name":"ID","ordinal":0,"type":"text"},{"id":"qty","name":"Qty","ordinal":1,"type":"number"},{"id":"total","name":"Total","ordinal":2,"type":"number","calculation":{"kind":"formula","formula":"=[@qty]*2"}}]}
+          """));
+        catalog.create(new CreateWorkbookRequest(sourceId, "Range access", source), owner);
+        ObjectNode target = (ObjectNode) snapshot(targetId);
+        ((com.fasterxml.jackson.databind.node.ArrayNode) target.path("dataModel").path("externalLinks")).add(mapper.readTree("""
+          {"id":"record-link","token":"Records.xlsx","sourceUnitId":"record-input-source","sheets":[{"token":"Sales","sheetId":"sheet-1"}]}
+          """));
+        catalog.create(new CreateWorkbookRequest(targetId, "Range access", target), owner);
+        acl.grant(sourceId, owner, reader, com.xc.luckysheet.server.contract.WorkbookAclRole.VIEWER);
+        acl.grant(targetId, owner, reader, com.xc.luckysheet.server.contract.WorkbookAclRole.VIEWER);
+        assertEquals(0, operations.readExternalLink(targetId, "record-link", reader, List.of()).path("sourceRevision").asLong());
+        rangeAccess.create(sourceId, owner, new RangeAccessRegionRequest("sheet-1", new RangeRef("sheet-1", 1, 1, 1, 1), RangeAccessLevel.HIDDEN, List.of()));
+        ServiceException denied = assertThrows(ServiceException.class, () -> operations.readExternalLink(targetId, "record-link", reader, List.of()));
+        assertTrue(denied.getMessage().contains("unreadable inputs"));
+        assertEquals(0, operations.readExternalLink(targetId, "record-link", owner, List.of()).path("sourceRevision").asLong());
+    }
+
     private JsonNode snapshot(String unitId) throws Exception {
         ObjectNode root = (ObjectNode) mapper.readTree("""
                 {"schema":"WorkbookSnapshot","version":11,"unitId":"%s","name":"Range access",

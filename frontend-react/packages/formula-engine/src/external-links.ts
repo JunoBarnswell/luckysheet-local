@@ -23,10 +23,11 @@ export function assertCalculationBlockedRanges(value: unknown): asserts value is
   if (!Array.isArray(value) || value.some(range => !range || typeof range.sheetId !== 'string' || !range.sheetId || !['startRow', 'endRow', 'startColumn', 'endColumn'].every(key => Number.isSafeInteger(range[key]) && range[key] >= 0) || range.endRow < range.startRow || range.endColumn < range.startColumn || range.endRow > 1048575 || range.endColumn > 16383)) throw new Error('CALCULATION_BLOCKED_RANGE_INVALID');
 }
 
-function validExternalValue(value: unknown, depth = 0): boolean {
+function validExternalValue(value: unknown, budget: { remaining: number }, depth = 0): boolean {
+  if (--budget.remaining < 0) throw new Error('EXTERNAL_LINK_CACHE_LIMIT');
   if (value === null || typeof value === 'string' || typeof value === 'boolean' || typeof value === 'number' && Number.isFinite(value)) return true;
   if (isFormulaError(value)) return typeof value.code === 'string' && typeof value.message === 'string';
-  return depth < 4 && Array.isArray(value) && value.length <= 100000 && value.every(row => Array.isArray(row) && row.length <= 16384 && row.every(cell => validExternalValue(cell, depth + 1)));
+  return depth < 4 && Array.isArray(value) && value.length <= 100000 && value.every(row => Array.isArray(row) && row.length <= 16384 && row.every(cell => validExternalValue(cell, budget, depth + 1)));
 }
 
 export function assertExternalCalculationLink(value: ExternalCalculationLink): void {
@@ -40,12 +41,13 @@ export function assertExternalCalculationLink(value: ExternalCalculationLink): v
     || !Number.isSafeInteger(sheet.rowCount) || sheet.rowCount < 1 || !Number.isSafeInteger(sheet.columnCount) || sheet.columnCount < 1)) throw new Error('EXTERNAL_LINK_SHEET_INVALID');
   if (value.blockedRanges !== undefined) assertCalculationBlockedRanges(value.blockedRanges);
   const cells = new Set<string>();
+  const budget = { remaining: 100000 };
   for (const cell of value.cells) {
     const sheet = sheets.get(cell.address.sheetId);
     const key = JSON.stringify(cell.address);
     if (!sheet || !Number.isSafeInteger(cell.address.row) || cell.address.row < 0 || cell.address.row >= sheet.rowCount
       || !Number.isSafeInteger(cell.address.column) || cell.address.column < 0 || cell.address.column >= sheet.columnCount
-      || cells.has(key) || !validExternalValue(cell.value)) throw new Error('EXTERNAL_LINK_CELL_INVALID');
+      || cells.has(key) || !validExternalValue(cell.value, budget)) throw new Error('EXTERNAL_LINK_CELL_INVALID');
     cells.add(key);
   }
   if (!['connected', 'stale', 'refreshing'].includes(value.state) && value.cells.length) throw new Error('EXTERNAL_LINK_REVOKED_CACHE');

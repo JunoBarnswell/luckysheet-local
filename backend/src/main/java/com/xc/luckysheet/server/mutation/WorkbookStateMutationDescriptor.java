@@ -75,6 +75,7 @@ final class WorkbookStateMutationDescriptor extends CanonicalJsonMutationDescrip
         String id = SnapshotMutationSupport.text(table, "id");
         if (SnapshotMutationSupport.findById(tables, id) != null) throw ServiceException.conflict("Workbook table already exists: " + id);
         tables.add(table.deepCopy());
+        com.xc.luckysheet.server.contract.RecordTableValidator.validateWorkbook(root);
     }
 
     private void removeTable(ObjectNode root, String tableId) {

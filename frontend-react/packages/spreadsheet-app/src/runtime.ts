@@ -292,6 +292,7 @@ function installCommandCellValueResolver(runtime: SpreadsheetRuntime): void {
 
 const FORMULA_SYNC_MUTATIONS = new Set([
   'record.set',
+  'record.restore',
   'cell.set',
   'cell.restore',
   'range.set',
@@ -344,6 +345,7 @@ const VISIBILITY_MUTATIONS = new Set([
 
 const DIRECT_CELL_WRITE_MUTATIONS = new Set([
   'record.set',
+  'record.restore',
   'cell.set',
   'cell.restore',
   'range.set',

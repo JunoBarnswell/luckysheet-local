@@ -42,3 +42,25 @@ test('authorization revocation clears external values and hidden ranges return B
   assert.throws(() => engine.applyExternalCalculationLinks([{ ...link(1, 10), state: 'denied' }]), /REVOKED_CACHE/);
   assert.throws(() => engine.applyExternalCalculationLinks([{ ...link(1, 10), blockedRanges: [{ sheetId: 'stable-sales', startRow: -1, endRow: 1, startColumn: 0, endColumn: 2 }] }]), /BLOCKED_RANGE/);
 });
+
+test('external source rebinding and sparse conditional reads retain authorized semantics', async () => {
+  const engine = new FormulaEngine({ defaultSheetId: 'Target' });
+  engine.setFormula('A1', '=SUMIF([Source.xlsx]Sales!B2:B10,">15")');
+  engine.applyExternalCalculationLinks([link(5, 25)]);
+  await engine.recalculateAsync();
+  assert.equal(engine.getCellResult('A1')?.value, 25);
+  engine.applyExternalCalculationLinks([{ ...link(1, 40), sourceUnitId: 'new-source' }]);
+  await engine.recalculateAsync();
+  assert.equal(engine.getCellResult('A1')?.value, 40);
+  engine.applyExternalCalculationLinks([{ ...link(2, 40), sourceUnitId: 'new-source', blockedRanges: [{ sheetId: 'stable-sales', startRow: 1, endRow: 1, startColumn: 1, endColumn: 1 }] }]);
+  await engine.recalculateAsync();
+  assert.equal((engine.getCellResult('A1')?.value as { code: string }).code, '#BLOCKED!');
+});
+
+test('Record owner conflicts are rejected even when the retained owner map is unchanged', () => {
+  const engine = new FormulaEngine({ defaultSheetId: 'Source' });
+  const owner = { tableId: 'Orders', recordId: 'o1', fieldId: 'amount', address: { sheetId: 'Source', row: 1, column: 4 } };
+  engine.setRecordFormulaOwners([owner]);
+  assert.throws(() => engine.setRecordFormulaOwners([owner, owner]), /OWNER_CONFLICT/);
+  assert.deepEqual(engine.getRecordFormulaOwners(), [owner]);
+});

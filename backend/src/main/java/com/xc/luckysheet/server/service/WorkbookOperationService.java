@@ -143,6 +143,11 @@ public class WorkbookOperationService {
         return withWorkbookLock(sourceId, () -> {
             var resolver = rangeAccess.resolver(sourceId, actor, groups);
             long accessRevision = resolver.accessRevision();
+            JsonNode canonicalSource = currentSnapshot(requireWorkbook(sourceId));
+            for (JsonNode table : canonicalSource.path("dataModel").path("tables")) if (table.has("recordIdFieldId")) {
+                JsonNode range = table.path("sourceRange");
+                if (!resolver.canRead(new RangeRef(range.path("sheetId").asText(), range.path("startRow").asInt(), range.path("endRow").asInt(), range.path("startColumn").asInt(), range.path("endColumn").asInt()))) throw new ServiceException("ACCESS_HIDDEN", 403, "Record calculation source contains unreadable inputs");
+            }
             WorkbookSnapshotResponse source = readSnapshot(sourceId, actor, groups);
             ObjectNode graph = ((ObjectNode) source.snapshot()).deepCopy();
             int inputCount = 0;
@@ -234,12 +239,21 @@ public class WorkbookOperationService {
         List<CommittedOperationMutation> committedMutations = new ArrayList<>();
         long changedAccessRevision = -1;
         for (OperationMutation mutation : operation.mutations()) {
+            if ("record.restore".equals(mutation.id()) && undoTarget == null) throw ServiceException.conflict("RECORD_RESTORE_REQUIRES_UNDO");
             if ("table.configure".equals(mutation.id()) && undoTarget == null) {
                 JsonNode previousTable = com.xc.luckysheet.server.contract.RecordTableValidator.table(next, mutation.params().path("table").path("id").asText());
                 if (previousTable.has("recordIdFieldId") && !previousTable.path("recordIdFieldId").equals(mutation.params().path("table").path("recordIdFieldId"))) throw ServiceException.conflict("RECORD_IDENTITY_IMMUTABLE");
             }
             RangeAccessResolver accessResolver = rangeAccess.resolver(routeUnitId, actor, actorRole, groups);
             JsonNode authorizationSnapshot = next;
+            if ("record.set".equals(mutation.id()) || "record.restore".equals(mutation.id())) {
+                JsonNode table = com.xc.luckysheet.server.contract.RecordTableValidator.table(next, mutation.params().path("tableId").asText());
+                JsonNode range = table.path("sourceRange");
+                Integer recordRow = com.xc.luckysheet.server.contract.RecordTableValidator.rows(next, table).get(mutation.params().path("recordId").asText());
+                if (recordRow == null) throw ServiceException.notFound("Record not found");
+                int identityColumn = range.path("startColumn").asInt() + com.xc.luckysheet.server.contract.RecordTableValidator.field(table, table.path("recordIdFieldId").asText()).path("ordinal").asInt();
+                accessResolver.requireCanRead(List.of(new RangeRef(range.path("sheetId").asText(), recordRow, recordRow, identityColumn, identityColumn)));
+            }
             MutationPreparation prepared = registry.prepare(authorizationSnapshot, mutation, actorRole, ranges -> {
                 if (!accessProjection.formulaDependenciesReadable(authorizationSnapshot, mutation.params(), mutation.sheetId(), accessResolver)) {
                     throw new ServiceException("ACCESS_HIDDEN", 403,

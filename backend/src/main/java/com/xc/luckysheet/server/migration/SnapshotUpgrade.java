@@ -16,6 +16,7 @@ public final class SnapshotUpgrade {
         if (snapshot.path("version").asInt(-1) != GeneratedWorkbookContract.SNAPSHOT_VERSION && containsLegacyImageData(snapshot)) {
             throw ServiceException.validation("ASSET_MIGRATION_REQUIRED: legacy image data must be assetized before server persistence");
         }
+        for (JsonNode sheet : snapshot.path("sheets")) if (sheet instanceof ObjectNode object) migrateStoredWorksheetDefaults(object);
         if (snapshot.path("version").asInt(-1) == GeneratedWorkbookContract.SNAPSHOT_VERSION) {
             return requireCanonical(snapshot, expectedUnitId);
         }
@@ -141,6 +142,18 @@ public final class SnapshotUpgrade {
             sheet.remove(java.util.List.of("defaultRowHeight", "defaultColumnWidth", "rowHeights", "columnWidths", "freeze"));
         }
         return migrateStored(snapshot, expectedUnitId);
+    }
+
+    /** Explicit schema migration only; runtime reducers create complete sheets instead. */
+    public static void migrateStoredWorksheetDefaults(ObjectNode sheet) {
+        for (String field : java.util.List.of("dataRegions", "conditionalFormats", "dataValidations", "hiddenRows", "hiddenColumns", "sheetTables", "sparklineGroups", "drawingGroups", "spillRanges", "protectionRules")) if (!sheet.has(field)) sheet.putArray(field);
+        if (!sheet.has("rowHeightsPx")) sheet.putObject("rowHeightsPx");
+        if (!sheet.has("columnWidthsPx")) sheet.putObject("columnWidthsPx");
+        if (!sheet.has("showGridlines")) sheet.put("showGridlines", true);
+        if (!sheet.has("showHeaders")) sheet.put("showHeaders", true);
+        if (!sheet.has("zoom")) sheet.put("zoom", 100);
+        if (!sheet.has("hidden")) sheet.put("hidden", false);
+        if (!sheet.has("snapSettings")) sheet.putObject("snapSettings").put("enabled", true).put("snapToGrid", true).put("snapToShape", true).put("gridSize", 8);
     }
 
     private static void migrateLegacyReview(ObjectNode sheet) {
