@@ -5,7 +5,7 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.xc.luckysheet.server.contract.OperationMutation;
 import com.xc.luckysheet.server.contract.RangeRef;
-import com.xc.luckysheet.server.contract.WorkbookAclRole;
+import com.xc.luckysheet.server.contract.WorkbookRole;
 import com.xc.luckysheet.server.service.ServiceException;
 
 import java.util.HashSet;
@@ -25,7 +25,7 @@ public final class FillMutationDescriptor extends CanonicalJsonMutationDescripto
     public static final Set<String> IDS = Set.of("fill.applied", "fill.restored");
 
     public FillMutationDescriptor(String id) {
-        super(id, WorkbookAclRole.EDITOR);
+        super(id, WorkbookRole.EDITOR);
         if (!IDS.contains(id)) throw new IllegalArgumentException("Unknown fill mutation: " + id);
     }
 

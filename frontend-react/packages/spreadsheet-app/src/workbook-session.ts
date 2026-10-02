@@ -1,3 +1,4 @@
+import type { WorkbookRole } from '@react-sheets/protocol';
 import { buildCellFromText } from '@react-sheets/sheet-features';
 import { refreshExternalLinks } from './features/linked-data/external-link-host';
 import type {
@@ -166,7 +167,7 @@ import {
   buildCollaborationSnapshot,
   type CollaborationSnapshot,
 } from './collaboration';
-import { PermissionService, type PermissionCapabilities, type ShareRole } from './permission-service';
+import { PermissionService, type PermissionCapabilities } from './permission-service';
 import {
   canExecuteCommand,
   findProtectionRuleCoveringRange,
@@ -464,7 +465,7 @@ export interface UiSnapshot extends DesignerState {
   pendingCommandCount: number;
   offlineQueueState: string;
   actorId: string;
-  shareRole: ShareRole | null;
+  shareRole: WorkbookRole | null;
   permissions: PermissionCapabilities;
   accessRevision: number;
   effectiveAccessRegions: readonly import('@react-sheets/protocol').EffectiveAccessRegion[];
@@ -2386,7 +2387,7 @@ export class WorkbookSession {
     ).allowed;
   }
 
-  getShareRole(): ShareRole | null {
+  getShareRole(): WorkbookRole | null {
     return this.permission.getShareRole();
   }
 

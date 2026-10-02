@@ -11,7 +11,6 @@ import {
   WorkbookApiClient,
   type AuthTokenProvider,
   type ShareTokenProvider,
-  type WorkbookAclRole,
   type WorkbookAccessResponse,
   type OperationMessage,
   type SnapshotResponse,

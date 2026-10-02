@@ -3,7 +3,7 @@ package com.xc.luckysheet.server.service;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.xc.luckysheet.server.contract.CopyWorkbookRequest;
-import com.xc.luckysheet.server.contract.WorkbookAclRole;
+import com.xc.luckysheet.server.contract.WorkbookRole;
 import com.xc.luckysheet.server.contract.WorkbookLifecycle;
 import com.xc.luckysheet.server.contract.WorkbookSnapshotResponse;
 import com.xc.luckysheet.server.contract.WorkbookSource;
@@ -49,7 +49,7 @@ class WorkbookCatalogServiceTest {
         WorkspaceService workspace = mock(WorkspaceService.class);
         WorkbookAuthorizationService authorization = mock(WorkbookAuthorizationService.class);
         WorkbookOperationService operations = mock(WorkbookOperationService.class);
-        when(authorization.role("book-1", "editor")).thenReturn(Optional.of(com.xc.luckysheet.server.contract.WorkbookAclRole.EDITOR));
+        when(authorization.role("book-1", "editor")).thenReturn(Optional.of(com.xc.luckysheet.server.contract.WorkbookRole.EDITOR));
         when(workbooks.findForUpdate("book-1")).thenReturn(Optional.of(new WorkbookEntity("book-1", "Book", "{}", 0, 0,
                 Instant.now(), Instant.now(), "owner", "space-1", null, WorkbookStorageLocation.REMOTE,
                 WorkbookSource.NATIVE, WorkbookLifecycle.ACTIVE, null)));
@@ -106,10 +106,10 @@ class WorkbookCatalogServiceTest {
                 """);
         when(workbooks.findById("source-1")).thenReturn(Optional.of(source));
         when(workbooks.existsById(any())).thenReturn(false);
-        when(authorization.role(any(), eq("actor"))).thenReturn(Optional.of(WorkbookAclRole.OWNER));
-        when(authorization.role("source-1", "actor")).thenReturn(Optional.of(WorkbookAclRole.VIEWER));
+        when(authorization.role(any(), eq("actor"))).thenReturn(Optional.of(WorkbookRole.OWNER));
+        when(authorization.role("source-1", "actor")).thenReturn(Optional.of(WorkbookRole.VIEWER));
         when(operations.readSnapshot("source-1", "actor")).thenReturn(new WorkbookSnapshotResponse("source-1", snapshot, 0, "checksum"));
-        when(workspace.require("space-1", "actor", WorkbookAclRole.EDITOR)).thenReturn(space);
+        when(workspace.require("space-1", "actor", WorkbookRole.EDITOR)).thenReturn(space);
         when(spaces.findById("space-1")).thenReturn(Optional.of(space));
         when(folders.findBySpaceIdOrderByName("space-1")).thenReturn(java.util.List.of());
         when(artifacts.findById(any())).thenReturn(Optional.empty());

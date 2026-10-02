@@ -121,8 +121,8 @@ class LinkedDataAcceptanceIntegrationTest {
           {"id":"record-link","token":"Records.xlsx","sourceUnitId":"record-input-source","sheets":[{"token":"Sales","sheetId":"sheet-1"}]}
           """));
         catalog.create(new CreateWorkbookRequest(targetId, "Range access", target), owner);
-        acl.grant(sourceId, owner, reader, com.xc.luckysheet.server.contract.WorkbookAclRole.VIEWER);
-        acl.grant(targetId, owner, reader, com.xc.luckysheet.server.contract.WorkbookAclRole.VIEWER);
+        acl.grant(sourceId, owner, reader, com.xc.luckysheet.server.contract.WorkbookRole.VIEWER);
+        acl.grant(targetId, owner, reader, com.xc.luckysheet.server.contract.WorkbookRole.VIEWER);
         assertEquals(0, operations.readExternalLink(targetId, "record-link", reader, List.of()).path("sourceRevision").asLong());
         rangeAccess.create(sourceId, owner, new RangeAccessRegionRequest("sheet-1", new RangeRef("sheet-1", 1, 1, 1, 1), RangeAccessLevel.HIDDEN, List.of()));
         ServiceException denied = assertThrows(ServiceException.class, () -> operations.readExternalLink(targetId, "record-link", reader, List.of()));

@@ -9,7 +9,7 @@ import java.util.Set;
 
 final class ExternalLinkMutationDescriptor extends CanonicalJsonMutationDescriptor {
     static final Set<String> IDS = Set.of("externalLink.set", "externalLink.remove");
-    ExternalLinkMutationDescriptor(String id) { super(id, WorkbookAclRole.EDITOR); }
+    ExternalLinkMutationDescriptor(String id) { super(id, WorkbookRole.EDITOR); }
     public List<RangeRef> affectedRanges(JsonNode snapshot, OperationMutation mutation) { validate(mutation); return List.of(); }
     private ObjectNode validate(OperationMutation mutation) {
         ObjectNode params = SnapshotMutationSupport.params(mutation);

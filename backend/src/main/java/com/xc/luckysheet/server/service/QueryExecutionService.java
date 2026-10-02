@@ -13,7 +13,7 @@ import com.xc.luckysheet.server.contract.QueryBlockResponse;
 import com.xc.luckysheet.server.contract.QueryDataSourceBlock;
 import com.xc.luckysheet.server.contract.QueryDataSourceExecutionResponse;
 import com.xc.luckysheet.server.contract.QueryStep;
-import com.xc.luckysheet.server.contract.WorkbookAclRole;
+import com.xc.luckysheet.server.contract.WorkbookRole;
 import com.xc.luckysheet.server.store.WorkbookStore;
 import org.springframework.stereotype.Service;
 
@@ -100,7 +100,7 @@ public class QueryExecutionService {
     }
 
     public QueryExecutionResponse execute(String unitId, QueryExecutionRequest request, String actor) {
-        access.require(unitId, actor, WorkbookAclRole.EDITOR);
+        access.require(unitId, actor, WorkbookRole.EDITOR);
         lifecycle.requireActive(unitId);
         if (!properties.enabled()) throw ServiceException.unavailable("Server query execution is disabled");
         QuerySource source;
@@ -165,7 +165,7 @@ public class QueryExecutionService {
      * commit only the DataSource manifest through query.load.
      */
     public QueryBlockExecutionResponse executeBlocks(String unitId, QueryExecutionRequest request, String actor) {
-        access.require(unitId, actor, WorkbookAclRole.EDITOR);
+        access.require(unitId, actor, WorkbookRole.EDITOR);
         lifecycle.requireActive(unitId);
         if (!properties.enabled()) throw ServiceException.unavailable("Server query execution is disabled");
         QuerySource source;
@@ -262,7 +262,7 @@ public class QueryExecutionService {
      * normal data-block reader boundary.
      */
     public QueryDataSourceExecutionResponse executeDataSource(String unitId, QueryExecutionRequest request, String actor) {
-        access.require(unitId, actor, WorkbookAclRole.EDITOR);
+        access.require(unitId, actor, WorkbookRole.EDITOR);
         lifecycle.requireActive(unitId);
         if (!properties.enabled()) throw ServiceException.unavailable("Server query execution is disabled");
         QuerySource source;
@@ -406,7 +406,7 @@ public class QueryExecutionService {
     }
 
     public void finishBlocks(String unitId, String queryId, String executionId, String actor) {
-        access.require(unitId, actor, WorkbookAclRole.VIEWER);
+        access.require(unitId, actor, WorkbookRole.VIEWER);
         lifecycle.requireActive(unitId);
         BlockQuery session = blockSessions.get(executionId);
         // Finishing is cleanup, not a second business transaction. A session
@@ -415,18 +415,18 @@ public class QueryExecutionService {
         if (!session.unitId().equals(unitId) || !session.queryId().equals(queryId)) {
             throw ServiceException.notFound("Query block session not found");
         }
-        if (!session.actor().equals(actor) && !access.currentRole(unitId, actor).includes(WorkbookAclRole.OWNER)) {
+        if (!session.actor().equals(actor) && !access.currentRole(unitId, actor).includes(WorkbookRole.OWNER)) {
             throw ServiceException.forbidden("Only the query owner or workbook owner may finish this query block session");
         }
         blockSessions.remove(executionId, session);
     }
 
     public void cancel(String unitId, String queryId, String actor) {
-        access.require(unitId, actor, WorkbookAclRole.EDITOR);
+        access.require(unitId, actor, WorkbookRole.EDITOR);
         lifecycle.requireActive(unitId);
         ActiveQuery query = active.get(unitId + ":" + queryId);
         if (query == null) throw ServiceException.notFound("Running query not found");
-        if (!query.actor().equals(actor) && !access.currentRole(unitId, actor).includes(WorkbookAclRole.OWNER)) {
+        if (!query.actor().equals(actor) && !access.currentRole(unitId, actor).includes(WorkbookRole.OWNER)) {
             throw ServiceException.forbidden("Only the query owner or workbook owner may cancel a query");
         }
         query.future().cancel(true);
@@ -1053,8 +1053,8 @@ public class QueryExecutionService {
         if (session == null || !session.unitId().equals(unitId) || !session.queryId().equals(queryId)) {
             throw ServiceException.notFound("Query block session not found");
         }
-        access.require(unitId, actor, WorkbookAclRole.VIEWER);
-        if (!session.actor().equals(actor) && !access.currentRole(unitId, actor).includes(WorkbookAclRole.OWNER)) {
+        access.require(unitId, actor, WorkbookRole.VIEWER);
+        if (!session.actor().equals(actor) && !access.currentRole(unitId, actor).includes(WorkbookRole.OWNER)) {
             throw ServiceException.forbidden("Only the query owner or workbook owner may read this query block session");
         }
         lifecycle.requireActive(unitId);

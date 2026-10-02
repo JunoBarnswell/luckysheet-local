@@ -8,7 +8,7 @@ import com.xc.luckysheet.server.contract.CommittedOperationMutation;
 import com.xc.luckysheet.server.contract.OperationEnvelope;
 import com.xc.luckysheet.server.contract.OperationMutation;
 import com.xc.luckysheet.server.contract.RangeRef;
-import com.xc.luckysheet.server.contract.WorkbookAclRole;
+import com.xc.luckysheet.server.contract.WorkbookRole;
 import com.xc.luckysheet.server.contract.WorkbookLifecycle;
 import com.xc.luckysheet.server.migration.SnapshotUpgrade;
 import com.xc.luckysheet.server.mutation.MutationDescriptorRegistry;
@@ -61,7 +61,7 @@ class WorkbookIntegrityAndConflictTest {
         OperationEnvelope previous = cellOperation("op-existing", "session-a", 1, 0, 0, 0, 1);
         OperationRow previousRow = committedRow(previous, 1, 0, 0);
         stubWorkbook(store, snapshot, 0, 1, List.of(previousRow));
-        when(access.require(UNIT_ID, ACTOR, WorkbookAclRole.VIEWER)).thenReturn(WorkbookAclRole.EDITOR);
+        when(access.require(UNIT_ID, ACTOR, WorkbookRole.VIEWER)).thenReturn(WorkbookRole.EDITOR);
 
         WorkbookOperationService service = service(store, access, new MutationDescriptorRegistry());
         OperationEnvelope stale = cellOperation("op-stale", "session-b", 1, 0, 0, 0, 2);
@@ -81,7 +81,7 @@ class WorkbookIntegrityAndConflictTest {
         OperationEnvelope previous = cellOperation("op-existing", "session-a", 1, 0, 0, 0, 1);
         OperationRow previousRow = committedRow(previous, 1, 0, 0);
         stubWorkbook(store, snapshot, 0, 1, List.of(previousRow));
-        when(access.require(UNIT_ID, ACTOR, WorkbookAclRole.VIEWER)).thenReturn(WorkbookAclRole.EDITOR);
+        when(access.require(UNIT_ID, ACTOR, WorkbookRole.VIEWER)).thenReturn(WorkbookRole.EDITOR);
 
         WorkbookOperationService service = service(store, access, new MutationDescriptorRegistry());
         OperationEnvelope nonIntersecting = cellOperation("op-next", "session-b", 1, 0, 0, 1, 2);
@@ -99,7 +99,7 @@ class WorkbookIntegrityAndConflictTest {
         String snapshot = canonicalSnapshot();
         WorkbookStore store = mock(WorkbookStore.class);
         AccessControlService access = mock(AccessControlService.class);
-        when(access.require(UNIT_ID, ACTOR, WorkbookAclRole.VIEWER)).thenReturn(WorkbookAclRole.VIEWER);
+        when(access.require(UNIT_ID, ACTOR, WorkbookRole.VIEWER)).thenReturn(WorkbookRole.VIEWER);
         when(store.find(UNIT_ID)).thenReturn(Optional.of(workbook(snapshot, 0, 0)));
         when(store.findCheckpoint(UNIT_ID, 0)).thenReturn(Optional.of(new CheckpointRow(
                 UNIT_ID, 0, snapshot, "not-the-snapshot-checksum", CREATED_AT)));
@@ -118,7 +118,7 @@ class WorkbookIntegrityAndConflictTest {
         WorkbookStore store = mock(WorkbookStore.class);
         AccessControlService access = mock(AccessControlService.class);
         stubWorkbook(store, snapshot, 0, 0, List.of());
-        when(access.require(UNIT_ID, ACTOR, WorkbookAclRole.VIEWER)).thenReturn(WorkbookAclRole.EDITOR);
+        when(access.require(UNIT_ID, ACTOR, WorkbookRole.VIEWER)).thenReturn(WorkbookRole.EDITOR);
         when(store.findOperation(anyString())).thenReturn(Optional.empty());
         when(store.findOperationBySequence(anyString(), anyString(), anyString(), anyLong())).thenReturn(Optional.empty());
 
@@ -141,7 +141,7 @@ class WorkbookIntegrityAndConflictTest {
         AccessControlService access = mock(AccessControlService.class);
         OperationEnvelope existing = cellOperation("op-existing", "session-a", 1, 0, 0, 0, 1);
         stubWorkbook(store, snapshot, 0, 0, List.of());
-        when(access.require(UNIT_ID, ACTOR, WorkbookAclRole.VIEWER)).thenReturn(WorkbookAclRole.EDITOR);
+        when(access.require(UNIT_ID, ACTOR, WorkbookRole.VIEWER)).thenReturn(WorkbookRole.EDITOR);
         when(store.findOperation("op-retry")).thenReturn(Optional.empty());
         when(store.findOperationBySequence(UNIT_ID, ACTOR, "session-a", 1))
                 .thenReturn(Optional.of(committedRow(existing, 1, 0, 0)));
@@ -160,7 +160,7 @@ class WorkbookIntegrityAndConflictTest {
         CoordinationProperties coordination = new CoordinationProperties(
                 false, false, null, "coordination", Duration.ofSeconds(1), Duration.ofSeconds(30), 10, Duration.ofSeconds(45));
         RangeAccessService rangeAccess = mock(RangeAccessService.class);
-        when(rangeAccess.resolver(anyString(), anyString(), any(WorkbookAclRole.class), anyCollection()))
+        when(rangeAccess.resolver(anyString(), anyString(), any(WorkbookRole.class), anyCollection()))
                 .thenAnswer(invocation -> new RangeAccessResolver(new RangeAccessIndex(List.of()), List.of(),
                         new RangeAccessContext(invocation.getArgument(1), invocation.getArgument(2),
                                 invocation.getArgument(3), 0)));
@@ -178,7 +178,7 @@ class WorkbookIntegrityAndConflictTest {
         AccessControlService access = mock(AccessControlService.class);
         OperationEnvelope original = cellOperation("stable-id", "session-a", 1, 0, 0, 0, 42);
         stubWorkbook(store, canonicalSnapshot(), 0, 1, List.of(committedRow(original, 1, 0, 0)));
-        when(access.require(UNIT_ID, ACTOR, WorkbookAclRole.VIEWER)).thenReturn(WorkbookAclRole.EDITOR);
+        when(access.require(UNIT_ID, ACTOR, WorkbookRole.VIEWER)).thenReturn(WorkbookRole.EDITOR);
         when(store.findOperation("stable-id")).thenReturn(Optional.of(committedRow(original, 1, 0, 0)));
         WorkbookOperationService service = service(store, access, new MutationDescriptorRegistry());
 

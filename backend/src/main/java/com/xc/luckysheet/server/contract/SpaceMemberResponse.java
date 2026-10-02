@@ -5,7 +5,7 @@ import java.time.Instant;
 public record SpaceMemberResponse(
         String spaceId,
         String subject,
-        WorkbookAclRole role,
+        WorkbookRole role,
         Instant createdAt,
         Instant updatedAt
 ) {

@@ -1,5 +1,6 @@
 {
   "apiVersion": "2026-09-21",
+  "workbookRoles": ["owner", "editor", "commenter", "viewer"],
   "workbook": {
     "snapshotSchema": "WorkbookSnapshot",
     "snapshotVersion": 11,

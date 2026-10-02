@@ -6,7 +6,7 @@ import com.xc.luckysheet.server.contract.RangeAccessGrant;
 import com.xc.luckysheet.server.contract.RangeAccessLevel;
 import com.xc.luckysheet.server.contract.RangeAccessRegion;
 import com.xc.luckysheet.server.contract.RangeRef;
-import com.xc.luckysheet.server.contract.WorkbookAclRole;
+import com.xc.luckysheet.server.contract.WorkbookRole;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
@@ -27,17 +27,17 @@ class RangeAccessResolverTest {
                 grant(AccessPrincipalKind.GROUP, "analysts", RangeAccessLevel.EDIT),
                 grant(AccessPrincipalKind.SUBJECT, "alice", RangeAccessLevel.READ));
 
-        RangeAccessResolver editor = resolver(WorkbookAclRole.EDITOR, List.of("analysts"), region);
+        RangeAccessResolver editor = resolver(WorkbookRole.EDITOR, List.of("analysts"), region);
         assertEquals(RangeAccessLevel.READ, editor.effectiveAccess(SHEET, 2, 2));
         assertTrue(editor.canRead(new RangeRef(SHEET, 2, 2, 2, 2)));
         assertFalse(editor.canEdit(new RangeRef(SHEET, 2, 2, 2, 2)));
 
-        RangeAccessResolver viewer = resolver(WorkbookAclRole.VIEWER, List.of("analysts"), region);
+        RangeAccessResolver viewer = resolver(WorkbookRole.VIEWER, List.of("analysts"), region);
         assertEquals(RangeAccessLevel.READ, viewer.effectiveAccess(SHEET, 2, 2));
         assertFalse(viewer.canEdit(new RangeRef(SHEET, 2, 2, 2, 2)));
 
         RangeAccessResolver groupMember = new RangeAccessResolver(new RangeAccessIndex(List.of(region)), List.of(region),
-                new RangeAccessContext("bob", WorkbookAclRole.EDITOR, List.of("analysts"), 12));
+                new RangeAccessContext("bob", WorkbookRole.EDITOR, List.of("analysts"), 12));
         assertEquals(RangeAccessLevel.EDIT, groupMember.effectiveAccess(SHEET, 2, 2));
         assertTrue(groupMember.canEdit(new RangeRef(SHEET, 2, 2, 2, 2)));
     }
@@ -46,20 +46,20 @@ class RangeAccessResolverTest {
     void hiddenIntersectionRejectsWholeMutationAndOwnerRetainsAccess() {
         RangeAccessRegion region = region(RangeAccessLevel.HIDDEN);
         RangeRef partiallyHidden = new RangeRef(SHEET, 4, 6, 3, 5);
-        RangeAccessResolver editor = resolver(WorkbookAclRole.EDITOR, List.of(), region);
+        RangeAccessResolver editor = resolver(WorkbookRole.EDITOR, List.of(), region);
 
         assertFalse(editor.canRead(partiallyHidden));
         assertFalse(editor.canEdit(partiallyHidden));
         assertThrows(ServiceException.class, () -> editor.requireCanRead(List.of(partiallyHidden)));
         assertThrows(ServiceException.class, () -> editor.requireCanEdit(List.of(partiallyHidden)));
 
-        RangeAccessResolver owner = resolver(WorkbookAclRole.OWNER, List.of(), region);
+        RangeAccessResolver owner = resolver(WorkbookRole.OWNER, List.of(), region);
         assertTrue(owner.canRead(partiallyHidden));
         assertTrue(owner.canEdit(partiallyHidden));
         assertTrue(owner.hiddenRegions().isEmpty());
     }
 
-    private static RangeAccessResolver resolver(WorkbookAclRole role, List<String> groups, RangeAccessRegion... regions) {
+    private static RangeAccessResolver resolver(WorkbookRole role, List<String> groups, RangeAccessRegion... regions) {
         List<RangeAccessRegion> configured = List.of(regions);
         return new RangeAccessResolver(new RangeAccessIndex(configured), configured,
                 new RangeAccessContext("alice", role, groups, 12));

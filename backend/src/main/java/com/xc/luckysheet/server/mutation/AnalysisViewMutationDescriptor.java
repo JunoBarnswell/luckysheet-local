@@ -5,7 +5,7 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.xc.luckysheet.server.contract.OperationMutation;
 import com.xc.luckysheet.server.contract.RangeRef;
-import com.xc.luckysheet.server.contract.WorkbookAclRole;
+import com.xc.luckysheet.server.contract.WorkbookRole;
 import com.xc.luckysheet.server.service.ServiceException;
 
 import java.util.HashSet;
@@ -27,7 +27,7 @@ final class AnalysisViewMutationDescriptor extends CanonicalJsonMutationDescript
     private static final Set<String> FILTER_OPERATORS = Set.of("equals", "not-equals", "contains", "in", "between");
 
     AnalysisViewMutationDescriptor() {
-        super("analysis.view.replace", WorkbookAclRole.EDITOR);
+        super("analysis.view.replace", WorkbookRole.EDITOR);
     }
 
     @Override

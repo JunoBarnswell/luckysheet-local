@@ -9,20 +9,30 @@ import java.time.Instant;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
-class WorkbookAclRoleTest {
+class WorkbookRoleTest {
     private final ObjectMapper mapper = JsonMapper.builder().addModule(new JavaTimeModule()).build();
 
     @Test
     void roleUsesLowerCaseWireValueAndAcceptsTheBrowserContract() throws Exception {
-        assertEquals("\"viewer\"", mapper.writeValueAsString(WorkbookAclRole.VIEWER));
-        assertEquals(WorkbookAclRole.EDITOR, mapper.readValue("\"editor\"", WorkbookAclRole.class));
-        assertEquals(WorkbookAclRole.COMMENTER, mapper.readValue("\"COMMENTER\"", WorkbookAclRole.class));
+        assertEquals("\"viewer\"", mapper.writeValueAsString(WorkbookRole.VIEWER));
+        assertEquals(WorkbookRole.EDITOR, mapper.readValue("\"editor\"", WorkbookRole.class));
+        assertEquals(WorkbookRole.COMMENTER, mapper.readValue("\"commenter\"", WorkbookRole.class));
+        assertThrows(Exception.class, () -> mapper.readValue("\"COMMENTER\"", WorkbookRole.class));
+        assertThrows(Exception.class, () -> mapper.readValue("\"admin\"", WorkbookRole.class));
+    }
+
+    @Test
+    void roleHierarchyIsGeneratedAndDistinctFromSystemAdministration() {
+        assertEquals(true, WorkbookRole.OWNER.includes(WorkbookRole.EDITOR));
+        assertEquals(false, WorkbookRole.VIEWER.includes(WorkbookRole.COMMENTER));
+        assertEquals(true, WorkbookRole.COMMENTER.includes(WorkbookRole.VIEWER));
     }
 
     @Test
     void accessProjectionDoesNotExposeJavaEnumCapitalization() throws Exception {
-        String json = mapper.writeValueAsString(new WorkbookAccessProjection("book-1", WorkbookAclRole.EDITOR, 0, java.util.List.of()));
+        String json = mapper.writeValueAsString(new WorkbookAccessProjection("book-1", WorkbookRole.EDITOR, 0, java.util.List.of()));
         assertEquals("{\"unitId\":\"book-1\",\"role\":\"editor\",\"accessRevision\":0,\"regions\":[]}", json);
     }
 
@@ -31,7 +41,7 @@ class WorkbookAclRoleTest {
         ShareResponse response = new ShareResponse(
                 UUID.fromString("00000000-0000-0000-0000-000000000001"),
                 "book-1",
-                WorkbookAclRole.COMMENTER,
+                WorkbookRole.COMMENTER,
                 Instant.parse("2026-08-24T00:00:00Z"),
                 null,
                 "owner-1",

@@ -16,7 +16,7 @@ public record WorkbookSummary(
         String name,
         long revision,
         Instant updatedAt,
-        WorkbookAclRole role,
+        WorkbookRole role,
         String ownerSubject,
         String spaceId,
         String folderId,

@@ -1,3 +1,4 @@
+import { workbookCapabilities } from '@react-sheets/sdk';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Button, CheckToggle, Dialog, LocationPicker, Select, Stack, Text, TextInput, type LocationOption } from '@react-sheets/ui-system';
 import {
@@ -53,6 +54,7 @@ function itemFromEntry(entry: WorkbookCatalogEntry): WorkbookCatalogItem {
     syncStatus: entry.syncState,
     lifecycle: entry.lifecycle,
     role: entry.role,
+    capabilities: workbookCapabilities(entry.role, entry.lifecycle),
     sourceKind: entry.source,
     ownerName: entry.ownerName,
     ownerSubject: entry.ownerId,

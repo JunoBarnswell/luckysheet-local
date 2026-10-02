@@ -1,7 +1,7 @@
 package com.xc.luckysheet.server.service;
 
 import com.xc.luckysheet.server.contract.AclEntry;
-import com.xc.luckysheet.server.contract.WorkbookAclRole;
+import com.xc.luckysheet.server.contract.WorkbookRole;
 import com.xc.luckysheet.server.store.WorkbookStore;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -21,8 +21,8 @@ public class AccessControlService {
         this.authorization = authorization;
     }
 
-    public WorkbookAclRole require(String unitId, String subject, WorkbookAclRole required) {
-        WorkbookAclRole actual = authorization.role(unitId, subject).orElse(null);
+    public WorkbookRole require(String unitId, String subject, WorkbookRole required) {
+        WorkbookRole actual = authorization.role(unitId, subject).orElse(null);
         if (actual == null) actual = guestShares.roleFor(unitId, subject);
         if (actual == null) throw ServiceException.forbidden("Workbook access denied");
         if (!actual.includes(required)) throw ServiceException.forbidden("Workbook role " + required + " is required");
@@ -30,21 +30,21 @@ public class AccessControlService {
     }
 
     /** Returns only a role derived from persistent ACL or a verified share token. */
-    public WorkbookAclRole currentRole(String unitId, String subject) {
-        return require(unitId, subject, WorkbookAclRole.VIEWER);
+    public WorkbookRole currentRole(String unitId, String subject) {
+        return require(unitId, subject, WorkbookRole.VIEWER);
     }
 
     public List<AclEntry> list(String unitId, String subject) {
-        require(unitId, subject, WorkbookAclRole.OWNER);
+        require(unitId, subject, WorkbookRole.OWNER);
         return store.listAcl(unitId);
     }
 
     @Transactional
-    public AclEntry grant(String unitId, String actor, String target, WorkbookAclRole role) {
+    public AclEntry grant(String unitId, String actor, String target, WorkbookRole role) {
         store.findForUpdate(unitId).orElseThrow(() -> ServiceException.notFound("Workbook not found"));
-        require(unitId, actor, WorkbookAclRole.OWNER);
+        require(unitId, actor, WorkbookRole.OWNER);
         if (target == null || target.isBlank()) throw ServiceException.validation("ACL subject is required");
-        if (role == null || role == WorkbookAclRole.OWNER) throw ServiceException.validation("Only editor, commenter or viewer may be granted");
+        if (role == null || role == WorkbookRole.OWNER) throw ServiceException.validation("Only editor, commenter or viewer may be granted");
         Instant now = Instant.now();
         store.upsertAcl(unitId, target, role, now);
         return store.listAcl(unitId).stream().filter(entry -> entry.subject().equals(target)).findFirst()
@@ -54,8 +54,8 @@ public class AccessControlService {
     @Transactional
     public void revoke(String unitId, String actor, String target) {
         store.findForUpdate(unitId).orElseThrow(() -> ServiceException.notFound("Workbook not found"));
-        require(unitId, actor, WorkbookAclRole.OWNER);
-        if (authorization.role(unitId, target).orElse(null) == WorkbookAclRole.OWNER) {
+        require(unitId, actor, WorkbookRole.OWNER);
+        if (authorization.role(unitId, target).orElse(null) == WorkbookRole.OWNER) {
             throw ServiceException.forbidden("The workbook owner cannot be revoked");
         }
         store.deleteAcl(unitId, target);

@@ -6,7 +6,7 @@ import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.xc.luckysheet.server.contract.OperationMutation;
 import com.xc.luckysheet.server.contract.RangeRef;
-import com.xc.luckysheet.server.contract.WorkbookAclRole;
+import com.xc.luckysheet.server.contract.WorkbookRole;
 import com.xc.luckysheet.server.service.ServiceException;
 
 import java.util.ArrayList;
@@ -38,7 +38,7 @@ final class DataSourceMutationDescriptor extends CanonicalJsonMutationDescriptor
     private static final Set<String> FIELD_TYPES = Set.of("text", "number", "boolean", "date", "mixed");
 
     DataSourceMutationDescriptor(String id) {
-        super(id, WorkbookAclRole.EDITOR);
+        super(id, WorkbookRole.EDITOR);
         if (!IDS.contains(id)) throw new IllegalArgumentException("Unsupported data-source mutation: " + id);
     }
 

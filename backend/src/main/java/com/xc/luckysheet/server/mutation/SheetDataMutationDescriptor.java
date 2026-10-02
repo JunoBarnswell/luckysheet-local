@@ -9,7 +9,7 @@ import com.xc.luckysheet.server.contract.DataRegionContextValidator;
 import com.xc.luckysheet.server.contract.OperationMutation;
 import com.xc.luckysheet.server.contract.RangeRef;
 import com.xc.luckysheet.server.contract.StructuralPatch;
-import com.xc.luckysheet.server.contract.WorkbookAclRole;
+import com.xc.luckysheet.server.contract.WorkbookRole;
 import com.xc.luckysheet.server.service.ServiceException;
 
 import java.util.ArrayList;
@@ -30,7 +30,7 @@ final class SheetDataMutationDescriptor extends CanonicalJsonMutationDescriptor 
     );
 
     SheetDataMutationDescriptor(String id) {
-        super(id, WorkbookAclRole.EDITOR);
+        super(id, WorkbookRole.EDITOR);
         if (!IDS.contains(id)) throw new IllegalArgumentException("Unsupported sheet metadata mutation: " + id);
     }
 

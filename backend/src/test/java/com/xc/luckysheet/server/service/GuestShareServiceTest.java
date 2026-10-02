@@ -2,7 +2,7 @@ package com.xc.luckysheet.server.service;
 
 import com.xc.luckysheet.server.config.ShareProperties;
 import com.xc.luckysheet.server.contract.ShareCreateRequest;
-import com.xc.luckysheet.server.contract.WorkbookAclRole;
+import com.xc.luckysheet.server.contract.WorkbookRole;
 import com.xc.luckysheet.server.store.ShareRow;
 import com.xc.luckysheet.server.store.WorkbookStore;
 import com.xc.luckysheet.server.store.WorkbookRow;
@@ -28,7 +28,7 @@ class GuestShareServiceTest {
         WorkbookStore store = mock(WorkbookStore.class);
         WorkbookLifecycleService lifecycle = mock(WorkbookLifecycleService.class);
         WorkbookAuthorizationService authorization = mock(WorkbookAuthorizationService.class);
-        when(authorization.role("unit-1", "owner")).thenReturn(Optional.of(WorkbookAclRole.OWNER));
+        when(authorization.role("unit-1", "owner")).thenReturn(Optional.of(WorkbookRole.OWNER));
         when(store.findForUpdate("unit-1")).thenReturn(Optional.of(new WorkbookRow(
                 "unit-1", "Book", "{}", 0, 0, WorkbookLifecycle.ACTIVE, Instant.now(), Instant.now())));
         ShareProperties properties = new ShareProperties(Duration.ofHours(1), Duration.ofDays(7));
@@ -42,7 +42,7 @@ class GuestShareServiceTest {
 
         GuestShareService.GuestIdentity identity = service.authenticate(response.token());
         assertEquals("guest:" + response.shareId(), identity.subject());
-        assertEquals(WorkbookAclRole.VIEWER, service.roleFor("unit-1", identity.subject()));
+        assertEquals(WorkbookRole.VIEWER, service.roleFor("unit-1", identity.subject()));
     }
 
     @Test

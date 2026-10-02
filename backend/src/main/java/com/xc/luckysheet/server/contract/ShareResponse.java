@@ -10,7 +10,7 @@ import java.util.UUID;
 public record ShareResponse(
         @JsonProperty("shareId") UUID shareId,
         @JsonProperty("unitId") String unitId,
-        @JsonProperty("role") WorkbookAclRole role,
+        @JsonProperty("role") WorkbookRole role,
         @JsonProperty("expiresAt") Instant expiresAt,
         @JsonProperty("revokedAt") Instant revokedAt,
         @JsonProperty("createdBy") String createdBy,

@@ -9,7 +9,7 @@ import com.xc.luckysheet.server.contract.GeneratedWorkbookContract;
 import com.xc.luckysheet.server.contract.OperationMutation;
 import com.xc.luckysheet.server.contract.RangeRef;
 import com.xc.luckysheet.server.contract.StructuralPatch;
-import com.xc.luckysheet.server.contract.WorkbookAclRole;
+import com.xc.luckysheet.server.contract.WorkbookRole;
 import com.xc.luckysheet.server.service.ServiceException;
 import org.junit.jupiter.api.Test;
 
@@ -130,16 +130,16 @@ class MutationDescriptorRegistryTest {
         OperationMutation insertRows = new OperationMutation("rows.inserted", "sheet-1", mapper.readTree("""
                 {"sheetId":"sheet-1","at":2,"count":1}
                 """));
-        MutationPreparation insertRowsPreparation = registry.prepare(snapshot, insertRows, WorkbookAclRole.EDITOR);
-        assertTrue(registry.usesOwnedSnapshotCommit(insertRowsPreparation, WorkbookAclRole.EDITOR));
+        MutationPreparation insertRowsPreparation = registry.prepare(snapshot, insertRows, WorkbookRole.EDITOR);
+        assertTrue(registry.usesOwnedSnapshotCommit(insertRowsPreparation, WorkbookRole.EDITOR));
 
         OperationMutation moveRange = new OperationMutation("range.move", "sheet-1", mapper.readTree("""
                 {"sheetId":"sheet-1","sourceRange":{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0},"targetOrigin":{"row":1,"column":0}}
                 """));
-        MutationPreparation movePreparation = registry.prepare(snapshot, moveRange, WorkbookAclRole.EDITOR);
+        MutationPreparation movePreparation = registry.prepare(snapshot, moveRange, WorkbookRole.EDITOR);
 
-        assertFalse(registry.usesOwnedSnapshotCommit(movePreparation, WorkbookAclRole.EDITOR));
-        assertTrue(registry.usesOwnedSnapshotCommit(movePreparation, WorkbookAclRole.OWNER));
+        assertFalse(registry.usesOwnedSnapshotCommit(movePreparation, WorkbookRole.EDITOR));
+        assertTrue(registry.usesOwnedSnapshotCommit(movePreparation, WorkbookRole.OWNER));
     }
 
     @Test
@@ -410,10 +410,10 @@ class MutationDescriptorRegistryTest {
         assertEquals("=A4", reduced.path("definedNameModels").get(0).path("formula").asText());
         assertEquals(5, reduced.path("definedNameModels").get(0).path("anchor").path("row").asInt());
 
-        MutationPreparation commitPreparation = registry.prepare(snapshot, mutation, WorkbookAclRole.EDITOR);
-        assertTrue(registry.usesOwnedSnapshotCommit(commitPreparation, WorkbookAclRole.EDITOR));
+        MutationPreparation commitPreparation = registry.prepare(snapshot, mutation, WorkbookRole.EDITOR);
+        assertTrue(registry.usesOwnedSnapshotCommit(commitPreparation, WorkbookRole.EDITOR));
         ObjectNode ownedSnapshot = snapshot.deepCopy();
-        MutationApplication owned = registry.applyPreparedCommit(ownedSnapshot, mutation, commitPreparation, WorkbookAclRole.EDITOR);
+        MutationApplication owned = registry.applyPreparedCommit(ownedSnapshot, mutation, commitPreparation, WorkbookRole.EDITOR);
         assertSame(ownedSnapshot, owned.snapshot());
         assertEquals("=A2", ownedSnapshot.path("sheets").get(0)
                 .path("cells").path("1").path("0").path("formula").asText());
@@ -628,7 +628,7 @@ class MutationDescriptorRegistryTest {
                  "snapshot":{"clearRanges":[{"sheetId":"sheet-1","startRow":1,"endRow":1,"startColumn":1,"endColumn":1},{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0}],"clearMetadataRanges":[],"cells":[{"row":0,"column":0},{"row":1,"column":1,"value":{"value":"move"}}]}}
                 """));
 
-        var prepared = registry.prepare(snapshot, mutation, WorkbookAclRole.EDITOR);
+        var prepared = registry.prepare(snapshot, mutation, WorkbookRole.EDITOR);
         var next = prepared.descriptor().apply(snapshot, mutation);
 
         assertEquals(2, prepared.affectedRanges().size());
@@ -651,7 +651,7 @@ class MutationDescriptorRegistryTest {
                  "snapshot":{"clearRanges":[],"clearMetadataRanges":[],"cells":[],"workbookTheme":{"id":"after","colors":{"accent1":"#AABBCC"}}}}
                 """));
 
-        var prepared = registry.prepare(snapshot, mutation, WorkbookAclRole.EDITOR);
+        var prepared = registry.prepare(snapshot, mutation, WorkbookRole.EDITOR);
         JsonNode updated = prepared.descriptor().apply(snapshot, mutation);
 
         assertEquals(SnapshotMutationSupport.MAX_ROW, prepared.affectedRanges().getFirst().endRow());
@@ -674,7 +674,7 @@ class MutationDescriptorRegistryTest {
                 """));
 
         ServiceException error = assertThrows(ServiceException.class,
-                () -> registry.prepare(snapshot, mutation, WorkbookAclRole.EDITOR));
+                () -> registry.prepare(snapshot, mutation, WorkbookRole.EDITOR));
 
         assertEquals("VALIDATION_ERROR", error.code());
         assertTrue(snapshot.path("sheets").get(0).path("cells").isEmpty());
@@ -695,7 +695,7 @@ class MutationDescriptorRegistryTest {
                  "snapshot":{"clearRanges":[],"clearMetadataRanges":[{"sheetId":"sheet-1","startRow":2,"endRow":2,"startColumn":2,"endColumn":2}],"cells":[],"hyperlinks":[]}}
                 """));
 
-        JsonNode updated = registry.prepare(snapshot, mutation, WorkbookAclRole.EDITOR).descriptor().apply(snapshot, mutation);
+        JsonNode updated = registry.prepare(snapshot, mutation, WorkbookRole.EDITOR).descriptor().apply(snapshot, mutation);
 
         assertEquals(snapshot.path("sheets").get(0).path("review"), updated.path("sheets").get(0).path("review"));
     }
@@ -718,7 +718,7 @@ class MutationDescriptorRegistryTest {
                 """));
 
         ServiceException error = assertThrows(ServiceException.class,
-                () -> registry.prepare(snapshot, mutation, WorkbookAclRole.EDITOR).descriptor().apply(snapshot, mutation));
+                () -> registry.prepare(snapshot, mutation, WorkbookRole.EDITOR).descriptor().apply(snapshot, mutation));
 
         assertEquals("CONFLICT", error.code());
         assertEquals("keep", snapshot.path("sheets").get(0).path("review").path("threadsById").path("thread-1").path("text").asText());
@@ -743,7 +743,7 @@ class MutationDescriptorRegistryTest {
                 """));
 
         ServiceException error = assertThrows(ServiceException.class,
-                () -> registry.prepare(snapshot, mutation, WorkbookAclRole.EDITOR));
+                () -> registry.prepare(snapshot, mutation, WorkbookRole.EDITOR));
 
         assertEquals("UNSUPPORTED_FEATURE", error.code());
         assertTrue(error.getMessage().contains("UNSUPPORTED_FEATURE"));
@@ -766,7 +766,7 @@ class MutationDescriptorRegistryTest {
                 """));
 
         ServiceException error = assertThrows(ServiceException.class,
-                () -> registry.prepare(snapshot, mutation, WorkbookAclRole.EDITOR));
+                () -> registry.prepare(snapshot, mutation, WorkbookRole.EDITOR));
 
         assertEquals("VALIDATION_ERROR", error.code());
         assertEquals("source", snapshot.path("sheets").get(0).path("cells").path("0").path("0").path("value").asText());
@@ -791,7 +791,7 @@ class MutationDescriptorRegistryTest {
                  "snapshot":{"cells":[{"row":0,"column":0},{"row":1,"column":1,"value":{"value":"move"}}]}}
                 """));
 
-        ServiceException error = assertThrows(ServiceException.class, () -> registry.prepare(snapshot, mutation, WorkbookAclRole.EDITOR));
+        ServiceException error = assertThrows(ServiceException.class, () -> registry.prepare(snapshot, mutation, WorkbookRole.EDITOR));
 
         assertEquals("VALIDATION_ERROR", error.code());
         assertEquals("keep", snapshot.path("sheets").get(0).path("cells").path("0").path("0").path("value").asText());
@@ -802,7 +802,7 @@ class MutationDescriptorRegistryTest {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         var snapshot = mapper.readTree("{\"sheets\":[{\"id\":\"sheet-1\",\"rowCount\":10,\"columnCount\":10,\"cells\":{}}]}");
         var legacy = new OperationMutation("range.paste", "sheet-1", mapper.readTree("{\"startRow\":0,\"startColumn\":0,\"values\":[[{\"value\":1}]]}"));
-        assertThrows(ServiceException.class, () -> registry.prepare(snapshot, legacy, WorkbookAclRole.EDITOR));
+        assertThrows(ServiceException.class, () -> registry.prepare(snapshot, legacy, WorkbookRole.EDITOR));
     }
 
     @Test
@@ -823,7 +823,7 @@ class MutationDescriptorRegistryTest {
         var legacy = new OperationMutation("range.clear", "sheet-1", mapper.readTree("""
                 {"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0},"mode":"formats"}
                 """));
-        assertThrows(ServiceException.class, () -> registry.prepare(snapshot, legacy, WorkbookAclRole.EDITOR));
+        assertThrows(ServiceException.class, () -> registry.prepare(snapshot, legacy, WorkbookRole.EDITOR));
     }
 
     @Test
@@ -919,7 +919,7 @@ class MutationDescriptorRegistryTest {
                  ]}]}}
                 """));
 
-        var prepared = registry.prepare(snapshot, mutation, WorkbookAclRole.EDITOR);
+        var prepared = registry.prepare(snapshot, mutation, WorkbookRole.EDITOR);
         var updated = prepared.descriptor().apply(snapshot, mutation);
 
         assertEquals("dv-1", updated.path("sheets").get(0).path("dataValidations").get(0).path("id").asText());
@@ -941,7 +941,7 @@ class MutationDescriptorRegistryTest {
                  ]}]}}
                 """));
 
-        var prepared = registry.prepare(snapshot, mutation, WorkbookAclRole.EDITOR);
+        var prepared = registry.prepare(snapshot, mutation, WorkbookRole.EDITOR);
         ServiceException error = assertThrows(ServiceException.class, () -> prepared.descriptor().apply(snapshot, mutation));
 
         assertEquals("VALIDATION_ERROR", error.code());
@@ -1061,10 +1061,10 @@ class MutationDescriptorRegistryTest {
                  "snapshot":{"clearRanges":[{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0}],"clearMetadataRanges":[{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0}],"cells":[],"columnWidths":[{"column":0,"widthPx":120}]}}
                 """));
 
-        ServiceException error = assertThrows(ServiceException.class, () -> registry.prepare(snapshot, mutation, WorkbookAclRole.EDITOR));
+        ServiceException error = assertThrows(ServiceException.class, () -> registry.prepare(snapshot, mutation, WorkbookRole.EDITOR));
         assertEquals("FORBIDDEN", error.code());
 
-        var owner = registry.prepare(snapshot, mutation, WorkbookAclRole.OWNER);
+        var owner = registry.prepare(snapshot, mutation, WorkbookRole.OWNER);
         assertEquals(SnapshotMutationSupport.MAX_ROW, owner.affectedRanges().get(1).endRow());
         assertEquals(0, owner.affectedRanges().get(1).startColumn());
     }
@@ -1201,7 +1201,7 @@ class MutationDescriptorRegistryTest {
                 {"sheetId":"sheet-1","definition":{"viewId":"table-1","columns":[{"fieldId":"amount","caption":"Amount","widthPx":120}],"grouping":[],"sortState":[{"fieldId":"amount","direction":"desc"}]}}
                 """));
 
-        var prepared = registry.prepare(snapshot, update, WorkbookAclRole.EDITOR);
+        var prepared = registry.prepare(snapshot, update, WorkbookRole.EDITOR);
         assertEquals(1, prepared.affectedRanges().size());
         assertEquals(0, prepared.affectedRanges().getFirst().startRow());
         assertEquals(19, prepared.affectedRanges().getFirst().endRow());
@@ -1236,7 +1236,7 @@ class MutationDescriptorRegistryTest {
         var update = new OperationMutation("ganttSheet.update", "sheet-1", mapper.readTree("""
                 {"sheetId":"sheet-1","definition":{"viewId":"tasks","fieldMap":{"id":"id","title":"title","start":"start","end":"end","progress":"progress","parentId":"parent","dependencies":"deps"},"calendar":{"workingDays":[1,2,3,4,5],"dayStartHour":8,"dayEndHour":17},"timeline":{"unit":"day"},"dependencyStyle":{"color":"#334155","width":2}}}
                 """));
-        var prepared = registry.prepare(snapshot, update, WorkbookAclRole.EDITOR);
+        var prepared = registry.prepare(snapshot, update, WorkbookRole.EDITOR);
         assertEquals(1, prepared.affectedRanges().size());
         assertEquals(19, prepared.affectedRanges().getFirst().endRow());
         var updated = registry.applyPublicMutations(snapshot, List.of(update));
@@ -1259,7 +1259,7 @@ class MutationDescriptorRegistryTest {
         var update = new OperationMutation("reportSheet.update", "report", mapper.readTree("""
                 {"sheetId":"report","definition":{"templateSheetId":"template","tableId":"tasks","bindings":[{"cell":{"row":1,"column":0},"expression":"title","kind":"field","direction":"vertical","fill":"down"}],"pagination":{"enabled":true,"rowsPerPage":5,"repeatHeaderRows":[0]},"renderMode":"preview","layout":{"orientation":"landscape","marginTopPx":12,"marginRightPx":12,"marginBottomPx":12,"marginLeftPx":12},"dataEntry":[{"fieldId":"title","writable":true}]}}
                 """));
-        var prepared = registry.prepare(snapshot, update, WorkbookAclRole.EDITOR);
+        var prepared = registry.prepare(snapshot, update, WorkbookRole.EDITOR);
         assertEquals(1, prepared.affectedRanges().size());
         assertEquals(19, prepared.affectedRanges().getFirst().endRow());
         var updated = registry.applyPublicMutations(snapshot, List.of(update));
@@ -1289,7 +1289,7 @@ class MutationDescriptorRegistryTest {
                 {"sheetId":"sheet-1","row":2,"column":3,"note":{"id":"n-1","author":"guest","text":"Review","createdAt":"2026-08-23T00:00:00Z","visible":true}}
                 """));
 
-        var prepared = registry.prepare(snapshot, note, WorkbookAclRole.COMMENTER);
+        var prepared = registry.prepare(snapshot, note, WorkbookRole.COMMENTER);
         assertEquals(2, prepared.affectedRanges().get(0).startRow());
         var next = prepared.descriptor().apply(snapshot, note);
         assertEquals("n-1", next.path("sheets").get(0).path("review").path("notesById").path("n-1").path("id").asText());
@@ -1297,7 +1297,7 @@ class MutationDescriptorRegistryTest {
         var cell = new OperationMutation("cell.set", "sheet-1", mapper.readTree("""
                 {"row":0,"column":0,"value":{"value":"no"}}
                 """));
-        ServiceException error = assertThrows(ServiceException.class, () -> registry.prepare(snapshot, cell, WorkbookAclRole.COMMENTER));
+        ServiceException error = assertThrows(ServiceException.class, () -> registry.prepare(snapshot, cell, WorkbookRole.COMMENTER));
         assertEquals("FORBIDDEN", error.code());
     }
 
@@ -1313,7 +1313,7 @@ class MutationDescriptorRegistryTest {
                 {"row":0,"column":0,"value":{"value":42}}
                 """));
 
-        ServiceException error = assertThrows(ServiceException.class, () -> registry.prepare(snapshot, mutation, WorkbookAclRole.EDITOR));
+        ServiceException error = assertThrows(ServiceException.class, () -> registry.prepare(snapshot, mutation, WorkbookRole.EDITOR));
         assertEquals("FORBIDDEN", error.code());
     }
 
@@ -1329,18 +1329,18 @@ class MutationDescriptorRegistryTest {
         var unlocked = new OperationMutation("cell.set", "sheet-1", mapper.readTree("""
                 {"row":0,"column":0,"value":{"value":"changed"}}
                 """));
-        assertDoesNotThrow(() -> registry.prepare(snapshot, unlocked, WorkbookAclRole.EDITOR));
+        assertDoesNotThrow(() -> registry.prepare(snapshot, unlocked, WorkbookRole.EDITOR));
 
         var locked = new OperationMutation("cell.set", "sheet-1", mapper.readTree("""
                 {"row":0,"column":1,"value":{"value":"rejected"}}
                 """));
-        ServiceException lockedError = assertThrows(ServiceException.class, () -> registry.prepare(snapshot, locked, WorkbookAclRole.EDITOR));
+        ServiceException lockedError = assertThrows(ServiceException.class, () -> registry.prepare(snapshot, locked, WorkbookRole.EDITOR));
         assertEquals("FORBIDDEN", lockedError.code());
 
         var format = new OperationMutation("style.set", "sheet-1", mapper.readTree("""
                 {"range":{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":1,"endColumn":1},"style":{"bold":true}}
                 """));
-        assertDoesNotThrow(() -> registry.prepare(snapshot, format, WorkbookAclRole.EDITOR));
+        assertDoesNotThrow(() -> registry.prepare(snapshot, format, WorkbookRole.EDITOR));
     }
 
     @Test
@@ -1354,7 +1354,7 @@ class MutationDescriptorRegistryTest {
         var mutation = new OperationMutation("range.set", "sheet-1", mapper.readTree("""
                 {"startRow":0,"startColumn":0,"values":[[{"value":"a"},{"value":"b"}]]}
                 """));
-        ServiceException error = assertThrows(ServiceException.class, () -> registry.prepare(snapshot, mutation, WorkbookAclRole.EDITOR));
+        ServiceException error = assertThrows(ServiceException.class, () -> registry.prepare(snapshot, mutation, WorkbookRole.EDITOR));
         assertEquals("FORBIDDEN", error.code());
         assertEquals("open", snapshot.path("sheets").get(0).path("cells").path("0").path("0").path("value").asText());
     }
@@ -1410,10 +1410,10 @@ class MutationDescriptorRegistryTest {
                 {"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":0,"endRow":9,"startColumn":0,"endColumn":0},"sourceRows":[5,6,7,8,9,0,1,2,3,4]}
                 """)), range(0, 9, 0, 0), "worksheet", null, false, 500);
 
-        ServiceException error = assertThrows(ServiceException.class, () -> registry.prepare(snapshot, mutation, WorkbookAclRole.EDITOR));
+        ServiceException error = assertThrows(ServiceException.class, () -> registry.prepare(snapshot, mutation, WorkbookRole.EDITOR));
         assertEquals("FORBIDDEN", error.code());
 
-        var owner = registry.prepare(snapshot, mutation, WorkbookAclRole.OWNER);
+        var owner = registry.prepare(snapshot, mutation, WorkbookRole.OWNER);
         assertEquals(0, owner.affectedRanges().getFirst().startColumn());
         assertEquals(500, owner.affectedRanges().getFirst().endColumn());
         var updated = owner.descriptor().apply(snapshot, mutation);
@@ -1428,7 +1428,7 @@ class MutationDescriptorRegistryTest {
                 {"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":0,"endRow":2,"startColumn":0,"endColumn":0},"sourceRows":[2,0,1]}
                 """)), range(0, 2, 0, 0), "worksheet", null, false, 1);
 
-        JsonNode current = registry.prepare(snapshot, mutation, WorkbookAclRole.EDITOR).descriptor().apply(snapshot, mutation);
+        JsonNode current = registry.prepare(snapshot, mutation, WorkbookRole.EDITOR).descriptor().apply(snapshot, mutation);
         JsonNode owner = current.path("sheets").get(1);
         assertEquals(1, owner.path("sparklines").get(0).path("sourceRange").path("startRow").asInt());
         assertEquals(0, owner.path("sparklines").get(0).path("anchor").path("row").asInt());
@@ -1452,14 +1452,14 @@ class MutationDescriptorRegistryTest {
         ObjectNode beforeSparklineRejection = snapshot.deepCopy();
 
         ServiceException sparklineError = assertThrows(ServiceException.class,
-                () -> registry.prepare(snapshot, mutation, WorkbookAclRole.EDITOR).descriptor().apply(snapshot, mutation));
+                () -> registry.prepare(snapshot, mutation, WorkbookRole.EDITOR).descriptor().apply(snapshot, mutation));
         assertEquals("VALIDATION_ERROR", sparklineError.code());
         assertEquals(beforeSparklineRejection, snapshot);
 
         ((ArrayNode) snapshot.path("sheets").get(1).path("sparklines")).remove(0);
         ObjectNode beforePivotRejection = snapshot.deepCopy();
         ServiceException pivotError = assertThrows(ServiceException.class,
-                () -> registry.prepare(snapshot, mutation, WorkbookAclRole.EDITOR).descriptor().apply(snapshot, mutation));
+                () -> registry.prepare(snapshot, mutation, WorkbookRole.EDITOR).descriptor().apply(snapshot, mutation));
         assertEquals("VALIDATION_ERROR", pivotError.code());
         assertEquals(beforePivotRejection, snapshot);
     }
@@ -1487,11 +1487,11 @@ class MutationDescriptorRegistryTest {
 
         OperationMutation overstated = withSortContext(raw, selected, "worksheet", null, false, 6);
         ServiceException extentError = assertThrows(ServiceException.class,
-                () -> registry.prepare(snapshot, overstated, WorkbookAclRole.OWNER));
+                () -> registry.prepare(snapshot, overstated, WorkbookRole.OWNER));
         assertEquals("VALIDATION_ERROR", extentError.code());
 
         OperationMutation mutation = withSortContext(raw, selected, "worksheet", null, false, 5);
-        var prepared = registry.prepare(snapshot, mutation, WorkbookAclRole.OWNER);
+        var prepared = registry.prepare(snapshot, mutation, WorkbookRole.OWNER);
         var application = prepared.descriptor().applyWithPatch(snapshot, mutation);
         JsonNode updated = application.snapshot();
         assertTrue(application.structuralPatch() != null);
@@ -1541,7 +1541,7 @@ class MutationDescriptorRegistryTest {
 
         JsonNode current = snapshot;
         for (OperationMutation mutation : List.of(filter, conditionalFormat, sheetTable, hideRow)) {
-            var prepared = registry.prepare(current, mutation, WorkbookAclRole.EDITOR);
+            var prepared = registry.prepare(current, mutation, WorkbookRole.EDITOR);
             current = prepared.descriptor().apply(current, mutation);
         }
 
@@ -1606,7 +1606,7 @@ class MutationDescriptorRegistryTest {
                 {"sheetId":"sheet-1","ruleId":"dv-duplicate"}
                 """));
 
-        assertThrows(ServiceException.class, () -> registry.prepare(snapshot, clear, WorkbookAclRole.OWNER));
+        assertThrows(ServiceException.class, () -> registry.prepare(snapshot, clear, WorkbookRole.OWNER));
         assertThrows(ServiceException.class, () -> registry.applyPublicMutations(snapshot, List.of(removeFormat)));
         assertThrows(ServiceException.class, () -> registry.applyPublicMutations(snapshot, List.of(removeValidation)));
         assertEquals(2, snapshot.path("sheets").get(0).path("conditionalFormats").size());
@@ -1622,7 +1622,7 @@ class MutationDescriptorRegistryTest {
         OperationMutation add = new OperationMutation("drawing.add", "sheet-1", mapper.readTree("""
                 {"sheetId":"sheet-1","drawing":{"id":"draw-1","sheetId":"sheet-1","kind":"image","payloadId":"payload-1","anchor":{"kind":"absolute"},"transform":{"x":1,"y":2,"width":30,"height":40,"rotation":0},"zIndex":1},"payload":{"kind":"image","src":"data:image/png;base64,AA==","altText":"Logo"}}
                 """));
-        var prepared = registry.prepare(snapshot, add, WorkbookAclRole.EDITOR);
+        var prepared = registry.prepare(snapshot, add, WorkbookRole.EDITOR);
         JsonNode current = prepared.descriptor().apply(snapshot, add);
         assertEquals("draw-1", current.path("sheets").get(0).path("drawings").get(0).path("id").asText());
         assertEquals("image", current.path("sheets").get(0).path("drawingPayloads").path("payload-1").path("kind").asText());
@@ -1630,7 +1630,7 @@ class MutationDescriptorRegistryTest {
         OperationMutation update = new OperationMutation("drawing.payload.update", "sheet-1", mapper.readTree("""
                 {"sheetId":"sheet-1","payloadId":"payload-1","before":{"kind":"image","src":"data:image/png;base64,AA==","altText":"Logo"},"after":{"kind":"image","src":"data:image/png;base64,AA==","altText":"Updated"}}
                 """));
-        current = registry.prepare(current, update, WorkbookAclRole.EDITOR).descriptor().apply(current, update);
+        current = registry.prepare(current, update, WorkbookRole.EDITOR).descriptor().apply(current, update);
         assertEquals("Updated", current.path("sheets").get(0).path("drawingPayloads").path("payload-1").path("altText").asText());
     }
 
@@ -1643,13 +1643,13 @@ class MutationDescriptorRegistryTest {
         OperationMutation bounded = new OperationMutation("drawing.add", "sheet-1", mapper.readTree("""
                 {"sheetId":"sheet-1","drawing":{"id":"bounded-camera","sheetId":"sheet-1","kind":"camera","payloadId":"bounded-payload","anchor":{"kind":"absolute"},"transform":{"x":1,"y":2,"width":30,"height":40,"rotation":0},"zIndex":1},"payload":{"kind":"camera","sourceRange":{"sheetId":"sheet-1","startRow":0,"endRow":99,"startColumn":0,"endColumn":99},"refreshPolicy":"live"}}
                 """));
-        registry.prepare(snapshot, bounded, WorkbookAclRole.EDITOR);
+        registry.prepare(snapshot, bounded, WorkbookRole.EDITOR);
 
         OperationMutation add = new OperationMutation("drawing.add", "sheet-1", mapper.readTree("""
                 {"sheetId":"sheet-1","drawing":{"id":"camera-1","sheetId":"sheet-1","kind":"camera","payloadId":"camera-payload","anchor":{"kind":"absolute"},"transform":{"x":1,"y":2,"width":30,"height":40,"rotation":0},"zIndex":1},"payload":{"kind":"camera","sourceRange":{"sheetId":"sheet-1","startRow":0,"endRow":999,"startColumn":0,"endColumn":999},"refreshPolicy":"live"}}
                 """));
 
-        var prepared = registry.prepare(snapshot, add, WorkbookAclRole.EDITOR);
+        var prepared = registry.prepare(snapshot, add, WorkbookRole.EDITOR);
         ServiceException error = assertThrows(ServiceException.class, () -> prepared.descriptor().apply(snapshot, add));
         assertEquals("VALIDATION_ERROR", error.code());
         assertEquals(0, snapshot.path("sheets").get(0).path("drawings").size());
@@ -1664,13 +1664,13 @@ class MutationDescriptorRegistryTest {
         OperationMutation print = new OperationMutation("pageLayout.paperSize.set", "sheet-1", mapper.readTree("""
                 {"sheetId":"sheet-1","paperSize":"a4"}
                 """));
-        JsonNode current = registry.prepare(snapshot, print, WorkbookAclRole.EDITOR).descriptor().apply(snapshot, print);
+        JsonNode current = registry.prepare(snapshot, print, WorkbookRole.EDITOR).descriptor().apply(snapshot, print);
         assertEquals("a4", current.path("printDocuments").get(0).path("pageSetup").path("paperSize").asText());
 
         OperationMutation load = new OperationMutation("query.load.range", "sheet-1", mapper.readTree("""
                 {"kind":"data-source-load","queryId":"query-1","queryDefinition":{"schema":"QueryDefinition","id":"query-1","name":"Block backed","connectorId":"json","connectorConfig":{"data":[]},"steps":[{"id":"trim-1","kind":"trim-text","name":"Trim","config":{"columns":["Name"]},"enabled":true},{"id":"split-1","kind":"split-column","name":"Split","config":{"column":"Name","delimiter":",","outputColumns":["First","Last"]},"enabled":true},{"id":"dedupe-1","kind":"remove-duplicates","name":"Dedupe","config":{"columns":["First"]},"enabled":true}],"sourceRevision":0},"target":{"kind":"range","sheetId":"sheet-1"},"sourceId":"query:query-1","source":null,"binding":null}
                 """));
-        current = registry.prepare(current, load, WorkbookAclRole.EDITOR).descriptor().apply(current, load);
+        current = registry.prepare(current, load, WorkbookRole.EDITOR).descriptor().apply(current, load);
         assertEquals("query-1", current.path("queryDefinitions").get(0).path("id").asText());
         assertEquals(0, current.path("sheets").get(0).path("cells").size());
     }
@@ -1684,21 +1684,21 @@ class MutationDescriptorRegistryTest {
         OperationMutation pivot = new OperationMutation("pivot.add", "sheet-1", mapper.readTree("""
                 {"schema":"PivotDefinition","id":"pivot-1","source":{"kind":"worksheet-range","range":{"sheetId":"sheet-1","startRow":0,"endRow":1,"startColumn":0,"endColumn":1}},"target":{"sheetId":"sheet-1","anchor":{"row":4,"column":3}},"fieldCatalog":{"schema":"PivotFieldCatalog","fields":[{"fieldId":"sheet:sheet-1:column:0:range:0","name":"Region","dataType":"text","ordinal":0},{"fieldId":"sheet:sheet-1:column:1:range:0","name":"Amount","dataType":"number","ordinal":1}]},"layout":{"rows":[{"fieldId":"sheet:sheet-1:column:0:range:0","subtotal":{"mode":"automatic"}}],"columns":[],"filters":[{"kind":"manual","family":"manual","fieldId":"sheet:sheet-1:column:0:range:0","scope":"report","mode":"all","memberKeys":[]}],"allowMultipleFiltersPerField":true,"collation":{"locale":"en-US","sensitivity":"variant","numeric":false,"caseFirst":"false"},"values":[{"valueId":"value:amount","fieldId":"sheet:sheet-1:column:1:range:0","summarizeBy":"sum"}],"subtotalLocation":"bottom","showRowGrandTotals":true,"showColumnGrandTotals":true,"reportLayout":"compact"},"refreshPolicy":{"mode":"on-change","preserveFormatting":true,"refreshOnLoad":true}}
                 """));
-        JsonNode current = registry.prepare(snapshot, pivot, WorkbookAclRole.EDITOR).descriptor().apply(snapshot, pivot);
+        JsonNode current = registry.prepare(snapshot, pivot, WorkbookRole.EDITOR).descriptor().apply(snapshot, pivot);
         assertEquals("pivot-1", current.path("sheets").get(0).path("pivots").get(0).path("id").asText());
 
         ObjectNode pivotWithDisplayOptions = (ObjectNode) pivot.params().deepCopy();
         ((ObjectNode) pivotWithDisplayOptions).set("presentation", mapper.readTree("""
                 {"styleOptions":{"showRowHeaders":true,"showColumnHeaders":true,"showRowStripes":false,"showColumnStripes":false,"showLastColumn":false},"displayOptions":{"fillEmptyCells":false,"emptyCellText":"","showErrorValues":true,"errorCellText":"","showFieldHeaders":true,"autoFitColumnsOnUpdate":true}}
                 """));
-        JsonNode persistedPresentation = registry.prepare(snapshot, new OperationMutation("pivot.add", "sheet-1", pivotWithDisplayOptions), WorkbookAclRole.EDITOR)
+        JsonNode persistedPresentation = registry.prepare(snapshot, new OperationMutation("pivot.add", "sheet-1", pivotWithDisplayOptions), WorkbookRole.EDITOR)
                 .descriptor().apply(snapshot, new OperationMutation("pivot.add", "sheet-1", pivotWithDisplayOptions));
         assertTrue(persistedPresentation.path("sheets").get(0).path("pivots").get(0).path("presentation").path("displayOptions").path("autoFitColumnsOnUpdate").asBoolean());
 
         ObjectNode invalidDisplayOptions = pivotWithDisplayOptions.deepCopy();
         ((ObjectNode) invalidDisplayOptions.path("presentation").path("displayOptions")).put("autoFitColumnsOnUpdate", "yes");
         ServiceException invalidDisplayOption = assertThrows(ServiceException.class, () -> registry.prepare(snapshot,
-                new OperationMutation("pivot.add", "sheet-1", invalidDisplayOptions), WorkbookAclRole.EDITOR));
+                new OperationMutation("pivot.add", "sheet-1", invalidDisplayOptions), WorkbookRole.EDITOR));
         assertEquals("VALIDATION_ERROR", invalidDisplayOption.code());
 
         ObjectNode difference = (ObjectNode) pivot.params().deepCopy();
@@ -1707,18 +1707,18 @@ class MutationDescriptorRegistryTest {
                 .put("kind", "difference")
                 .put("baseFieldId", "sheet:sheet-1:column:0:range:0")
                 .set("baseItem", mapper.createObjectNode().put("type", "text").put("value", "East")));
-        registry.prepare(snapshot, new OperationMutation("pivot.add", "sheet-1", difference), WorkbookAclRole.EDITOR);
+        registry.prepare(snapshot, new OperationMutation("pivot.add", "sheet-1", difference), WorkbookRole.EDITOR);
 
         ObjectNode missingOperand = (ObjectNode) difference.deepCopy();
         ((ObjectNode) missingOperand.path("layout").path("values").get(0).path("showAs")).remove("baseItem");
-        assertThrows(ServiceException.class, () -> registry.prepare(snapshot, new OperationMutation("pivot.add", "sheet-1", missingOperand), WorkbookAclRole.EDITOR));
+        assertThrows(ServiceException.class, () -> registry.prepare(snapshot, new OperationMutation("pivot.add", "sheet-1", missingOperand), WorkbookRole.EDITOR));
 
         ObjectNode highCardinality = (ObjectNode) pivot.params().deepCopy();
         ArrayNode members = mapper.createArrayNode();
         for (int index = 0; index < 10_001; index++) members.add("Member " + index);
         ((ObjectNode) highCardinality.path("fieldCatalog").path("fields").get(0)).set("values", members);
         OperationMutation highCardinalityMutation = new OperationMutation("pivot.add", "sheet-1", highCardinality);
-        JsonNode highCardinalitySnapshot = registry.prepare(snapshot, highCardinalityMutation, WorkbookAclRole.EDITOR).descriptor().apply(snapshot, highCardinalityMutation);
+        JsonNode highCardinalitySnapshot = registry.prepare(snapshot, highCardinalityMutation, WorkbookRole.EDITOR).descriptor().apply(snapshot, highCardinalityMutation);
         assertEquals(10_001, highCardinalitySnapshot.path("sheets").get(0).path("pivots").get(0).path("fieldCatalog").path("fields").get(0).path("values").size());
 
         ObjectNode boundedManualFilter = (ObjectNode) pivot.params().deepCopy();
@@ -1729,11 +1729,11 @@ class MutationDescriptorRegistryTest {
             manualMembers.addObject().put("type", "text").put("value", "Member " + index);
         }
         manualFilter.set("memberKeys", manualMembers);
-        registry.prepare(snapshot, new OperationMutation("pivot.add", "sheet-1", boundedManualFilter), WorkbookAclRole.EDITOR);
+        registry.prepare(snapshot, new OperationMutation("pivot.add", "sheet-1", boundedManualFilter), WorkbookRole.EDITOR);
 
         manualMembers.addObject().put("type", "text").put("value", "Member 10000");
         ServiceException oversizedFilter = assertThrows(ServiceException.class, () -> registry.prepare(snapshot,
-                new OperationMutation("pivot.add", "sheet-1", boundedManualFilter), WorkbookAclRole.EDITOR));
+                new OperationMutation("pivot.add", "sheet-1", boundedManualFilter), WorkbookRole.EDITOR));
         assertEquals("VALIDATION_ERROR", oversizedFilter.code());
 
         ObjectNode oversizedManualGroup = (ObjectNode) pivot.params().deepCopy();
@@ -1742,17 +1742,17 @@ class MutationDescriptorRegistryTest {
         group.put("kind", "manual").putArray("groups").addObject()
                 .put("groupId", "group-1").put("name", "Group 1").set("items", manualMembers);
         ServiceException oversizedGroup = assertThrows(ServiceException.class, () -> registry.prepare(snapshot,
-                new OperationMutation("pivot.add", "sheet-1", oversizedManualGroup), WorkbookAclRole.EDITOR));
+                new OperationMutation("pivot.add", "sheet-1", oversizedManualGroup), WorkbookRole.EDITOR));
         assertEquals("VALIDATION_ERROR", oversizedGroup.code());
 
         ObjectNode malformedValues = (ObjectNode) pivot.params().deepCopy();
         ((ObjectNode) malformedValues.path("fieldCatalog").path("fields").get(0)).set("values", mapper.createObjectNode());
-        assertThrows(ServiceException.class, () -> registry.prepare(snapshot, new OperationMutation("pivot.add", "sheet-1", malformedValues), WorkbookAclRole.EDITOR));
+        assertThrows(ServiceException.class, () -> registry.prepare(snapshot, new OperationMutation("pivot.add", "sheet-1", malformedValues), WorkbookRole.EDITOR));
 
         OperationMutation sparkline = new OperationMutation("sparkline.add", "sheet-1", mapper.readTree("""
                 {"sheetId":"sheet-1","sparkline":{"id":"spark-1","sheetId":"sheet-1","anchor":{"row":3,"column":0},"sourceRange":{"sheetId":"sheet-1","startRow":1,"endRow":1,"startColumn":1,"endColumn":1},"type":"line","color":"#2563eb"}}
                 """));
-        current = registry.prepare(current, sparkline, WorkbookAclRole.EDITOR).descriptor().apply(current, sparkline);
+        current = registry.prepare(current, sparkline, WorkbookRole.EDITOR).descriptor().apply(current, sparkline);
         assertEquals("spark-1", current.path("sheets").get(0).path("sparklines").get(0).path("id").asText());
 
         ObjectNode drillDownParams = (ObjectNode) mapper.readTree("""
@@ -1760,7 +1760,7 @@ class MutationDescriptorRegistryTest {
                 """);
         drillDownParams.set("detail", drillDownDetail("detail-1", "detail-source-1", 1, List.of("Region", "Amount")));
         OperationMutation drillDown = new OperationMutation("pivot.drilldown.add", "sheet-1", drillDownParams);
-        current = registry.prepare(current, drillDown, WorkbookAclRole.EDITOR).descriptor().apply(current, drillDown);
+        current = registry.prepare(current, drillDown, WorkbookRole.EDITOR).descriptor().apply(current, drillDown);
         assertEquals("detail-1", current.path("sheets").get(1).path("id").asText());
         assertEquals("Region", current.path("sheets").get(1).path("cells").path("0").path("0").path("value").asText());
         assertEquals("detail-source-1", current.path("sheets").get(1).path("dataRegions").get(0).path("sourceId").asText());
@@ -1777,7 +1777,7 @@ class MutationDescriptorRegistryTest {
         largeDrillDownParams.putObject("target").put("row", 0).put("column", 0);
         largeDrillDownParams.set("detail", drillDownDetail("detail-large", "detail-source-large", 1_001, List.of("Region", "Amount")));
         OperationMutation largeDrillDown = new OperationMutation("pivot.drilldown.add", "sheet-1", largeDrillDownParams);
-        current = registry.prepare(current, largeDrillDown, WorkbookAclRole.EDITOR).descriptor().apply(current, largeDrillDown);
+        current = registry.prepare(current, largeDrillDown, WorkbookRole.EDITOR).descriptor().apply(current, largeDrillDown);
         JsonNode largeDetail = current.path("sheets").get(2);
         assertEquals("worksheet", largeDetail.path("kind").asText());
         assertEquals("detail-large", largeDetail.path("id").asText());
@@ -1794,18 +1794,18 @@ class MutationDescriptorRegistryTest {
         OperationMutation legacy = new OperationMutation("pivot.add", "sheet-1", mapper.readTree("""
                 {"id":"pivot-legacy","sheetId":"sheet-1","sourceRange":{"sheetId":"sheet-1","startRow":0,"endRow":1,"startColumn":0,"endColumn":1},"layout":{"rows":[],"columns":[],"filters":[],"values":[],"showSubtotals":true,"showGrandTotals":true}}
                 """));
-        ServiceException error = assertThrows(ServiceException.class, () -> registry.prepare(snapshot, legacy, WorkbookAclRole.EDITOR));
+        ServiceException error = assertThrows(ServiceException.class, () -> registry.prepare(snapshot, legacy, WorkbookRole.EDITOR));
         assertEquals("VALIDATION_ERROR", error.code());
 
         OperationMutation oldLayout = new OperationMutation("pivot.add", "sheet-1", mapper.readTree("""
                 {"schema":"PivotDefinition","id":"pivot-old-layout","source":{"kind":"worksheet-range","range":{"sheetId":"sheet-1","startRow":0,"endRow":1,"startColumn":0,"endColumn":1}},"target":{"sheetId":"sheet-1","anchor":{"row":4,"column":3}},"fieldCatalog":{"schema":"PivotFieldCatalog","fields":[]},"layout":{"rows":[],"columns":[],"filters":[],"values":[],"showGrandTotals":true,"compact":false,"repeatLabels":false},"refreshPolicy":{"mode":"on-change","preserveFormatting":true,"refreshOnLoad":true}}
                 """));
-        assertThrows(ServiceException.class, () -> registry.prepare(snapshot, oldLayout, WorkbookAclRole.EDITOR));
+        assertThrows(ServiceException.class, () -> registry.prepare(snapshot, oldLayout, WorkbookRole.EDITOR));
 
         OperationMutation malformedSubtotal = new OperationMutation("pivot.add", "sheet-1", mapper.readTree("""
                 {"schema":"PivotDefinition","id":"pivot-bad-subtotal","source":{"kind":"worksheet-range","range":{"sheetId":"sheet-1","startRow":0,"endRow":1,"startColumn":0,"endColumn":1}},"target":{"sheetId":"sheet-1","anchor":{"row":4,"column":3}},"fieldCatalog":{"schema":"PivotFieldCatalog","fields":[{"fieldId":"sheet:sheet-1:column:0:range:0","name":"Region","dataType":"text","ordinal":0}]},"layout":{"rows":[{"fieldId":"sheet:sheet-1:column:0:range:0","subtotal":{"mode":"custom","functions":[]}}],"columns":[],"filters":[],"values":[],"subtotalLocation":"bottom","showRowGrandTotals":true,"showColumnGrandTotals":true,"reportLayout":"compact"},"refreshPolicy":{"mode":"on-change","preserveFormatting":true,"refreshOnLoad":true}}
                 """));
-        assertThrows(ServiceException.class, () -> registry.prepare(snapshot, malformedSubtotal, WorkbookAclRole.EDITOR));
+        assertThrows(ServiceException.class, () -> registry.prepare(snapshot, malformedSubtotal, WorkbookRole.EDITOR));
 
         OperationMutation add = new OperationMutation("pivot.add", "sheet-1", mapper.readTree("""
                 {"schema":"PivotDefinition","id":"pivot-1","source":{"kind":"worksheet-range","range":{"sheetId":"sheet-1","startRow":0,"endRow":1,"startColumn":0,"endColumn":1}},"target":{"sheetId":"sheet-1","anchor":{"row":4,"column":3}},"fieldCatalog":{"schema":"PivotFieldCatalog","fields":[]},"layout":{"rows":[],"columns":[],"filters":[],"allowMultipleFiltersPerField":true,"collation":{"locale":"en-US","sensitivity":"variant","numeric":false,"caseFirst":"false"},"values":[],"subtotalLocation":"bottom","showRowGrandTotals":true,"showColumnGrandTotals":true,"reportLayout":"compact"},"refreshPolicy":{"mode":"on-change","preserveFormatting":true,"refreshOnLoad":true}}
@@ -1858,13 +1858,13 @@ class MutationDescriptorRegistryTest {
         OperationMutation collision = new OperationMutation("pivot.update", "sheet-1", mapper.readTree("""
                 {"sheetId":"sheet-1","pivotId":"pivot-1","layout":{"rows":[],"columns":[],"filters":[],"allowMultipleFiltersPerField":true,"collation":{"locale":"en-US","sensitivity":"variant","numeric":false,"caseFirst":"false"},"values":[],"calculatedFields":[{"fieldId":"sheet:sheet-1:column:0:range:0","name":"Shadow","formula":"=1"}],"subtotalLocation":"bottom","showRowGrandTotals":true,"showColumnGrandTotals":true,"reportLayout":"compact"}}
                 """));
-        ServiceException collisionError = assertThrows(ServiceException.class, () -> registry.prepare(snapshot, collision, WorkbookAclRole.EDITOR));
+        ServiceException collisionError = assertThrows(ServiceException.class, () -> registry.prepare(snapshot, collision, WorkbookRole.EDITOR));
         assertEquals("VALIDATION_ERROR", collisionError.code());
 
         OperationMutation missingTarget = new OperationMutation("pivot.update", "sheet-1", mapper.readTree("""
                 {"sheetId":"sheet-1","pivotId":"pivot-1","layout":{"rows":[],"columns":[],"filters":[],"allowMultipleFiltersPerField":true,"collation":{"locale":"en-US","sensitivity":"variant","numeric":false,"caseFirst":"false"},"values":[],"calculatedFields":[],"calculatedItems":[{"fieldId":"calculated-item:missing","targetFieldId":"missing","name":"Missing","formula":"=1"}],"subtotalLocation":"bottom","showRowGrandTotals":true,"showColumnGrandTotals":true,"reportLayout":"compact"}}
                 """));
-        ServiceException targetError = assertThrows(ServiceException.class, () -> registry.prepare(snapshot, missingTarget, WorkbookAclRole.EDITOR));
+        ServiceException targetError = assertThrows(ServiceException.class, () -> registry.prepare(snapshot, missingTarget, WorkbookRole.EDITOR));
         assertEquals("VALIDATION_ERROR", targetError.code());
     }
 
@@ -1907,24 +1907,24 @@ class MutationDescriptorRegistryTest {
         ((ObjectNode) validValueSortPivot.path("layout").path("rows").get(0)).set("sort", mapper.readTree("""
                 {"direction":"descending","by":"value","valueId":"value:amount:count"}
                 """));
-        registry.prepare(snapshot, new OperationMutation("pivot.add", "sheet-1", validValueSortPivot), WorkbookAclRole.EDITOR);
+        registry.prepare(snapshot, new OperationMutation("pivot.add", "sheet-1", validValueSortPivot), WorkbookRole.EDITOR);
 
         ObjectNode missingValueSortIdentity = (ObjectNode) validValueSortPivot.deepCopy();
         ((ObjectNode) missingValueSortIdentity.path("layout").path("rows").get(0).path("sort")).remove("valueId");
         assertThrows(ServiceException.class, () -> registry.prepare(snapshot,
-                new OperationMutation("pivot.add", "sheet-1", missingValueSortIdentity), WorkbookAclRole.EDITOR));
+                new OperationMutation("pivot.add", "sheet-1", missingValueSortIdentity), WorkbookRole.EDITOR));
 
         ObjectNode labelSortWithValueIdentity = (ObjectNode) validValueSortPivot.deepCopy();
         ObjectNode labelSort = (ObjectNode) labelSortWithValueIdentity.path("layout").path("rows").get(0).path("sort");
         labelSort.put("by", "label");
         assertThrows(ServiceException.class, () -> registry.prepare(snapshot,
-                new OperationMutation("pivot.add", "sheet-1", labelSortWithValueIdentity), WorkbookAclRole.EDITOR));
+                new OperationMutation("pivot.add", "sheet-1", labelSortWithValueIdentity), WorkbookRole.EDITOR));
 
         ObjectNode duplicateValuesPivot = (ObjectNode) pivot.deepCopy();
         ArrayNode duplicateValues = (ArrayNode) duplicateValuesPivot.path("layout").path("values");
         duplicateValues.add(duplicateValues.get(0).deepCopy());
         OperationMutation duplicateValuesMutation = new OperationMutation("pivot.add", "sheet-1", duplicateValuesPivot);
-        assertThrows(ServiceException.class, () -> registry.prepare(snapshot, duplicateValuesMutation, WorkbookAclRole.EDITOR));
+        assertThrows(ServiceException.class, () -> registry.prepare(snapshot, duplicateValuesMutation, WorkbookRole.EDITOR));
 
         ObjectNode legacyTopItems = (ObjectNode) pivot.deepCopy();
         ObjectNode legacyFilter = (ObjectNode) legacyTopItems.path("layout").path("filters").get(2);
@@ -1932,32 +1932,32 @@ class MutationDescriptorRegistryTest {
         legacyFilter.remove("threshold");
         legacyFilter.put("count", 1);
         assertThrows(ServiceException.class, () -> registry.prepare(snapshot,
-                new OperationMutation("pivot.add", "sheet-1", legacyTopItems), WorkbookAclRole.EDITOR));
+                new OperationMutation("pivot.add", "sheet-1", legacyTopItems), WorkbookRole.EDITOR));
 
         ObjectNode invalidTopMode = (ObjectNode) pivot.deepCopy();
         ObjectNode invalidModeFilter = (ObjectNode) invalidTopMode.path("layout").path("filters").get(2);
         invalidModeFilter.put("mode", "average");
         assertThrows(ServiceException.class, () -> registry.prepare(snapshot,
-                new OperationMutation("pivot.add", "sheet-1", invalidTopMode), WorkbookAclRole.EDITOR));
+                new OperationMutation("pivot.add", "sheet-1", invalidTopMode), WorkbookRole.EDITOR));
 
         ObjectNode invalidScopePivot = (ObjectNode) pivot.deepCopy();
         ((ObjectNode) invalidScopePivot.path("layout").path("filters").get(0)).put("scope", "workspace");
         OperationMutation invalidScope = new OperationMutation("pivot.add", "sheet-1", invalidScopePivot);
-        assertThrows(ServiceException.class, () -> registry.prepare(snapshot, invalidScope, WorkbookAclRole.EDITOR));
+        assertThrows(ServiceException.class, () -> registry.prepare(snapshot, invalidScope, WorkbookRole.EDITOR));
         assertEquals(0, snapshot.path("sheets").get(0).path("pivots").size());
 
         ObjectNode invalidAxisPivot = (ObjectNode) pivot.deepCopy();
         ObjectNode nonAxisFilter = (ObjectNode) invalidAxisPivot.path("layout").path("filters").get(3);
         nonAxisFilter.put("scope", "field");
         OperationMutation invalidAxis = new OperationMutation("pivot.add", "sheet-1", invalidAxisPivot);
-        ServiceException error = assertThrows(ServiceException.class, () -> registry.prepare(snapshot, invalidAxis, WorkbookAclRole.EDITOR));
+        ServiceException error = assertThrows(ServiceException.class, () -> registry.prepare(snapshot, invalidAxis, WorkbookRole.EDITOR));
         assertEquals("VALIDATION_ERROR", error.code());
         assertEquals(0, snapshot.path("sheets").get(0).path("pivots").size());
 
         ObjectNode missingValuePlacementPivot = (ObjectNode) pivot.deepCopy();
         ((ObjectNode) missingValuePlacementPivot.path("layout").path("filters").get(3)).remove("valueId");
         OperationMutation missingValuePlacement = new OperationMutation("pivot.add", "sheet-1", missingValuePlacementPivot);
-        ServiceException missingValueError = assertThrows(ServiceException.class, () -> registry.prepare(snapshot, missingValuePlacement, WorkbookAclRole.EDITOR));
+        ServiceException missingValueError = assertThrows(ServiceException.class, () -> registry.prepare(snapshot, missingValuePlacement, WorkbookRole.EDITOR));
         assertEquals("VALIDATION_ERROR", missingValueError.code());
     }
 
@@ -1982,7 +1982,7 @@ class MutationDescriptorRegistryTest {
                 "{\"kind\":\"named-range\",\"name\":\"SalesData\",\"sheetId\":\"sheet-2\"}",
                 "{\"kind\":\"data-source\",\"dataSourceId\":\"source-1\"}")) {
             OperationMutation valid = new OperationMutation("pivot.add", "sheet-1", pivotWithSource(source, "valid-" + Math.abs(source.hashCode())));
-            registry.prepare(snapshot, valid, WorkbookAclRole.EDITOR);
+            registry.prepare(snapshot, valid, WorkbookRole.EDITOR);
         }
 
         for (String source : List.of(
@@ -1992,14 +1992,14 @@ class MutationDescriptorRegistryTest {
                 "{\"kind\":\"data-source\",\"dataSourceId\":\"missing-source\"}")) {
             OperationMutation invalid = new OperationMutation("pivot.add", "sheet-1", pivotWithSource(source, "invalid-" + Math.abs(source.hashCode())));
             JsonNode before = snapshot.deepCopy();
-            assertThrows(ServiceException.class, () -> registry.prepare(snapshot, invalid, WorkbookAclRole.EDITOR));
+            assertThrows(ServiceException.class, () -> registry.prepare(snapshot, invalid, WorkbookRole.EDITOR));
             assertEquals(before, snapshot);
         }
         ObjectNode missingSources = (ObjectNode) snapshot.deepCopy();
         ((ObjectNode) missingSources.path("dataModel")).remove("sources");
         JsonNode beforeMissingSources = missingSources.deepCopy();
         OperationMutation invalidWithoutSourceCollection = new OperationMutation("pivot.add", "sheet-1", pivotWithSource("{\"kind\":\"data-source\",\"dataSourceId\":\"missing-source\"}", "invalid-no-source-collection"));
-        assertThrows(ServiceException.class, () -> registry.prepare(missingSources, invalidWithoutSourceCollection, WorkbookAclRole.EDITOR));
+        assertThrows(ServiceException.class, () -> registry.prepare(missingSources, invalidWithoutSourceCollection, WorkbookRole.EDITOR));
         assertEquals(beforeMissingSources, missingSources);
     }
 
@@ -2039,7 +2039,7 @@ class MutationDescriptorRegistryTest {
         OperationMutation update = new OperationMutation("pivot.update", "sheet-1", mapper.readTree("""
                 {"sheetId":"sheet-1","pivotId":"pivot-1","source":{"kind":"named-range","name":"SalesData"}}
                 """));
-        ServiceException error = assertThrows(ServiceException.class, () -> registry.prepare(snapshot, update, WorkbookAclRole.EDITOR));
+        ServiceException error = assertThrows(ServiceException.class, () -> registry.prepare(snapshot, update, WorkbookRole.EDITOR));
         assertEquals("VALIDATION_ERROR", error.code());
         assertEquals("table", snapshot.path("sheets").get(0).path("pivots").get(0).path("source").path("kind").asText());
     }
@@ -2060,18 +2060,18 @@ class MutationDescriptorRegistryTest {
 
         OperationMutation validLocal = new OperationMutation("pivot.add", "sheet-1", pivotWithSource(
                 "{\"kind\":\"named-range\",\"name\":\"LocalOnly\",\"sheetId\":\"sheet-2\"}", "pivot-local-exact"));
-        registry.prepare(snapshot, validLocal, WorkbookAclRole.EDITOR);
+        registry.prepare(snapshot, validLocal, WorkbookRole.EDITOR);
 
         OperationMutation validWorkbook = new OperationMutation("pivot.add", "sheet-1", pivotWithSource(
                 "{\"kind\":\"named-range\",\"name\":\"WorkbookOnly\"}", "pivot-workbook-exact"));
-        registry.prepare(snapshot, validWorkbook, WorkbookAclRole.EDITOR);
+        registry.prepare(snapshot, validWorkbook, WorkbookRole.EDITOR);
 
         for (String source : List.of(
                 "{\"kind\":\"named-range\",\"name\":\"WorkbookOnly\",\"sheetId\":\"sheet-2\"}",
                 "{\"kind\":\"named-range\",\"name\":\"LocalOnly\"}")) {
             JsonNode before = snapshot.deepCopy();
             OperationMutation invalid = new OperationMutation("pivot.add", "sheet-1", pivotWithSource(source, "pivot-invalid-scope"));
-            ServiceException error = assertThrows(ServiceException.class, () -> registry.prepare(snapshot, invalid, WorkbookAclRole.EDITOR));
+            ServiceException error = assertThrows(ServiceException.class, () -> registry.prepare(snapshot, invalid, WorkbookRole.EDITOR));
             assertEquals("NOT_FOUND", error.code());
             assertEquals(before, snapshot);
         }
@@ -2185,7 +2185,7 @@ class MutationDescriptorRegistryTest {
                 ]}]}
                 """);
         OperationMutation remove = new OperationMutation("pivot.remove", "sheet-1", mapper.readTree("\"pivot-1\""));
-        ServiceException error = assertThrows(ServiceException.class, () -> registry.prepare(snapshot, remove, WorkbookAclRole.EDITOR));
+        ServiceException error = assertThrows(ServiceException.class, () -> registry.prepare(snapshot, remove, WorkbookRole.EDITOR));
         assertEquals("CONFLICT", error.code());
     }
 
@@ -2217,13 +2217,13 @@ class MutationDescriptorRegistryTest {
 
         OperationMutation deleteOtherColumns = new OperationMutation("columns.deleted", "sheet-1", mapper.readTree(
                 "{\"sheetId\":\"sheet-1\",\"at\":1,\"count\":2}"));
-        var prepared = registry.prepare(snapshot, deleteOtherColumns, WorkbookAclRole.EDITOR);
+        var prepared = registry.prepare(snapshot, deleteOtherColumns, WorkbookRole.EDITOR);
         assertEquals(new RangeRef("sheet-1", 0, 99, 1, 2), prepared.affectedRanges().getFirst());
 
         OperationMutation deleteProtectedColumn = new OperationMutation("columns.deleted", "sheet-1", mapper.readTree(
                 "{\"sheetId\":\"sheet-1\",\"at\":3,\"count\":1}"));
         ServiceException blocked = assertThrows(ServiceException.class,
-                () -> registry.prepare(snapshot, deleteProtectedColumn, WorkbookAclRole.EDITOR));
+                () -> registry.prepare(snapshot, deleteProtectedColumn, WorkbookRole.EDITOR));
         assertEquals("FORBIDDEN", blocked.code());
 
         OperationMutation insertRows = new OperationMutation("rows.inserted", "sheet-1", mapper.readTree(
@@ -2329,7 +2329,7 @@ class MutationDescriptorRegistryTest {
                 {"sheetId":"sheet-1","at":0,"count":1}
                 """));
 
-        var preparedInsert = registry.prepare(snapshot, insert, WorkbookAclRole.OWNER);
+        var preparedInsert = registry.prepare(snapshot, insert, WorkbookRole.OWNER);
         var axisApplication = preparedInsert.descriptor().applyWithPatch(snapshot, insert);
         JsonNode shifted = axisApplication.snapshot();
         JsonNode sheet = shifted.path("sheets").get(0);
@@ -2366,7 +2366,7 @@ class MutationDescriptorRegistryTest {
                 {"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":1,"endRow":1,"startColumn":0,"endColumn":0},
                  "affectedBand":{"sheetId":"sheet-1","startRow":1,"endRow":5,"startColumn":0,"endColumn":0},"operation":"insert","axis":"row"}
                 """));
-        var preparedCellShift = registry.prepare(shifted, cellShift, WorkbookAclRole.OWNER);
+        var preparedCellShift = registry.prepare(shifted, cellShift, WorkbookRole.OWNER);
         var cellShiftApplication = preparedCellShift.descriptor().applyWithPatch(shifted, cellShift);
         JsonNode cellShifted = cellShiftApplication.snapshot();
         assertEquals(5, cellShiftApplication.structuralPatch().formulaOwnerDeltas().stream()
@@ -2383,7 +2383,7 @@ class MutationDescriptorRegistryTest {
         OperationMutation move = new OperationMutation("range.move", "sheet-1", mapper.readTree("""
                 {"sheetId":"sheet-1","sourceRange":{"sheetId":"sheet-1","startRow":2,"endRow":2,"startColumn":0,"endColumn":0},"targetOrigin":{"row":3,"column":1}}
                 """));
-        var preparedMove = registry.prepare(cellShifted, move, WorkbookAclRole.OWNER);
+        var preparedMove = registry.prepare(cellShifted, move, WorkbookRole.OWNER);
         var moveApplication = preparedMove.descriptor().applyWithPatch(cellShifted, move);
         JsonNode moved = moveApplication.snapshot();
         assertEquals(5, moveApplication.structuralPatch().formulaOwnerDeltas().stream()
@@ -2444,7 +2444,7 @@ class MutationDescriptorRegistryTest {
                 {"sheetId":"sheet-1","groupIds":["g1"],"groups":[{"index":0,"group":{"id":"g1","sheetId":"sheet-1","type":"line","sparklineIds":["s1","s2"],"showAxis":true}}],"members":[{"sparklineId":"s1","type":"line","groupId":"g1","showAxis":true},{"sparklineId":"s2","type":"line","groupId":"g1","showAxis":true}]}
                 """));
 
-        JsonNode current = registry.prepare(snapshot, group, WorkbookAclRole.EDITOR).descriptor().apply(snapshot, group);
+        JsonNode current = registry.prepare(snapshot, group, WorkbookRole.EDITOR).descriptor().apply(snapshot, group);
         assertEquals("g1", current.path("sheets").get(0).path("sparklineGroups").get(0).path("id").asText());
         assertEquals("g1", current.path("sheets").get(0).path("sparklines").get(0).path("groupId").asText());
         assertEquals(true, current.path("sheets").get(0).path("sparklines").get(1).path("showAxis").asBoolean());
@@ -2467,7 +2467,7 @@ class MutationDescriptorRegistryTest {
                 {"sheetId":"sheet-1","at":1,"count":1}
                 """));
 
-        JsonNode current = registry.prepare(snapshot, insert, WorkbookAclRole.EDITOR).descriptor().apply(snapshot, insert);
+        JsonNode current = registry.prepare(snapshot, insert, WorkbookRole.EDITOR).descriptor().apply(snapshot, insert);
         assertEquals(6, current.path("sheets").get(0).path("rowCount").asInt());
         assertEquals(10, current.path("sheets").get(0).path("cells").path("2").path("0").path("value").asInt());
         assertEquals("=A3", current.path("sheets").get(0).path("cells").path("0").path("0").path("formula").asText());
@@ -2568,7 +2568,7 @@ class MutationDescriptorRegistryTest {
         OperationMutation shift = new OperationMutation("cells.inserted", "sheet-1", mapper.readTree("""
                 {"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0},"operation":"insert","axis":"row","affectedBand":{"sheetId":"sheet-1","startRow":0,"endRow":4,"startColumn":0,"endColumn":0}}
                 """));
-        JsonNode current = registry.prepare(snapshot, shift, WorkbookAclRole.EDITOR).descriptor().apply(snapshot, shift);
+        JsonNode current = registry.prepare(snapshot, shift, WorkbookRole.EDITOR).descriptor().apply(snapshot, shift);
         assertEquals("=A2", current.path("sheets").get(0).path("cells").path("1").path("0").path("formula").asText());
         assertEquals("=A2", current.path("sheets").get(0).path("cells").path("1").path("0").path("formulaMetadata").path("sourceFormula").asText());
         assertEquals("=A2", current.path("sheets").get(0).path("cells").path("1").path("0").path("presentation").path("source").path("formula").asText());
@@ -2617,7 +2617,7 @@ class MutationDescriptorRegistryTest {
         OperationMutation restore = new OperationMutation("cells.inserted.restore", "sheet-1", mapper.readTree("""
                 {"spec":{"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0},"operation":"insert","axis":"row","affectedBand":{"sheetId":"sheet-1","startRow":0,"endRow":4,"startColumn":0,"endColumn":0}},"cells":[{"row":0,"column":0,"cell":{"value":null,"formula":"=A1","formulaValue":7,"formulaMetadata":{"kind":"normal","sourceFormula":"=A1"},"presentation":{"kind":"barcode","symbology":"qr","source":{"kind":"formula","formula":"=B1"},"parameters":{"symbology":"qr"},"options":{"foreground":"#000000","background":"#ffffff","showText":false,"labelPosition":"none","quietZone":0}}}},{"row":1,"column":0,"cell":{"value":"drop"}}]}
                 """));
-        current = registry.prepare(current, restore, WorkbookAclRole.EDITOR).descriptor().apply(current, restore);
+        current = registry.prepare(current, restore, WorkbookRole.EDITOR).descriptor().apply(current, restore);
         assertEquals("=A1", current.path("sheets").get(0).path("cells").path("0").path("0").path("formula").asText());
         assertEquals("drop", current.path("sheets").get(0).path("cells").path("1").path("0").path("value").asText());
         ((ObjectNode) current.path("sheets").get(1).path("cells").path("0").path("0")).put("formulaValue", 6);
@@ -2626,7 +2626,7 @@ class MutationDescriptorRegistryTest {
                 {"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":0,"endRow":1,"startColumn":0,"endColumn":0},"sourceRows":[1,0]}
                 """));
         permutation = withSortContext(permutation, range(0, 1, 0, 0), "worksheet", null, false, 2);
-        current = registry.prepare(current, permutation, WorkbookAclRole.EDITOR).descriptor().apply(current, permutation);
+        current = registry.prepare(current, permutation, WorkbookRole.EDITOR).descriptor().apply(current, permutation);
         assertEquals("drop", current.path("sheets").get(0).path("cells").path("0").path("0").path("value").asText());
         JsonNode movedFormula = current.path("sheets").get(0).path("cells").path("1").path("0");
         assertEquals("=A2", movedFormula.path("formula").asText());
@@ -2639,7 +2639,7 @@ class MutationDescriptorRegistryTest {
                 {"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":0,"endRow":1,"startColumn":0,"endColumn":0},"sourceRows":[1,0]}
                 """));
         OperationMutation inversePermutation = withSortContext(rawInversePermutation, range(0, 1, 0, 0), "worksheet", null, false, 2);
-        current = registry.prepare(current, inversePermutation, WorkbookAclRole.EDITOR).descriptor().apply(current, inversePermutation);
+        current = registry.prepare(current, inversePermutation, WorkbookRole.EDITOR).descriptor().apply(current, inversePermutation);
         JsonNode restoredFormula = current.path("sheets").get(0).path("cells").path("0").path("0");
         assertEquals("=A1", restoredFormula.path("formula").asText());
         assertEquals("=A1", restoredFormula.path("formulaMetadata").path("sourceFormula").asText());
@@ -2714,7 +2714,7 @@ class MutationDescriptorRegistryTest {
             OperationMutation permutation = withSortContext(rawPermutation, range(0, 1, 0, 0), "worksheet", null, false, 1);
 
             ServiceException rejection = assertThrows(ServiceException.class,
-                    () -> registry.prepare(snapshot, permutation, WorkbookAclRole.EDITOR).descriptor().apply(snapshot, permutation));
+                    () -> registry.prepare(snapshot, permutation, WorkbookRole.EDITOR).descriptor().apply(snapshot, permutation));
             assertEquals("UNSUPPORTED_FEATURE", rejection.code());
             assertEquals(before, snapshot);
         }
@@ -2771,7 +2771,7 @@ class MutationDescriptorRegistryTest {
         OperationMutation permutation = withSortContext(rawPermutation, range(0, 1, 0, 0), "worksheet", null, false, 1);
 
         ServiceException rejection = assertThrows(ServiceException.class,
-                () -> new MutationDescriptorRegistry().prepare(snapshot, permutation, WorkbookAclRole.EDITOR).descriptor().apply(snapshot, permutation));
+                () -> new MutationDescriptorRegistry().prepare(snapshot, permutation, WorkbookRole.EDITOR).descriptor().apply(snapshot, permutation));
         assertEquals("UNSUPPORTED_FEATURE", rejection.code());
         assertEquals(before, snapshot);
     }
@@ -2794,7 +2794,7 @@ class MutationDescriptorRegistryTest {
                 {"sheetId":"sheet-1","at":0,"count":1}
                 """));
 
-        JsonNode current = registry.prepare(snapshot, insert, WorkbookAclRole.EDITOR).descriptor().apply(snapshot, insert);
+        JsonNode current = registry.prepare(snapshot, insert, WorkbookRole.EDITOR).descriptor().apply(snapshot, insert);
         JsonNode payloads = current.path("sheets").get(0).path("drawingPayloads");
         assertEquals(1, payloads.path("camera-1").path("sourceRange").path("startRow").asInt());
         assertEquals(2, payloads.path("camera-1").path("sourceRange").path("endRow").asInt());
@@ -2827,7 +2827,7 @@ class MutationDescriptorRegistryTest {
                 {"sourceSheetId":"sheet-1","newId":"sheet-2","newName":"Sheet1 Copy"}
                 """));
 
-        JsonNode current = registry.prepare(snapshot, duplicate, WorkbookAclRole.EDITOR).descriptor().apply(snapshot, duplicate);
+        JsonNode current = registry.prepare(snapshot, duplicate, WorkbookRole.EDITOR).descriptor().apply(snapshot, duplicate);
         JsonNode copy = current.path("sheets").get(1);
         assertEquals("=Sheet1!A1", snapshot.path("sheets").get(0).path("conditionalFormats").get(0).path("value1").asText());
         assertEquals("='Sheet1 Copy'!A1", copy.path("conditionalFormats").get(0).path("value1").asText());
@@ -2861,7 +2861,7 @@ class MutationDescriptorRegistryTest {
                 {"sheetId":"sheet-1","sourceRange":{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":1},"targetOrigin":{"row":2,"column":2}}
                 """));
 
-        var prepared = registry.prepare(snapshot, move, WorkbookAclRole.EDITOR);
+        var prepared = registry.prepare(snapshot, move, WorkbookRole.EDITOR);
         assertEquals(2, prepared.affectedRanges().size());
         JsonNode moved = registry.applyPublicMutations(snapshot, List.of(move));
         JsonNode sheet = moved.path("sheets").get(0);
@@ -2990,7 +2990,7 @@ class MutationDescriptorRegistryTest {
                  ]}
                 """));
 
-        var prepared = registry.prepare(snapshot, fill, WorkbookAclRole.EDITOR);
+        var prepared = registry.prepare(snapshot, fill, WorkbookRole.EDITOR);
         assertEquals(0, prepared.affectedRanges().get(0).startRow());
         assertEquals(4, prepared.affectedRanges().get(0).endRow());
         JsonNode next = prepared.descriptor().apply(snapshot, fill);
@@ -3005,7 +3005,7 @@ class MutationDescriptorRegistryTest {
                    {"row":1,"column":0,"before":{"value":99},"after":{"value":1}}
                  ]}
                 """));
-        ServiceException conflict = assertThrows(ServiceException.class, () -> registry.prepare(next, stale, WorkbookAclRole.EDITOR).descriptor().apply(next, stale));
+        ServiceException conflict = assertThrows(ServiceException.class, () -> registry.prepare(next, stale, WorkbookRole.EDITOR).descriptor().apply(next, stale));
         assertEquals("CONFLICT", conflict.code());
     }
 
@@ -3020,7 +3020,7 @@ class MutationDescriptorRegistryTest {
                 """));
         permutation = withSortContext(permutation, range(0, 3, 0, 1), "worksheet", null, true, 7);
 
-        JsonNode current = registry.prepare(snapshot, permutation, WorkbookAclRole.EDITOR).descriptor().apply(snapshot, permutation);
+        JsonNode current = registry.prepare(snapshot, permutation, WorkbookRole.EDITOR).descriptor().apply(snapshot, permutation);
         JsonNode sheet = current.path("sheets").get(0);
         assertEquals(true, sheet.path("cells").path("0").isMissingNode());
         assertEquals("b", sheet.path("cells").path("3").path("0").path("value").asText());
@@ -3043,7 +3043,7 @@ class MutationDescriptorRegistryTest {
                 """));
         OperationMutation permutation = withSortContext(raw, range(0, 3, 0, 0), "worksheet", null, false, 0);
 
-        JsonNode current = registry.prepare(snapshot, permutation, WorkbookAclRole.EDITOR).descriptor().apply(snapshot, permutation);
+        JsonNode current = registry.prepare(snapshot, permutation, WorkbookRole.EDITOR).descriptor().apply(snapshot, permutation);
 
         assertEquals(1, current.path("dataModel").path("tables").get(0).path("sourceRange").path("startRow").asInt());
         assertEquals(3, current.path("dataModel").path("tables").get(0).path("sourceRange").path("endRow").asInt());
@@ -3069,7 +3069,7 @@ class MutationDescriptorRegistryTest {
             JsonNode before = snapshot.deepCopy();
 
             ServiceException error = assertThrows(ServiceException.class,
-                    () -> registry.prepare(snapshot, permutation, WorkbookAclRole.EDITOR).descriptor().apply(snapshot, permutation));
+                    () -> registry.prepare(snapshot, permutation, WorkbookRole.EDITOR).descriptor().apply(snapshot, permutation));
 
             assertEquals("VALIDATION_ERROR", error.code());
             assertEquals(before, snapshot);
@@ -3132,7 +3132,7 @@ class MutationDescriptorRegistryTest {
                 """));
         OperationMutation permutation = withSortContext(raw, range(0, 3, 0, 0), "worksheet", null, false, 0);
 
-        MutationApplication application = registry.prepare(snapshot, permutation, WorkbookAclRole.OWNER)
+        MutationApplication application = registry.prepare(snapshot, permutation, WorkbookRole.OWNER)
                 .descriptor().applyWithPatch(snapshot, permutation);
 
         StructuralPatch patch = application.structuralPatch();
@@ -3163,7 +3163,7 @@ class MutationDescriptorRegistryTest {
                 """));
         OperationMutation permutation = withSortContext(raw, range(0, 3, 0, 0), "worksheet", null, false, 0);
 
-        MutationApplication application = registry.prepare(snapshot, permutation, WorkbookAclRole.OWNER)
+        MutationApplication application = registry.prepare(snapshot, permutation, WorkbookRole.OWNER)
                 .descriptor().applyWithPatch(snapshot, permutation);
 
         StructuralPatch patch = application.structuralPatch();
@@ -3192,7 +3192,7 @@ class MutationDescriptorRegistryTest {
                 """));
         OperationMutation fragmented = withSortContext(fragmentedRaw, range(0, 3, 0, 0), "worksheet", null, false, 0);
         ServiceException error = assertThrows(ServiceException.class,
-                () -> registry.prepare(rejected, fragmented, WorkbookAclRole.OWNER).descriptor().apply(rejected, fragmented));
+                () -> registry.prepare(rejected, fragmented, WorkbookRole.OWNER).descriptor().apply(rejected, fragmented));
         assertEquals("VALIDATION_ERROR", error.code());
         assertEquals(before, rejected);
     }
@@ -3212,7 +3212,7 @@ class MutationDescriptorRegistryTest {
         OperationMutation insert = new OperationMutation("rows.inserted", "sheet-2",
                 mapper.readTree("{\"sheetId\":\"sheet-2\",\"at\":0,\"count\":1}"));
 
-        MutationApplication application = registry.prepare(snapshot, insert, WorkbookAclRole.OWNER)
+        MutationApplication application = registry.prepare(snapshot, insert, WorkbookRole.OWNER)
                 .descriptor().applyWithPatch(snapshot, insert);
 
         StructuralPatch.RangeOwnerDelta delta = application.structuralPatch().rangeOwnerDeltas().getFirst();
@@ -3286,7 +3286,7 @@ class MutationDescriptorRegistryTest {
                 """));
         OperationMutation permutation = withSortContext(rawPermutation, range(0, 1, 0, 0), "worksheet", null, false, 8);
 
-        var preparation = registry.prepare(snapshot, permutation, WorkbookAclRole.EDITOR);
+        var preparation = registry.prepare(snapshot, permutation, WorkbookRole.EDITOR);
         assertEquals(8, preparation.affectedRanges().getFirst().endColumn());
         MutationApplication application = preparation.descriptor().applyWithPatch(snapshot, permutation);
         JsonNode current = application.snapshot();
@@ -3342,7 +3342,7 @@ class MutationDescriptorRegistryTest {
                 """));
         OperationMutation inversePermutation = withSortContext(
                 inverseRawPermutation, range(0, 1, 0, 0), "worksheet", null, false, 8);
-        var inversePreparation = registry.prepare(current, inversePermutation, WorkbookAclRole.EDITOR);
+        var inversePreparation = registry.prepare(current, inversePermutation, WorkbookRole.EDITOR);
         MutationApplication inverseApplication = inversePreparation.descriptor().applyWithPatch(current, inversePermutation);
         JsonNode restored = inverseApplication.snapshot();
         StructuralPatch inversePatch = inverseApplication.structuralPatch();
@@ -3378,7 +3378,7 @@ class MutationDescriptorRegistryTest {
                 """));
         OperationMutation permutation = withSortContext(rawPermutation, range(0, 4, 0, 1), "worksheet", null, false, 3);
 
-        JsonNode current = registry.prepare(snapshot, permutation, WorkbookAclRole.EDITOR).descriptor().apply(snapshot, permutation);
+        JsonNode current = registry.prepare(snapshot, permutation, WorkbookRole.EDITOR).descriptor().apply(snapshot, permutation);
         JsonNode rule = current.path("sheets").get(0).path("conditionalFormats").get(0);
 
         assertEquals(2, rule.path("formulaAnchor").path("row").asInt());
@@ -3403,7 +3403,7 @@ class MutationDescriptorRegistryTest {
         OperationMutation permutation = withSortContext(rawPermutation, range(0, 1, 0, 0), "worksheet", null, false, 8);
 
         ServiceException error = assertThrows(ServiceException.class,
-                () -> registry.prepare(snapshot, permutation, WorkbookAclRole.EDITOR).descriptor().apply(snapshot, permutation));
+                () -> registry.prepare(snapshot, permutation, WorkbookRole.EDITOR).descriptor().apply(snapshot, permutation));
 
         assertEquals("UNSUPPORTED_FEATURE", error.code());
         assertEquals(before, snapshot);
@@ -3426,7 +3426,7 @@ class MutationDescriptorRegistryTest {
         OperationMutation permutation = withSortContext(rawPermutation, range(0, 3, 0, 1), "worksheet", null, false, 3);
 
         ServiceException error = assertThrows(ServiceException.class,
-                () -> registry.prepare(snapshot, permutation, WorkbookAclRole.EDITOR).descriptor().apply(snapshot, permutation));
+                () -> registry.prepare(snapshot, permutation, WorkbookRole.EDITOR).descriptor().apply(snapshot, permutation));
 
         assertEquals("VALIDATION_ERROR", error.code());
         assertEquals(before, snapshot);
@@ -3454,7 +3454,7 @@ class MutationDescriptorRegistryTest {
                 {"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":1,"endRow":3,"startColumn":0,"endColumn":0},"sourceRows":[3,2,1]}
                 """)), range(0, 3, 0, 0), "worksheet", null, true, 0);
 
-        JsonNode current = registry.prepare(snapshot, valid, WorkbookAclRole.EDITOR).descriptor().apply(snapshot, valid);
+        JsonNode current = registry.prepare(snapshot, valid, WorkbookRole.EDITOR).descriptor().apply(snapshot, valid);
         JsonNode sheet = current.path("sheets").get(0);
         assertEquals("A", sheet.path("cells").path("1").path("0").path("value").asText());
         assertEquals("B", sheet.path("cells").path("2").path("0").path("value").asText());
@@ -3466,7 +3466,7 @@ class MutationDescriptorRegistryTest {
                 {"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":1,"endRow":3,"startColumn":0,"endColumn":0},"sourceRows":[2,1,3]}
                 """)), range(0, 3, 0, 0), "worksheet", null, true, 0);
         ServiceException error = assertThrows(ServiceException.class,
-                () -> registry.prepare(current, movedHiddenRow, WorkbookAclRole.EDITOR).descriptor().apply(current, movedHiddenRow));
+                () -> registry.prepare(current, movedHiddenRow, WorkbookRole.EDITOR).descriptor().apply(current, movedHiddenRow));
 
         assertEquals("VALIDATION_ERROR", error.code());
         assertEquals(beforeRejected, current);
@@ -3490,7 +3490,7 @@ class MutationDescriptorRegistryTest {
                 {"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":1,"endRow":4,"startColumn":0,"endColumn":0},"sourceRows":[3,4,1,2]}
                 """)), range(0, 4, 0, 0), "worksheet", null, true, 0);
 
-        JsonNode current = registry.prepare(snapshot, grouped, WorkbookAclRole.EDITOR).descriptor().apply(snapshot, grouped);
+        JsonNode current = registry.prepare(snapshot, grouped, WorkbookRole.EDITOR).descriptor().apply(snapshot, grouped);
         JsonNode sheet = current.path("sheets").get(0);
         assertEquals("A", sheet.path("cells").path("1").path("0").path("value").asText());
         assertEquals("A detail", sheet.path("cells").path("2").path("0").path("value").asText());
@@ -3504,7 +3504,7 @@ class MutationDescriptorRegistryTest {
                 {"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":1,"endRow":4,"startColumn":0,"endColumn":0},"sourceRows":[2,1,3,4]}
                 """)), range(0, 4, 0, 0), "worksheet", null, true, 0);
         ServiceException error = assertThrows(ServiceException.class,
-                () -> registry.prepare(current, reorderedWithinGroup, WorkbookAclRole.EDITOR).descriptor().apply(current, reorderedWithinGroup));
+                () -> registry.prepare(current, reorderedWithinGroup, WorkbookRole.EDITOR).descriptor().apply(current, reorderedWithinGroup));
 
         assertEquals("VALIDATION_ERROR", error.code());
         assertEquals(beforeRejected, current);
@@ -3516,7 +3516,7 @@ class MutationDescriptorRegistryTest {
                 """)), range(0, 5, 0, 0), "worksheet", null, true, 0);
         JsonNode beforeMixedRejected = mixedSnapshot.deepCopy();
         ServiceException mixedError = assertThrows(ServiceException.class,
-                () -> registry.prepare(mixedSnapshot, mixedHiddenAndOutline, WorkbookAclRole.EDITOR).descriptor().apply(mixedSnapshot, mixedHiddenAndOutline));
+                () -> registry.prepare(mixedSnapshot, mixedHiddenAndOutline, WorkbookRole.EDITOR).descriptor().apply(mixedSnapshot, mixedHiddenAndOutline));
 
         assertEquals("UNSUPPORTED_FEATURE", mixedError.code());
         assertEquals(beforeMixedRejected, mixedSnapshot);
@@ -3556,7 +3556,7 @@ class MutationDescriptorRegistryTest {
         OperationMutation permutation = new OperationMutation("rows.permuted", "sheet-1", params);
 
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
-        return registry.prepare(snapshot, permutation, WorkbookAclRole.EDITOR).descriptor().apply(snapshot, permutation);
+        return registry.prepare(snapshot, permutation, WorkbookRole.EDITOR).descriptor().apply(snapshot, permutation);
     }
 
     @Test
@@ -3574,7 +3574,7 @@ class MutationDescriptorRegistryTest {
                 """));
         permutation = withSortContext(permutation, range(0, 3, 0, 1), "sheet-table", "table-1", true, 2);
 
-        JsonNode current = registry.prepare(snapshot, permutation, WorkbookAclRole.EDITOR).descriptor().apply(snapshot, permutation);
+        JsonNode current = registry.prepare(snapshot, permutation, WorkbookRole.EDITOR).descriptor().apply(snapshot, permutation);
         JsonNode sheet = current.path("sheets").get(0);
         assertEquals("Calculated", sheet.path("cells").path("0").path("0").path("value").asText());
         assertEquals("five", sheet.path("cells").path("1").path("1").path("value").asText());
@@ -3587,7 +3587,7 @@ class MutationDescriptorRegistryTest {
         OperationMutation duplicate = withSortContext(new OperationMutation("rows.permuted", "sheet-1", mapper.readTree("""
                 {"sheetId":"sheet-1","range":{"sheetId":"sheet-1","startRow":1,"endRow":3,"startColumn":0,"endColumn":1},"sourceRows":[1,1,3]}
                 """)), range(0, 3, 0, 1), "sheet-table", "table-1", true, 2);
-        assertThrows(ServiceException.class, () -> registry.prepare(snapshot, duplicate, WorkbookAclRole.EDITOR).descriptor().apply(snapshot, duplicate));
+        assertThrows(ServiceException.class, () -> registry.prepare(snapshot, duplicate, WorkbookRole.EDITOR).descriptor().apply(snapshot, duplicate));
     }
 
     @Test

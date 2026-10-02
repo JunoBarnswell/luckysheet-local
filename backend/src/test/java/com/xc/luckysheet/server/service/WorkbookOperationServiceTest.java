@@ -9,7 +9,7 @@ import com.xc.luckysheet.server.contract.CommittedOperationEnvelope;
 import com.xc.luckysheet.server.contract.CommittedOperationMutation;
 import com.xc.luckysheet.server.contract.StructuralPatch;
 import com.xc.luckysheet.server.service.ServiceException;
-import com.xc.luckysheet.server.contract.WorkbookAclRole;
+import com.xc.luckysheet.server.contract.WorkbookRole;
 import com.xc.luckysheet.server.contract.WorkbookLifecycle;
 import com.xc.luckysheet.server.mutation.MutationDescriptorRegistry;
 import com.xc.luckysheet.server.store.WorkbookRow;
@@ -127,7 +127,7 @@ class WorkbookOperationServiceTest {
                 com.xc.luckysheet.server.migration.SnapshotUpgrade.migrateStored(mapper.readTree(canonicalSnapshot()), "book-1"));
         String checksum = java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
                 .digest(snapshot.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
-        when(access.require("book-1", "actor-1", WorkbookAclRole.EDITOR)).thenReturn(WorkbookAclRole.EDITOR);
+        when(access.require("book-1", "actor-1", WorkbookRole.EDITOR)).thenReturn(WorkbookRole.EDITOR);
         when(store.findForUpdate("book-1")).thenReturn(Optional.of(new WorkbookRow(
                 "book-1", "Book", snapshot, 0, 0, WorkbookLifecycle.ACTIVE, now, now)));
         when(store.findCheckpoint("book-1", 0)).thenReturn(Optional.of(
@@ -169,7 +169,7 @@ class WorkbookOperationServiceTest {
     void rejectedWriteKeepsWorkbookLockUntilRollbackCompletion() throws Exception {
         WorkbookStore store = mock(WorkbookStore.class);
         AccessControlService access = mock(AccessControlService.class);
-        when(access.require("book-1", "actor-1", WorkbookAclRole.EDITOR)).thenReturn(WorkbookAclRole.EDITOR);
+        when(access.require("book-1", "actor-1", WorkbookRole.EDITOR)).thenReturn(WorkbookRole.EDITOR);
         when(store.findForUpdate("book-1")).thenReturn(Optional.empty());
         WorkbookOperationService service = serviceWithAccess(store, access, new MutationDescriptorRegistry(), mapper,
                 mock(AuditRecorder.class), new CoordinationProperties(false, false, null, "coordination",
@@ -221,7 +221,7 @@ class WorkbookOperationServiceTest {
         String snapshot = mapper.writeValueAsString(com.xc.luckysheet.server.migration.SnapshotUpgrade.migrateStored(mapper.readTree(canonicalSnapshot()), "book-1"));
         when(store.findCheckpoint("book-1", 0)).thenReturn(Optional.of(new com.xc.luckysheet.server.store.CheckpointRow("book-1", 0, snapshot,
                 java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(snapshot.getBytes(java.nio.charset.StandardCharsets.UTF_8))), Instant.now())));
-        when(access.require("book-1", "guest:share-1", WorkbookAclRole.VIEWER)).thenReturn(WorkbookAclRole.COMMENTER);
+        when(access.require("book-1", "guest:share-1", WorkbookRole.VIEWER)).thenReturn(WorkbookRole.COMMENTER);
         when(store.findForUpdate("book-1")).thenReturn(Optional.of(new WorkbookRow(
                 "book-1", "Book", snapshot, 0, 0, WorkbookLifecycle.ACTIVE, Instant.now(), Instant.now()
         )));
@@ -261,7 +261,7 @@ class WorkbookOperationServiceTest {
         String snapshot = mapper.writeValueAsString(com.xc.luckysheet.server.migration.SnapshotUpgrade.migrateStored(mapper.readTree(canonicalSnapshot()), "book-1"));
         when(store.findCheckpoint("book-1", 0)).thenReturn(Optional.of(new com.xc.luckysheet.server.store.CheckpointRow("book-1", 0, snapshot,
                 java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(snapshot.getBytes(java.nio.charset.StandardCharsets.UTF_8))), Instant.now())));
-        when(access.require("book-1", "editor-1", WorkbookAclRole.VIEWER)).thenReturn(WorkbookAclRole.EDITOR);
+        when(access.require("book-1", "editor-1", WorkbookRole.VIEWER)).thenReturn(WorkbookRole.EDITOR);
         when(store.findForUpdate("book-1")).thenReturn(Optional.of(new WorkbookRow("book-1", "Book", snapshot, 0, 0,
                 WorkbookLifecycle.ACTIVE, Instant.now(), Instant.now())));
         when(store.findOperation("op-2")).thenReturn(Optional.empty());
@@ -296,7 +296,7 @@ class WorkbookOperationServiceTest {
                                                         WorkbookDataBlockPublicationGuard dataBlockPublication) {
         RangeAccessService rangeAccess = mock(RangeAccessService.class);
         when(rangeAccess.resolver(org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString(),
-                org.mockito.ArgumentMatchers.any(WorkbookAclRole.class), org.mockito.ArgumentMatchers.anyCollection()))
+                org.mockito.ArgumentMatchers.any(WorkbookRole.class), org.mockito.ArgumentMatchers.anyCollection()))
                 .thenAnswer(invocation -> new RangeAccessResolver(new RangeAccessIndex(List.of()), List.of(),
                         new RangeAccessContext(invocation.getArgument(1), invocation.getArgument(2),
                                 invocation.getArgument(3), 0)));

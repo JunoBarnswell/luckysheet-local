@@ -1,3 +1,4 @@
+import type { WorkbookRole } from '@react-sheets/protocol';
 import { guardRecordWorksheetWrites } from '@react-sheets/core-model';
 import {
   MAX_SHEET_COLUMN_COUNT,
@@ -27,7 +28,7 @@ import {
 export { inferAffectedRanges } from './features/permission';
 
 /** 共享角色 — 与 Excel Share 语义对齐 */
-export type ShareRole = 'owner' | 'editor' | 'commenter' | 'viewer';
+
 
 export interface ActorContext {
   actorId: string;
@@ -176,7 +177,7 @@ function mutationPolicyOverride(value: { capability: string; protectionAction: P
 /** Workbook/Sheet/Range 权限 — 命令 dispatch 前拦截 */
 export class PermissionService {
   private workbook: WorkbookModel | null = null;
-  private serverRole: ShareRole | null = null;
+  private serverRole: WorkbookRole | null = null;
   private accessRevision = 0;
   private accessRegions: readonly EffectiveAccessRegion[] = [];
   private accessIndex = new AccessProjectionIndex([]);
@@ -201,7 +202,7 @@ export class PermissionService {
     this.online = online;
   }
 
-  getShareRole(): ShareRole | null {
+  getShareRole(): WorkbookRole | null {
     return this.serverRole;
   }
 

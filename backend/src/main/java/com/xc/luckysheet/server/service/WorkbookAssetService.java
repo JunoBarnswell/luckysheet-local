@@ -1,7 +1,7 @@
 package com.xc.luckysheet.server.service;
 
 import com.xc.luckysheet.server.contract.AssetMetadata;
-import com.xc.luckysheet.server.contract.WorkbookAclRole;
+import com.xc.luckysheet.server.contract.WorkbookRole;
 import com.xc.luckysheet.server.persistence.AssetEntity;
 import com.xc.luckysheet.server.persistence.AssetEntityRepository;
 import com.xc.luckysheet.server.persistence.WorkbookEntityRepository;
@@ -36,7 +36,7 @@ public class WorkbookAssetService {
     @Transactional
     public AssetMetadata put(String unitId, String assetId, String checksum, String mimeType,
                              Integer width, Integer height, long contentLength, InputStreamSource source, String actor) {
-        authorize(unitId, actor, WorkbookAclRole.EDITOR);
+        authorize(unitId, actor, WorkbookRole.EDITOR);
         validateIdentity(assetId, "assetId");
         validateImageMime(mimeType);
         validateDimension(width, "width");
@@ -61,21 +61,21 @@ public class WorkbookAssetService {
 
     @Transactional(readOnly = true)
     public AssetEntity get(String unitId, String assetId, String actor) {
-        authorize(unitId, actor, WorkbookAclRole.VIEWER);
+        authorize(unitId, actor, WorkbookRole.VIEWER);
         validateIdentity(assetId, "assetId");
         return assets.findById(new AssetEntity.Id(unitId, assetId)).orElseThrow(() -> ServiceException.notFound("Asset not found"));
     }
 
     @Transactional
     public void release(String unitId, String assetId, String actor) {
-        authorize(unitId, actor, WorkbookAclRole.EDITOR);
+        authorize(unitId, actor, WorkbookRole.EDITOR);
         validateIdentity(assetId, "assetId");
         assets.deleteById(new AssetEntity.Id(unitId, assetId));
     }
 
     @Transactional
     public void reconcile(String unitId, Set<String> referencedAssetIds, String actor) {
-        authorize(unitId, actor, WorkbookAclRole.EDITOR);
+        authorize(unitId, actor, WorkbookRole.EDITOR);
         if (referencedAssetIds == null) throw ServiceException.validation("Referenced asset set is required");
         for (AssetEntity entity : assets.findAllByIdUnitId(unitId)) {
             if (!referencedAssetIds.contains(entity.getId().getAssetId())) assets.delete(entity);
@@ -87,7 +87,7 @@ public class WorkbookAssetService {
                 entity.getMimeType(), entity.getByteLength(), entity.getWidth(), entity.getHeight(), entity.getUpdatedAt());
     }
 
-    private void authorize(String unitId, String actor, WorkbookAclRole role) {
+    private void authorize(String unitId, String actor, WorkbookRole role) {
         workbooks.findById(unitId).orElseThrow(() -> ServiceException.notFound("Workbook not found"));
         lifecycle.requireActive(unitId);
         access.require(unitId, actor, role);

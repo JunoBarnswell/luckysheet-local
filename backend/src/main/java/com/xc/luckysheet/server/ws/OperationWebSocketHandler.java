@@ -2,7 +2,7 @@ package com.xc.luckysheet.server.ws;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.xc.luckysheet.server.contract.WorkbookAclRole;
+import com.xc.luckysheet.server.contract.WorkbookRole;
 import com.xc.luckysheet.server.coordination.EphemeralCoordinationService;
 import com.xc.luckysheet.server.coordination.EphemeralEvent;
 import com.xc.luckysheet.server.coordination.WebSocketSessionRegistry;
@@ -71,7 +71,7 @@ public class OperationWebSocketHandler extends TextWebSocketHandler {
     private void handleTransient(WebSocketSession session, String actor, JsonNode root, String type) {
         if (root.has("actorId")) throw ServiceException.validation("actorId is server-owned");
         String unitId = parseUnitId(root.path("unitId").asText(""));
-        access.require(unitId, actor, WorkbookAclRole.VIEWER);
+        access.require(unitId, actor, WorkbookRole.VIEWER);
         sessions.join(unitId, session);
         EphemeralEvent event = ephemeral.updated(type, unitId, actor, session.getId(), root.get("state"));
         sessions.broadcastEphemeral(event, session);

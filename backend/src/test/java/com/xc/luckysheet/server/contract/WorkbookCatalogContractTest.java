@@ -17,7 +17,7 @@ class WorkbookCatalogContractTest {
     @Test
     void summaryCarriesActorRoleAndStructuredLocationWithoutLossyPathJoin() throws Exception {
         WorkbookSummary summary = new WorkbookSummary("book-1", "Budget", 3,
-                Instant.parse("2026-08-24T00:00:00Z"), WorkbookAclRole.EDITOR, "owner-1", "space-1",
+                Instant.parse("2026-08-24T00:00:00Z"), WorkbookRole.EDITOR, "owner-1", "space-1",
                 "folder-1", List.of("团队空间", "财务"), "团队空间", null, WorkbookStorageLocation.REMOTE,
                 WorkbookSyncStatus.SYNCED, WorkbookLifecycle.ACTIVE, WorkbookSource.NATIVE, true, null, null);
         String json = mapper.writeValueAsString(summary);

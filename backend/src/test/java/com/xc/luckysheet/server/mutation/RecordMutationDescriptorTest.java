@@ -5,7 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.xc.luckysheet.server.contract.OperationMutation;
 import com.xc.luckysheet.server.contract.RecordTableValidator;
-import com.xc.luckysheet.server.contract.WorkbookAclRole;
+import com.xc.luckysheet.server.contract.WorkbookRole;
 import com.xc.luckysheet.server.service.ServiceException;
 import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
@@ -56,7 +56,7 @@ class RecordMutationDescriptorTest {
         OperationMutation physical = new OperationMutation("range.clear", "source", mapper.readTree("""
           {"range":{"sheetId":"source","startRow":1,"endRow":1,"startColumn":0,"endColumn":0}}
           """));
-        assertThrows(ServiceException.class, () -> new MutationDescriptorRegistry().prepare(before, physical, WorkbookAclRole.OWNER));
+        assertThrows(ServiceException.class, () -> new MutationDescriptorRegistry().prepare(before, physical, WorkbookRole.OWNER));
     }
     @Test void recordRestorePreservesAnAbsentPhysicalCell() throws Exception {
         ObjectNode before = (ObjectNode) fixture();

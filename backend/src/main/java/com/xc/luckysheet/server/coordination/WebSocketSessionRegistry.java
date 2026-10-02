@@ -3,7 +3,7 @@ package com.xc.luckysheet.server.coordination;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.xc.luckysheet.server.contract.CommittedOperationEnvelope;
-import com.xc.luckysheet.server.contract.WorkbookAclRole;
+import com.xc.luckysheet.server.contract.WorkbookRole;
 import com.xc.luckysheet.server.service.AccessControlService;
 import com.xc.luckysheet.server.service.ActorIdentity;
 import com.xc.luckysheet.server.service.ServiceException;
@@ -171,7 +171,7 @@ public class WebSocketSessionRegistry {
     /** Re-check persistent ACL/share state before every remote delivery. */
     private boolean sessionCanRead(String unitId, WebSocketSession session) {
         try {
-            access.require(unitId, ActorIdentity.subject(session.getPrincipal()), WorkbookAclRole.VIEWER);
+            access.require(unitId, ActorIdentity.subject(session.getPrincipal()), WorkbookRole.VIEWER);
             return true;
         } catch (ServiceException error) {
             return false;

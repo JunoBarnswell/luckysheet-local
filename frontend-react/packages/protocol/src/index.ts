@@ -16,6 +16,8 @@ import type {
 import type { AssetRef } from '@react-sheets/core-model';
 import { isWorkbookCalculationSettings } from '@react-sheets/formula-engine';
 import {
+  WORKBOOK_ROLES,
+  isWorkbookRole,
   CONTRACT_ERROR_CODES,
   MAX_WORKBOOK_NAME_LENGTH,
   WORKBOOK_SNAPSHOT_SCHEMA,
@@ -33,10 +35,13 @@ import {
   STRUCTURAL_PATCH_MUTATIONS,
   requiresServerStructuralPlannerCommand,
   SERVER_STRUCTURAL_PLANNER_COMMANDS,
+  type WorkbookRole,
   type ContractErrorCode,
 } from './generated-contract';
 
 export {
+  WORKBOOK_ROLES,
+  isWorkbookRole,
   CONTRACT_ERROR_CODES,
   MAX_WORKBOOK_NAME_LENGTH,
   WORKBOOK_SNAPSHOT_SCHEMA,
@@ -51,7 +56,7 @@ export {
   SERVER_STRUCTURAL_PLANNER_COMMANDS,
 } from './generated-contract';
 
-export type { PermissionCapability, PermissionPolicy, ProtectionAction, RangeAccessLevel } from './generated-contract';
+export type { WorkbookRole, PermissionCapability, PermissionPolicy, ProtectionAction, RangeAccessLevel } from './generated-contract';
 
 export type ProtocolErrorCode = ContractErrorCode | 'AUTH_CONFIGURATION_ERROR';
 
@@ -157,12 +162,12 @@ export interface CommittedOperationEnvelope extends Omit<OperationEnvelope, 'mut
   mutations: CommittedOperationMutation[];
 }
 
-export type WorkbookAclRole = 'owner' | 'editor' | 'commenter' | 'viewer';
+
 
 export interface WorkbookAclRecord {
   unitId: string;
   subject: string;
-  role: WorkbookAclRole;
+  role: WorkbookRole;
   createdAt: string;
   updatedAt: string;
 }
@@ -170,7 +175,7 @@ export interface WorkbookAclRecord {
 /** Server-calculated access projection for the authenticated or guest session. */
 export interface WorkbookAccessResponse {
   unitId: string;
-  role: WorkbookAclRole;
+  role: WorkbookRole;
   accessRevision: number;
   regions: EffectiveAccessRegion[];
 }
@@ -1688,7 +1693,7 @@ function validateWorkbookSummary(value: unknown): WorkbookSummary {
   if (input.name.length > MAX_WORKBOOK_NAME_LENGTH) throw new Error('Workbook summary name is too long');
   if (!Number.isSafeInteger(input.revision) || Number(input.revision) < 0) throw new Error('Workbook summary revision is invalid');
   validateIsoTimestamp(input.updatedAt, 'Workbook summary updatedAt');
-  if (input.role !== undefined && !['owner', 'editor', 'commenter', 'viewer'].includes(String(input.role))) throw new Error('Workbook summary role is invalid');
+  if (input.role !== undefined && !isWorkbookRole(input.role)) throw new Error('Workbook summary role is invalid');
   if (input.storageLocation !== undefined && !['local', 'remote', 'mirrored'].includes(String(input.storageLocation))) throw new Error('Workbook summary storageLocation is invalid');
   if (input.syncStatus !== undefined && !['synced', 'syncing', 'pending', 'offline', 'conflict', 'error'].includes(String(input.syncStatus))) throw new Error('Workbook summary syncStatus is invalid');
   if (input.lifecycle !== undefined && !['active', 'trashed'].includes(String(input.lifecycle))) throw new Error('Workbook summary lifecycle is invalid');
@@ -1706,7 +1711,7 @@ function validateWorkbookSummary(value: unknown): WorkbookSummary {
     name,
     revision: Number(input.revision),
     updatedAt,
-    ...(input.role === undefined ? {} : { role: input.role as WorkbookAclRole }),
+    ...(input.role === undefined ? {} : { role: input.role as WorkbookRole }),
     ...(input.ownerSubject == null ? {} : { ownerSubject: input.ownerSubject as string }),
     ...(input.spaceId == null ? {} : { spaceId: input.spaceId as string }),
     ...(input.spaceName == null ? {} : { spaceName: input.spaceName as string }),
@@ -1807,7 +1812,7 @@ function validateWorkbookAccessResponse(value: unknown): WorkbookAccessResponse 
   }
   const input = value as Record<string, unknown>;
   if (!isNonEmptyString(input.unitId)) throw new Error('workbook access response requires unitId');
-  if (input.role !== 'owner' && input.role !== 'editor' && input.role !== 'commenter' && input.role !== 'viewer') {
+  if (!isWorkbookRole(input.role)) {
     throw new Error('workbook access response has an invalid role');
   }
   if (!Number.isSafeInteger(input.accessRevision) || Number(input.accessRevision) < 0 || !Array.isArray(input.regions)) {
@@ -2230,7 +2235,7 @@ function validateServerQueryBlockResponse(value: unknown): ServerQueryBlockRespo
   return { ...response, rows } as unknown as ServerQueryBlockResponse;
 }
 
-export type GuestShareRole = 'viewer' | 'commenter' | 'editor';
+export type GuestShareRole = Exclude<WorkbookRole, 'owner'>;
 
 export interface GuestShareRequest {
   role: GuestShareRole;
@@ -2254,7 +2259,7 @@ export interface WorkbookSummary {
   name: string;
   revision: number;
   updatedAt: string;
-  role?: WorkbookAclRole;
+  role?: WorkbookRole;
   ownerSubject?: string;
   spaceId?: string;
   spaceName?: string;
@@ -2336,7 +2341,7 @@ export interface WorkspaceSpace {
   createdBy: string;
   kind: WorkspaceSpaceKind;
   name: string;
-  role?: WorkbookAclRole;
+  role?: WorkbookRole;
   spaceId: string;
   updatedAt: string;
 }
@@ -2350,7 +2355,7 @@ export interface WorkspaceFolder {
 }
 
 export interface SpaceMember {
-  role: WorkbookAclRole;
+  role: WorkbookRole;
   spaceId: string;
   subject: string;
   updatedAt: string;
@@ -2541,7 +2546,7 @@ export class WorkbookApiClient {
     return this.json<WorkbookAclRecord[]>(`/api/workbooks/${encodeURIComponent(unitId)}/acl`, options);
   }
 
-  async putWorkbookAcl(unitId: string, subject: string, role: WorkbookAclRole): Promise<WorkbookAclRecord> {
+  async putWorkbookAcl(unitId: string, subject: string, role: WorkbookRole): Promise<WorkbookAclRecord> {
     return this.json<WorkbookAclRecord>(`/api/workbooks/${encodeURIComponent(unitId)}/acl/${encodeURIComponent(subject)}`, {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
@@ -2696,7 +2701,7 @@ export class WorkbookApiClient {
     return this.json<SpaceMember[]>(`/api/spaces/${encodeURIComponent(spaceId)}/members`, options);
   }
 
-  async putSpaceMember(spaceId: string, subject: string, role: WorkbookAclRole): Promise<SpaceMember> {
+  async putSpaceMember(spaceId: string, subject: string, role: WorkbookRole): Promise<SpaceMember> {
     return this.json<SpaceMember>(`/api/spaces/${encodeURIComponent(spaceId)}/members/${encodeURIComponent(subject)}`, {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },

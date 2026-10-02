@@ -1,6 +1,6 @@
 package com.xc.luckysheet.server.security;
 
-import com.xc.luckysheet.server.contract.WorkbookAclRole;
+import com.xc.luckysheet.server.contract.WorkbookRole;
 import com.xc.luckysheet.server.persistence.LocalUserEntity;
 import com.xc.luckysheet.server.service.GuestShareService;
 import org.junit.jupiter.api.Test;
@@ -44,7 +44,7 @@ class WebSocketAuthenticationHandshakeHandlerTest {
         JwtDecoder decoder = mock(JwtDecoder.class);
         GuestShareService shares = mock(GuestShareService.class);
         GuestShareService.GuestIdentity identity = new GuestShareService.GuestIdentity(
-                "guest:share-1", UUID.randomUUID(), "book-1", WorkbookAclRole.COMMENTER, Instant.now().plusSeconds(60)
+                "guest:share-1", UUID.randomUUID(), "book-1", WorkbookRole.COMMENTER, Instant.now().plusSeconds(60)
         );
         when(shares.authenticate("share-token")).thenReturn(identity);
         WebSocketAuthenticationHandshakeHandler handler = new WebSocketAuthenticationHandshakeHandler(decoder, shares);

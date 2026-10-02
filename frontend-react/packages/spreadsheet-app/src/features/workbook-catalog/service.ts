@@ -19,7 +19,6 @@ import {
 import {
   type WorkspaceRecord,
   type WorkspaceRecordMetadata,
-  type WorkspaceRole,
   type WorkspaceUserState,
   WorkspacePersistence,
 } from '../persistence/storage';
@@ -73,7 +72,7 @@ export interface WorkbookCatalogSyncResult {
   revision: number;
 }
 
-function normalizeRole(role: WorkbookRole | undefined, fallback: WorkspaceRole = 'owner'): WorkspaceRole {
+function normalizeRole(role: WorkbookRole | undefined, fallback: WorkbookRole = 'owner'): WorkbookRole {
   return role === 'owner' || role === 'editor' || role === 'commenter' || role === 'viewer' ? role : fallback;
 }
 

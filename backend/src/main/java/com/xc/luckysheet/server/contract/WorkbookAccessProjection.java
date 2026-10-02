@@ -5,7 +5,7 @@ import java.util.List;
 /** Server-computed role projection for the current authenticated subject. */
 public record WorkbookAccessProjection(
         String unitId,
-        WorkbookAclRole role,
+        WorkbookRole role,
         long accessRevision,
         List<EffectiveAccessRegion> regions
 ) {

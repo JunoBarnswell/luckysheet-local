@@ -7,7 +7,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.xc.luckysheet.server.contract.OperationMutation;
 import com.xc.luckysheet.server.contract.RangeRef;
 import com.xc.luckysheet.server.contract.WorkbookSnapshotValidator;
-import com.xc.luckysheet.server.contract.WorkbookAclRole;
+import com.xc.luckysheet.server.contract.WorkbookRole;
 import com.xc.luckysheet.server.service.ServiceException;
 
 import java.util.List;
@@ -24,7 +24,7 @@ final class WorkbookStateMutationDescriptor extends CanonicalJsonMutationDescrip
     );
 
     WorkbookStateMutationDescriptor(String id) {
-        super(id, WorkbookAclRole.EDITOR);
+        super(id, WorkbookRole.EDITOR);
         if (!IDS.contains(id)) throw new IllegalArgumentException("Unsupported workbook state mutation: " + id);
     }
 

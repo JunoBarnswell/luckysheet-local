@@ -6,7 +6,7 @@ import com.xc.luckysheet.server.contract.CommittedOperationMutation;
 import com.xc.luckysheet.server.contract.OperationEnvelope;
 import com.xc.luckysheet.server.contract.OperationOrigin;
 import com.xc.luckysheet.server.contract.RangeRef;
-import com.xc.luckysheet.server.contract.WorkbookAclRole;
+import com.xc.luckysheet.server.contract.WorkbookRole;
 import com.xc.luckysheet.server.service.AccessControlService;
 import com.xc.luckysheet.server.service.AccessProjectionService;
 import com.xc.luckysheet.server.service.RangeAccessService;
@@ -38,7 +38,7 @@ class WebSocketSessionRegistryTest {
         when(session.getPrincipal()).thenReturn(principal);
         when(session.isOpen()).thenReturn(true);
         doThrow(ServiceException.forbidden("Workbook access denied"))
-                .when(access).require("book-1", "editor-1", WorkbookAclRole.VIEWER);
+                .when(access).require("book-1", "editor-1", WorkbookRole.VIEWER);
         registry.join("book-1", session);
         CommittedOperationEnvelope operation = new CommittedOperationEnvelope("test-session", 
                 OperationEnvelope.SCHEMA,

@@ -21,7 +21,7 @@ import com.xc.luckysheet.server.contract.RangeAccessRegionRequest;
 import com.xc.luckysheet.server.contract.RestoreRequest;
 import com.xc.luckysheet.server.contract.RevisionRecord;
 import com.xc.luckysheet.server.contract.StructuralPatch;
-import com.xc.luckysheet.server.contract.WorkbookAclRole;
+import com.xc.luckysheet.server.contract.WorkbookRole;
 import com.xc.luckysheet.server.contract.WorkbookAccessProjection;
 import com.xc.luckysheet.server.contract.WorkbookSnapshotResponse;
 import com.xc.luckysheet.server.contract.WorkbookLifecycle;
@@ -104,7 +104,7 @@ public class WorkbookOperationService {
     }
 
     public CommitResult operationResult(String unitId, String operationId, String actor, List<String> groups) {
-        access.require(unitId, actor, WorkbookAclRole.VIEWER);
+        access.require(unitId, actor, WorkbookRole.VIEWER);
         OperationRow row = store.findOperation(operationId).orElseThrow(() -> ServiceException.notFound("Operation not committed"));
         if (!row.unitId().equals(unitId) || !row.actorSubject().equals(actor)) throw ServiceException.forbidden("Operation belongs to another subject");
         CommittedOperationEnvelope operation = readCommittedHistoryRow(row);
@@ -120,7 +120,7 @@ public class WorkbookOperationService {
     }
 
     public WorkbookSnapshotResponse readSnapshot(String unitId, String actor, List<String> groups) {
-        WorkbookAclRole role = access.require(unitId, actor, WorkbookAclRole.VIEWER);
+        WorkbookRole role = access.require(unitId, actor, WorkbookRole.VIEWER);
         WorkbookRow row = requireWorkbook(unitId);
         JsonNode snapshot = currentSnapshot(row);
         if (snapshot.isObject()) ((ObjectNode) snapshot).put("name", row.name());
@@ -200,7 +200,7 @@ public class WorkbookOperationService {
 
     private CommitResult commitInternal(String routeUnitId, OperationEnvelope operation, String actor, List<String> groups) {
         if (!routeUnitId.equals(operation.unitId())) throw ServiceException.validation("Operation unitId does not match route");
-        WorkbookAclRole actorRole = access.require(routeUnitId, actor, WorkbookAclRole.VIEWER);
+        WorkbookRole actorRole = access.require(routeUnitId, actor, WorkbookRole.VIEWER);
         WorkbookRow row = store.findForUpdate(routeUnitId).orElseThrow(() -> ServiceException.notFound("Workbook not found: " + routeUnitId));
         if (row.lifecycle() != WorkbookLifecycle.ACTIVE) throw ServiceException.trashed("Workbook is in trash and cannot accept operations");
         OperationRow existing = store.findOperation(operation.operationId()).orElse(null);
@@ -598,7 +598,7 @@ public class WorkbookOperationService {
     }
 
     public CursorPage<RevisionRecord> revisions(String unitId, String actor, long beforeRevision, int limit, String nextCursor, List<String> groups) {
-        WorkbookAclRole role = access.require(unitId, actor, WorkbookAclRole.VIEWER);
+        WorkbookRole role = access.require(unitId, actor, WorkbookRole.VIEWER);
         RangeAccessResolver resolver = rangeAccess.resolver(unitId, actor, role, groups);
         long accessRevision = resolver.accessRevision();
         List<RevisionRecord> items = store.listOperationsBefore(unitId, beforeRevision, limit).stream()
@@ -612,7 +612,7 @@ public class WorkbookOperationService {
     }
 
     public WorkbookSnapshotResponse readRevision(String unitId, long revision, String actor, List<String> groups) {
-        WorkbookAclRole role = access.require(unitId, actor, WorkbookAclRole.VIEWER);
+        WorkbookRole role = access.require(unitId, actor, WorkbookRole.VIEWER);
         WorkbookRow current = requireWorkbook(unitId);
         if (revision < 0 || revision > current.revision()) throw ServiceException.notFound("Revision not found: " + revision);
         JsonNode snapshot = snapshotAtRevision(current, revision);
@@ -625,7 +625,7 @@ public class WorkbookOperationService {
     @Transactional
     public CheckpointResponse checkpoint(String unitId, String actor) {
         return withWorkbookLock(unitId, () -> {
-            access.require(unitId, actor, WorkbookAclRole.EDITOR);
+            access.require(unitId, actor, WorkbookRole.EDITOR);
             WorkbookRow row = store.findForUpdate(unitId).orElseThrow(() -> ServiceException.notFound("Workbook not found: " + unitId));
             if (row.lifecycle() != WorkbookLifecycle.ACTIVE) throw ServiceException.trashed("Workbook is in trash and cannot be checkpointed");
             if (row.snapshotRevision() == row.revision()) {
@@ -645,7 +645,7 @@ public class WorkbookOperationService {
     @Transactional
     public RestoreResult restore(String unitId, RestoreRequest request, String actor) {
         return withWorkbookLock(unitId, () -> {
-            access.require(unitId, actor, WorkbookAclRole.OWNER);
+            access.require(unitId, actor, WorkbookRole.OWNER);
             WorkbookRow row = store.findForUpdate(unitId).orElseThrow(() -> ServiceException.notFound("Workbook not found: " + unitId));
             if (request.targetRevision() > row.revision()) throw ServiceException.notFound("Revision not found: " + request.targetRevision());
             JsonNode target = snapshotAtRevision(row, request.targetRevision());
@@ -730,7 +730,7 @@ public class WorkbookOperationService {
         return rangeAccess.delete(unitId, regionId, actor);
     }
 
-    public AclEntry grantAcl(String unitId, String actor, String target, WorkbookAclRole role) {
+    public AclEntry grantAcl(String unitId, String actor, String target, WorkbookRole role) {
         return access.grant(unitId, actor, target, role);
     }
 
@@ -743,7 +743,7 @@ public class WorkbookOperationService {
     }
 
     public List<AuditRecord> audit(String unitId, String actor, int limit) {
-        access.require(unitId, actor, WorkbookAclRole.VIEWER);
+        access.require(unitId, actor, WorkbookRole.VIEWER);
         requireWorkbook(unitId);
         return store.listAudit(unitId, limit);
     }

@@ -6,7 +6,7 @@ import type {
   NativeDocumentArtifact,
 } from '@react-sheets/exchange-excel-ooxml';
 import type {
-  WorkbookAclRole,
+  WorkbookRole,
   ApiRequestOptions,
   WorkbookAccessResponse,
   WorkbookApiClient,
@@ -27,12 +27,11 @@ import type {
 import type {
   WorkspaceRecord,
   WorkspaceRecordMetadata,
-  WorkspaceRole,
   WorkspaceStorageLocation,
   WorkspaceUserState,
 } from '../persistence/storage';
 
-export type WorkbookRole = WorkbookAclRole | WorkspaceRole;
+export type { WorkbookRole } from '@react-sheets/protocol';
 export type WorkbookCatalogView = 'all' | 'recent' | 'local' | 'owned' | 'shared' | 'trash';
 export type WorkbookStorageLocation = WorkspaceStorageLocation;
 export type WorkbookLifecycle = WorkspaceRecordMetadata['lifecycle'];
@@ -189,7 +188,7 @@ export type WorkbookCatalogProtocolCopy = WorkbookCopyRequest;
 export type WorkbookCatalogProtocolArtifactMetadata = WorkbookSourceArtifactMetadata;
 export type WorkbookCatalogProtocolSpace = ProtocolWorkspaceSpace;
 export type WorkbookCatalogProtocolFolder = ProtocolWorkspaceFolder;
-export type WorkbookCatalogProtocolRole = WorkbookAclRole;
+export type WorkbookCatalogProtocolRole = WorkbookRole;
 export type WorkbookCatalogProtocolUserStateInput = Omit<ProtocolWorkbookUserState, 'unitId'>;
 
 export type WorkbookCatalogLocation = Pick<WorkspaceRecordMetadata, 'spaceId' | 'folderId' | 'locationPath'>;

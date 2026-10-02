@@ -1,3 +1,4 @@
+import type { WorkbookRole } from '@react-sheets/protocol';
 import { migrateStoredWorkbookSnapshot, type WorkbookSnapshot } from '@react-sheets/core-model';
 import type { NativeDocumentArtifact } from '@react-sheets/exchange-excel-ooxml';
 import type { OperationEnvelope } from '@react-sheets/protocol';
@@ -23,13 +24,13 @@ export interface WorkspacePersistenceOptions {
 export type WorkspaceLifecycle = 'active' | 'trashed';
 export type WorkspaceStorageLocation = 'local' | 'remote' | 'mirrored';
 export type WorkspaceSource = 'native' | 'document-import';
-export type WorkspaceRole = 'owner' | 'editor' | 'commenter' | 'viewer';
+
 
 export interface WorkspaceRecordMetadata {
   location: WorkspaceStorageLocation;
   lifecycle: WorkspaceLifecycle;
   source: WorkspaceSource;
-  role: WorkspaceRole;
+  role: WorkbookRole;
   ownerId?: string;
   sourceFileName?: string;
   spaceId?: string;

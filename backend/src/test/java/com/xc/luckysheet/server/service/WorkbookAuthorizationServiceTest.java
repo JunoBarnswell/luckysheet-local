@@ -1,6 +1,6 @@
 package com.xc.luckysheet.server.service;
 
-import com.xc.luckysheet.server.contract.WorkbookAclRole;
+import com.xc.luckysheet.server.contract.WorkbookRole;
 import com.xc.luckysheet.server.contract.WorkbookLifecycle;
 import com.xc.luckysheet.server.contract.WorkbookSource;
 import com.xc.luckysheet.server.contract.WorkbookStorageLocation;
@@ -32,11 +32,11 @@ class WorkbookAuthorizationServiceTest {
                 now, now, "owner", "space-1", null, WorkbookStorageLocation.REMOTE, WorkbookSource.NATIVE,
                 WorkbookLifecycle.ACTIVE, null)));
         when(acl.findForSubject("book-1", "member")).thenReturn(Optional.of(
-                new WorkbookAclEntity("book-1", "member", WorkbookAclRole.VIEWER, now, now)));
+                new WorkbookAclEntity("book-1", "member", WorkbookRole.VIEWER, now, now)));
         when(members.findByIdSpaceIdAndIdSubject("space-1", "member")).thenReturn(Optional.of(
-                new SpaceMemberEntity("space-1", "member", WorkbookAclRole.EDITOR, now, now)));
+                new SpaceMemberEntity("space-1", "member", WorkbookRole.EDITOR, now, now)));
 
-        assertEquals(Optional.of(WorkbookAclRole.EDITOR), service.role("book-1", "member"));
+        assertEquals(Optional.of(WorkbookRole.EDITOR), service.role("book-1", "member"));
         assertTrue(service.role("missing", "member").isEmpty());
     }
 }

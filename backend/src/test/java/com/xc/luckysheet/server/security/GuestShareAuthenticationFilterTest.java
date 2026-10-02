@@ -1,6 +1,6 @@
 package com.xc.luckysheet.server.security;
 
-import com.xc.luckysheet.server.contract.WorkbookAclRole;
+import com.xc.luckysheet.server.contract.WorkbookRole;
 import com.xc.luckysheet.server.service.GuestShareService;
 import jakarta.servlet.FilterChain;
 import org.junit.jupiter.api.AfterEach;
@@ -28,7 +28,7 @@ class GuestShareAuthenticationFilterTest {
     void validShareTokenCreatesServerDerivedGuestIdentity() throws Exception {
         GuestShareService shares = mock(GuestShareService.class);
         GuestShareService.GuestIdentity identity = new GuestShareService.GuestIdentity(
-                "guest:share-1", UUID.randomUUID(), "unit-1", WorkbookAclRole.VIEWER, Instant.now().plusSeconds(60)
+                "guest:share-1", UUID.randomUUID(), "unit-1", WorkbookRole.VIEWER, Instant.now().plusSeconds(60)
         );
         when(shares.authenticate("token")).thenReturn(identity);
         GuestShareAuthenticationFilter filter = new GuestShareAuthenticationFilter(shares);
