@@ -24,6 +24,7 @@ waived; this follow-up does not push or merge feature changes directly to main.
 | `npm run check:boundaries` | **Pass**, contracts, registry, acceptance matrix | `/tmp/luckysheet-linked-boundaries-8.log` |
 | `npm run test:unit` | **1,442 / 1,525 passed; 83 failed** | `/tmp/luckysheet-linked-full-unit-8.log` |
 | Real Chromium UI + Java service + persisted H2 | **10 / 10 passed** | `/tmp/luckysheet-linked-browser-15.log` |
+| Live API authorization/revocation and Record commit/undo | **11 / 11 passed** (8 + 3) | `/tmp/luckysheet-linked-backend-http-5.log`, `/tmp/luckysheet-record-source-http-5.log` |
 
 The full-unit failing test identities were compared with the recorded previous
 84-failure run. There are no new failing entries, and one spill-environment fixture
@@ -69,6 +70,8 @@ Screenshots outside Git:
 - `/workspace/luckysheet-record-formula-proof.png`
 - `/workspace/luckysheet-record-lookup-rollup-proof.png`
 - `/workspace/luckysheet-record-reload-proof.png`
+- `/workspace/luckysheet-external-denied-proof.png`
+- `/workspace/luckysheet-external-hidden-proof.png`
 
 ## Backend rejection and undo
 
@@ -83,6 +86,10 @@ Additional Java tests reject duplicate identities, missing Lookup targets,
 overlapping Record owners, invalid restore payloads and tampered 3D undo. Record
 ID read permission is separate from field edit permission. Runtime tests verify
 fresh-engine external requests and access changes clearing browser-owned state.
+The live HTTP rejection tests use real authenticated users and source/target ACLs;
+the hidden Record source returns `ACCESS_HIDDEN` while its owner still receives
+the complete graph. QA permission regions are removed and verified absent after
+each run.
 
 ## Stored data migration rehearsal
 
