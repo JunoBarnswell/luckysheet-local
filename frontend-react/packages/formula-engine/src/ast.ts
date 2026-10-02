@@ -132,6 +132,7 @@ export interface ReferenceIntersectionNode {
 export interface SheetRangeQualifier {
   readonly startSheetId: string;
   readonly endSheetId: string;
+  readonly quotedInterval?: boolean;
 }
 
 type QualifiedReferenceNode = CellReferenceNode | InvalidReferenceNode | RangeReferenceNode | WholeColumnReferenceNode | WholeRowReferenceNode;

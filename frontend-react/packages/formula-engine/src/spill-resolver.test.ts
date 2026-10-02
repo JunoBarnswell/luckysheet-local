@@ -196,6 +196,7 @@ test('recalculating a persisted spill does not treat its old children as blocker
 
 test('affected spill owners do not block one another with stale ranges during one recalculation', async () => {
   const engine = new FormulaEngine({ defaultSheetId: 'Sheet1' });
+  engine.setSpillEnvironment('Sheet1', { rowCount: 20, columnCount: 20, isOccupied: () => false });
   engine.setValue('C1', 2);
   engine.setValue('D3', 2);
   engine.setFormula('B1', '=SEQUENCE(C1,1)');

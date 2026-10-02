@@ -2,7 +2,7 @@ import { createFormulaError, isFormulaError, type FormulaValue } from '../values
 import { coerceExcelNumber, normalizeExcelPrecision } from '../numeric';
 import type { FormulaEvaluationContext } from '../evaluator';
 import { compareWorkbookValues } from '../collation';
-import { findLookupIndex, type LookupMatchMode } from './lookup-engine';
+import { evaluateRangeFunction } from './range-functions';
 
 const MAX_GENERATED_ARRAY_CELLS = 100_000;
 
@@ -31,7 +31,7 @@ function to1DArray(val: FormulaValue | undefined): FormulaValue[] {
   if (Array.isArray(val)) {
     const list: FormulaValue[] = [];
     for (const row of val) {
-      if (Array.isArray(row)) list.push(...row);
+      if (Array.isArray(row)) for (const cell of row) list.push(cell);
       else list.push(row);
     }
     return list;
@@ -56,41 +56,27 @@ function matrixHeight(matrix: FormulaValue[][]): number {
 }
 
 function matrixWidth(matrix: FormulaValue[][]): number {
-  return Math.max(0, ...matrix.map((row) => row.length));
+  return matrix.reduce((width, row) => Math.max(width, row.length), 0);
 }
 
 export const dynamicArrayFunctions: Record<string, (args: FormulaValue[], context?: FormulaEvaluationContext) => FormulaValue> = {
   FILTER: (args) => {
-    if (args.length < 2) return createFormulaError('#VALUE!', 'FILTER requires array and include');
     const array = to2DArray(args[0]);
     const include = to2DArray(args[1]);
-    const ifEmpty = args[2];
     const rows = matrixHeight(array);
-    const cols = matrixWidth(array);
-    const includeRows = matrixHeight(include);
-    const includeCols = matrixWidth(include);
-    if (includeRows !== rows && includeRows !== 1) {
-      return createFormulaError('#VALUE!', 'FILTER include height mismatch');
+    const columns = matrixWidth(array);
+    const byRow = include.length === rows && matrixWidth(include) === 1;
+    const byColumn = include.length === 1 && matrixWidth(include) === columns;
+    if (!byRow && !byColumn) return createFormulaError('#VALUE!', 'FILTER include must align with one array dimension');
+    const selected: boolean[] = [];
+    for (let index = 0; index < (byRow ? rows : columns); index++) {
+      const value = include[byRow ? index : 0]?.[byRow ? 0 : index] ?? null;
+      if (isFormulaError(value)) return value;
+      if (typeof value === 'string' && !['TRUE', 'FALSE'].includes(value.toUpperCase())) return createFormulaError('#VALUE!', 'FILTER include is not logical');
+      selected.push(typeof value === 'string' ? value.toUpperCase() === 'TRUE' : Boolean(value));
     }
-    const result: FormulaValue[][] = [];
-    for (let row = 0; row < rows; row++) {
-      let pass = false;
-      if (includeRows === 1) {
-        for (let column = 0; column < includeCols; column++) {
-          if (isTruthy(include[0]?.[column] ?? false)) pass = true;
-        }
-      } else {
-        for (let column = 0; column < includeCols; column++) {
-          if (isTruthy(include[row]?.[column] ?? false)) pass = true;
-        }
-      }
-      if (pass) result.push([...(array[row] ?? Array.from({ length: cols }, () => null))]);
-    }
-    if (result.length === 0) {
-      if (ifEmpty !== undefined) return to2DArray(ifEmpty);
-      return createFormulaError('#CALC!', 'FILTER returned no results');
-    }
-    return result;
+    if (!selected.some(Boolean)) return args[2] !== undefined ? to2DArray(args[2]) : createFormulaError('#CALC!', 'FILTER returned no results');
+    return byRow ? array.filter((_, row) => selected[row]).map((row) => [...row]) : array.map((row) => row.filter((_, column) => selected[column]));
   },
 
   UNIQUE: (args) => {
@@ -108,7 +94,7 @@ export const dynamicArrayFunctions: Record<string, (args: FormulaValue[], contex
         const colValues = array.map((row) => row[column] ?? null);
         const key = JSON.stringify(colValues);
         seen.set(key, (seen.get(key) ?? 0) + 1);
-        if (!exactlyOnce || seen.get(key) === 1) columns.push(colValues);
+        if (seen.get(key) === 1) columns.push(colValues);
       }
       if (exactlyOnce) {
         const filtered = columns.filter((col) => seen.get(JSON.stringify(col)) === 1);
@@ -144,25 +130,27 @@ export const dynamicArrayFunctions: Record<string, (args: FormulaValue[], contex
     const sortIndex = coerceExcelNumber(args[1] ?? 1);
     const sortOrderValue = coerceExcelNumber(args[2] ?? 1);
     if (isFormulaError(sortIndex) || isFormulaError(sortOrderValue)) return isFormulaError(sortIndex) ? sortIndex : sortOrderValue;
-    const normalizedSortIndex = Math.max(1, sortIndex);
-    const sortOrder = sortOrderValue >= 0 ? 1 : -1;
+    const normalizedSortIndex = Math.trunc(sortIndex);
+    if (![1, -1].includes(sortOrderValue) || normalizedSortIndex < 1) return createFormulaError('#VALUE!', 'Invalid SORT index or order');
+    const sortOrder = sortOrderValue;
     const byCol = args[3] === true || args[3] === 1;
     const column = normalizedSortIndex - 1;
 
     if (byCol) {
       const width = matrixWidth(array);
-      if (column >= width) return createFormulaError('#VALUE!', 'SORT sort_index out of bounds');
+      if (column >= array.length) return createFormulaError('#VALUE!', 'SORT sort_index out of bounds');
       const indices = Array.from({ length: width }, (_, index) => index);
-      indices.sort((left, right) => sortOrder * compareValues(array[0]?.[left] ?? null, array[0]?.[right] ?? null, context));
+      indices.sort((left, right) => sortOrder * compareValues(array[column]?.[left] ?? null, array[column]?.[right] ?? null, context));
       return array.map((row) => indices.map((index) => row[index] ?? null));
     }
 
+    if (column >= matrixWidth(array)) return createFormulaError('#VALUE!', 'SORT sort_index out of bounds');
     const sorted = [...array].sort((left, right) => sortOrder * compareValues(left[column] ?? null, right[column] ?? null, context));
     return sorted;
   },
 
   SEQUENCE: (args) => {
-    const rows = coerceExcelNumber(args[0]);
+    const rows = coerceExcelNumber(args[0] ?? 1);
     const columns = coerceExcelNumber(args[1] ?? 1);
     const start = coerceExcelNumber(args[2] ?? 1);
     const step = coerceExcelNumber(args[3] ?? 1);
@@ -173,9 +161,9 @@ export const dynamicArrayFunctions: Record<string, (args: FormulaValue[], contex
     if (sizeError) return sizeError;
     const result: FormulaValue[][] = [];
     let value = start;
-    for (let row = 0; row < rows; row++) {
+    for (let row = 0; row < Math.trunc(rows); row++) {
       const line: FormulaValue[] = [];
-      for (let column = 0; column < columns; column++) {
+      for (let column = 0; column < Math.trunc(columns); column++) {
         line.push(normalizeExcelPrecision(value));
         value = normalizeExcelPrecision(value + step);
       }
@@ -184,27 +172,16 @@ export const dynamicArrayFunctions: Record<string, (args: FormulaValue[], contex
     return result;
   },
 
-  XMATCH: (args, context) => {
-    const lookupValue = args[0];
-    const lookupArray = to1DArray(args[1]);
-    const matchMode = coerceExcelNumber(args[2] ?? 0);
-    const searchMode = coerceExcelNumber(args[3] ?? 1);
-    if (lookupArray.length === 0) return createFormulaError('#N/A', 'XMATCH lookup array is empty');
-
-    if (isFormulaError(matchMode) || isFormulaError(searchMode) || ![0, -1, 1, 2].includes(matchMode) || ![1, -1, 2, -2].includes(searchMode)) return createFormulaError('#VALUE!', 'Invalid XMATCH mode');
-    const index = findLookupIndex(lookupValue, lookupArray, matchMode as LookupMatchMode, searchMode, context?.collationContext);
-    if (index >= 0) return index + 1;
-    return createFormulaError('#N/A', 'Value not found in XMATCH');
-  },
+  XMATCH: (args, context) => evaluateRangeFunction('XMATCH', args, context) as FormulaValue,
 
   HSTACK: (args) => {
     if (args.length === 0) return createFormulaError('#VALUE!', 'HSTACK requires arrays');
     const matrices = args.map((arg) => to2DArray(arg));
-    const height = Math.max(...matrices.map((matrix) => matrix.length));
+    const height = matrices.reduce((height, matrix) => Math.max(height, matrix.length), 0);
     const result: FormulaValue[][] = [];
     for (let row = 0; row < height; row++) {
       const line: FormulaValue[] = [];
-      for (const matrix of matrices) line.push(...(matrix[row] ?? []));
+      for (const matrix of matrices) for (let column = 0; column < matrixWidth(matrix); column++) line.push(matrix[row]?.[column] ?? createFormulaError('#N/A', 'HSTACK input has no value at this position'));
       result.push(line);
     }
     return result;
@@ -213,12 +190,12 @@ export const dynamicArrayFunctions: Record<string, (args: FormulaValue[], contex
   VSTACK: (args) => {
     if (args.length === 0) return createFormulaError('#VALUE!', 'VSTACK requires arrays');
     const matrices = args.map((arg) => to2DArray(arg));
-    const width = Math.max(...matrices.map((matrix) => matrixWidth(matrix)));
+    const width = matrices.reduce((width, matrix) => Math.max(width, matrixWidth(matrix)), 0);
     const result: FormulaValue[][] = [];
     for (const matrix of matrices) {
       for (const row of matrix) {
         const padded = [...row];
-        while (padded.length < width) padded.push(null);
+        while (padded.length < width) padded.push(createFormulaError('#N/A', 'VSTACK input has no value at this position'));
         result.push(padded);
       }
     }
@@ -231,16 +208,10 @@ export const dynamicArrayFunctions: Record<string, (args: FormulaValue[], contex
     const rows = coerceExcelNumber(args[1]);
     const columns = args[2] === undefined ? undefined : coerceExcelNumber(args[2]);
     if (isFormulaError(rows) || isFormulaError(columns) || !Number.isFinite(rows)) return isFormulaError(rows) ? rows : isFormulaError(columns) ? columns : createFormulaError('#VALUE!', 'TAKE rows must be numeric');
-    if (rows >= 0) {
-      const sliced = array.slice(0, rows);
-      if (columns === undefined) return sliced;
-      return sliced.map((row) => row.slice(0, columns));
-    }
-    const start = Math.max(0, array.length + rows);
-    const sliced = array.slice(start);
-    if (columns === undefined) return sliced;
-    if (columns >= 0) return sliced.map((row) => row.slice(0, columns));
-    return sliced.map((row) => row.slice(columns));
+    if (Math.trunc(rows) === 0 || (columns !== undefined && Math.trunc(columns) === 0)) return createFormulaError('#CALC!', 'TAKE cannot return an empty array');
+    const rowSlice = rows >= 0 ? array.slice(0, Math.trunc(rows)) : array.slice(Math.max(0, array.length + Math.trunc(rows)));
+    if (columns === undefined) return rowSlice;
+    return rowSlice.map((row) => columns >= 0 ? row.slice(0, Math.trunc(columns)) : row.slice(Math.trunc(columns)));
   },
 
   DROP: (args) => {
@@ -250,9 +221,8 @@ export const dynamicArrayFunctions: Record<string, (args: FormulaValue[], contex
     const columns = args[2] === undefined ? undefined : coerceExcelNumber(args[2]);
     if (isFormulaError(rows) || isFormulaError(columns) || !Number.isFinite(rows)) return isFormulaError(rows) ? rows : isFormulaError(columns) ? columns : createFormulaError('#VALUE!', 'DROP rows must be numeric');
     const rowSlice = rows >= 0 ? array.slice(rows) : array.slice(0, Math.max(0, array.length + rows));
-    if (columns === undefined) return rowSlice;
-    if (columns >= 0) return rowSlice.map((row) => row.slice(columns));
-    return rowSlice.map((row) => row.slice(0, Math.max(0, row.length + columns)));
+    const result = columns === undefined ? rowSlice : rowSlice.map((row) => columns >= 0 ? row.slice(Math.trunc(columns)) : row.slice(0, Math.max(0, row.length + Math.trunc(columns))));
+    return !result.length || !matrixWidth(result) ? createFormulaError('#CALC!', 'DROP cannot return an empty array') : result;
   },
 
   SORTBY: (args, context) => {
@@ -269,9 +239,11 @@ export const dynamicArrayFunctions: Record<string, (args: FormulaValue[], contex
       if (argIndex < args.length && !Array.isArray(args[argIndex])) {
         const order = coerceExcelNumber(args[argIndex] ?? 1);
         if (isFormulaError(order)) return order;
-        sortOrder = order >= 0 ? 1 : -1;
+        if (![1, -1].includes(order)) return createFormulaError('#VALUE!', 'SORTBY order must be 1 or -1');
+        sortOrder = order;
         argIndex += 1;
       }
+      if (byArray.length !== array.length) return createFormulaError('#VALUE!', 'SORTBY keys must align with the array');
       sortKeys.push({ values: byArray, order: sortOrder });
     }
     indices.sort((left, right) => {
@@ -285,7 +257,7 @@ export const dynamicArrayFunctions: Record<string, (args: FormulaValue[], contex
   },
 
   RANDARRAY: (args, context) => {
-    const rows = coerceExcelNumber(args[0]);
+    const rows = coerceExcelNumber(args[0] ?? 1);
     const columns = coerceExcelNumber(args[1] ?? 1);
     const min = coerceExcelNumber(args[2] ?? 0);
     const max = coerceExcelNumber(args[3] ?? 1);
@@ -293,16 +265,17 @@ export const dynamicArrayFunctions: Record<string, (args: FormulaValue[], contex
     if (isFormulaError(rows) || isFormulaError(columns) || isFormulaError(min) || isFormulaError(max)) return [rows, columns, min, max].find(isFormulaError)!;
     if (!Number.isFinite(rows) || rows < 1) return createFormulaError('#VALUE!', 'RANDARRAY rows must be >= 1');
     if (!Number.isFinite(columns) || columns < 1) return createFormulaError('#VALUE!', 'RANDARRAY columns must be >= 1');
+    if (min > max || (whole && Math.ceil(min) > Math.floor(max))) return createFormulaError('#VALUE!', 'RANDARRAY minimum exceeds maximum');
     const sizeError = validateGeneratedArraySize('RANDARRAY', rows, columns);
     if (sizeError) return sizeError;
     const result: FormulaValue[][] = [];
-    for (let row = 0; row < rows; row++) {
+    for (let row = 0; row < Math.trunc(rows); row++) {
       const line: FormulaValue[] = [];
-      for (let column = 0; column < columns; column++) {
+      for (let column = 0; column < Math.trunc(columns); column++) {
         const random = context?.random?.('RANDARRAY', context?.volatileOccurrence, row * columns + column);
         if (random === undefined || isFormulaError(random)) return random ?? createFormulaError('#BLOCKED!', 'RANDARRAY requires a calculation entropy context');
         const value = min + random * (max - min);
-        line.push(whole ? Math.floor(value) : normalizeExcelPrecision(value));
+        line.push(whole ? Math.floor(random * (Math.floor(max) - Math.ceil(min) + 1)) + Math.ceil(min) : normalizeExcelPrecision(value));
       }
       result.push(line);
     }

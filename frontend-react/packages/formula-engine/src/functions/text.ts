@@ -15,7 +15,7 @@ export const textFunctions: Record<string, (args: FormulaValue[]) => FormulaValu
       if (Array.isArray(arg)) {
         for (const row of arg) {
           if (Array.isArray(row)) {
-            for (const cell of row) result += toStringVal(cell);
+            for (const cell of row) { if (isFormulaError(cell)) return cell; result += toStringVal(cell); }
           } else {
             result += toStringVal(row);
           }
@@ -48,6 +48,7 @@ export const textFunctions: Record<string, (args: FormulaValue[]) => FormulaValu
         for (const row of arg) {
           if (Array.isArray(row)) {
             for (const cell of row) {
+              if (isFormulaError(cell)) return cell;
               const s = toStringVal(cell);
               if (!ignoreEmpty || s.length > 0) items.push(s);
             }
@@ -103,7 +104,7 @@ export const textFunctions: Record<string, (args: FormulaValue[]) => FormulaValu
 
   PROPER: (args) => {
     const str = toStringVal(args[0]);
-    return str.replace(/\b\w/g, (c) => c.toUpperCase());
+    return str.toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase());
   },
 
   TRIM: (args) => {

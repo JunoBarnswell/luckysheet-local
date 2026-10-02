@@ -130,7 +130,7 @@ function formatNode(node: FormulaAst, parentPrecedence = 0): string {
       content = `${formatNode(node.left, precedence(node))} ${formatNode(node.right, precedence(node))}`;
       break;
     case 'sheet-range-reference':
-      content = `${formatSheetInterval(node.qualifier.startSheetId, node.qualifier.endSheetId)}!${formatNode(node.reference)}`;
+      content = `${node.qualifier.quotedInterval ? formatSheetInterval(node.qualifier.startSheetId, node.qualifier.endSheetId) : `${formatSheetId(node.qualifier.startSheetId)}:${formatSheetId(node.qualifier.endSheetId)}`}!${formatNode(node.reference)}`;
       break;
     case 'external-reference':
       content = node.reference.type === 'table-reference'

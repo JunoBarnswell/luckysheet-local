@@ -11,6 +11,9 @@ import { visitLexicalArguments } from './lexical-scope';
 export interface CollectFormulaDependenciesOptions {
   readonly sheetTables?: ReadonlyMap<string, SheetTableRef>;
   readonly sheetOrder: readonly FormulaSheetIdentity[];
+  readonly resolveNameAst?: (name: string, owner: CellAddress) => FormulaAst | undefined;
+  /** Geometry owners remain indexed for structure, but do not create value cycles. */
+  readonly valueDependencies?: boolean;
 }
 
 export function collectFormulaDependencies(
@@ -21,8 +24,54 @@ export function collectFormulaDependencies(
   assertCellAddress(owner);
   const dependencies: FormulaDependency[] = [];
   const seen = new Set<string>();
-  visit(ast, owner, dependencies, seen, options.sheetTables, options.sheetOrder);
+  visit(ast, owner, dependencies, seen, options.sheetTables, options.sheetOrder, new Set(), options.valueDependencies ?? false);
+  addProjectedConsumerDependencies(ast, owner, options, dependencies, seen);
   return dependencies;
+}
+
+/** SUMIF projects the target using criteria dimensions, including beyond its authored endpoint. */
+function addProjectedConsumerDependencies(ast: FormulaAst, owner: CellAddress, options: CollectFormulaDependenciesOptions, dependencies: FormulaDependency[], seen: Set<string>): void {
+  function envelope(node: FormulaAst, bindings: ReadonlyMap<string, FormulaAst>, names = new Set<string>()): RangeDependency | undefined {
+    if (node.type === 'cell-reference') { const address = resolveCellReference(node.reference, owner, options.sheetOrder); return { kind: 'range', start: address, end: address }; }
+    if (node.type === 'range-reference') return resolveRangeReference(node, owner, options.sheetOrder);
+    if (node.type === 'whole-column-reference') { const sheetId = resolveFormulaSheetId(node.sheetId, owner.sheetId, options.sheetOrder); return { kind: 'range', start: { sheetId, row: 0, column: node.startColumn }, end: { sheetId, row: 1_048_575, column: node.endColumn } }; }
+    if (node.type === 'whole-row-reference') { const sheetId = resolveFormulaSheetId(node.sheetId, owner.sheetId, options.sheetOrder); return { kind: 'range', start: { sheetId, row: node.startRow, column: 0 }, end: { sheetId, row: node.endRow, column: 16_383 } }; }
+    if (node.type === 'table-reference' && options.sheetTables) { const resolved = resolveSheetTableReference(node.tableName, node, owner, options.sheetTables); return isFormulaError(resolved) ? undefined : 'start' in resolved ? resolved : { kind: 'range', start: resolved, end: resolved }; }
+    if (node.type === 'name-reference') {
+      const id = node.name.toUpperCase();
+      if (names.has(id)) return undefined;
+      names.add(id);
+      const definition = bindings.get(id) ?? options.resolveNameAst?.(node.name, owner);
+      return definition ? envelope(definition, bindings, names) : undefined;
+    }
+    if (node.type === 'function-call' && node.name.toUpperCase() === 'INDEX' && node.arguments[0]) return envelope(node.arguments[0], bindings, names);
+    return undefined;
+  }
+  function walk(node: FormulaAst, bindings: ReadonlyMap<string, FormulaAst> = new Map()): void {
+    if (node.type === 'function-call') {
+      const id = node.name.toUpperCase();
+      if (id === 'LET') {
+        const local = new Map(bindings);
+        for (let index = 0; index < node.arguments.length - 1; index += 2) {
+          const variable = node.arguments[index]!;
+          const value = node.arguments[index + 1]!;
+          walk(value, local);
+          if (variable.type === 'name-reference') local.set(variable.name.toUpperCase(), value);
+        }
+        if (node.arguments.length) walk(node.arguments[node.arguments.length - 1]!, local);
+        return;
+      }
+      if ((id === 'SUMIF' || id === 'AVERAGEIF') && node.arguments.length === 3) {
+        const criteria = envelope(node.arguments[0]!, bindings);
+        const target = envelope(node.arguments[2]!, bindings);
+        if (criteria && target) addDependency({ kind: 'range', start: target.start, end: { sheetId: target.start.sheetId, row: Math.min(1_048_575, target.end.row + criteria.end.row - criteria.start.row), column: Math.min(16_383, target.end.column + criteria.end.column - criteria.start.column) } }, dependencies, seen);
+      }
+      if (node.callee) walk(node.callee, bindings);
+      for (const argument of node.arguments) walk(argument, bindings);
+    } else if (node.type === 'binary-expression') { walk(node.left, bindings); walk(node.right, bindings); }
+    else if (node.type === 'unary-expression') walk(node.operand, bindings);
+  }
+  walk(ast);
 }
 
 export function collectFormulaReferenceNodes(ast: FormulaAst): readonly FormulaReferenceNode[] {
@@ -98,6 +147,7 @@ function visit(
   sheetTables: ReadonlyMap<string, SheetTableRef> | undefined,
   sheetOrder: readonly FormulaSheetIdentity[],
   bound: ReadonlySet<string> = new Set(),
+  valueDependencies = false,
 ): void {
   switch (node.type) {
     case 'cell-reference': {
@@ -122,20 +172,21 @@ function visit(
       collectNestedTableDependencies(node, owner, dependencies, seen, sheetTables, sheetOrder);
       return;
     case 'unary-expression':
-      visit(node.operand, owner, dependencies, seen, sheetTables, sheetOrder, bound);
+      visit(node.operand, owner, dependencies, seen, sheetTables, sheetOrder, bound, valueDependencies);
       return;
     case 'spill-reference':
-      visit(node.operand, owner, dependencies, seen, sheetTables, sheetOrder, bound);
+      visit(node.operand, owner, dependencies, seen, sheetTables, sheetOrder, bound, valueDependencies);
       return;
     case 'binary-expression':
-      visit(node.left, owner, dependencies, seen, sheetTables, sheetOrder, bound);
-      visit(node.right, owner, dependencies, seen, sheetTables, sheetOrder, bound);
+      visit(node.left, owner, dependencies, seen, sheetTables, sheetOrder, bound, valueDependencies);
+      visit(node.right, owner, dependencies, seen, sheetTables, sheetOrder, bound, valueDependencies);
       return;
     case 'function-call':
-      if (visitLexicalArguments(node, bound, (child, local) => visit(child, owner, dependencies, seen, sheetTables, sheetOrder, local))) return;
-      if (node.callee) visit(node.callee, owner, dependencies, seen, sheetTables, sheetOrder, bound);
+      if (valueDependencies && ['ROW', 'COLUMN', 'ROWS', 'COLUMNS'].includes(node.name.toUpperCase())) return;
+      if (visitLexicalArguments(node, bound, (child, local) => visit(child, owner, dependencies, seen, sheetTables, sheetOrder, local, valueDependencies))) return;
+      if (node.callee) visit(node.callee, owner, dependencies, seen, sheetTables, sheetOrder, bound, valueDependencies);
       if (node.name && !bound.has(node.name.toUpperCase()) && !getFunctionDescriptor(node.name)) addDependency({ kind: 'name', name: node.name.toUpperCase() }, dependencies, seen);
-      for (const argument of node.arguments) visit(argument, owner, dependencies, seen, sheetTables, sheetOrder, bound);
+      for (const argument of node.arguments) visit(argument, owner, dependencies, seen, sheetTables, sheetOrder, bound, valueDependencies);
       return;
     case 'name-reference': {
       if (bound.has(node.name.toUpperCase())) return;

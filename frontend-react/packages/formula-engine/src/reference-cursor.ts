@@ -45,9 +45,17 @@ export interface ReferenceCell {
  */
 export function createReferenceCursor(
   range: RangeDependency,
-  context: Pick<FormulaEvaluationContext, 'readCell' | 'rowVisibility' | 'readFormulaKind'>,
+  context: Pick<FormulaEvaluationContext, 'readCell' | 'readSparseRangeCells' | 'rowVisibility' | 'readFormulaKind'>,
 ): Iterable<ReferenceCell> {
   return (function* cursor(): Generator<ReferenceCell> {
+    if (context.readSparseRangeCells) {
+      for (const cell of context.readSparseRangeCells(range)) yield {
+        ...cell,
+        visibility: context.rowVisibility?.resolve(cell.address.sheetId, cell.address.row) ?? VISIBLE_ROW,
+        formulaKind: context.readFormulaKind?.(cell.address) ?? 'ordinary',
+      };
+      return;
+    }
     for (let row = range.start.row; row <= range.end.row; row += 1) {
       for (let column = range.start.column; column <= range.end.column; column += 1) {
         const address = { sheetId: range.start.sheetId, row, column };

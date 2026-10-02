@@ -13,6 +13,25 @@ function toBoolean(val: FormulaValue | undefined): boolean {
   return false;
 }
 
+function logicalAggregate(name: 'AND' | 'OR' | 'XOR', args: FormulaValue[]): FormulaValue {
+  let found = false;
+  let truthCount = 0;
+  let falseCount = 0;
+  for (const arg of args) {
+    const reference = Array.isArray(arg);
+    const values = reference ? arg.flat() : [arg];
+    for (const value of values) {
+      if (isFormulaError(value)) return value;
+      if (reference && (value === null || typeof value === 'string')) continue;
+      if (typeof value === 'string' && !['TRUE', 'FALSE'].includes(value.toUpperCase())) return createFormulaError('#VALUE!', 'Logical argument is not valid');
+      found = true;
+      if (toBoolean(value)) truthCount++; else falseCount++;
+    }
+  }
+  if (!found) return createFormulaError('#VALUE!', 'Logical function has no logical values');
+  return name === 'AND' ? falseCount === 0 : name === 'OR' ? truthCount > 0 : truthCount % 2 === 1;
+}
+
 export const logicalFunctions: Record<string, (args: FormulaValue[]) => FormulaValue> = {
   IF: (args) => {
     const condition = args[0] ?? null;
@@ -52,59 +71,14 @@ export const logicalFunctions: Record<string, (args: FormulaValue[]) => FormulaV
     return val;
   },
 
-  AND: (args) => {
-    if (args.length === 0) return createFormulaError('#VALUE!', 'AND requires arguments');
-    for (const arg of args) {
-      if (isFormulaError(arg)) return arg;
-      if (Array.isArray(arg)) {
-        for (const row of arg) {
-          if (Array.isArray(row)) {
-            for (const cell of row) {
-              if (isFormulaError(cell)) return cell;
-              if (!toBoolean(cell)) return false;
-            }
-          } else if (!toBoolean(row)) return false;
-        }
-      } else if (!toBoolean(arg)) {
-        return false;
-      }
-    }
-    return true;
-  },
-
-  OR: (args) => {
-    if (args.length === 0) return createFormulaError('#VALUE!', 'OR requires arguments');
-    for (const arg of args) {
-      if (isFormulaError(arg)) return arg;
-      if (Array.isArray(arg)) {
-        for (const row of arg) {
-          if (Array.isArray(row)) {
-            for (const cell of row) {
-              if (isFormulaError(cell)) return cell;
-              if (toBoolean(cell)) return true;
-            }
-          } else if (toBoolean(row)) return true;
-        }
-      } else if (toBoolean(arg)) {
-        return true;
-      }
-    }
-    return false;
-  },
-
+  AND: (args) => logicalAggregate('AND', args),
+  OR: (args) => logicalAggregate('OR', args),
+  XOR: (args) => logicalAggregate('XOR', args),
   NOT: (args) => {
-    const arg = args[0] ?? null;
-    if (isFormulaError(arg)) return arg;
-    return !toBoolean(arg);
-  },
-
-  XOR: (args) => {
-    let trueCount = 0;
-    for (const arg of args) {
-      if (isFormulaError(arg)) return arg;
-      if (toBoolean(arg)) trueCount += 1;
-    }
-    return trueCount % 2 === 1;
+    const value = args[0];
+    if (isFormulaError(value)) return value;
+    if (typeof value === 'string' && !['TRUE', 'FALSE'].includes(value.toUpperCase())) return createFormulaError('#VALUE!', 'NOT requires a logical value');
+    return !toBoolean(value);
   },
 
   SWITCH: (args) => {

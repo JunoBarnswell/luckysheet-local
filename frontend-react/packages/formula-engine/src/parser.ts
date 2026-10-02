@@ -429,7 +429,7 @@ class Parser {
         const startSheetId = qualifier.slice(0, intervalSeparator);
         const endSheetId = qualifier.slice(intervalSeparator + 1);
         if (!endSheetId || endSheetId.includes(':')) throw new FormulaSyntaxError('Invalid worksheet interval', firstToken.span.start);
-        return this.parseReferenceOperators({ type: 'sheet-range-reference', qualifier: { startSheetId, endSheetId }, reference: reference as SheetRangeReferenceNode['reference'], span: { start: firstToken.span.start, end: reference.span.end } });
+        return this.parseReferenceOperators({ type: 'sheet-range-reference', qualifier: { startSheetId, endSheetId, quotedInterval: true }, reference: reference as SheetRangeReferenceNode['reference'], span: { start: firstToken.span.start, end: reference.span.end } });
       }
     }
 
@@ -609,7 +609,9 @@ class Parser {
   }
 
   private isSheetRangeQualifier(token: Token): boolean {
+    const cell = token.kind === 'identifier' ? tryParseCellReferenceText(token.lexeme) : undefined;
     return (token.kind === 'identifier' || token.kind === 'string')
+      && !(cell && cell.row <= MAX_ROW_INDEX && cell.column <= MAX_COLUMN_INDEX)
       && this.tokens[this.index + 1]?.kind === 'colon'
       && (this.tokens[this.index + 2]?.kind === 'identifier' || this.tokens[this.index + 2]?.kind === 'string')
       && this.tokens[this.index + 3]?.kind === 'bang';
