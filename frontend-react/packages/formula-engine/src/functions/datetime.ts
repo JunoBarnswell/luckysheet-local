@@ -16,7 +16,11 @@ function parseDateInput(value: FormulaValue | undefined, context?: ExcelDateEval
   const system = context?.dateSystem ?? '1900';
   if (value instanceof Date) return canonicalExcelDateFromUtcDate(value, system);
   if (typeof value === 'number') return canonicalExcelDateFromSerial(value, system);
-  if (typeof value === 'string') return canonicalExcelDateFromValue(value, system);
+  if (typeof value === 'string') {
+    const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+    if (dateOnly) return canonicalExcelDateFromParts({ year: Number(dateOnly[1]), month: Number(dateOnly[2]), day: Number(dateOnly[3]), hour: 0, minute: 0, second: 0, millisecond: 0 }, system);
+    return canonicalExcelDateFromValue(value, system);
+  }
   return null;
 }
 

@@ -337,6 +337,9 @@ function rangeTargetsSheet(
   end: ParsedCellReference,
   context: StructuralReferenceContext,
 ): boolean {
+  if (start.sheetId === undefined && end.sheetId !== undefined && !referenceTargetsWorksheet(end.sheetId, context.ownerSheetId, context.ownerSheetId, undefined, context.sheetOrder)) {
+    throw new Error(`UNSUPPORTED_STRUCTURAL_REFERENCE: ${context.cellShift ? 'cell shift' : 'structural transform'} cannot rewrite a partially qualified range`);
+  }
   return referenceTargetsSheet(rangeSheetId(start, end), context);
 }
 
@@ -487,6 +490,9 @@ export function mapAstMovedReferences(node: FormulaAst, context: MoveRangeRefere
     return { ...reference, row: reference.row + context.rowDelta, column: reference.column + context.columnDelta };
   };
   const mapRange = (start: ParsedCellReference, end: ParsedCellReference): { start: ParsedCellReference; end: ParsedCellReference } => {
+    if (start.sheetId === undefined && end.sheetId !== undefined && !referenceTargetsWorksheet(end.sheetId, context.ownerSheetId, context.ownerSheetId, undefined, context.sheetOrder)) {
+      throw new Error('UNSUPPORTED_STRUCTURAL_REFERENCE: moved range has a partially qualified formula reference');
+    }
     if (!targetsSheet(rangeSheetId(start, end))) return { start, end };
     const lowRow = Math.min(start.row, end.row);
     const highRow = Math.max(start.row, end.row);
@@ -804,6 +810,7 @@ function renameQualifiedSheets(node: FormulaAst, normalizedOld: string, newName:
       return {
         ...node,
         qualifier: {
+          ...node.qualifier,
           startSheetId: node.qualifier.startSheetId.trim().toLowerCase() === normalizedOld ? newName : node.qualifier.startSheetId,
           endSheetId: node.qualifier.endSheetId.trim().toLowerCase() === normalizedOld ? newName : node.qualifier.endSheetId,
         },

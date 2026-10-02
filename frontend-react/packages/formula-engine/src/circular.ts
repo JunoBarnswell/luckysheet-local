@@ -14,6 +14,12 @@ export interface CircularComponent {
   readonly cyclic: boolean;
 }
 
+export interface FormulaGraphAnalysis {
+  readonly components: readonly CircularComponent[];
+  readonly calculationOrder: readonly string[];
+  readonly prerequisites: ReadonlyMap<string, readonly string[]>;
+}
+
 /**
  * Decompose formula dependencies without expanding blank cells or recursing
  * through the JavaScript call stack. Range edges query a row-sorted formula
@@ -24,6 +30,13 @@ export function findFormulaComponents(
   nodes: readonly FormulaGraphNode[],
   sheetOrder: readonly FormulaSheetIdentity[] = [],
 ): readonly CircularComponent[] {
+  return analyzeFormulaGraph(nodes, sheetOrder).components;
+}
+
+export function analyzeFormulaGraph(
+  nodes: readonly FormulaGraphNode[],
+  sheetOrder: readonly FormulaSheetIdentity[] = [],
+): FormulaGraphAnalysis {
   const ordered = [...nodes].sort((left, right) => compareCellAddresses(left.address, right.address));
   const byKey = new Map(ordered.map((node) => [cellAddressKey(node.address), node]));
   const formulasBySheet = new Map<string, CellAddress[]>();
@@ -104,7 +117,11 @@ export function findFormulaComponents(
     components.push({ members, cyclic });
   }
 
-  return components.sort((left, right) => compareCellAddresses(left.members[0]!, right.members[0]!));
+  return {
+    components: components.sort((left, right) => compareCellAddresses(left.members[0]!, right.members[0]!)),
+    calculationOrder: finished,
+    prerequisites: adjacency,
+  };
 }
 
 function addRangeTargets(

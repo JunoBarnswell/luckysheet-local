@@ -31,13 +31,13 @@ export interface ResolvedSpill {
 export function isSpillMatrix(value: FormulaValue): value is ArrayValue {
   if (!isArrayValue(value)) return false;
   const rows = value.length;
-  const columns = Math.max(0, ...value.map((row) => row.length));
+  const columns = value.reduce((width, row) => Math.max(width, row.length), 0);
   return rows * columns > 1;
 }
 
 export function resolveSpill(input: SpillResolveInput): ResolvedSpill {
   const height = input.values.length;
-  const width = Math.max(0, ...input.values.map((row) => row.length));
+  const width = input.values.reduce((width, row) => Math.max(width, row.length), 0);
   const endRow = input.anchor.row + height - 1;
   const endColumn = input.anchor.column + width - 1;
   const range = {

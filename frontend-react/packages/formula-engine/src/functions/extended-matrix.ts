@@ -1,3 +1,4 @@
+import { evaluateAggregate } from './aggregate';
 import {
   createFormulaError,
   isFormulaError,
@@ -216,17 +217,7 @@ function aggregateColumns(rows: readonly (readonly ScalarValue[])[], aggregation
 }
 
 function aggregate(values: readonly ScalarValue[], aggregation: Aggregate): FormulaValue {
-  const numbers = values.filter((value): value is number => typeof value === 'number' && Number.isFinite(value));
-  switch (aggregation) {
-    case 'SUM': return numbers.reduce((sum, value) => sum + value, 0);
-    case 'COUNT': return numbers.length;
-    case 'AVERAGE': {
-      if (numbers.length === 0) return createFormulaError('#DIV/0!', 'AVERAGE has no numeric values');
-      return numbers.reduce((sum, value) => sum + value, 0) / numbers.length;
-    }
-    case 'MIN': return numbers.length === 0 ? 0 : Math.min(...numbers);
-    case 'MAX': return numbers.length === 0 ? 0 : Math.max(...numbers);
-  }
+  return evaluateAggregate(aggregation, [{ values, reference: true }]);
 }
 
 function pivotHeaders(
