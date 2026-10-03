@@ -184,3 +184,8 @@ SDK 拥有认证/身份/凭证/组合根/工作簿目录与生命周期/Excel �
 首轮真实 Java/H2 UAT：6 Pass /1 Fail /6 未执行。OO-01/MWB-01/MWB-02 用例在加载 SDK 时即失败；`/packages/sdk/src/index.ts` 返回 404，业务场景没有执行，相关父项保持 Pending。原始 trace 同时证明 Web 正常消费的公开入口 `/@fs/.../packages/sdk/src/index.ts` 返回 200。首次失败证据保存在 `/tmp/sdk-oo-uat/first-attempt-test-results`，不以重新运行覆盖首次失败。
 
 验收宿主修正边界：依据 package.json 的 `exports["."]` 使用 Node 的 `import.meta.resolve('@react-sheets/sdk')` 定位公开入口，转换为 Vite 的实际 filesystem module URL；保留真实 Java/H2、浏览器同源认证、无 route mocks、零 retries 和原断言。只调整验收消费入口，不修改冻结的产品实现或 Vite 配置；Linux/Windows 路径均在进入浏览器前归一为 URL。修正后执行真实 UAT 并分别记录结果。
+
+
+真实授权补充 UAT 的首次独立执行（`7e0acdba118a26c9c009feae2356cd3fd29ba6fb`）：身份 A→B 的旧 Workbook/Cell 退休、重新打开读取已提交 43、active SDK dispose 退休旧 Cell 全部 Pass。五函数/撤权用例在 bootstrap 前置步骤返回 403，业务断言未执行。trace 的两个匿名 session 响应证明：bootstrap 使用第一个响应的 CSRF，却携带第二个响应写入的 session cookie；Web 和独立 SDK 的初始化竞争。没有输出 token/cookie，也不放宽服务器 CSRF。
+
+验收宿主修正为 Vite 提供的独立 `e2e/support/sdk-consumer.html`，只启动被测公开 SDK，不挂载 Web 的另一个认证组合根。这符合预设“无编辑器 SDK consumer”前置条件；页面保留真实 origin/HttpOnly cookie/Worker。首次失败保留在 `/tmp/sdk-mwb-authority-uat/first-attempt-test-results`，产品代码仍冻结于 `5ce6111179f7fdbe687cbbb2a7fc60d73af4ecbf`。

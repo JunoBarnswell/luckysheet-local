@@ -9,10 +9,12 @@ test.skip(!process.env.SDK_UAT_ENABLED, 'Requires the isolated real Java/H2 SDK 
 test.setTimeout(120_000);
 const entryPath = fileURLToPath(import.meta.resolve('@react-sheets/sdk')).replaceAll('\\', '/');
 const entryUrl = `/@fs${entryPath.startsWith('/') ? entryPath : `/${entryPath}`}`;
+const consumerPath = fileURLToPath(new URL('./support/sdk-consumer.html', import.meta.url)).replaceAll('\\', '/');
+const consumerUrl = `/@fs${consumerPath.startsWith('/') ? consumerPath : `/${consumerPath}`}`;
 const password = 'Uat-Private-Password-2026';
 
 async function publicSdk(page: Page): Promise<JSHandle<SpreadsheetSdk>> {
-  await page.goto('/workbooks');
+  await page.goto(consumerUrl);
   return page.evaluateHandle(async (entryUrl) => {
     const { createSpreadsheetSdk } = await import(/* @vite-ignore */ entryUrl) as typeof import('@react-sheets/sdk');
     const sdk = createSpreadsheetSdk();
