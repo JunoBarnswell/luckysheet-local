@@ -1,6 +1,8 @@
 import { expect, test, type JSHandle, type Page } from '@playwright/test';
-import { readFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
+import path from 'node:path';
+import { importOoxmlDocument } from '@react-sheets/exchange-excel-ooxml';
 import type { SpreadsheetSdk } from '@react-sheets/sdk';
 import { installBrowserDiagnostics } from './support/workbook-fixtures';
 
@@ -336,18 +338,20 @@ test('O1.1-d/e/f: real Java structural planner owns Worksheet identities, refere
       const oldRange = duplicate.ranges.get('D3'); await duplicate.remove(); await workbook.flush();
       let deleted = ''; try { await oldRange.read(); } catch (error) { deleted = (error as { code?: string }).code ?? ''; }
       await workbook.undo(); await workbook.flush(); const revived = workbook.worksheets.byId(duplicate.id) === duplicate && (await oldRange.readValues())[0]![0] === 42;
+      await workbook.redo(); await workbook.flush(); let removedAgain = ''; try { await oldRange.read(); } catch (error) { removedAgain = (error as { code?: string }).code ?? ''; }
+      await workbook.undo(); await workbook.flush(); const revivedAgain = (await oldRange.readValues())[0]![0] === 42;
       await workbook.save(); const ids = { added: added.id, duplicate: duplicate.id, first: first.id }; workbook.close();
       workbook = await sdk.workbooks.open(entry.unitId);
       const reopened = workbook.worksheets.byId(ids.added), reopenedSnapshot = reopened.snapshot(), reopenedValue = (await reopened.cells.get('D3').read()).value;
-      return { stable, renamedFormula, inserted, columnInserted, dimensions, hiddenValue, filled, fillUndone, mergeRejected, merged, merges, mergeUndo, copied, deleted, revived, reopenedSnapshot, reopenedValue, reopenedReference: await workbook.worksheets.byId(ids.first).cells.get('A1').read() };
+      return { stable, renamedFormula, inserted, columnInserted, dimensions, hiddenValue, filled, fillUndone, mergeRejected, merged, merges, mergeUndo, copied, deleted, revived, removedAgain, revivedAgain, reopenedSnapshot, reopenedValue, reopenedReference: await workbook.worksheets.byId(ids.first).cells.get('A1').read() };
     });
     expect(result.stable).toBe(true); expect(result.renamedFormula.formula).toBe('=Values!A1'); expect(result.renamedFormula.calculatedValue).toBe(10);
     expect(result.inserted.formula).toBe('=Values!A2'); expect(result.inserted.calculatedValue).toBe(10); expect(result.columnInserted.formula).toBe('=Values!B1'); expect(result.columnInserted.calculatedValue).toBe(10);
-    expect(result.dimensions.rowHeightsPx[2]).toBe(30); expect(result.dimensions.columnWidthsPx[3]).toBe(90); expect(result.dimensions.hiddenRows).toContain(2); expect(result.dimensions.hiddenColumns).toContain(3); expect(result.hiddenValue).toBe(42); expect(result.dimensions.pane.kind).toBe('frozen');
+    expect(result.dimensions.rowHeightsPx[2]).toBe(30); expect(result.dimensions.columnWidthsPx[3]).toBe(90); expect(result.dimensions.hiddenRows).toContain(2); expect(result.dimensions.hiddenColumns).toContain(3); expect(result.hiddenValue).toBe(42); expect(result.dimensions.pane.kind).toBe('frozen'); expect(result.dimensions.pane).not.toHaveProperty('activePane');
     expect(result.filled).toEqual([[1], [2], [3], [4]]); expect(result.fillUndone).toEqual([[1], [2], [null], [null]]);
     expect(result.mergeRejected).toBe(true); expect(result.merged).toEqual([[10, null]]); expect(result.merges).toHaveLength(1); expect(result.mergeUndo).toEqual([[10, 20]]);
-    expect(result.copied).toBe(42); expect(result.deleted).toBe('INVALID_ARGUMENT'); expect(result.revived).toBe(true); expect(result.reopenedValue).toBe(42);
-    expect(result.reopenedSnapshot.rowHeightsPx[2]).toBe(30); expect(result.reopenedSnapshot.pane.kind).toBe('frozen'); expect(result.reopenedReference.formula).toBe('=Values!A1'); expect(result.reopenedReference.calculatedValue).toBe(10);
+    expect(result.copied).toBe(42); expect(result.deleted).toBe('INVALID_ARGUMENT'); expect(result.revived).toBe(true); expect(result.removedAgain).toBe('INVALID_ARGUMENT'); expect(result.revivedAgain).toBe(true); expect(result.reopenedValue).toBe(42);
+    expect(result.reopenedSnapshot.rowHeightsPx[2]).toBe(30); expect(result.reopenedSnapshot.pane.kind).toBe('frozen'); expect(result.reopenedSnapshot.pane).not.toHaveProperty('activePane'); expect(result.reopenedReference.formula).toBe('=Values!A1'); expect(result.reopenedReference.calculatedValue).toBe(10);
     expect(rejected).toEqual([]); diagnostics.assertClean();
   } finally { await sdk.evaluate(sdk => sdk.dispose()); }
 });
@@ -380,6 +384,91 @@ test('O1.1-b/g: real viewer denies a whole matrix and error-value copies leave t
       return { code, after: await to.readValues() };
     }, setup.id);
     expect(copy.code).toBe('UNSUPPORTED_FEATURE'); expect(copy.after).toEqual([[5, 6], [7, 8]]);
+    diagnostics.assertClean(); viewerDiagnostics.assertClean();
+  } finally { if (viewer) await viewer.evaluate(sdk => sdk.dispose()); await context.close(); await owner.evaluate(sdk => sdk.dispose()); }
+});
+
+
+test('O2.1-a/b/c/d: public names, rich text and protection preserve canonical state and real native output', async ({ page }) => {
+  const diagnostics = installBrowserDiagnostics(page), sdk = await ownerSdk(page);
+  try {
+    const result = await sdk.evaluate(async sdk => {
+      const entry = await sdk.workbooks.create({ name: `O2 objects ${Date.now()}` });
+      let workbook = await sdk.workbooks.open(entry.unitId), sheet = workbook.worksheets.at(0);
+      await sheet.ranges.get('A1:B1').setValues([[2, 3]]); await workbook.flush();
+      await workbook.names.define({ name: 'Rate', scope: 'workbook', formula: '=2', hidden: true, comment: 'Global' }); await workbook.flush();
+      const local = await workbook.names.define({ name: 'Rate', scope: 'sheet', sheetId: sheet.id, formula: '=3' }); await workbook.flush();
+      await workbook.names.define({ name: 'Relative', scope: 'workbook', formula: '=A1', anchor: { sheetId: sheet.id, row: 3, column: 3 }, comment: 'Anchored' }); await workbook.flush();
+      await sheet.cells.get('D1').setFormula('=Rate*10'); await sheet.cells.get('D4').setFormula('=Relative'); await sheet.cells.get('E4').setFormula('=Relative'); await workbook.flush();
+      const values = await Promise.all(['D1', 'D4', 'E4'].map(async address => (await sheet.cells.get(address).read()).calculatedValue));
+      await local.setFormula('=4'); await workbook.flush(); const changed = (await sheet.cells.get('D1').read()).calculatedValue;
+      await local.remove(); await workbook.flush(); const removed = (await sheet.cells.get('D1').read()).calculatedValue;
+      await workbook.undo(); await workbook.flush(); const restored = (await sheet.cells.get('D1').read()).calculatedValue;
+      await sheet.ranges.get('D8:E9').setRichText('=literal', [{ text: '=lit', style: { bold: true } }, { text: 'eral', style: { italic: true, textColor: '#123456' } }]); await workbook.flush();
+      const rich = await sheet.ranges.get('D8:E9').read();
+      await workbook.undo(); await workbook.flush(); const richUndo = await sheet.ranges.get('D8:E9').readValues();
+      await workbook.redo(); await workbook.flush();
+      await sheet.cells.get('E8').setStyle({ locked: false }); await workbook.flush();
+      await sheet.protection.set({ id: 'sheet-lock', scope: 'sheet', sheetId: sheet.id, locked: true, allow: { selectLocked: true, selectUnlocked: true, formatCells: true } }); await workbook.flush();
+      let protectedCode = ''; try { await sheet.cells.get('D8').setValue(99); } catch (error) { protectedCode = (error as { code?: string }).code ?? ''; }
+      await sheet.cells.get('E8').setValue(9); await workbook.flush(); const unlocked = (await sheet.cells.get('E8').read()).value;
+      await workbook.undo(); await workbook.flush();
+      await sheet.protection.remove('sheet-lock'); await workbook.flush(); await workbook.undo(); await workbook.flush();
+      await workbook.redo(); await workbook.flush(); const unprotected = sheet.protection.list(); await workbook.undo(); await workbook.flush();
+      await workbook.save(); const oldName = workbook.names.byName('Relative', 'workbook'), oldProtection = sheet.protection; workbook.close();
+      let retiredName = '', retiredProtection = ''; try { oldName.snapshot(); } catch (error) { retiredName = (error as { code?: string }).code ?? ''; } try { oldProtection.list(); } catch (error) { retiredProtection = (error as { code?: string }).code ?? ''; }
+      workbook = await sdk.workbooks.open(entry.unitId); sheet = workbook.worksheets.at(0);
+      const name = workbook.names.byName('Relative', 'workbook').snapshot(), global = workbook.names.byName('Rate', 'workbook').snapshot(), reopenedRich = await sheet.ranges.get('D8:E9').read(), protection = sheet.protection.list();
+      const output = await sdk.workbooks.exportWorkbook(entry.unitId, { fileName: 'sdk-o21.xlsx' });
+      return { id: entry.unitId, sheetId: sheet.id, values, changed, removed, restored, rich, richUndo, protectedCode, unlocked, unprotected, retiredName, retiredProtection, name, global, reopenedRich, protection, bytes: Array.from(new Uint8Array(output.buffer)) };
+    });
+    expect(result.values).toEqual([30, 2, 3]); expect(result.changed).toBe(40); expect(result.removed).toBe(20); expect(result.restored).toBe(40);
+    for (const row of result.rich) for (const cell of row) { expect(cell.value).toBe('=literal'); expect(cell.formula).toBeUndefined(); expect(cell.richText).toEqual([{ text: '=lit', style: { bold: true } }, { text: 'eral', style: { italic: true, textColor: '#123456' } }]); }
+    expect(result.richUndo).toEqual([[null, null], [null, null]]); expect(result.protectedCode).toBe('FORBIDDEN'); expect(result.unlocked).toBe(9); expect(result.unprotected).toEqual([]);
+    expect(result.retiredName).toBe('RUNTIME_DISPOSED'); expect(result.retiredProtection).toBe('RUNTIME_DISPOSED');
+    expect(result.name.anchor).toEqual({ sheetId: result.sheetId, row: 3, column: 3 }); expect(result.name.comment).toBe('Anchored'); expect(result.global).toMatchObject({ scope: 'workbook', hidden: true, comment: 'Global' });
+    expect(result.reopenedRich.map(row => row.map(cell => cell.value))).toEqual([['=literal', '=literal'], ['=literal', '=literal']]); expect(result.protection).toEqual([{ id: 'sheet-lock', scope: 'sheet', sheetId: result.sheetId, locked: true, allow: { selectLocked: true, selectUnlocked: true, formatCells: true } }]);
+    const bytes = Uint8Array.from(result.bytes); await writeFile(path.join(process.env.SDK_UAT_EVIDENCE_DIR!, 'sdk-o21.xlsx'), bytes);
+    const imported = await importOoxmlDocument({ fileName: 'sdk-o21.xlsx', buffer: bytes.buffer, options: { compatibilityTarget: 'B' } });
+    expect(imported.snapshot.definedNameModels).toBeDefined();
+    expect(imported.snapshot.definedNameModels!.find(name => name.name === 'Relative')?.anchor).toEqual(result.name.anchor);
+    expect(imported.snapshot.sheets[0]!.cells['7']!['3']!.value).toBe('=literal'); expect(imported.snapshot.sheets[0]!.cells['7']!['3']!.richText?.map(run => run.text).join('')).toBe('=literal'); expect(imported.snapshot.sheets[0]!.protectionRules).toEqual([{ id: `protection-sheet-1`, scope: 'sheet', sheetId: result.sheetId, locked: true, allow: { selectLocked: true, selectUnlocked: true, formatCells: true, insertRows: false, insertColumns: false, deleteRows: false, deleteColumns: false, sort: false, autoFilter: false, editObjects: false } }]);
+    expect(imported.snapshot.definedNameModels!.find(name => name.name === 'Relative')?.comment).toBe('Anchored');
+    diagnostics.assertClean();
+  } finally { await sdk.evaluate(sdk => sdk.dispose()); }
+});
+
+test('O2.1-a/b/c/e: viewer and malformed real protection operations are rejected without a revision or partial write', async ({ page, browser }) => {
+  const diagnostics = installBrowserDiagnostics(page), owner = await ownerSdk(page);
+  const context = await browser.newContext({ baseURL: 'http://127.0.0.1:4180' }), viewerPage = await context.newPage();
+  const viewerDiagnostics = installBrowserDiagnostics(viewerPage); let viewer: JSHandle<SpreadsheetSdk> | undefined;
+  try {
+    const setup = await owner.evaluate(async (sdk, input) => {
+      await sdk.identity.createUser({ username: input.username, displayName: 'O2 viewer', password: input.password });
+      const user = (await sdk.identity.listUsers()).find(user => user.username === input.username)!;
+      const entry = await sdk.workbooks.create({ name: input.username });
+      await sdk.workbooks.grantAccess(entry.unitId, user.id, 'viewer');
+      const workbook = await sdk.workbooks.open(entry.unitId), sheet = workbook.worksheets.at(0);
+      await sheet.ranges.get('D8:E9').setValues([[1, 2], [3, 4]]); await workbook.flush();
+      return { id: entry.unitId, sheetId: sheet.id, username: input.username };
+    }, { username: `o2-viewer-${Date.now()}`, password });
+    const before = await (await page.request.get(`/api/workbooks/${setup.id}/snapshot`)).json();
+    viewer = await publicSdk(viewerPage); await viewer.evaluate((sdk, input) => sdk.auth.authenticate(input.username, input.password), { username: setup.username, password });
+    const denied = await viewer.evaluate(async (sdk, input) => {
+      const workbook = await sdk.workbooks.open(input.id), sheet = workbook.worksheets.byId(input.sheetId), codes: string[] = [];
+      for (const action of [() => sheet.ranges.get('D8:E9').setRichText('x', [{ text: 'x' }]), () => workbook.names.define({ name: 'Forged', scope: 'workbook', formula: '=9' }), () => sheet.protection.set({ id: 'forged', scope: 'sheet', locked: true, allow: {} })]) { try { await action(); } catch (error) { codes.push((error as { code?: string }).code ?? ''); } }
+      return { codes, values: await sheet.ranges.get('D8:E9').readValues() };
+    }, setup);
+    expect(denied.codes).toEqual(['FORBIDDEN', 'FORBIDDEN', 'FORBIDDEN']); expect(denied.values).toEqual([[1, 2], [3, 4]]);
+    const rule = { id: 'direct', scope: 'sheet', sheetId: setup.sheetId, locked: true, allow: { sort: 'yes' } };
+    const operation = { schema: 'OperationEnvelope', clientSessionId: crypto.randomUUID(), operationId: crypto.randomUUID(), unitId: setup.id, clientSequence: 1, baseRevision: before.revision, createdAt: new Date().toISOString(), mutations: [{ id: 'sheet.protect.set', sheetId: setup.sheetId, params: { sheetId: setup.sheetId, rule } }] };
+    const ownerCsrf = (await (await page.request.get('/api/auth/session')).json()).csrfToken;
+    const invalid = await page.request.post(`/api/workbooks/${setup.id}/operations`, { headers: { 'X-CSRF-TOKEN': ownerCsrf }, data: operation });
+    expect(invalid.status()).toBe(400); const invalidBody = await invalid.json(); expect(invalidBody.code).toBe('VALIDATION_ERROR'); expect(invalidBody.message).toMatch(/allow/i);
+    const viewerCsrf = (await (await context.request.get('/api/auth/session')).json()).csrfToken;
+    const forbidden = await context.request.post(`/api/workbooks/${setup.id}/operations`, { headers: { 'X-CSRF-TOKEN': viewerCsrf }, data: { ...operation, clientSessionId: crypto.randomUUID(), operationId: crypto.randomUUID(), mutations: [{ ...operation.mutations[0]!, params: { sheetId: setup.sheetId, rule: { ...rule, allow: {} } } }] } });
+    expect(forbidden.status()).toBe(403); expect((await forbidden.json()).code).toBe('FORBIDDEN');
+    expect(await (await page.request.get(`/api/workbooks/${setup.id}/snapshot`)).json()).toEqual(before);
     diagnostics.assertClean(); viewerDiagnostics.assertClean();
   } finally { if (viewer) await viewer.evaluate(sdk => sdk.dispose()); await context.close(); await owner.evaluate(sdk => sdk.dispose()); }
 });

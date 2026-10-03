@@ -5,11 +5,13 @@ import { CommandDispatchError, type WorkbookObjectPort } from '@react-sheets/spr
 import { SdkError } from '../error';
 import { domainFor, registerWorkbookDomain } from './object-domain';
 import { WorksheetCollection } from './worksheet-collection';
+import { DefinedNameCollection } from './defined-name';
 import { WorkbookExternalLinks } from './external-links';
 
 export class Workbook {
   readonly id: string;
   readonly worksheets: WorksheetCollection;
+  readonly names: DefinedNameCollection;
   readonly externalLinks: WorkbookExternalLinks;
   #closed = false;
   #closeReady: (() => void) | null = null;
@@ -21,6 +23,7 @@ export class Workbook {
     this.id = readonlyPort.unitId;
     this.worksheets = new WorksheetCollection(this);
     this.externalLinks = new WorkbookExternalLinks(this);
+    this.names = new DefinedNameCollection(this);
     this.#initializeDomain(scope);
     this.#unsubscribeLifetime = readonlyPort.subscribeDisposed(() => this.close());
     Object.freeze(this);
@@ -89,6 +92,11 @@ export class Workbook {
         try { return this.#port.readWorksheet(sheetId); }
         catch (cause) { throw this.#error('REQUEST_REJECTED', 'worksheet.read', cause instanceof Error ? cause.message : 'Worksheet metadata unavailable.', cause, { sheetId }); }
       },
+      names: () => {
+        this.#assertAlive('definedNames.read');
+        try { return immutableSnapshot(this.#port.readDefinedNames()); }
+        catch (cause) { throw this.#error('REQUEST_REJECTED', 'definedNames.read', cause instanceof Error ? cause.message : 'Defined names are unavailable.', cause); }
+      },
       sheets: () => { this.#assertAlive('worksheets.read'); return this.#port.sheets(); },
       invalid: (operation, cause, object) => { this.#assertAlive(operation); throw this.#error('INVALID_ARGUMENT', operation, cause instanceof Error ? cause.message : String(cause), cause, object); },
       read: (sheetId, row, column) => this.#perform('cell.read', async () => this.#cellSnapshot(await this.#port.readCell(sheetId, row, column)), { sheetId, address: cellAddress(row, column) }),
@@ -109,6 +117,16 @@ export class Workbook {
         this.#assertAlive('range.write');
         const result = await this.#port.dispatch({ commandId: 'sheet.cells.commitMatrix', params: { sheetId: range.sheetId, range, entries } });
         if (result.status === 'rejected') throw result.error;
+      }, { sheetId: range.sheetId }),
+      writeRichText: (range, text, runs) => this.#perform('range.setRichText', async () => {
+        const intent = structuredClone({ text, runs });
+        const sheet = this.#port.sheets().find(sheet => sheet.id === range.sheetId);
+        if (!sheet || sheet.kind !== 'worksheet' || range.endRow >= sheet.rowCount || range.endColumn >= sheet.columnCount) throw this.#error('INVALID_ARGUMENT', 'range.setRichText', 'Rich text must fit the canonical worksheet extent.', undefined, { sheetId: range.sheetId });
+        const cells = await this.#port.readCells(range);
+        if (cells.some(cell => !cell.writable || cell.recordField || cell.sheetId !== range.sheetId)) throw this.#error('UNSUPPORTED_FEATURE', 'range.setRichText', 'Rich text targets must be writable cells owned by this worksheet.', undefined, { sheetId: range.sheetId });
+        this.#assertAlive('range.setRichText');
+        const outcome = await this.#port.dispatch({ commandId: 'sheet.cells.commitRichText', params: { ...intent, targets: cells.map(cell => ({ sheetId: cell.sheetId, row: cell.row, column: cell.column })) } });
+        if (outcome.status === 'rejected') throw outcome.error;
       }, { sheetId: range.sheetId }),
       command: (operation, descriptor) => this.#perform(operation, async () => {
         const outcome = await this.#port.dispatch(structuredClone(descriptor));

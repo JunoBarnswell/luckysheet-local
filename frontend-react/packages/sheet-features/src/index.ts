@@ -118,6 +118,23 @@ export interface CommitTypedValueParams {
   validationConfirmation?: boolean;
 }
 
+function authoredRichText(text: unknown, runs: unknown): RichTextRun[] {
+  if (typeof text !== 'string' || text.length > 32_767 || !Array.isArray(runs) || runs.length > 32_767
+    || runs.some(run => !isRecord(run) || typeof run.text !== 'string' || Object.keys(run).some(key => !['text', 'style', 'preservedProperties'].includes(key)))
+    || runs.map(run => run.text).join('') !== text) throw new Error('CELL_ENTRY_RICH_TEXT_INVALID: runs must reproduce bounded canonical text');
+  return runs.map(run => {
+    if (run.preservedProperties !== undefined && (!Array.isArray(run.preservedProperties) || run.preservedProperties.length > 0)) throw new Error('UNSUPPORTED_FEATURE: preserved run properties cannot be authored');
+    if (run.style === undefined) return { text: run.text };
+    const style = run.style;
+    if (!isRecord(style) || Object.keys(style).some(key => !['fontFamily', 'fontSizePx', 'bold', 'italic', 'underline', 'strikethrough', 'textColor', 'verticalAlignment'].includes(key))
+      || ['bold', 'italic', 'underline', 'strikethrough'].some(key => style[key] !== undefined && typeof style[key] !== 'boolean')
+      || style.fontSizePx !== undefined && (typeof style.fontSizePx !== 'number' || !Number.isFinite(style.fontSizePx) || style.fontSizePx <= 0 || style.fontSizePx > 8192)
+      || style.textColor !== undefined && (typeof style.textColor !== 'string' || !style.textColor.trim())
+      || style.verticalAlignment !== undefined && (typeof style.verticalAlignment !== 'string' || !['baseline', 'superscript', 'subscript'].includes(style.verticalAlignment))) throw new Error('CELL_ENTRY_RICH_TEXT_INVALID: run style is invalid');
+    return { text: run.text, style: { ...style, ...(style.fontFamily === undefined ? {} : { fontFamily: normalizeFontFamily(style.fontFamily) }) } } as RichTextRun;
+  });
+}
+
 export interface CommitRichTextParams {
   sheetId: string;
   row: number;
@@ -1563,31 +1580,12 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
   runtime.registry.registerCommand<CommitRichTextParams>({
     id: 'sheet.cell.commitRichText',
     execute: (params, context) => {
-      if (typeof params.text !== 'string' || !Array.isArray(params.runs) || params.runs.some((run) => typeof run.text !== 'string')) {
-        throw new CellEntryError({
-          code: 'CELL_ENTRY_RICH_TEXT_INVALID',
-          message: 'Rich-text commit requires text and canonical runs',
-          sheetId: params.sheetId,
-          row: params.row,
-          column: params.column,
-          recovery: 'Submit a canonical rich-text draft with text-preserving runs.',
-        });
-      }
-      if (params.runs.map((run) => run.text).join('') !== params.text) {
-        throw new CellEntryError({
-          code: 'CELL_ENTRY_RICH_TEXT_INVALID',
-          message: 'Rich-text runs do not reproduce the canonical plain text',
-          sheetId: params.sheetId,
-          row: params.row,
-          column: params.column,
-          recovery: 'Normalize the run sequence before committing.',
-        });
-      }
+      const runs = authoredRichText(params.text, params.runs);
       const sheet = context.workbook.getSheet(params.sheetId);
       const previous = sheet.cells.get(params.row, params.column);
       const next = clearFormulaProvenance(previous ? structuredClone(previous) : { value: null });
       next.value = params.text;
-      next.richText = structuredClone(params.runs);
+      next.richText = structuredClone(runs);
       delete next.formula;
       delete next.formulaValue;
       delete next.displayValue;
@@ -1689,7 +1687,8 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
   runtime.registry.registerCommand<CommitRichTextCellsParams>({
     id: 'sheet.cells.commitRichText',
     execute: (params, context) => {
-      if (!Array.isArray(params.targets) || params.targets.length === 0 || params.runs.map((run) => run.text).join('') !== params.text) rejectCellEntry(params.targets?.[0] ?? { sheetId: context.workbook.primarySheetId, row: 0, column: 0 }, 'Multi-cell rich-text commit payload is invalid', 'Submit text-preserving rich-text runs and at least one canonical target.');
+      const runs = authoredRichText(params.text, params.runs);
+      if (!Array.isArray(params.targets) || params.targets.length === 0 || params.targets.length > MAX_OBJECT_RANGE_CELLS) rejectCellEntry(params.targets?.[0] ?? { sheetId: context.workbook.primarySheetId, row: 0, column: 0 }, 'Multi-cell rich-text commit payload is invalid', 'Submit text-preserving rich-text runs and at least one canonical target.');
       const identities = new Set<string>();
       const prepared = params.targets.map((target) => {
         const identity = `${target.sheetId}:${target.row}:${target.column}`;
@@ -1699,7 +1698,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
         const previous = sheet.cells.get(target.row, target.column);
         const next = clearFormulaProvenance(previous ? structuredClone(previous) : { value: null });
         next.value = params.text;
-        next.richText = structuredClone(params.runs);
+        next.richText = structuredClone(runs);
         delete next.formula;
         delete next.formulaValue;
         delete next.displayValue;
@@ -3342,28 +3341,15 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       inverseIds: ['name.set'],
     },
   });
-  runtime.registry.registerCommand<{
-    name: string;
-    value?: string;
-    formula?: string;
-    scope?: 'workbook' | 'sheet';
-    sheetId?: string;
-    hidden?: boolean;
-    comment?: string;
-  }>({
+  runtime.registry.registerCommand<DefinedNameModel>({
     id: 'workbook.name.set',
     execute: (params, context) => {
-      const model: DefinedNameModel = {
-        name: params.name,
-        formula: params.formula ?? params.value ?? '',
-        scope: params.scope ?? 'workbook',
-        ...(params.sheetId ? { sheetId: params.sheetId } : {}),
-        ...(params.hidden === undefined ? {} : { hidden: params.hidden }),
-        ...(params.comment === undefined ? {} : { comment: params.comment }),
-      };
-      // Validate before opening a mutation so invalid scope/name input cannot
-      // create a history entry or leave the legacy formula view half updated.
+      if (!isRecord(params) || Object.keys(params).some(key => !['name', 'formula', 'scope', 'sheetId', 'anchor', 'hidden', 'comment'].includes(key))
+        || typeof params.name !== 'string' || typeof params.formula !== 'string' || (params.scope !== 'workbook' && params.scope !== 'sheet')) throw new Error('DEFINED_NAME_INVALID: canonical name, formula and explicit scope are required');
+      const model = structuredClone(params);
       const normalized = normalizeDefinedNameModel(model);
+      if (normalized.scope === 'sheet') context.workbook.getSheet(normalized.sheetId!);
+      if (normalized.anchor) context.workbook.getSheet(normalized.anchor.sheetId);
       const previous = context.workbook.getDefinedNameExact(normalized.name, normalized.scope, normalized.sheetId);
       const affectedRanges: RangeRef[] = [];
       context.applyMutation({

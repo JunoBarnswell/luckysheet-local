@@ -427,3 +427,104 @@ test('committed worksheet rename rejects forged owner semantics without repairin
   assert.throws(() => runtime.applyCommittedStructuralPatches(result.operationId, [forged], 1), /STRUCTURAL_PATCH_MISMATCH/);
   assert.deepEqual(model.snapshot(), before); assert.deepEqual(runtime.getUndoEntries(), history);
 });
+
+
+test('object defined names preserve canonical scope, anchors, immutable identity and calculation history', async () => {
+  const { workbook, session } = fixture('named-objects');
+  try {
+    const sheet = workbook.worksheets.at(0);
+    await sheet.ranges.get('A1:B1').setValues([[2, 3]]);
+    await workbook.names.define({ name: 'Rate', formula: '=2', scope: 'workbook', hidden: true, comment: 'Global' });
+    const local = await workbook.names.define({ name: 'Rate', formula: '=3', scope: 'sheet', sheetId: sheet.id });
+    const relative = await workbook.names.define({ name: 'Relative', formula: '=A1', scope: 'workbook', anchor: { sheetId: sheet.id, row: 3, column: 3 }, comment: 'Relative owner' });
+    assert.equal(workbook.names.byName('rate', 'sheet', sheet.id), local);
+    assert.equal(Object.isFrozen(relative.snapshot().anchor), true);
+    await sheet.cells.get('D1').setFormula('=Rate*10');
+    await sheet.cells.get('D4').setFormula('=Relative');
+    await sheet.cells.get('E4').setFormula('=Relative');
+    assert.equal((await sheet.cells.get('D1').read()).calculatedValue, 30);
+    assert.equal((await sheet.cells.get('D4').read()).calculatedValue, 2);
+    assert.equal((await sheet.cells.get('E4').read()).calculatedValue, 3);
+    await local.setFormula('=4'); assert.equal((await sheet.cells.get('D1').read()).calculatedValue, 40);
+    await local.remove(); assert.equal((await sheet.cells.get('D1').read()).calculatedValue, 20);
+    assert.throws(() => local.snapshot(), invalid);
+    await workbook.undo(); assert.equal(workbook.names.byName('Rate', 'sheet', sheet.id), local); assert.equal((await sheet.cells.get('D1').read()).calculatedValue, 40);
+    await workbook.redo(); assert.equal((await sheet.cells.get('D1').read()).calculatedValue, 20);
+    const before = session['runtime'].model.snapshot(), depth = session['runtime'].commands.getHistoryDepth();
+    for (const model of [{ name: 'NoScope', formula: '=1' }, { name: 'Legacy', value: '=1', scope: 'workbook' },
+      { name: 'Bad', formula: '=1', scope: 'sheet', sheetId: 'missing' }, { name: 'Bad', formula: '=A1', scope: 'workbook', anchor: { sheetId: 'missing', row: 0, column: 0 } }]) {
+      await assert.rejects(workbook.names.define(model as never), cause => cause instanceof SdkError && cause.code === 'REQUEST_REJECTED');
+    }
+    assert.deepEqual(session['runtime'].model.snapshot(), before); assert.deepEqual(session['runtime'].commands.getHistoryDepth(), depth);
+    session['permission'].applyServerAccess({ unitId: workbook.id, role: 'viewer', accessRevision: 1, regions: [] });
+    await assert.rejects(relative.setFormula('=2'), cause => cause instanceof SdkError && cause.code === 'FORBIDDEN');
+    workbook.close(); assert.throws(() => relative.snapshot(), cause => cause instanceof SdkError && cause.code === 'RUNTIME_DISPOSED');
+  } finally { workbook.close(); }
+});
+
+test('rich-text object commits preserve literal text and style in one canonical history transaction', async () => {
+  const { workbook, session } = fixture('richtext-objects');
+  try {
+    const sheet = workbook.worksheets.at(0), range = sheet.ranges.get('D8:E9');
+    await range.setValues([[1, 2], [3, 4]]); await range.setStyle({ bold: true }, { numberFormat: '0.00' });
+    const depth = session['runtime'].commands.getHistoryDepth().undo;
+    const runs = [{ text: '=lit', style: { bold: true, fontFamily: ' arial ' } }, { text: 'eral', style: { italic: true, textColor: '#123456' } }];
+    await range.setRichText('=literal', runs);
+    assert.equal(session['runtime'].commands.getHistoryDepth().undo, depth + 1);
+    assert.deepEqual(await range.readValues(), [['=literal', '=literal'], ['=literal', '=literal']]);
+    for (const row of await range.read()) for (const cell of row) { assert.equal(cell.formula, undefined); assert.equal(cell.numberFormat, '0.00'); assert.equal(cell.richText?.[0]?.style?.fontFamily, 'Arial'); assert.equal(Object.isFrozen(cell.richText?.[1]?.style), true); }
+    await workbook.undo(); assert.deepEqual(await range.readValues(), [[1, 2], [3, 4]]);
+    await workbook.redo(); assert.equal((await range.read())[1]![1]!.richText?.[1]?.style?.italic, true);
+    await sheet.cells.get('D8').setStyle({ italic: true }); await sheet.cells.get('D8').setNumberFormat('0');
+    assert.equal((await sheet.cells.get('D8').read()).style?.italic, true);
+    const before = session['runtime'].model.snapshot();
+    await assert.rejects(range.setRichText('mismatch', runs), invalid);
+    for (const style of [{ fontSizePx: NaN }, { bold: 'yes' }, { fontFamily: ' ' }, { arbitrary: true }]) await assert.rejects(range.setRichText('x', [{ text: 'x', style } as never]), cause => cause instanceof SdkError && cause.code === 'REQUEST_REJECTED');
+    await assert.rejects(sheet.ranges.get('A1:XFD1048576').setRichText('x', [{ text: 'x' }]), cause => cause instanceof SdkError && cause.code === 'UNSUPPORTED_FEATURE' && Boolean(cause.object?.workbookId) && Boolean(cause.recovery));
+    assert.deepEqual(session['runtime'].model.snapshot(), before);
+    session.runCommand('sheet.dv.add', { sheetId: sheet.id, rule: { id: 'richtext-dv', sheetId: sheet.id, ranges: [{ sheetId: sheet.id, startRow: 7, endRow: 7, startColumn: 4, endColumn: 4 }], type: 'whole', operator: 'greaterThan', formula1: '10' } });
+    const withRule = session['runtime'].model.snapshot();
+    await assert.rejects(range.setRichText('invalid', [{ text: 'invalid' }]), cause => cause instanceof SdkError && cause.code === 'REQUEST_REJECTED');
+    assert.deepEqual(session['runtime'].model.snapshot(), withRule);
+    session['permission'].applyServerAccess({ unitId: workbook.id, role: 'viewer', accessRevision: 1, regions: [] });
+    await assert.rejects(sheet.cells.get('A1').setRichText('x', [{ text: 'x' }]), cause => cause instanceof SdkError && cause.code === 'FORBIDDEN');
+  } finally { workbook.close(); }
+});
+
+test('rich-text captures caller intent before async source authorization', async () => {
+  const { workbook, session } = fixture('richtext-intent');
+  try {
+    const port = getWorkbookObjectPort(session), read = port.readCells.bind(port);
+    let resume!: () => void; const blocked = new Promise<void>(resolve => { resume = resolve; });
+    port.readCells = async range => { await blocked; return read(range); };
+    const runs = [{ text: 'captured', style: { bold: true } }];
+    const commit = workbook.worksheets.at(0).cells.get('D8').setRichText('captured', runs);
+    runs[0]!.text = 'changed'; runs[0]!.style.bold = false; resume(); await commit;
+    assert.equal((await workbook.worksheets.at(0).cells.get('D8').read()).value, 'captured');
+    assert.equal((await workbook.worksheets.at(0).cells.get('D8').read()).richText?.[0]?.style?.bold, true);
+  } finally { workbook.close(); }
+});
+
+test('worksheet protection objects enforce canonical ownership, owner ACL and reversible allow flags', async () => {
+  const { workbook, session } = fixture('protection-objects');
+  try {
+    const sheet = workbook.worksheets.at(0), protection = sheet.protection;
+    await sheet.cells.get('D8').setValue(1); await sheet.cells.get('E8').setStyle({ locked: false });
+    await protection.set({ id: 'lock', scope: 'sheet', sheetId: sheet.id, locked: true, allow: { selectLocked: true, selectUnlocked: true, formatCells: true } });
+    assert.equal(Object.isFrozen(protection.list()[0]?.allow), true);
+    await assert.rejects(sheet.cells.get('D8').setValue(2), cause => cause instanceof SdkError && cause.code === 'FORBIDDEN');
+    await sheet.cells.get('E8').setValue(3);
+    await protection.remove('lock'); await workbook.undo(); assert.equal(protection.list().length, 1);
+    await workbook.redo(); assert.deepEqual(protection.list(), []);
+    const before = session['runtime'].model.snapshot();
+    for (const rule of [{ id: 'bad', scope: 'sheet', locked: true, allow: { sort: 'yes' } }, { id: 'bad', scope: 'sheet', locked: true, allow: {}, arbitrary: true },
+      { id: 'bad', scope: 'range', locked: true, allow: {}, range: { sheetId: 'other', startRow: 0, endRow: 1, startColumn: 0, endColumn: 1 } }]) await assert.rejects(protection.set(rule as never), cause => cause instanceof SdkError);
+    await assert.rejects(protection.set({ id: 'unsupported', scope: 'workbook', locked: true, allow: {} }), cause => cause instanceof SdkError && cause.code === 'UNSUPPORTED_FEATURE');
+    await assert.rejects(protection.remove('missing'), invalid);
+    assert.deepEqual(session['runtime'].model.snapshot(), before);
+    session['permission'].applyServerAccess({ unitId: workbook.id, role: 'editor', accessRevision: 1, regions: [] });
+    await assert.rejects(protection.set({ id: 'editor-lock', scope: 'sheet', locked: true, allow: {} }), cause => cause instanceof SdkError && cause.code === 'FORBIDDEN');
+    assert.deepEqual(session['runtime'].model.snapshot(), before);
+    workbook.close(); assert.throws(() => protection.list(), cause => cause instanceof SdkError && cause.code === 'RUNTIME_DISPOSED');
+  } finally { workbook.close(); }
+});

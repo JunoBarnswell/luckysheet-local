@@ -1,5 +1,5 @@
-import type { CellStyle, CellValue, FormulaValue, RichTextRun, SheetKind, WorksheetPane } from '@react-sheets/core-model';
-export type { CellStyle, RichTextRun, WorksheetPane, BorderPlacement, BorderLine } from '@react-sheets/core-model';
+import type { CellStyle, CellValue, FormulaValue, RichTextRun, SheetKind, WorksheetPane, ProtectionRule } from '@react-sheets/core-model';
+export type { DefinedNameModel, DefinedNameScope, ProtectionRule, ProtectionAllow, CellStyle, RichTextRun, WorksheetPane, BorderPlacement, BorderLine } from '@react-sheets/core-model';
 export type { ClearFamily, FillDirection, FillMode, FillSeriesOptions } from '@react-sheets/sheet-features';
 export type CellInput = { readonly kind: 'value'; readonly value: CellValue } | { readonly kind: 'formula'; readonly formula: string };
 export interface WorksheetSnapshot {
@@ -10,6 +10,7 @@ export interface WorksheetSnapshot {
   readonly columnCount: number;
   readonly hidden: boolean;
   readonly pane: Readonly<WorksheetPane>;
+  readonly protectionRules: readonly Readonly<ProtectionRule>[];
   readonly defaultRowHeightPx: number;
   readonly defaultColumnWidthPx: number;
   readonly rowHeightsPx: Readonly<Record<number, number>>;

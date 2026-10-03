@@ -1,4 +1,4 @@
-import { cellAddress, type CellValue, type FormulaValue, type CellStyle, type BorderPlacement, type BorderLine, type RangeRef } from '@react-sheets/core-model';
+import { cellAddress, type CellValue, type FormulaValue, type CellStyle, type BorderPlacement, type BorderLine, type RangeRef, type RichTextRun } from '@react-sheets/core-model';
 import type { ClearFamily, FillDirection, FillMode, FillSeriesOptions } from '@react-sheets/sheet-features';
 import type { Cell } from './cell';
 import type { Workbook } from './workbook';
@@ -55,6 +55,14 @@ export class Range {
     if (!Array.isArray(matrix) || matrix.length !== this.rowCount || !matrix.every(row => Array.isArray(row) && row.length === this.columnCount && row.every(validate))) {
       domainFor(this.#workbook).invalid(operation, new Error('Input must exactly match the range dimensions and canonical value contract.'), { sheetId: this.#sheet.id, address: this.address });
     }
+  }
+  async setRichText(text: string, runs: readonly RichTextRun[]): Promise<void> {
+    this.#assertBounded('range.setRichText');
+    if (typeof text !== 'string' || text.length > 32_767 || !Array.isArray(runs)
+      || runs.some(run => !run || typeof run.text !== 'string') || runs.map(run => run.text).join('') !== text) {
+      return domainFor(this.#workbook).invalid('range.setRichText', new Error('Canonical rich-text runs must reproduce the complete plain text.'), { sheetId: this.#sheet.id, address: this.address });
+    }
+    await domainFor(this.#workbook).writeRichText(this.#range, text, runs);
   }
   async clear(family: ClearFamily = 'contents'): Promise<void> { await this.#command('range.clear', 'sheet.range.clear', { family }); }
   async setStyle(style: Partial<CellStyle>, options: RangeStyleOptions = {}): Promise<void> { await this.#command('range.setStyle', 'sheet.style.set', { style, ...options }); }

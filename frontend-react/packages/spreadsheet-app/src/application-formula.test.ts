@@ -266,7 +266,7 @@ describe('WorkbookSession formula integration', () => {
   it('resolves defined names through workbook.name.set', async () => {
     const app = new WorkbookSession();
     const sheetId = app.getActiveSheetId();
-    app.runCommand('workbook.name.set', { name: 'TaxRate', value: '0.1' });
+    app.runCommand('workbook.name.set', { name: 'TaxRate', formula: '0.1', scope: 'workbook' });
     app.runCommand('sheet.cell.set', {
       sheetId,
       row: 2,
@@ -282,7 +282,7 @@ describe('WorkbookSession formula integration', () => {
     await app.waitForFormulaCalculation();
     assert.equal(cellValue(app, 3, 3), '10');
 
-    app.runCommand('workbook.name.set', { name: 'TaxRate', value: '0.2' });
+    app.runCommand('workbook.name.set', { name: 'TaxRate', formula: '0.2', scope: 'workbook' });
     await app.waitForFormulaCalculation();
     assert.equal(cellValue(app, 3, 3), '20');
   });

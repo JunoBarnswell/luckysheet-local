@@ -36,6 +36,7 @@ import {
   type CanonicalExcelDateParts,
   formatFormula,
   normalizeExternalFormula,
+  normalizeDefinedNameModels,
   offsetAst,
   parseFormula,
 } from '@react-sheets/formula-engine';
@@ -2117,7 +2118,9 @@ function serializeAutoFilter(filter: AutoFilterModel, differentialStyleIndexes?:
 }
 
 function serializeProtection(rules: ProtectionRule[]): string {
-  const rule = rules.find((candidate) => candidate.scope === 'sheet');
+  const active = rules.filter(rule => rule.locked);
+  if (active.some(rule => rule.scope !== 'sheet') || active.length > 1) throw new NativeDocumentError({ code: 'NATIVE_DOCUMENT_UNSUPPORTED', message: 'OOXML export cannot represent these protection owners without losing their rules.', location: active[0]?.sheetId, recovery: 'Use one active worksheet protection rule or remove unsupported protection explicitly before exporting.' });
+  const rule = active[0];
   if (!rule) return '';
   const allow = rule.allow;
   return `<sheetProtection sheet="1"${rule.passwordHash ? ` password="${encodeXml(rule.passwordHash)}"` : ''} selectLockedCells="${allow.selectLocked ? '0' : '1'}" selectUnlockedCells="${allow.selectUnlocked ? '0' : '1'}" formatCells="${allow.formatCells ? '0' : '1'}" insertRows="${allow.insertRows ? '0' : '1'}" insertColumns="${allow.insertColumns ? '0' : '1'}" deleteRows="${allow.deleteRows ? '0' : '1'}" deleteColumns="${allow.deleteColumns ? '0' : '1'}" sort="${allow.sort ? '0' : '1'}" autoFilter="${allow.autoFilter ? '0' : '1'}" objects="${allow.editObjects ? '0' : '1'}"/>`;
@@ -2293,7 +2296,7 @@ function buildWorkbookXml(snapshot: WorkbookSnapshot, workbookPart: string, rela
     xml += '<definedNames>';
     for (const name of names) {
       const localSheetId = name.scope === 'sheet' && name.sheetId ? descriptors.findIndex((descriptor) => descriptor.id === name.sheetId) : -1;
-      xml += `<definedName name="${encodeXml(name.name)}"${localSheetId >= 0 ? ` localSheetId="${localSheetId}"` : ''}${name.hidden ? ' hidden="1"' : ''}>${encodeXml(name.formula.startsWith('=') ? name.formula.slice(1) : name.formula)}</definedName>`;
+      xml += `<definedName name="${encodeXml(name.name)}"${localSheetId >= 0 ? ` localSheetId="${localSheetId}"` : ''}${name.hidden ? ' hidden="1"' : ''}${name.comment === undefined ? '' : ` comment="${encodeXml(name.comment)}"`}>${encodeXml(name.formula.startsWith('=') ? name.formula.slice(1) : name.formula)}</definedName>`;
     }
     xml += '</definedNames>';
   }
@@ -2453,7 +2456,8 @@ function buildRootRelationshipsXml(existing: NativeRelationship[], workbookPart 
 
 interface ReactSheetsPackageMetadata {
   schema: 'ReactSheetsWorkbookMetadata';
-  version: 4;
+  version: 5;
+  definedNameAnchors: Array<Pick<DefinedNameModel, 'name' | 'scope' | 'sheetId' | 'formula'> & { anchor: NonNullable<DefinedNameModel['anchor']> }>;
   editingOptions: WorkbookSnapshot['editingOptions'];
   dataModel: WorkbookSnapshot['dataModel'];
   sheets: Array<Pick<SheetSnapshot, 'id' | 'kind' | 'tableSheet' | 'ganttSheet' | 'reportSheet' | 'sparklines' | 'sparklineGroups' | 'drawings' | 'drawingPayloads' | 'drawingGroups' | 'snapSettings'> & { nativeSheetId: number; cellMetadata: Array<{ row: number; column: number; presentation?: CellData['presentation']; editor?: CellData['editor'] }> }>;
@@ -2461,7 +2465,8 @@ interface ReactSheetsPackageMetadata {
 
 function buildReactSheetsMetadata(snapshot: WorkbookSnapshot, nativeSheetIds: ReadonlyMap<string, number>): string {
   const metadata: ReactSheetsPackageMetadata = {
-    schema: 'ReactSheetsWorkbookMetadata', version: 4, editingOptions: structuredClone(snapshot.editingOptions), dataModel: structuredClone(snapshot.dataModel),
+    schema: 'ReactSheetsWorkbookMetadata', version: 5,
+    definedNameAnchors: (snapshot.definedNameModels ?? []).filter(name => name.anchor !== undefined).map(name => ({ name: name.name, scope: name.scope, formula: name.formula, ...(name.sheetId === undefined ? {} : { sheetId: name.sheetId }), anchor: structuredClone(name.anchor!) })), editingOptions: structuredClone(snapshot.editingOptions), dataModel: structuredClone(snapshot.dataModel),
     sheets: snapshot.sheets.map((sheet) => {
       const cellMetadata: ReactSheetsPackageMetadata['sheets'][number]['cellMetadata'] = [];
       for (const [rowKey, columns] of Object.entries(sheet.cells)) for (const [columnKey, cell] of Object.entries(columns)) if (cell.presentation || cell.editor) cellMetadata.push({ row: Number(rowKey), column: Number(columnKey), presentation: cell.presentation ? structuredClone(cell.presentation) : undefined, editor: cell.editor ? structuredClone(cell.editor) : undefined });
@@ -2502,7 +2507,9 @@ function applyReactSheetsMetadata(snapshot: WorkbookSnapshot, bytes: Uint8Array 
       if (!data) throw new Error('React Sheets workbook metadata data model is missing');
       data.externalLinks = [];
     }
-    if (raw.version !== 3 && raw.version !== 4) throw new Error(`React Sheets workbook metadata version is unsupported: ${String(raw.version)}`);
+    const businessNativeIds = raw.version === 3;
+    if (raw.version === 3 || raw.version === 4) { raw.version = 5; raw.definedNameAnchors = []; }
+    if (raw.version !== 5) throw new Error(`React Sheets workbook metadata version is unsupported: ${String(raw.version)}`);
     const parsed = raw as unknown as ReactSheetsPackageMetadata;
     if (!parsed.dataModel || !Array.isArray(parsed.sheets) || !parsed.editingOptions) throw new Error('React Sheets workbook metadata payload is incomplete');
     if (parsed.sheets.length !== snapshot.sheets.length) throw new Error('Workbook metadata worksheet count does not match the native workbook');
@@ -2514,8 +2521,8 @@ function applyReactSheetsMetadata(snapshot: WorkbookSnapshot, bytes: Uint8Array 
       if (typeof metadata.id !== 'string' || !metadata.id.trim() || canonicalIds.has(metadata.id)) throw new Error('Workbook metadata worksheet identities are invalid or duplicated');
       // Versions 1-3 were exported with business IDs in native sheetId. This
       // conversion runs only at the explicit native import boundary.
-      const importedId = raw.version === 3 ? `sheet-${metadata.id.replace(/^sheet-/, '')}` : `sheet-${metadata.nativeSheetId}`;
-      if (raw.version === 4 && (!Number.isSafeInteger(metadata.nativeSheetId) || metadata.nativeSheetId <= 0 || metadata.nativeSheetId > 0xffffffff)) throw new Error('Workbook metadata native worksheet identity is invalid');
+      const importedId = businessNativeIds ? `sheet-${metadata.id.replace(/^sheet-/, '')}` : `sheet-${metadata.nativeSheetId}`;
+      if (!businessNativeIds && (!Number.isSafeInteger(metadata.nativeSheetId) || metadata.nativeSheetId <= 0 || metadata.nativeSheetId > 0xffffffff)) throw new Error('Workbook metadata native worksheet identity is invalid');
       if (identities.has(importedId) || !nativeIds.has(importedId)) throw new Error('Workbook metadata native worksheet mapping is invalid or duplicated');
       identities.set(importedId, metadata.id); canonicalIds.add(metadata.id);
     }
@@ -2527,6 +2534,19 @@ function applyReactSheetsMetadata(snapshot: WorkbookSnapshot, bytes: Uint8Array 
       [canonicalId, graph.sheetPartById[importedId]!]));
     snapshot.editingOptions = structuredClone(parsed.editingOptions);
     snapshot.dataModel = structuredClone(parsed.dataModel);
+    if (!Array.isArray(parsed.definedNameAnchors)) throw new Error('Defined-name anchor metadata is required');
+    for (const entry of parsed.definedNameAnchors) {
+      if (!isRecord(entry) || !Object.keys(entry).every(key => ['name', 'scope', 'sheetId', 'formula', 'anchor'].includes(key))
+        || typeof entry.name !== 'string' || typeof entry.formula !== 'string' || !isRecord(entry.anchor)
+        || !Object.keys(entry.anchor).every(key => ['sheetId', 'row', 'column'].includes(key))) throw new Error('Defined-name anchor metadata shape is invalid');
+    }
+    for (const entry of normalizeDefinedNameModels(parsed.definedNameAnchors)) {
+      if (!entry.anchor || !canonicalIds.has(entry.anchor.sheetId) || entry.scope === 'sheet' && !canonicalIds.has(entry.sheetId!)) throw new Error('Defined-name anchor metadata worksheet is invalid');
+      const nativeName = snapshot.definedNameModels!.find(name => name.name.toUpperCase() === entry.name.toUpperCase() && name.scope === entry.scope && name.sheetId === entry.sheetId);
+      // Native names are authoritative after an external edit. The extension
+      // augments an unchanged owner only and cannot resurrect a deleted name.
+      if (nativeName && nativeName.formula === entry.formula) nativeName.anchor = structuredClone(entry.anchor);
+    }
     for (const metadata of parsed.sheets) {
       const sheet = snapshot.sheets.find(candidate => candidate.id === metadata.id)!;
       sheet.kind = metadata.kind;
@@ -2658,7 +2678,7 @@ function parseDefinedNames(node: XmlNode | undefined, descriptors: SheetDescript
     if (!name.attrs.name || !formula) return [];
     const localSheetId = name.attrs.localSheetId === undefined ? -1 : Number(name.attrs.localSheetId);
     const descriptor = localSheetId >= 0 ? descriptors[localSheetId] : undefined;
-    return [{ name: name.attrs.name, formula: `=${formula}`, scope: descriptor ? 'sheet' : 'workbook', ...(descriptor ? { sheetId: descriptor.id } : {}), ...(name.attrs.hidden ? { hidden: name.attrs.hidden === '1' || name.attrs.hidden === 'true' } : {}) }];
+    return [{ name: name.attrs.name, formula: `=${formula}`, scope: descriptor ? 'sheet' : 'workbook', ...(descriptor ? { sheetId: descriptor.id } : {}), ...(name.attrs.hidden ? { hidden: name.attrs.hidden === '1' || name.attrs.hidden === 'true' } : {}), ...(name.attrs.comment === undefined ? {} : { comment: name.attrs.comment }) }];
   });
 }
 

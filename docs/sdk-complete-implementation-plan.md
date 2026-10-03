@@ -142,3 +142,15 @@ WorksheetModel.snapshot/fromSnapshot/duplicate 验证并复制原 pane，不归�
 统一代码批次落地后一次执行 frontend build/SDK/calculation/boundaries/full unit 和合并后 Java 全测试/package，再在干净 head 上跑完整真实 SDK UAT。继承 main/security 变更已经保留于 371bc4d6，不以旧 Jar 或旧验证证明新 head 通过。所有失败原始证据保留，不降低服务端完整恢复、权限或公式断言。
 
 脏根地址补充契约：canonical cellAddressKey 已记录完整 sheet/row/column，清空输入仍必须导出这个根。pending 根导出与遍历共用 key 解码，不以 live cells 查找/过滤，不新建第二份脏根集合。Worker bootstrap pendingRoots 与后续 input deltas 表达同一来源变化，manual 不自动重算，显式 F9 同步结果。原冻结的 k..o 条件保持不变。
+
+## O2.1 名称、富文本和工作表保护（实施前冻结）
+
+本子批扩展公开对象入口：Workbook.names（list/byName/define/remove，DefinedName.snapshot/setFormula/remove）；Cell/Range.setRichText(text,runs)，Cell.setStyle/setNumberFormat/setBorders 复用原 Range 格式 owner；Worksheet.protection（list/set/remove）。只保存句柄身份，名称、富文本、保护状态仍从 canonical model 读取。返回的配置递归 immutable，关闭/身份切换后所有新对象退休。独立消费者不取得 Session/model/dispatch/token。
+
+名称采用正式 DefinedNameModel，scope 必填，sheet/anchor 用明确稳定 ID；旧 workbook.name.set 的 value 别名删除，UI 与测试正式调用同时改为 formula，并补齐 anchor 传递。相对名称不猜测 active cell，原 engine 对缺 anchor 的拒绝继续保留。定义、修改、移除与撤销使用已有 name.set/name.remove，增量同步唯一 FormulaEngine。
+
+富文本使用现有 commitRichText / commitRichTextCells：plain text 必须等于 runs 拼接，整个目标预授权和准备后一个事务；不解析以 = 开头的富文本为公式，不改变格式/selection，不逐 Cell 写。拒绝隐藏、readonly/record/projected owner、预算/extent、坏 runs、viewer、DV 或 spill child，不写部分内容。Cell 的格式动作按显式单格 Range 调用原 owner。
+
+保护的 canonical 校验由 core rule validator 与 Java reducer 分别在各自正式边界落实，scope/range/sheet/allow 布尔/未知字段均严格校验，错误不进入 model/history/server storage。消除 Number.MAX_SAFE_INTEGER 伪造整张范围：sheet-wide 保护使用已存在的 Java 空 affected-range 全表语义，range 保护使用真实范围；owner ACL 与工作表保护仍独立，设置保护不授予 ACL。worksheet/range 才由 Worksheet.protection 修改；workbook structure/password 安全能力属于 S1，不能用单张 sheet rule 假装实现。不存在的保护 remove 拒绝且不产生 history。当前规范状态 snapshot/load 保留全部合法元数据，不改版本、不隐式迁移。
+
+Theme 和模板库 owner 的完整改造留给 O2.2；本批不把部分字段暴露算 O2 全量完成。实现全部子批改动后再统一 build/SDK/calculation/full unit/boundaries/Java 和真实 UAT；每完成一子批推送同一草稿 PR。

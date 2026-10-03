@@ -1,4 +1,4 @@
-import type { CellValue, RangeRef } from '@react-sheets/core-model';
+import type { CellValue, RangeRef, RichTextRun } from '@react-sheets/core-model';
 import type { CommandDescriptor } from '@react-sheets/command-runtime';
 import type { WorkbookObjectPort } from '@react-sheets/spreadsheet-app';
 import type { CellInput, CellSnapshot, ExternalLinkSnapshot } from './contract';
@@ -8,6 +8,8 @@ import type { Workbook } from './workbook';
 export interface WorkbookDomainAccess {
   readonly scope: object;
   sheet(sheetId: string): ReturnType<WorkbookObjectPort['readWorksheet']>;
+  names(): ReturnType<WorkbookObjectPort['readDefinedNames']>;
+  writeRichText(range: RangeRef, text: string, runs: readonly RichTextRun[]): Promise<void>;
   sheets(): ReturnType<WorkbookObjectPort['sheets']>;
   invalid(operation: string, cause: unknown, object?: { sheetId?: string; address?: string }): never;
   read(sheetId: string, row: number, column: number): Promise<CellSnapshot>;

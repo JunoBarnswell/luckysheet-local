@@ -1,3 +1,4 @@
+export { protectionRuleValidationError, assertWorksheetProtectionRule } from './protection-rule';
 export { isTableSheetDefinition } from './table-sheet-validation';
 import { assertExternalLinkBinding } from './data-model';
 import { assertRecordTable, assertRecordRelationship, assertRecordCalculations } from './record-domain';

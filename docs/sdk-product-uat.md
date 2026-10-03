@@ -292,3 +292,33 @@ Java 成功/拒绝与真实并发检查补齐 MWB-03.c/d/e/f：伪造循环 comm
 干净产品 head **0c741cee6bafb3474dccf70452de37d0e6307742**，重建后的 Java21/H2/Chromium 完整真实 SDK UAT **19/19 Pass**，零 route mocks、单 worker/retries=0。证据 `/tmp/sdk-objects-calculation-owner-browser.log`、`/tmp/sdk-product-uat-2Idror/evidence`。a..j 原有业务步骤全部执行成功；新增自动 clear/undo/redo/copy 与 manual Worker journal k、声明成功/拒绝 l、pane snapshot/load/clone/OOXML m 由相应领域检查通过。n 的真实 sheet remove→undo→save→reopen 和服务端严格 preimage 校验成功；其额外 redo→undo 子步骤留至下一轮 UAT，不虚报为全部完成。浏览器 console/network diagnostics 成功（预设拒绝案例按测试明确验证），Worksheet 结构/rename/fill/merge 的操作无异常 HTTP 响应。原 49 父项、T1/O2 全范围、full-unit/CI 等未完成门禁仍保持原实际状态，不据 19 条测试合并。
 
 Java 两项 Skipped 为 QueryReadOnlyDialectIntegrationTest 的 PostgreSQL/MySQL 实机方言用例，缺 REMEDIATION_JDBC_CONFIG，记为外部方言环境 Blocked；H2 权威服务与本批真实 browser 已通过，不将它们算作方言实机证据。
+
+### O2.1 实施前 UAT 细项
+
+| ID | 成功流程 | 拒绝与恢复流程 | 状态 |
+| --- | --- | --- | --- |
+| O2.1-a | workbook/sheet 同名名称、绝对/相对 anchored 名称、公式修改/移除、undo/redo 与依赖计算；save/reopen 保留 anchor/comment/hidden | 无 scope/坏 ID/非法 anchor、旧 value 别名、viewer 修改拒绝，模型/历史不变 | Pending |
+| O2.1-b | 单格与范围富文本保留文字/分段格式，=literal 保持文字；源 caller 修改不改变异步已捕获 intent；格式对象与 UI owner 同步 | text/runs 不匹配、NaN/非法格式、隐藏/只读/record、DV/spill/预算/extent、viewer 拒绝整个事务 | Pending |
+| O2.1-c | worksheet/range 保护、locked/unlocked/allow flags、移除及 undo/redo；真实 Java 保存重开/native 保护往返 | 非 owner、异 sheet/out-of-extent 范围、坏 allow/unknown field、不存在的 remove、假 workbook-wide scope 均拒绝 | Pending |
+| O2.1-d | 句柄稳定、snapshot immutable；身份切换/关闭使新名称/保护句柄不可调用；其他 Workbook 可继续使用 | 退休句柄不能改新上下文对象，不把新配置授权给任意资源 | Pending |
+| O2.1-e | 完整真实 browser 继续19原流程，扩展 sheet.remove undo→redo→undo，新增名称/富文本/保护 save/reopen/Excel文件断言，检查 console/network | 客户端与直接 REST 的 invalid/unauthorized 均拒绝且版本/operation/snapshot 不变；实机 Excel仍 Blocked | Pending |
+
+### O2.1 首轮冻结与统一纠正契约
+
+首轮 SDK 62/60 Pass/2 Fail；build 仅 native UAT optional 名称字段的类型断言失败；calculation 457 Pass，boundaries Pass，Java 369/367 Pass/0 Fail/2 Skipped + package。完整 unit 1581/1527 Pass/54 Fail。原始源与日志保留 `/tmp/sdk-o21-first-pass.patch`、`/tmp/sdk-o21-first-{sdk,build,boundaries,unit,formula,java}.log`，没有在验证中反复改产品。
+
+只读链路复核确认 PermissionService.getCapabilities 以 online=false 优先选择 LOCAL_CAPABILITIES，覆盖已确认 serverRole。全表保护的真实 affectedRanges=[] 不经过单格范围 ACL，因此 editor 错误获准。统一纠正：角色投影一旦存在，能力始终由它决定；连接状态仅决定无投影时 online 的 fail-close，不能将已知 editor/viewer 升级为本地 owner。Session 远程离线 mutation guard 和 Java requiredRole 不变。增加 owner/editor/viewer 的在线/离线命令及 mutation 重放成功/拒绝测试，并保留 SDK editor 拒绝及全模型不变断言。
+
+两处测试契约同期更正：超 10000 格预算必须精确断言既有 UNSUPPORTED_FEATURE，不改产品预算；原生导入的可选名称字段先断言存在再收窄，不引入空数组 fallback。完成这一个纠正批后统一验证，再冻结产品 head 做真实 21 条 browser UAT。主题、模板、原生格式全量和 T1 等仍 Pending，不扩大 O2.1 的结论。
+
+### O2.1 原生边界整链补全契约（落代码前）
+
+权限纠正验证：permission 11 Pass；SDK editor 拒绝成功。剩余 rich-text 测试在 DV 前置步骤使用 CF 的 value1 字段，必须改为正式 DataValidationRule.formula1='10'，不改 DV 规则或放宽拒绝。完整 unit 1582/1529 Pass/53 Fail，新增仅此新 fixture 前置问题。
+
+原生只读审查确认 comment 未写入原生 definedName attribute，anchor 未保存；保护原生 ID 在 import 边界重建，native allow flags 固定展开。这不是服务器 save/reopen 丢失，而是格式边界契约。新增 metadata v5 仅保存 anchored name 的身份、原公式指纹与 anchor，原生 formula/comment/hidden/scope 仍为权威，不保存第二份名称模型。3/4→5 仅原生 import migration 边界；Excel 修改原生名称或删除后不采用旧 anchor。坏/重复/越界/外 sheet anchor metadata 拒绝。增加真实文件 round-trip→同一引擎相对计算成功、旧 v4 import 与坏/stale metadata 拒绝/不覆盖测试。
+
+原生 sheetProtection 的 allow booleans 按格式展开，ID 为 import 边界生成；UAT 比较全部保护行为字段，服务器 save/reopen 仍严格比较原模型。范围/工作簿保护及多个活动 sheet 规则当前无原生完整表示，export 明确 NATIVE_DOCUMENT_UNSUPPORTED，不能挑第一条或丢弃。inactive sheet rule 不产生原生保护；活动保护的 flags 与 passwordHash 仍以原生节点保存。相对名称 anchor extension 的 SDK 文件往返不等于已验证桌面 Excel 的执行能力，实机 Excel仍 Blocked。全部原生格式 X1/S1 仍 Pending。
+
+原生补全统一验证首轮新语义成功：SDK 62 Pass；native 65/66 Pass，唯一旧 v3 fixture 仍从 version4 改写，已按正式 version5 生成旧包；build 两处仅测试给 readonly collection 重新赋值，改为测试 setup 对现有 collection 的 splice，不改产品语义。首轮日志 `/tmp/sdk-o21-native-{sdk,native,build,boundaries}.log` 保留。产品源仍冻结，统一迁移这三处测试契约后检查。
+
+O2.1 冻结产品统一检查：SDK 62/62 Pass；permission 11/11 Pass；native 66/66 Pass；calculation 457 Pass（本批公式引擎未变）；boundaries Pass；Java 369/367 Pass/0 Fail/2 Skipped + package。完整 unit 1584/1532 Pass/52 Fail，与 O1 产品失败标题新增0/消失0；保留完整门禁 Fail。日志 `/tmp/sdk-o21-native-sdk.log`、`/tmp/sdk-o21-corrected-permission.log`、`/tmp/sdk-o21-final-{native,unit,build}.log`、`/tmp/sdk-o21-native-boundaries.log`、`/tmp/sdk-o21-first-java.log`。build 与真实 browser 完成后记录实际结论，不先填 Pass。GitHub 0f318900 的 canonical-build FAILURE 明确发生在完整 unit 检查（run37120591294 step11），不以局部绿色覆盖。

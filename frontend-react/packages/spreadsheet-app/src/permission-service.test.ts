@@ -72,3 +72,19 @@ test('PermissionService blocks locked range', () => {
   assert.ok(result.blockedBy && typeof result.blockedBy === 'object');
   if (result.blockedBy && typeof result.blockedBy === 'object') assert.equal(result.blockedBy.id, 'r1');
 });
+
+
+test('verified server roles govern protection commands and replay even when disconnected', () => {
+  for (const online of [true, false]) for (const role of ['owner', 'editor', 'viewer'] as const) {
+    const perm = new PermissionService();
+    perm.applyServerAccess({ unitId: 'wb-test', role, accessRevision: 1, regions: [] });
+    perm.setOnline(online);
+    const allowed = role === 'owner';
+    for (const id of ['sheet.protect.set', 'sheet.protect.remove']) {
+      assert.equal(perm.canCheck({ commandId: id, affectedRanges: [], actor: { actorId: 'actor' } }).allowed, allowed, `${online}:${role}:${id}`);
+      assert.equal(perm.checkMutation({ id, affectedRanges: [] }).allowed, allowed, `${online}:${role}:replay:${id}`);
+    }
+    assert.equal(perm.canCheck({ commandId: 'sheet.cell.set', affectedRanges: [], actor: { actorId: 'actor' } }).allowed, role !== 'viewer');
+    assert.equal(perm.canCheck({ commandId: 'navigation.cell', affectedRanges: [], actor: { actorId: 'actor' } }).allowed, true);
+  }
+});

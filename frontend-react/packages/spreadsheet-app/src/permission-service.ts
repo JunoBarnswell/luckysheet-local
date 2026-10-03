@@ -213,8 +213,8 @@ export class PermissionService {
   isWorkbookAccessManager(): boolean { return this.serverRole === 'owner'; }
 
   getCapabilities(): PermissionCapabilities {
-    if (!this.online) return LOCAL_CAPABILITIES;
-    return this.serverRole ? buildPermissionCapabilities(this.serverRole) : UNKNOWN_REMOTE_CAPABILITIES;
+    if (this.serverRole) return buildPermissionCapabilities(this.serverRole);
+    return this.online ? UNKNOWN_REMOTE_CAPABILITIES : LOCAL_CAPABILITIES;
   }
 
   canCheck(input: PermissionCheckInput): PermissionResult {

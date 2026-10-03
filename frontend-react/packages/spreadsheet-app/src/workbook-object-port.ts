@@ -1,4 +1,4 @@
-import type { CellData, ExternalLinkBinding, FormulaValue, RecordFieldAddress, SheetKind, RangeRef, WorksheetPane, MergeSpan } from '@react-sheets/core-model';
+import type { CellData, ExternalLinkBinding, FormulaValue, RecordFieldAddress, SheetKind, RangeRef, WorksheetPane, MergeSpan, DefinedNameModel, ProtectionRule } from '@react-sheets/core-model';
 import type { CellInputInterpretationContext } from '@react-sheets/sheet-features';
 import type { CommandDescriptor } from '@react-sheets/command-runtime';
 import type { DispatchOutcome } from './workbook-session';
@@ -9,6 +9,7 @@ export interface WorkbookObjectPort {
   state(): { phase: string; notice: string; name: string; disposed: boolean };
   subscribeDisposed(listener: () => void): () => void;
   sheets(): readonly { id: string; name: string; kind: SheetKind; rowCount: number; columnCount: number; hidden: boolean; pane: WorksheetPane }[];
+  readDefinedNames(): readonly DefinedNameModel[];
   readWorksheet(sheetId: string): WorkbookWorksheetRead;
   readCell(sheetId: string, row: number, column: number): Promise<WorkbookCellRead>;
   readCells(range: RangeRef): Promise<readonly WorkbookCellRead[]>;
@@ -24,7 +25,7 @@ export interface WorkbookWorksheetRead {
   id: string; name: string; kind: SheetKind; rowCount: number; columnCount: number; hidden: boolean; pane: WorksheetPane;
   defaultRowHeightPx: number; defaultColumnWidthPx: number;
   rowHeightsPx: Record<number, number>; columnWidthsPx: Record<number, number>;
-  hiddenRows: number[]; hiddenColumns: number[]; merges: MergeSpan[];
+  hiddenRows: number[]; hiddenColumns: number[]; merges: MergeSpan[]; protectionRules: ProtectionRule[];
 }
 export interface WorkbookCellRead {
     sheetId: string; row: number; column: number; cell?: CellData;

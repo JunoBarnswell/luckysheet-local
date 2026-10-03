@@ -30,6 +30,45 @@ class MutationDescriptorRegistryTest {
     private final ObjectMapper mapper = new ObjectMapper();
 
     @Test
+    void protectionUsesCanonicalRuleOwnershipAndRejectsMalformedParametersWithoutWriting() throws Exception {
+        var registry = new MutationDescriptorRegistry();
+        JsonNode before = mapper.readTree("""
+                {"sheets":[{"id":"sheet-1","rowCount":10,"columnCount":5,"protectionRules":[]}]}
+                """);
+        ObjectNode params = (ObjectNode) mapper.readTree("""
+                {"sheetId":"sheet-1","rule":{"id":"lock","scope":"sheet","sheetId":"sheet-1","locked":true,"allow":{"formatCells":true}}}
+                """);
+        var set = registry.require("sheet.protect.set", false);
+        var remove = registry.require("sheet.protect.remove", false);
+        assertEquals(WorkbookRole.OWNER, set.requiredRole());
+        assertEquals(List.of(), set.affectedRanges(before, new OperationMutation(set.id(), "sheet-1", params)));
+        JsonNode changed = set.apply(before, new OperationMutation(set.id(), "sheet-1", params));
+        assertEquals(0, before.path("sheets").get(0).path("protectionRules").size());
+        assertEquals(params.get("rule"), changed.path("sheets").get(0).path("protectionRules").get(0));
+        ObjectNode removeParams = mapper.createObjectNode().put("sheetId", "sheet-1").put("ruleId", "lock");
+        assertEquals(before, remove.apply(changed, new OperationMutation(remove.id(), "sheet-1", removeParams)));
+        assertThrows(ServiceException.class, () -> remove.apply(before, new OperationMutation(remove.id(), "sheet-1", removeParams)));
+        List<ObjectNode> malformed = new java.util.ArrayList<>();
+        ObjectNode allow = params.deepCopy(); ((ObjectNode) allow.path("rule").path("allow")).put("sort", "yes"); malformed.add(allow);
+        ObjectNode extra = params.deepCopy(); ((ObjectNode) extra.path("rule")).put("arbitrary", true); malformed.add(extra);
+        ObjectNode foreign = params.deepCopy(); ((ObjectNode) foreign.path("rule")).put("sheetId", "sheet-2"); malformed.add(foreign);
+        ObjectNode global = params.deepCopy(); ((ObjectNode) global.path("rule")).put("scope", "workbook"); malformed.add(global);
+        ObjectNode invalidParams = params.deepCopy(); invalidParams.put("fallback", true); malformed.add(invalidParams);
+        ObjectNode overflow = params.deepCopy(); ((ObjectNode) overflow.path("rule")).put("scope", "range").set("range", mapper.readTree("""
+                {"sheetId":"sheet-1","startRow":0,"endRow":10,"startColumn":0,"endColumn":1}
+                """)); malformed.add(overflow);
+        for (ObjectNode candidate : malformed) {
+            assertThrows(ServiceException.class, () -> set.affectedRanges(before, new OperationMutation(set.id(), "sheet-1", candidate)));
+            assertThrows(ServiceException.class, () -> set.apply(before, new OperationMutation(set.id(), "sheet-1", candidate)));
+            assertEquals(0, before.path("sheets").get(0).path("protectionRules").size());
+        }
+        ObjectNode range = params.deepCopy(); ((ObjectNode) range.path("rule")).put("scope", "range").set("range", mapper.readTree("""
+                {"sheetId":"sheet-1","startRow":0,"endRow":1,"startColumn":0,"endColumn":1}
+                """));
+        assertEquals(List.of(new com.xc.luckysheet.server.contract.RangeRef("sheet-1", 0, 1, 0, 1)), set.affectedRanges(before, new OperationMutation(set.id(), "sheet-1", range)));
+    }
+
+    @Test
     void dimensionOverrideRemovalRestoresExactPreimageAndRejectsMalformedValues() throws Exception {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         JsonNode original = mapper.readTree("""

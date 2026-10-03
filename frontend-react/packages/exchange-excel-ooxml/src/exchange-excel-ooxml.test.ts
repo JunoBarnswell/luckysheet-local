@@ -12,6 +12,7 @@ import { mapNativePivotDefinition, readNativePivotGraph } from './native-pivot';
 import { NativeDocumentError } from './native-document-error';
 import type { NativePivotCacheDefinition, NativePivotTableDefinition } from './types';
 import { strFromU8, strToU8 } from 'fflate';
+import { FormulaEngine } from '@react-sheets/formula-engine';
 import { descendants, parseXml } from './xml';
 
 it('OOXML round-trip preserves an omitted activePane without adding a default', async () => {
@@ -609,7 +610,7 @@ describe('exchange-excel-ooxml', () => {
     assert.match(strFromU8(regenerated.files['xl/workbook.xml']!), /name="Second" sheetId="2"[^>]+\/><sheet name="Sheet1" sheetId="1"/);
     const legacy = structuredClone(generated.files);
     legacy['xl/workbook.xml'] = strToU8(nativeXml.replace('name="Sheet1" sheetId="1"', 'name="Sheet1" sheetId="2"').replace('name="Second" sheetId="2"', 'name="Second" sheetId="1"'));
-    legacy[actualPart] = strToU8(strFromU8(legacy[actualPart]!).replace('&quot;version&quot;:4', '&quot;version&quot;:3').replace(/,&quot;nativeSheetId&quot;:[12]/g, ''));
+    legacy[actualPart] = strToU8(strFromU8(legacy[actualPart]!).replace('&quot;version&quot;:5', '&quot;version&quot;:3').replace(/,&quot;nativeSheetId&quot;:[12]/g, ''));
     const legacyImport = await importOoxmlDocument({ fileName: 'old-metadata.xlsx', buffer: zipOpcPartsBuffer(legacy), options: { compatibilityTarget: 'B' } });
     assert.deepEqual(legacyImport.snapshot.sheets.map(sheet => sheet.id), ['sheet-2', 'sheet-1']);
     assert.deepEqual(legacyImport.snapshot.sheets[0]!.hyperlinks[0]!.hyperlink.target, { kind: 'sheet', sheetId: 'sheet-1', address: 'A1' });
@@ -2271,4 +2272,39 @@ describe('exchange-excel-ooxml', () => {
     assert.deepEqual(cell?.phonetic?.runs, [{ text: 'とうきょう', start: 0, end: 2 }]);
     assert.equal(cell?.phonetic?.type, 'hiragana');
   });
+});
+
+
+it('native name anchors augment unchanged owners, preserve comments and reject invalid metadata', async () => {
+  const workbook = new WorkbookModel('native-name-anchor', 'Name anchor'), sheet = workbook.getSheet(workbook.primarySheetId);
+  workbook.setDefinedName({ name: 'Relative', formula: '=A1', scope: 'workbook', anchor: { sheetId: sheet.id, row: 3, column: 3 }, comment: 'Anchored & visible', hidden: true });
+  const graph = loadOpcPackageGraph(exportSnapshotToOoxmlBuffer(workbook.snapshot()));
+  const importParts = () => importOoxmlDocument({ fileName: 'names.xlsx', buffer: zipOpcPartsBuffer(graph.packageGraph.parts), options: { compatibilityTarget: 'B' } });
+  const imported = await importParts(), name = imported.snapshot.definedNameModels![0]!;
+  assert.deepEqual(name, workbook.snapshot().definedNameModels![0]);
+  const engine = new FormulaEngine({ defaultSheetId: sheet.id, sheetOrder: [{ id: sheet.id, name: sheet.name }] });
+  engine.setDefinedNameModels(imported.snapshot.definedNameModels!); engine.setValue('A1', 2); engine.setValue('B1', 3);
+  engine.setFormula('D4', '=Relative'); engine.setFormula('E4', '=Relative');
+  assert.equal(engine.getCellValue('D4'), 2); assert.equal(engine.getCellValue('E4'), 3);
+  const originalNative = graph.packageGraph.parts['xl/workbook.xml']!, metadata = graph.packageGraph.parts['customXml/react-sheets-workbook.xml']!;
+  graph.packageGraph.parts['xl/workbook.xml'] = strToU8(strFromU8(originalNative).replace('>A1</definedName>', '>99</definedName>'));
+  const changed = await importParts(); assert.equal(changed.snapshot.definedNameModels![0]!.formula, '=99'); assert.equal(changed.snapshot.definedNameModels![0]!.anchor, undefined);
+  graph.packageGraph.parts['xl/workbook.xml'] = originalNative;
+  graph.packageGraph.parts['customXml/react-sheets-workbook.xml'] = strToU8(strFromU8(metadata).replace('&quot;row&quot;:3', '&quot;row&quot;:-1'));
+  await assert.rejects(importParts(), cause => cause instanceof NativeDocumentError && cause.code === 'NATIVE_DOCUMENT_INVALID' && /anchor/.test(cause.message));
+  graph.packageGraph.parts['customXml/react-sheets-workbook.xml'] = strToU8(strFromU8(metadata).replace('&quot;version&quot;:5', '&quot;version&quot;:4'));
+  const old = await importParts(); assert.equal(old.snapshot.definedNameModels![0]!.anchor, undefined); assert.equal(old.snapshot.definedNameModels![0]!.comment, name.comment);
+});
+
+it('native protection export rejects unrepresentable owners and does not activate an inactive rule', () => {
+  const workbook = new WorkbookModel('native-protection-owner', 'Protection'), sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.protectionRules.push({ id: 'range', scope: 'range', range: { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }, locked: true, allow: {} });
+  const before = workbook.snapshot();
+  assert.throws(() => exportSnapshotToOoxmlBuffer(before), cause => cause instanceof NativeDocumentError && cause.code === 'NATIVE_DOCUMENT_UNSUPPORTED');
+  assert.deepEqual(workbook.snapshot(), before);
+  sheet.protectionRules.splice(0, sheet.protectionRules.length, { id: 'first', scope: 'sheet', sheetId: sheet.id, locked: true, allow: {} }, { id: 'second', scope: 'sheet', sheetId: sheet.id, locked: true, allow: {} });
+  assert.throws(() => exportSnapshotToOoxmlBuffer(workbook.snapshot()), cause => cause instanceof NativeDocumentError && cause.code === 'NATIVE_DOCUMENT_UNSUPPORTED');
+  sheet.protectionRules.splice(0, sheet.protectionRules.length, { id: 'inactive', scope: 'sheet', sheetId: sheet.id, locked: false, allow: {} });
+  const output = loadOpcPackageGraph(exportSnapshotToOoxmlBuffer(workbook.snapshot()));
+  assert.doesNotMatch(strFromU8(output.files['xl/worksheets/sheet1.xml']!), /<sheetProtection/);
 });

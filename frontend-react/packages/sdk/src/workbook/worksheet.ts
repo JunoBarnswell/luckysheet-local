@@ -3,6 +3,7 @@ import type { Workbook } from './workbook';
 import type { WorksheetSnapshot } from './contract';
 import { CellCollection } from './cell-collection';
 import { RangeCollection } from './range-collection';
+import { WorksheetProtection } from './worksheet-protection';
 import { WorksheetAxis } from './worksheet-axis';
 import { domainFor } from './object-domain';
 import { immutableSnapshot } from './value';
@@ -11,12 +12,14 @@ export class Worksheet {
   readonly id: string;
   readonly cells: CellCollection;
   readonly ranges: RangeCollection;
+  readonly protection: WorksheetProtection;
   readonly rows: WorksheetAxis;
   readonly columns: WorksheetAxis;
   readonly #workbook: Workbook;
   constructor(workbook: Workbook, id: string) {
     this.#workbook = workbook; this.id = id;
     this.cells = new CellCollection(workbook, id); this.ranges = new RangeCollection(workbook, this);
+    this.protection = new WorksheetProtection(workbook, this);
     this.rows = new WorksheetAxis(workbook, this, 'rows'); this.columns = new WorksheetAxis(workbook, this, 'columns');
     Object.freeze(this);
   }

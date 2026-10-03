@@ -626,6 +626,7 @@ export interface DefinedNameCommandInput {
   formula: string;
   scope?: DefinedNameModel['scope'];
   sheetId?: string;
+  anchor?: DefinedNameModel['anchor'];
   hidden?: boolean;
   comment?: string;
 }
@@ -950,12 +951,16 @@ export class WorkbookSession {
       state: () => ({ phase: this.phase, notice: this.notice, name: this.runtime.model.name, disposed: this.disposed || this.runtime.disposed }),
       subscribeDisposed: (listener) => { this.disposedListeners.add(listener); return () => this.disposedListeners.delete(listener); },
       sheets: () => this.runtime.model.getSheets().map(({ id, name, kind, rowCount, columnCount, hidden, pane }) => ({ id, name, kind, rowCount, columnCount, hidden, pane: structuredClone(pane) })),
+      readDefinedNames: () => {
+        if (this.disposed || this.runtime.disposed || this.phase !== 'ready') throw new CommandDispatchError('WORKBOOK_NOT_READY', 'Workbook is not ready');
+        return structuredClone(this.runtime.model.definedNameModels);
+      },
       readWorksheet: (sheetId) => {
         if (this.disposed || this.runtime.disposed || this.phase !== 'ready') throw new CommandDispatchError('WORKBOOK_NOT_READY', 'Workbook is not ready');
         const sheet = this.runtime.model.getSheet(sheetId);
         return structuredClone({ id: sheet.id, name: sheet.name, kind: sheet.kind, rowCount: sheet.rowCount, columnCount: sheet.columnCount, hidden: sheet.hidden,
           pane: sheet.pane, defaultRowHeightPx: sheet.defaultRowHeightPx, defaultColumnWidthPx: sheet.defaultColumnWidthPx,
-          rowHeightsPx: sheet.rowHeightsPx, columnWidthsPx: sheet.columnWidthsPx, hiddenRows: [...sheet.hiddenRows], hiddenColumns: [...sheet.hiddenColumns], merges: sheet.merges });
+          rowHeightsPx: sheet.rowHeightsPx, columnWidthsPx: sheet.columnWidthsPx, hiddenRows: [...sheet.hiddenRows], hiddenColumns: [...sheet.hiddenColumns], merges: sheet.merges, protectionRules: sheet.protectionRules });
       },
       readCell: async (sheetId, row, column) => (await this.readObjectCells({ sheetId, startRow: row, endRow: row, startColumn: column, endColumn: column }))[0]!,
       readCells: (range) => this.readObjectCells(range),
@@ -4287,6 +4292,7 @@ export class WorkbookSession {
       formula: input.formula,
       scope,
       ...(sheetId === undefined ? {} : { sheetId }),
+      ...(input.anchor === undefined ? {} : { anchor: structuredClone(input.anchor) }),
       ...(input.hidden === undefined ? {} : { hidden: input.hidden }),
       ...(input.comment === undefined ? {} : { comment: input.comment }),
     });
