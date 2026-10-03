@@ -59,10 +59,13 @@ ERP 浏览器会话 Cookie 是 HttpOnly，令牌由 Gateway 保存和续期。�
 | AUTHX-11 | 公开 SDK 独立消费者完成完整真实流程 | public API/文件/日志无 token、CSRF、密码和内部 owner | Pending |
 | FULL-01 | 上表每批对象调用 → 操作 → 保存 → 重开 → 原生输出逐项对照 | 无权限、非法参数、存储/版本失败整体不改变模型/资产/包 | Pending |
 
-每个完成的功能批次提交到现有草稿 PR #349；ERP 变更使用独立 codex 分支和草稿 PR。验收证据记录实际代码 head、环境、步骤、断言、console/network 与失败恢复；真实 SSO 和桌面 Excel 缺失仍为 Blocked。当前 54 项单测失败、COUNT 撤权失败及其余原验收项均未因本计划自动通过。
+每个完成的功能批次提交到现有草稿 PR #349；ERP 变更使用独立 codex 分支和草稿 PR。验收证据记录实际代码 head、环境、步骤、断言、console/network 与失败恢复；真实 SSO 和桌面 Excel 缺失仍为 Blocked。原有 54 项单测失败和其余未完成验收项不会因计划或局部门禁通过而自动通过。
 
 ## C1 实现批次验证
 
 统一实现输入 fault 类型、根求值输入边界、流式/稀疏/数组/名称/派生读取观察、外部与隐藏范围故障、Worker 元数据校验及 audit trace 后，统一执行验证。TypeScript/Vite build Pass；calculation-domain 主进程 450/450 Pass，补充结构/表达式 5/5 Pass。其中新增 4 组检查覆盖 12 种消费式、三类来源失败、恢复、Worker、普通错误、懒分支、隐藏范围和坏元数据。
 
 首次真实浏览器执行被 E2E provenance 的 clean-source 前置条件拒绝，未进入业务步骤（`/tmp/sdk-input-fault-browser.log`）。产品实现保持冻结，提交同一批完整源代码后，在干净的明确 head 上执行浏览器验收；不删除或绕过来源门禁。完整单测旧 54 项失败仍需后续逐项验证。
+
+
+C1 干净产品 head `70c3920499b50ab6fa636662f00582ddc16d9e47` 的真实补充 browser **2/2 Pass**：撤权五函数阻断及恢复步骤实际执行通过，subject 切换与 active dispose 通过。AUTHX-09、CALCF-01、CALCF-02 的输入故障细项通过真实授权场景及新增成功/拒绝语义检查；其他身份项仍待实现/验收。完整 unit 1555/1501 Pass/54 Fail，与旧失败标题无增减。详细证据见 sdk-product-uat.md 的 C1 执行记录。

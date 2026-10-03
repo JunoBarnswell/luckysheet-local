@@ -71,7 +71,7 @@ SDK 拥有认证/身份/凭证/组合根/工作簿目录与生命周期/Excel �
 | OO-02 | 按所有 Excel/Aspose 类对象逐能力调用、编辑、保存、重算、往返 | 完整领域对象与 read/edit/write/preserve capability，不能只有 Web 菜单可用 | Pending |
 | OO-03 | 浏览器无编辑器、Node/Java 文件/Worker/输出宿主 | 宿主仅 I/O/线程，SDK 拥有语义与文档；缺失宿主明确拒绝 | Pending |
 | MWB-01 | 一个 SDK 同时打开多个 workbook；重复打开；关闭一个、subject 切换、全部释放 | 按 unitId 唯一 owner、对象与租约；不影响其他 workbook，无旧身份读写 | Pass |
-| MWB-02 | 真实跨 workbook SUM/范围/其他函数，source 更新→提交→refresh→target 重算与保存 | source ID/sheet ID/subject/revision/access 定义明确；撤权清缓存、#BLOCKED!、恢复重算 | Fail |
+| MWB-02 | 真实跨 workbook SUM/范围/其他函数，source 更新→提交→refresh→target 重算与保存 | source ID/sheet ID/subject/revision/access 定义明确；撤权清缓存、#BLOCKED!、恢复重算 | Pass |
 | MWB-03 | 多级依赖图、环/迭代、自动传播、版本变化/关闭/撤权并发 | 统一图、明确循环语义、无过期授权/过期任务结果 | Pending |
 | MWB-04 | 多 workbook copy/move/批量写/undo，任一权限/版本/存储失败 | 服务端共同事务提交或整体拒绝；不能将依次保存声称原子事务 | Pending |
 
@@ -215,3 +215,14 @@ SDK 拥有认证/身份/凭证/组合根/工作簿目录与生命周期/Excel �
 真实 UAT 按 head 分别记录，不混成一次绿色结果：`124b2359` 本地/Windows完整产品 13/13 Pass；补充独立宿主 `b9c24435` 本地 1 Pass /1 Fail，COUNT 业务拒绝问题。Windows `7e0acdba` run 37100228629 原产品 AUTH-01 的 viewer 登录前置等待超时（原因未确认），其余串行产品用例未执行；补充用例失败也保持可见。最终 Windows `b9c24435` run 37101187825/job 111140878728：**14 Pass /1 Fail**，COUNT 同样返回 0；完整 unit 仍 54 Fail。Java/build/SDK/calculation/boundaries 通过，真实 UAT 与完整 unit 门禁失败。不得隐藏前述失败或标记全部门禁通过。
 
 后续修正所需的架构边界：授权/输入不可用属于求值前置故障，应与普通 Excel cell error 区分，并沿同一输入解析、函数/依赖计算与 Worker 结果链传播；COUNT 对合法源里的普通错误忽略行为应保留。不能用 COUNT 专用补丁、UI 改显示、保留旧缓存或放宽 403 来完成。需要先确定所有读取/派生路径、缓存退休/恢复与 Worker/服务端约束，再一次性实施完整修正批次。当前没有满足合并条件。
+
+
+## C1 授权输入前置故障验收（2026-10-03）
+
+产品 head `70c3920499b50ab6fa636662f00582ddc16d9e47`。单一输入边界观察实际消费的范围、数组、稀疏迭代、名称和派生值，传播带 reason/source 的输入 fault；普通 Excel 错误值保留函数语义。没有针对 COUNT 改写结果或削弱服务器授权。
+
+干净 head 的真实 Java 21/H2/Chromium 补充验收 **2/2 Pass**（`/tmp/sdk-input-fault-browser-clean.log`；`/tmp/sdk-product-uat-7cIKtM/evidence`）。五函数用例实际完成初值、源更新、普通用户权限、撤权 403、五个 #BLOCKED!、恢复 ACL 和授权版本重算。subject 切换/active dispose 用例再次通过。MWB-02.c/d 当前全部 Pass，父项 MWB-02 改为 Pass；多级图与跨簿事务仍分别 Pending，不扩大本项结论。
+
+新增 4 组成功/拒绝检查覆盖 12 种消费表达式（含 IFERROR/ISERROR/AGGREGATE）、三种输入故障、Worker 和派生公式、权限恢复、隐藏范围、audit trace、未执行 IF 分支及损坏元数据拒绝。calculation-domain **455/455 Pass**（主套件 450 +补充 5）；SDK **36/36 Pass**；build/typecheck 和现有 boundaries Pass。完整 unit **1555 /1501 Pass /54 Fail**，与先前 head 对比失败标题新增 0、消失 0。GATE-01 和 BOUND-01 继续 Fail。
+
+当前完整 49 项父项为 **12 Pass /2 Fail /2 Blocked /33 Pending**。旧 COUNT 失败与恢复未执行记录是旧 head 的历史证据，完整保留。首次本批 browser 被 clean-source 前置检查拒绝，没有执行业务步骤；提交冻结实现后重新执行，没有绕过门禁。GitHub 当前没有返回该 head 的 PR workflow run，不把未执行的检查计为通过。PR #349 继续草稿，尚不满足合并条件。
