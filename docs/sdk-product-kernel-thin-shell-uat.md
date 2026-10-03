@@ -82,9 +82,10 @@
 
 | ID | 公开入口步骤与精确断言 | 状态 | 本轮证据 |
 |---|---|---|---|
-| S08a | 一次 createSpreadsheetSdk 打开真实 workbook；通过 Workbook.data.subtotal 的显式 sheetId/address 对 11 个 worksheet 分别执行 AVERAGE/COUNT/COUNTA/MAX/MIN/PRODUCT/STDEV/STDEVP/SUM/VAR/VARP。源含 2、4、空值、文本、boolean、公式空字符串和嵌套 SUBTOTAL；结果分别为 3/2/5/4/2/8/sqrt(2)/1/6/2/1；保存、关闭重开、真实 XLSX 导出/重导入一致 | Pending | — |
-| S08b | inline 与 Worker 对全部 1–11/101–111 执行三种隐藏原因、嵌套 SUBTOTAL/AGGREGATE、空集合和 ordinary error；filter hidden 始终排除，manual/outline 仅 101–111 排除。Data 只提交公式，禁止自行计算 summary cache | Pending | — |
-| S08c | public Data 拒绝非法函数、非 boolean hidden option、越界/非法/不存在的 worksheet 地址、viewer 和已退休 workbook；错误为 SdkError，完整前像无改变；成功 summary+outline 一次历史、undo/redo 精确恢复 | Pending | — |
+| S08a | 一次 createSpreadsheetSdk 打开真实 workbook；通过 Workbook.data.subtotal 的显式 sheetId/address 对 11 个 worksheet 分别执行 AVERAGE/COUNT/COUNTA/MAX/MIN/PRODUCT/STDEV/STDEVP/SUM/VAR/VARP。源含 2、4、空值、文本、boolean、公式空字符串和嵌套 SUBTOTAL；结果分别为 3/2/5/4/2/8/sqrt(2)/1/6/2/1；保存、关闭重开、真实 XLSX 导出/重导入一致 | Pass | U07：public Data 全部 11 函数，精确值/公式、单次历史 undo/redo、真实 save/reopen/XLSX/reimport；25/25 browser Pass。 |
+| S08b | inline 与 Worker 对全部 1–11/101–111 执行三种隐藏原因、嵌套 SUBTOTAL/AGGREGATE、空集合和 ordinary error；filter hidden 始终排除，manual/outline 仅 101–111 排除。Data 只提交公式，禁止自行计算 summary cache | Pass | U08：全部 1–11/101–111，三种 visibility、nested totals、empty/error 的 inline/Worker vectors；Data 已删除独立缓存计算。 |
+| S08c | public Data 拒绝非法函数、非 boolean hidden option、越界/非法/不存在的 worksheet 地址、viewer 和已退休 workbook；错误为 SdkError，完整前像无改变；成功 summary+outline 一次历史、undo/redo 精确恢复 | Pass | U09：75/75 SDK，显式 inactive worksheet、非法/null 参数/地址/budget、退休句柄；U07 真实 viewer FORBIDDEN 且前像无改变。 |
+| S08d | public SDK 在真实 Java/H2 建立 manual-hidden worksheet：1–11 读隐藏值、101–111 排除，undo/redo 后保存；empty AVERAGE 和 ordinary-error SUM/COUNTA 保持错误/计数语义。保存/重开/XLSX/reimport 后验证公式、错误 code、hidden metadata 与 hidden-cell canonical read | Pending | — |
 
 | Domain | Public API | Canonical owner | Command chain | Permission | History | Collaboration | Persistence | Server authority | Web migrated |
 |---|---|---|---|---|---|---|---|---|---|
@@ -155,3 +156,18 @@
 首次真实浏览器运行还发现两个真实链路缺陷：WebSocket 并发广播写入同一 transport 导致已提交 HTTP 动作返回失败；guest capability 被服务端错误标记为注册身份。分别由 `4779428c` 和 `9910ed01` 连贯修正，并在新增成功/拒绝合同测试后重新执行整组，当前 24/24 通过。
 
 本记录只将已经逐项执行的 I01–I05、B03/B07、D02/D03 标记 Pass。SDK 全领域 gate、完整 browser gate 与其余领域仍为 Pending；WorkbookSession 删除、公开 DTO/错误统一、零 Web 内部依赖、结构 P0、全部小计/outline 和完整矩阵仍需实现。OIDC、desktop Excel、外部数据库继续 Blocked。
+
+## Data subtotal 执行记录（2026-10-03）
+
+产品源码提交 `4e2b61f431a08f5cea5f2b75c31a57aa5f94aaba`，subject `feat(sdk): unify all Excel subtotals under the formula engine`；公开 `Workbook.data` 绑定实际 Data owner 和 consumer lifetime，支持显式 `sheetId/address`。单一公式编号表供 Data 与 evaluator 使用；summary 仅提交正式公式，独立 SUM/COUNT/AVERAGE 缓存分支已删除。
+
+| 证据 | 实际执行与结果 | 日志/产物 |
+|---|---|---|
+| U07 | real Java/H2 + public SDK browser UAT 25/25 Pass；本次 source/build/backend ID 同为 `4e2b61f4`，worktree clean | `/tmp/sdk-thin-shell-subtotal-browser.log`；`/tmp/sdk-product-uat-hsk5Md/evidence`；`sdk-all-subtotals.xlsx`；25 个成功 trace 与原始 provenance 归档到 `/tmp/sdk-product-uat-hsk5Md/playwright` |
+| U08 | calculation domain 547/547 + structural named subset 5/5 Pass | `/tmp/sdk-thin-shell-subtotal-calculation.log` |
+| U09 | SDK 75/75 Pass | `/tmp/sdk-thin-shell-subtotal-sdk-complete.log` |
+| U10 | typecheck/production build 与现有 boundary/stack/contracts gates Pass | `/tmp/sdk-thin-shell-subtotal-build-complete.log`；`/tmp/sdk-thin-shell-subtotal-boundaries.log` |
+| U11 | full frontend unit 1686 tests：1646 Pass、40 Fail；与基线失败名称完全相同 | `/tmp/sdk-thin-shell-subtotal-unit.log` |
+| U12 | Java 源码未改；重新 package jar 用于 U07，未重复单测；之前 U06 的375测试仍是该 Java 源码的真实结果 | `/tmp/sdk-thin-shell-subtotal-backend-build.log` |
+
+U07 runId `4e2b61f431a08f5cea5f2b75c31a57aa5f94aaba-20261003145301493`，Node `v24.19.0`，Chromium `151.0.7922.34`，viewport `1440x960`，lock digest 与 U02 相同。S08d 原生边界补充项仍 Pending；总 S08、完整领域/Data API/新边界/Session 删除及 P0 结构项仍不能以本组通过代替完成。

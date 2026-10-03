@@ -160,6 +160,49 @@ test('S08a/b/c: public Data owns all eleven subtotal functions with real save, n
   } finally { await sdk.evaluate(sdk => sdk.dispose()); }
 });
 
+test('S08d: public subtotal preserves hidden reads, empty/error values and visibility through real native roundtrip', async ({ page }) => {
+  const diagnostics = installBrowserDiagnostics(page), sdk = await ownerSdk(page);
+  try {
+    const result = await sdk.evaluate(async sdk => {
+      const entry = await sdk.workbooks.create({ name: `Subtotal native boundaries ${Date.now()}` });
+      let workbook = await sdk.workbooks.open(entry.unitId);
+      const manual = workbook.worksheets.at(0); await manual.rename('Manual');
+      const empty = await workbook.worksheets.add({ name: 'Empty', rowCount: 20, columnCount: 8 });
+      const error = await workbook.worksheets.add({ name: 'Errors', rowCount: 20, columnCount: 8 });
+      await manual.ranges.get('A1:B3').setValues([['Group', 'Amount'], ['East', 2], ['East', 4]]); await manual.rows.setHidden([2], true);
+      await empty.ranges.get('A1:B3').setValues([['Group', 'Amount'], ['East', null], ['East', null]]);
+      await error.ranges.get('A1:B3').setValues([['Group', 'Amount'], ['East', 2], ['East', null]]); await error.cells.get('B3').setFormula('=1/0'); await workbook.flush();
+      const subtotal = async (sheetId: string, functionName: import('@react-sheets/sdk').SubtotalFunction, excludeHiddenRows?: boolean) => {
+        const result = await workbook.data.subtotal({ range: { sheetId, address: 'A1:B3' }, functionName, ...(excludeHiddenRows === undefined ? {} : { excludeHiddenRows }) });
+        if (result.status !== 'applied') throw result.error;
+        return workbook.worksheets.byId(sheetId).cells.get('B6').read();
+      };
+      const ordinary = await subtotal(manual.id, 'SUM'); await workbook.undo();
+      await subtotal(manual.id, 'SUM', true); await subtotal(empty.id, 'AVERAGE');
+      const count = await subtotal(error.id, 'COUNTA'); await workbook.undo(); await subtotal(error.id, 'SUM');
+      const reads = async () => ({ manual: await workbook.worksheets.byName('Manual').cells.get('B6').read(),
+        hiddenSource: await workbook.worksheets.byName('Manual').cells.get('B3').read(), hiddenRows: workbook.worksheets.byName('Manual').snapshot().hiddenRows,
+        empty: await workbook.worksheets.byName('Empty').cells.get('B6').read(), error: await workbook.worksheets.byName('Errors').cells.get('B6').read() });
+      const initial = await reads(); await workbook.save(); workbook.close(); workbook = await sdk.workbooks.open(entry.unitId);
+      const reopened = await reads();
+      const exported = await sdk.workbooks.exportWorkbook(entry.unitId, { fileName: 'sdk-subtotal-native-boundaries.xlsx' });
+      const imported = await sdk.workbooks.importWorkbook({ fileName: exported.fileName, buffer: exported.buffer, options: { compatibilityTarget: 'B' } });
+      workbook = await sdk.workbooks.open(imported.entry.unitId);
+      return { ordinary, count, initial, reopened, reimported: await reads(), bytes: Array.from(new Uint8Array(exported.buffer)) };
+    });
+    expect(result.ordinary.formula).toBe('=SUBTOTAL(9,B2:B3)'); expect(result.ordinary.calculatedValue).toBe(6);
+    expect(result.count.calculatedValue).toBe(2);
+    for (const state of [result.initial, result.reopened, result.reimported]) {
+      expect(state.manual.formula).toBe('=SUBTOTAL(109,B2:B3)'); expect(state.manual.calculatedValue).toBe(2);
+      expect(state.hiddenSource.calculatedValue).toBe(4); expect(state.hiddenRows).toContain(2);
+      expect(state.empty.formula).toBe('=SUBTOTAL(1,B2:B3)'); expect(state.empty.calculatedValue).toMatchObject({ kind: 'error', code: '#DIV/0!' });
+      expect(state.error.formula).toBe('=SUBTOTAL(9,B2:B3)'); expect(state.error.calculatedValue).toMatchObject({ kind: 'error', code: '#DIV/0!' });
+    }
+    await writeFile(path.join(process.env.SDK_UAT_EVIDENCE_DIR!, 'sdk-subtotal-native-boundaries.xlsx'), Uint8Array.from(result.bytes));
+    diagnostics.assertClean();
+  } finally { await sdk.evaluate(sdk => sdk.dispose()); }
+});
+
 test('O1.2-a/b/c/d: canonical range cut rewrites moved inputs, undoes overwritten values and survives native reimport', async ({ page }) => {
   const diagnostics = installBrowserDiagnostics(page), sdk = await ownerSdk(page);
   try {
