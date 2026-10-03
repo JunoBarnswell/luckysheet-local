@@ -389,3 +389,9 @@ A1.1 最终统一typecheck/boundaries Pass；完整unit **1678/1637 Pass/41 Fail
 - d：真实浏览器 SDK、保存重开、实际 xlsx 导出/原生解析/服务器重导入、console/network；桌面 Excel Blocked。
 
 O1.2 首轮00853d8e：完整22/23，新增a/b/c/d仍Fail（首次undo真实409；后续native未执行）。源代码及trace冻结，Java恢复事实owner修正前不升Pass。O1.2-e实施前Pending：目标覆盖单元格按真实preimage精确恢复，重复/篡改/无关/跨sheet恢复拒绝，完整快照guard不变。
+
+### O1.2 验收结果及本次交付边界
+
+2026-10-03，产品head `f9cac28bf1840a106d60a6a0ac19ade202ca9a8c`，完整真实Java21/H2/Chromium SDK UAT **23/23 Pass**，零HTTP mocks、retries0；日志 `/tmp/sdk-o12-undo-browser.log`，证据 `/tmp/sdk-product-uat-dJzwIP/evidence`。O1.2-a/b/d实际通过：内部/绝对/区域外未移动/外部及跨sheet引用、源清空/目标覆盖、首次undo恢复88/99、redo、单独移动公式输入不偏移、保存重开、实际sdk-range-cut.xlsx原生解析与服务器import后公共SDK结果相同；既有viewer场景实际拒绝move并保留源/目标。e由Java新正式preimage/精确事实及恶意输入测试通过。c的错尺寸/跨sheet/overlap/viewer由真实browser通过，跨Workbook/预算/offline/退休与公式组/不可逆引用由SDK/core/Java检查通过；独立真实hidden移动验收仍未追加，不把整个原O1父项升Pass。范围移动新浏览器console/network诊断通过；本轮Vite在旧测试关闭WS时记录一次代理ECONNRESET，未出现新增范围场景的browser diagnostics失败，保留原始日志。
+
+构建/SDK64/calculation549/boundaries Pass；Java371/369 Pass/2 Skip。完整unit1681/1641 Pass/**40 Fail**，不是完整门禁通过。ERP/SSO、桌面Excel和外部SQL环境仍Blocked；完整计划的其他批次仍Pending。2026-10-03用户最新明确要求“提交代码并推送，合并这个pr吧”，本次按该指令提交当前已实现批次并请求正常GitHub合并；不将合并记作完整Aspose能力或全部UAT验收通过，不绕过GitHub分支保护。首次22/23失败的原trace和409证据保留。

@@ -172,3 +172,9 @@ O1.2 产品00853d8e首次真实完整UAT22/23 Pass；移动已ACK，第一次und
 下一修正契约：deleted-cell helper clean-break为structuralRemovedCellFacts，由每条目标操作的真实中间preimage和已有正式mutation descriptor提取move destination sparse cells；行列删除继续原事实来源。每个未匹配的cell.restore必须精确匹配sheet/address/previous且只消费一次事实。无关、source原值、错坐标/工作表、篡改旧值、非restore、重复恢复均拒绝。操作最终还必须完整恢复原preimage；该校验和ACL/范围授权/版本/subject/current-history条件不变。新增O1.2-e（实施前Pending）：正式registry生成move事实→reverse move+精确target restores完整恢复，全部上述恶意输入拒绝且originalpreimage不变；真实browser原断言全部保留。无协议或存储迁移。
 
 O1.2恢复事实修正统一验证：Java21 package Pass，371 tests、369 Pass、2 Skip；新完整preimage恢复与七类篡改/重复/遗漏恢复拒绝断言通过，原行列删除的中间preimage和其他非法structural undo测试继续通过。boundaries Pass。前端产品源未改变，沿用00853d8e的build/SDK64/calculation549/full unit40结果；提交修正后再跑完整真实UAT，不弱化任何原browser断言。日志 `/tmp/sdk-o12-undo-java.log`、`/tmp/sdk-o12-undo-boundaries.log`。
+
+### O1.2 验收结果及本次交付边界
+
+2026-10-03，产品head `f9cac28bf1840a106d60a6a0ac19ade202ca9a8c`，完整真实Java21/H2/Chromium SDK UAT **23/23 Pass**，零HTTP mocks、retries0；日志 `/tmp/sdk-o12-undo-browser.log`，证据 `/tmp/sdk-product-uat-dJzwIP/evidence`。O1.2-a/b/d实际通过：内部/绝对/区域外未移动/外部及跨sheet引用、源清空/目标覆盖、首次undo恢复88/99、redo、单独移动公式输入不偏移、保存重开、实际sdk-range-cut.xlsx原生解析与服务器import后公共SDK结果相同；既有viewer场景实际拒绝move并保留源/目标。e由Java新正式preimage/精确事实及恶意输入测试通过。c的错尺寸/跨sheet/overlap/viewer由真实browser通过，跨Workbook/预算/offline/退休与公式组/不可逆引用由SDK/core/Java检查通过；独立真实hidden移动验收仍未追加，不把整个原O1父项升Pass。范围移动新浏览器console/network诊断通过；本轮Vite在旧测试关闭WS时记录一次代理ECONNRESET，未出现新增范围场景的browser diagnostics失败，保留原始日志。
+
+构建/SDK64/calculation549/boundaries Pass；Java371/369 Pass/2 Skip。完整unit1681/1641 Pass/**40 Fail**，不是完整门禁通过。ERP/SSO、桌面Excel和外部SQL环境仍Blocked；完整计划的其他批次仍Pending。2026-10-03用户最新明确要求“提交代码并推送，合并这个pr吧”，本次按该指令提交当前已实现批次并请求正常GitHub合并；不将合并记作完整Aspose能力或全部UAT验收通过，不绕过GitHub分支保护。首次22/23失败的原trace和409证据保留。
