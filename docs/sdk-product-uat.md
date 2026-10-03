@@ -340,3 +340,5 @@ O2.1-f 预验收：三项名称中移除中项，undo 完整快照与名字顺�
 新增 O2.1-g：带 comment/anchor 名称的native import→编辑workbook属性→实际artifact Save As→再import，comment/anchor全部保留；未知future属性仍触发严格UNCHANGED_SAVE_REQUIRED且未修改sourcebytes。完成这一个契约同步批后检查与干净head真实UAT。49父项/完整unit/SSO/桌面Excel状态仍不扩大。
 
 属性契约同步统一检查：native66/66 Pass；build/typecheck、boundaries Pass；Java370/368 Pass/0 Fail/2 Skipped + package。日志 `/tmp/sdk-o21-comment-{native,build,boundaries,java}.log`。未知属性拒绝与sourcebytes不变测试通过，服务端guard未放宽。完整unit已记录52 Fail且未修改公式/应用运行时；干净提交后完整21项真实browser仍待执行。
+
+O2.1 干净产品head **68aec758** 完整真实 Java21/H2/Chromium **21/21 Pass**，retries0、无HTTP mocks。成功场景执行全部最后断言：名称中项remove→undo顺序/值恢复、相对anchor/comment/hidden保存重开与实际xlsx再import；富文本literal等号、undo/redo、范围矩阵；保护锁定格拒绝/解锁格写入、保护remove→undo/redo、关闭旧句柄退休；viewer和非法REST保护/name.restore整体零revision写入。console/network diagnostics全通过。证据 `/tmp/sdk-o21-comment-browser.log`、`/tmp/sdk-product-uat-tcJlxV/evidence/sdk-o21.xlsx`。O2.1-a..g声明范围通过，Theme/完整格式/多种保护原生输出仍待各自实施；原49父项、全量unit52 Fail、ERP/SSO/桌面Excel/外部SQL Blocked仍保留。该head两项canonical-build当前in_progress（run37122552603/37122547520），未声明CI通过。
