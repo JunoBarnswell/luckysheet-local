@@ -477,3 +477,25 @@ test('resolved cells expose loading and missing states without replacing a block
   );
   assert.equal(sheet.dataRegions.length, 1);
 });
+
+
+test('sorted viewport prefetch retains a failed block while loading unseen blocks', async () => {
+  const sourceId = nextSourceId();
+  const first = await buildBlock(sourceId, 'failed', 0, [['A', 1]]);
+  const second = await buildBlock(sourceId, 'ready', 1, [['B', 2]]);
+  const store = new LocalDataBlockStore(new WorkspaceMemoryCoordinator());
+  await store.put(second.ref, second.bytes);
+  const reads: string[] = [];
+  const query = new DataSourceContentQuery({ ...manifest(sourceId, 2, [first.ref, second.ref]), rowOrder: [1, 0] }, {
+    get: async ref => { reads.push(ref.id); return store.get(ref); },
+  });
+  assert.equal((await query.getRowValues(1)).state.availability, 'missing');
+  query.prefetchRows(0, 2);
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(query.peekCellValue(0, 0).value, 'B');
+  assert.equal(query.peekCellValue(1, 0).state.availability, 'missing');
+  assert.deepEqual(reads, ['failed', 'ready']);
+  await store.put(first.ref, first.bytes);
+  assert.deepEqual((await query.getRowValues(1)).value, ['A', 1]);
+  assert.deepEqual(reads, ['failed', 'ready', 'failed']);
+});

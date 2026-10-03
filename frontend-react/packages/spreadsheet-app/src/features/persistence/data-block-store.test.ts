@@ -33,3 +33,21 @@ test('block writes reject a mismatched manifest length without storing partial c
   await store.put(original.ref, original.bytes);
   assert.deepEqual((await store.get(original.ref))?.bytes, original.bytes);
 });
+
+
+test('manifest read failures identify the block and preserve the immutable stored bytes', async () => {
+  const store = new LocalDataBlockStore(new WorkspaceMemoryCoordinator(), 'workbook');
+  const original = await block('original');
+  await store.put(original.ref, original.bytes);
+  for (const ref of [{ ...original.ref, byteLength: 1 }, { ...original.ref, checksum: 'mismatched' }]) {
+    await assert.rejects(store.get(ref), (error: unknown) => {
+      assert.ok(error instanceof Error && 'code' in error && 'operation' in error && 'recovery' in error);
+      assert.equal(error.code, 'STORAGE_SCHEMA_INVALID');
+      assert.equal(error.operation, 'data-block-get');
+      assert.match(error.message, /manifest.*mismatch: block/);
+      assert.match(String(error.recovery), /canonical manifest/);
+      return true;
+    });
+  }
+  assert.deepEqual((await store.get(original.ref))?.bytes, original.bytes);
+});

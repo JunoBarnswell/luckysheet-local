@@ -83,8 +83,16 @@ export class LocalDataBlockStore {
       const record = transaction.get<DataBlockRecord>('dataBlocks', memoryKey(sourceId, ref.id));
       if (!record) return null;
       await assertRecord(record);
-      if (record.checksum !== ref.checksum) throw new Error(`Data block manifest checksum mismatch: ${ref.id}`);
-      if (ref.byteLength !== undefined && record.bytes.byteLength !== ref.byteLength) throw new Error(`Data block manifest byteLength mismatch: ${ref.id}`);
+      if (record.checksum !== ref.checksum) throw new WorkspaceStorageError({
+        code: 'STORAGE_SCHEMA_INVALID', operation: 'data-block-get',
+        message: `Data block manifest checksum mismatch: ${ref.id}`,
+        recovery: 'Reload the canonical manifest and its matching immutable block.',
+      });
+      if (ref.byteLength !== undefined && record.bytes.byteLength !== ref.byteLength) throw new WorkspaceStorageError({
+        code: 'STORAGE_SCHEMA_INVALID', operation: 'data-block-get',
+        message: `Data block manifest byteLength mismatch: ${ref.id}`,
+        recovery: 'Reload the canonical manifest and its matching immutable block.',
+      });
       return cloneRecord(record);
     });
   }
