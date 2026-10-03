@@ -370,7 +370,7 @@ public class WorkbookOperationService {
             throw ServiceException.conflict("Undo requires its target to be the current workbook revision");
         }
         JsonNode preimage = snapshotAtRevision(row, targetRow.revision() - 1);
-        validateStructuralUndoMutations(operation, target, preimage);
+        validateStructuralUndoMutations(operation, target, preimage, registry);
         return new UndoContext(target, preimage);
     }
 
@@ -386,7 +386,8 @@ public class WorkbookOperationService {
     static void validateStructuralUndoMutations(
             OperationEnvelope operation,
             CommittedOperationEnvelope target,
-            JsonNode structuralUndoPreimage
+            JsonNode structuralUndoPreimage,
+            MutationDescriptorRegistry registry
     ) {
         boolean[] matchedInverseMutations = new boolean[operation.mutations().size()];
         for (CommittedOperationMutation original : target.mutations()) {
@@ -419,12 +420,66 @@ public class WorkbookOperationService {
         boolean targetContainsNonStructuralMutations = target.mutations().stream()
                 .anyMatch(mutation -> !isStructuralPatchMutation(mutation.id()));
         if (!targetContainsNonStructuralMutations) {
+            boolean allMatched = true;
+            for (boolean matched : matchedInverseMutations) allMatched &= matched;
+            if (allMatched) return;
+            List<DeletedCellFact> deletedCells = deletedCellFacts(target, structuralUndoPreimage, registry);
             for (int index = 0; index < operation.mutations().size(); index++) {
-                if (!matchedInverseMutations[index]) {
+                if (!matchedInverseMutations[index] && !matchesDeletedCell(operation.mutations().get(index), deletedCells)) {
                     throw ServiceException.conflict("Structural undo contains a mutation outside its target operation");
                 }
             }
         }
+    }
+
+    private record DeletedCellFact(String sheetId, int row, int column, JsonNode previous) {}
+
+    /** Use the canonical replay to recover each deletion's own preimage, including earlier reference transforms. */
+    private static List<DeletedCellFact> deletedCellFacts(
+            CommittedOperationEnvelope target, JsonNode preimage, MutationDescriptorRegistry registry
+    ) {
+        if (preimage == null) return List.of();
+        List<DeletedCellFact> facts = new ArrayList<>();
+        JsonNode current = preimage;
+        for (int index = 0; index < target.mutations().size(); index++) {
+            CommittedOperationMutation original = target.mutations().get(index);
+            if ("rows.deleted".equals(original.id()) || "columns.deleted".equals(original.id())) {
+                boolean rows = "rows.deleted".equals(original.id());
+                long start = original.params().path("at").asLong(-1);
+                long count = original.params().path("count").asLong(0);
+                for (JsonNode sheet : current.path("sheets")) {
+                    if (!original.sheetId().equals(sheet.path("id").asText())) continue;
+                    var rowEntries = sheet.path("cells").fields();
+                    while (rowEntries.hasNext()) {
+                        var row = rowEntries.next();
+                        int rowIndex = Integer.parseInt(row.getKey());
+                        var columns = row.getValue().fields();
+                        while (columns.hasNext()) {
+                            var column = columns.next();
+                            int columnIndex = Integer.parseInt(column.getKey());
+                            long coordinate = rows ? rowIndex : columnIndex;
+                            if (start >= 0 && count > 0 && coordinate >= start && coordinate - start < count) {
+                                facts.add(new DeletedCellFact(original.sheetId(), rowIndex, columnIndex, column.getValue()));
+                            }
+                        }
+                    }
+                }
+            }
+            if (index + 1 < target.mutations().size()) {
+                current = registry.applyCommittedMutations(current, List.of(original), java.util.Collections.singletonList(null));
+            }
+        }
+        return facts;
+    }
+
+    private static boolean matchesDeletedCell(OperationMutation mutation, List<DeletedCellFact> facts) {
+        if (!"cell.restore".equals(mutation.id())) return false;
+        JsonNode row = mutation.params().path("row");
+        JsonNode column = mutation.params().path("column");
+        if (!row.isIntegralNumber() || !row.canConvertToInt() || !column.isIntegralNumber() || !column.canConvertToInt()) return false;
+        return facts.stream().anyMatch(fact -> fact.sheetId().equals(mutation.sheetId())
+                && fact.row() == row.intValue() && fact.column() == column.intValue()
+                && fact.previous().equals(mutation.params().path("previous")));
     }
 
     private static boolean isStructuralPatchMutation(String mutationId) {
