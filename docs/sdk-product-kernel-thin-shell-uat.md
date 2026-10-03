@@ -85,7 +85,8 @@
 | S08a | 一次 createSpreadsheetSdk 打开真实 workbook；通过 Workbook.data.subtotal 的显式 sheetId/address 对 11 个 worksheet 分别执行 AVERAGE/COUNT/COUNTA/MAX/MIN/PRODUCT/STDEV/STDEVP/SUM/VAR/VARP。源含 2、4、空值、文本、boolean、公式空字符串和嵌套 SUBTOTAL；结果分别为 3/2/5/4/2/8/sqrt(2)/1/6/2/1；保存、关闭重开、真实 XLSX 导出/重导入一致 | Pass | U07：public Data 全部 11 函数，精确值/公式、单次历史 undo/redo、真实 save/reopen/XLSX/reimport；25/25 browser Pass。 |
 | S08b | inline 与 Worker 对全部 1–11/101–111 执行三种隐藏原因、嵌套 SUBTOTAL/AGGREGATE、空集合和 ordinary error；filter hidden 始终排除，manual/outline 仅 101–111 排除。Data 只提交公式，禁止自行计算 summary cache | Pass | U08：全部 1–11/101–111，三种 visibility、nested totals、empty/error 的 inline/Worker vectors；Data 已删除独立缓存计算。 |
 | S08c | public Data 拒绝非法函数、非 boolean hidden option、越界/非法/不存在的 worksheet 地址、viewer 和已退休 workbook；错误为 SdkError，完整前像无改变；成功 summary+outline 一次历史、undo/redo 精确恢复 | Pass | U09：75/75 SDK，显式 inactive worksheet、非法/null 参数/地址/budget、退休句柄；U07 真实 viewer FORBIDDEN 且前像无改变。 |
-| S08d | public SDK 在真实 Java/H2 建立 manual-hidden worksheet：1–11 读隐藏值、101–111 排除，undo/redo 后保存；empty AVERAGE 和 ordinary-error SUM/COUNTA 保持错误/计数语义。保存/重开/XLSX/reimport 后验证公式、错误 code、hidden metadata 与 hidden-cell canonical read | Pending | — |
+| S08d | public SDK 在真实 Java/H2 建立 manual-hidden worksheet：1–11 读隐藏值、101–111 排除，undo/redo 后保存；empty AVERAGE 和 ordinary-error SUM/COUNTA 保持错误/计数语义。保存/重开/XLSX/reimport 后验证公式、错误 code、hidden metadata 与 hidden-cell canonical read | Fail | U13：连续 subtotal 后 undo 的 intent 仍带创建时 base=8；目标实际提交 base=12，Java 409，save 未完成。 |
+| S08e | 预先连续写入三条操作并 undo/redo/再次 undo；每个未发送 undo 的 targetBaseRevision 跟随目标的最终 queued/committed base。ACK removal 与后续队列重排只持久化一次；journal failure 时 queue/history/revision/terminal status 不变化。已发送及恢复请求不可修改、缺失目标/重复 ACK revision 不一致必须拒绝 | Pending | 成功/拒绝单测与 S08d 真实 Java/H2 再验收；禁止测试插入 flush/delay 掩盖时序。 |
 
 | Domain | Public API | Canonical owner | Command chain | Permission | History | Collaboration | Persistence | Server authority | Web migrated |
 |---|---|---|---|---|---|---|---|---|---|
@@ -170,4 +171,6 @@
 | U11 | full frontend unit 1686 tests：1646 Pass、40 Fail；与基线失败名称完全相同 | `/tmp/sdk-thin-shell-subtotal-unit.log` |
 | U12 | Java 源码未改；重新 package jar 用于 U07，未重复单测；之前 U06 的375测试仍是该 Java 源码的真实结果 | `/tmp/sdk-thin-shell-subtotal-backend-build.log` |
 
-U07 runId `4e2b61f431a08f5cea5f2b75c31a57aa5f94aaba-20261003145301493`，Node `v24.19.0`，Chromium `151.0.7922.34`，viewport `1440x960`，lock digest 与 U02 相同。S08d 原生边界补充项仍 Pending；总 S08、完整领域/Data API/新边界/Session 删除及 P0 结构项仍不能以本组通过代替完成。
+U07 runId `4e2b61f431a08f5cea5f2b75c31a57aa5f94aaba-20261003145301493`，Node `v24.19.0`，Chromium `151.0.7922.34`，viewport `1440x960`，lock digest 与 U02 相同。总 S08、完整领域/Data API/新边界/Session 删除及 P0 结构项仍不能以本组通过代替完成。
+
+U13：补充 S08d 运行于 clean source/build `eb5d9c62`，backend jar `4e2b61f4`（Java 源码未改变），1 Fail。`/tmp/sdk-thin-shell-subtotal-native-edge.log` 与 `/tmp/sdk-product-uat-RkDGs3/evidence/backend.log`；原始失败 trace/provenance 归档 `/tmp/sdk-product-uat-RkDGs3/playwright`。seq 13 目标提交 base 12，seq 14 undo base 13 但 intent.targetBaseRevision 8；Java 返回 `CONFLICT` / `Undo target base revision does not match the committed operation`。本次没有用等待、自动重试、客户端 repair 或放宽服务端校验改写结果。修正先完成 queue/ACK/history/持久化所有权设计，再统一执行验收。
