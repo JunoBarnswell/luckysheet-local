@@ -50,6 +50,11 @@ jobs:
           npx playwright install chromium
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           npm run test:sdk-uat
+      - name: Verify the complete frontend unit suite
+        working-directory: frontend-react
+        run: |
+          npm run test:unit 2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP/react-sheets-build/frontend-unit.log"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - uses: actions/upload-artifact@v4
         if: always()
         with:
