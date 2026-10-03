@@ -1,3 +1,4 @@
+import type { Workbook } from '../workbook/workbook';
 import { SdkError } from '../error';
 import type { AssetStore } from '@react-sheets/spreadsheet-app';
 import type { WorkbookSnapshot } from '@react-sheets/core-model';
@@ -27,9 +28,9 @@ import {
   WorkspacePersistence,
 } from '@react-sheets/spreadsheet-app';
 
-import { createWorkbookUnitId } from '@react-sheets/spreadsheet-app';
+import { createTemplateSnapshot, createWorkbookUnitId, getWorkbookTemplate } from '@react-sheets/spreadsheet-app';
+import type { WorkbookCreateOptions } from './contract';
 import type {
-  WorkbookCatalogCreateInput,
   WorkbookCatalogEntry,
   WorkbookCatalogExportInput,
   WorkbookCatalogExportResult,
@@ -62,6 +63,7 @@ export class WorkbookCatalogError extends Error {
 }
 
 export interface WorkbooksDomainOptions {
+  openWorkbook?: (resolution: WorkbookResolution) => Promise<Workbook>;
   persistence?: WorkspacePersistence;
   assetStoreFor?: (unitId: string) => AssetStore;
   remote?: WorkbookCatalogRemoteClient;
@@ -147,6 +149,7 @@ export class WorkbooksDomain {
   private retired = false;
   retire(): void { this.retired = true; }
   readonly #persistence: WorkspacePersistence;
+  readonly #openWorkbook?: (resolution: WorkbookResolution) => Promise<Workbook>;
   readonly #remote?: WorkbookCatalogRemoteClient;
   readonly #resolver: WorkbookResolver;
   private readonly now: () => Date;
@@ -155,6 +158,7 @@ export class WorkbooksDomain {
   readonly #assetStoreFor?: (unitId: string) => AssetStore;
 
   constructor(options: WorkbooksDomainOptions = {}) {
+    this.#openWorkbook = options.openWorkbook;
     this.#persistence = options.persistence ?? new WorkspacePersistence();
     this.#remote = options.remote;
     this.#assetStoreFor = options.assetStoreFor;
@@ -189,10 +193,41 @@ export class WorkbooksDomain {
     return page.entries;
   }
 
-  async create(input: WorkbookCatalogCreateInput): Promise<CatalogEntry> {
-    if (input.destination === 'local') throw new WorkbookCatalogError('invalid-input', '工作簿必须保存到服务器');
-    const response = await this.requireRemote().createWorkbook(input.snapshot, input.metadata);
-    return remoteEntry(await this.requireRemote().getWorkbookSummary(response.snapshot.unitId));
+  async create(input: WorkbookCreateOptions): Promise<CatalogEntry> {
+    try {
+      if (!input || typeof input.name !== 'string' || !input.name.trim() || input.name.trim().length > MAX_WORKBOOK_NAME_LENGTH
+        || [input.spaceId, input.folderId].some(value => value !== undefined && (typeof value !== 'string' || !value.trim()))) {
+        throw new SdkError('INVALID_ARGUMENT', 'workbooks.create', '工作簿名称或目录身份无效。', '请提供有效名称与稳定目录 ID。');
+      }
+      const template = input.template ?? 'blank';
+      try { getWorkbookTemplate(template); }
+      catch (cause) { throw new SdkError('INVALID_ARGUMENT', 'workbooks.create', '工作簿模板无效。', '请选择公开模板 ID。', { cause }); }
+      const snapshot = createTemplateSnapshot(template, this.unitIdFactory(), input.name.trim());
+      const response = await this.requireRemote().createWorkbook(snapshot, { spaceId: input.spaceId, folderId: input.folderId });
+      const entry = remoteEntry(await this.requireRemote().getWorkbookSummary(response.snapshot.unitId));
+      this.requireRemote();
+      return entry;
+    } catch (cause) {
+      if (cause instanceof SdkError) throw cause;
+      const code = cause instanceof ApiRequestError && cause.status === 403 ? 'FORBIDDEN' : 'REQUEST_REJECTED';
+      throw new SdkError(code, 'workbooks.create', cause instanceof Error ? cause.message : '创建失败。', '请检查认证、目录权限和服务端连接后重试。', { cause });
+    }
+  }
+
+  async open(unitId: string): Promise<Workbook> {
+    if (typeof unitId !== 'string' || !unitId.trim()) throw new SdkError('INVALID_ARGUMENT', 'workbooks.open', '工作簿 ID 无效。', '请使用目录返回的稳定 unitId。');
+    this.requireRemote();
+    if (!this.#openWorkbook) throw new SdkError('UNSUPPORTED_FEATURE', 'workbooks.open', '目录缺少 canonical Workbook 运行宿主。', '请通过 createSpreadsheetSdk 获取工作簿目录。');
+    try {
+      const resolution = await this.resolve(unitId);
+      this.requireRemote();
+      const workbook = await this.#openWorkbook(resolution);
+      this.requireRemote();
+      return workbook;
+    } catch (cause) {
+      if (cause instanceof SdkError) throw cause;
+      throw new SdkError('REQUEST_REJECTED', 'workbooks.open', `${unitId}: ${cause instanceof Error ? cause.message : '打开失败。'}`, '请检查权限、工作簿身份与服务端连接后重试。', { cause, object: { workbookId: unitId } });
+    }
   }
 
   resolve(unitId: string, options: WorkbookCatalogRequestOptions = {}): Promise<WorkbookResolution> {

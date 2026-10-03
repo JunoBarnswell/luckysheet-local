@@ -439,6 +439,73 @@ test.describe('SDK product UAT against Java authority', () => {
     diagnostics.assertClean();
   });
 
+  test('OO-01 MWB-01 MWB-02: one public SDK opens two workbooks and calculates cross-workbook SUM through Java authority', async ({ page, context }) => {
+    const diagnostics = installBrowserDiagnostics(page);
+    await ownerPage(context, page);
+    const result = await page.evaluate(async (runId) => {
+      const sdkUrl = '/packages/sdk/src/index.ts';
+      const { createSpreadsheetSdk } = await import(/* @vite-ignore */ sdkUrl) as typeof import('@react-sheets/sdk');
+      const sdk = createSpreadsheetSdk();
+      try {
+        await sdk.auth.initialize();
+        const sourceEntry = await sdk.workbooks.create({ name: `SDK OO Source ${runId}` });
+        const targetEntry = await sdk.workbooks.create({ name: `SDK OO Target ${runId}` });
+        const [source, target] = await Promise.all([sdk.workbooks.open(sourceEntry.unitId), sdk.workbooks.open(targetEntry.unitId)]);
+        if (await sdk.workbooks.open(source.id) !== source) throw new Error('Duplicate workbook owner');
+        const sourceSheet = source.worksheets.at(0), targetSheet = target.worksheets.at(0);
+        await sourceSheet.cells.get('A1').setValue(10);
+        await sourceSheet.cells.get('A2').setValue(20);
+        await target.externalLinks.bind(source, 'Source.xlsx');
+        const formula = `=SUM('[Source.xlsx]${sourceSheet.name}'!A1:A2)`;
+        await targetSheet.cells.get('B1').setFormula(formula);
+        await target.externalLinks.refresh();
+        const first = await targetSheet.cells.get('B1').read();
+        if (first.calculatedValue !== 30) throw new Error(`Cross-workbook initial result: ${JSON.stringify(first)}`);
+        await sourceSheet.cells.get('A2').setValue(40);
+        await source.flush();
+        const links = await target.externalLinks.refresh();
+        const updated = await targetSheet.cells.get('B1').read();
+        if (updated.calculatedValue !== 50) throw new Error(`Cross-workbook updated result: ${JSON.stringify(updated)}`);
+        const staleCell = sourceSheet.cells.get('A1');
+        source.close();
+        let retired = false;
+        try { await staleCell.read(); } catch (cause) { retired = (cause as { code?: string }).code === 'RUNTIME_DISPOSED'; }
+        if (!retired) throw new Error('Closed source still readable');
+        await targetSheet.cells.get('C1').setValue('=1+2');
+        const literal = await targetSheet.cells.get('C1').read();
+        if (literal.value !== '=1+2' || literal.formula !== undefined) throw new Error('Literal value became a formula');
+        await target.save();
+        const output = { sourceId: source.id, targetId: target.id, formula, first: first.calculatedValue,
+          updated: updated.calculatedValue, sourceRevision: links[0]?.sourceRevision, state: links[0]?.state };
+        target.close();
+        return output;
+      } finally { await sdk.dispose(); }
+    }, runId);
+    expect(result.first).toBe(30); expect(result.updated).toBe(50); expect(result.state).toBe('connected');
+    expect(result.sourceRevision).toBeGreaterThan(0);
+    const source = await context.request.get(`/api/workbooks/${result.sourceId}/snapshot`);
+    const target = await context.request.get(`/api/workbooks/${result.targetId}/snapshot`);
+    expect(source.ok()).toBe(true); expect(target.ok()).toBe(true);
+    expect((await source.json()).snapshot.sheets[0].cells['1']['0'].value).toBe(40);
+    const saved = (await target.json()).snapshot;
+    expect(saved.sheets[0].cells['0']['1'].formula).toBe(result.formula);
+    expect(saved.sheets[0].cells['0']['2'].value).toBe('=1+2');
+    expect(saved.dataModel.externalLinks[0].sourceUnitId).toBe(result.sourceId);
+    const artifactResponse = await context.request.get(`/api/workbooks/${result.targetId}/native-document-artifact`);
+    expect(artifactResponse.ok()).toBe(true);
+    const artifactBytes = Uint8Array.from(await artifactResponse.body());
+    const imported = await importOoxmlDocument({ fileName: 'SDK-two-workbooks.xlsx', buffer: artifactBytes.buffer, options: { compatibilityTarget: 'B' } });
+    expect(imported.snapshot.sheets[0]!.cells['0']!['1']!.formula).toBe(result.formula);
+    expect(imported.snapshot.sheets[0]!.cells['0']!['2']!.value).toBe('=1+2');
+    expect(imported.snapshot.dataModel!.externalLinks[0]!.sourceUnitId).toBe(result.sourceId);
+    await page.goto(`/workbooks/${result.targetId}`);
+    await expect(page.getByTestId('designer-shell')).toHaveAttribute('data-workspace-phase', 'ready');
+    await page.getByTestId('name-box').fill('B1'); await page.getByTestId('name-box').press('Enter');
+    await expect(page.getByTestId('formula-input')).toHaveValue(result.formula);
+    await screenshot(page, 'sdk-two-workbooks');
+    diagnostics.assertClean();
+  });
+
   test('ROLE-02 HUB-02: owner menu, rename, favorite and share roles use real SDK catalog actions', async ({ page, context }) => {
     const diagnostics = installBrowserDiagnostics(page);
     await ownerPage(context, page);

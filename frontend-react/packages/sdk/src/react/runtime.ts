@@ -17,13 +17,15 @@ export function useSdkServices(sdk: SpreadsheetSdk) {
 export function useWorkbook(sdk: SpreadsheetSdk, resolution: WorkbookResolution) {
   const runtime = runtimeFor(sdk);
   const sessionRef = useRef<WorkbookSession | null>(null);
+  const releaseSession = useRef<(() => void) | null>(null);
   const disposeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   if (!sessionRef.current) sessionRef.current = runtime.createSession(resolution);
   const session = sessionRef.current;
   useEffect(() => {
     if (disposeTimer.current !== null) { clearTimeout(disposeTimer.current); disposeTimer.current = null; }
+    if (!releaseSession.current) releaseSession.current = runtime.retainSession(session);
     session.start();
-    return () => { disposeTimer.current = setTimeout(() => { disposeTimer.current = null; runtime.closeSession(session); }, 0); };
+    return () => { disposeTimer.current = setTimeout(() => { disposeTimer.current = null; releaseSession.current?.(); releaseSession.current = null; }, 0); };
   }, [runtime, session]);
   const snapshot = useSyncExternalStore(session.subscribe, session.getUiSnapshot, session.getUiSnapshot);
   return { session, snapshot, data: runtime.dataActions(session), dimensions: runtime.dimensionActions(session) };

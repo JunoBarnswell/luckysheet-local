@@ -18,6 +18,7 @@ export {
   type UiSnapshot,
   type SheetTabSnapshot,
 } from './workbook-session';
+export { getWorkbookObjectPort, type WorkbookObjectPort } from './workbook-object-port';
 export { InsertCoordinator, type InsertIdentity, type InsertResult, type InsertRequest, type DrawingInsertRequest, type InsertMutationRequest } from './insert-coordinator';
 export { writeSystemClipboard, type BrowserClipboardPort, type SystemClipboardWriteOutcome } from './clipboard-browser';
 export { useCellEdit, useWorkbookSession, createWorkbookSessionFactory, type UseWorkbookSessionResult, type WorkbookSessionFactory } from './workbook-session-react';

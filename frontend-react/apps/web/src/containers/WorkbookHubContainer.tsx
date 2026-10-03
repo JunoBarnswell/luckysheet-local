@@ -1,4 +1,4 @@
-import type { CatalogEntry } from '@react-sheets/sdk';
+import type { CatalogEntry, WorkbookTemplateId } from '@react-sheets/sdk';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Button, CheckToggle, Dialog, LocationPicker, Select, Stack, Text, TextInput, type LocationOption } from '@react-sheets/ui-system';
 import {
@@ -17,10 +17,7 @@ import {
 import { useApplicationServices } from '../ApplicationServicesProvider';
 import { useAuthSession, useAuthSnapshot } from '../auth/AuthProvider';
 import {
-  createTemplateSnapshot,
-  createWorkbookUnitId,
   isWorkspaceStorageError,
-  type WorkbookTemplateId,
 } from '@react-sheets/spreadsheet-app';
 import type { SpaceMember, WorkspaceFolder, WorkspaceSpace } from '@react-sheets/protocol';
 import type { UserPreferences } from '@react-sheets/protocol';
@@ -302,13 +299,10 @@ export function WorkbookHubContainer({ onOpenWorkbook }: WorkbookHubContainerPro
       const targetLocation = destinationFromLocation(value.locationId);
       if (targetLocation.destination === 'remote' && !await requireCloudSignIn()) return;
       await ensureStorageReady();
-      const unitId = createWorkbookUnitId();
-      const snapshot = createTemplateSnapshot(pendingTemplate, unitId, value.name);
       const entry = await catalog.create({
-        snapshot,
-        destination: targetLocation.destination,
-        metadata: { spaceId: targetLocation.spaceId, folderId: targetLocation.folderId },
-        source: 'native',
+        name: value.name,
+        template: pendingTemplate,
+        spaceId: targetLocation.spaceId, folderId: targetLocation.folderId,
       });
       onOpenWorkbook(entry.unitId, pendingTemplate === 'designer-demo' ? { initialCell: 'B1' } : undefined);
     });
@@ -325,13 +319,10 @@ export function WorkbookHubContainer({ onOpenWorkbook }: WorkbookHubContainerPro
           if (pendingCreateValue) {
             const targetLocation = destinationFromLocation(pendingCreateValue.locationId);
             if (targetLocation.destination === 'remote' && !await requireCloudSignIn()) return;
-            const unitId = createWorkbookUnitId();
-            const snapshot = createTemplateSnapshot(pendingTemplate, unitId, pendingCreateValue.name);
             const entry = await catalog.create({
-              snapshot,
-              destination: targetLocation.destination,
-              metadata: { spaceId: targetLocation.spaceId, folderId: targetLocation.folderId },
-              source: 'native',
+              name: pendingCreateValue.name,
+              template: pendingTemplate,
+              spaceId: targetLocation.spaceId, folderId: targetLocation.folderId,
             });
             setPendingCreateValue(undefined);
             setActiveDialog(null);

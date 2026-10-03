@@ -61,6 +61,22 @@ SDK 拥有认证/身份/凭证/组合根/工作簿目录与生命周期/Excel �
 | BOUND-02 | 注入越层 import/相对路径绕过/未声明依赖/cycle | 门禁全部拒绝；正常 graph 通过 | Pending |
 | GATE-01 | build/typecheck/unit/boundaries/contracts/Java/browser/PR checks | 保存实际结果；全部通过后 ready 并 merge 指定 head | Fail |
 
+## 用户追加的对象模型与多工作簿目标（实施前设计）
+
+详见 sdk-object-model-architecture.md。本轮先冻结所有权、生命周期、版本、权限与对象 API，再一次实现完整批次，最后统一验证；完整 Excel 对齐不以入口类或少数公式通过代替。
+
+| ID | 前置条件与操作 | 预期结果与拒绝路径 | 状态 |
+|---|---|---|---|
+| OO-01 | SDK → Workbooks → Workbook → Worksheets → Cell/Range；真实显式寻址、typed 值/公式、保存与关闭 | 同一 canonical 数据/权限/计算/写链；不暴露可变 model/session/API；非法地址、失效、越权 typed 拒绝 | Pending |
+| OO-02 | 按所有 Excel/Aspose 类对象逐能力调用、编辑、保存、重算、往返 | 完整领域对象与 read/edit/write/preserve capability，不能只有 Web 菜单可用 | Pending |
+| OO-03 | 浏览器无编辑器、Node/Java 文件/Worker/输出宿主 | 宿主仅 I/O/线程，SDK 拥有语义与文档；缺失宿主明确拒绝 | Pending |
+| MWB-01 | 一个 SDK 同时打开多个 workbook；重复打开；关闭一个、subject 切换、全部释放 | 按 unitId 唯一 owner、对象与租约；不影响其他 workbook，无旧身份读写 | Pending |
+| MWB-02 | 真实跨 workbook SUM/范围/其他函数，source 更新→提交→refresh→target 重算与保存 | source ID/sheet ID/subject/revision/access 定义明确；撤权清缓存、#BLOCKED!、恢复重算 | Pending |
+| MWB-03 | 多级依赖图、环/迭代、自动传播、版本变化/关闭/撤权并发 | 统一图、明确循环语义、无过期授权/过期任务结果 | Pending |
+| MWB-04 | 多 workbook copy/move/批量写/undo，任一权限/版本/存储失败 | 服务端共同事务提交或整体拒绝；不能将依次保存声称原子事务 | Pending |
+
+本批细项 OO-01.a/b、MWB-01.a、MWB-02.a/b 的完整成功/拒绝步骤已在架构文档中预先制定；执行结果在统一验证后记录。原有 42 项保持完整；追加 7 项后共 49 项。
+
 ## 已确认入口与删除要求
 
 - ApplicationServicesProvider 创建 API/persistence/assets/session options，需迁入 SDK。

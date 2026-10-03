@@ -5,6 +5,8 @@ import type { AuthDomain } from '../auth/domain';
 import { WorkbooksDomain } from '../workbooks/domain';
 import { DataDomain } from '../data/domain';
 import { DimensionsDomain } from '../dimensions/domain';
+import { getWorkbookObjectPort } from '@react-sheets/spreadsheet-app';
+import { Workbook } from '../workbook/workbook';
 import { SdkError } from '../error';
 
 export interface StorageReadiness {
@@ -22,6 +24,11 @@ export class ApplicationRuntime {
   private snapshot: StorageReadiness = Object.freeze({ state: 'warming', error: null });
   private readonly listeners = new Set<() => void>();
   private readonly sessions = new Set<WorkbookSession>();
+  private readonly sessionByUnit = new Map<string, WorkbookSession>();
+  private readonly sessionLeases = new Map<WorkbookSession, number>();
+  private readonly workbookObjects = new Map<string, Workbook>();
+  private readonly workbookOpens = new Map<string, Promise<Workbook>>();
+  private resetting = false;
   private readonly assetStores = new Map<string, RemoteAssetStore>();
   private readonly data = new Map<WorkbookSession, DataDomain>();
   private readonly dimensions = new Map<WorkbookSession, DimensionsDomain>();
@@ -43,6 +50,7 @@ export class ApplicationRuntime {
   }
   private createCatalog(): WorkbooksDomain {
     return new WorkbooksDomain({
+      openWorkbook: (resolution) => this.openWorkbook(resolution),
       persistence: this.persistence, remote: this.api, assetStoreFor: (unitId) => this.assetStoreFor(unitId),
       remoteAvailable: () => !this.disposed && (this.auth.session.getSnapshot().phase === 'authenticated' || Boolean(this.shareTokenProvider())),
       shareTokenProvider: this.shareTokenProvider,
@@ -87,7 +95,7 @@ export class ApplicationRuntime {
       if (released) return;
       released = true;
       this.users--;
-      if (!this.users) this.releaseTimer = setTimeout(() => {
+      if (!this.users && !this.disposed && !this.resetting) this.releaseTimer = setTimeout(() => {
         this.releaseTimer = null;
         if (this.users || this.disposed) return;
         this.resetWorkspace();
@@ -96,6 +104,10 @@ export class ApplicationRuntime {
   }
   private resetWorkspace(): void {
     if (this.disposed) return;
+    this.resetting = true;
+    for (const workbook of [...this.workbookObjects.values()]) workbook.close();
+    this.workbookObjects.clear(); this.workbookOpens.clear();
+    this.sessionByUnit.clear(); this.sessionLeases.clear();
     for (const domain of this.data.values()) domain.dispose();
     this.data.clear();
     for (const domain of this.dimensions.values()) domain.dispose();
@@ -110,10 +122,13 @@ export class ApplicationRuntime {
     this.readiness = null;
     this.publish({ state: 'warming', error: null });
     void previous.disposeAsync();
+    this.resetting = false;
   }
   createSession(resolution: WorkbookResolution): WorkbookSession {
     if (this.disposed) throw new SdkError('RUNTIME_DISPOSED', 'workbook.open', 'SDK Runtime 已释放。', '请创建新的 SDK。');
     if (typeof Worker === 'undefined') throw new SdkError('UNSUPPORTED_FEATURE', 'workbook.open', '此宿主缺少工作簿运行所需的 browser Worker。', '请提供支持 browser Worker 的浏览器宿主。');
+    const existing = this.sessionByUnit.get(resolution.unitId);
+    if (existing) return existing;
     const session = new WorkbookSession({
       unitId: resolution.unitId, initialPhase: 'loading', resolution, api: this.api, workspacePersistence: this.persistence,
       authTokenProvider: this.auth.getAccessToken, shareTokenProvider: this.shareTokenProvider,
@@ -122,9 +137,44 @@ export class ApplicationRuntime {
       onReady: () => this.catalog.markOpened(resolution).then(() => undefined),
     });
     this.sessions.add(session);
+    this.sessionByUnit.set(resolution.unitId, session);
     this.data.set(session, new DataDomain(session));
     this.dimensions.set(session, new DimensionsDomain(session, () => session.getSelectedSheet()));
     return session;
+  }
+  retainSession(session: WorkbookSession): () => void {
+    if (!this.sessions.has(session) || this.disposed) throw new SdkError('RUNTIME_DISPOSED', 'workbook.retain', '会话已释放。', '请重新打开工作簿。');
+    this.sessionLeases.set(session, (this.sessionLeases.get(session) ?? 0) + 1);
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      const count = this.sessionLeases.get(session);
+      if (count === undefined) return;
+      if (count > 1) this.sessionLeases.set(session, count - 1);
+      else { this.sessionLeases.delete(session); this.closeSession(session); }
+    };
+  }
+  private openWorkbook(resolution: WorkbookResolution): Promise<Workbook> {
+    const existing = this.workbookOpens.get(resolution.unitId);
+    if (existing) return existing;
+    const releaseRuntime = this.acquire();
+    let session: WorkbookSession;
+    try { session = this.createSession(resolution); }
+    catch (cause) { releaseRuntime(); throw cause; }
+    const releaseSession = this.retainSession(session);
+    let workbook!: Workbook;
+    workbook = new Workbook(getWorkbookObjectPort(session), this, () => {
+      if (this.workbookObjects.get(resolution.unitId) === workbook) {
+        this.workbookObjects.delete(resolution.unitId); this.workbookOpens.delete(resolution.unitId);
+      }
+      releaseSession(); releaseRuntime();
+    });
+    this.workbookObjects.set(resolution.unitId, workbook);
+    const opening = workbook.ready().catch(cause => { workbook.close(); throw cause; });
+    this.workbookOpens.set(resolution.unitId, opening);
+    session.start();
+    return opening;
   }
   dataActions(session: WorkbookSession) {
     const domain = this.data.get(session);
@@ -136,10 +186,13 @@ export class ApplicationRuntime {
     if (!domain) throw new SdkError('RUNTIME_DISPOSED', 'dimensions', '行列尺寸会话不可用。', '请重新打开工作簿。');
     return domain.actions;
   }
-  closeSession(session: WorkbookSession): void { this.data.get(session)?.dispose(); this.data.delete(session); this.dimensions.get(session)?.dispose(); this.dimensions.delete(session); session.dispose(); this.sessions.delete(session); }
+  closeSession(session: WorkbookSession): void { this.sessionByUnit.delete(getWorkbookObjectPort(session).unitId); this.sessionLeases.delete(session); this.data.get(session)?.dispose(); this.data.delete(session); this.dimensions.get(session)?.dispose(); this.dimensions.delete(session); session.dispose(); this.sessions.delete(session); }
   async dispose(): Promise<void> {
     if (this.disposed) return;
     this.disposed = true;
+    for (const workbook of [...this.workbookObjects.values()]) workbook.close();
+    this.workbookObjects.clear(); this.workbookOpens.clear();
+    this.sessionByUnit.clear(); this.sessionLeases.clear();
     this.unsubscribeAuth();
     this.catalogDomain.retire();
     if (this.releaseTimer) clearTimeout(this.releaseTimer);

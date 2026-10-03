@@ -5,12 +5,14 @@ export class SdkError extends Error {
   readonly operation: string;
   readonly recovery: string;
   readonly status?: number;
-  constructor(code: SdkErrorCode, operation: string, message: string, recovery: string, options: { status?: number; cause?: unknown } = {}) {
+  readonly object?: Readonly<{ workbookId: string; sheetId?: string; address?: string }>;
+  constructor(code: SdkErrorCode, operation: string, message: string, recovery: string, options: { status?: number; cause?: unknown; object?: { workbookId: string; sheetId?: string; address?: string } } = {}) {
     super(message, { cause: options.cause });
     this.name = 'SdkError';
     this.code = code;
     this.operation = operation;
     this.recovery = recovery;
     this.status = options.status;
+    this.object = options.object ? Object.freeze({ ...options.object }) : undefined;
   }
 }
