@@ -73,7 +73,7 @@ public class WorkspaceService {
     @Transactional
     public List<SpaceResponse> list(String subject) {
         ensurePersonalSpace(subject);
-        return spaces.findAccessibleTo(subject).stream().map(space -> response(space, effectiveRole(space, subject))).toList();
+        return spaces.findAccessibleTo(subject).stream().filter(space -> effectiveRole(space, subject) != null).map(space -> response(space, effectiveRole(space, subject))).toList();
     }
 
     public WorkspaceSpaceEntity require(String spaceId, String subject, WorkbookRole required) {
@@ -151,6 +151,7 @@ public class WorkspaceService {
     public SpaceMemberResponse upsertMember(String spaceId, String target, SpaceMemberRequest request, String subject) {
         WorkspaceSpaceEntity space = require(spaceId, subject, WorkbookRole.OWNER);
         if (target == null || target.isBlank()) throw ServiceException.validation("Member subject is required");
+        if (!sameScope(subject, target)) throw ServiceException.forbidden("Cross-workspace membership is forbidden");
         if (target.equals(space.getOwnerSubject())) throw ServiceException.validation("The space owner cannot be changed");
         Instant now = Instant.now();
         SpaceMemberEntity member = members.findByIdSpaceIdAndIdSubject(spaceId, target)
@@ -175,8 +176,14 @@ public class WorkspaceService {
     }
 
     private WorkbookRole effectiveRole(WorkspaceSpaceEntity space, String subject) {
+        if (!sameScope(space.getOwnerSubject(), subject)) return null;
         if (space.getOwnerSubject().equals(subject)) return WorkbookRole.OWNER;
         return members.findByIdSpaceIdAndIdSubject(space.getSpaceId(), subject).map(SpaceMemberEntity::getRole).orElse(null);
+    }
+
+    private boolean sameScope(String left, String right) {
+        return com.xc.luckysheet.server.security.VerifiedIdentityService.scopeForActor(left)
+                .equals(com.xc.luckysheet.server.security.VerifiedIdentityService.scopeForActor(right));
     }
 
     private SpaceResponse response(WorkspaceSpaceEntity space, WorkbookRole role) {

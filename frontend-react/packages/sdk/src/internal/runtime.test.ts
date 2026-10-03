@@ -15,7 +15,7 @@ function authPort() {
     if (path === '/api/auth/config') return Response.json({ mode: 'local' });
     if (path === '/api/auth/login') subject = 'user-a';
     if (path === '/api/auth/logout') subject = null;
-    if (path === '/api/auth/session') return Response.json({ authenticated: Boolean(subject), subject, displayName: subject, admin: false, bootstrapRequired: false, csrfToken: 'csrf' });
+    if (path === '/api/auth/session') return Response.json({ context: subject ? { authority: 'local', subject, principal: subject, scopeId: 'local', sessionId: 'public-nonce', tenantId: null, appCode: null, employmentId: null, contextVersion: 0, contextId: 'context-' + subject } : null, authenticated: Boolean(subject), subject, displayName: subject, admin: false, bootstrapRequired: false, csrfToken: 'csrf' });
     if (path.endsWith('/workbooks')) return Response.json({ items: [], nextCursor: null });
     return Response.json({});
   };
@@ -23,7 +23,7 @@ function authPort() {
 
 test('runtime scopes cache and catalog owners to auth subject and retires old actions', async () => {
   const auth = new AuthDomain({ fetch: authPort() });
-  const runtime = new ApplicationRuntime(auth, undefined, authPort());
+  const runtime = new ApplicationRuntime(auth);
   await auth.session.initialize();
   const anonymousCatalog = runtime.catalog;
   await assert.rejects(anonymousCatalog.list(), /unavailable/);

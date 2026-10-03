@@ -34,6 +34,24 @@ public final class LocalAuthSessionRegistry {
         webSocketSessions.computeIfAbsent(authentication.getName(), ignored -> ConcurrentHashMap.newKeySet()).add(session);
     }
 
+    public void unregisterWebSocket(WebSocketSession session) {
+        if (session != null && session.getPrincipal() instanceof LocalUserAuthentication local) {
+            remove(webSocketSessions, local.getName(), session);
+        }
+    }
+
+    public void closeContext(String contextId) {
+        for (Set<WebSocketSession> sockets : webSocketSessions.values()) {
+            for (WebSocketSession socket : sockets) {
+                Object context = socket.getAttributes().get("verifiedContext");
+                if (context instanceof VerifiedAuthContext verified && verified.contextId().equals(contextId)) {
+                    try { if (socket.isOpen()) socket.close(CloseStatus.POLICY_VIOLATION); }
+                    catch (IOException error) { LOGGER.debug("Local-auth WebSocket was already closed", error); }
+                }
+            }
+        }
+    }
+
     /** Invalidates HTTP sessions and closes sockets for a changed local account. */
     public void invalidate(String subject) {
         if (subject == null || subject.isBlank()) return;

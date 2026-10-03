@@ -1,16 +1,10 @@
 import { UserManager, WebStorageStateStore, type User } from 'oidc-client-ts';
-import type { AuthPhase, AuthSnapshot, OidcConfiguration } from './contract';
+import type { AuthPhase, BearerCredential, OidcConfiguration } from './contract';
 import { SdkError } from '../error';
 
 const AUTH_RETURN_TO_KEY = 'react-sheets:oidc:return-to';
-const initialSnapshot: AuthSnapshot = {
-  bootstrapRequired: false,
-  capabilities: Object.freeze({ canManageUsers: false }),
-  displayName: null,
-  error: null,
-  phase: 'loading',
-  subject: null,
-};
+interface OidcState { readonly phase: AuthPhase; readonly error: SdkError | null }
+const initialSnapshot: OidcState = { phase: 'loading', error: null };
 
 function callbackUri(): string {
   return new URL('/auth/callback', window.location.origin).toString();
@@ -20,39 +14,15 @@ function silentCallbackUri(): string {
   return new URL('/auth/silent-renew', window.location.origin).toString();
 }
 
-function toSnapshot(user: User | null, phase: AuthPhase, error: SdkError | null = null): AuthSnapshot {
-  if (!user || user.expired) {
-    return {
-      bootstrapRequired: false,
-      capabilities: Object.freeze({ canManageUsers: false }),
-      displayName: null,
-      error,
-      phase,
-      subject: null,
-    };
-  }
-  const profile = user.profile as Record<string, unknown>;
-  return {
-    bootstrapRequired: false,
-    capabilities: Object.freeze({ canManageUsers: false }),
-    displayName: typeof profile.name === 'string'
-      ? profile.name
-      : typeof profile.preferred_username === 'string'
-        ? profile.preferred_username
-        : typeof profile.sub === 'string'
-          ? profile.sub
-          : null,
-    error,
-    phase,
-    subject: typeof profile.sub === 'string' ? profile.sub : null,
-  };
+function toSnapshot(user: User | null, phase: AuthPhase, error: SdkError | null = null): OidcState {
+  return { phase: user?.expired ? 'anonymous' : phase, error };
 }
 
 export class BrowserOidcSession {
   private readonly configuration: OidcConfiguration | undefined;
   private readonly listeners = new Set<() => void>();
   private readonly manager: UserManager | null;
-  private snapshot: AuthSnapshot = initialSnapshot;
+  private snapshot: OidcState = initialSnapshot;
   private initialized = false;
 
   constructor(configuration?: OidcConfiguration) {
@@ -65,7 +35,7 @@ export class BrowserOidcSession {
     this.manager = new UserManager({
       authority: this.configuration.authority,
       client_id: this.configuration.clientId,
-      redirect_uri: callbackUri(),
+      redirect_uri: this.configuration.redirectUri ?? callbackUri(),
       silent_redirect_uri: this.configuration.silentRedirectUri ?? silentCallbackUri(),
       response_type: 'code',
       scope: this.configuration.scope ?? 'openid profile email',
@@ -85,14 +55,14 @@ export class BrowserOidcSession {
     }));
   }
 
-  getAccessToken = async (): Promise<string | null> => {
+  getCredential = async (): Promise<BearerCredential | null> => {
     if (!this.manager) return null;
     const user = await this.manager.getUser();
     if (!user || user.expired) { this.publish({ ...initialSnapshot, phase: 'anonymous' }); return null; }
-    return user.access_token || null;
+    return user.access_token && user.expires_at ? { token: user.access_token, expiresAt: user.expires_at * 1000 } : null;
   };
 
-  getSnapshot = (): AuthSnapshot => this.snapshot;
+  getSnapshot = (): OidcState => this.snapshot;
 
   subscribe = (listener: () => void): (() => void) => {
     this.listeners.add(listener);
@@ -157,7 +127,7 @@ export class BrowserOidcSession {
     this.snapshot = initialSnapshot;
   }
 
-  private publish(snapshot: AuthSnapshot): void {
+  private publish(snapshot: OidcState): void {
     this.snapshot = Object.freeze({ ...snapshot });
     for (const listener of this.listeners) listener();
   }

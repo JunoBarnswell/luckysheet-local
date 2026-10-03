@@ -16,7 +16,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   if (snapshot.phase === 'loading') return <main className="p-8" role="status">正在连接工作簿服务…</main>;
   if (snapshot.phase === 'error') return <main className="p-8"><p role="alert">{snapshot.error?.message}</p><Button onClick={() => void session.initialize()}>重新连接</Button></main>;
   if (snapshot.mode === 'local' && snapshot.phase !== 'authenticated' && !shared) return <LoginPage snapshot={snapshot} />;
-  return <AuthContext.Provider value={session}><Box key={snapshot.subject ?? 'guest'}>{children}</Box></AuthContext.Provider>;
+  return <AuthContext.Provider value={session}><Box key={snapshot.context?.contextId ?? 'guest'}>{children}</Box></AuthContext.Provider>;
 }
 
 export function useAuthSession(): AuthSession {

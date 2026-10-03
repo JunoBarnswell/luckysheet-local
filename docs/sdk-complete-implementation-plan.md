@@ -69,3 +69,18 @@ ERP 浏览器会话 Cookie 是 HttpOnly，令牌由 Gateway 保存和续期。�
 
 
 C1 干净产品 head `70c3920499b50ab6fa636662f00582ddc16d9e47` 的真实补充 browser **2/2 Pass**：撤权五函数阻断及恢复步骤实际执行通过，subject 切换与 active dispose 通过。AUTHX-09、CALCF-01、CALCF-02 的输入故障细项通过真实授权场景及新增成功/拒绝语义检查；其他身份项仍待实现/验收。完整 unit 1555/1501 Pass/54 Fail，与旧失败标题无增减。详细证据见 sdk-product-uat.md 的 C1 执行记录。
+
+
+## I1 身份批次的冻结契约
+
+统一 local / OIDC / external-bearer / host-session 凭证 owner；输入配置删除旧 oidc 选项，使用 source 判别契约，Web 和所有消费者同时迁移。OIDC 浏览器 profile 只用于凭证生命周期，身份通过 Java auth/session 验证。source 不提供可授予权限的 subject；公开 context 仅包含 authority、subject、ACL principal、scope、非秘密会话 nonce、tenant/app/employment/contextVersion 和 contextId。
+
+REST/WS 采用同一受验证 JWT identity 转换，主体 key 由可信 authority 与工作区命名空间产生。Workbook 存储 identity_scope，owner/ACL/space-role 计算前先拒绝异域 scope；目录查询、空间角色、ACL/member 写同样拒绝跨 scope。V14 为显式存储迁移：既有 local 资源保持 local；旧未限定 OIDC subject 必须在停机迁移边界以可信 issuer/subject 映射重绑 workbook/ACL/space/member/user-state/range principals，不做运行时别名或回退。未迁移资源不会被新身份自动接管。迁移前备份数据库；回滚恢复备份和匹配代码。
+
+每个 runtime API/凭证闭包/fetch/响应体和 WS 捕获已验证 context；切换或登出退休对象、目录、cache、assets、协作和恢复 journal。journal 使用完整 contextId。同 context 凭证续期先验新凭证，保留 owner；旧上下文请求不能携新凭证写入或发布结果，不自动重试写入。Cookie 模式要求 CSRF；host-session 从 Gateway owner 获取 CSRF，保留路由 prefix，bearer omit cookies。凭证仅用于固定可信 HTTP/WS 来源。local nonce 与 JSESSIONID 分离并在登录时轮换；local logout 关闭对应 context 的 WS，JWT/guest WS 到期关闭。
+
+部署需声明受验证 token 的 session claim（默认 sid）；tenant/app/employment 必须共同存在且提供非负整数 contextVersion。可信 subject/authority 映射仅为部署配置。JWT 提前撤销仍取决于 IdP 的撤销/实时授权能力；I2 的 Main 断言和当前授权不可被此批的签名验证代替。
+
+I1 先完成上述整个实现批次，再执行 build/SDK/Java/浏览器验证。AUTHX-03/04/05/07/10/11 先以成功及拒绝契约检查覆盖，真实外部身份集成不以测试凭证或本地 issuer 算作 Pass。AUTHX-01/02/08/真实 ERP 切换由 I2 交付验收；全部验收前 PR 仍草稿。
+
+I1 统一验证：build/typecheck、现有 boundaries Pass；SDK 42/42 Pass；Java 327/327 Pass + package 成功。首轮 Java 326 tests 只有迁移测试仍断言版本 13，而新正式迁移为 14；产品实现保持冻结，只同步该测试的显式版本契约，并增加 v13→v14 数据/owner 不变、不擅自发明 OIDC 映射及重复启动历史不变的验收。签名/issuer/audience/过期/缺 sid 五类拒绝测试和 namespace/scope/WS 检查通过。随后在干净提交 head 执行真实本地浏览器；真实 ERP/SSO 项尚未通过。

@@ -19,7 +19,7 @@ export type WorkbooksActions = Omit<WorkbooksDomain, 'retire'>;
 export class ApplicationRuntime {
   private catalogDomain: WorkbooksDomain;
   get catalog(): WorkbooksActions { return this.catalogDomain; }
-  private readonly api: WorkbookApiClient;
+  private api: WorkbookApiClient;
   private persistence = new WorkspacePersistence();
   private snapshot: StorageReadiness = Object.freeze({ state: 'warming', error: null });
   private readonly listeners = new Set<() => void>();
@@ -40,13 +40,16 @@ export class ApplicationRuntime {
   private releaseTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly shareTokenProvider = () => resolveShareToken();
 
-  constructor(private readonly auth: AuthDomain, baseUrl?: string, fetchImpl?: typeof globalThis.fetch) {
-    this.api = new WorkbookApiClient({ baseUrl, fetchImpl, authTokenProvider: auth.getAccessToken, csrfTokenProvider: auth.getCsrfToken, shareTokenProvider: this.shareTokenProvider });
+  constructor(private readonly auth: AuthDomain) {
+    this.api = this.createApi();
     this.catalogDomain = this.createCatalog();
     this.unsubscribeAuth = auth.session.subscribe(() => {
-      const subject = auth.session.getSnapshot().subject;
+      const subject = auth.session.getSnapshot().context?.contextId ?? null;
       if (subject !== this.owner) { this.owner = subject; this.resetWorkspace(); }
     });
+  }
+  private createApi(): WorkbookApiClient {
+    return new WorkbookApiClient({ ...this.auth.createTransport(), shareTokenProvider: this.shareTokenProvider });
   }
   private createCatalog(): WorkbooksDomain {
     return new WorkbooksDomain({
@@ -118,6 +121,7 @@ export class ApplicationRuntime {
     const previous = this.persistence;
     this.catalogDomain.retire();
     this.persistence = new WorkspacePersistence();
+    this.api = this.createApi();
     this.catalogDomain = this.createCatalog();
     this.readiness = null;
     this.publish({ state: 'warming', error: null });
@@ -131,8 +135,9 @@ export class ApplicationRuntime {
     if (existing) return existing;
     const session = new WorkbookSession({
       unitId: resolution.unitId, initialPhase: 'loading', resolution, api: this.api, workspacePersistence: this.persistence,
-      authTokenProvider: this.auth.getAccessToken, shareTokenProvider: this.shareTokenProvider,
-      recoverySubject: this.auth.session.getSnapshot().subject ?? undefined,
+      authTokenProvider: this.auth.createTransport().authTokenProvider, shareTokenProvider: this.shareTokenProvider,
+      collaborationUrl: this.auth.collaborationUrl,
+      recoverySubject: this.auth.session.getSnapshot().context?.contextId,
       pivotExecution: 'worker', assetStore: this.assetStoreFor(resolution.unitId),
       onReady: () => this.catalog.markOpened(resolution).then(() => undefined),
     });

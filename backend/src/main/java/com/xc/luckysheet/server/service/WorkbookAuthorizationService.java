@@ -27,7 +27,8 @@ public class WorkbookAuthorizationService {
 
     public Optional<WorkbookRole> role(String unitId, String subject) {
         WorkbookEntity workbook = workbooks.findById(unitId).orElse(null);
-        if (workbook == null) return Optional.empty();
+        if (workbook == null || !workbook.getIdentityScope().equals(
+                com.xc.luckysheet.server.security.VerifiedIdentityService.scopeForActor(subject))) return Optional.empty();
         WorkbookRole effective = null;
         if (subject.equals(workbook.getOwnerSubject())) effective = WorkbookRole.OWNER;
         WorkbookRole direct = acl.findForSubject(unitId, subject).map(e -> e.getRole()).orElse(null);

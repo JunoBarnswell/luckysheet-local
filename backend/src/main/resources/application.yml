@@ -68,6 +68,14 @@ luckysheet:
     issuer: ${AUTH_ISSUER:}
     audience: ${AUTH_AUDIENCE:}
     jwks-url: ${AUTH_JWKS_URL:}
+  identity:
+    authority: ${AUTH_IDENTITY_AUTHORITY:}
+    subject-claim: ${AUTH_SUBJECT_CLAIM:sub}
+    session-claim: ${AUTH_SESSION_CLAIM:sid}
+    tenant-claim: ${AUTH_TENANT_CLAIM:tenantId}
+    app-claim: ${AUTH_APP_CLAIM:appCode}
+    employment-claim: ${AUTH_EMPLOYMENT_CLAIM:employmentId}
+    version-claim: ${AUTH_CONTEXT_VERSION_CLAIM:contextVersion}
   websocket:
     allowed-origins: ${WEB_ALLOWED_ORIGINS:http://127.0.0.1:8082,http://localhost:8082,http://127.0.0.1:4180,http://localhost:4180}
   coordination:

@@ -132,7 +132,7 @@ public class WorkbookCatalogService {
         boolean sharedOnly = "shared".equals(normalizedView);
         boolean ownedOnly = "owned".equals(normalizedView);
         String normalizedQuery = query == null || query.isBlank() ? null : query.trim();
-        List<WorkbookEntity> rows = workbooks.findCatalogCandidates(actor, includeTrash, trashOnly, sharedOnly, ownedOnly,
+        List<WorkbookEntity> rows = workbooks.findCatalogCandidates(actor, com.xc.luckysheet.server.security.VerifiedIdentityService.scopeForActor(actor), includeTrash, trashOnly, sharedOnly, ownedOnly,
                 blankToNull(spaceId), blankToNull(folderId), normalizedQuery, PageRequest.of(page, limit));
         if (rows.isEmpty()) return new CursorPage<>(List.of(), null);
 
@@ -155,7 +155,7 @@ public class WorkbookCatalogService {
         List<WorkbookSummary> items = rows.stream().map(row -> {
             WorkbookRole role = row.getOwnerSubject().equals(actor) ? WorkbookRole.OWNER : directRoles.get(row.getUnitId());
             role = max(role, row.getSpaceId() == null ? null : spaceRoles.get(row.getSpaceId()));
-            if (role == null) role = WorkbookRole.VIEWER;
+            if (role == null) throw ServiceException.forbidden("Catalog candidate has no verified workbook role");
             WorkbookUserStateEntity state = stateMap.get(row.getUnitId());
             WorkspaceSpaceEntity space = row.getSpaceId() == null ? null : spaceMap.get(row.getSpaceId());
             WorkspaceFolderEntity folder = row.getFolderId() == null ? null : folderMap.get(row.getFolderId());

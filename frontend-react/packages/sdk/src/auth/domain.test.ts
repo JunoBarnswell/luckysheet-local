@@ -3,8 +3,9 @@ import test from 'node:test';
 import { AuthDomain } from './domain';
 import { SdkError } from '../error';
 
-const anonymous = { authenticated: false, subject: null, displayName: null, admin: false, bootstrapRequired: false, csrfToken: 'anonymous-csrf' };
-const admin = { authenticated: true, subject: 'admin-1', displayName: 'Admin', admin: true, bootstrapRequired: false, csrfToken: 'authenticated-csrf' };
+const anonymous = { context: null, authenticated: false, subject: null, displayName: null, admin: false, bootstrapRequired: false, csrfToken: 'anonymous-csrf' };
+const context = { authority: 'local', subject: 'admin-1', principal: 'admin-1', scopeId: 'local', sessionId: 'public-nonce', tenantId: null, appCode: null, employmentId: null, contextVersion: 0, contextId: 'context-admin-1' };
+const admin = { context, authenticated: true, subject: 'admin-1', displayName: 'Admin', admin: true, bootstrapRequired: false, csrfToken: 'authenticated-csrf' };
 function json(value: unknown, status = 200) { return new Response(JSON.stringify(value), { status, headers: { 'Content-Type': 'application/json' } }); }
 function port(responses: Response[]) {
   const requests: { path: string; init?: RequestInit }[] = [];
@@ -125,4 +126,118 @@ test('network error is observable without granting identity; disposed callbacks 
   assert.ok(domain.session.getSnapshot().error?.recovery);
   domain.dispose();
   await assert.rejects(domain.session.signOut(), (error: unknown) => error instanceof SdkError && error.code === 'RUNTIME_DISPOSED');
+});
+
+function verified(principal: string, contextId: string) {
+  return { ...admin, admin: false, csrfToken: '', subject: principal, context: { ...context, authority: 'https://issuer.test',
+    subject: 'trusted-user', principal, scopeId: 'scope-a', sessionId: 'sso-session', contextId } };
+}
+function credentialOwner() {
+  let credential = { token: 'credential-a', expiresAt: Date.now() + 60000 } as { token: string; expiresAt: number } | null;
+  let listener: ((event: import('./contract').CredentialEvent) => void) | null = null;
+  let acquisitions = 0;
+  return {
+    source: { acquire: async () => { acquisitions++; return credential; },
+      subscribe: (next: (event: import('./contract').CredentialEvent) => void) => { listener = next; return () => { listener = null; }; },
+      signOut: async () => { credential = null; listener?.('signed-out'); } },
+    set: (next: typeof credential) => { credential = next; },
+    emit: (event: import('./contract').CredentialEvent) => listener?.(event),
+    acquisitions: () => acquisitions,
+  };
+}
+
+test('external bearer is verified by the server and renewal preserves the same context', async () => {
+  const owner = credentialOwner();
+  const wire = port([json({ mode: 'oidc' }), json(verified('principal-a', 'context-a')), json(verified('principal-a', 'context-a')), json({ done: true })]);
+  const domain = new AuthDomain({ source: { kind: 'external-bearer', credentials: owner.source }, fetch: wire.fetch });
+  await Promise.all([domain.session.initialize(), domain.session.initialize()]);
+  assert.equal(wire.requests.length, 2);
+  const bound = domain.createTransport();
+  owner.set({ token: 'credential-renewed', expiresAt: Date.now() + 60000 });
+  const tokens = await Promise.all([bound.authTokenProvider(), bound.authTokenProvider()]);
+  assert.deepEqual(tokens, ['credential-renewed', 'credential-renewed']);
+  assert.equal(wire.requests.length, 3, 'concurrent acquisition/verification must be single-flight');
+  const response = await bound.fetchImpl('/api/workbooks');
+  assert.deepEqual(await response.json(), { done: true });
+  assert.equal(new Headers(wire.requests[3]?.init?.headers).get('X-Spreadsheet-Context'), 'context-a');
+  assert.equal(wire.requests[1]?.init?.credentials, 'omit');
+  assert.equal(domain.session.getSnapshot().subject, 'principal-a', 'caller did not choose the server principal');
+  assert.equal(JSON.stringify(domain.session.getSnapshot()).includes('credential-'), false);
+  domain.dispose();
+});
+
+test('same subject in a changed workspace retires old credential and fetch closures before dispatch', async () => {
+  const owner = credentialOwner();
+  const wire = port([json({ mode: 'oidc' }), json(verified('principal-a', 'context-a')), json(verified('principal-a', 'context-b'))]);
+  const domain = new AuthDomain({ source: { kind: 'external-bearer', credentials: owner.source }, fetch: wire.fetch });
+  await domain.session.initialize();
+  const old = domain.createTransport();
+  owner.set({ token: 'credential-b', expiresAt: Date.now() + 60000 });
+  await assert.rejects(old.authTokenProvider(), (error: unknown) => error instanceof SdkError && error.code === 'STALE_OPERATION');
+  assert.equal(domain.session.getSnapshot().subject, 'principal-a');
+  assert.equal(domain.session.getSnapshot().context?.contextId, 'context-b');
+  await assert.rejects(old.fetchImpl('/api/workbooks', { method: 'POST' }), (error: unknown) => error instanceof SdkError && error.code === 'STALE_OPERATION');
+  assert.equal(wire.requests.length, 3);
+  domain.dispose();
+});
+
+test('retired context cannot publish a response body already returned by fetch', async () => {
+  const owner = credentialOwner();
+  const wire = port([json({ mode: 'oidc' }), json(verified('principal-a', 'context-a')), json({ privateValue: 42 })]);
+  const domain = new AuthDomain({ source: { kind: 'external-bearer', credentials: owner.source }, fetch: wire.fetch });
+  await domain.session.initialize();
+  const response = await domain.createTransport().fetchImpl('/api/workbooks');
+  owner.emit('signed-out');
+  await assert.rejects(response.json(), (error: unknown) => error instanceof SdkError && error.code === 'STALE_OPERATION');
+  assert.equal(domain.session.getSnapshot().context, null);
+  domain.dispose();
+});
+
+test('expired or rejected external credentials clear identity without dispatching business writes', async () => {
+  for (const failure of ['expired', 'server-rejected'] as const) {
+    const owner = credentialOwner();
+    const wire = port([json({ mode: 'oidc' }), json(verified('principal-a', 'context-a')), ...(failure === 'server-rejected' ? [json({}, 401)] : [])]);
+    const domain = new AuthDomain({ source: { kind: 'external-bearer', credentials: owner.source }, fetch: wire.fetch });
+    await domain.session.initialize();
+    const bound = domain.createTransport();
+    owner.set({ token: 'credential-b', expiresAt: Date.now() + (failure === 'expired' ? -1 : 60000) });
+    await assert.rejects(bound.authTokenProvider(), (error: unknown) => error instanceof SdkError && error.code === 'UNAUTHENTICATED');
+    assert.equal(domain.session.getSnapshot().subject, null);
+    assert.equal(domain.getCsrfToken(), null);
+    assert.equal(wire.requests.some(request => request.path === '/api/workbooks'), false);
+    domain.dispose();
+  }
+});
+
+test('host-session preserves Gateway prefix, uses host CSRF and never accepts host-selected subject', async () => {
+  const wire = port([json({ mode: 'delegated' }), json(verified('server-principal', 'server-context')), json({})]);
+  const domain = new AuthDomain({ baseUrl: 'https://gateway.test/api/workspaces/tenant/app/excel',
+    collaborationUrl: 'wss://gateway.test/api/workspaces/tenant/app/excel/ws', fetch: wire.fetch,
+    source: { kind: 'host-session', session: { getCsrfToken: async () => 'gateway-csrf', subscribe: () => () => {}, signOut: async () => {} } } });
+  await domain.session.initialize();
+  assert.equal(wire.requests[0]?.path, 'https://gateway.test/api/workspaces/tenant/app/excel/api/auth/config');
+  assert.equal(domain.session.getSnapshot().subject, 'server-principal');
+  assert.equal(domain.getCsrfToken(), 'gateway-csrf');
+  assert.equal(wire.requests[1]?.init?.credentials, 'include');
+  assert.equal(new Headers(wire.requests[1]?.init?.headers).has('Authorization'), false);
+  assert.equal(new URL(domain.collaborationUrl!).searchParams.get('context'), 'server-context');
+  const bound = domain.createTransport();
+  await assert.rejects(bound.fetchImpl('https://untrusted.test/api/workbooks'), (error: unknown) => error instanceof SdkError && error.code === 'FORBIDDEN');
+  assert.equal(wire.requests.length, 2);
+  await assert.rejects(domain.session.authenticate('spoofed', 'secret'), (error: unknown) => error instanceof SdkError && error.code === 'AUTH_CONFIGURATION_ERROR');
+  domain.dispose();
+});
+
+test('credential source mismatch and malformed verified context fail closed', async () => {
+  const owner = credentialOwner();
+  const mismatched = new AuthDomain({ source: { kind: 'external-bearer', credentials: owner.source }, fetch: port([json({ mode: 'local' })]).fetch });
+  await mismatched.session.initialize();
+  assert.equal(mismatched.session.getSnapshot().error?.code, 'AUTH_CONFIGURATION_ERROR');
+  mismatched.dispose();
+  const wire = port([json({ mode: 'oidc' }), json({ ...verified('principal-a', 'context-a'), context: { ...context, principal: 'different' } })]);
+  const domain = new AuthDomain({ source: { kind: 'external-bearer', credentials: owner.source }, fetch: wire.fetch });
+  await domain.session.initialize();
+  assert.equal(domain.session.getSnapshot().error?.code, 'CONTRACT_INVALID');
+  assert.equal(domain.session.getSnapshot().context, null);
+  domain.dispose();
 });

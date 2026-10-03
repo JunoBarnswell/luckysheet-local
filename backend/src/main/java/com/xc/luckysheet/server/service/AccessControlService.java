@@ -44,6 +44,10 @@ public class AccessControlService {
         store.findForUpdate(unitId).orElseThrow(() -> ServiceException.notFound("Workbook not found"));
         require(unitId, actor, WorkbookRole.OWNER);
         if (target == null || target.isBlank()) throw ServiceException.validation("ACL subject is required");
+        if (!com.xc.luckysheet.server.security.VerifiedIdentityService.scopeForActor(actor).equals(
+                com.xc.luckysheet.server.security.VerifiedIdentityService.scopeForActor(target))) {
+            throw ServiceException.forbidden("Cross-workspace ACL is forbidden");
+        }
         if (role == null || role == WorkbookRole.OWNER) throw ServiceException.validation("Only editor, commenter or viewer may be granted");
         Instant now = Instant.now();
         store.upsertAcl(unitId, target, role, now);
