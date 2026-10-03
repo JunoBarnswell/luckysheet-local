@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { WorkbookModel } from '@react-sheets/core-model';
 import { AuthDomain } from '../auth/domain';
 import { ApplicationRuntime } from './runtime';
 import { createSpreadsheetSdk } from '../sdk';
@@ -66,4 +67,16 @@ test('SDK exposes named actions without protocol/persistence owners and fails af
   await sdk.dispose();
   await assert.rejects(sdk.auth.signOut(), (error: unknown) => error instanceof SdkError && error.code === 'RUNTIME_DISPOSED');
   await assert.rejects(sdk.workbooks.list(), /unavailable/);
+});
+
+test('a host without browser Worker fails closed instead of opening a partially initialized editor', async () => {
+  const auth = new AuthDomain({ fetch: authPort() });
+  const runtime = new ApplicationRuntime(auth);
+  const snapshot = new WorkbookModel('loading-boundary', 'Loading boundary').snapshot();
+  assert.throws(() => runtime.createSession({ schema: 'WorkbookResolution', unitId: snapshot.unitId, snapshot,
+    revision: 0, lifecycle: 'active', source: 'remote', mode: 'remote', localRecord: null,
+    binding: { location: 'remote', syncMode: 'remote' },
+    access: { unitId: snapshot.unitId, role: 'owner', accessRevision: 0, regions: [] } }), (error: unknown) => error instanceof SdkError && error.code === 'UNSUPPORTED_FEATURE');
+  await runtime.dispose();
+  auth.dispose();
 });

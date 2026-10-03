@@ -1637,6 +1637,8 @@ export function startCollaborationSession(
       runtime.remoteConnected = false;
       runtime.collaboration?.offlineQueue.setOnline(false);
       runtime.handlers.onCollabStatus?.(status);
+      // Editing is available only after the server snapshot/access/history synchronization.
+      runtime.handlers.onPhaseChange?.('loading');
       if (status === 'closed') {
         runtime.collaboration?.transportClosed();
         runtime.handlers.onSaveState?.('offline');
@@ -1667,6 +1669,7 @@ export function startCollaborationSession(
         client.markSynchronized();
         runtime.remoteConnected = true;
         runtime.collaboration?.offlineQueue.setOnline(true);
+        runtime.handlers.onPhaseChange?.('ready');
         runtime.handlers.onMutationsApplied?.();
         runtime.handlers.onSaveState?.(runtime.collaboration?.getPendingOperations().length ? 'saving' : 'saved');
         if (runtime.model.dataModel.externalLinks.size) await refreshExternalLinks(runtime);
@@ -1677,6 +1680,7 @@ export function startCollaborationSession(
         runtime.remoteConnected = false;
         runtime.handlers.onSaveState?.('conflict');
         runtime.handlers.onNotice?.(error.message);
+        runtime.handlers.onPhaseChange?.('error');
         if (error instanceof MutationRecoveryRequiredError) client.requestResynchronization();
       });
     });
@@ -1866,9 +1870,8 @@ async function initializePersistence(runtime: SpreadsheetRuntime, isActive: () =
         runtime.handlers.onSaveState?.('saved');
         runtime.handlers.onNotice?.('Workbook restored from server');
         runtime.handlers.onActiveSheetChange?.(runtime.model.primarySheetId);
-        // Keep the visible ready boundary after the authoritative active-sheet
-        // callback so immediate tab interaction cannot be reverted by startup.
-        runtime.handlers.onPhaseChange?.('ready');
+        // Server state is loaded, but the collaboration writer is not synchronized yet.
+        runtime.handlers.onPhaseChange?.('loading');
         runtime.handlers.onWorkspacePersisted?.();
         if (runtime.model.dataModel.externalLinks.size) await refreshExternalLinks(runtime);
       }

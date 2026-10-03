@@ -97,8 +97,9 @@ export class ApplicationRuntime {
   }
   createSession(resolution: WorkbookResolution): WorkbookSession {
     if (this.disposed) throw new SdkError('RUNTIME_DISPOSED', 'workbook.open', 'SDK Runtime 已释放。', '请创建新的 SDK。');
+    if (typeof Worker === 'undefined') throw new SdkError('UNSUPPORTED_FEATURE', 'workbook.open', '此宿主缺少工作簿运行所需的 browser Worker。', '请提供支持 browser Worker 的浏览器宿主。');
     const session = new WorkbookSession({
-      unitId: resolution.unitId, resolution, api: this.api, workspacePersistence: this.persistence,
+      unitId: resolution.unitId, initialPhase: 'loading', resolution, api: this.api, workspacePersistence: this.persistence,
       authTokenProvider: this.auth.getAccessToken, shareTokenProvider: this.shareTokenProvider,
       recoverySubject: this.auth.session.getSnapshot().subject ?? undefined,
       pivotExecution: 'worker', assetStore: new RemoteAssetStore(resolution.unitId, this.api),
