@@ -3,6 +3,8 @@ import test from 'node:test';
 import { getWorkbookObjectPort, WorkbookSession } from '@react-sheets/spreadsheet-app';
 import { Workbook } from './workbook';
 import { SdkError } from '../error';
+import { CollabSocketClient, type OperationMessage } from '@react-sheets/protocol';
+import { startCollaborationSession } from '../../../spreadsheet-app/src/runtime';
 function fixture(id: string, scope: object = {}) {
   const session = new WorkbookSession({ unitId: id });
   const workbook = new Workbook(getWorkbookObjectPort(session), scope, () => session.dispose());
@@ -68,6 +70,56 @@ test('closing one workbook retires its cell and range handles while another stay
     await second.workbook.worksheets.at(0).cells.get('D8').setValue(42);
     assert.equal((await second.workbook.worksheets.at(0).cells.get('D8').read()).value, 42);
   } finally { second.workbook.close(); }
+});
+
+test('canonical Session disposal and workbook lifecycle retire public objects without affecting another workbook', async () => {
+  const first = fixture('session-retirement'), other = fixture('session-survivor');
+  try {
+    const cell = first.workbook.worksheets.at(0).cells.get('A1'), range = first.workbook.worksheets.at(0).ranges.get('A1:B2');
+    first.session['runtime'].handlers.onWorkbookLifecycle?.('active');
+    await cell.setValue(40);
+    first.session['runtime'].handlers.onWorkbookLifecycle?.('trashed');
+    await assert.rejects(cell.read(), (cause: unknown) => cause instanceof SdkError && cause.code === 'RUNTIME_DISPOSED');
+    assert.throws(() => [...range.cells()], (cause: unknown) => cause instanceof SdkError && cause.code === 'RUNTIME_DISPOSED');
+    await other.workbook.worksheets.at(0).cells.get('A1').setValue(7);
+    assert.equal((await other.workbook.worksheets.at(0).cells.get('A1').read()).value, 7);
+    other.session.dispose();
+    assert.throws(() => other.workbook.name, (cause: unknown) => cause instanceof SdkError && cause.code === 'RUNTIME_DISPOSED');
+  } finally { first.workbook.close(); other.workbook.close(); }
+});
+
+test('source lifecycle retirement precedes initial synchronization and rejects late snapshot publication', async t => {
+  const prior = Object.getOwnPropertyDescriptor(globalThis, 'window');
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: { location: { protocol: 'http:', host: 'localhost' }, setInterval, clearInterval } });
+  t.after(() => { if (prior) Object.defineProperty(globalThis, 'window', prior); else Reflect.deleteProperty(globalThis, 'window'); });
+  let status!: (status: 'connecting' | 'open' | 'closed') => void, message!: (message: OperationMessage) => void;
+  t.mock.method(CollabSocketClient.prototype, 'onStatus', (listener: typeof status) => { status = listener; return () => {}; });
+  t.mock.method(CollabSocketClient.prototype, 'onMessage', (listener: typeof message) => { message = listener; return () => {}; });
+  t.mock.method(CollabSocketClient.prototype, 'open', () => status('open'));
+  t.mock.method(CollabSocketClient.prototype, 'send', () => true);
+  t.mock.method(CollabSocketClient.prototype, 'close', () => {});
+  const { session, workbook } = fixture('life-during-sync');
+  const cell = workbook.worksheets.at(0).cells.get('A1'), runtime = session['runtime'], snapshot = runtime.model.snapshot();
+  runtime.localOnly = false;
+  let release!: (snapshot: import('@react-sheets/protocol').SnapshotResponse) => void;
+  let snapshotStarted!: () => void;
+  const started = new Promise<void>(resolve => { snapshotStarted = resolve; });
+  runtime.api.getSnapshot = async () => new Promise(resolve => { release = resolve; snapshotStarted(); });
+  runtime.api.getAccess = async () => ({ unitId: workbook.id, role: 'owner', accessRevision: 0, regions: [] });
+  runtime.api.listRevisions = async () => [];
+  const detach = startCollaborationSession(runtime, () => 'A1');
+  try {
+    await started;
+    message({ type: 'workbook.lifecycle.changed', unitId: 'another-book', lifecycle: 'purged' });
+    assert.equal(runtime.disposed, false);
+    message({ type: 'workbook.lifecycle.changed', unitId: workbook.id, lifecycle: 'purged' });
+    assert.equal(runtime.disposed, true);
+    await assert.rejects(cell.read(), (cause: unknown) => cause instanceof SdkError && cause.code === 'RUNTIME_DISPOSED');
+    const oldModel = runtime.model;
+    release({ unitId: workbook.id, snapshot, revision: 999 });
+    await Promise.resolve(); await Promise.resolve();
+    assert.equal(runtime.model, oldModel); assert.equal(runtime.remoteConnected, false); assert.notEqual(runtime.remoteRevision, 999);
+  } finally { detach(); workbook.close(); }
 });
 test('cross-workbook formulas refresh authorized revisions and clear revoked inputs', async () => {
   const scope = {}, source = fixture('object-source', scope), target = fixture('object-target', scope);

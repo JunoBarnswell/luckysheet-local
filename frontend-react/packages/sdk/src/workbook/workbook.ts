@@ -12,6 +12,7 @@ export class Workbook {
   #closed = false;
   #closeReady: (() => void) | null = null;
   #opening: Promise<Workbook> | null = null;
+  #unsubscribeLifetime: () => void = () => {};
   constructor(readonlyPort: WorkbookObjectPort, scope: object, close: () => void) {
     this.#port = readonlyPort;
     this.#release = close;
@@ -19,13 +20,14 @@ export class Workbook {
     this.worksheets = new WorksheetCollection(this);
     this.externalLinks = new WorkbookExternalLinks(this);
     this.#initializeDomain(scope);
+    this.#unsubscribeLifetime = readonlyPort.subscribeDisposed(() => this.close());
     Object.freeze(this);
   }
   readonly #port: WorkbookObjectPort;
   readonly #release: () => void;
   get name(): string { this.#assertAlive('workbook.name'); return this.#port.state().name; }
   #assertAlive(operation: string): void {
-    if (this.#closed) throw this.#error('RUNTIME_DISPOSED', operation, '工作簿对象已关闭。', undefined);
+    if (this.#closed || this.#port.state().disposed) throw this.#error('RUNTIME_DISPOSED', operation, '工作簿对象已关闭。', undefined);
   }
   #error(code: SdkError['code'], operation: string, message: string, cause: unknown, object?: { sheetId?: string; address?: string }): SdkError {
     return new SdkError(code, operation, `${this.id}: ${message}`, '请检查工作簿权限和状态，重新打开后重试。', { cause, object: { workbookId: this.id, ...object } });
@@ -52,6 +54,7 @@ export class Workbook {
   close(): void {
     if (this.#closed) return;
     this.#closed = true;
+    this.#unsubscribeLifetime();
     this.#closeReady?.();
     this.#release();
   }

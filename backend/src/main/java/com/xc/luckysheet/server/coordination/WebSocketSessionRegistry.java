@@ -70,9 +70,13 @@ public class WebSocketSessionRegistry {
         });
     }
 
-    public void broadcastLifecycleChanged(String unitId) {
+    public void broadcastLifecycleChanged(String unitId, String lifecycle) {
+        if (!Set.of("active", "trashed", "purged").contains(lifecycle)) throw new IllegalArgumentException("Unknown workbook lifecycle");
         broadcastCalculationChanged(unitId);
         for (WebSocketSession peer : sessionsByUnit.getOrDefault(unitId, Set.of())) {
+            if (!peer.isOpen()) continue;
+            sendJson(peer, mapper.createObjectNode().put("type", "workbook.lifecycle.changed").put("unitId", unitId).put("lifecycle", lifecycle));
+            if (lifecycle.equals("active")) continue;
             unsubscribeCalculation(peer);
             closeRevokedSession(peer);
         }

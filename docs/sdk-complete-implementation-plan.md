@@ -108,3 +108,7 @@ WebSocket 增加正式 calculation.subscribe / calculation.changed 契约；闭�
 完整修正采用一次规范拓扑闭包收集（仅内部锁集，不是持久化/read model），锁前 flush/clear 去掉未锁 entity，按稳定 ID 获取所有规范依赖的数据库锁，再清理 ORM 并产生授权响应。拒绝节点的后代也只内部锁定，响应只遍历授权可见闭包，禁止暴露拒绝节点的快照或内部后代；这样权限变化不会改变已锁集合。新建/复制/导入、永久删除和历史恢复都经过同一图门控；恢复候选必须重新检查循环和授权。来源 trash/purge 是 broken 输入并发送生命周期失效通知，restore-from-trash 重新获取授权版本。
 
 新增实施前细项 MWB-03.e：事务已有旧 source entity 后另一真实事务写入 40，图必须读到新的版本与值且无 409；锁前缓存不能代表来源版本。MWB-03.f：A→B 曾合法，移除后 B→A，再恢复旧 A→B 必须整体拒绝，无新 operation/revision；来源 trash→restore→trash/purge 自动触发 #REF!→80/1/80→#REF!，坏来源节点无 snapshot。修正整个上述事务链后再统一验证，既有拒绝断言保持。
+
+e8bf2736 第二轮 15/16 Pass；所有旧图 409 已消失，新增 trash/restore/purge 的依赖结果均通过。最后 network 断言发现仍打开的来源自身 WS 被关闭后触发 access/snapshot 403：生命周期仅关闭连接，尚未退休宿主对象。下一完整所有权批次新增正式 server-only workbook.lifecycle.changed，单 Session 先处理生命周期再关闭 WS，dispose 通过内部 lifetime port 通知公开 Workbook 退休；ApplicationRuntime 现有 release 回收 session/object/catalog open cache。source 的 dependent subscriptions 保留，目标重取图；恢复创建新对象，旧 Cell/Range 永久 RUNTIME_DISPOSED。不再让已退休来源重新请求自身 snapshot，不放宽 network/console。
+
+实施前 MWB-03.g：来源 A 打开时 trash 后旧 Cell 报 RUNTIME_DISPOSED，C 自动 #REF!；restore 后重新 open A 能读 40、旧 Cell 仍拒绝；purge 不发生来源自己的 access/snapshot 403；来源 lifecycle 不能被客户端伪造，也不能退休别的 unit。Session 直接 dispose 同样退休全部公开句柄，仍打开的其他工作簿保持可用。

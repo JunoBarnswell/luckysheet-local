@@ -80,9 +80,15 @@ class WebSocketSessionRegistryTest {
             when(session.getAttributes()).thenReturn(new java.util.concurrent.ConcurrentHashMap<>());
         }
         registry.subscribeCalculation("root", java.util.Set.of("leaf"), dependent); registry.join("leaf", source);
-        registry.broadcastLifecycleChanged("leaf"); registry.broadcastLifecycleChanged("leaf");
+        registry.broadcastLifecycleChanged("leaf", "trashed"); registry.broadcastLifecycleChanged("leaf", "purged");
         verify(dependent, times(2)).sendMessage(any()); verify(dependent, never()).close(any());
         verify(source, times(2)).close(eq(CloseStatus.POLICY_VIOLATION));
+        var order = org.mockito.Mockito.inOrder(source);
+        order.verify(source).sendMessage(any()); order.verify(source).close(eq(CloseStatus.POLICY_VIOLATION));
+        var messages = ArgumentCaptor.forClass(TextMessage.class); verify(source, times(2)).sendMessage(messages.capture());
+        ObjectMapper mapper = new ObjectMapper();
+        assertEquals(mapper.readTree("{\"type\":\"workbook.lifecycle.changed\",\"unitId\":\"leaf\",\"lifecycle\":\"trashed\"}"), mapper.readTree(messages.getAllValues().get(0).getPayload()));
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class, () -> registry.broadcastLifecycleChanged("leaf", "forged"));
     }
 
     @Test

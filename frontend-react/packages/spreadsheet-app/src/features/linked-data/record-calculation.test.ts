@@ -269,4 +269,7 @@ test('external calculation graph rejects missing duplicate cyclic and malformed 
   assert.throws(() => validateExternalCalculationGraph({ ...graph, nodes: [node(a), node(b)] }, a.unitId), /CIRCULAR_DEPENDENCY/);
   assert.deepEqual(decodeClientOperationMessage(encodeClientOperationMessage({ type: 'calculation.subscribe', unitId: a.unitId })), { type: 'calculation.subscribe', unitId: a.unitId });
   assert.throws(() => decodeClientOperationMessage(JSON.stringify({ type: 'calculation.changed', unitId: a.unitId, sourceUnitId: b.unitId })), /Server-only/);
+  assert.throws(() => decodeClientOperationMessage(JSON.stringify({ type: 'workbook.lifecycle.changed', unitId: a.unitId, lifecycle: 'purged' })), /Server-only/);
+  const { decodeOperationMessage } = await import('@react-sheets/protocol');
+  assert.throws(() => decodeOperationMessage(JSON.stringify({ type: 'workbook.lifecycle.changed', unitId: a.unitId, lifecycle: 'forged' })), /invalid/);
 });

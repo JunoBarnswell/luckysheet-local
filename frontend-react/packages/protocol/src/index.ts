@@ -3064,6 +3064,7 @@ export type OperationMessage =
   | { type: 'revision.created'; unitId: string; operationId: string; accessRevision: number; payload: CommittedOperationEnvelope; resyncRequired?: never; revision: number }
   | { type: 'revision.created'; unitId: string; operationId: string; accessRevision: number; payload?: never; resyncRequired: true; revision: number }
   | { type: 'access.changed'; unitId: string; accessRevision: number }
+  | { type: 'workbook.lifecycle.changed'; unitId: string; lifecycle: 'active' | 'trashed' | 'purged' }
   | { type: 'calculation.changed'; unitId: string; sourceUnitId: string }
   | { type: 'calculation.subscribe'; unitId: string }
   | { type: 'presence.updated'; unitId: string; state: unknown }
@@ -3212,6 +3213,10 @@ export function decodeOperationMessage(input: string): OperationMessage {
       validateExactKeys(message, ['type', 'unitId', 'sourceUnitId'], 'calculation.changed');
       if (!isNonEmptyString(message.unitId) || !isNonEmptyString(message.sourceUnitId)) throw new Error('calculation.changed identities are invalid');
       return { type: 'calculation.changed', unitId: message.unitId, sourceUnitId: message.sourceUnitId };
+    case 'workbook.lifecycle.changed':
+      validateExactKeys(message, ['type', 'unitId', 'lifecycle'], 'workbook.lifecycle.changed');
+      if (!isNonEmptyString(message.unitId) || !['active', 'trashed', 'purged'].includes(String(message.lifecycle))) throw new Error('workbook.lifecycle.changed identity or lifecycle is invalid');
+      return { type: 'workbook.lifecycle.changed', unitId: message.unitId, lifecycle: message.lifecycle as 'active' | 'trashed' | 'purged' };
     case 'calculation.subscribe':
       validateExactKeys(message, ['type', 'unitId'], 'calculation.subscribe');
       if (!isNonEmptyString(message.unitId)) throw new Error('calculation.subscribe identity is invalid');

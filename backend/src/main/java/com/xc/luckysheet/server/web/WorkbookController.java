@@ -138,21 +138,21 @@ public class WorkbookController {
     @DeleteMapping("/{unitId}")
     public ResponseEntity<Void> moveToTrash(@PathVariable String unitId, Authentication authentication) {
         catalog.moveToTrash(unitId, ActorIdentity.subject(authentication));
-        sessions.broadcastLifecycleChanged(unitId);
+        sessions.broadcastLifecycleChanged(unitId, "trashed");
         return ResponseEntity.noContent().build();
     }
 
     @PostMapping("/{unitId}/restore-from-trash")
     public WorkbookSummary restoreFromTrash(@PathVariable String unitId, Authentication authentication) {
         var summary = catalog.restoreFromTrash(unitId, ActorIdentity.subject(authentication));
-        sessions.broadcastLifecycleChanged(unitId);
+        sessions.broadcastLifecycleChanged(unitId, "active");
         return summary;
     }
 
     @DeleteMapping("/{unitId}/purge")
     public ResponseEntity<Void> purge(@PathVariable String unitId, Authentication authentication) {
         catalog.purge(unitId, ActorIdentity.subject(authentication));
-        sessions.broadcastLifecycleChanged(unitId);
+        sessions.broadcastLifecycleChanged(unitId, "purged");
         return ResponseEntity.noContent().build();
     }
 

@@ -6,7 +6,8 @@ import type { DispatchOutcome } from './workbook-session';
 /** Internal access to the existing canonical runtime, never exported by SDK. */
 export interface WorkbookObjectPort {
   readonly unitId: string;
-  state(): { phase: string; notice: string; name: string };
+  state(): { phase: string; notice: string; name: string; disposed: boolean };
+  subscribeDisposed(listener: () => void): () => void;
   sheets(): readonly { id: string; name: string; kind: SheetKind }[];
   readCell(sheetId: string, row: number, column: number): Promise<{
     sheetId: string; row: number; column: number; cell?: CellData;

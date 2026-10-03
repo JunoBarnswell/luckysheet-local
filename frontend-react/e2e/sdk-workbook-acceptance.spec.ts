@@ -226,6 +226,8 @@ test('MWB-03.a/b/c: three-workbook graph propagates real source commits and auth
     expect(cycle).toBe('CIRCULAR_DEPENDENCY');
     expect(await (await page.request.get(`/api/workbooks/${setup.a}/snapshot`)).json()).toEqual(before);
     expect((await readRoot()).values).toEqual([80, 1, 80]);
+    const oldSourceCell = await owner.evaluateHandle(async (sdk, id) => (await sdk.workbooks.open(id)).worksheets.at(0).cells.get('A1'), setup.a);
+    const oldSourceCode = () => oldSourceCell.evaluate(async cell => { try { await cell.read(); return 'alive'; } catch (cause) { return (cause as { code?: string }).code; } });
 
     const waitLeafState = (state: 'broken' | 'connected') => readerPage.waitForResponse(async response => {
       if (!response.ok() || new URL(response.url()).pathname !== graphPath) return false;
@@ -234,11 +236,14 @@ test('MWB-03.a/b/c: three-workbook graph propagates real source commits and auth
     const automaticTrash = waitLeafState('broken');
     await owner.evaluate((sdk, id) => sdk.workbooks.moveToTrash(id), setup.a);
     const trashed = await (await automaticTrash).json();
+    await expect.poll(oldSourceCode).toBe('RUNTIME_DISPOSED');
     expect(trashed.nodes.find((node: { unitId: string }) => node.unitId === setup.a)).not.toHaveProperty('snapshot');
     for (const value of (await readRoot()).values) expect(value).toMatchObject({ kind: 'error', code: '#REF!' });
     const automaticUntrash = waitLeafState('connected');
     await owner.evaluate((sdk, id) => sdk.workbooks.restore(id), setup.a); await automaticUntrash;
     expect((await readRoot()).values).toEqual([80, 1, 80]);
+    expect(await owner.evaluate(async (sdk, id) => (await (await sdk.workbooks.open(id)).worksheets.at(0).cells.get('A1').read()).value, setup.a)).toBe(40);
+    expect(await oldSourceCode()).toBe('RUNTIME_DISPOSED');
     const secondTrash = waitLeafState('broken');
     await owner.evaluate((sdk, id) => sdk.workbooks.moveToTrash(id), setup.a); await secondTrash;
     const automaticPurge = readerPage.waitForResponse(async response => {

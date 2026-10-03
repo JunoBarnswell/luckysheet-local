@@ -759,6 +759,7 @@ export class WorkbookSession {
     dispatch: (intent) => this.dispatchCellEditIntent(intent),
   };
   private readonly listeners = new Set<() => void>();
+  private readonly disposedListeners = new Set<() => void>();
   private readonly actorId: string;
   private readonly nativeDocumentExecution: 'worker' | 'inline-test';
   private readonly onReady?: () => void | Promise<unknown>;
@@ -945,7 +946,8 @@ export class WorkbookSession {
     this.syncPersistenceMeta();
     registerWorkbookObjectPort(this, {
       unitId: this.runtime.model.unitId,
-      state: () => ({ phase: this.phase, notice: this.notice, name: this.runtime.model.name }),
+      state: () => ({ phase: this.phase, notice: this.notice, name: this.runtime.model.name, disposed: this.disposed || this.runtime.disposed }),
+      subscribeDisposed: (listener) => { this.disposedListeners.add(listener); return () => this.disposedListeners.delete(listener); },
       sheets: () => this.runtime.model.getSheets().map(({ id, name, kind }) => ({ id, name, kind })),
       readCell: async (sheetId, row, column) => {
         const authorize = () => {
@@ -1219,6 +1221,11 @@ export class WorkbookSession {
       }
       this.emit();
     };
+    this.runtime.handlers.onWorkbookLifecycle = (lifecycle) => {
+      if (lifecycle === 'active') return;
+      this.notice = lifecycle === 'trashed' ? 'Workbook moved to trash' : 'Workbook permanently removed';
+      this.dispose();
+    };
     this.runtime.handlers.onPeersChange = (peer) => {
       if (peer.length === 0) {
         this.peers = [];
@@ -1286,6 +1293,7 @@ export class WorkbookSession {
     if (!this.started && this.disposed) return;
     this.formatPainter = null;
     this.disposed = true;
+    this.phase = 'error';
     this.started = false;
     this.pendingActiveSheetDerivedState = null;
     this.lifecycleGeneration += 1;
@@ -1314,6 +1322,9 @@ export class WorkbookSession {
     disposeSpreadsheetRuntime(this.runtime);
     this.projection.invalidateAllSheetProjections();
     this.cachedUiSnapshot = null;
+    for (const listener of [...this.disposedListeners]) listener();
+    this.disposedListeners.clear();
+    for (const listener of [...this.listeners]) listener();
   }
 
   subscribe = (listener: () => void): (() => void) => {

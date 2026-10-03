@@ -53,6 +53,7 @@ export interface RuntimeHandlers {
   onMutationsApplied?: () => void;
   onCalculationApplied?: (addresses: readonly { readonly sheetId: string; readonly row: number; readonly column: number }[]) => void;
   onPhaseChange?: (phase: import('./types').AppPhase) => void;
+  onWorkbookLifecycle?: (lifecycle: 'active' | 'trashed' | 'purged') => void;
   onActiveSheetChange?: (sheetId: string) => void;
   onRemoteRevisions?: (revisions: import('@react-sheets/protocol').RevisionRecord[]) => void;
   onCollabStatus?: (status: 'connecting' | 'open' | 'closed') => void;
@@ -1566,8 +1567,13 @@ export function startCollaborationSession(
       }
     };
     const applyRemote = (message: OperationMessage) => {
-      if (synchronizing) { deferredMessages.push(message); return; }
       if (runtime.disposed) return;
+      // Retirement fences even an in-flight initial snapshot synchronization.
+      if (message.type === 'workbook.lifecycle.changed') {
+        if (message.unitId === runtime.model.unitId) runtime.handlers.onWorkbookLifecycle?.(message.lifecycle);
+        return;
+      }
+      if (synchronizing) { deferredMessages.push(message); return; }
       if (message.type === 'access.changed') {
         if (message.unitId !== runtime.model.unitId) return;
         void resynchronizeForAccessChange(message.accessRevision);
