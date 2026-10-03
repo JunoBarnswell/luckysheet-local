@@ -67,3 +67,7 @@ analysis/univer-npm/node_modules/
 
 # Local tools (download separately)
 tools/apache-maven-3.9.9/
+
+# Runtime credentials/databases and generated browser artifacts
+/data/
+/output/playwright/

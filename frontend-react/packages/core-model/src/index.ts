@@ -1,3 +1,4 @@
+export { isTableSheetDefinition } from './table-sheet-validation';
 import { assertExternalLinkBinding } from './data-model';
 import { assertRecordTable, assertRecordRelationship, assertRecordCalculations } from './record-domain';
 import { rewriteSheetLifecycleFormula } from '@react-sheets/formula-engine';

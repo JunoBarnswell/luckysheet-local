@@ -1104,7 +1104,7 @@ class MutationDescriptorRegistryTest {
                 "pageLayout.margins.set", "pageLayout.orientation.set", "pageLayout.paperSize.set", "pageLayout.pageSetupDetail.set", "pageLayout.scaleToFit.set", "pageLayout.printTitles.set", "pageLayout.printArea.set", "pageLayout.printArea.clear", "pageLayout.pageBreak.insert", "pageLayout.pageBreak.remove", "pageLayout.pageBreak.clear", "pageLayout.printGridlines.set", "pageLayout.printHeadings.set", "pageLayout.viewGridlines.set", "pageLayout.viewHeadings.set"
                 , "query.definition.replace", "query.load.range", "query.load.sheet-table", "query.load.pivot-source", "query.load.workbook-table",
                 "rows.inserted", "rows.deleted", "columns.inserted", "columns.deleted", "cells.inserted", "cells.deleted", "cells.inserted.restore", "cells.deleted.restore", "rows.permuted", "range.move", "rows.visibility",
-                "fill.applied", "fill.restored",
+                "find.replaced", "fill.applied", "fill.restored",
                 "dataSource.add", "dataSource.update", "dataSource.remove", "dataRegion.add", "dataRegion.remove", "analysis.view.replace"
         ), Set.copyOf(registry.acceptedIds()));
     }
@@ -1283,7 +1283,7 @@ class MutationDescriptorRegistryTest {
     void commenterMayCommitReviewMutationButCannotWriteCells() throws Exception {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         var snapshot = mapper.readTree("""
-                {"sheets":[{"id":"sheet-1","cells":{},"review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}}}]}
+                {"sheets":[{"id":"sheet-1","rowCount":10,"columnCount":10,"protectionRules":[],"cells":{},"review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}}}]}
                 """);
         var note = new OperationMutation("note.set", "sheet-1", mapper.readTree("""
                 {"sheetId":"sheet-1","row":2,"column":3,"note":{"id":"n-1","author":"guest","text":"Review","createdAt":"2026-08-23T00:00:00Z","visible":true}}
@@ -1399,7 +1399,7 @@ class MutationDescriptorRegistryTest {
     }
 
     @Test
-    void rowPermutationChecksProtectedMetadataAcrossEveryColumnItRemaps() throws Exception {
+    void rowPermutationChecksAuthorizedColumnsAndKeepsUnselectedProtectionRulesStationary() throws Exception {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
         var snapshot = mapper.readTree("""
                 {"sheets":[{"id":"sheet-1","name":"Data","rowCount":10,"columnCount":2,"cells":{},"review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}},"protectionRules":[
@@ -1417,7 +1417,7 @@ class MutationDescriptorRegistryTest {
         assertEquals(0, owner.affectedRanges().getFirst().startColumn());
         assertEquals(500, owner.affectedRanges().getFirst().endColumn());
         var updated = owner.descriptor().apply(snapshot, mutation);
-        assertEquals(5, updated.path("sheets").get(0).path("protectionRules").get(0).path("range").path("startRow").asInt());
+        assertEquals(0, updated.path("sheets").get(0).path("protectionRules").get(0).path("range").path("startRow").asInt());
     }
 
     @Test

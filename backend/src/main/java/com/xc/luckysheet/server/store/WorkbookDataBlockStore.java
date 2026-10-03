@@ -12,6 +12,7 @@ import java.util.Optional;
 
 @Repository
 public class WorkbookDataBlockStore {
+    @jakarta.persistence.PersistenceContext private jakarta.persistence.EntityManager entityManager;
     private final DataBlockEntityRepository blocks;
     private final WorkbookEntityRepository workbooks;
 
@@ -30,6 +31,8 @@ public class WorkbookDataBlockStore {
 
     /** Copies immutable bytes inside the database so workbook copy never materializes block payloads in the JVM. */
     public int copyToWorkbook(String sourceUnitId, String targetUnitId, String sourceId, String blockId) {
+        var source = findMetadata(sourceUnitId, sourceId, blockId).orElseThrow(() -> ServiceException.notFound("Source data block not found"));
+        requireGlobalQuota(source.byteLength());
         return blocks.copyToWorkbook(sourceUnitId, targetUnitId, sourceId, blockId);
     }
 
@@ -54,10 +57,16 @@ public class WorkbookDataBlockStore {
         if (resultingBytes > maximumBytes || resultingBlocks > maximumBlocks) {
             throw ServiceException.validation("Workbook data block quota exceeded");
         }
+        requireGlobalQuota(row.byteLength());
         DataBlockEntity entity = new DataBlockEntity(row.unitId(), row.sourceId(), row.blockId(), row.checksum(),
                 row.byteLength(), row.content().clone(), row.createdAt(), row.updatedAt());
         blocks.save(entity);
         return metadata(entity);
+    }
+
+    private void requireGlobalQuota(long bytes) {
+        entityManager.createNativeQuery("select id from workbook_resource_quota where id = 1 for update").getSingleResult();
+        if (blocks.totalBytes() + bytes > 1024L * 1024 * 1024 || blocks.count() >= 40000) throw ServiceException.validation("Server data block quota exceeded; remove unreferenced staging data before retrying");
     }
 
     @Transactional

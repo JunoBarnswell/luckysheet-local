@@ -908,6 +908,7 @@ function drawFilledText(
   const measured = context.measureText(text).width;
   if (measured <= 0) return;
   const count = Math.max(1, Math.ceil(width / measured));
+  if (!Number.isSafeInteger(count) || count * text.length > 32767) throw new Error("UNSUPPORTED_FEATURE: Filled text exceeds its rendering budget");
   context.fillText(text.repeat(count).slice(0, Math.max(text.length, Math.floor(count * text.length))), x, y, width);
 }
 

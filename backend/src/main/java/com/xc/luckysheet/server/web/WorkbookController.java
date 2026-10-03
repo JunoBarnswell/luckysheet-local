@@ -132,7 +132,7 @@ public class WorkbookController {
 
     @PostMapping("/{unitId}/copy")
     public WorkbookSummary copy(@PathVariable String unitId, @RequestBody(required = false) CopyWorkbookRequest request, Authentication authentication) {
-        return catalog.copy(unitId, request, ActorIdentity.subject(authentication));
+        return catalog.copy(unitId, request, ActorIdentity.subject(authentication), ActorIdentity.groups(authentication));
     }
 
     @DeleteMapping("/{unitId}")
@@ -169,20 +169,26 @@ public class WorkbookController {
             @RequestHeader(value = "Content-Type", required = false) String mimeType,
             @RequestHeader("X-Content-SHA256") String checksum,
             @RequestHeader("X-Workbook-Revision") long expectedRevision,
-            @RequestBody byte[] content,
+            HttpServletRequest servletRequest,
             Authentication authentication
     ) {
-        return catalog.putArtifact(unitId, fileName, mimeType, checksum, content, expectedRevision, ActorIdentity.subject(authentication));
+        byte[] content;
+        long length = servletRequest.getContentLengthLong();
+        if (length > WorkbookCatalogService.MAX_NATIVE_DOCUMENT_BYTES) throw com.xc.luckysheet.server.service.ServiceException.validation("Native document exceeds 50 MiB");
+        try {
+            content = servletRequest.getInputStream().readNBytes((int) WorkbookCatalogService.MAX_NATIVE_DOCUMENT_BYTES + 1);
+        } catch (java.io.IOException error) {
+            throw com.xc.luckysheet.server.service.ServiceException.validation("Unable to read native document body");
+        }
+        if (content.length > WorkbookCatalogService.MAX_NATIVE_DOCUMENT_BYTES || (length >= 0 && length != content.length)) {
+            throw com.xc.luckysheet.server.service.ServiceException.validation("Native document body exceeds its limit or declared length");
+        }
+        return catalog.putArtifact(unitId, fileName, mimeType, checksum, content, expectedRevision, ActorIdentity.subject(authentication), ActorIdentity.groups(authentication));
     }
 
     @GetMapping(value = "/{unitId}/native-document-artifact", produces = MediaType.APPLICATION_OCTET_STREAM_VALUE)
     public ResponseEntity<byte[]> getSourceArtifact(@PathVariable String unitId, Authentication authentication) {
-        if (operations.accessProjection(unitId, ActorIdentity.subject(authentication), ActorIdentity.groups(authentication))
-                .regions().stream().anyMatch(region -> region.access() == com.xc.luckysheet.server.contract.RangeAccessLevel.HIDDEN)) {
-            throw new com.xc.luckysheet.server.service.ServiceException("ACCESS_HIDDEN", 403,
-                    "The original native document contains data hidden from the current subject");
-        }
-        WorkbookSourceArtifactEntity artifact = catalog.getArtifact(unitId, ActorIdentity.subject(authentication));
+        WorkbookSourceArtifactEntity artifact = catalog.getArtifact(unitId, ActorIdentity.subject(authentication), ActorIdentity.groups(authentication));
         return ResponseEntity.ok()
                 .contentType(MediaType.parseMediaType(artifact.getMimeType()))
                 .contentLength(artifact.getByteLength())
@@ -454,6 +460,8 @@ public class WorkbookController {
                 .contentLength(asset.getByteLength())
                 .header("X-Content-SHA256", asset.getContentHash())
                 .header(HttpHeaders.CACHE_CONTROL, "private, max-age=0")
+                .header("Content-Security-Policy", "sandbox; default-src 'none'; img-src data:; style-src 'unsafe-inline'")
+                .header("X-Content-Type-Options", "nosniff")
                 .body(asset.getContent());
     }
 

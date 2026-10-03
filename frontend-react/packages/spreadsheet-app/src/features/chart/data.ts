@@ -166,6 +166,7 @@ export function buildPivotChartData(tree: PivotResultTree, pivot?: PivotModel): 
     }
     return cells;
   });
+  if (columnPaths.length * valueCount * leaves.length > 100000) throw new Error("UNSUPPORTED_FEATURE: Pivot chart exceeds the cell budget");
   const series: PivotChartSeries[] = [];
   for (const columnPath of columnPaths) {
     const columnPathKey = pivotPathKey(columnPath);
@@ -315,8 +316,17 @@ function scalarValue(sheet: StructuredChartSheet, row: number, column: number): 
   return sheet.getCell(row, column)?.value ?? null;
 }
 
+export function assertChartProjectionBudget(ranges: readonly RangeRef[]): void {
+  let cells = 0;
+  for (const range of ranges) {
+    const area = (range.endRow - range.startRow + 1) * (range.endColumn - range.startColumn + 1);
+    if (!Number.isSafeInteger(area) || area <= 0 || (cells += area) > 100000) throw new Error('UNSUPPORTED_FEATURE: Chart projection exceeds its cell budget');
+  }
+}
+
 function scalarVector(sheet: StructuredChartSheet, range: RangeRef, hiddenData: ChartPayload['elements']['hiddenData']): PivotScalar[] {
   validateChartVector(range);
+  assertChartProjectionBudget([range]);
   const values: PivotScalar[] = [];
   for (let row = range.startRow; row <= range.endRow; row += 1) {
     if (hiddenData === 'hideRows' && containsHidden(sheet.hiddenRows, row)) continue;
@@ -480,6 +490,7 @@ function loadingData(source: ChartSource, message: string): ResolvedChartData {
 /** Resolve a canonical chart against a worksheet reader without constructing a second model. */
 export function resolveChartDataFromSources(payload: ChartPayload, getSheet: (sheetId: string) => StructuredChartSheet | undefined, pivotResults: Readonly<Record<string, PivotResultTree>> = {}, tables: readonly WorkbookTableModel[] = [], loadingPivotIds: ReadonlySet<string> = new Set()): ResolvedChartData {
   try {
+    if (payload.source.kind === 'worksheet-ranges') assertChartProjectionBudget(chartSourceRanges(payload));
     if (payload.source.kind === 'pivot') {
       const tree = pivotResults[payload.source.pivotId];
       if (!tree) {
@@ -540,6 +551,8 @@ export function resolveStructuredChartBindings(payload: ChartDrawingPayload, tab
     || sourceRange.endRow < sourceRange.startRow || sourceRange.endColumn < sourceRange.startColumn) {
     throw new Error('INVALID_CHART_SOURCE: structured chart source range is invalid');
   }
+  const bindingCount = Object.values(source.bindings).reduce((sum, area) => sum + area.length, 0);
+  if (bindingCount > 256 || (sourceRange.endRow - sourceRange.startRow) * bindingCount > 100000) throw new Error("UNSUPPORTED_FEATURE: Chart projection exceeds its cell budget");
   const sheet = getSheet(sourceRange.sheetId);
   if (!sheet) throw new Error(`Chart source sheet not found: ${sourceRange.sheetId}`);
   const fields = source.kind === 'table'
@@ -701,6 +714,7 @@ export function resolveSparklineSeries(
   group?: import('@react-sheets/core-model').SparklineGroup,
 ): ResolvedSparklineSeries {
   const source = sparkline.sourceRange;
+  assertChartProjectionBudget([source]);
   const sheet = getSheet(source.sheetId);
   if (!sheet) throw new Error(`Unknown sparkline source sheet: ${source.sheetId}`);
   const orientation = group?.dataOrientation ?? sparkline.dataOrientation ?? 'rows';
@@ -729,5 +743,5 @@ export function resolveSparklineSeries(
   });
   const numbers = resolved.filter((value): value is number => value !== null);
   const output = sparkline.rightToLeft || group?.rightToLeft ? resolved.reverse() : resolved;
-  return { values: output, min: Math.min(0, ...numbers), max: Math.max(0, ...numbers) };
+  return { values: output, min: numbers.reduce((min, value) => Math.min(min, value), 0), max: numbers.reduce((max, value) => Math.max(max, value), 0) };
 }

@@ -591,7 +591,7 @@ function validatePivotGroup(value: unknown): void {
     validateExactKeys(group, ['kind', 'unit', 'units', 'startOfWeek', 'start', 'end', 'autoStart', 'autoEnd'], 'Pivot date group');
     const units = group.units === undefined ? [group.unit] : group.units;
     if (!['year', 'quarter', 'month', 'week', 'day'].includes(String(group.unit))
-      || !Array.isArray(units) || units.length === 0 || new Set(units).size !== units.length || !units.every((unit) => ['year', 'quarter', 'month', 'week', 'day'].includes(String(unit)))
+      || !Array.isArray(units) || units.length === 0 || units.length > 5 || new Set(units).size !== units.length || !units.every((unit) => typeof unit === 'string' && ['year', 'quarter', 'month', 'week', 'day'].includes(unit))
       || !units.includes(String(group.unit) as typeof group.unit)
       || (group.startOfWeek !== undefined && (!Number.isInteger(group.startOfWeek) || Number(group.startOfWeek) < 0 || Number(group.startOfWeek) > 6))
       || (group.start !== undefined && !['string', 'number'].includes(typeof group.start))
@@ -679,6 +679,7 @@ function validatePivotCalculatedItemReferences(
     }
     const state = new Map<string, 'visiting' | 'visited'>();
     const visit = (id: string, path: string[]): void => {
+    if (path.length >= 256) throw new Error("UNSUPPORTED_FEATURE: Pivot dependency depth exceeds 256");
       if (state.get(id) === 'visited') return;
       if (state.get(id) === 'visiting') throw new Error(`Pivot calculated item dependency cycle: ${[...path, id].join(' -> ')}`);
       state.set(id, 'visiting');
@@ -733,6 +734,7 @@ function validatePivotCalculatedItemReferences(
   }
   const state = new Map<string, 'visiting' | 'visited'>();
   const visit = (id: string, path: string[]): void => {
+    if (path.length >= 256) throw new Error("UNSUPPORTED_FEATURE: Pivot dependency depth exceeds 256");
     if (state.get(id) === 'visited') return;
     if (state.get(id) === 'visiting') throw new Error(`Pivot calculated item dependency cycle: ${[...path, id].join(' -> ')}`);
     state.set(id, 'visiting');

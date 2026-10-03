@@ -144,6 +144,7 @@ export function buildAnalysisViewProjection(
   if (!table.sourceRange) return empty('unavailable', '当前表的数据块尚未提供工作表投影，无法在浏览器中预览。');
   if (!sourceSheet || sourceSheet.id !== table.sourceRange.sheetId) return empty('unavailable', `分析视图源工作表不可用：${table.sourceRange.sheetId}`);
 
+  if ((table.sourceRange.endRow - table.sourceRange.startRow) * table.fields.length > 100000) return empty("unavailable", "UNSUPPORTED_FEATURE: Analysis projection exceeds 100000 cells");
   const rows: AnalysisProjectedRow[] = [];
   let errorRows = 0;
   for (let sourceRow = table.sourceRange.startRow + 1; sourceRow <= table.sourceRange.endRow; sourceRow += 1) {

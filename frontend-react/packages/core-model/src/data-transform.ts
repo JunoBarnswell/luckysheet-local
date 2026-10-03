@@ -578,7 +578,7 @@ export function validatePermutationMetadata(
     }
   }
   if (sheet.autoFilter) remapSingleRange('auto filter', sheet.autoFilter.range, plan);
-  for (const rule of sheet.protectionRules) if (rule.range) remapSingleRange(`protection ${rule.id}`, rule.range, plan, plan.metadataScope);
+  for (const rule of sheet.protectionRules) if (rule.range) remapSingleRange(`protection ${rule.id}`, rule.range, plan, plan.range);
   if (sheet.bandedRule) remapSingleRange('banded rule', sheet.bandedRule.range, plan);
   const definedNames = indexedDefinedNames.flatMap((entry) => {
     const anchor = entry.anchor!;
@@ -801,7 +801,7 @@ export function applyRowPermutation(
     }
     for (const merge of sheet.merges) { merge.range = remapSingleRange('merge', merge.range, plan); if (inRange(range, merge.anchor.row, merge.anchor.column)) merge.anchor.row = remapRow(merge.anchor.row, plan); }
     for (const group of sheet.outline?.groups ?? []) if (group.axis === 'row' && group.start >= range.startRow && group.end <= range.endRow) { const mapped = remapRangeExact({ sheetId: sheet.id, startRow: group.start, endRow: group.end, startColumn: range.startColumn, endColumn: range.endColumn }, plan); if (mapped.length !== 1) throw new Error('Sort cannot exactly remap outline group'); group.start = mapped[0]!.startRow; group.end = mapped[0]!.endRow; }
-    for (const rule of sheet.protectionRules) if (rule.range) rule.range = remapSingleRange(`protection ${rule.id}`, rule.range, plan, plan.metadataScope);
+    for (const rule of sheet.protectionRules) if (rule.range) rule.range = remapSingleRange(`protection ${rule.id}`, rule.range, plan, plan.range);
     if (sheet.bandedRule) sheet.bandedRule.range = remapSingleRange('banded rule', sheet.bandedRule.range, plan);
     for (const change of ownerChanges.definedNames) {
       workbook.setDefinedName({ ...change.entry, formula: change.formula, anchor: change.anchor });

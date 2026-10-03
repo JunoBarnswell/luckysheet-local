@@ -18,18 +18,19 @@ public abstract class CanonicalSnapshotMigration extends BaseJavaMigration {
             while (rows.next()) {
                 String oldJson = rows.getString(3);
                 if (!checksum(oldJson).equals(rows.getString(4))) throw new IllegalStateException("CHECKPOINT_CHECKSUM_MISMATCH: " + rows.getString(1) + "/" + rows.getLong(2));
-                String json = mapper.writeValueAsString(SnapshotUpgrade.migrateStored(mapper.readTree(oldJson), rows.getString(1)));
+                String json = mapper.writeValueAsString(upgrade(mapper.readTree(oldJson), rows.getString(1)));
                 update.setString(1, json); update.setString(2, checksum(json)); update.setString(3, rows.getString(1)); update.setLong(4, rows.getLong(2)); update.executeUpdate();
             }
         }
         try (var select = connection.prepareStatement("select unit_id, snapshot_json from workbooks"); var rows = select.executeQuery();
              var update = connection.prepareStatement("update workbooks set snapshot_json=? where unit_id=?")) {
             while (rows.next()) {
-                String json = mapper.writeValueAsString(SnapshotUpgrade.migrateStored(mapper.readTree(rows.getString(2)), rows.getString(1)));
+                String json = mapper.writeValueAsString(upgrade(mapper.readTree(rows.getString(2)), rows.getString(1)));
                 update.setString(1, json); update.setString(2, rows.getString(1)); update.executeUpdate();
             }
         }
     }
+    protected com.fasterxml.jackson.databind.node.ObjectNode upgrade(com.fasterxml.jackson.databind.JsonNode value, String unitId) { return SnapshotUpgrade.migrateStored(value, unitId); }
     private String checksum(String json) throws Exception {
         return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(json.getBytes(StandardCharsets.UTF_8)));
     }

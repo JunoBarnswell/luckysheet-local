@@ -4183,15 +4183,12 @@ export class WorkbookSession {
   }
 
   autoSum(functionName: 'SUM' | 'AVERAGE' | 'COUNT' | 'MAX' | 'MIN' = 'SUM'): void {
-    const selection = this.selectionService.getState();
     const range = this.getCurrentRegion();
-    const primary = this.getPrimaryRange();
     this.dispatch({
       commandId: 'formula.autosum',
       params: {
         sheetId: this.activeSheetId,
         range,
-        ...(primary.startRow === primary.endRow && primary.startColumn === primary.endColumn ? { target: { ...selection.activeCell } } : {}),
         functionName,
       },
     });

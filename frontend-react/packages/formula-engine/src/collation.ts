@@ -36,7 +36,8 @@ export function normalizeWorkbookCollation(context?: Partial<WorkbookCollationCo
     typeOrder: context?.typeOrder ? [...context.typeOrder] : [...DEFAULT_WORKBOOK_COLLATION.typeOrder],
     customLists: context?.customLists?.map((list) => [...list]) ?? [],
   } satisfies WorkbookCollationContext;
-  if (!next.cultureId.trim()) throw new Error('Workbook collation requires a cultureId');
+  if (typeof next.cultureId !== 'string' || !next.cultureId.trim() || next.cultureId.length > 255 || typeof next.caseSensitive !== 'boolean' || typeof next.accentSensitive !== 'boolean' || !['lexical', 'numeric'].includes(next.numericTextMode) || !['first', 'last'].includes(next.blankOrder)) throw new Error('Workbook collation options are invalid');
+  if (next.customLists.length > 256 || next.customLists.reduce((sum, list) => sum + list.length, 0) > 10000 || next.customLists.some((list) => list.some((value) => typeof value !== 'string' || value.length > 32767))) throw new Error('Workbook custom collation lists exceed their budget');
   if (next.typeOrder.length !== 5 || new Set(next.typeOrder).size !== 5) throw new Error('Workbook collation typeOrder must contain each value type exactly once');
   if (next.typeOrder.some((kind) => !['number', 'text', 'boolean', 'error', 'blank'].includes(kind))) throw new Error('Workbook collation has an invalid typeOrder');
   return next;
@@ -146,14 +147,17 @@ function compareIntegerText(left: string, right: string): number {
   return compareInvariant(leftSignificant, rightSignificant);
 }
 
-function customListRank(
-  value: string,
-  context: WorkbookCollationContext,
-  compareText: (left: string, right: string) => number,
-): number | undefined {
-  for (const list of context.customLists) {
-    const index = list.findIndex((entry) => compareText(entry, value) === 0);
-    if (index >= 0) return index;
+const customRankCache = new WeakMap<WorkbookCollationContext, Array<{ value: string; rank: number }>>();
+function customListRank(value: string, context: WorkbookCollationContext, compareText: (left: string, right: string) => number): number | undefined {
+  let entries = customRankCache.get(context);
+  if (!entries) {
+    entries = [];
+    for (const list of context.customLists) for (const [rank, item] of list.entries()) entries.push({ value: item, rank });
+    if (entries.length > 10000) throw new Error('Workbook custom collation lists exceed their budget');
+    entries.sort((left, right) => compareText(left.value, right.value));
+    customRankCache.set(context, entries);
   }
-  return undefined;
+  let low = 0; let high = entries.length;
+  while (low < high) { const middle = (low + high) >>> 1; if (compareText(entries[middle]!.value, value) < 0) low = middle + 1; else high = middle; }
+  return low < entries.length && compareText(entries[low]!.value, value) === 0 ? entries[low]!.rank : undefined;
 }

@@ -1,6 +1,6 @@
 import type { CellAddress } from './ast';
 import type { RangeDependency } from './range-index';
-import { evaluateFormula } from './evaluator';
+import { type FormulaEvaluationContext, evaluateFormula } from './evaluator';
 import { parseFormula } from './parser';
 import { offsetAst } from './ast-rewrite';
 import type { FormulaAst } from './ast';
@@ -17,7 +17,7 @@ export interface FormulaDefinedName {
   readonly anchor?: CellAddress;
 }
 
-export interface DefinedNameContext {
+export interface DefinedNameContext extends Pick<FormulaEvaluationContext, 'dateSystem' | 'canonicalReferenceDate' | 'calculationReferenceDate' | 'random' | 'collationContext' | 'tableBudget'> {
   currentCell: CellAddress;
   sheetOrder: readonly FormulaSheetIdentity[];
   readCell: (address: CellAddress) => FormulaValue;
@@ -87,6 +87,7 @@ export function resolveDefinedNameSource(source: string, context: DefinedNameCon
       ? offsetAst(parsed, context.currentCell.row - context.anchor.row, context.currentCell.column - context.anchor.column)
       : parsed;
     return evaluateFormula(ast, {
+      ...context,
       currentCell: context.currentCell,
       sheetOrder: context.sheetOrder,
       readCell: context.readCell,

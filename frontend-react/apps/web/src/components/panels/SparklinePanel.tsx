@@ -161,7 +161,7 @@ export function SparklinePanel({
     const parsed = parsedSourceRange;
     const location = parseTargetCell(targetCell);
     if (!parsed || !location) return;
-    const source: RangeRef = { sheetId, ...parsed };
+    const source: RangeRef = { sheetId: selectedSparkline?.sourceRange.sheetId ?? sheetId, ...parsed };
     const patch: Partial<SparklineModel> = {
       sourceRange: source,
       anchor: location,

@@ -93,6 +93,7 @@ public class AuthController {
     public AuthSessionResponse login(@Valid @RequestBody LoginRequest request,
                                      HttpServletRequest servletRequest,
                                      HttpServletResponse servletResponse) {
+        auth.reserveSourceAttempt(servletRequest.getRemoteAddr());
         LocalUserAuthentication authentication = auth.authenticate(request.username(), request.password());
         saveAuthentication(authentication, servletRequest, servletResponse);
         return session(authentication, servletRequest, servletResponse);

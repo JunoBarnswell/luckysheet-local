@@ -346,6 +346,7 @@ export class FormulaEngine {
   }
 
   private formulaCount = 0;
+  private tableBudget = { depth: 0, remaining: 100_000, deadline: Infinity };
 
   constructor(options: FormulaEngineOptions = {}) {
     this.blockedRanges = structuredClone(options.blockedRanges ?? []);
@@ -1908,6 +1909,7 @@ export class FormulaEngine {
       return cell.result.value;
     }
 
+    if (this.tableBudget.depth === 0) this.tableBudget = { depth: 0, remaining: 100_000, deadline: Date.now() + 1000 };
     visiting.add(key);
     let value: FormulaValue;
     try {
@@ -2020,6 +2022,7 @@ export class FormulaEngine {
           return this.evaluateCell(resolved as CellAddress, cache, visiting, overrides);
         },
         resolveReference: (reference) => this.resolveReference(reference, cell.address),
+        tableBudget: this.tableBudget,
         evaluateWithCellOverrides: (ast, nestedOverrides) => evaluateFormula(ast, this.createEvaluationContext(cell, new Map<string, FormulaValue>(), new Set<string>(), [...overrides, ...nestedOverrides])),
       };
   }
@@ -2265,25 +2268,34 @@ export class FormulaEngine {
     visiting: Set<string>,
     valueDependencies = false,
   ): FormulaDependency[] {
-    const expanded = [...dependencies];
-    for (const dependency of dependencies) {
+    const expanded: FormulaDependency[] = [];
+    const pending = [...dependencies];
+    const seen = new Set<string>();
+    const expandedNames = new Set(visiting);
+    while (pending.length) {
+      const dependency = pending.pop()!;
+      const key = JSON.stringify(dependency);
+      if (seen.has(key)) continue;
+      if (seen.size >= 100000) throw new Error('UNSUPPORTED_FEATURE: Defined-name dependency budget exceeded');
+      seen.add(key);
+      expanded.push(dependency);
       if (dependency.kind !== 'name') continue;
       const definition = this.findDefinedName(dependency.name, owner);
       if (!definition) continue;
       const identity = this.definedNameIdentity(definition);
-      if (visiting.has(identity)) continue;
+      if (expandedNames.has(identity)) continue;
+      expandedNames.add(identity);
       const source = parseDefinedNameFormula(definition.formula);
       if (!source) continue;
       const projected = definition.anchor
         ? offsetAst(source, owner.row - definition.anchor.row, owner.column - definition.anchor.column)
         : source;
       const nested = collectFormulaDependencies(projected, owner, {
-        sheetTables: this.sheetTables,
-        sheetOrder: this.sheetOrder,
-        valueDependencies,
-        resolveNameAst: (name, owner) => this.resolveDefinedNameAst(name, owner),
+        sheetTables: this.sheetTables, sheetOrder: this.sheetOrder, valueDependencies,
+        resolveNameAst: (name, address) => this.resolveDefinedNameAst(name, address),
       });
-      expanded.push(...this.expandNameDependencies(nested, owner, new Set([...visiting, identity]), valueDependencies));
+      for (const entry of nested) pending.push(entry);
+      if (pending.length > 100000) throw new Error('UNSUPPORTED_FEATURE: Defined-name dependency budget exceeded');
     }
     return expanded;
   }
@@ -2444,6 +2456,7 @@ export class FormulaEngine {
     visiting: Set<string>,
     overrides: readonly FormulaCellOverride[] = [],
   ): ArrayValue {
+    if ((range.end.row - range.start.row + 1) * (range.end.column - range.start.column + 1) > 100000) return [[createFormulaError("#CALC!", "Range matrix exceeds 100000 cells")]];
     const matrix: ArrayValue = [];
     for (let row = range.start.row; row <= range.end.row; row += 1) {
       const line: FormulaValue[] = [];

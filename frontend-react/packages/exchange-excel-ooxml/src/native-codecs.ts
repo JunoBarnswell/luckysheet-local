@@ -69,7 +69,7 @@ function detectZipParts(buffer: ArrayBuffer): Record<string, Uint8Array> | undef
       filter(file) {
         entries += 1;
         total += file.originalSize;
-        if (entries > DEFAULT_NATIVE_DOCUMENT_RESOURCE_LIMITS.maxEntries || file.originalSize > DEFAULT_NATIVE_DOCUMENT_RESOURCE_LIMITS.maxEntryBytes || total > DEFAULT_NATIVE_DOCUMENT_RESOURCE_LIMITS.maxUncompressedBytes) throw new Error('detection budget exceeded');
+        if (entries > DEFAULT_NATIVE_DOCUMENT_RESOURCE_LIMITS.maxEntries || file.originalSize > DEFAULT_NATIVE_DOCUMENT_RESOURCE_LIMITS.maxEntryBytes || (file.originalSize > 0 && (file.size === 0 || file.originalSize / file.size > DEFAULT_NATIVE_DOCUMENT_RESOURCE_LIMITS.maxCompressionRatio)) || total > DEFAULT_NATIVE_DOCUMENT_RESOURCE_LIMITS.maxUncompressedBytes) throw new Error('detection budget exceeded');
         return true;
       },
     }) as Record<string, Uint8Array>;
@@ -153,12 +153,13 @@ function textVariantForFileName(fileName: string): TextDialectGraph['variant'] {
   return lower.endsWith('.dif') ? 'dif' : lower.endsWith('.slk') ? 'sylk' : lower.endsWith('.prn') ? 'prn' : lower.endsWith('.txt') ? 'txt' : 'csv';
 }
 
-function parseDelimited(text: string, dialect: TextDialectGraph): string[][] {
+function parseDelimited(text: string, dialect: TextDialectGraph, maxCells = DEFAULT_NATIVE_DOCUMENT_RESOURCE_LIMITS.maxCells): string[][] {
+  let cellCount = 0;
   const rows: string[][] = [];
   let row: string[] = [];
   let field = '';
   let quoted = false;
-  const pushField = () => { row.push(field); field = ''; };
+  const pushField = () => { if (++cellCount > maxCells) throw new NativeDocumentError({ code: 'NATIVE_DOCUMENT_RESOURCE_LIMIT', message: 'Text document exceeds its cell budget' }); row.push(field); field = ''; };
   const pushRow = () => { pushField(); rows.push(row); row = []; };
   for (let index = 0; index < text.length; index += 1) {
     const character = text[index]!;
@@ -254,13 +255,16 @@ export const textCodec: NativeDocumentCodec<NativeDocumentImportTransaction, Nat
     let rows: string[][];
     if (dialect.variant === 'dif') rows = parseDif(decoded.text);
     else if (dialect.variant === 'sylk') rows = parseSylk(decoded.text);
-    else rows = parseDelimited(decoded.text, dialect);
+    else rows = parseDelimited(decoded.text, dialect, limitsFor(request.options).maxCells);
     assertCellBudget(rows, limitsFor(request.options), 'Text document');
     return importedResult(request.fileName, bytes, formatForText(dialect), workbookFromRows(request.fileName.replace(/\.[^.]+$/, ''), rows), { kind: 'text', dialect }, TEXT_FEATURES, request.options.compatibilityTarget);
   },
   export: async (request) => {
-    const untouched = await untouchedExport(request);
-    if (untouched) return untouched;
+    const sourceRows = rowsFromSnapshot(request.snapshot);
+    if (sourceRows.every((row) => row.every((value) => guardFormulaInjection(value) === value))) {
+      const untouched = await untouchedExport(request);
+      if (untouched) return untouched;
+    }
     const sourceDialect = request.artifact?.nativeGraph.kind === 'text' ? request.artifact.nativeGraph.dialect : undefined;
     const dialect: TextDialectGraph = sourceDialect && sourceDialect.variant === textVariantForFileName(request.fileName) ? sourceDialect : textDialect(request.fileName, '', 'utf-8', false);
     const rows = rowsFromSnapshot(request.snapshot);
@@ -334,18 +338,21 @@ function xmlValue(node: XmlNode): string {
 
 function parseXmlss(bytes: Uint8Array, limits: NativeDocumentResourceLimits): { rows: string[][]; graph: NativeGraph } {
   if (bytes.byteLength > limits.maxXmlBytes) throw new NativeDocumentError({ code: 'NATIVE_DOCUMENT_RESOURCE_LIMIT', message: `XML Spreadsheet exceeds ${limits.maxXmlBytes} XML bytes` });
-  const root = parseXml(strFromU8(bytes));
+  const root = parseXml(strFromU8(bytes), { maxDepth: limits.maxXmlDepth });
   assertXmlTreeBudget(root, limits, 'XML Spreadsheet');
   const workbook = descendants(root, 'Workbook').find((node) => node.attrs.xmlns === XMLSS_NAMESPACE || node.name.includes('Workbook'));
   if (!workbook) invalidNativeDocument('NATIVE_XMLSS_INVALID: Workbook root is missing');
   const worksheet = descendants(workbook, 'Worksheet')[0];
   if (!worksheet) invalidNativeDocument('NATIVE_XMLSS_INVALID: Worksheet is missing');
   const rows: string[][] = [];
+  let cellCount = 0;
   for (const rowNode of descendants(worksheet, 'Row')) {
     const row: string[] = [];
     let column = 0;
     for (const cellNode of children(rowNode, 'Cell')) {
       const index = Number(cellNode.attrs['ss:Index'] ?? cellNode.attrs.Index ?? column + 1) - 1;
+      if (!Number.isSafeInteger(index) || index < column || index >= 16_384 || cellCount + index - column + 1 > limits.maxCells) throw new NativeDocumentError({ code: 'NATIVE_DOCUMENT_RESOURCE_LIMIT', message: 'XML Spreadsheet index exceeds its cell budget' });
+      cellCount += index - column + 1;
       while (column < index) row.push(''), column += 1;
       row.push(xmlValue(cellNode)); column += 1;
     }
@@ -394,7 +401,8 @@ function odfRows(content: string): string[][] {
   return odfRowsFromRoot(parseXml(content));
 }
 
-function odfRowsFromRoot(root: XmlNode): string[][] {
+function odfRowsFromRoot(root: XmlNode, maxCells = DEFAULT_NATIVE_DOCUMENT_RESOURCE_LIMITS.maxCells): string[][] {
+  let cellCount = 0;
   const table = descendants(root, 'table').find((node) => localName(node.name) === 'table');
   if (!table) invalidNativeDocument('NATIVE_ODS_INVALID: table:table is missing');
   const rows: string[][] = [];
@@ -402,6 +410,8 @@ function odfRowsFromRoot(root: XmlNode): string[][] {
     const row: string[] = [];
     for (const cellNode of rowNode.children.filter((node) => localName(node.name) === 'table-cell')) {
       const repeated = Number(cellNode.attrs['table:number-columns-repeated'] ?? 1);
+      if (!Number.isSafeInteger(repeated) || repeated < 1 || repeated > 16_384 || cellCount + repeated > maxCells) throw new NativeDocumentError({ code: 'NATIVE_DOCUMENT_RESOURCE_LIMIT', message: 'ODS repetition exceeds its cell budget' });
+      cellCount += repeated;
       const value = cellNode.attrs['office:value'] ?? textContent(cellNode);
       for (let index = 0; index < Math.max(1, repeated); index += 1) row.push(value);
     }
@@ -467,7 +477,7 @@ function updateOdsContent(snapshot: WorkbookSnapshot, graph: Extract<NativeGraph
 export const odsCodec: NativeDocumentCodec<NativeDocumentImportTransaction, NativeDocumentExportTransaction> = {
   family: 'ods',
   canRead: (fileName, buffer) => { const parts = detectZipParts(buffer); return /\.ods$/i.test(fileName) || Boolean(parts?.mimetype && strFromU8(parts.mimetype).includes('opendocument')); },
-  import: async (request) => { const bytes = new Uint8Array(request.buffer); const limits = limitsFor(request.options); const parts = unzipNativePackage(bytes, limits, 'ODS document'); const contentPart = parts['content.xml'] ? 'content.xml' : Object.keys(parts).find((name) => name.endsWith('/content.xml')) ?? ''; if (!contentPart) invalidNativeDocument('NATIVE_ODS_INVALID: content.xml is missing'); if (parts[contentPart]!.byteLength > limits.maxXmlBytes) throw new NativeDocumentError({ code: 'NATIVE_DOCUMENT_RESOURCE_LIMIT', message: `ODS content exceeds ${limits.maxXmlBytes} XML bytes` }); const contentTree = parseXml(strFromU8(parts[contentPart]!)); assertXmlTreeBudget(contentTree, limits, 'ODS document'); const rows = odfRowsFromRoot(contentTree); assertCellBudget(rows, limits, 'ODS document'); const graph: NativeGraph = { kind: 'ods', package: { parts: Object.fromEntries(Object.entries(parts).map(([name, data]) => [name, data.slice()])), mimetype: strFromU8(parts.mimetype ?? strToU8(ODS_MIMETYPE)), contentPart, contentTree } }; return importedResult(request.fileName, bytes, { family: 'ods', variant: 'ods' }, workbookFromRows(request.fileName.replace(/\.[^.]+$/, ''), rows), graph, TEXT_FEATURES, request.options.compatibilityTarget); },
+  import: async (request) => { const bytes = new Uint8Array(request.buffer); const limits = limitsFor(request.options); const parts = unzipNativePackage(bytes, limits, 'ODS document'); const contentPart = parts['content.xml'] ? 'content.xml' : Object.keys(parts).find((name) => name.endsWith('/content.xml')) ?? ''; if (!contentPart) invalidNativeDocument('NATIVE_ODS_INVALID: content.xml is missing'); if (parts[contentPart]!.byteLength > limits.maxXmlBytes) throw new NativeDocumentError({ code: 'NATIVE_DOCUMENT_RESOURCE_LIMIT', message: `ODS content exceeds ${limits.maxXmlBytes} XML bytes` }); const contentTree = parseXml(strFromU8(parts[contentPart]!), { maxDepth: limits.maxXmlDepth }); assertXmlTreeBudget(contentTree, limits, 'ODS document'); const rows = odfRowsFromRoot(contentTree, limits.maxCells); assertCellBudget(rows, limits, 'ODS document'); const graph: NativeGraph = { kind: 'ods', package: { parts: Object.fromEntries(Object.entries(parts).map(([name, data]) => [name, data.slice()])), mimetype: strFromU8(parts.mimetype ?? strToU8(ODS_MIMETYPE)), contentPart, contentTree } }; return importedResult(request.fileName, bytes, { family: 'ods', variant: 'ods' }, workbookFromRows(request.fileName.replace(/\.[^.]+$/, ''), rows), graph, TEXT_FEATURES, request.options.compatibilityTarget); },
   export: async (request) => { const untouched = await untouchedExport(request); if (untouched) return untouched; const existingGraph = request.artifact?.nativeGraph.kind === 'ods' ? request.artifact.nativeGraph : undefined; const existing = existingGraph?.package.parts; const rows = rowsFromSnapshot(request.snapshot); assertCellBudget(rows, limitsFor(request.options), 'ODS document'); const updatedContent = existingGraph ? updateOdsContent(request.snapshot, existingGraph) : undefined; const bytes = updatedContent && existing ? serializeOdsWithContent(request.snapshot, existing, existingGraph.package.contentPart, updatedContent) : serializeOds(request.snapshot, existing); return exportedResult(request.fileName.replace(/\.[^.]+$/i, '.ods'), bytes, { family: 'ods', variant: 'ods' }, request.snapshot, { kind: 'ods', package: { parts: unzipNativePackage(bytes, limitsFor(request.options), 'ODS document'), mimetype: ODS_MIMETYPE, contentPart: existingGraph?.package.contentPart ?? 'content.xml', contentTree: updatedContent ? parseXml(strFromU8(updatedContent)) : undefined } }, TEXT_FEATURES, request.options.compatibilityTarget); },
 };
 

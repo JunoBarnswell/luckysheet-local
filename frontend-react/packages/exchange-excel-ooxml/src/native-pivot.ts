@@ -83,7 +83,7 @@ const NATIVE_BASE_ITEM_DEFAULT = 0x100100;
 const NATIVE_SHOW_DATA_AS = new Set([
   'normal', 'difference', 'percent', 'percentDiff', 'runTotal',
   'percentOfRow', 'percentOfCol', 'percentOfTotal', 'index',
-  'percentOfParent',
+  'percentOfParent', 'percentRunningTotal', 'percentRunTotal',
 ]);
 const NATIVE_DATA_FIELD_ATTRIBUTES = new Set([
   'fld', 'name', 'subtotal', 'showDataAs', 'baseField', 'baseItem', 'numFmtId',
@@ -611,6 +611,7 @@ export function mapNativePivotDefinition(
       ...(mapped.kind === 'normal' ? {} : { showAs: mapped }),
     };
   };
+  const pageFieldIndexes = new Set(table.pageFields);
   const mappedFilters = mapNativePivotFilters(table.pivotFilters ?? [], fields, table.dataFields, cache.cacheId, new Set(table.pageFields));
   const manualItemFilters = table.fields.flatMap((nativeField) => {
     const hidden = nativeField.hiddenItemIndexes ?? [];
@@ -629,7 +630,7 @@ export function mapNativePivotDefinition(
       kind: 'manual' as const,
       family: 'manual' as const,
       fieldId: fieldId(nativeField.index),
-      scope: table.pageFields.includes(nativeField.index)
+      scope: pageFieldIndexes.has(nativeField.index)
         || (!table.rowFields.includes(nativeField.index) && !table.columnFields.includes(nativeField.index))
         ? 'report' as const
         : 'field' as const,
@@ -637,10 +638,10 @@ export function mapNativePivotDefinition(
       memberKeys,
     }];
   });
+  const reportFilterFields = new Set([...manualItemFilters, ...mappedFilters.filters].filter((filter) => (filter.scope ?? "report") === "report").map((filter) => filter.fieldId));
   const pageFilters = table.pageFields.map((index) => {
     if (index < 0 || index >= fields.length) throw new Error(`Pivot page field ${index} is outside cache field bounds`);
-    if (manualItemFilters.some((filter) => filter.fieldId === fieldId(index) && filter.scope === 'report')) return undefined;
-    if (mappedFilters.filters.some((filter) => filter.fieldId === fieldId(index) && (filter.scope ?? 'report') === 'report')) return undefined;
+    if (reportFilterFields.has(fieldId(index))) return undefined;
     return { kind: 'manual' as const, family: 'manual' as const, fieldId: fieldId(index), scope: 'report' as const, mode: 'all' as const, memberKeys: [] };
   }).filter((filter): filter is NonNullable<typeof filter> => filter !== undefined);
   const preservedAutoSortScopes = table.fields.flatMap((field) => {
@@ -1582,6 +1583,10 @@ function buildAutoSortScopeXml(scope: NativePivotAutoSortScope): string {
     ...(scope.outline === undefined ? {} : { outline: scope.outline ? '1' : '0' }),
     ...(scope.fieldPosition === undefined ? {} : { fieldPosition: String(scope.fieldPosition) }),
   };
+  for (const name of Object.keys(areaAttributes)) if (!/^[A-Za-z_][A-Za-z0-9_.:-]*$/.test(name)) throw new Error("Invalid native Pivot area attribute name");
+  for (const reference of scope.references) {
+    if (!Number.isSafeInteger(reference.field) || reference.field < 0 || reference.itemIndexes?.some((index) => !Number.isSafeInteger(index) || index < 0)) throw new Error("Invalid native Pivot area reference");
+  }
   const attrs = Object.entries(areaAttributes).map(([name, value]) => `${name}="${encodeXml(value)}"`).join(' ');
   const references = scope.references.map((reference) => `<reference field="${reference.field}"${reference.selected === undefined ? '' : ` selected="${reference.selected ? '1' : '0'}"`}${reference.itemIndexes?.length ? ` count="${reference.itemIndexes.length}"` : ''}>${(reference.itemIndexes ?? []).map((index) => `<x v="${index}"/>`).join('')}</reference>`).join('');
   return `<autoSortScope><pivotArea${attrs ? ` ${attrs}` : ''}><references count="${scope.references.length}">${references}</references></pivotArea></autoSortScope>`;
@@ -2125,10 +2130,16 @@ function nativePivotGroup(field: NativePivotCacheField | undefined, cache: Nativ
     };
   }
   if (grouping.discreteIndexes && grouping.groupItems) {
+    const indexedMembers = new Map<number, ReturnType<typeof createPivotMemberKey>[]>();
+    (baseField?.sharedItems ?? []).forEach((value, itemIndex) => {
+      const groupIndex = grouping.discreteIndexes![itemIndex];
+      if (groupIndex === undefined) return;
+      const values = indexedMembers.get(groupIndex) ?? []; values.push(createPivotMemberKey(value)); indexedMembers.set(groupIndex, values);
+    });
     const groups = grouping.groupItems.map((name, groupIndex) => ({
       groupId: `${fieldId}:group:${groupIndex}`,
       name: name === null ? '' : String(name),
-      items: (baseField?.sharedItems ?? []).flatMap((value, itemIndex) => grouping.discreteIndexes?.[itemIndex] === groupIndex ? [createPivotMemberKey(value)] : []),
+      items: indexedMembers.get(groupIndex) ?? [],
     }));
     return { kind: 'manual', groups };
   }

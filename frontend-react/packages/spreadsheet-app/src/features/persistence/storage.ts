@@ -107,6 +107,7 @@ const DEFAULT_WORKSPACE_USER_STATE: WorkspaceUserState = {
 };
 
 export function normalizeWorkspaceRecord(record: WorkspaceRecord): WorkspaceRecord {
+  if (!verifyWorkspaceRecord(record)) throw schemaError(record.unitId);
   const snapshot = migrateStoredWorkbookSnapshot(record.snapshot);
   return {
     ...clone(record),
@@ -170,6 +171,7 @@ interface WorkspaceHeadRecord {
   syncMode: 'remote' | 'local-only';
   storageRevision: number;
   nextClientSequence: number;
+  journalChecksum?: string;
   updatedAt: string;
 }
 
@@ -197,6 +199,12 @@ interface WorkspaceCatalogRecord {
   updatedAt: string;
 }
 
+function verifyStoredJournal(head: WorkspaceHeadRecord, operations: readonly OperationEnvelope[], snapshotRevision: number): void {
+  const journal = buildJournal(head.unitId, head.nextClientSequence, operations, snapshotRevision);
+  if (head.journalChecksum !== undefined && head.journalChecksum !== journal.checksum) throw schemaError(head.unitId);
+  if (head.journalChecksum === undefined && operations.length > 0) throw new WorkspaceStorageError({ code: 'STORAGE_SCHEMA_INVALID', operation: 'journal-migration', message: 'Legacy pending journal has no persisted integrity checksum', recovery: 'Recover and verify the legacy pending journal through an explicit migration before replay' });
+}
+
 function headRecordFrom(record: WorkspaceRecord, storageRevision: number): WorkspaceHeadRecord {
   return {
     schema: 'WorkspaceHead',
@@ -208,6 +216,7 @@ function headRecordFrom(record: WorkspaceRecord, storageRevision: number): Works
     syncMode: record.syncMode,
     storageRevision,
     nextClientSequence: record.pending.nextClientSequence,
+    journalChecksum: record.pending.checksum,
     updatedAt: record.updatedAt,
   };
 }
@@ -466,6 +475,7 @@ export class MemoryWorkspaceStore {
       const snapshot = transaction.get<WorkspaceSnapshotRecord>('workspaceSnapshots', memoryKey(head.unitId, head.snapshotRevision));
       const catalog = transaction.get<WorkspaceCatalogRecord>('workspaceCatalog', head.unitId);
       if (!snapshot || !catalog) throw schemaError(head.unitId);
+      verifyStoredJournal(head, operations.filter((candidate) => candidate.unitId === head.unitId).sort((left, right) => left.clientSequence - right.clientSequence), snapshot.localRevision);
       const pending = buildJournal(head.unitId, head.nextClientSequence, operations
         .filter((candidate) => candidate.unitId === head.unitId)
         .sort((left, right) => left.clientSequence - right.clientSequence), snapshot.localRevision);
@@ -495,6 +505,7 @@ export class MemoryWorkspaceStore {
     const catalog = transaction.get<WorkspaceCatalogRecord>('workspaceCatalog', unitId);
     const operations = transaction.getAll<WorkspaceOperationRecord>('workspaceOperations').filter((candidate) => candidate.unitId === unitId).sort((left, right) => left.clientSequence - right.clientSequence);
     if (!head || !snapshot || !catalog) throw schemaError(unitId);
+    verifyStoredJournal(head, operations, snapshot.localRevision);
     const record = normalizeWorkspaceRecord({
       schema: 'WorkspaceRecord', unitId, snapshot: snapshot.snapshot as WorkbookSnapshot, checksum: snapshot.checksum,
       localRevision: head.localRevision, serverRevision: head.serverRevision, storageRevision: head.storageRevision,
@@ -730,7 +741,7 @@ export class WorkspacePersistence {
       for (const operation of existing) if (operation.unitId === unitId) transaction.delete('workspaceOperations', memoryKey(unitId, operation.clientSequence));
       for (const operation of operations) transaction.set('workspaceOperations', memoryKey(unitId, operation.clientSequence), { ...clone(operation), unitId });
       const storageRevision = head.storageRevision + 1;
-      transaction.set('workspaceHeads', unitId, { ...head, storageRevision, nextClientSequence, ...(localRevision === undefined ? {} : { localRevision }), updatedAt: new Date().toISOString() });
+      transaction.set('workspaceHeads', unitId, { ...head, storageRevision, nextClientSequence, journalChecksum: buildJournal(unitId, nextClientSequence, operations, head.checkpointRevision).checksum, ...(localRevision === undefined ? {} : { localRevision }), updatedAt: new Date().toISOString() });
       return storageRevision;
       });
     });

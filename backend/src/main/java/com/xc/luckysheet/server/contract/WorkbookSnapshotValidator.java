@@ -101,7 +101,196 @@ public final class WorkbookSnapshotValidator {
         }
     }
 
+    public static void requireResourceBudget(JsonNode value) {
+        if (value == null) throw ServiceException.validation("Workbook structure is missing");
+        record Entry(JsonNode value, int depth, String key) { }
+        java.util.ArrayDeque<Entry> pending = new java.util.ArrayDeque<>();
+        pending.push(new Entry(value, 0, ""));
+        long nodes = 0, text = 0;
+        while (!pending.isEmpty()) {
+            Entry entry = pending.pop();
+            if (++nodes > 2_000_000 || entry.depth() > 64) throw ServiceException.unsupportedFeature("Workbook structure exceeds its resource budget");
+            JsonNode node = entry.value();
+            if ("editor".equals(entry.key())) requireCellEditor(node);
+            if ("fontFamily".equals(entry.key()) && (!node.isTextual() || node.asText().isBlank() || node.asText().chars().anyMatch(c -> c < 32 || c == 127))) throw ServiceException.validation("Font family is invalid");
+            if ("numberFormat".equals(entry.key()) && !node.isTextual()) throw ServiceException.validation("Number format must be a string");
+            if (node.isTextual()) {
+                int length = node.textValue().length();
+                text += length;
+                int limit = "numberFormat".equals(entry.key()) ? 255 : "svgPath".equals(entry.key()) ? 16_384 : 32_767;
+                if (length > limit || text > 16 * 1024 * 1024) throw ServiceException.unsupportedFeature("Workbook text exceeds its resource budget");
+            } else if (node.isNumber() && java.util.Set.of("width", "height", "widthPx", "heightPx", "fontSize", "fontSizePx", "defaultRowHeightPx", "defaultColumnWidthPx").contains(entry.key())) {
+                if (!Double.isFinite(node.asDouble()) || node.asDouble() < 0 || node.asDouble() > 8192) throw ServiceException.unsupportedFeature("Workbook pixel geometry exceeds its resource budget");
+            } else if (node.isObject()) {
+                node.fields().forEachRemaining(field -> pending.push(new Entry(field.getValue(), entry.depth() + 1, "rowHeightsPx".equals(entry.key()) ? "heightPx" : "columnWidthsPx".equals(entry.key()) ? "widthPx" : field.getKey())));
+            } else if (node.isArray()) for (JsonNode child : node) pending.push(new Entry(child, entry.depth() + 1, ""));
+            if (pending.size() > 2_000_000) throw ServiceException.unsupportedFeature("Workbook structure exceeds its resource budget");
+        }
+    }
+
+    public static void requireCellEditor(JsonNode editor) {
+        if (editor == null || editor.isNull()) return;
+        if (!editor.isObject() || !java.util.Set.of("text", "number", "datetime", "validation-list", "rich-text", "formula", "custom", "combo-box", "checkbox", "mask").contains(editor.path("kind").asText())) throw ServiceException.validation("Cell editor kind is invalid");
+        if (!"checkbox".equals(editor.path("kind").asText())) return;
+        for (String key : java.util.List.of("trueValue", "falseValue", "indeterminateValue")) if (editor.has(key) && !(editor.get(key).isValueNode() && (!editor.get(key).isNumber() || Double.isFinite(editor.get(key).asDouble())))) throw ServiceException.validation("Checkbox state must be scalar");
+        if (editor.has("threeState") && !editor.get("threeState").isBoolean()) throw ServiceException.validation("Checkbox threeState must be boolean");
+        JsonNode yes = editor.has("trueValue") ? editor.get("trueValue") : com.fasterxml.jackson.databind.node.BooleanNode.TRUE;
+        JsonNode no = editor.has("falseValue") ? editor.get("falseValue") : com.fasterxml.jackson.databind.node.BooleanNode.FALSE;
+        JsonNode maybe = editor.has("indeterminateValue") ? editor.get("indeterminateValue") : com.fasterxml.jackson.databind.node.NullNode.instance;
+        if (yes.equals(no) || editor.path("threeState").asBoolean() && (maybe.equals(yes) || maybe.equals(no))) throw ServiceException.validation("Checkbox state values must be distinct");
+    }
+    public static JsonNode normalizeCheckboxValue(JsonNode editor, JsonNode value) {
+        requireCellEditor(editor);
+        JsonNode yes = editor.has("trueValue") ? editor.get("trueValue") : com.fasterxml.jackson.databind.node.BooleanNode.TRUE;
+        JsonNode no = editor.has("falseValue") ? editor.get("falseValue") : com.fasterxml.jackson.databind.node.BooleanNode.FALSE;
+        JsonNode maybe = editor.has("indeterminateValue") ? editor.get("indeterminateValue") : com.fasterxml.jackson.databind.node.NullNode.instance;
+        boolean threeState = editor.path("threeState").asBoolean();
+        if (yes.equals(value)) return yes;
+        if (no.equals(value)) return no;
+        if (threeState && maybe.equals(value)) return maybe;
+        if (value == null || value.isNull()) return threeState ? maybe : no;
+        if (value.isBoolean()) return value.asBoolean() ? yes : no;
+        if (value.isNumber() && (value.asDouble() == 0 || value.asDouble() == 1)) return value.asDouble() == 1 ? yes : no;
+        if (value.isTextual()) {
+            String normalized = value.asText().trim().toUpperCase(java.util.Locale.ROOT);
+            if ("TRUE".equals(normalized)) return yes;
+            if ("FALSE".equals(normalized)) return no;
+            if ("INDETERMINATE".equals(normalized) && threeState) return maybe;
+        }
+        throw ServiceException.validation("Checkbox source value does not match a supported state");
+    }
+
+    private static void requireFraction(JsonNode value, double minimum, double maximum, String label) {
+        if (!value.isNumber() || !Double.isFinite(value.asDouble()) || value.asDouble() < minimum || value.asDouble() > maximum) throw ServiceException.validation(label + " is invalid");
+    }
+    public static void requireTableSheetDefinition(JsonNode value) {
+        if (!value.isObject() || !value.path("viewId").isTextual() || value.path("viewId").asText().isBlank() || !value.path("columns").isArray() || !value.path("grouping").isArray()) throw ServiceException.validation("TableSheet definition is invalid");
+        java.util.Set<String> fields = new java.util.HashSet<>();
+        for (JsonNode column : value.path("columns")) {
+            String id = column.path("fieldId").asText();
+            if (!column.isObject() || id.isBlank() || !fields.add(id) || !column.path("caption").isTextual() || column.path("caption").asText().isBlank()) throw ServiceException.validation("TableSheet column is invalid");
+            if (column.has("widthPx")) requireFraction(column.get("widthPx"), Double.MIN_VALUE, 8192, "TableSheet column width");
+            if (column.has("formula") && !column.get("formula").isTextual() || column.has("type") && !column.get("type").isTextual()) throw ServiceException.validation("TableSheet column type/formula is invalid");
+        }
+        for (String area : java.util.List.of("grouping", "sortState")) {
+            if (!value.has(area)) continue;
+            if (!value.get(area).isArray()) throw ServiceException.validation("TableSheet " + area + " must be an array");
+            java.util.Set<String> seen = new java.util.HashSet<>();
+            for (JsonNode entry : value.get(area)) {
+                String id = entry.path("fieldId").asText();
+                if (!entry.isObject() || !fields.contains(id) || !seen.add(id)) throw ServiceException.validation("TableSheet " + area + " field is invalid");
+                if ("sortState".equals(area) && !java.util.Set.of("asc", "desc").contains(entry.path("direction").asText()) || entry.has("collapsed") && !entry.get("collapsed").isBoolean()) throw ServiceException.validation("TableSheet grouping/sort is invalid");
+            }
+        }
+    }
+    public static void requireDrawingPayload(JsonNode workbook, JsonNode payload) {
+        requireResourceBudget(payload);
+        if ("textbox".equals(payload.path("kind").asText())) {
+            JsonNode frame = payload.path("textFrame");
+            if (!payload.path("text").isTextual() || !frame.isObject() || !frame.path("fontFamily").isTextual()
+                    || frame.path("fontFamily").asText().isBlank() || !frame.path("fontSize").isNumber() || frame.path("fontSize").asDouble() <= 0
+                    || !frame.path("margin").isObject() || !frame.path("wrap").isBoolean()
+                    || !java.util.Set.of("none", "shrink-text", "resize-shape").contains(frame.path("autofit").asText())
+                    || !java.util.Set.of("horizontal", "vertical").contains(frame.path("direction").asText())) throw ServiceException.validation("Text box requires a canonical text frame");
+        }
+        if ("image".equals(payload.path("kind").asText())) {
+            JsonNode crop = payload.get("crop");
+            if (crop != null) {
+                if (!crop.isObject() || crop.size() != 4) throw ServiceException.validation("Image crop must contain four fractions");
+                for (String side : java.util.List.of("left", "top", "right", "bottom")) requireFraction(crop.path(side), 0, 1, "Image crop");
+                if (crop.path("left").asDouble() + crop.path("right").asDouble() >= 1 || crop.path("top").asDouble() + crop.path("bottom").asDouble() >= 1) throw ServiceException.validation("Image crop removes the entire image");
+            }
+            JsonNode effects = payload.get("effects");
+            if (effects != null) {
+                if (!effects.isObject()) throw ServiceException.validation("Image effects must be an object");
+                effects.fields().forEachRemaining(field -> {
+                    if (!java.util.Set.of("brightness", "contrast", "transparency").contains(field.getKey())) throw ServiceException.validation("Unknown image effect");
+                    requireFraction(field.getValue(), "transparency".equals(field.getKey()) ? 0 : -1, 1, "Image effect");
+                });
+            }
+        }
+        if (!"chart".equals(payload.path("kind").asText())) return;
+        var subtypes = GeneratedChartSubtypes.VALUES.get(payload.path("chartType").asText());
+        if (subtypes == null || !subtypes.contains(payload.path("subtype").asText())) throw ServiceException.validation("Chart type/subtype is invalid");
+        if (payload.path("chartId").asText().isBlank() || !payload.path("elements").isObject() || (payload.path("elements").has("legend") && (!payload.path("elements").path("legend").isObject() || !payload.path("elements").path("legend").path("visible").isBoolean())) || (payload.path("elements").has("dataLabels") && !payload.path("elements").path("dataLabels").path("visible").isBoolean()) || !java.util.Set.of("show", "hideRows", "hideColumns").contains(payload.path("elements").path("hiddenData").asText())) throw ServiceException.validation("Chart elements are invalid");
+        JsonNode source = payload.path("source");
+        String kind = source.path("kind").asText();
+        if (!java.util.Set.of("worksheet-ranges", "table", "report-range", "pivot").contains(kind)) throw ServiceException.validation("Chart source is invalid");
+        java.util.Map<String, int[]> dimensions = new java.util.HashMap<>();
+        for (JsonNode sheet : workbook.path("sheets")) dimensions.put(sheet.path("id").asText(), new int[]{sheet.path("rowCount").asInt(), sheet.path("columnCount").asInt()});
+        if ("worksheet-ranges".equals(kind)) {
+            if (!source.path("ranges").isArray() || source.path("ranges").isEmpty()) throw ServiceException.validation("Chart source ranges are required");
+            for (JsonNode range : source.path("ranges")) validateDrawingSourceRange(range, dimensions, "Chart");
+        }
+        if ("report-range".equals(kind)) validateDrawingSourceRange(source.path("range"), dimensions, "Chart report");
+        if ("table".equals(kind)) {
+            JsonNode table = null;
+            for (JsonNode candidate : workbook.path("dataModel").path("tables")) if (candidate.path("id").equals(source.path("tableId"))) table = candidate;
+            if (table == null) throw ServiceException.validation("Chart references a missing table");
+            if (table.hasNonNull("sourceRange")) validateDrawingSourceRange(table.path("sourceRange"), dimensions, "Chart table");
+        }
+        if ("table".equals(kind) || "report-range".equals(kind)) {
+            int bindings = 0;
+            for (String area : java.util.List.of("values", "category", "details", "color", "size", "tooltip", "filter")) {
+                JsonNode entries = source.path("bindings").path(area);
+                if (!entries.isArray()) throw ServiceException.validation("Chart binding area is required: " + area);
+                java.util.Set<String> ids = new java.util.HashSet<>();
+                for (JsonNode binding : entries) if (++bindings > 256 || !binding.path("fieldId").isTextual() || binding.path("fieldId").asText().isBlank()
+                        || !area.equals(binding.path("area").asText()) || !java.util.Set.of("sum", "average", "count", "min", "max", "none").contains(binding.path("aggregate").asText()) || !ids.add(binding.path("fieldId").asText())) throw ServiceException.validation("Chart bindings are invalid or exceed their budget");
+            }
+        }
+        if ("table".equals(kind) || "report-range".equals(kind)) {
+            JsonNode bindings = source.path("bindings");
+            if (bindings.path("values").isEmpty() || bindings.path("category").size() > 1) throw ServiceException.validation("Chart requires values and at most one category");
+            int sortedValues = 0;
+            java.util.Set<String> tableFields = new java.util.HashSet<>();
+            if ("table".equals(kind)) for (JsonNode table : workbook.path("dataModel").path("tables")) if (table.path("id").equals(source.path("tableId"))) for (JsonNode field : table.path("fields")) tableFields.add(field.path("id").asText());
+            for (String area : java.util.List.of("values", "category", "details", "color", "size", "tooltip", "filter")) for (JsonNode binding : bindings.path(area)) {
+                if ("table".equals(kind) && !tableFields.contains(binding.path("fieldId").asText())) throw ServiceException.validation("Chart references a missing table field");
+                if (binding.has("format") && !binding.get("format").isTextual()) throw ServiceException.validation("Chart binding format is invalid");
+                if (binding.has("sort")) {
+                    if (!java.util.Set.of("asc", "desc").contains(binding.path("sort").asText())) throw ServiceException.validation("Chart binding sort is invalid");
+                    if ("values".equals(area) && ++sortedValues > 1) throw ServiceException.validation("Chart permits one sorted value binding");
+                }
+            }
+        }
+        if ("pivot".equals(kind) && (!source.path("pivotId").isTextual() || source.path("pivotId").asText().isBlank())) throw ServiceException.validation("Chart Pivot identity is required");
+        if (payload.has("categoryRange")) validateDrawingSourceRange(payload.get("categoryRange"), dimensions, "Chart category");
+        JsonNode seriesEntries = payload.path("series");
+        if (payload.has("series") && (!seriesEntries.isArray() || seriesEntries.size() > 256)) throw ServiceException.validation("Chart series are invalid or exceed their budget");
+        String chartType = payload.path("chartType").asText();
+        if ("combo".equals(chartType) && seriesEntries.isEmpty()) throw ServiceException.validation("Combo chart requires explicit series");
+        for (JsonNode series : seriesEntries) {
+            validateDrawingSourceRange(series.path("range"), dimensions, "Chart series");
+            if ("rows".equals(payload.path("dataOrientation").asText()) && series.path("range").path("startRow").asInt() != series.path("range").path("endRow").asInt()) throw ServiceException.validation("Row-oriented chart series must be horizontal");
+            for (String area : java.util.List.of("xRange", "yRange", "sizeRange", "categoryRange")) if (series.has(area)) validateDrawingSourceRange(series.get(area), dimensions, "Chart series binding");
+            for (String area : java.util.List.of("open", "high", "low", "close", "volume")) if (series.path("stockRoles").has(area)) validateDrawingSourceRange(series.path("stockRoles").get(area), dimensions, "Stock role");
+            for (String area : java.util.List.of("plusRange", "minusRange")) if (series.path("errorBars").has(area)) validateDrawingSourceRange(series.path("errorBars").get(area), dimensions, "Error bar");
+            if (series.path("dataLabels").has("valuesFromCells")) validateDrawingSourceRange(series.path("dataLabels").get("valuesFromCells"), dimensions, "Chart label");
+            String type = series.path("chartType").asText(chartType);
+            if ("combo".equals(chartType) ? !java.util.Set.of("column", "bar", "line", "area").contains(type) : !chartType.equals(type)) throw ServiceException.validation("Chart series type is inconsistent");
+            if (series.has("subtype") && !GeneratedChartSubtypes.VALUES.getOrDefault(type, java.util.Set.of()).contains(series.path("subtype").asText())) throw ServiceException.validation("Chart series subtype is invalid");
+            if (("scatter".equals(type) || "bubble".equals(type)) && (!series.has("xRange") || !series.has("yRange") || "bubble".equals(type) && !series.has("sizeRange"))) throw ServiceException.validation("Chart series requires explicit X/Y/Size roles");
+            if ("stock".equals(type) && (!series.path("stockRoles").has("high") || !series.path("stockRoles").has("low") || !series.path("stockRoles").has("close"))) throw ServiceException.validation("Stock chart requires High/Low/Close roles");
+            if ("custom".equals(series.path("errorBars").path("type").asText()) && (!series.path("errorBars").has("plusRange") || !series.path("errorBars").has("minusRange"))) throw ServiceException.validation("Custom error bars require plus and minus ranges");
+        }
+        JsonNode features = payload.path("mapOptions").path("resource").get("features");
+        if (payload.path("mapOptions").hasNonNull("resource")) {
+            if (features == null || !features.isArray() || features.size() > 10_000) throw ServiceException.validation("Map feature collection is invalid");
+            long coordinates = 0;
+            for (JsonNode feature : features) {
+                if (!feature.path("polygons").isArray()) throw ServiceException.validation("Map polygons are invalid");
+                for (JsonNode ring : feature.path("polygons")) {
+                    if (!ring.isArray() || ring.size() < 3) throw ServiceException.validation("Map polygon ring is invalid");
+                    for (JsonNode point : ring) if (++coordinates > 500_000 || !point.isArray() || point.size() != 2 || !point.get(0).isNumber() || !point.get(1).isNumber()
+                            || !Double.isFinite(point.get(0).asDouble()) || !Double.isFinite(point.get(1).asDouble()) || Math.abs(point.get(0).asDouble()) > 180 || Math.abs(point.get(1).asDouble()) > 90) throw ServiceException.validation("Map coordinate is invalid");
+                }
+            }
+        }
+    }
+
     public static ObjectNode requireCanonical(JsonNode value, String expectedUnitId) {
+        requireResourceBudget(value);
         if (value == null || !value.isObject()) throw ServiceException.validation("Workbook snapshot must be an object");
         ObjectNode snapshot = (ObjectNode) value;
         if (!GeneratedWorkbookContract.SNAPSHOT_SCHEMA.equals(snapshot.path("schema").asText())) {
@@ -164,7 +353,7 @@ public final class WorkbookSnapshotValidator {
             }
             String sheetKind = sheet.path("kind").asText();
             if (!java.util.Set.of("worksheet", "table-sheet", "gantt-sheet", "report-sheet").contains(sheetKind)) throw ServiceException.validation("Workbook snapshot sheet kind is invalid");
-            if ("table-sheet".equals(sheetKind) && !sheet.path("tableSheet").isObject()) throw ServiceException.validation("TableSheet definition is required");
+            if ("table-sheet".equals(sheetKind)) requireTableSheetDefinition(sheet.path("tableSheet"));
             if ("gantt-sheet".equals(sheetKind) && !sheet.path("ganttSheet").isObject()) throw ServiceException.validation("GanttSheet definition is required");
             if ("report-sheet".equals(sheetKind) && !sheet.path("reportSheet").isObject()) throw ServiceException.validation("ReportSheet definition is required");
             if (!sheet.path("rowCount").canConvertToInt() || sheet.path("rowCount").intValue() < 1
@@ -190,6 +379,7 @@ public final class WorkbookSnapshotValidator {
             requireCanonicalPane(sheet.path("pane"));
             sheet.path("drawingPayloads").fields().forEachRemaining(entry -> {
                 JsonNode payload = entry.getValue();
+                requireDrawingPayload(snapshot, payload);
                 if ("camera".equals(payload.path("kind").asText())) {
                     validateDrawingSourceRange(payload.get("sourceRange"), sheetDimensions, "Camera");
                 }

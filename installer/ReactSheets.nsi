@@ -85,7 +85,7 @@ Section "React Sheets service" SEC_SERVICE
   CreateDirectory "${DATA_ROOT}\config"
   CreateDirectory "${DATA_ROOT}\backups"
   CreateDirectory "${DATA_ROOT}\logs"
-  nsExec::ExecToLog '"$SYSDIR\icacls.exe" "${DATA_ROOT}" /grant "NT AUTHORITY\LOCAL SERVICE:(OI)(CI)M" /T /C'
+  nsExec::ExecToLog '"$SYSDIR\icacls.exe" "${DATA_ROOT}" /inheritance:r /grant:r "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" "*S-1-5-19:(OI)(CI)M" /T'
   Pop $0
   ${If} $0 != 0
     MessageBox MB_ICONSTOP "Unable to grant the service account access to ${DATA_ROOT}. Exit code $0."

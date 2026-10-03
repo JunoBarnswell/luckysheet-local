@@ -206,7 +206,7 @@ export class SheetSkeleton {
       rowAdjustments.set(row, (height - this.defaultRowHeight) * this.zoom);
     }
     for (const row of this.hiddenRowSet) {
-      rowAdjustments.set(row, -(this.rowHeightOverrides.get(row) ?? this.defaultRowHeight) * this.zoom);
+      rowAdjustments.set(row, -this.defaultRowHeight * this.zoom);
     }
     [this.rowAdjustmentRows, this.rowAdjustmentPrefix] = this.buildAdjustmentPrefix(rowAdjustments);
 
@@ -216,7 +216,7 @@ export class SheetSkeleton {
       columnAdjustments.set(column, (width - this.defaultColumnWidth) * this.zoom);
     }
     for (const column of this.hiddenColumnSet) {
-      columnAdjustments.set(column, -(this.columnWidthOverrides.get(column) ?? this.defaultColumnWidth) * this.zoom);
+      columnAdjustments.set(column, -this.defaultColumnWidth * this.zoom);
     }
     [this.columnAdjustmentRows, this.columnAdjustmentPrefix] = this.buildAdjustmentPrefix(columnAdjustments);
   }

@@ -1,4 +1,126 @@
 {
+  "chartSubtypes": {
+  "column": [
+    "clustered",
+    "stacked",
+    "percent-stacked",
+    "three-dimensional",
+    "three-dimensional-stacked",
+    "three-dimensional-percent-stacked",
+    "cone",
+    "cone-stacked",
+    "cone-percent-stacked",
+    "cylinder",
+    "cylinder-stacked",
+    "cylinder-percent-stacked",
+    "pyramid",
+    "pyramid-stacked",
+    "pyramid-percent-stacked"
+  ],
+  "bar": [
+    "clustered",
+    "stacked",
+    "percent-stacked",
+    "three-dimensional",
+    "three-dimensional-stacked",
+    "three-dimensional-percent-stacked",
+    "cone",
+    "cone-stacked",
+    "cone-percent-stacked",
+    "cylinder",
+    "cylinder-stacked",
+    "cylinder-percent-stacked",
+    "pyramid",
+    "pyramid-stacked",
+    "pyramid-percent-stacked"
+  ],
+  "line": [
+    "line",
+    "line-markers",
+    "stacked",
+    "stacked-markers",
+    "percent-stacked",
+    "percent-stacked-markers",
+    "three-dimensional"
+  ],
+  "area": [
+    "area",
+    "stacked",
+    "percent-stacked",
+    "three-dimensional"
+  ],
+  "pie": [
+    "pie",
+    "exploded-pie",
+    "three-dimensional",
+    "exploded-three-dimensional-pie",
+    "pie-of-pie",
+    "bar-of-pie"
+  ],
+  "doughnut": [
+    "doughnut",
+    "exploded-doughnut"
+  ],
+  "scatter": [
+    "scatter-markers",
+    "scatter-smooth-lines-markers",
+    "scatter-smooth-lines",
+    "scatter-straight-lines-markers",
+    "scatter-straight-lines"
+  ],
+  "bubble": [
+    "bubble",
+    "bubble-three-dimensional"
+  ],
+  "treemap": [
+    "treemap"
+  ],
+  "sunburst": [
+    "sunburst"
+  ],
+  "histogram": [
+    "histogram"
+  ],
+  "pareto": [
+    "pareto"
+  ],
+  "box-whisker": [
+    "box-whisker"
+  ],
+  "waterfall": [
+    "waterfall"
+  ],
+  "funnel": [
+    "funnel"
+  ],
+  "stock": [
+    "stock-high-low-close",
+    "stock-open-high-low-close",
+    "stock-volume-high-low-close",
+    "stock-volume-open-high-low-close"
+  ],
+  "surface": [
+    "surface-three-dimensional",
+    "surface-wireframe",
+    "surface-contour",
+    "surface-wireframe-contour"
+  ],
+  "radar": [
+    "radar",
+    "radar-markers",
+    "radar-filled"
+  ],
+  "map": [
+    "filled-map",
+    "region-map"
+  ],
+  "combo": [
+    "clustered-column-line",
+    "clustered-column-line-secondary",
+    "stacked-area-clustered-column",
+    "custom-combo"
+  ]
+},
   "apiVersion": "2026-09-21",
   "workbook": {
     "snapshotSchema": "WorkbookSnapshot",
@@ -133,6 +255,7 @@
     "cellTemplate.set": { "durability": "remote", "remote": true, "schema": "CellStyleTemplateSet", "minRole": "editor", "rebasePolicy": "exact", "javaReducer": true },
     "cellTemplate.remove": { "durability": "remote", "remote": true, "schema": "CellStyleTemplateRemove", "minRole": "editor", "rebasePolicy": "exact", "javaReducer": true },
     "cell.editor.set": { "durability": "remote", "remote": true, "schema": "CellEditorSet", "minRole": "editor", "rebasePolicy": "range", "javaReducer": true },
+    "find.replaced": { "durability": "remote", "remote": true, "schema": "FindReplacement", "minRole": "editor", "rebasePolicy": "exact", "javaReducer": true },
     "fill.applied": { "durability": "remote", "remote": true, "schema": "FillApplied", "minRole": "editor", "rebasePolicy": "exact", "javaReducer": true },
     "fill.restored": { "durability": "remote", "remote": true, "schema": "FillRestored", "minRole": "editor", "rebasePolicy": "exact", "javaReducer": true },
     "tableSheet.update": { "durability": "remote", "remote": true, "schema": "TableSheetDefinitionUpdate", "minRole": "editor", "rebasePolicy": "exact", "javaReducer": true },
@@ -270,14 +393,14 @@
       "sheetTable.update": { "capability": "structure", "protectionAction": "format", "checksProtection": true },
       "sheetTable.style.set": { "capability": "format", "protectionAction": "format", "checksProtection": true },
       "sheetTable.toggleTotalRow": { "capability": "format", "protectionAction": "format", "checksProtection": true },
-      "comment.add": { "capability": "comment", "protectionAction": "none", "checksProtection": false },
-      "comment.reply": { "capability": "comment", "protectionAction": "none", "checksProtection": false },
-      "comment.resolve": { "capability": "comment", "protectionAction": "none", "checksProtection": false },
-      "comment.remove": { "capability": "comment", "protectionAction": "none", "checksProtection": false },
-      "comment.update": { "capability": "comment", "protectionAction": "none", "checksProtection": false },
-      "note.set": { "capability": "comment", "protectionAction": "none", "checksProtection": false },
-      "note.remove": { "capability": "comment", "protectionAction": "none", "checksProtection": false },
-      "note.visibility": { "capability": "comment", "protectionAction": "none", "checksProtection": false },
+      "comment.add": { "capability": "comment", "protectionAction": "edit-objects", "checksProtection": true },
+      "comment.reply": { "capability": "comment", "protectionAction": "edit-objects", "checksProtection": true },
+      "comment.resolve": { "capability": "comment", "protectionAction": "edit-objects", "checksProtection": true },
+      "comment.remove": { "capability": "comment", "protectionAction": "edit-objects", "checksProtection": true },
+      "comment.update": { "capability": "comment", "protectionAction": "edit-objects", "checksProtection": true },
+      "note.set": { "capability": "comment", "protectionAction": "edit-objects", "checksProtection": true },
+      "note.remove": { "capability": "comment", "protectionAction": "edit-objects", "checksProtection": true },
+      "note.visibility": { "capability": "comment", "protectionAction": "edit-objects", "checksProtection": true },
       "hyperlink.set": { "capability": "edit-cell", "protectionAction": "edit-cell", "checksProtection": true },
       "hyperlink.remove": { "capability": "edit-cell", "protectionAction": "edit-cell", "checksProtection": true },
       "history.restore": { "capability": "restore", "protectionAction": "none", "checksProtection": false },
@@ -307,6 +430,7 @@
       "dataSource.add": { "capability": "structure", "protectionAction": "format", "checksProtection": true },
       "dataSource.remove": { "capability": "structure", "protectionAction": "format", "checksProtection": true },
       "dataSource.update": { "capability": "structure", "protectionAction": "format", "checksProtection": true },
+      "dataSource.autoFilterSort.commit": { "capability": "structure", "protectionAction": "format", "checksProtection": true },
       "format.painter.apply": { "capability": "format", "protectionAction": "format", "checksProtection": true },
       "matrix.flip": { "capability": "edit-cell", "protectionAction": "edit-cell", "checksProtection": true },
       "matrix.transpose": { "capability": "edit-cell", "protectionAction": "edit-cell", "checksProtection": true },
@@ -321,8 +445,8 @@
       "workbook.rename": { "capability": "format", "protectionAction": "none", "checksProtection": false }
     },
     "commandPrefixes": [
-      { "prefix": "comment.", "capability": "comment", "protectionAction": "none", "checksProtection": false },
-      { "prefix": "note.", "capability": "comment", "protectionAction": "none", "checksProtection": false },
+      { "prefix": "comment.", "capability": "comment", "protectionAction": "edit-objects", "checksProtection": true },
+      { "prefix": "note.", "capability": "comment", "protectionAction": "edit-objects", "checksProtection": true },
       { "prefix": "hyperlink.", "capability": "edit-cell", "protectionAction": "edit-cell", "checksProtection": true },
       { "prefix": "drawing.", "capability": "drawing", "protectionAction": "edit-objects", "checksProtection": true },
       { "prefix": "chart.", "capability": "drawing", "protectionAction": "edit-objects", "checksProtection": true },
@@ -371,6 +495,7 @@
       "cells.deleted.restore": { "capability": "edit-cell", "protectionAction": "edit-cell", "checksProtection": true },
       "cellTemplate.remove": { "capability": "format", "protectionAction": "format", "checksProtection": true },
       "cellTemplate.set": { "capability": "format", "protectionAction": "format", "checksProtection": true },
+      "find.replaced": { "capability": "edit-cell", "protectionAction": "edit-cell", "checksProtection": true },
       "fill.applied": { "capability": "edit-cell", "protectionAction": "edit-cell", "checksProtection": true },
       "fill.restored": { "capability": "edit-cell", "protectionAction": "edit-cell", "checksProtection": true },
       "cf.add": { "capability": "format", "protectionAction": "format", "checksProtection": true },
@@ -390,11 +515,11 @@
       "columns.unhidden.all": { "capability": "structure", "protectionAction": "edit-cell", "checksProtection": true },
       "columns.visibility": { "capability": "structure", "protectionAction": "edit-cell", "checksProtection": true },
       "rows.visibility": { "capability": "structure", "protectionAction": "edit-cell", "checksProtection": true },
-      "comment.add": { "capability": "comment", "protectionAction": "none", "checksProtection": false },
-      "comment.remove": { "capability": "comment", "protectionAction": "none", "checksProtection": false },
-      "comment.reply": { "capability": "comment", "protectionAction": "none", "checksProtection": false },
-      "comment.reply.remove": { "capability": "comment", "protectionAction": "none", "checksProtection": false },
-      "comment.resolve": { "capability": "comment", "protectionAction": "none", "checksProtection": false },
+      "comment.add": { "capability": "comment", "protectionAction": "edit-objects", "checksProtection": true },
+      "comment.remove": { "capability": "comment", "protectionAction": "edit-objects", "checksProtection": true },
+      "comment.reply": { "capability": "comment", "protectionAction": "edit-objects", "checksProtection": true },
+      "comment.reply.remove": { "capability": "comment", "protectionAction": "edit-objects", "checksProtection": true },
+      "comment.resolve": { "capability": "comment", "protectionAction": "edit-objects", "checksProtection": true },
       "dataRegion.add": { "capability": "structure", "protectionAction": "format", "checksProtection": true },
       "dataRegion.remove": { "capability": "structure", "protectionAction": "format", "checksProtection": true },
       "dataRegion.materialize.commit": { "capability": "edit-cell", "protectionAction": "edit-cell", "checksProtection": true },
@@ -425,9 +550,9 @@
       "name.set": { "capability": "format", "protectionAction": "none", "checksProtection": false },
       "workbook.calculation.mode.set": { "capability": "format", "protectionAction": "none", "checksProtection": false },
       "workbook.editing.options.set": { "capability": "format", "protectionAction": "none", "checksProtection": false },
-      "note.remove": { "capability": "comment", "protectionAction": "none", "checksProtection": false },
-      "note.set": { "capability": "comment", "protectionAction": "none", "checksProtection": false },
-      "note.visibility": { "capability": "comment", "protectionAction": "none", "checksProtection": false },
+      "note.remove": { "capability": "comment", "protectionAction": "edit-objects", "checksProtection": true },
+      "note.set": { "capability": "comment", "protectionAction": "edit-objects", "checksProtection": true },
+      "note.visibility": { "capability": "comment", "protectionAction": "edit-objects", "checksProtection": true },
       "outline.set": { "capability": "structure", "protectionAction": "format", "checksProtection": true },
       "pivot.add": { "capability": "structure", "protectionAction": "format", "checksProtection": true },
       "pivot.create": { "capability": "structure", "protectionAction": "format", "checksProtection": true },
@@ -456,7 +581,7 @@
       "query.load.range": { "capability": "query", "protectionAction": "edit-cell", "checksProtection": true },
       "query.load.sheet-table": { "capability": "query", "protectionAction": "edit-cell", "checksProtection": true },
       "query.load.pivot-source": { "capability": "query", "protectionAction": "edit-cell", "checksProtection": true },
-      "query.load.workbook-table": { "capability": "query", "protectionAction": "none", "checksProtection": false },
+      "query.load.workbook-table": { "capability": "query", "protectionAction": "edit-cell", "checksProtection": true },
       "externalLink.set": {"capability": "structure", "protectionAction": "none", "checksProtection": false, "affectedRangeMode": "none", "objectScope": "workbook"},
       "externalLink.remove": {"capability": "structure", "protectionAction": "none", "checksProtection": false, "affectedRangeMode": "none", "objectScope": "workbook"},
       "table.configure": {"capability": "structure", "protectionAction": "none", "checksProtection": false, "affectedRangeMode": "declared", "objectScope": "worksheet"},

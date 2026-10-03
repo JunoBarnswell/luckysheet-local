@@ -410,3 +410,19 @@ describe('native document codec registry', () => {
     );
   });
 });
+
+it('bounds CSV cells, XML indices, and ODS repetition before allocating expanded rows', async () => {
+  await assert.rejects(nativeDocumentCodecRegistry.import({ fileName: 'budget.csv', buffer: strToU8('a,b,c').buffer as ArrayBuffer, options: { compatibilityTarget: 'B', limits: { maxCells: 2 } }, execution: 'inline-test' }), /cell budget|cells/i);
+  const xml = '<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"><Worksheet ss:Name="s"><Table><Row><Cell ss:Index="1000000000"><Data ss:Type="String">x</Data></Cell></Row></Table></Worksheet></Workbook>';
+  await assert.rejects(nativeDocumentCodecRegistry.import({ fileName: 'index.xml', buffer: strToU8(xml).buffer as ArrayBuffer, options, execution: 'inline-test' }), /index|budget/i);
+  const nested = '<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet">' + '<a>'.repeat(40) + '</a>'.repeat(40) + '</Workbook>';
+  await assert.rejects(nativeDocumentCodecRegistry.import({ fileName: 'deep.xml', buffer: strToU8(nested).buffer as ArrayBuffer, options: { compatibilityTarget: 'B', limits: { maxXmlDepth: 10 } }, execution: 'inline-test' }), /depth|budget/i);
+});
+
+it('escapes malicious untouched CSV artifacts instead of returning their unsafe source bytes', async () => {
+  for (const source of ['=1+2', '+CMD', '@SUM(1)', '\t=1+2']) {
+    const imported = await nativeDocumentCodecRegistry.import({ fileName: 'unsafe.csv', buffer: strToU8(source).buffer as ArrayBuffer, options, execution: 'inline-test' });
+    const saved = await nativeDocumentCodecRegistry.export({ snapshot: imported.snapshot, artifact: imported.artifact, fileName: 'unsafe.csv', options, execution: 'inline-test' });
+    assert.match(strFromU8(bytesOf(saved.buffer)), /'/);
+  }
+});

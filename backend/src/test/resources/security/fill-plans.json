@@ -1,0 +1,2558 @@
+[
+  {
+    "name": "1900/linear/day/down",
+    "snapshot": {
+      "sheets": [
+        {
+          "id": "sheet-1",
+          "rowCount": 10,
+          "columnCount": 1,
+          "cells": {
+            "0": {
+              "0": {
+                "value": 2,
+                "numberFormat": "\"USD\" 0"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "params": {
+      "sheetId": "sheet-1",
+      "sourceRange": {
+        "sheetId": "sheet-1",
+        "startRow": 0,
+        "endRow": 0,
+        "startColumn": 0,
+        "endColumn": 0
+      },
+      "targetRange": {
+        "sheetId": "sheet-1",
+        "startRow": 0,
+        "endRow": 5,
+        "startColumn": 0,
+        "endColumn": 0
+      },
+      "direction": "down",
+      "mode": "series",
+      "dateSystem": "1900",
+      "series": {
+        "type": "linear",
+        "dateUnit": "day",
+        "trend": true,
+        "stepValue": 2
+      },
+      "writes": [
+        {
+          "row": 1,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": 4,
+            "numberFormat": "\"USD\" 0"
+          }
+        },
+        {
+          "row": 2,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": 6,
+            "numberFormat": "\"USD\" 0"
+          }
+        },
+        {
+          "row": 3,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": 8,
+            "numberFormat": "\"USD\" 0"
+          }
+        },
+        {
+          "row": 4,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": 10,
+            "numberFormat": "\"USD\" 0"
+          }
+        },
+        {
+          "row": 5,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": 12,
+            "numberFormat": "\"USD\" 0"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "1900/linear/day/up",
+    "snapshot": {
+      "sheets": [
+        {
+          "id": "sheet-1",
+          "rowCount": 10,
+          "columnCount": 1,
+          "cells": {
+            "5": {
+              "0": {
+                "value": 2,
+                "numberFormat": "\"USD\" 0"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "params": {
+      "sheetId": "sheet-1",
+      "sourceRange": {
+        "sheetId": "sheet-1",
+        "startRow": 5,
+        "endRow": 5,
+        "startColumn": 0,
+        "endColumn": 0
+      },
+      "targetRange": {
+        "sheetId": "sheet-1",
+        "startRow": 0,
+        "endRow": 5,
+        "startColumn": 0,
+        "endColumn": 0
+      },
+      "direction": "up",
+      "mode": "series",
+      "dateSystem": "1900",
+      "series": {
+        "type": "linear",
+        "dateUnit": "day",
+        "trend": true,
+        "stepValue": 2
+      },
+      "writes": [
+        {
+          "row": 0,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": 12,
+            "numberFormat": "\"USD\" 0"
+          }
+        },
+        {
+          "row": 1,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": 10,
+            "numberFormat": "\"USD\" 0"
+          }
+        },
+        {
+          "row": 2,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": 8,
+            "numberFormat": "\"USD\" 0"
+          }
+        },
+        {
+          "row": 3,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": 6,
+            "numberFormat": "\"USD\" 0"
+          }
+        },
+        {
+          "row": 4,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": 4,
+            "numberFormat": "\"USD\" 0"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "1900/growth/day/down",
+    "snapshot": {
+      "sheets": [
+        {
+          "id": "sheet-1",
+          "rowCount": 10,
+          "columnCount": 1,
+          "cells": {
+            "0": {
+              "0": {
+                "value": 2,
+                "numberFormat": "\"USD\" 0"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "params": {
+      "sheetId": "sheet-1",
+      "sourceRange": {
+        "sheetId": "sheet-1",
+        "startRow": 0,
+        "endRow": 0,
+        "startColumn": 0,
+        "endColumn": 0
+      },
+      "targetRange": {
+        "sheetId": "sheet-1",
+        "startRow": 0,
+        "endRow": 5,
+        "startColumn": 0,
+        "endColumn": 0
+      },
+      "direction": "down",
+      "mode": "series",
+      "dateSystem": "1900",
+      "series": {
+        "type": "growth",
+        "dateUnit": "day"
+      },
+      "writes": [
+        {
+          "row": 1,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": 4,
+            "numberFormat": "\"USD\" 0"
+          }
+        },
+        {
+          "row": 2,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": 8,
+            "numberFormat": "\"USD\" 0"
+          }
+        },
+        {
+          "row": 3,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": 16,
+            "numberFormat": "\"USD\" 0"
+          }
+        },
+        {
+          "row": 4,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": 32,
+            "numberFormat": "\"USD\" 0"
+          }
+        },
+        {
+          "row": 5,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": 64,
+            "numberFormat": "\"USD\" 0"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "1900/growth/day/up",
+    "snapshot": {
+      "sheets": [
+        {
+          "id": "sheet-1",
+          "rowCount": 10,
+          "columnCount": 1,
+          "cells": {
+            "5": {
+              "0": {
+                "value": 2,
+                "numberFormat": "\"USD\" 0"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "params": {
+      "sheetId": "sheet-1",
+      "sourceRange": {
+        "sheetId": "sheet-1",
+        "startRow": 5,
+        "endRow": 5,
+        "startColumn": 0,
+        "endColumn": 0
+      },
+      "targetRange": {
+        "sheetId": "sheet-1",
+        "startRow": 0,
+        "endRow": 5,
+        "startColumn": 0,
+        "endColumn": 0
+      },
+      "direction": "up",
+      "mode": "series",
+      "dateSystem": "1900",
+      "series": {
+        "type": "growth",
+        "dateUnit": "day"
+      },
+      "writes": [
+        {
+          "row": 0,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": 64,
+            "numberFormat": "\"USD\" 0"
+          }
+        },
+        {
+          "row": 1,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": 32,
+            "numberFormat": "\"USD\" 0"
+          }
+        },
+        {
+          "row": 2,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": 16,
+            "numberFormat": "\"USD\" 0"
+          }
+        },
+        {
+          "row": 3,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": 8,
+            "numberFormat": "\"USD\" 0"
+          }
+        },
+        {
+          "row": 4,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": 4,
+            "numberFormat": "\"USD\" 0"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "1900/date/day/down",
+    "snapshot": {
+      "sheets": [
+        {
+          "id": "sheet-1",
+          "rowCount": 10,
+          "columnCount": 1,
+          "cells": {
+            "0": {
+              "0": {
+                "value": "2024-01-31T12:30:00.000Z",
+                "numberFormat": "yyyy-mm-dd"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "params": {
+      "sheetId": "sheet-1",
+      "sourceRange": {
+        "sheetId": "sheet-1",
+        "startRow": 0,
+        "endRow": 0,
+        "startColumn": 0,
+        "endColumn": 0
+      },
+      "targetRange": {
+        "sheetId": "sheet-1",
+        "startRow": 0,
+        "endRow": 5,
+        "startColumn": 0,
+        "endColumn": 0
+      },
+      "direction": "down",
+      "mode": "series",
+      "dateSystem": "1900",
+      "series": {
+        "type": "date",
+        "dateUnit": "day"
+      },
+      "writes": [
+        {
+          "row": 1,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "2024-02-01T12:30:00.000Z",
+            "numberFormat": "yyyy-mm-dd"
+          }
+        },
+        {
+          "row": 2,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "2024-02-02T12:30:00.000Z",
+            "numberFormat": "yyyy-mm-dd"
+          }
+        },
+        {
+          "row": 3,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "2024-02-03T12:30:00.000Z",
+            "numberFormat": "yyyy-mm-dd"
+          }
+        },
+        {
+          "row": 4,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "2024-02-04T12:30:00.000Z",
+            "numberFormat": "yyyy-mm-dd"
+          }
+        },
+        {
+          "row": 5,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "2024-02-05T12:30:00.000Z",
+            "numberFormat": "yyyy-mm-dd"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "1900/date/day/up",
+    "snapshot": {
+      "sheets": [
+        {
+          "id": "sheet-1",
+          "rowCount": 10,
+          "columnCount": 1,
+          "cells": {
+            "5": {
+              "0": {
+                "value": "2024-01-31T12:30:00.000Z",
+                "numberFormat": "yyyy-mm-dd"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "params": {
+      "sheetId": "sheet-1",
+      "sourceRange": {
+        "sheetId": "sheet-1",
+        "startRow": 5,
+        "endRow": 5,
+        "startColumn": 0,
+        "endColumn": 0
+      },
+      "targetRange": {
+        "sheetId": "sheet-1",
+        "startRow": 0,
+        "endRow": 5,
+        "startColumn": 0,
+        "endColumn": 0
+      },
+      "direction": "up",
+      "mode": "series",
+      "dateSystem": "1900",
+      "series": {
+        "type": "date",
+        "dateUnit": "day"
+      },
+      "writes": [
+        {
+          "row": 0,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "2024-02-05T12:30:00.000Z",
+            "numberFormat": "yyyy-mm-dd"
+          }
+        },
+        {
+          "row": 1,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "2024-02-04T12:30:00.000Z",
+            "numberFormat": "yyyy-mm-dd"
+          }
+        },
+        {
+          "row": 2,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "2024-02-03T12:30:00.000Z",
+            "numberFormat": "yyyy-mm-dd"
+          }
+        },
+        {
+          "row": 3,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "2024-02-02T12:30:00.000Z",
+            "numberFormat": "yyyy-mm-dd"
+          }
+        },
+        {
+          "row": 4,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "2024-02-01T12:30:00.000Z",
+            "numberFormat": "yyyy-mm-dd"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "1900/date/weekday/down",
+    "snapshot": {
+      "sheets": [
+        {
+          "id": "sheet-1",
+          "rowCount": 10,
+          "columnCount": 1,
+          "cells": {
+            "0": {
+              "0": {
+                "value": "2024-01-31T12:30:00.000Z",
+                "numberFormat": "yyyy-mm-dd"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "params": {
+      "sheetId": "sheet-1",
+      "sourceRange": {
+        "sheetId": "sheet-1",
+        "startRow": 0,
+        "endRow": 0,
+        "startColumn": 0,
+        "endColumn": 0
+      },
+      "targetRange": {
+        "sheetId": "sheet-1",
+        "startRow": 0,
+        "endRow": 5,
+        "startColumn": 0,
+        "endColumn": 0
+      },
+      "direction": "down",
+      "mode": "series",
+      "dateSystem": "1900",
+      "series": {
+        "type": "date",
+        "dateUnit": "weekday"
+      },
+      "writes": [
+        {
+          "row": 1,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "2024-02-01T12:30:00.000Z",
+            "numberFormat": "yyyy-mm-dd"
+          }
+        },
+        {
+          "row": 2,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "2024-02-02T12:30:00.000Z",
+            "numberFormat": "yyyy-mm-dd"
+          }
+        },
+        {
+          "row": 3,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "2024-02-05T12:30:00.000Z",
+            "numberFormat": "yyyy-mm-dd"
+          }
+        },
+        {
+          "row": 4,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "2024-02-06T12:30:00.000Z",
+            "numberFormat": "yyyy-mm-dd"
+          }
+        },
+        {
+          "row": 5,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "2024-02-07T12:30:00.000Z",
+            "numberFormat": "yyyy-mm-dd"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "1900/date/weekday/up",
+    "snapshot": {
+      "sheets": [
+        {
+          "id": "sheet-1",
+          "rowCount": 10,
+          "columnCount": 1,
+          "cells": {
+            "5": {
+              "0": {
+                "value": "2024-01-31T12:30:00.000Z",
+                "numberFormat": "yyyy-mm-dd"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "params": {
+      "sheetId": "sheet-1",
+      "sourceRange": {
+        "sheetId": "sheet-1",
+        "startRow": 5,
+        "endRow": 5,
+        "startColumn": 0,
+        "endColumn": 0
+      },
+      "targetRange": {
+        "sheetId": "sheet-1",
+        "startRow": 0,
+        "endRow": 5,
+        "startColumn": 0,
+        "endColumn": 0
+      },
+      "direction": "up",
+      "mode": "series",
+      "dateSystem": "1900",
+      "series": {
+        "type": "date",
+        "dateUnit": "weekday"
+      },
+      "writes": [
+        {
+          "row": 0,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "2024-02-07T12:30:00.000Z",
+            "numberFormat": "yyyy-mm-dd"
+          }
+        },
+        {
+          "row": 1,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "2024-02-06T12:30:00.000Z",
+            "numberFormat": "yyyy-mm-dd"
+          }
+        },
+        {
+          "row": 2,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "2024-02-05T12:30:00.000Z",
+            "numberFormat": "yyyy-mm-dd"
+          }
+        },
+        {
+          "row": 3,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "2024-02-02T12:30:00.000Z",
+            "numberFormat": "yyyy-mm-dd"
+          }
+        },
+        {
+          "row": 4,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "2024-02-01T12:30:00.000Z",
+            "numberFormat": "yyyy-mm-dd"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "1900/date/month/down",
+    "snapshot": {
+      "sheets": [
+        {
+          "id": "sheet-1",
+          "rowCount": 10,
+          "columnCount": 1,
+          "cells": {
+            "0": {
+              "0": {
+                "value": "2024-01-31T12:30:00.000Z",
+                "numberFormat": "yyyy-mm-dd"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "params": {
+      "sheetId": "sheet-1",
+      "sourceRange": {
+        "sheetId": "sheet-1",
+        "startRow": 0,
+        "endRow": 0,
+        "startColumn": 0,
+        "endColumn": 0
+      },
+      "targetRange": {
+        "sheetId": "sheet-1",
+        "startRow": 0,
+        "endRow": 5,
+        "startColumn": 0,
+        "endColumn": 0
+      },
+      "direction": "down",
+      "mode": "series",
+      "dateSystem": "1900",
+      "series": {
+        "type": "date",
+        "dateUnit": "month"
+      },
+      "writes": [
+        {
+          "row": 1,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "2024-02-29T12:30:00.000Z",
+            "numberFormat": "yyyy-mm-dd"
+          }
+        },
+        {
+          "row": 2,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "2024-03-31T12:30:00.000Z",
+            "numberFormat": "yyyy-mm-dd"
+          }
+        },
+        {
+          "row": 3,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "2024-04-30T12:30:00.000Z",
+            "numberFormat": "yyyy-mm-dd"
+          }
+        },
+        {
+          "row": 4,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "2024-05-31T12:30:00.000Z",
+            "numberFormat": "yyyy-mm-dd"
+          }
+        },
+        {
+          "row": 5,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "2024-06-30T12:30:00.000Z",
+            "numberFormat": "yyyy-mm-dd"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "1900/date/month/up",
+    "snapshot": {
+      "sheets": [
+        {
+          "id": "sheet-1",
+          "rowCount": 10,
+          "columnCount": 1,
+          "cells": {
+            "5": {
+              "0": {
+                "value": "2024-01-31T12:30:00.000Z",
+                "numberFormat": "yyyy-mm-dd"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "params": {
+      "sheetId": "sheet-1",
+      "sourceRange": {
+        "sheetId": "sheet-1",
+        "startRow": 5,
+        "endRow": 5,
+        "startColumn": 0,
+        "endColumn": 0
+      },
+      "targetRange": {
+        "sheetId": "sheet-1",
+        "startRow": 0,
+        "endRow": 5,
+        "startColumn": 0,
+        "endColumn": 0
+      },
+      "direction": "up",
+      "mode": "series",
+      "dateSystem": "1900",
+      "series": {
+        "type": "date",
+        "dateUnit": "month"
+      },
+      "writes": [
+        {
+          "row": 0,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "2024-06-30T12:30:00.000Z",
+            "numberFormat": "yyyy-mm-dd"
+          }
+        },
+        {
+          "row": 1,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "2024-05-31T12:30:00.000Z",
+            "numberFormat": "yyyy-mm-dd"
+          }
+        },
+        {
+          "row": 2,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "2024-04-30T12:30:00.000Z",
+            "numberFormat": "yyyy-mm-dd"
+          }
+        },
+        {
+          "row": 3,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "2024-03-31T12:30:00.000Z",
+            "numberFormat": "yyyy-mm-dd"
+          }
+        },
+        {
+          "row": 4,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "2024-02-29T12:30:00.000Z",
+            "numberFormat": "yyyy-mm-dd"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "1900/date/year/down",
+    "snapshot": {
+      "sheets": [
+        {
+          "id": "sheet-1",
+          "rowCount": 10,
+          "columnCount": 1,
+          "cells": {
+            "0": {
+              "0": {
+                "value": "2024-01-31T12:30:00.000Z",
+                "numberFormat": "yyyy-mm-dd"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "params": {
+      "sheetId": "sheet-1",
+      "sourceRange": {
+        "sheetId": "sheet-1",
+        "startRow": 0,
+        "endRow": 0,
+        "startColumn": 0,
+        "endColumn": 0
+      },
+      "targetRange": {
+        "sheetId": "sheet-1",
+        "startRow": 0,
+        "endRow": 5,
+        "startColumn": 0,
+        "endColumn": 0
+      },
+      "direction": "down",
+      "mode": "series",
+      "dateSystem": "1900",
+      "series": {
+        "type": "date",
+        "dateUnit": "year"
+      },
+      "writes": [
+        {
+          "row": 1,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "2025-01-31T12:30:00.000Z",
+            "numberFormat": "yyyy-mm-dd"
+          }
+        },
+        {
+          "row": 2,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "2026-01-31T12:30:00.000Z",
+            "numberFormat": "yyyy-mm-dd"
+          }
+        },
+        {
+          "row": 3,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "2027-01-31T12:30:00.000Z",
+            "numberFormat": "yyyy-mm-dd"
+          }
+        },
+        {
+          "row": 4,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "2028-01-31T12:30:00.000Z",
+            "numberFormat": "yyyy-mm-dd"
+          }
+        },
+        {
+          "row": 5,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "2029-01-31T12:30:00.000Z",
+            "numberFormat": "yyyy-mm-dd"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "1900/date/year/up",
+    "snapshot": {
+      "sheets": [
+        {
+          "id": "sheet-1",
+          "rowCount": 10,
+          "columnCount": 1,
+          "cells": {
+            "5": {
+              "0": {
+                "value": "2024-01-31T12:30:00.000Z",
+                "numberFormat": "yyyy-mm-dd"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "params": {
+      "sheetId": "sheet-1",
+      "sourceRange": {
+        "sheetId": "sheet-1",
+        "startRow": 5,
+        "endRow": 5,
+        "startColumn": 0,
+        "endColumn": 0
+      },
+      "targetRange": {
+        "sheetId": "sheet-1",
+        "startRow": 0,
+        "endRow": 5,
+        "startColumn": 0,
+        "endColumn": 0
+      },
+      "direction": "up",
+      "mode": "series",
+      "dateSystem": "1900",
+      "series": {
+        "type": "date",
+        "dateUnit": "year"
+      },
+      "writes": [
+        {
+          "row": 0,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "2029-01-31T12:30:00.000Z",
+            "numberFormat": "yyyy-mm-dd"
+          }
+        },
+        {
+          "row": 1,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "2028-01-31T12:30:00.000Z",
+            "numberFormat": "yyyy-mm-dd"
+          }
+        },
+        {
+          "row": 2,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "2027-01-31T12:30:00.000Z",
+            "numberFormat": "yyyy-mm-dd"
+          }
+        },
+        {
+          "row": 3,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "2026-01-31T12:30:00.000Z",
+            "numberFormat": "yyyy-mm-dd"
+          }
+        },
+        {
+          "row": 4,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "2025-01-31T12:30:00.000Z",
+            "numberFormat": "yyyy-mm-dd"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "1900/autofill/day/down",
+    "snapshot": {
+      "sheets": [
+        {
+          "id": "sheet-1",
+          "rowCount": 10,
+          "columnCount": 1,
+          "cells": {
+            "0": {
+              "0": {
+                "value": "copy text",
+                "numberFormat": "\"USD\" 0"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "params": {
+      "sheetId": "sheet-1",
+      "sourceRange": {
+        "sheetId": "sheet-1",
+        "startRow": 0,
+        "endRow": 0,
+        "startColumn": 0,
+        "endColumn": 0
+      },
+      "targetRange": {
+        "sheetId": "sheet-1",
+        "startRow": 0,
+        "endRow": 5,
+        "startColumn": 0,
+        "endColumn": 0
+      },
+      "direction": "down",
+      "mode": "series",
+      "dateSystem": "1900",
+      "series": {
+        "type": "autofill",
+        "dateUnit": "day"
+      },
+      "writes": [
+        {
+          "row": 1,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "copy text",
+            "numberFormat": "\"USD\" 0"
+          }
+        },
+        {
+          "row": 2,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "copy text",
+            "numberFormat": "\"USD\" 0"
+          }
+        },
+        {
+          "row": 3,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "copy text",
+            "numberFormat": "\"USD\" 0"
+          }
+        },
+        {
+          "row": 4,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "copy text",
+            "numberFormat": "\"USD\" 0"
+          }
+        },
+        {
+          "row": 5,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "copy text",
+            "numberFormat": "\"USD\" 0"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "1900/autofill/day/up",
+    "snapshot": {
+      "sheets": [
+        {
+          "id": "sheet-1",
+          "rowCount": 10,
+          "columnCount": 1,
+          "cells": {
+            "5": {
+              "0": {
+                "value": "copy text",
+                "numberFormat": "\"USD\" 0"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "params": {
+      "sheetId": "sheet-1",
+      "sourceRange": {
+        "sheetId": "sheet-1",
+        "startRow": 5,
+        "endRow": 5,
+        "startColumn": 0,
+        "endColumn": 0
+      },
+      "targetRange": {
+        "sheetId": "sheet-1",
+        "startRow": 0,
+        "endRow": 5,
+        "startColumn": 0,
+        "endColumn": 0
+      },
+      "direction": "up",
+      "mode": "series",
+      "dateSystem": "1900",
+      "series": {
+        "type": "autofill",
+        "dateUnit": "day"
+      },
+      "writes": [
+        {
+          "row": 0,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "copy text",
+            "numberFormat": "\"USD\" 0"
+          }
+        },
+        {
+          "row": 1,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "copy text",
+            "numberFormat": "\"USD\" 0"
+          }
+        },
+        {
+          "row": 2,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "copy text",
+            "numberFormat": "\"USD\" 0"
+          }
+        },
+        {
+          "row": 3,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "copy text",
+            "numberFormat": "\"USD\" 0"
+          }
+        },
+        {
+          "row": 4,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "copy text",
+            "numberFormat": "\"USD\" 0"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "1904/linear/day/down",
+    "snapshot": {
+      "sheets": [
+        {
+          "id": "sheet-1",
+          "rowCount": 10,
+          "columnCount": 1,
+          "cells": {
+            "0": {
+              "0": {
+                "value": 2,
+                "numberFormat": "\"USD\" 0"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "params": {
+      "sheetId": "sheet-1",
+      "sourceRange": {
+        "sheetId": "sheet-1",
+        "startRow": 0,
+        "endRow": 0,
+        "startColumn": 0,
+        "endColumn": 0
+      },
+      "targetRange": {
+        "sheetId": "sheet-1",
+        "startRow": 0,
+        "endRow": 5,
+        "startColumn": 0,
+        "endColumn": 0
+      },
+      "direction": "down",
+      "mode": "series",
+      "dateSystem": "1904",
+      "series": {
+        "type": "linear",
+        "dateUnit": "day",
+        "trend": true,
+        "stepValue": 2
+      },
+      "writes": [
+        {
+          "row": 1,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": 4,
+            "numberFormat": "\"USD\" 0"
+          }
+        },
+        {
+          "row": 2,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": 6,
+            "numberFormat": "\"USD\" 0"
+          }
+        },
+        {
+          "row": 3,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": 8,
+            "numberFormat": "\"USD\" 0"
+          }
+        },
+        {
+          "row": 4,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": 10,
+            "numberFormat": "\"USD\" 0"
+          }
+        },
+        {
+          "row": 5,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": 12,
+            "numberFormat": "\"USD\" 0"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "1904/linear/day/up",
+    "snapshot": {
+      "sheets": [
+        {
+          "id": "sheet-1",
+          "rowCount": 10,
+          "columnCount": 1,
+          "cells": {
+            "5": {
+              "0": {
+                "value": 2,
+                "numberFormat": "\"USD\" 0"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "params": {
+      "sheetId": "sheet-1",
+      "sourceRange": {
+        "sheetId": "sheet-1",
+        "startRow": 5,
+        "endRow": 5,
+        "startColumn": 0,
+        "endColumn": 0
+      },
+      "targetRange": {
+        "sheetId": "sheet-1",
+        "startRow": 0,
+        "endRow": 5,
+        "startColumn": 0,
+        "endColumn": 0
+      },
+      "direction": "up",
+      "mode": "series",
+      "dateSystem": "1904",
+      "series": {
+        "type": "linear",
+        "dateUnit": "day",
+        "trend": true,
+        "stepValue": 2
+      },
+      "writes": [
+        {
+          "row": 0,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": 12,
+            "numberFormat": "\"USD\" 0"
+          }
+        },
+        {
+          "row": 1,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": 10,
+            "numberFormat": "\"USD\" 0"
+          }
+        },
+        {
+          "row": 2,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": 8,
+            "numberFormat": "\"USD\" 0"
+          }
+        },
+        {
+          "row": 3,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": 6,
+            "numberFormat": "\"USD\" 0"
+          }
+        },
+        {
+          "row": 4,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": 4,
+            "numberFormat": "\"USD\" 0"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "1904/growth/day/down",
+    "snapshot": {
+      "sheets": [
+        {
+          "id": "sheet-1",
+          "rowCount": 10,
+          "columnCount": 1,
+          "cells": {
+            "0": {
+              "0": {
+                "value": 2,
+                "numberFormat": "\"USD\" 0"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "params": {
+      "sheetId": "sheet-1",
+      "sourceRange": {
+        "sheetId": "sheet-1",
+        "startRow": 0,
+        "endRow": 0,
+        "startColumn": 0,
+        "endColumn": 0
+      },
+      "targetRange": {
+        "sheetId": "sheet-1",
+        "startRow": 0,
+        "endRow": 5,
+        "startColumn": 0,
+        "endColumn": 0
+      },
+      "direction": "down",
+      "mode": "series",
+      "dateSystem": "1904",
+      "series": {
+        "type": "growth",
+        "dateUnit": "day"
+      },
+      "writes": [
+        {
+          "row": 1,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": 4,
+            "numberFormat": "\"USD\" 0"
+          }
+        },
+        {
+          "row": 2,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": 8,
+            "numberFormat": "\"USD\" 0"
+          }
+        },
+        {
+          "row": 3,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": 16,
+            "numberFormat": "\"USD\" 0"
+          }
+        },
+        {
+          "row": 4,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": 32,
+            "numberFormat": "\"USD\" 0"
+          }
+        },
+        {
+          "row": 5,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": 64,
+            "numberFormat": "\"USD\" 0"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "1904/growth/day/up",
+    "snapshot": {
+      "sheets": [
+        {
+          "id": "sheet-1",
+          "rowCount": 10,
+          "columnCount": 1,
+          "cells": {
+            "5": {
+              "0": {
+                "value": 2,
+                "numberFormat": "\"USD\" 0"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "params": {
+      "sheetId": "sheet-1",
+      "sourceRange": {
+        "sheetId": "sheet-1",
+        "startRow": 5,
+        "endRow": 5,
+        "startColumn": 0,
+        "endColumn": 0
+      },
+      "targetRange": {
+        "sheetId": "sheet-1",
+        "startRow": 0,
+        "endRow": 5,
+        "startColumn": 0,
+        "endColumn": 0
+      },
+      "direction": "up",
+      "mode": "series",
+      "dateSystem": "1904",
+      "series": {
+        "type": "growth",
+        "dateUnit": "day"
+      },
+      "writes": [
+        {
+          "row": 0,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": 64,
+            "numberFormat": "\"USD\" 0"
+          }
+        },
+        {
+          "row": 1,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": 32,
+            "numberFormat": "\"USD\" 0"
+          }
+        },
+        {
+          "row": 2,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": 16,
+            "numberFormat": "\"USD\" 0"
+          }
+        },
+        {
+          "row": 3,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": 8,
+            "numberFormat": "\"USD\" 0"
+          }
+        },
+        {
+          "row": 4,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": 4,
+            "numberFormat": "\"USD\" 0"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "1904/date/day/down",
+    "snapshot": {
+      "sheets": [
+        {
+          "id": "sheet-1",
+          "rowCount": 10,
+          "columnCount": 1,
+          "cells": {
+            "0": {
+              "0": {
+                "value": "2024-01-31T12:30:00.000Z",
+                "numberFormat": "yyyy-mm-dd"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "params": {
+      "sheetId": "sheet-1",
+      "sourceRange": {
+        "sheetId": "sheet-1",
+        "startRow": 0,
+        "endRow": 0,
+        "startColumn": 0,
+        "endColumn": 0
+      },
+      "targetRange": {
+        "sheetId": "sheet-1",
+        "startRow": 0,
+        "endRow": 5,
+        "startColumn": 0,
+        "endColumn": 0
+      },
+      "direction": "down",
+      "mode": "series",
+      "dateSystem": "1904",
+      "series": {
+        "type": "date",
+        "dateUnit": "day"
+      },
+      "writes": [
+        {
+          "row": 1,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "2024-02-01T12:30:00.000Z",
+            "numberFormat": "yyyy-mm-dd"
+          }
+        },
+        {
+          "row": 2,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "2024-02-02T12:30:00.000Z",
+            "numberFormat": "yyyy-mm-dd"
+          }
+        },
+        {
+          "row": 3,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "2024-02-03T12:30:00.000Z",
+            "numberFormat": "yyyy-mm-dd"
+          }
+        },
+        {
+          "row": 4,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "2024-02-04T12:30:00.000Z",
+            "numberFormat": "yyyy-mm-dd"
+          }
+        },
+        {
+          "row": 5,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "2024-02-05T12:30:00.000Z",
+            "numberFormat": "yyyy-mm-dd"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "1904/date/day/up",
+    "snapshot": {
+      "sheets": [
+        {
+          "id": "sheet-1",
+          "rowCount": 10,
+          "columnCount": 1,
+          "cells": {
+            "5": {
+              "0": {
+                "value": "2024-01-31T12:30:00.000Z",
+                "numberFormat": "yyyy-mm-dd"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "params": {
+      "sheetId": "sheet-1",
+      "sourceRange": {
+        "sheetId": "sheet-1",
+        "startRow": 5,
+        "endRow": 5,
+        "startColumn": 0,
+        "endColumn": 0
+      },
+      "targetRange": {
+        "sheetId": "sheet-1",
+        "startRow": 0,
+        "endRow": 5,
+        "startColumn": 0,
+        "endColumn": 0
+      },
+      "direction": "up",
+      "mode": "series",
+      "dateSystem": "1904",
+      "series": {
+        "type": "date",
+        "dateUnit": "day"
+      },
+      "writes": [
+        {
+          "row": 0,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "2024-02-05T12:30:00.000Z",
+            "numberFormat": "yyyy-mm-dd"
+          }
+        },
+        {
+          "row": 1,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "2024-02-04T12:30:00.000Z",
+            "numberFormat": "yyyy-mm-dd"
+          }
+        },
+        {
+          "row": 2,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "2024-02-03T12:30:00.000Z",
+            "numberFormat": "yyyy-mm-dd"
+          }
+        },
+        {
+          "row": 3,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "2024-02-02T12:30:00.000Z",
+            "numberFormat": "yyyy-mm-dd"
+          }
+        },
+        {
+          "row": 4,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "2024-02-01T12:30:00.000Z",
+            "numberFormat": "yyyy-mm-dd"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "1904/date/weekday/down",
+    "snapshot": {
+      "sheets": [
+        {
+          "id": "sheet-1",
+          "rowCount": 10,
+          "columnCount": 1,
+          "cells": {
+            "0": {
+              "0": {
+                "value": "2024-01-31T12:30:00.000Z",
+                "numberFormat": "yyyy-mm-dd"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "params": {
+      "sheetId": "sheet-1",
+      "sourceRange": {
+        "sheetId": "sheet-1",
+        "startRow": 0,
+        "endRow": 0,
+        "startColumn": 0,
+        "endColumn": 0
+      },
+      "targetRange": {
+        "sheetId": "sheet-1",
+        "startRow": 0,
+        "endRow": 5,
+        "startColumn": 0,
+        "endColumn": 0
+      },
+      "direction": "down",
+      "mode": "series",
+      "dateSystem": "1904",
+      "series": {
+        "type": "date",
+        "dateUnit": "weekday"
+      },
+      "writes": [
+        {
+          "row": 1,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "2024-02-01T12:30:00.000Z",
+            "numberFormat": "yyyy-mm-dd"
+          }
+        },
+        {
+          "row": 2,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "2024-02-02T12:30:00.000Z",
+            "numberFormat": "yyyy-mm-dd"
+          }
+        },
+        {
+          "row": 3,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "2024-02-05T12:30:00.000Z",
+            "numberFormat": "yyyy-mm-dd"
+          }
+        },
+        {
+          "row": 4,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "2024-02-06T12:30:00.000Z",
+            "numberFormat": "yyyy-mm-dd"
+          }
+        },
+        {
+          "row": 5,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "2024-02-07T12:30:00.000Z",
+            "numberFormat": "yyyy-mm-dd"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "1904/date/weekday/up",
+    "snapshot": {
+      "sheets": [
+        {
+          "id": "sheet-1",
+          "rowCount": 10,
+          "columnCount": 1,
+          "cells": {
+            "5": {
+              "0": {
+                "value": "2024-01-31T12:30:00.000Z",
+                "numberFormat": "yyyy-mm-dd"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "params": {
+      "sheetId": "sheet-1",
+      "sourceRange": {
+        "sheetId": "sheet-1",
+        "startRow": 5,
+        "endRow": 5,
+        "startColumn": 0,
+        "endColumn": 0
+      },
+      "targetRange": {
+        "sheetId": "sheet-1",
+        "startRow": 0,
+        "endRow": 5,
+        "startColumn": 0,
+        "endColumn": 0
+      },
+      "direction": "up",
+      "mode": "series",
+      "dateSystem": "1904",
+      "series": {
+        "type": "date",
+        "dateUnit": "weekday"
+      },
+      "writes": [
+        {
+          "row": 0,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "2024-02-07T12:30:00.000Z",
+            "numberFormat": "yyyy-mm-dd"
+          }
+        },
+        {
+          "row": 1,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "2024-02-06T12:30:00.000Z",
+            "numberFormat": "yyyy-mm-dd"
+          }
+        },
+        {
+          "row": 2,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "2024-02-05T12:30:00.000Z",
+            "numberFormat": "yyyy-mm-dd"
+          }
+        },
+        {
+          "row": 3,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "2024-02-02T12:30:00.000Z",
+            "numberFormat": "yyyy-mm-dd"
+          }
+        },
+        {
+          "row": 4,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "2024-02-01T12:30:00.000Z",
+            "numberFormat": "yyyy-mm-dd"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "1904/date/month/down",
+    "snapshot": {
+      "sheets": [
+        {
+          "id": "sheet-1",
+          "rowCount": 10,
+          "columnCount": 1,
+          "cells": {
+            "0": {
+              "0": {
+                "value": "2024-01-31T12:30:00.000Z",
+                "numberFormat": "yyyy-mm-dd"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "params": {
+      "sheetId": "sheet-1",
+      "sourceRange": {
+        "sheetId": "sheet-1",
+        "startRow": 0,
+        "endRow": 0,
+        "startColumn": 0,
+        "endColumn": 0
+      },
+      "targetRange": {
+        "sheetId": "sheet-1",
+        "startRow": 0,
+        "endRow": 5,
+        "startColumn": 0,
+        "endColumn": 0
+      },
+      "direction": "down",
+      "mode": "series",
+      "dateSystem": "1904",
+      "series": {
+        "type": "date",
+        "dateUnit": "month"
+      },
+      "writes": [
+        {
+          "row": 1,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "2024-02-29T12:30:00.000Z",
+            "numberFormat": "yyyy-mm-dd"
+          }
+        },
+        {
+          "row": 2,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "2024-03-31T12:30:00.000Z",
+            "numberFormat": "yyyy-mm-dd"
+          }
+        },
+        {
+          "row": 3,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "2024-04-30T12:30:00.000Z",
+            "numberFormat": "yyyy-mm-dd"
+          }
+        },
+        {
+          "row": 4,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "2024-05-31T12:30:00.000Z",
+            "numberFormat": "yyyy-mm-dd"
+          }
+        },
+        {
+          "row": 5,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "2024-06-30T12:30:00.000Z",
+            "numberFormat": "yyyy-mm-dd"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "1904/date/month/up",
+    "snapshot": {
+      "sheets": [
+        {
+          "id": "sheet-1",
+          "rowCount": 10,
+          "columnCount": 1,
+          "cells": {
+            "5": {
+              "0": {
+                "value": "2024-01-31T12:30:00.000Z",
+                "numberFormat": "yyyy-mm-dd"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "params": {
+      "sheetId": "sheet-1",
+      "sourceRange": {
+        "sheetId": "sheet-1",
+        "startRow": 5,
+        "endRow": 5,
+        "startColumn": 0,
+        "endColumn": 0
+      },
+      "targetRange": {
+        "sheetId": "sheet-1",
+        "startRow": 0,
+        "endRow": 5,
+        "startColumn": 0,
+        "endColumn": 0
+      },
+      "direction": "up",
+      "mode": "series",
+      "dateSystem": "1904",
+      "series": {
+        "type": "date",
+        "dateUnit": "month"
+      },
+      "writes": [
+        {
+          "row": 0,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "2024-06-30T12:30:00.000Z",
+            "numberFormat": "yyyy-mm-dd"
+          }
+        },
+        {
+          "row": 1,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "2024-05-31T12:30:00.000Z",
+            "numberFormat": "yyyy-mm-dd"
+          }
+        },
+        {
+          "row": 2,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "2024-04-30T12:30:00.000Z",
+            "numberFormat": "yyyy-mm-dd"
+          }
+        },
+        {
+          "row": 3,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "2024-03-31T12:30:00.000Z",
+            "numberFormat": "yyyy-mm-dd"
+          }
+        },
+        {
+          "row": 4,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "2024-02-29T12:30:00.000Z",
+            "numberFormat": "yyyy-mm-dd"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "1904/date/year/down",
+    "snapshot": {
+      "sheets": [
+        {
+          "id": "sheet-1",
+          "rowCount": 10,
+          "columnCount": 1,
+          "cells": {
+            "0": {
+              "0": {
+                "value": "2024-01-31T12:30:00.000Z",
+                "numberFormat": "yyyy-mm-dd"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "params": {
+      "sheetId": "sheet-1",
+      "sourceRange": {
+        "sheetId": "sheet-1",
+        "startRow": 0,
+        "endRow": 0,
+        "startColumn": 0,
+        "endColumn": 0
+      },
+      "targetRange": {
+        "sheetId": "sheet-1",
+        "startRow": 0,
+        "endRow": 5,
+        "startColumn": 0,
+        "endColumn": 0
+      },
+      "direction": "down",
+      "mode": "series",
+      "dateSystem": "1904",
+      "series": {
+        "type": "date",
+        "dateUnit": "year"
+      },
+      "writes": [
+        {
+          "row": 1,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "2025-01-31T12:30:00.000Z",
+            "numberFormat": "yyyy-mm-dd"
+          }
+        },
+        {
+          "row": 2,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "2026-01-31T12:30:00.000Z",
+            "numberFormat": "yyyy-mm-dd"
+          }
+        },
+        {
+          "row": 3,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "2027-01-31T12:30:00.000Z",
+            "numberFormat": "yyyy-mm-dd"
+          }
+        },
+        {
+          "row": 4,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "2028-01-31T12:30:00.000Z",
+            "numberFormat": "yyyy-mm-dd"
+          }
+        },
+        {
+          "row": 5,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "2029-01-31T12:30:00.000Z",
+            "numberFormat": "yyyy-mm-dd"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "1904/date/year/up",
+    "snapshot": {
+      "sheets": [
+        {
+          "id": "sheet-1",
+          "rowCount": 10,
+          "columnCount": 1,
+          "cells": {
+            "5": {
+              "0": {
+                "value": "2024-01-31T12:30:00.000Z",
+                "numberFormat": "yyyy-mm-dd"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "params": {
+      "sheetId": "sheet-1",
+      "sourceRange": {
+        "sheetId": "sheet-1",
+        "startRow": 5,
+        "endRow": 5,
+        "startColumn": 0,
+        "endColumn": 0
+      },
+      "targetRange": {
+        "sheetId": "sheet-1",
+        "startRow": 0,
+        "endRow": 5,
+        "startColumn": 0,
+        "endColumn": 0
+      },
+      "direction": "up",
+      "mode": "series",
+      "dateSystem": "1904",
+      "series": {
+        "type": "date",
+        "dateUnit": "year"
+      },
+      "writes": [
+        {
+          "row": 0,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "2029-01-31T12:30:00.000Z",
+            "numberFormat": "yyyy-mm-dd"
+          }
+        },
+        {
+          "row": 1,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "2028-01-31T12:30:00.000Z",
+            "numberFormat": "yyyy-mm-dd"
+          }
+        },
+        {
+          "row": 2,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "2027-01-31T12:30:00.000Z",
+            "numberFormat": "yyyy-mm-dd"
+          }
+        },
+        {
+          "row": 3,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "2026-01-31T12:30:00.000Z",
+            "numberFormat": "yyyy-mm-dd"
+          }
+        },
+        {
+          "row": 4,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "2025-01-31T12:30:00.000Z",
+            "numberFormat": "yyyy-mm-dd"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "1904/autofill/day/down",
+    "snapshot": {
+      "sheets": [
+        {
+          "id": "sheet-1",
+          "rowCount": 10,
+          "columnCount": 1,
+          "cells": {
+            "0": {
+              "0": {
+                "value": "copy text",
+                "numberFormat": "\"USD\" 0"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "params": {
+      "sheetId": "sheet-1",
+      "sourceRange": {
+        "sheetId": "sheet-1",
+        "startRow": 0,
+        "endRow": 0,
+        "startColumn": 0,
+        "endColumn": 0
+      },
+      "targetRange": {
+        "sheetId": "sheet-1",
+        "startRow": 0,
+        "endRow": 5,
+        "startColumn": 0,
+        "endColumn": 0
+      },
+      "direction": "down",
+      "mode": "series",
+      "dateSystem": "1904",
+      "series": {
+        "type": "autofill",
+        "dateUnit": "day"
+      },
+      "writes": [
+        {
+          "row": 1,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "copy text",
+            "numberFormat": "\"USD\" 0"
+          }
+        },
+        {
+          "row": 2,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "copy text",
+            "numberFormat": "\"USD\" 0"
+          }
+        },
+        {
+          "row": 3,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "copy text",
+            "numberFormat": "\"USD\" 0"
+          }
+        },
+        {
+          "row": 4,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "copy text",
+            "numberFormat": "\"USD\" 0"
+          }
+        },
+        {
+          "row": 5,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "copy text",
+            "numberFormat": "\"USD\" 0"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "1904/autofill/day/up",
+    "snapshot": {
+      "sheets": [
+        {
+          "id": "sheet-1",
+          "rowCount": 10,
+          "columnCount": 1,
+          "cells": {
+            "5": {
+              "0": {
+                "value": "copy text",
+                "numberFormat": "\"USD\" 0"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "params": {
+      "sheetId": "sheet-1",
+      "sourceRange": {
+        "sheetId": "sheet-1",
+        "startRow": 5,
+        "endRow": 5,
+        "startColumn": 0,
+        "endColumn": 0
+      },
+      "targetRange": {
+        "sheetId": "sheet-1",
+        "startRow": 0,
+        "endRow": 5,
+        "startColumn": 0,
+        "endColumn": 0
+      },
+      "direction": "up",
+      "mode": "series",
+      "dateSystem": "1904",
+      "series": {
+        "type": "autofill",
+        "dateUnit": "day"
+      },
+      "writes": [
+        {
+          "row": 0,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "copy text",
+            "numberFormat": "\"USD\" 0"
+          }
+        },
+        {
+          "row": 1,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "copy text",
+            "numberFormat": "\"USD\" 0"
+          }
+        },
+        {
+          "row": 2,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "copy text",
+            "numberFormat": "\"USD\" 0"
+          }
+        },
+        {
+          "row": 3,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "copy text",
+            "numberFormat": "\"USD\" 0"
+          }
+        },
+        {
+          "row": 4,
+          "column": 0,
+          "before": null,
+          "after": {
+            "value": "copy text",
+            "numberFormat": "\"USD\" 0"
+          }
+        }
+      ]
+    }
+  }
+]
