@@ -251,12 +251,14 @@ test.describe('SDK product UAT against Java authority', () => {
     await page.getByRole('button', { name: 'Clear Filter', exact: true }).click();
     expect((await sheet()).sheetTables[0].showFilterButton).toBe(true);
     await enter('D1', 'a,b,c'); await select('D1:D2');
+    await expect.poll(async () => (await sheet()).cells['0']?.['3']?.value).toBe('a,b,c');
+    const beforeSplit = await sheet();
     await page.getByTestId('ribbon-tab-data').click();
     await page.getByRole('button', { name: 'Text to Columns', exact: true }).click();
     await expect.poll(async () => (await sheet()).cells['0']?.['5']?.value).toBe('c');
     await canvas.focus(); await page.keyboard.press('Control+z');
     await expect.poll(async () => (await sheet()).cells['0']?.['3']?.value).toBe('a,b,c');
-    expect((await sheet()).cells['0']?.['5']).toBeUndefined();
+    await expect.poll(async () => (await sheet()).cells).toEqual(beforeSplit.cells);
     await page.reload();
     await expect(page.getByTestId('designer-shell')).toHaveAttribute('data-workspace-phase', 'ready');
     await screenshot(page, 'sdk-data-undo');
