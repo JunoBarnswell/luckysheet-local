@@ -39,6 +39,7 @@ test.describe('SDK product UAT against Java authority', () => {
   test('AUTH-01 ID-01: bootstrap or login administrator and create three ordinary users through SDK UI actions', async ({ page, context, browser }) => {
     const diagnostics = installBrowserDiagnostics(page);
     await page.goto('/workbooks');
+    await expect(page.getByRole('heading', { name: /初始化管理员|登录 React Sheets/ })).toBeVisible();
     if (await page.getByRole('heading', { name: '初始化管理员' }).isVisible()) {
       const token = (await readFile(process.env.SDK_UAT_BOOTSTRAP_FILE ?? '/tmp/sdk-uat/data/bootstrap-token', 'utf8')).trim();
       await page.getByLabel('初始化凭据', { exact: true }).fill(token);
