@@ -51,13 +51,13 @@ All commands ran after the coordinated implementation pass. Follow-up runs were 
 | Security resource-boundary tests | 5 passed |
 | `npm run test:native-codecs` / `npm run test:cell-ui` | 19 / 9 passed |
 | Actual uploaded CSV import/export/re-import | Passed; 180 rows including header; report content was held in memory and not exported into the repository |
-| Real Chromium application checks | Server workbook creation, editing, undo/redo, editor measurement/cancel and persistence passed with clean console/network; final committed E2E run recorded below |
+| Real Chromium application checks | 1 committed E2E test passed: server workbook creation, editing, undo/redo, editor measurement/cancel, inert formula-like replacement, AutoSum source preservation and reload; clean console/network |
 
 The unit comparison uses a detached worktree of the original base with the same dependencies. The unchanged failures remain an overall gate failure, not waived tests. Native generated fixtures and the actual CSV do not substitute for a real Excel corpus or desktop Excel.
 
 The reproducible browser test is `frontend-react/e2e/security-remediation.spec.ts`. Run it against a **fresh disposable** backend/H2 database with `SECURITY_ACCEPTANCE_BOOTSTRAP_FILE` set to its freshly created token file, and `PLAYWRIGHT_BROWSERS_PATH` pointing at the installed Chromium. It consumes the disposable token, creates a random test-only password in memory, and uses actual UI and server snapshots. It checks inert replacement text, AutoSum source preservation, reload persistence, screenshots, console errors and failed/HTTP-error requests. The normal repository Playwright global setup records clean source/build provenance. The test skips if no disposable bootstrap file is supplied; a skipped run is not acceptance.
 
-Final browser source identity/result will be recorded after the implementation commit. Detailed local logs and browser artifacts are under `/workspace/remediation-evidence` and `frontend-react/test-results`; neither credentials nor raw traces are committed.
+The final browser run passed in 6.7 seconds against clean implementation commit `711bcf24e0bd2d950cff6ebcd2fd0d83a874e55f`, Chromium `151.0.7922.34`, viewport `1440x960`, with source/build/backend identities matching. The screenshot and diagnostic attachment record no console errors, page errors, failed requests or HTTP errors. [Sanitized acceptance evidence](security-findings-remediation-evidence.json) records provenance, result counts and artifact/log hashes. The later documentation-only evidence commit does not change the validated implementation. Detailed local logs and browser artifacts are under `/workspace/remediation-evidence` and `frontend-react/test-results`; neither credentials nor raw traces are committed.
 
 ## Independent candidate review
 
