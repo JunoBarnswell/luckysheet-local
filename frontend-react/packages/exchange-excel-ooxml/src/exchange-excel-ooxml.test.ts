@@ -471,7 +471,7 @@ describe('exchange-excel-ooxml', () => {
   it('writes hyperlinks from the canonical worksheet hyperlink collection', async () => {
     const workbook = new WorkbookModel('wb-links', 'Links');
     const sheet = workbook.getSheet(workbook.primarySheetId);
-    const targetSheet = workbook.addSheet('sheet-target', 'Target', 20, 20);
+    const targetSheet = workbook.addSheet('target-native', 'Target', 20, 20);
     workbook.setDefinedName({ name: 'SalesTotal', formula: '=Sheet1!A1', scope: 'workbook' });
     sheet.cells.set(0, 0, { value: 'OpenAI' });
     sheet.hyperlinks.set('0:0', { id: 'link-1', target: { kind: 'url', url: 'https://openai.com/' }, tooltip: 'Open' });
@@ -487,7 +487,7 @@ describe('exchange-excel-ooxml', () => {
     const imported = await importOoxmlDocument({ fileName: 'links.xlsx', buffer: zipOpcPartsBuffer(emitted.packageGraph.parts), options: { compatibilityTarget: 'B' } });
     assert.equal(imported.snapshot.sheets[0]?.hyperlinks?.[0]?.hyperlink.target.kind, 'url');
     assert.deepEqual(imported.snapshot.sheets[0]?.hyperlinks?.[1]?.hyperlink.target, { kind: 'email', address: 'team@example.com', subject: 'Review' });
-    assert.deepEqual(imported.snapshot.sheets[0]?.hyperlinks?.[2]?.hyperlink.target, { kind: 'sheet', sheetId: 'sheet-target', address: 'B2' });
+    assert.deepEqual(imported.snapshot.sheets[0]?.hyperlinks?.[2]?.hyperlink.target, { kind: 'sheet', sheetId: 'target-native', address: 'B2' });
     assert.deepEqual(imported.snapshot.sheets[0]?.hyperlinks?.[3]?.hyperlink.target, { kind: 'name', name: 'SalesTotal' });
     const importedSheet = imported.snapshot.sheets[0]!;
     assert.equal(importedSheet.rowCount, 4);
@@ -511,6 +511,59 @@ describe('exchange-excel-ooxml', () => {
         options: { compatibilityTarget: 'B' } }), (error: unknown) => error instanceof NativeDocumentError
           && error.code === 'NATIVE_DOCUMENT_INVALID' && Boolean(error.location) && Boolean(error.recovery));
       assert.deepEqual(new Uint8Array(malformed), new Uint8Array(before));
+    }
+  });
+
+  it('maps native sheet identities simultaneously and rejects ambiguous metadata before import', async () => {
+    const workbook = new WorkbookModel('wb-id-map', 'Identity map');
+    const first = workbook.getSheet(workbook.primarySheetId);
+    const second = workbook.addSheet('second-business-id', 'Second', 20, 20);
+    first.cells.set(0, 0, { value: 'First' });
+    second.cells.set(0, 0, { value: 'Second' });
+    first.hyperlinks.set('0:0', { id: 'across', target: { kind: 'sheet', sheetId: second.id, address: 'A1' } });
+    workbook.setDefinedName({ name: 'LocalFirst', formula: '=Sheet1!A1', scope: 'sheet', sheetId: first.id });
+    const snapshot = workbook.snapshot();
+    snapshot.sheets[0]!.id = 'sheet-2';
+    snapshot.sheets[1]!.id = 'sheet-1';
+    snapshot.sheets[0]!.hyperlinks[0]!.hyperlink.target = { kind: 'sheet', sheetId: 'sheet-1', address: 'A1' };
+    snapshot.definedNameModels![0]!.sheetId = 'sheet-2';
+    const duplicate = structuredClone(snapshot);
+    duplicate.sheets[1]!.id = duplicate.sheets[0]!.id;
+    assert.throws(() => exportSnapshotToOoxmlBuffer(duplicate), (error: unknown) => error instanceof NativeDocumentError && error.code === 'NATIVE_DOCUMENT_INVALID');
+    const generated = loadOpcPackageGraph(exportSnapshotToOoxmlBuffer(snapshot));
+    const nativeXml = strFromU8(generated.files['xl/workbook.xml']!);
+    assert.match(nativeXml, /name="Sheet1" sheetId="1"/);
+    assert.match(nativeXml, /name="Second" sheetId="2"/);
+    const imported = await importOoxmlDocument({ fileName: 'identity.xlsx', buffer: zipOpcPartsBuffer(generated.files), options: { compatibilityTarget: 'B' } });
+    assert.deepEqual(imported.snapshot.sheets.map(sheet => sheet.id), ['sheet-2', 'sheet-1']);
+    assert.deepEqual(imported.snapshot.sheets[0]!.hyperlinks[0]!.hyperlink.target, { kind: 'sheet', sheetId: 'sheet-1', address: 'A1' });
+    assert.equal(imported.snapshot.definedNameModels![0]!.sheetId, 'sheet-2');
+    // Native reordering retains identity through numeric sheetId, not array position.
+    const reordered = structuredClone(generated.files);
+    reordered['xl/workbook.xml'] = strToU8(nativeXml.replace(/(<sheet name="Sheet1"[^>]+\/>)(<sheet name="Second"[^>]+\/>)/, '$2$1'));
+    const reorderedImport = await importOoxmlDocument({ fileName: 'reordered.xlsx', buffer: zipOpcPartsBuffer(reordered), options: { compatibilityTarget: 'B' } });
+    assert.deepEqual(reorderedImport.snapshot.sheets.map(sheet => sheet.id), ['sheet-1', 'sheet-2']);
+    assert.equal(reorderedImport.snapshot.sheets[0]!.cells['0']!['0']!.value, 'Second');
+    const actualPart = Object.keys(generated.files).find(part => strFromU8(generated.files[part]!).includes('ReactSheetsWorkbookMetadata'))!;
+    assert.ok(actualPart);
+    const regenerated = loadOpcPackageGraph((await exportOoxmlDocument({ snapshot: reorderedImport.snapshot,
+      artifact: reorderedImport.artifact, fileName: 'reordered-edited.xlsx', options: { compatibilityTarget: 'B' }, mode: 'save-as' })).buffer);
+    assert.match(strFromU8(regenerated.files['xl/workbook.xml']!), /name="Second" sheetId="2"[^>]+\/><sheet name="Sheet1" sheetId="1"/);
+    const legacy = structuredClone(generated.files);
+    legacy['xl/workbook.xml'] = strToU8(nativeXml.replace('name="Sheet1" sheetId="1"', 'name="Sheet1" sheetId="2"').replace('name="Second" sheetId="2"', 'name="Second" sheetId="1"'));
+    legacy[actualPart] = strToU8(strFromU8(legacy[actualPart]!).replace('&quot;version&quot;:4', '&quot;version&quot;:3').replace(/,&quot;nativeSheetId&quot;:[12]/g, ''));
+    const legacyImport = await importOoxmlDocument({ fileName: 'old-metadata.xlsx', buffer: zipOpcPartsBuffer(legacy), options: { compatibilityTarget: 'B' } });
+    assert.deepEqual(legacyImport.snapshot.sheets.map(sheet => sheet.id), ['sheet-2', 'sheet-1']);
+    assert.deepEqual(legacyImport.snapshot.sheets[0]!.hyperlinks[0]!.hyperlink.target, { kind: 'sheet', sheetId: 'sheet-1', address: 'A1' });
+
+    for (const mutate of [(text: string) => text.replace('&quot;id&quot;:&quot;sheet-2&quot;', '&quot;id&quot;:&quot;sheet-1&quot;'),
+      (text: string) => text.replace('&quot;nativeSheetId&quot;:2', '&quot;nativeSheetId&quot;:1')]) {
+      const malformed = structuredClone(generated.files);
+      const xml = strFromU8(malformed[actualPart]!);
+      const changed = mutate(xml); assert.notEqual(changed, xml);
+      malformed[actualPart] = strToU8(changed);
+      await assert.rejects(importOoxmlDocument({ fileName: 'ambiguous.xlsx', buffer: zipOpcPartsBuffer(malformed), options: { compatibilityTarget: 'B' } }),
+        (error: unknown) => error instanceof NativeDocumentError && error.code === 'NATIVE_DOCUMENT_INVALID' && Boolean(error.location));
     }
   });
 
