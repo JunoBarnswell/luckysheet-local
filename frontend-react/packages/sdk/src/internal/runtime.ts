@@ -22,6 +22,7 @@ export class ApplicationRuntime {
   private snapshot: StorageReadiness = Object.freeze({ state: 'warming', error: null });
   private readonly listeners = new Set<() => void>();
   private readonly sessions = new Set<WorkbookSession>();
+  private readonly assetStores = new Map<string, RemoteAssetStore>();
   private readonly data = new Map<WorkbookSession, DataDomain>();
   private readonly dimensions = new Map<WorkbookSession, DimensionsDomain>();
   private readiness: Promise<void> | null = null;
@@ -42,10 +43,16 @@ export class ApplicationRuntime {
   }
   private createCatalog(): WorkbooksDomain {
     return new WorkbooksDomain({
-      persistence: this.persistence, remote: this.api,
+      persistence: this.persistence, remote: this.api, assetStoreFor: (unitId) => this.assetStoreFor(unitId),
       remoteAvailable: () => !this.disposed && (this.auth.session.getSnapshot().phase === 'authenticated' || Boolean(this.shareTokenProvider())),
       shareTokenProvider: this.shareTokenProvider,
     });
+  }
+  private assetStoreFor(unitId: string): RemoteAssetStore {
+    if (this.disposed) throw new SdkError('RUNTIME_DISPOSED', 'assets', 'SDK Runtime 已释放。', '请创建新的 SDK。');
+    let store = this.assetStores.get(unitId);
+    if (!store) { store = new RemoteAssetStore(unitId, this.api); this.assetStores.set(unitId, store); }
+    return store;
   }
   getSnapshot = (): StorageReadiness => this.snapshot;
   subscribe = (listener: () => void): (() => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; };
@@ -95,6 +102,7 @@ export class ApplicationRuntime {
     this.dimensions.clear();
     for (const session of this.sessions) session.dispose();
     this.sessions.clear();
+    this.assetStores.clear();
     const previous = this.persistence;
     this.catalogDomain.retire();
     this.persistence = new WorkspacePersistence();
@@ -110,7 +118,7 @@ export class ApplicationRuntime {
       unitId: resolution.unitId, initialPhase: 'loading', resolution, api: this.api, workspacePersistence: this.persistence,
       authTokenProvider: this.auth.getAccessToken, shareTokenProvider: this.shareTokenProvider,
       recoverySubject: this.auth.session.getSnapshot().subject ?? undefined,
-      pivotExecution: 'worker', assetStore: new RemoteAssetStore(resolution.unitId, this.api),
+      pivotExecution: 'worker', assetStore: this.assetStoreFor(resolution.unitId),
       onReady: () => this.catalog.markOpened(resolution).then(() => undefined),
     });
     this.sessions.add(session);
@@ -141,6 +149,7 @@ export class ApplicationRuntime {
     this.dimensions.clear();
     for (const session of this.sessions) session.dispose();
     this.sessions.clear();
+    this.assetStores.clear();
     this.listeners.clear();
     await this.persistence.disposeAsync();
   }

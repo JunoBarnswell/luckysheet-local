@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { createHash } from 'node:crypto';
+import { loadOpcPackageGraph } from '@react-sheets/exchange-excel-ooxml';
 import { WorkbookModel } from '@react-sheets/core-model';
 import { AuthDomain } from '../auth/domain';
 import { ApplicationRuntime } from './runtime';
@@ -79,4 +81,53 @@ test('a host without browser Worker fails closed instead of opening a partially 
     access: { unitId: snapshot.unitId, role: 'owner', accessRevision: 0, regions: [] } }), (error: unknown) => error instanceof SdkError && error.code === 'UNSUPPORTED_FEATURE');
   await runtime.dispose();
   auth.dispose();
+});
+
+
+test('SDK catalog export resolves canonical remote assets and rejects missing or corrupt bytes without partial state', async () => {
+  const png = Uint8Array.from(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAADAAAAAgCAIAAADbtmxLAAAAN0lEQVR4nO3OQQ0AMAgEMFRgFNOTMRccjyYV0Op5p1R8ICQkJJQeCAkJCaUHQkJCQumBkJDQsg8dwKZ5fgcr3gAAAABJRU5ErkJggg==', 'base64'));
+  const hash = createHash('sha256').update(png).digest('hex');
+  const asset = { schema: 'AssetRef' as const, assetId: `asset-${hash}`, contentHash: hash, mimeType: 'image/png', byteLength: png.byteLength };
+  const workbook = new WorkbookModel('export-assets', 'Remote assets');
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, { value: null, presentation: { kind: 'image', asset, fit: 'contain' } });
+  const snapshot = workbook.snapshot();
+  const before = structuredClone(snapshot);
+  let assetMode: 'success' | 'missing' | 'metadata' | 'hash' = 'success';
+  let assetReads = 0;
+  const auth = authPort();
+  const fetchPort: typeof fetch = async (input, init) => {
+    const path = String(input);
+    if (path === '/api/workbooks/export-assets/snapshot') return Response.json({ snapshot, revision: 0 });
+    if (path === '/api/workbooks/export-assets/access') return Response.json({ unitId: snapshot.unitId, role: 'owner', accessRevision: 0, regions: [] });
+    if (path === '/api/workbooks/export-assets') return Response.json({ unitId: snapshot.unitId, name: snapshot.name });
+    if (path.startsWith('/api/workbooks/export-assets/assets/')) {
+      assert.equal(path, `/api/workbooks/export-assets/assets/${asset.assetId}`);
+      assert.equal(init?.method ?? 'GET', 'GET');
+      assetReads++;
+      if (assetMode === 'missing') return Response.json({ code: 'NOT_FOUND', message: 'Asset missing' }, { status: 404 });
+      const bytes = png.slice();
+      if (assetMode === 'hash') bytes[bytes.length - 1] = bytes[bytes.length - 1]! ^ 1;
+      return new Response(bytes, { headers: { 'content-type': 'image/png', 'content-length': String(bytes.byteLength),
+        'x-content-sha256': assetMode === 'metadata' ? '0'.repeat(64) : hash } });
+    }
+    return auth(input, init);
+  };
+  const sdk = createSpreadsheetSdk({ fetch: fetchPort });
+  try {
+    await sdk.auth.initialize(); await sdk.auth.authenticate('a', 'password');
+    const result = await sdk.workbooks.exportWorkbook(snapshot.unitId, { execution: 'inline-test' });
+    assert.deepEqual(loadOpcPackageGraph(result.buffer).files[`xl/media/${asset.assetId}.png`], png);
+    assert.equal(assetReads, 1);
+    for (const mode of ['missing', 'metadata', 'hash'] as const) {
+      assetMode = mode;
+      await assert.rejects(sdk.workbooks.exportWorkbook(snapshot.unitId, { execution: 'inline-test' }), (error: unknown) =>
+        error instanceof SdkError && error.code === 'REQUEST_REJECTED' && error.operation === 'workbooks.export'
+        && error.message.includes(snapshot.unitId) && Boolean(error.recovery) && error.cause instanceof Error);
+      assert.deepEqual(snapshot, before);
+    }
+    assetMode = 'success';
+    const retried = await sdk.workbooks.exportWorkbook(snapshot.unitId, { execution: 'inline-test' });
+    assert.deepEqual(loadOpcPackageGraph(retried.buffer).files[`xl/media/${asset.assetId}.png`], png);
+  } finally { await sdk.dispose(); }
 });

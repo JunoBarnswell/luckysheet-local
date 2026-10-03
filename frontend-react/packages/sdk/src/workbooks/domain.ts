@@ -1,5 +1,7 @@
+import { SdkError } from '../error';
+import type { AssetStore } from '@react-sheets/spreadsheet-app';
 import type { WorkbookSnapshot } from '@react-sheets/core-model';
-import type { NativeDocumentArtifact } from '@react-sheets/exchange-excel-ooxml';
+import { NativeDocumentError, type NativeDocumentArtifact } from '@react-sheets/exchange-excel-ooxml';
 import {
   ApiRequestError,
   AuthenticationRequiredError,
@@ -61,6 +63,7 @@ export class WorkbookCatalogError extends Error {
 
 export interface WorkbooksDomainOptions {
   persistence?: WorkspacePersistence;
+  assetStoreFor?: (unitId: string) => AssetStore;
   remote?: WorkbookCatalogRemoteClient;
   now?: () => Date;
   unitIdFactory?: () => string;
@@ -149,10 +152,12 @@ export class WorkbooksDomain {
   private readonly now: () => Date;
   private readonly unitIdFactory: () => string;
   readonly #remoteAvailable?: () => boolean;
+  readonly #assetStoreFor?: (unitId: string) => AssetStore;
 
   constructor(options: WorkbooksDomainOptions = {}) {
     this.#persistence = options.persistence ?? new WorkspacePersistence();
     this.#remote = options.remote;
+    this.#assetStoreFor = options.assetStoreFor;
     this.now = options.now ?? (() => new Date());
     this.unitIdFactory = options.unitIdFactory ?? (() => createWorkbookUnitId());
     this.#remoteAvailable = options.remoteAvailable;
@@ -228,7 +233,19 @@ export class WorkbooksDomain {
       artifact = (await exchangeImportDocument({ fileName: source.metadata.fileName, buffer: await source.artifact.arrayBuffer(), execution: 'worker' })).artifact;
     }
     const fileName = input.fileName ?? artifact?.fileName ?? `${resolved.snapshot.name || 'workbook'}.xlsx`;
-    const exported = await exchangeSaveAsDocument(resolved.snapshot, { ...input, fileName, artifact });
+    this.requireRemote();
+    let exported: Awaited<ReturnType<typeof exchangeSaveAsDocument>>;
+    try {
+      exported = await exchangeSaveAsDocument(resolved.snapshot, {
+        ...input, fileName, artifact, assetStore: this.#assetStoreFor?.(unitId),
+      });
+    } catch (cause) {
+      if (cause instanceof NativeDocumentError) throw cause;
+      throw new SdkError('REQUEST_REJECTED', 'workbooks.export',
+        `工作簿 ${unitId} 导出失败：${cause instanceof Error ? cause.message : String(cause)}`,
+        '请确认源文档和引用的资产完整、仍有读取权限，再重试导出。', { cause });
+    }
+    this.requireRemote();
     if (!exported.buffer || !exported.fileName) throw new WorkbookCatalogError('invalid-input', '导出未生成文件');
     return { unitId, fileName: exported.fileName, buffer: exported.buffer, report: exported.report };
   }

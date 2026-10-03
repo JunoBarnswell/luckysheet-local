@@ -357,11 +357,11 @@ test.describe('SDK product UAT against Java authority', () => {
     const create = page.getByTestId('create-workbook-dialog');
     await create.getByLabel('工作簿名称').fill(imageName);
     await create.getByLabel('保存位置').selectOption('server');
-    await create.getByRole('button', { name: '创建', exact: true }).click();
+    await create.getByRole('button', { name: '创建工作簿', exact: true }).click();
     await expect(page.getByTestId('designer-shell')).toHaveAttribute('data-workspace-phase', 'ready');
-    const imageId = new URL(page.url()).pathname.split('/')[2]!;
+    const imageId = decodeURIComponent(new URL(page.url()).pathname.split('/').at(-1)!);
     const readSnapshot = async () => {
-      const response = await context.request.get(`/api/workbooks/${imageId}`);
+      const response = await context.request.get(`/api/workbooks/${encodeURIComponent(imageId)}/snapshot`);
       expect(response.ok()).toBe(true);
       return (await response.json()).snapshot;
     };
