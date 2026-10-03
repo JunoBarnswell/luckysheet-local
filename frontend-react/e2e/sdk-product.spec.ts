@@ -352,7 +352,7 @@ test.describe('SDK product UAT against Java authority', () => {
     const diagnostics = installBrowserDiagnostics(page);
     await ownerPage(context, page);
     const imageName = `SDK first image ${runId}`;
-    const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=', 'base64');
+    const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAADAAAAAgCAIAAADbtmxLAAAAN0lEQVR4nO3OQQ0AMAgEMFRgFNOTMRccjyYV0Op5p1R8ICQkJJQeCAkJCaUHQkJCQumBkJDQsg8dwKZ5fgcr3gAAAABJRU5ErkJggg==', 'base64');
     await page.getByRole('button', { name: '新建工作簿', exact: true }).click();
     const create = page.getByTestId('create-workbook-dialog');
     await create.getByLabel('工作簿名称').fill(imageName);
@@ -366,7 +366,7 @@ test.describe('SDK product UAT against Java authority', () => {
       return (await response.json()).snapshot;
     };
     await page.getByTestId('ribbon-tab-insert').click();
-    await page.getByRole('button', { name: 'Picture', exact: true }).click();
+    await page.locator('button[data-ribbon-surface="illustrations.picture"]').click();
     const pictureDialog = page.getByRole('dialog').filter({ has: page.getByText('插入图片', { exact: true }) });
     await expect(pictureDialog).toBeVisible();
     const chooser = page.waitForEvent('filechooser');

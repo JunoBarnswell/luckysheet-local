@@ -14,7 +14,7 @@ import type { NativePivotCacheDefinition, NativePivotTableDefinition } from './t
 import { strFromU8, strToU8 } from 'fflate';
 import { descendants, parseXml } from './xml';
 
-const imagePng = Uint8Array.from(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=', 'base64'));
+const imagePng = Uint8Array.from(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAADAAAAAgCAIAAADbtmxLAAAAN0lEQVR4nO3OQQ0AMAgEMFRgFNOTMRccjyYV0Op5p1R8ICQkJJQeCAkJCaUHQkJCQumBkJDQsg8dwKZ5fgcr3gAAAABJRU5ErkJggg==', 'base64'));
 const imageAsset = { schema: 'AssetRef' as const, assetId: 'asset-test', contentHash: createHash('sha256').update(imagePng).digest('hex'), mimeType: 'image/png', byteLength: imagePng.byteLength };
 
 describe('exchange-excel-ooxml', () => {
