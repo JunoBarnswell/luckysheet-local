@@ -67,11 +67,11 @@ SDK 拥有认证/身份/凭证/组合根/工作簿目录与生命周期/Excel �
 
 | ID | 前置条件与操作 | 预期结果与拒绝路径 | 状态 |
 |---|---|---|---|
-| OO-01 | SDK → Workbooks → Workbook → Worksheets → Cell/Range；真实显式寻址、typed 值/公式、保存与关闭 | 同一 canonical 数据/权限/计算/写链；不暴露可变 model/session/API；非法地址、失效、越权 typed 拒绝 | Pending |
+| OO-01 | SDK → Workbooks → Workbook → Worksheets → Cell/Range；真实显式寻址、typed 值/公式、保存与关闭 | 同一 canonical 数据/权限/计算/写链；不暴露可变 model/session/API；非法地址、失效、越权 typed 拒绝 | Pass |
 | OO-02 | 按所有 Excel/Aspose 类对象逐能力调用、编辑、保存、重算、往返 | 完整领域对象与 read/edit/write/preserve capability，不能只有 Web 菜单可用 | Pending |
 | OO-03 | 浏览器无编辑器、Node/Java 文件/Worker/输出宿主 | 宿主仅 I/O/线程，SDK 拥有语义与文档；缺失宿主明确拒绝 | Pending |
-| MWB-01 | 一个 SDK 同时打开多个 workbook；重复打开；关闭一个、subject 切换、全部释放 | 按 unitId 唯一 owner、对象与租约；不影响其他 workbook，无旧身份读写 | Pending |
-| MWB-02 | 真实跨 workbook SUM/范围/其他函数，source 更新→提交→refresh→target 重算与保存 | source ID/sheet ID/subject/revision/access 定义明确；撤权清缓存、#BLOCKED!、恢复重算 | Pending |
+| MWB-01 | 一个 SDK 同时打开多个 workbook；重复打开；关闭一个、subject 切换、全部释放 | 按 unitId 唯一 owner、对象与租约；不影响其他 workbook，无旧身份读写 | Pass |
+| MWB-02 | 真实跨 workbook SUM/范围/其他函数，source 更新→提交→refresh→target 重算与保存 | source ID/sheet ID/subject/revision/access 定义明确；撤权清缓存、#BLOCKED!、恢复重算 | Fail |
 | MWB-03 | 多级依赖图、环/迭代、自动传播、版本变化/关闭/撤权并发 | 统一图、明确循环语义、无过期授权/过期任务结果 | Pending |
 | MWB-04 | 多 workbook copy/move/批量写/undo，任一权限/版本/存储失败 | 服务端共同事务提交或整体拒绝；不能将依次保存声称原子事务 | Pending |
 
@@ -144,7 +144,7 @@ SDK 拥有认证/身份/凭证/组合根/工作簿目录与生命周期/Excel �
 ### 门禁记录与未通过项
 
 - `npm run build`：Pass（TypeScript + Vite）。
-- `npm run test:sdk`：30/30 Pass；auth/identity/runtime/dimensions/data 成功与拒绝路径。
+- `npm run test:sdk`：36/36 Pass；auth/identity/runtime/dimensions/data 成功与拒绝路径。
 - protocol focused：33/33 Pass。
 - `npm run check:boundaries`：Pass（包含 generated contracts/registry/stack/provenance/既有 acceptance matrix）；`npm run test:calculation-domain`：446 + 5 tests Pass。不能据此宣称 Web 已只依赖 SDK。
 - `npm run test:native-codecs`：17/17 Pass；`npm run test:pointer-gesture`：7/7 Pass。
@@ -153,7 +153,7 @@ SDK 拥有认证/身份/凭证/组合根/工作簿目录与生命周期/Excel �
 - Java 21 `mvn ... package`：实际 Maven 汇总 **321 tests，0 failure/error/skipped**，真实 H2 integration；不使用含过期报告的 XML 目录总数。
 - 完整 `npm run test:unit`（本次 Pivot lifecycle 实现，提交前干净语义检查）：**1545 tests，1491 Pass，54 Fail**；上次 ed0f570 为 1543/1487/56。基线为 1525 tests，1442 Pass，83 Fail。不能未经逐项对照认定失败都来自基线；完整失败清单另见 sdk-product-unit-failures.md。
 - GATE-01：Fail。CI 真实 SDK UAT 与完整 test:unit 独立执行，完整日志作为 artifact。ed0f570 的 Windows push run 37093921510：12/12 UAT Pass，完整单测 56 Fail；同 head 的 PR run 37093924549 在 DATA 新工作簿打开的默认 5 秒内未 ready（3 Pass / 1 Fail / 8 未执行），缺少失败 trace，原因未确认。34c44dbe 已补首次失败 trace/截图/console/pageerror/网络拒绝记录与递归 artifact，没有增大超时或增加 action retries，后续 Windows 结果待记录。
-- BOUND-01：Fail。Web 仍有内部包业务 import；WorkbookSession 仍 8121 行并暴露给 Web，完整 WorkbookHandle/领域拆分未完成。认证、组合根、目录 service、尺寸规划/worker、六个数据 action 已实质迁移，不能据此宣称所有领域完成。
+- BOUND-01：Fail。Web 仍有内部包业务 import；WorkbookSession 仍 8181 行并暴露给 Web，完整 WorkbookHandle/领域拆分未完成。认证、组合根、目录 service、尺寸规划/worker、六个数据 action 已实质迁移，不能据此宣称所有领域完成。
 - BOUND-02：Pending。现有 graph gate 通过，不代表更严格的 Web-only-SDK 及绕过注入门禁已经实现。
 - RT-02：Pending。subject owner 退休单测通过，但跨身份恢复 journal 的完整验收还没有完成。
 - AUTH-03：Blocked。用户明确回复没有真实 OIDC issuer/provider，SDK 已迁入 OIDC 生命周期，但不能把本地认证测试作为 OIDC 验收。
@@ -192,3 +192,26 @@ SDK 拥有认证/身份/凭证/组合根/工作簿目录与生命周期/Excel �
 
 
 独立 SDK consumer 的原始 filesystem HTML 尝试在 React dev preamble 校验时失败（2 Fail，业务未执行；head `425519666f8324506c11a1a8181aa2e97b163c2c`）。`/@fs` 静态 HTML 没有经过 Vite 的 HTML/React transform。宿主最终设为 Web 开发根中的 `sdk-consumer.uat.html`，由实际 Vite HTML 管线处理；不手工置入成功标志或省略 React 前置校验，不挂载 Web。生产构建仍只有既有 index.html 入口；该文件仅是开发服务器的验收入口。证据保存在 `/tmp/sdk-mwb-standalone-uat/first-attempt-test-results`，产品实现继续冻结。
+
+
+## 本批最终逐条验收（产品实现未随验证修改）
+
+产品实现固定于 `5ce6111179f7fdbe687cbbb2a7fc60d73af4ecbf`。后续提交只改变验收入口/宿主、预设场景及证据文档；`git diff 5ce61111 -- packages/sdk/src packages/spreadsheet-app/src ...` 的产品路径为空。基本对象 API 的 Pass 不代表完整公开 SDK 边界已完成；BOUND-01 仍 Fail。
+
+| 细项 | 实际执行与结果 | 状态/证据 |
+|---|---|---|
+| OO-01.a | Worksheet ID/name/index、稳定 cell、显式 D8 对比 A1 选区、矩形惰性遍历、非法 A0/XFE1/Excel 越界、非法 scalar/formula 不改变 snapshot；Workbook 无 session/model/API/凭证 | Pass；36 SDK tests（新增 6 组）；基本对象入口父项 Pass |
+| OO-01.b | typed 字面量 `=1+2`、明确 SUM 公式和计算值、style 保留；viewer 写/hidden-range 读 typed 拒绝；隐藏行列 canonical read；保护后 formulaHidden 不返回公式、结果仍为 3、snapshot 不变 | Pass；SDK tests + `/tmp/sdk-oo-remaining-read-uat.log` 的 3 项语义检查；完整 ACCESS-01 保持 Pending |
+| MWB-01.a | 同 SDK 同时开两本、重复打开相同对象、关闭来源后目标仍可编辑；打开中的 ready Promise 共享且 close typed 拒绝 | Pass；真实 13 项产品 UAT + 补充语义检查 |
+| MWB-01.b | 真正从用户 A 切到 B，旧 Cell RUNTIME_DISPOSED，新 Workbook 不是旧对象且读取已提交 43；active Workbook 下 dispose 后旧 Cell RUNTIME_DISPOSED | Pass；`sdk-workbook-acceptance.spec.ts` 第二项，真实 Java/H2、公开 SDK、独立宿主、无 HTTP mocks；完整跨身份未提交 journal 的 RT-02 仍 Pending |
+| MWB-02.a/b | 实际 source 10/20 → SUM 30；source 改 40 并 flush/refresh → 50；保存/服务端 snapshot/重新打开/真实 XLSX 的公式、字面量与 source ID 一致 | Pass；本地与 Windows `124b2359` 13/13 产品 UAT，`sdk-two-workbooks.png` 明确显示 50；仅直接来源 |
+| MWB-02.c | 真正普通用户 source viewer/target editor；SUM/AVERAGE/COUNT/MIN/MAX 初值 30/15/2/10/20；更新来源后 50/25/2/10/40，sourceRevision 增加 | Pass；`b9c24435` 的真实独立 SDK UAT，均在后续拒绝断言之前通过 |
+| MWB-02.d 拒绝 | owner 真正删除 source ACL；external inputs 403、链接状态 denied、公式文本不变；COUNT 返回数字 0，而不是预设 #BLOCKED! | **Fail**；本地原始 trace `/tmp/sdk-mwb-vite-host-uat`；不弱化断言、不修改冻结的产品实现；MWB-02 父项 Fail |
+| MWB-02.d 恢复 | 恢复 source viewer 后应重算为授权的版本 | Pending；前述断言失败，恢复步骤未执行 |
+| OO-02/OO-03/MWB-03/MWB-04 | 所有 Excel/Aspose 对象与格式；Node/Java 宿主；完整依赖图/环/自动传播；跨簿原子写/history | Pending；不据少数函数或浏览器宿主通过宣称全部实现 |
+
+当前完整 49 项父项：**11 Pass /3 Fail /2 Blocked /33 Pending**。原 42 项仍为 9 Pass /2 Fail /2 Blocked /29 Pending；新增 7 项为 2 Pass /1 Fail /4 Pending。SDK 36/36、build/typecheck、现有边界检查通过；完整 unit 为 1551 /1497 Pass /54 Fail，失败标题与上一产品实现逐条对照没有增减。
+
+真实 UAT 按 head 分别记录，不混成一次绿色结果：`124b2359` 本地/Windows完整产品 13/13 Pass；补充独立宿主 `b9c24435` 本地 1 Pass /1 Fail，COUNT 业务拒绝问题。Windows `7e0acdba` run 37100228629 原产品 AUTH-01 的 viewer 登录前置等待超时（原因未确认），其余串行产品用例未执行；补充用例失败也保持可见。最终 Windows `b9c24435` run 37101187825/job 111140878728：**14 Pass /1 Fail**，COUNT 同样返回 0；完整 unit 仍 54 Fail。Java/build/SDK/calculation/boundaries 通过，真实 UAT 与完整 unit 门禁失败。不得隐藏前述失败或标记全部门禁通过。
+
+后续修正所需的架构边界：授权/输入不可用属于求值前置故障，应与普通 Excel cell error 区分，并沿同一输入解析、函数/依赖计算与 Worker 结果链传播；COUNT 对合法源里的普通错误忽略行为应保留。不能用 COUNT 专用补丁、UI 改显示、保留旧缓存或放宽 403 来完成。需要先确定所有读取/派生路径、缓存退休/恢复与 Worker/服务端约束，再一次性实施完整修正批次。当前没有满足合并条件。

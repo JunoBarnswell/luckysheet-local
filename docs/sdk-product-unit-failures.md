@@ -1,6 +1,6 @@
 # SDK 产品验收：完整单元测试失败清单
 
-2026-10-03，34c44dbe025da5d298bc0aedafadbd97731902b9 之后的 Pivot detail lifecycle 实现；`npm run test:unit` 实际执行。1545 tests，1491 Pass，54 Fail。完整日志 `/tmp/sdk-all-unit-pivot.log`。基线为 83 Fail，不能未经逐项对照将当前问题全部归于基线。此清单不意味着错误都在测试；需要逐项判断实际缺陷与过期/非 canonical fixture，不能通过弱化授权或转换约束解决。
+2026-10-03，34c44dbe025da5d298bc0aedafadbd97731902b9 之后的 Pivot detail lifecycle 实现；`npm run test:unit` 实际执行。当前对象模型实现：1551 tests，1497 Pass，54 Fail；新增 6 组 SDK 行为检查通过。完整日志 `/tmp/sdk-oo-all-unit.log`；与上一版 `/tmp/sdk-all-unit-pivot.log` 的失败标题逐条对照，新增/减少均为 0。基线为 83 Fail，不能未经逐项对照将当前问题全部归于基线。此清单不意味着错误都在测试；需要逐项判断实际缺陷与过期/非 canonical fixture，不能通过弱化授权或转换约束解决。
 
 | # | 失败测试 | 实际文件/位置 |
 |---|---|---|
