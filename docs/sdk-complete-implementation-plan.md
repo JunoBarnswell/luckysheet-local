@@ -84,3 +84,5 @@ REST/WS 采用同一受验证 JWT identity 转换，主体 key 由可信 authori
 I1 先完成上述整个实现批次，再执行 build/SDK/Java/浏览器验证。AUTHX-03/04/05/07/10/11 先以成功及拒绝契约检查覆盖，真实外部身份集成不以测试凭证或本地 issuer 算作 Pass。AUTHX-01/02/08/真实 ERP 切换由 I2 交付验收；全部验收前 PR 仍草稿。
 
 I1 统一验证：build/typecheck、现有 boundaries Pass；SDK 42/42 Pass；Java 327/327 Pass + package 成功。首轮 Java 326 tests 只有迁移测试仍断言版本 13，而新正式迁移为 14；产品实现保持冻结，只同步该测试的显式版本契约，并增加 v13→v14 数据/owner 不变、不擅自发明 OIDC 映射及重复启动历史不变的验收。签名/issuer/audience/过期/缺 sid 五类拒绝测试和 namespace/scope/WS 检查通过。随后在干净提交 head 执行真实本地浏览器；真实 ERP/SSO 项尚未通过。
+
+I1 产品 head `1100d699cc8f8d724fcf367dde3e3276666e4af3` 的完整真实 Java 21/H2/Chromium UAT **15/15 Pass**（`/tmp/sdk-identity-browser.log`，`/tmp/sdk-product-uat-GLepoX/evidence`），无 HTTP route mocks。完整 unit 1555/1501 Pass/54 Fail，失败标题仍无增减；不会据此合并。外部 IdP/ERP 生命周期集成仍 Blocked，不将签名测试等同真实 SSO。

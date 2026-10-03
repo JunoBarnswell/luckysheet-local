@@ -226,3 +226,11 @@ SDK 拥有认证/身份/凭证/组合根/工作簿目录与生命周期/Excel �
 新增 4 组成功/拒绝检查覆盖 12 种消费表达式（含 IFERROR/ISERROR/AGGREGATE）、三种输入故障、Worker 和派生公式、权限恢复、隐藏范围、audit trace、未执行 IF 分支及损坏元数据拒绝。calculation-domain **455/455 Pass**（主套件 450 +补充 5）；SDK **36/36 Pass**；build/typecheck 和现有 boundaries Pass。完整 unit **1555 /1501 Pass /54 Fail**，与先前 head 对比失败标题新增 0、消失 0。GATE-01 和 BOUND-01 继续 Fail。
 
 当前完整 49 项父项为 **12 Pass /2 Fail /2 Blocked /33 Pending**。旧 COUNT 失败与恢复未执行记录是旧 head 的历史证据，完整保留。首次本批 browser 被 clean-source 前置检查拒绝，没有执行业务步骤；提交冻结实现后重新执行，没有绕过门禁。GitHub 当前没有返回该 head 的 PR workflow run，不把未执行的检查计为通过。PR #349 继续草稿，尚不满足合并条件。
+
+## I1 身份上下文执行记录
+
+产品 head `1100d699cc8f8d724fcf367dde3e3276666e4af3`：build/typecheck、现有 boundaries Pass；SDK 42/42 Pass；Java 327/327 Pass + package；完整真实 Java/H2/Chromium **15/15 Pass**，证据 `/tmp/sdk-identity-browser.log` 与 `/tmp/sdk-product-uat-GLepoX/evidence`。包括旧对象退休、当前身份重新打开、多工作簿 source 撤权和恢复，以及现有 UI、持久化和原生输出场景。
+
+新增凭证检查覆盖服务端确认身份、并发单次获取与确认、同上下文续期、不变 subject 下换工作区、旧 HTTP/响应体拒绝、过期/401 清除身份、host CSRF/正式 prefix、来源不匹配与坏上下文。Java 以实际 RSA 签名/JWKS decoder 检查 issuer/audience/过期/错签名/缺 sid 拒绝，并验证不同 authority/scope 主体隔离、ACL 不能越过 scope、同 context 续期与显式可信身份映射。真实外部身份、ERP 路由和上下文恢复尚需 I2/后续验收，相关父项不升级为 Pass。
+
+产品源在统一验证期间未修改。首轮 Java 只有正式 schema 已迁到 V14、迁移测试仍断言 13 的契约陈旧问题；同步版本并增加真实 v13→v14 旧数据保留和重复启动检查后，Java 全部通过。完整 unit 仍 1555/1501 Pass/54 Fail，失败标题与 C1 相同。49 父项保持 12 Pass/2 Fail/2 Blocked/33 Pending；现有 boundaries 的绿色结果仍不代替 BOUND-01。PR 继续草稿。
