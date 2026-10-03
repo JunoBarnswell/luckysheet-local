@@ -5,6 +5,7 @@ import { coerceExcelNumber, normalizeExcelPrecision } from '../numeric';
 import type { ReferenceCell } from '../reference-cursor';
 import type { RangeDependency } from '../range-index';
 import { evaluateAggregate } from './aggregate';
+import { SUBTOTAL_FUNCTIONS } from '../subtotal';
 
 export interface AdvancedFunctionArgs {
   values: FormulaValue[];
@@ -15,7 +16,6 @@ export interface AdvancedContext {
   readCursor(range: RangeDependency): Iterable<ReferenceCell>;
 }
 type AdvancedFn = (args: AdvancedFunctionArgs, context: AdvancedContext) => FormulaValue;
-const AGGREGATIONS = ['AVERAGE', 'COUNT', 'COUNTA', 'MAX', 'MIN', 'PRODUCT', 'STDEV.S', 'STDEV.P', 'SUM', 'VAR.S', 'VAR.P'];
 
 function* referenceValues(args: AdvancedFunctionArgs, context: AdvancedContext, start: number, end: number, options: number, subtotal: boolean): Iterable<FormulaValue> {
   for (let index = start; index < end; index++) {
@@ -46,13 +46,13 @@ export const ADVANCED_FUNCTIONS: Record<string, AdvancedFn> = {
   SUBTOTAL: (args, context) => {
     const mode = parameter(args, 0);
     if (args.ranges.length < 2 || isFormulaError(mode) || !((mode >= 1 && mode <= 11) || (mode >= 101 && mode <= 111))) return createFormulaError('#VALUE!', 'SUBTOTAL requires a function number and references');
-    return evaluateAggregate(AGGREGATIONS[(mode >= 101 ? mode - 100 : mode) - 1]!, [{ reference: true, values: referenceValues(args, context, 1, args.ranges.length, mode >= 101 ? 1 : 0, true) }]);
+    return evaluateAggregate(SUBTOTAL_FUNCTIONS[(mode >= 101 ? mode - 100 : mode) - 1]!, [{ reference: true, values: referenceValues(args, context, 1, args.ranges.length, mode >= 101 ? 1 : 0, true) }]);
   },
   AGGREGATE: (args, context) => {
     const mode = parameter(args, 0);
     const options = parameter(args, 1);
     if (isFormulaError(mode) || mode < 1 || mode > 19 || isFormulaError(options) || options < 0 || options > 7 || args.ranges.length < 3) return createFormulaError('#VALUE!', 'Invalid AGGREGATE arguments');
-    if (mode <= 11) return evaluateAggregate(AGGREGATIONS[mode - 1]!, [{ reference: true, values: referenceValues(args, context, 2, args.ranges.length, options, false) }]);
+    if (mode <= 11) return evaluateAggregate(SUBTOTAL_FUNCTIONS[mode - 1]!, [{ reference: true, values: referenceValues(args, context, 2, args.ranges.length, options, false) }]);
     if (mode >= 14 && args.ranges.length !== 4) return createFormulaError('#VALUE!', 'AGGREGATE array form requires array and k');
     const values = referenceValues(args, context, 2, mode >= 14 ? 3 : args.ranges.length, options, false);
     const numbers: number[] = [];

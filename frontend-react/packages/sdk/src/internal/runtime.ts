@@ -174,6 +174,10 @@ export class ApplicationRuntime {
         this.workbookObjects.delete(resolution.unitId); this.workbookOpens.delete(resolution.unitId);
       }
       releaseSession(); releaseRuntime();
+    }, assertCurrent => {
+      const data = this.data.get(session);
+      if (!data) throw new SdkError('RUNTIME_DISPOSED', 'data', '数据领域已释放。', '请重新打开工作簿。');
+      return data.actionsFor(assertCurrent);
     });
     this.workbookObjects.set(resolution.unitId, workbook);
     const opening = workbook.ready().catch(cause => { workbook.close(); throw cause; });

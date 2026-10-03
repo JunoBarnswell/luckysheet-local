@@ -24,6 +24,6 @@ export type { CatalogEntry } from './workbooks/domain';
 export type { DimensionsActions, DimensionResult } from './dimensions/contract';
 export { MAX_EXCEL_ROW_HEIGHT_POINTS } from './dimensions/domain';
 
-export type { DataActions, DataActionResult } from './data/contract';
+export type { DataActions, DataActionResult, DataRangeAddress, SubtotalOptions, SubtotalFunction } from './data/contract';
 
 export type { WorkbookCreateOptions, WorkbookTemplateId } from './workbooks/contract';

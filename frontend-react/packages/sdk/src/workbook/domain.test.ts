@@ -9,12 +9,27 @@ import { SdkError } from '../error';
 import { CollabSocketClient, type OperationMessage } from '@react-sheets/protocol';
 import { consumeBrowserCalculationTaskWithEngine, type CalculationBrowserWorker, type FormulaEngine } from '@react-sheets/formula-engine';
 import { startCollaborationSession } from '../../../spreadsheet-app/src/runtime';
+import { DataDomain } from '../data/domain';
 function fixture(id: string, scope: object = {}) {
   const session = new WorkbookSession({ unitId: id });
-  const workbook = new Workbook(getWorkbookObjectPort(session), scope, () => session.dispose());
+  const data = new DataDomain(session);
+  const workbook = new Workbook(getWorkbookObjectPort(session), scope, () => session.dispose(), current => data.actionsFor(current));
   return { session, workbook, sheet: session['runtime'].model.getSheet(session.getActiveSheetId()) };
 }
 const invalid = (cause: unknown) => cause instanceof SdkError && cause.code === 'INVALID_ARGUMENT' && Boolean(cause.object?.workbookId) && Boolean(cause.recovery);
+test('public Workbook data actions share the canonical owner and retire captured actions on close', async () => {
+  const { workbook } = fixture('public-data');
+  const sheet = workbook.worksheets.at(0), actions = workbook.data;
+  await sheet.ranges.get('A1:B3').setValues([['Group', 'Amount'], ['East', 2], ['East', 4]]);
+  assert.deepEqual(await actions.subtotal({ range: { sheetId: sheet.id, address: 'A1:B3' }, functionName: 'PRODUCT' }), { status: 'applied' });
+  assert.equal((await sheet.cells.get('B6').read()).calculatedValue, 8);
+  await workbook.undo(); assert.equal((await sheet.cells.get('B6').read()).value, null);
+  await workbook.redo(); assert.equal((await sheet.cells.get('B6').read()).calculatedValue, 8);
+  workbook.close();
+  const result = await actions.subtotal({ range: { sheetId: sheet.id, address: 'A1:B3' } });
+  assert.equal(result.status, 'rejected');
+  if (result.status === 'rejected') { assert.equal(result.error.code, 'RUNTIME_DISPOSED'); assert.equal(result.error.operation, 'data.subtotal'); assert.equal(result.error.object?.workbookId, 'public-data'); }
+});
 test('object cells own explicit addresses, preserve literal values/styles and share the canonical formula engine', async () => {
   const { session, workbook, sheet } = fixture('object-1');
   try {

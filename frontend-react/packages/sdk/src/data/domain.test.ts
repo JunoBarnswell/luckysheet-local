@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { WorkbookSession } from '@react-sheets/spreadsheet-app';
 import { validateSheetTableModel } from '@react-sheets/sheet-features';
+import { WorkbookModel } from '@react-sheets/core-model';
+import { hydrateRuntime } from '../../../spreadsheet-app/src/runtime';
 import { DataDomain } from './domain';
 
 function fixture(values: unknown[][]) {
@@ -32,10 +34,12 @@ test('SDK subtotal writes formulas and outline in one history entry with exact u
     const before = sheet.snapshot();
     assert.deepEqual(await actions.subtotal(), { status: 'applied' });
     assert.equal(sheet.cells.get(6, 1)?.formula, '=SUBTOTAL(9,B2:B3)');
-    assert.equal(sheet.cells.get(6, 1)?.value, 15);
+    await session.waitForFormulaCalculation();
+    assert.equal(session['runtime'].formula.getCellValue({ sheetId: sheet.id, row: 6, column: 1 }), 15);
     assert.equal(sheet.outline?.groups.length, 2);
     session.undo(); assert.deepEqual(sheet.snapshot(), before);
-    session.redo(); assert.equal(sheet.cells.get(7, 1)?.value, 7);
+    session.redo(); await session.waitForFormulaCalculation();
+    assert.equal(session['runtime'].formula.getCellValue({ sheetId: sheet.id, row: 7, column: 1 }), 7);
   } finally { session.dispose(); }
 });
 
@@ -88,4 +92,54 @@ test('SDK retired data actions reject without invoking a disposed session', asyn
   const result = await actions.subtotal();
   assert.equal(result.status, 'rejected');
   if (result.status === 'rejected') assert.equal(result.error.code, 'RUNTIME_DISPOSED');
+});
+
+test('SDK subtotal targets an explicit inactive worksheet and consumes the one formula engine', async () => {
+  const { session, actions } = fixture([['Group', 'Amount'], ['East', 10]]);
+  try {
+    // Arrange the second worksheet at the canonical snapshot boundary. Actual
+    // worksheet creation requires Java and is covered in the browser UAT.
+    const prepared = WorkbookModel.fromSnapshot(session['runtime'].model.snapshot());
+    prepared.addSheet('other', 'Other');
+    hydrateRuntime(session['runtime'], { snapshot: prepared.snapshot(), revision: 0 });
+    session.runCommand('sheet.range.set', { sheetId: 'other', startRow: 0, startColumn: 0,
+      values: [[{ value: 'Group' }, { value: 'Amount' }], [{ value: 'East' }, { value: 2 }], [{ value: 'East' }, { value: 4 }], [{ value: 'East' }, { value: '7' }]] });
+    session.selectSheet(session['runtime'].model.primarySheetId);
+    for (const [functionName, expected] of [['COUNTA', 3], ['STDEV', 1.4142135623731], ['VARP', 1], ['PRODUCT', 8]] as const) {
+      const result = await actions.subtotal({ range: { sheetId: 'other', address: 'A1:B4' }, functionName });
+      assert.equal(result.status, 'applied', JSON.stringify(result)); await session.waitForFormulaCalculation();
+      assert.equal(session['runtime'].formula.getCellValue({ sheetId: 'other', row: 6, column: 1 }), expected);
+      session.undo();
+    }
+  } finally { session.dispose(); }
+});
+
+test('SDK subtotal rejects malformed function, visibility and explicit address without a partial transaction', async () => {
+  const { session, actions, sheet } = fixture([['Group', 'Amount'], ['East', 10]]);
+  try {
+    const before = sheet.snapshot();
+    const invalidInputs: unknown[] = [{ functionName: 'MEDIAN' }, { functionName: null }, { groupColumn: null }, { valueColumn: null }, { excludeHiddenRows: 1 }, { range: { sheetId: sheet.id, address: 'B2:A1' } },
+      { range: { sheetId: 'missing', address: 'A1:B2' } }, { range: { sheetId: sheet.id, address: 'A0:B2' } }, { range: { sheetId: sheet.id, address: 'A1:B1048576' } }];
+    for (const input of invalidInputs) {
+      const result = await actions.subtotal(input as Parameters<typeof actions.subtotal>[0]);
+      assert.equal(result.status, 'rejected');
+      if (result.status === 'rejected') { assert.equal(result.error.code, 'INVALID_ARGUMENT'); assert.equal(result.error.operation, 'data.subtotal'); assert.equal(result.error.object?.workbookId, session.getUiSnapshot().unitId); }
+      assert.deepEqual(sheet.snapshot(), before);
+    }
+  } finally { session.dispose(); }
+});
+
+test('SDK subtotal excludes manual hidden rows on request while ordinary subtotal still reads them', async () => {
+  const { session, actions, sheet } = fixture([['Group', 'Amount'], ['East', 2], ['East', 4]]);
+  try {
+    session.runCommand('sheet.rows.visibility.set', { sheetId: sheet.id, rows: [2], hidden: true });
+    const before = sheet.snapshot();
+    assert.deepEqual(await actions.subtotal({ excludeHiddenRows: true }), { status: 'applied' });
+    await session.waitForFormulaCalculation();
+    assert.equal(sheet.cells.get(5, 1)?.formula, '=SUBTOTAL(109,B2:B3)');
+    assert.equal(session['runtime'].formula.getCellValue({ sheetId: sheet.id, row: 5, column: 1 }), 2);
+    session.undo(); assert.deepEqual(sheet.snapshot(), before);
+    assert.deepEqual(await actions.subtotal(), { status: 'applied' }); await session.waitForFormulaCalculation();
+    assert.equal(session['runtime'].formula.getCellValue({ sheetId: sheet.id, row: 5, column: 1 }), 6);
+  } finally { session.dispose(); }
 });

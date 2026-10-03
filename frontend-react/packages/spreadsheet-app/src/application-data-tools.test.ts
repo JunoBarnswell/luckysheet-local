@@ -326,8 +326,9 @@ describe('WorkbookSession data tools integration', () => {
     const sheet = app['runtime'].model.getSheet(sheetId);
     assert.equal(sheet.cells.get(5, 0)?.value, 'Group');
     assert.equal(sheet.cells.get(6, 0)?.value, 'East');
-    assert.equal(sheet.cells.get(6, 1)?.value, 15);
+    await app.waitForFormulaCalculation();
+    assert.equal(app['runtime'].formula.getCellValue({ sheetId, row: 6, column: 1 }), 15);
     assert.equal(sheet.cells.get(7, 0)?.value, 'West');
-    assert.equal(sheet.cells.get(7, 1)?.value, 7);
+    assert.equal(app['runtime'].formula.getCellValue({ sheetId, row: 7, column: 1 }), 7);
   });
 });

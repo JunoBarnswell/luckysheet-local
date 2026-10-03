@@ -7,7 +7,7 @@ import type { SpreadsheetSdk } from '@react-sheets/sdk';
 import { installBrowserDiagnostics } from './support/workbook-fixtures';
 import { FINANCIAL_FUNCTION_CORPUS } from '../packages/formula-engine/src/fixtures/financial-corpus';
 
-test.use({ trace: 'retain-on-failure', screenshot: 'only-on-failure' });
+test.use({ trace: 'on', screenshot: 'only-on-failure' });
 test.skip(!process.env.SDK_UAT_ENABLED, 'Requires the isolated real Java/H2 SDK UAT service');
 test.setTimeout(120_000);
 const entryPath = fileURLToPath(import.meta.resolve('@react-sheets/sdk')).replaceAll('\\', '/');
@@ -92,6 +92,72 @@ test('I01-I05: public SDK separates verified identity and users; guest capabilit
     await expect(guest.getByTestId('formula-input')).toHaveValue('7');
     guestDiagnostics.assertClean(); diagnostics.assertClean();
   } finally { await guestContext?.close(); await sdk.evaluate(sdk => sdk.dispose()); }
+});
+
+test('S08a/b/c: public Data owns all eleven subtotal functions with real save, native reimport and rejection', async ({ page }) => {
+  const diagnostics = installBrowserDiagnostics(page), sdk = await ownerSdk(page);
+  const functions = ['AVERAGE', 'COUNT', 'COUNTA', 'MAX', 'MIN', 'PRODUCT', 'STDEV', 'STDEVP', 'SUM', 'VAR', 'VARP'] as const;
+  const expected = [3, 2, 5, 4, 2, 8, Math.SQRT2, 1, 6, 2, 1];
+  try {
+    const result = await sdk.evaluate(async (sdk, functions) => {
+      const entry = await sdk.workbooks.create({ name: `All subtotal functions ${Date.now()}` });
+      let workbook = await sdk.workbooks.open(entry.unitId);
+      const initial = [], formulas = [], sheetIds = [];
+      for (const [index, functionName] of functions.entries()) {
+        const sheet = index === 0 ? workbook.worksheets.at(0) : await workbook.worksheets.add({ name: functionName, rowCount: 20, columnCount: 8 });
+        if (index === 0) await sheet.rename(functionName);
+        sheetIds.push(sheet.id);
+        await sheet.ranges.get('A1:B6').setValues([['Group', 'Amount'], ['East', 2], ['East', 4], ['East', null], ['East', '7'], ['East', true]]);
+        await sheet.ranges.get('A7:A8').setValues([['East'], ['East']]);
+        await sheet.cells.get('B7').setFormula('=""'); await sheet.cells.get('C1').setValue(100);
+        await sheet.cells.get('B8').setFormula('=SUBTOTAL(9,C1:C1)'); await workbook.flush();
+        const output = await workbook.data.subtotal({ range: { sheetId: sheet.id, address: 'A1:B8' }, functionName });
+        if (output.status !== 'applied') throw output.error;
+        const cell = await sheet.cells.get('B11').read(); initial.push(cell.calculatedValue); formulas.push(cell.formula);
+      }
+      await workbook.flush(); await workbook.save();
+      const last = workbook.worksheets.byId(sheetIds.at(-1)!);
+      await workbook.undo(); const undone = await last.cells.get('B11').read();
+      await workbook.redo(); const redone = await last.cells.get('B11').read(); await workbook.save();
+      const before = await last.ranges.get('A1:C15').read();
+      const rejected = [];
+      for (const input of [{ functionName: 'MEDIAN' }, { excludeHiddenRows: 'yes' }, { range: { sheetId: last.id, address: 'B2:A1' } }]) {
+        const output = await workbook.data.subtotal(input as unknown as import('@react-sheets/sdk').SubtotalOptions);
+        rejected.push({ code: output.status === 'rejected' ? output.error.code : 'unexpected-success',
+          operation: output.status === 'rejected' ? output.error.operation : '', object: output.status === 'rejected' ? output.error.object : undefined });
+      }
+      const unchanged = JSON.stringify(before) === JSON.stringify(await last.ranges.get('A1:C15').read());
+      const retiredData = workbook.data; workbook.close();
+      const retired = await retiredData.subtotal({ range: { sheetId: last.id, address: 'A1:B8' } });
+      workbook = await sdk.workbooks.open(entry.unitId);
+      const reopened = await Promise.all(sheetIds.map(async id => (await workbook.worksheets.byId(id).cells.get('B11').read()).calculatedValue));
+      const output = await sdk.workbooks.exportWorkbook(entry.unitId, { fileName: 'sdk-all-subtotals.xlsx' });
+      return { id: entry.unitId, initial, formulas, sheetIds, rejected, unchanged, undone, redone,
+        retired: retired.status === 'rejected' ? { code: retired.error.code, operation: retired.error.operation } : { code: 'unexpected-success' },
+        reopened, bytes: Array.from(new Uint8Array(output.buffer)) };
+    }, [...functions]);
+    const assertNumbers = (values: readonly unknown[]) => {
+      expect(values).toHaveLength(expected.length);
+      values.forEach((value, index) => { expect(typeof value).toBe('number'); expect(Number(value)).toBeCloseTo(expected[index]!, 10); });
+    };
+    assertNumbers(result.initial); assertNumbers(result.reopened);
+    expect(result.formulas).toEqual(functions.map((_, index) => `=SUBTOTAL(${index + 1},B2:B8)`));
+    expect(result.unchanged).toBe(true); expect(result.rejected.map(error => error.code)).toEqual(['INVALID_ARGUMENT', 'INVALID_ARGUMENT', 'INVALID_ARGUMENT']);
+    for (const error of result.rejected) { expect(error.operation).toBe('data.subtotal'); expect(error.object?.workbookId).toBe(result.id); }
+    expect(result.retired).toEqual({ code: 'RUNTIME_DISPOSED', operation: 'data.subtotal' });
+    expect(result.undone.value).toBeNull(); expect(result.undone.formula).toBeUndefined();
+    expect(result.redone.formula).toBe('=SUBTOTAL(11,B2:B8)'); expect(result.redone.calculatedValue).toBe(1);
+    const bytes = Uint8Array.from(result.bytes);
+    await writeFile(path.join(process.env.SDK_UAT_EVIDENCE_DIR!, 'sdk-all-subtotals.xlsx'), bytes);
+    const native = await importOoxmlDocument({ fileName: 'sdk-all-subtotals.xlsx', buffer: bytes.buffer, options: { compatibilityTarget: 'B' } });
+    native.snapshot.sheets.forEach((sheet, index) => expect(sheet.cells['10']!['1']!.formula).toBe(result.formulas[index]));
+    const reimported = await sdk.evaluate(async (sdk, bytes) => {
+      const imported = await sdk.workbooks.importWorkbook({ fileName: 'sdk-all-subtotals.xlsx', buffer: Uint8Array.from(bytes).buffer, options: { compatibilityTarget: 'B' } });
+      const workbook = await sdk.workbooks.open(imported.entry.unitId);
+      return Promise.all(workbook.worksheets.list().map(async sheet => (await sheet.cells.get('B11').read()).calculatedValue));
+    }, result.bytes);
+    assertNumbers(reimported); diagnostics.assertClean();
+  } finally { await sdk.evaluate(sdk => sdk.dispose()); }
 });
 
 test('O1.2-a/b/c/d: canonical range cut rewrites moved inputs, undoes overwritten values and survives native reimport', async ({ page }) => {
@@ -536,9 +602,10 @@ test('O1.1-b/g: real viewer denies a whole matrix and error-value copies leave t
       const workbook = await sdk.workbooks.open(id), range = workbook.worksheets.at(0).ranges.get('A1:B2'), before = await range.readValues();
       let code = ''; try { await range.setValues([[10, 20], [30, 40]]); } catch (error) { code = (error as { code?: string }).code ?? ''; }
       let moveCode = ''; try { await range.moveTo(workbook.worksheets.at(0).ranges.get('D4:E5')); } catch (error) { moveCode = (error as { code?: string }).code ?? ''; }
-      return { before, after: await range.readValues(), code, moveCode, destination: await workbook.worksheets.at(0).ranges.get('D4:E5').readValues() };
+      const subtotal = await workbook.data.subtotal({ range: { sheetId: workbook.worksheets.at(0).id, address: 'A1:B2' }, functionName: 'COUNTA' });
+      return { before, after: await range.readValues(), code, moveCode, subtotal: subtotal.status === 'rejected' ? subtotal.error.code : 'unexpected-success', destination: await workbook.worksheets.at(0).ranges.get('D4:E5').readValues() };
     }, setup.id);
-    expect(result.before).toEqual([[1, 2], [3, 4]]); expect(result.after).toEqual(result.before); expect(result.code).toBe('FORBIDDEN'); expect(result.moveCode).toBe('FORBIDDEN'); expect(result.destination).toEqual([[null, null], [null, null]]);
+    expect(result.before).toEqual([[1, 2], [3, 4]]); expect(result.after).toEqual(result.before); expect(result.code).toBe('FORBIDDEN'); expect(result.moveCode).toBe('FORBIDDEN'); expect(result.subtotal).toBe('FORBIDDEN'); expect(result.destination).toEqual([[null, null], [null, null]]);
     const copy = await owner.evaluate(async (sdk, id) => {
       const source = await sdk.workbooks.open(id), targetEntry = await sdk.workbooks.create({ name: `Error copy ${Date.now()}` }), target = await sdk.workbooks.open(targetEntry.unitId);
       const to = target.worksheets.at(0).ranges.get('A1:B2'); await to.setValues([[5, 6], [7, 8]]); await target.flush();

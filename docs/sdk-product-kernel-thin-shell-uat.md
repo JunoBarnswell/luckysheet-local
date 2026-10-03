@@ -78,6 +78,14 @@
 
 ## 完整性矩阵（代码与行为双重证据）
 
+### S08 落代码前补充设计
+
+| ID | 公开入口步骤与精确断言 | 状态 | 本轮证据 |
+|---|---|---|---|
+| S08a | 一次 createSpreadsheetSdk 打开真实 workbook；通过 Workbook.data.subtotal 的显式 sheetId/address 对 11 个 worksheet 分别执行 AVERAGE/COUNT/COUNTA/MAX/MIN/PRODUCT/STDEV/STDEVP/SUM/VAR/VARP。源含 2、4、空值、文本、boolean、公式空字符串和嵌套 SUBTOTAL；结果分别为 3/2/5/4/2/8/sqrt(2)/1/6/2/1；保存、关闭重开、真实 XLSX 导出/重导入一致 | Pending | — |
+| S08b | inline 与 Worker 对全部 1–11/101–111 执行三种隐藏原因、嵌套 SUBTOTAL/AGGREGATE、空集合和 ordinary error；filter hidden 始终排除，manual/outline 仅 101–111 排除。Data 只提交公式，禁止自行计算 summary cache | Pending | — |
+| S08c | public Data 拒绝非法函数、非 boolean hidden option、越界/非法/不存在的 worksheet 地址、viewer 和已退休 workbook；错误为 SdkError，完整前像无改变；成功 summary+outline 一次历史、undo/redo 精确恢复 | Pending | — |
+
 | Domain | Public API | Canonical owner | Command chain | Permission | History | Collaboration | Persistence | Server authority | Web migrated |
 |---|---|---|---|---|---|---|---|---|---|
 | Auth | Pending | Pending | Pending | Pending | Pending | Pending | Pending | Pending | Pending |

@@ -25,6 +25,7 @@ export * from './random';
 export * from './collation';
 export * from './criteria';
 export * from './reference-cursor';
+export * from './subtotal';
 export * from './circular';
 export * from './calculation-settings';
 export * from './excel-date';
