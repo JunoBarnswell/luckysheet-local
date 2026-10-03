@@ -124,6 +124,54 @@ class WorkbookOperationServiceTest {
     }
 
     @Test
+    void rangeMoveUndoAcceptsOnlyExactOverwrittenCellFactsOnceAndRestoresTheWholePreimage() throws Exception {
+        Instant time = Instant.parse("2026-10-03T00:00:00Z");
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        // Canonical WorkbookModel snapshot with authored source, destination and dependent cells.
+        JsonNode preimage = mapper.readTree("""
+                {"schema":"WorkbookSnapshot","version":11,"unitId":"book","name":"Range undo","dimensionMetrics":{"normalFontFamily":"Calibri","normalFontSizePx":14.6666666667,"maximumDigitWidthPx":7},"collationContext":{"cultureId":"invariant","caseSensitive":true,"accentSensitive":true,"numericTextMode":"lexical","blankOrder":"last","typeOrder":["number","text","boolean","error","blank"],"customLists":[]},"calculationSettings":{"mode":"automatic","iterativeCalculation":false,"maximumIterations":100,"maximumChange":0.001,"precisionAsDisplayed":false,"calculateBeforeSave":true,"fullCalculationOnLoad":false},"editingOptions":{"allowEditDirectly":true,"moveAfterEnter":true,"enterDirection":"down","formulaAutoComplete":true,"valueAutoComplete":true,"fixedDecimalPlaces":null},"theme":{"id":"workbook-theme-default","colors":{}},"definedNames":{},"definedNameModels":[],"dataModel":{"externalLinks":[],"sources":[],"tables":[],"relationships":[],"views":[]},"printDocuments":[],"queryDefinitions":[],"cellStyleTemplates":[],"sheets":[{"kind":"worksheet","id":"sheet-1","name":"Sheet1","rowCount":1000,"columnCount":26,"cells":{"0":{"0":{"value":7},"1":{"value":null,"formula":"=A1"},"4":{"value":null,"formula":"=A1"}},"2":{"2":{"value":88},"3":{"value":99}}},"dataRegions":[],"merges":[],"pane":{"kind":"none"},"pivots":[],"sparklines":[],"conditionalFormats":[],"dataValidations":[],"defaultRowHeightPx":20,"defaultColumnWidthPx":64,"rowHeightsPx":{},"columnWidthsPx":{},"hiddenRows":[],"hiddenColumns":[],"sheetTables":[],"sparklineGroups":[],"drawings":[],"drawingPayloads":{},"drawingGroups":[],"snapSettings":{"enabled":true,"snapToGrid":true,"snapToShape":true,"gridSize":8},"hyperlinks":[],"review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}},"spillRanges":[],"protectionRules":[],"showGridlines":true,"showHeaders":true,"zoom":100,"hidden":false}]}
+                """);
+        JsonNode unchanged = preimage.deepCopy();
+        OperationMutation move = new OperationMutation("range.move", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","sourceRange":{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":1},"targetOrigin":{"row":2,"column":2}}
+                """));
+        var application = registry.require(move.id(), false).applyWithPatch(preimage, move);
+        OperationEnvelope request = new OperationEnvelope("session", OperationEnvelope.SCHEMA, "move", "book", 1, 0, List.of(move), time);
+        CommittedOperationEnvelope target = CommittedOperationEnvelope.from(request, "actor", 1, time,
+                List.of(CommittedOperationMutation.from(move, List.of(), registry.structuralImpactRanges(application.structuralPatch()), application.structuralPatch())));
+        OperationMutation reverse = new OperationMutation("range.move", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","sourceRange":{"sheetId":"sheet-1","startRow":2,"endRow":2,"startColumn":2,"endColumn":3},"targetOrigin":{"row":0,"column":0}}
+                """));
+        var restoreParams = mapper.createObjectNode().put("sheetId", "sheet-1").put("row", 2).put("column", 2);
+        restoreParams.set("previous", preimage.path("sheets").get(0).path("cells").path("2").path("2"));
+        OperationMutation firstRestore = new OperationMutation("cell.restore", "sheet-1", restoreParams);
+        var lastParams = restoreParams.deepCopy().put("column", 3);
+        lastParams.set("previous", preimage.path("sheets").get(0).path("cells").path("2").path("3"));
+        OperationMutation lastRestore = new OperationMutation("cell.restore", "sheet-1", lastParams);
+        OperationEnvelope undo = new OperationEnvelope("session", OperationEnvelope.SCHEMA, "undo-move", "book", 2, 1, List.of(reverse, firstRestore, lastRestore), time);
+        assertDoesNotThrow(() -> WorkbookOperationService.validateStructuralUndoMutations(undo, target, preimage, registry));
+        JsonNode restored = registry.applyPublicMutations(application.snapshot(), undo.mutations());
+        assertDoesNotThrow(() -> WorkbookOperationService.requireUndoRestoredPreimage(preimage, restored));
+        for (OperationMutation invalid : List.of(
+                new OperationMutation("cell.restore", "other-sheet", restoreParams),
+                new OperationMutation("cell.restore", "sheet-1", restoreParams.deepCopy().put("row", 0)),
+                new OperationMutation("cell.restore", "sheet-1", restoreParams.deepCopy().put("column", 4)),
+                new OperationMutation("cell.restore", "sheet-1", restoreParams.deepCopy().put("row", 2.5)),
+                new OperationMutation("cell.restore", "sheet-1", restoreParams.deepCopy().put("previous", "tampered")),
+                new OperationMutation("cell.restore", "sheet-1", restoreParams.deepCopy().putNull("previous")),
+                new OperationMutation("cell.set", "sheet-1", restoreParams))) {
+            OperationEnvelope bad = new OperationEnvelope("session", OperationEnvelope.SCHEMA, "bad-move", "book", 2, 1, List.of(reverse, invalid, lastRestore), time);
+            assertThrows(ServiceException.class, () -> WorkbookOperationService.validateStructuralUndoMutations(bad, target, preimage, registry));
+            assertEquals(unchanged, preimage);
+        }
+        OperationEnvelope duplicate = new OperationEnvelope("session", OperationEnvelope.SCHEMA, "duplicate-restore", "book", 2, 1, List.of(reverse, firstRestore, firstRestore, lastRestore), time);
+        assertThrows(ServiceException.class, () -> WorkbookOperationService.validateStructuralUndoMutations(duplicate, target, preimage, registry));
+        JsonNode missingTarget = registry.applyPublicMutations(application.snapshot(), List.of(reverse, firstRestore));
+        assertThrows(ServiceException.class, () -> WorkbookOperationService.requireUndoRestoredPreimage(preimage, missingTarget));
+        assertEquals(unchanged, preimage);
+    }
+
+    @Test
     void structuralUndoRejectsReusedInversesAndMutationsOutsideAnAllStructuralTarget() throws Exception {
         Instant committedAt = Instant.parse("2026-09-27T00:00:00Z");
         OperationMutation insertion = new OperationMutation("rows.inserted", "sheet-1",

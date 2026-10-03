@@ -166,3 +166,9 @@ Theme 和模板库 owner 的完整改造留给 O2.2；本批不把部分字段�
 O1.2 整批实现后统一检查：SDK64/64、calculation-domain549/549、boundaries Pass；full unit1681/1641 Pass/40 Fail，范围移动原失败真实修正，其他失败标题无新增。实际移动区域内外引用、绝对/未移动引用、sourceFormula/barcode、before/after地址、cache失效及公式组/不可逆拒绝都有断言。统一构建、Java及干净head真实UAT结果待记录，不以本段局部结果宣告验收完成。
 
 统一 build/typecheck Pass，Java21 package Pass：370 tests、368 Pass、2 Skip（外部 PostgreSQL/MySQL 环境缺失，仍 Blocked）；日志 `/tmp/sdk-o12-build.log`、`/tmp/sdk-o12-java.log`。产品源保持本批冻结，提交后执行完整真实 Java/H2/Chromium UAT，不能以通过的单元断言替代真实撤销/原生往返。
+
+O1.2 产品00853d8e首次真实完整UAT22/23 Pass；移动已ACK，第一次undo flush被Java409拒绝，尚未执行后续redo/native步骤。证据 `/tmp/sdk-o12-first-browser-test-results`、`/tmp/sdk-o12-browser.log`、`/tmp/sdk-product-uat-8eTAwV/evidence`。完整审查确认 inverse 为range.move加两个目标旧值的cell.restore；服务端 structural undo的removed-cell事实仅处理rows/columns.deleted，遗漏move替换的目标。不能放宽guard，也不删除旧值恢复断言。
+
+下一修正契约：deleted-cell helper clean-break为structuralRemovedCellFacts，由每条目标操作的真实中间preimage和已有正式mutation descriptor提取move destination sparse cells；行列删除继续原事实来源。每个未匹配的cell.restore必须精确匹配sheet/address/previous且只消费一次事实。无关、source原值、错坐标/工作表、篡改旧值、非restore、重复恢复均拒绝。操作最终还必须完整恢复原preimage；该校验和ACL/范围授权/版本/subject/current-history条件不变。新增O1.2-e（实施前Pending）：正式registry生成move事实→reverse move+精确target restores完整恢复，全部上述恶意输入拒绝且originalpreimage不变；真实browser原断言全部保留。无协议或存储迁移。
+
+O1.2恢复事实修正统一验证：Java21 package Pass，371 tests、369 Pass、2 Skip；新完整preimage恢复与七类篡改/重复/遗漏恢复拒绝断言通过，原行列删除的中间preimage和其他非法structural undo测试继续通过。boundaries Pass。前端产品源未改变，沿用00853d8e的build/SDK64/calculation549/full unit40结果；提交修正后再跑完整真实UAT，不弱化任何原browser断言。日志 `/tmp/sdk-o12-undo-java.log`、`/tmp/sdk-o12-undo-boundaries.log`。

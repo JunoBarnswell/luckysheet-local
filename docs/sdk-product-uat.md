@@ -387,3 +387,5 @@ A1.1 最终统一typecheck/boundaries Pass；完整unit **1678/1637 Pass/41 Fail
 - b：真实 Java ACK、一次 undo/redo 恢复全部源/目标和依赖，不增加 SDK 逆操作栈。
 - c：错尺寸、跨表/簿、重叠、预算、offline、退休、权限/隐藏、公式组/不可逆引用明确拒绝，状态不变。
 - d：真实浏览器 SDK、保存重开、实际 xlsx 导出/原生解析/服务器重导入、console/network；桌面 Excel Blocked。
+
+O1.2 首轮00853d8e：完整22/23，新增a/b/c/d仍Fail（首次undo真实409；后续native未执行）。源代码及trace冻结，Java恢复事实owner修正前不升Pass。O1.2-e实施前Pending：目标覆盖单元格按真实preimage精确恢复，重复/篡改/无关/跨sheet恢复拒绝，完整快照guard不变。

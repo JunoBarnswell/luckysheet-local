@@ -526,23 +526,26 @@ public class WorkbookOperationService {
             boolean allMatched = true;
             for (boolean matched : matchedInverseMutations) allMatched &= matched;
             if (allMatched) return;
-            List<DeletedCellFact> deletedCells = deletedCellFacts(target, structuralUndoPreimage, registry);
+            List<StructuralRemovedCellFact> remainingFacts = structuralRemovedCellFacts(target, structuralUndoPreimage, registry);
             for (int index = 0; index < operation.mutations().size(); index++) {
-                if (!matchedInverseMutations[index] && !matchesDeletedCell(operation.mutations().get(index), deletedCells)) {
+                if (matchedInverseMutations[index]) continue;
+                int factIndex = matchingRemovedCellIndex(operation.mutations().get(index), remainingFacts);
+                if (factIndex < 0) {
                     throw ServiceException.conflict("Structural undo contains a mutation outside its target operation");
                 }
+                remainingFacts.remove(factIndex);
             }
         }
     }
 
-    private record DeletedCellFact(String sheetId, int row, int column, JsonNode previous) {}
+    private record StructuralRemovedCellFact(String sheetId, int row, int column, JsonNode previous) {}
 
-    /** Use the canonical replay to recover each deletion's own preimage, including earlier reference transforms. */
-    private static List<DeletedCellFact> deletedCellFacts(
+    /** Canonical intermediate preimages own deleted and move-overwritten cells; each restore consumes one fact. */
+    private static List<StructuralRemovedCellFact> structuralRemovedCellFacts(
             CommittedOperationEnvelope target, JsonNode preimage, MutationDescriptorRegistry registry
     ) {
         if (preimage == null) return List.of();
-        List<DeletedCellFact> facts = new ArrayList<>();
+        List<StructuralRemovedCellFact> facts = new ArrayList<>();
         JsonNode current = preimage;
         for (int index = 0; index < target.mutations().size(); index++) {
             CommittedOperationMutation original = target.mutations().get(index);
@@ -562,7 +565,30 @@ public class WorkbookOperationService {
                             int columnIndex = Integer.parseInt(column.getKey());
                             long coordinate = rows ? rowIndex : columnIndex;
                             if (start >= 0 && count > 0 && coordinate >= start && coordinate - start < count) {
-                                facts.add(new DeletedCellFact(original.sheetId(), rowIndex, columnIndex, column.getValue()));
+                                facts.add(new StructuralRemovedCellFact(original.sheetId(), rowIndex, columnIndex, column.getValue()));
+                            }
+                        }
+                    }
+                }
+            }
+            if ("range.move".equals(original.id())) {
+                OperationMutation move = new OperationMutation(original.id(), original.sheetId(), original.params());
+                List<RangeRef> ranges = registry.require(move.id(), false).affectedRanges(current, move);
+                if (ranges.size() != 2) throw ServiceException.conflict("STRUCTURAL_PATCH_INVARIANT: range move has no exact destination");
+                RangeRef destination = ranges.get(1);
+                for (JsonNode sheet : current.path("sheets")) {
+                    if (!destination.sheetId().equals(sheet.path("id").asText())) continue;
+                    var rows = sheet.path("cells").fields();
+                    while (rows.hasNext()) {
+                        var row = rows.next();
+                        int rowIndex = Integer.parseInt(row.getKey());
+                        if (rowIndex < destination.startRow() || rowIndex > destination.endRow()) continue;
+                        var columns = row.getValue().fields();
+                        while (columns.hasNext()) {
+                            var column = columns.next();
+                            int columnIndex = Integer.parseInt(column.getKey());
+                            if (columnIndex >= destination.startColumn() && columnIndex <= destination.endColumn()) {
+                                facts.add(new StructuralRemovedCellFact(destination.sheetId(), rowIndex, columnIndex, column.getValue()));
                             }
                         }
                     }
@@ -575,14 +601,17 @@ public class WorkbookOperationService {
         return facts;
     }
 
-    private static boolean matchesDeletedCell(OperationMutation mutation, List<DeletedCellFact> facts) {
-        if (!"cell.restore".equals(mutation.id())) return false;
+    private static int matchingRemovedCellIndex(OperationMutation mutation, List<StructuralRemovedCellFact> facts) {
+        if (!"cell.restore".equals(mutation.id())) return -1;
         JsonNode row = mutation.params().path("row");
         JsonNode column = mutation.params().path("column");
-        if (!row.isIntegralNumber() || !row.canConvertToInt() || !column.isIntegralNumber() || !column.canConvertToInt()) return false;
-        return facts.stream().anyMatch(fact -> fact.sheetId().equals(mutation.sheetId())
-                && fact.row() == row.intValue() && fact.column() == column.intValue()
-                && fact.previous().equals(mutation.params().path("previous")));
+        if (!row.isIntegralNumber() || !row.canConvertToInt() || !column.isIntegralNumber() || !column.canConvertToInt()) return -1;
+        for (int index = 0; index < facts.size(); index++) {
+            StructuralRemovedCellFact fact = facts.get(index);
+            if (fact.sheetId().equals(mutation.sheetId()) && fact.row() == row.intValue()
+                    && fact.column() == column.intValue() && fact.previous().equals(mutation.params().path("previous"))) return index;
+        }
+        return -1;
     }
 
     private static boolean isStructuralPatchMutation(String mutationId) {
