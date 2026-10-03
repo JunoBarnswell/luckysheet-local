@@ -285,7 +285,7 @@ test.describe('SDK product UAT against Java authority', () => {
     const buffer = exportSnapshotToOoxmlBuffer(workbook.snapshot());
     const parts = loadOpcPackageGraph(buffer).packageGraph.parts;
     const xml = strFromU8(parts['xl/worksheets/sheet1.xml']!);
-    expect(xml).toContain('<dimension ref="A1"');
+    expect(xml).toContain('<dimension ref="A1:A1"');
     parts['xl/worksheets/sheet1.xml'] = strToU8(xml.replace('ref="A2"', 'ref="A1048577"'));
     const malformed = zipOpcPartsBuffer(parts);
     let imports = 0;
