@@ -5,6 +5,7 @@ import { cellAddressKey } from './address';
 import { isWorkbookCalculationSettings, type WorkbookCalculationSettings } from './calculation-settings';
 import type { SheetTableRef } from './sheet-table-resolver';
 import type { ScalarValue } from './values';
+import { isFormulaInputFault } from './input-fault';
 import type { ResolvedSpill, SpillBlockerRange } from './spill-resolver';
 import type { FormulaDefinedName } from './defined-names';
 import type { CanonicalExcelDateParts, ExcelDateSystem } from './excel-date';
@@ -202,6 +203,7 @@ function isSpillValue(value: unknown): boolean {
   return isRecord(value)
     && value.kind === 'error'
     && typeof value.code === 'string'
+    && (value.inputFault === undefined || isFormulaInputFault(value))
     && (value.message === undefined || typeof value.message === 'string');
 }
 

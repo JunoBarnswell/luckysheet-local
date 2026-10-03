@@ -19,6 +19,7 @@ export * from './reference-index';
 export { ReferenceTransformDomain } from './reference-transform-domain';
 export type { IntervalTransformResult, PointTransformResult } from './reference-transform-domain';
 export * from './values';
+export * from './input-fault';
 export * from './numeric';
 export * from './random';
 export * from './collation';

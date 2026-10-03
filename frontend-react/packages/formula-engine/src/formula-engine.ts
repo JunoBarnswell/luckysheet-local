@@ -1,4 +1,5 @@
 import { assertExternalCalculationLink, externalReferenceRange, externalSheetKey, type ExternalCalculationLink } from './external-links';
+import { createFormulaInputFault } from './input-fault';
 import type { CellAddress, FormulaAst, FormulaReferenceNode } from './ast';
 import { cellAddressKey, compareCellAddresses, parseCellAddress } from './address';
 import { collectFormulaDependencies, collectFormulaReferenceNodes, resolveRangeReference } from './dependencies';
@@ -572,7 +573,7 @@ export class FormulaEngine {
 
   private randomForCell(address: CellAddress, functionName: string, occurrence = '0', elementIndex = 0): number | FormulaError {
     const entropy = this.activeCalculationEntropy;
-    if (!entropy) return createFormulaError('#BLOCKED!', 'Volatile formula requires a calculation entropy context');
+    if (!entropy) return createFormulaInputFault('#BLOCKED!', 'Volatile formula requires a calculation entropy context', 'runtime-unavailable', 'calculation-entropy');
     return formulaRandom(entropy, address, functionName, occurrence, elementIndex);
   }
 
@@ -1983,12 +1984,12 @@ export class FormulaEngine {
         rowVisibility: this.rowVisibilityResolver,
         readFormulaKind: (reference) => this.formulaKindAt(reference),
         random: (functionName, occurrence, elementIndex) => this.randomForCell(cell.address, functionName, occurrence, elementIndex),
-        readCell: (reference) => this.blockedRanges.some(range => range.sheetId === reference.sheetId && range.startRow <= reference.row && reference.row <= range.endRow && range.startColumn <= reference.column && reference.column <= range.endColumn) ? createFormulaError('#BLOCKED!', 'Hidden formula input') : this.externalCells.get(reference.sheetId)?.get(`${reference.row}:${reference.column}`)?.value ?? this.readCellWithOverrides(reference, cache, visiting, overrides),
-        readRange: (range) => this.isBlockedRange(range) ? [createFormulaError('#BLOCKED!', 'Hidden formula range')] : this.externalRangeValues(range, false) ?? this.readRange(range, cache, visiting, overrides),
-        readRangeMatrix: (range) => this.isBlockedRange(range) ? [[createFormulaError('#BLOCKED!', 'Hidden formula range')]] : this.externalRangeMatrix(range) ?? this.readRangeMatrix(range, cache, visiting, overrides),
-        readSparseRange: (range) => this.isBlockedRange(range) ? [createFormulaError('#BLOCKED!', 'Hidden formula range')] : this.externalRangeValues(range, true) ?? this.readSparseRange(range, cache, visiting, overrides),
+        readCell: (reference) => this.blockedRanges.some(range => range.sheetId === reference.sheetId && range.startRow <= reference.row && reference.row <= range.endRow && range.startColumn <= reference.column && reference.column <= range.endColumn) ? createFormulaInputFault('#BLOCKED!', 'Hidden formula input', 'access-denied', reference.sheetId) : this.externalCells.get(reference.sheetId)?.get(`${reference.row}:${reference.column}`)?.value ?? this.readCellWithOverrides(reference, cache, visiting, overrides),
+        readRange: (range) => this.isBlockedRange(range) ? [createFormulaInputFault('#BLOCKED!', 'Hidden formula range', 'access-denied', range.start.sheetId)] : this.externalRangeValues(range, false) ?? this.readRange(range, cache, visiting, overrides),
+        readRangeMatrix: (range) => this.isBlockedRange(range) ? [[createFormulaInputFault('#BLOCKED!', 'Hidden formula range', 'access-denied', range.start.sheetId)]] : this.externalRangeMatrix(range) ?? this.readRangeMatrix(range, cache, visiting, overrides),
+        readSparseRange: (range) => this.isBlockedRange(range) ? [createFormulaInputFault('#BLOCKED!', 'Hidden formula range', 'access-denied', range.start.sheetId)] : this.externalRangeValues(range, true) ?? this.readSparseRange(range, cache, visiting, overrides),
         readSparseRangeCells: (range) => this.isBlockedRange(range)
-          ? [{ address: range.start, value: createFormulaError('#BLOCKED!', 'Hidden formula range') }]
+          ? [{ address: range.start, value: createFormulaInputFault('#BLOCKED!', 'Hidden formula range', 'access-denied', range.start.sheetId) }]
           : this.externalCells.has(range.start.sheetId)
             ? [...this.externalCells.get(range.start.sheetId)!.values()].filter(cell => cell.address.row >= range.start.row && cell.address.row <= range.end.row && cell.address.column >= range.start.column && cell.address.column <= range.end.column).map(cell => ({ address: { ...cell.address, sheetId: range.start.sheetId }, value: cell.value }))
             : this.readSparseRangeCells(range, cache, visiting, overrides),

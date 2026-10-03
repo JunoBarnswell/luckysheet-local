@@ -15,6 +15,7 @@ import type { WorkbookCollationContext } from './collation';
 import type { CanonicalExcelDateParts, ExcelDateSystem } from './excel-date';
 import { createReferenceCursor, type ReferenceFormulaKind, type RowVisibilityResolver } from './reference-cursor';
 import type { FormulaSheetIdentity } from './sheet-reference';
+import { FormulaInputBoundary } from './input-boundary';
 
 export interface FormulaEvaluationContext {
   readonly currentCell: CellAddress;
@@ -106,26 +107,32 @@ function isLambda(value: EvaluationValue | undefined): value is LambdaEvaluation
 }
 
 export function evaluateFormula(ast: FormulaAst, context: FormulaEvaluationContext): FormulaValue {
-  const result = evaluateFormulaOperand(ast, context);
-  return materializeEvaluationValue(result, context);
+  const boundary = new FormulaInputBoundary(context);
+  const result = boundary.observe(materializeEvaluationValue(evaluateNode(ast, boundary.context), boundary.context));
+  return boundary.failure ?? result;
 }
 
 /** Name and callable resolution preserve reference geometry until consumption. */
 export function evaluateFormulaOperand(ast: FormulaAst, context: FormulaEvaluationContext): FormulaEvaluationValue {
-  return evaluateNode(ast, context);
+  const boundary = new FormulaInputBoundary(context);
+  const result = boundary.observe(evaluateNode(ast, boundary.context));
+  return boundary.failure ?? result;
 }
 
 /** Evaluate a formula and capture every AST node's computed value in order. */
 export function evaluateFormulaWithTrace(ast: FormulaAst, context: FormulaEvaluationContext): FormulaEvaluationTrace {
   const steps: FormulaEvaluationTraceStep[] = [];
-  const result = evaluateNode(ast, context, (node, value) => {
+  const boundary = new FormulaInputBoundary(context);
+  const result = evaluateNode(ast, boundary.context, (node, value) => {
+    const materialized = boundary.observe(materializeEvaluationValue(value, boundary.context));
     steps.push({
       node: structuredClone(node),
       expression: formatFormula(node),
-      value: structuredClone(materializeEvaluationValue(value, context)),
+      value: structuredClone(boundary.failure ?? materialized),
     });
   });
-  return { value: structuredClone(materializeEvaluationValue(result, context)), steps };
+  const materialized = boundary.observe(materializeEvaluationValue(result, boundary.context));
+  return { value: structuredClone(boundary.failure ?? materialized), steps };
 }
 
 type EvaluationTraceSink = (node: FormulaAst, value: EvaluationValue) => void;

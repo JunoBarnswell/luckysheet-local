@@ -2,6 +2,7 @@ import type { ExternalReferenceNode, CellAddress } from './ast';
 import type { FormulaSheetIdentity } from './sheet-reference';
 import { createFormulaError, type FormulaValue, type FormulaError, isFormulaError } from './values';
 import type { RangeDependency } from './range-index';
+import { createFormulaInputFault, isFormulaInputFault } from './input-fault';
 
 export type ExternalLinkState = 'connected' | 'refreshing' | 'stale' | 'denied' | 'unavailable' | 'broken';
 /** Transient subject-bound calculation data. Never persisted with an authored workbook. */
@@ -26,7 +27,8 @@ export function assertCalculationBlockedRanges(value: unknown): asserts value is
 function validExternalValue(value: unknown, budget: { remaining: number }, depth = 0): boolean {
   if (--budget.remaining < 0) throw new Error('EXTERNAL_LINK_CACHE_LIMIT');
   if (value === null || typeof value === 'string' || typeof value === 'boolean' || typeof value === 'number' && Number.isFinite(value)) return true;
-  if (isFormulaError(value)) return typeof value.code === 'string' && typeof value.message === 'string';
+  if (isFormulaError(value)) return typeof value.code === 'string' && typeof value.message === 'string'
+    && (value.inputFault === undefined || isFormulaInputFault(value));
   return depth < 4 && Array.isArray(value) && value.length <= 100000 && value.every(row => Array.isArray(row) && row.length <= 16384 && row.every(cell => validExternalValue(cell, budget, depth + 1)));
 }
 
@@ -58,11 +60,12 @@ export function externalSheetKey(linkId: string, sheetId: string): string {
 }
 
 export function externalReferenceRange(node: ExternalReferenceNode, link?: ExternalCalculationLink): RangeDependency | FormulaError {
-  if (!link || link.state === 'broken') return createFormulaError('#REF!', link?.error?.message ?? 'External link is not bound');
-  if (link.state === 'denied') return createFormulaError('#BLOCKED!', link.error?.message ?? 'External source access denied');
-  if (link.state === 'unavailable' || link.state === 'refreshing' && !link.cells.length) return createFormulaError('#N/A', link.error?.message ?? 'External source is unavailable');
+  const source = link?.sourceUnitId ?? node.qualifier.workbookId;
+  if (!link || link.state === 'broken') return createFormulaInputFault('#REF!', link?.error?.message ?? 'External link is not bound', 'source-missing', source);
+  if (link.state === 'denied') return createFormulaInputFault('#BLOCKED!', link.error?.message ?? 'External source access denied', 'access-denied', source);
+  if (link.state === 'unavailable' || link.state === 'refreshing' && !link.cells.length) return createFormulaInputFault('#N/A', link.error?.message ?? 'External source is unavailable', 'source-unavailable', source);
   const sheet = link.sheets.find(sheet => sheet.id === node.qualifier.sheetId || sheet.name.toUpperCase() === node.qualifier.sheetId?.toUpperCase());
-  if (!sheet) return createFormulaError('#REF!', 'External source worksheet is missing');
+  if (!sheet) return createFormulaInputFault('#REF!', 'External source worksheet is missing', 'source-missing', source);
   const sheetId = externalSheetKey(link.id, sheet.id);
   const ref = node.reference;
   let start: CellAddress, end: CellAddress;
@@ -74,6 +77,6 @@ export function externalReferenceRange(node: ExternalReferenceNode, link?: Exter
     default: return createFormulaError('#REF!', 'External structured table binding is unavailable');
   }
   if (end.row >= sheet.rowCount || end.column >= sheet.columnCount) return createFormulaError('#REF!', 'External reference exceeds source extent');
-  if (link.blockedRanges?.some(range => range.sheetId === sheet.id && range.startRow <= end.row && start.row <= range.endRow && range.startColumn <= end.column && start.column <= range.endColumn)) return createFormulaError('#BLOCKED!', 'External range contains hidden inputs');
+  if (link.blockedRanges?.some(range => range.sheetId === sheet.id && range.startRow <= end.row && start.row <= range.endRow && range.startColumn <= end.column && start.column <= range.endColumn)) return createFormulaInputFault('#BLOCKED!', 'External range contains hidden inputs', 'access-denied', source);
   return { kind: 'range', start, end };
 }
