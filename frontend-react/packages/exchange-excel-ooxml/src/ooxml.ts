@@ -295,7 +295,7 @@ export function parseLoadedOoxml(loaded: LoadedOpcPackageGraph, options: ParseLo
 
 /**
  * XLSX only records the populated grid in `<dimension>`, while drawings can
- * legally reference an otherwise empty cell range.  The canonical snapshot
+ * and hyperlinks can legally reference an otherwise empty cell range.  The canonical snapshot
  * owns one addressable worksheet extent, so import expands that extent before
  * validation rather than leaving a valid chart reference outside the grid.
  */
@@ -309,7 +309,10 @@ function expandImportedReferenceExtents(snapshot: WorkbookSnapshot): void {
       && range.startRow >= 0 && range.startColumn >= 0
       && range.endRow >= range.startRow && range.endColumn >= range.startColumn
       && range.endRow <= OOXML_MAX_ROW_INDEX && range.endColumn <= OOXML_MAX_COLUMN_INDEX;
-    if (!target || !valid) throw new Error(`Imported ${label} range is invalid`);
+    if (!target || !valid) throw new NativeDocumentError({
+      code: 'NATIVE_DOCUMENT_INVALID', message: `Imported ${label} range is invalid`,
+      location: range.sheetId, recovery: 'Correct the source reference within Excel worksheet bounds and import again.',
+    });
     target.rowCount = Math.max(target.rowCount, range.endRow + 1);
     target.columnCount = Math.max(target.columnCount, range.endColumn + 1);
   };
@@ -327,6 +330,19 @@ function expandImportedReferenceExtents(snapshot: WorkbookSnapshot): void {
         }
         sheet.rowCount = Math.max(sheet.rowCount, rowIndex + 1);
         sheet.columnCount = Math.max(sheet.columnCount, columnIndex + 1);
+      }
+    }
+    for (const link of sheet.hyperlinks ?? []) {
+      extend({ sheetId: sheet.id, startRow: link.row, endRow: link.row,
+        startColumn: link.column, endColumn: link.column }, `hyperlink anchor on ${sheet.name}`);
+      const target = link.hyperlink.target;
+      if (target.kind === 'sheet') {
+        const address = target.address !== undefined ? parseA1(target.address) : { row: target.row!, column: target.column! };
+        if (!address) throw new NativeDocumentError({ code: 'NATIVE_DOCUMENT_INVALID',
+          message: 'Imported worksheet hyperlink target address is invalid', location: target.sheetId,
+          recovery: 'Correct the worksheet hyperlink address and import again.' });
+        extend({ sheetId: target.sheetId, startRow: address.row, endRow: address.row,
+          startColumn: address.column, endColumn: address.column }, `hyperlink target on ${sheet.name}`);
       }
     }
     for (const payload of Object.values(sheet.drawingPayloads)) {

@@ -8,6 +8,7 @@ import { exportSnapshotToOoxmlBuffer } from './archive';
 import { loadOpcPackageGraph, parseLoadedOoxml, zipOpcPartsBuffer } from './archive';
 import { readNativeChartGraph } from './native-chart';
 import { mapNativePivotDefinition, readNativePivotGraph } from './native-pivot';
+import { NativeDocumentError } from './native-document-error';
 import type { NativePivotCacheDefinition, NativePivotTableDefinition } from './types';
 import { strFromU8, strToU8 } from 'fflate';
 
@@ -488,6 +489,29 @@ describe('exchange-excel-ooxml', () => {
     assert.deepEqual(imported.snapshot.sheets[0]?.hyperlinks?.[1]?.hyperlink.target, { kind: 'email', address: 'team@example.com', subject: 'Review' });
     assert.deepEqual(imported.snapshot.sheets[0]?.hyperlinks?.[2]?.hyperlink.target, { kind: 'sheet', sheetId: 'sheet-target', address: 'B2' });
     assert.deepEqual(imported.snapshot.sheets[0]?.hyperlinks?.[3]?.hyperlink.target, { kind: 'name', name: 'SalesTotal' });
+    const importedSheet = imported.snapshot.sheets[0]!;
+    assert.equal(importedSheet.rowCount, 4);
+    assert.equal(imported.snapshot.sheets[1]!.rowCount, 2);
+    assert.equal(imported.snapshot.sheets[1]!.columnCount, 2);
+    assert.equal(importedSheet.cells['1'], undefined);
+    const edited = structuredClone(imported.snapshot);
+    edited.sheets[0]!.cells['0']!['0']!.value = 'Edited after native import';
+    const again = await importOoxmlDocument({ fileName: 'links-edited.xlsx',
+      buffer: exportSnapshotToOoxmlBuffer(edited), options: { compatibilityTarget: 'B' } });
+    assert.deepEqual(again.snapshot.sheets[0]!.hyperlinks, importedSheet.hyperlinks);
+    assert.equal(again.snapshot.sheets[0]!.cells['0']!['0']!.value, 'Edited after native import');
+    for (const xml of [worksheetXml.replace('ref="A2"', 'ref="A1048577"'),
+      worksheetXml.replace('ref="A2"', 'ref="XFE1"'),
+      worksheetXml.replace('location="Target!B2"', 'location="Target!A1048577"')]) {
+      const parts = structuredClone(emitted.packageGraph.parts);
+      parts['xl/worksheets/sheet1.xml'] = strToU8(xml);
+      const malformed = zipOpcPartsBuffer(parts);
+      const before = malformed.slice(0);
+      await assert.rejects(importOoxmlDocument({ fileName: 'links-outside.xlsx', buffer: malformed,
+        options: { compatibilityTarget: 'B' } }), (error: unknown) => error instanceof NativeDocumentError
+          && error.code === 'NATIVE_DOCUMENT_INVALID' && Boolean(error.location) && Boolean(error.recovery));
+      assert.deepEqual(new Uint8Array(malformed), new Uint8Array(before));
+    }
   });
 
   it('writes a canonical table Pivot as a native cache and table graph', async () => {
