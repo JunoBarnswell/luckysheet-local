@@ -1424,8 +1424,10 @@ public class MutationDescriptorRegistry {
         private void resize(ObjectNode root, ObjectNode sheet, String sheetId, ObjectNode params, String collection, String coordinateName, String valueName) {
             int coordinate = SnapshotMutationSupport.index(root, sheetId, params, coordinateName);
             JsonNode value = params.get(valueName);
-            if (value == null || !value.isNumber() || value.asDouble() <= 0 || !Double.isFinite(value.asDouble())) throw ServiceException.validation(valueName + " must be a positive number");
-            SnapshotMutationSupport.object(sheet, collection).set(Integer.toString(coordinate), value.deepCopy());
+            if (value == null || (!value.isNull() && (!value.isNumber() || value.asDouble() <= 0 || !Double.isFinite(value.asDouble())))) throw ServiceException.validation(valueName + " must be a positive number or null to remove the override");
+            ObjectNode overrides = SnapshotMutationSupport.object(sheet, collection);
+            if (value.isNull()) overrides.remove(Integer.toString(coordinate));
+            else overrides.set(Integer.toString(coordinate), value.deepCopy());
         }
 
         private void view(ObjectNode params, ObjectNode sheet) {

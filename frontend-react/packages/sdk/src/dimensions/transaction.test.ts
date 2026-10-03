@@ -13,13 +13,14 @@ function fixture() {
 test('dimension size and unhide commit and undo as one transaction', () => {
   const { runtime, sheetId, sheet } = fixture();
   sheet.hiddenColumns.add(0); sheet.hiddenRows.add(0);
-  const oldWidth = sheet.defaultColumnWidthPx, oldHeight = sheet.defaultRowHeightPx;
+  const preimage = sheet.snapshot();
   runtime.execute('sheet.dimensions.apply', { sheetId, columns: [{ column: 0, widthPx: 180, hidden: false }], rows: [{ row: 0, heightPx: 42, hidden: false }] });
   assert.equal(sheet.hiddenColumns.has(0), false); assert.equal(sheet.hiddenRows.has(0), false);
   assert.equal(sheet.columnWidthsPx[0], 180); assert.equal(sheet.rowHeightsPx[0], 42);
   runtime.undo();
   assert.equal(sheet.hiddenColumns.has(0), true); assert.equal(sheet.hiddenRows.has(0), true);
-  assert.equal(sheet.columnWidthsPx[0], oldWidth); assert.equal(sheet.rowHeightsPx[0], oldHeight);
+  assert.equal(sheet.columnWidthsPx[0], undefined); assert.equal(sheet.rowHeightsPx[0], undefined);
+  assert.deepEqual(sheet.snapshot(), preimage, 'undo restores absent overrides exactly');
   runtime.redo(); assert.equal(sheet.columnWidthsPx[0], 180); assert.equal(sheet.hiddenColumns.has(0), false);
 });
 test('an invalid dimension in a multi-axis plan causes zero size or visibility changes', () => {

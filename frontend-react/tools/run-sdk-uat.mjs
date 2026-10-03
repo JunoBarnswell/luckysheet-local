@@ -26,7 +26,7 @@ const backendLog = createWriteStream(path.join(evidence, 'backend.log'));
 const java = process.env.JAVA_HOME
   ? path.join(process.env.JAVA_HOME, 'bin', process.platform === 'win32' ? 'java.exe' : 'java') : 'java';
 const backend = spawn(java, ['-jar', jar], {
-  cwd: frontend, env: { ...process.env, SHEETS_DATA_DIR: isolated, SERVER_PORT: '8082', AUTH_MODE: 'local' },
+  cwd: frontend, env: { ...process.env, SHEETS_DATA_DIR: isolated, DATABASE_URL: `jdbc:h2:file:${isolated.replaceAll('\\', '/')}/luckysheet_canonical;DB_CLOSE_DELAY=-1;CASE_INSENSITIVE_IDENTIFIERS=TRUE`, DATABASE_USERNAME: 'sa', DATABASE_PASSWORD: '', SERVER_PORT: '8082', AUTH_MODE: 'local' },
   stdio: ['ignore', 'pipe', 'pipe'],
 });
 backend.stdout.pipe(backendLog); backend.stderr.pipe(backendLog);

@@ -11,6 +11,9 @@ export interface ColumnWidthPreview {
 }
 
 export const MAX_EXCEL_ROW_HEIGHT_POINTS = 409;
+function invalidDimension(message: string): SdkError {
+  return new SdkError('INVALID_ARGUMENT', 'dimensions', message, '请提供当前工作表允许的有限行列尺寸。');
+}
 
 export class DimensionsDomain {
   private autoFitAbort: AbortController | null = null;
@@ -65,13 +68,13 @@ export class DimensionsDomain {
   previewPixels(widthPx: number): ColumnWidthPreview {
     this.assertActive();
     const maximumDigitWidthPx = this.getSheet().maximumDigitWidthPx;
-    if (!Number.isFinite(widthPx) || widthPx < 0) throw new Error('Column width must be a finite non-negative pixel value');
+    if (!Number.isFinite(widthPx) || widthPx < 0) throw invalidDimension('Column width must be a finite non-negative pixel value');
     const bounded = Math.max(0, widthPx);
     return { widthPx: Math.round(bounded), excelWidth: pixelsToExcelColumnWidth(bounded, maximumDigitWidthPx) };
   }
 
   setExcelWidth(columns: readonly number[], excelWidth: number): void {
-    if (!Number.isFinite(excelWidth) || excelWidth < 0 || excelWidth > MAX_EXCEL_COLUMN_WIDTH) throw new Error('Excel column width must be between 0 and 255');
+    if (!Number.isFinite(excelWidth) || excelWidth < 0 || excelWidth > MAX_EXCEL_COLUMN_WIDTH) throw invalidDimension('Excel column width must be between 0 and 255');
     if (excelWidth === 0) {
       this.setHidden(columns, true);
       return;
@@ -82,7 +85,7 @@ export class DimensionsDomain {
   }
 
   setPixels(columns: readonly number[], widthPx: number): void {
-    if (!Number.isFinite(widthPx) || widthPx <= 0) throw new Error('Column width must be positive pixels');
+    if (!Number.isFinite(widthPx) || widthPx <= 0) throw invalidDimension('Column width must be positive pixels');
     const sheet = this.getSheet();
     this.apply(sheet, { columns: this.validateIndices(columns, sheet.columnCount).map(column => ({ column, widthPx: Math.max(1, Math.round(widthPx)) })) });
   }
@@ -93,7 +96,7 @@ export class DimensionsDomain {
   }
 
   setRowHeightPoints(rows: readonly number[], points: number): void {
-    if (!Number.isFinite(points) || points < 0 || points > MAX_EXCEL_ROW_HEIGHT_POINTS) throw new Error(`Row height must be between 0 and ${MAX_EXCEL_ROW_HEIGHT_POINTS} points`);
+    if (!Number.isFinite(points) || points < 0 || points > MAX_EXCEL_ROW_HEIGHT_POINTS) throw invalidDimension(`Row height must be between 0 and ${MAX_EXCEL_ROW_HEIGHT_POINTS} points`);
     if (points === 0) {
       this.setRowsHidden(rows, true);
       return;
@@ -102,7 +105,7 @@ export class DimensionsDomain {
   }
 
   setRowPixels(rows: readonly number[], heightPx: number): void {
-    if (!Number.isFinite(heightPx) || heightPx < 0) throw new Error('Row height must be non-negative pixels');
+    if (!Number.isFinite(heightPx) || heightPx < 0) throw invalidDimension('Row height must be non-negative pixels');
     if (heightPx === 0) {
       this.setRowsHidden(rows, true);
       return;
@@ -117,7 +120,7 @@ export class DimensionsDomain {
   }
 
   setDefaultExcelWidth(excelWidth: number): void {
-    if (!Number.isFinite(excelWidth) || excelWidth <= 0 || excelWidth > MAX_EXCEL_COLUMN_WIDTH) throw new Error('Default Excel column width must be between 0 and 255');
+    if (!Number.isFinite(excelWidth) || excelWidth <= 0 || excelWidth > MAX_EXCEL_COLUMN_WIDTH) throw invalidDimension('Default Excel column width must be between 0 and 255');
     this.assertActive();
     const sheet = this.getSheet();
     this.session.runCommand('sheet.column.defaultWidth.set', { sheetId: sheet.id, widthPx: excelColumnWidthToPixels(excelWidth, sheet.maximumDigitWidthPx) });

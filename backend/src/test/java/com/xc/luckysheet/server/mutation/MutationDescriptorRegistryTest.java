@@ -30,6 +30,31 @@ class MutationDescriptorRegistryTest {
     private final ObjectMapper mapper = new ObjectMapper();
 
     @Test
+    void dimensionOverrideRemovalRestoresExactPreimageAndRejectsMalformedValues() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        JsonNode original = mapper.readTree("""
+                {"sheets":[{"id":"sheet-1","rowCount":10,"columnCount":5,"rowHeightsPx":{},"columnWidthsPx":{}}]}
+                """);
+        for (String id : List.of("row.resize", "column.resize")) {
+            String coordinate = id.equals("row.resize") ? "row" : "column";
+            String valueKey = id.equals("row.resize") ? "heightPx" : "widthPx";
+            var params = mapper.createObjectNode().put("sheetId", "sheet-1").put(coordinate, 0).put(valueKey, 120);
+            JsonNode changed = registry.require(id, false).apply(original, new OperationMutation(id, "sheet-1", params));
+            var inverse = params.deepCopy().putNull(valueKey);
+            JsonNode restored = registry.require(id, false).apply(changed, new OperationMutation(id, "sheet-1", inverse));
+            assertEquals(original, restored);
+            assertEquals(0, original.path("sheets").get(0).path(id.equals("row.resize") ? "rowHeightsPx" : "columnWidthsPx").size());
+            for (JsonNode invalid : List.of(mapper.getNodeFactory().numberNode(0), mapper.getNodeFactory().numberNode(-1), mapper.getNodeFactory().textNode("120"))) {
+                var malformed = params.deepCopy(); malformed.set(valueKey, invalid);
+                assertThrows(ServiceException.class, () -> registry.require(id, false).apply(original, new OperationMutation(id, "sheet-1", malformed)));
+                assertEquals(restored, original);
+            }
+            var missing = params.deepCopy(); missing.remove(valueKey);
+            assertThrows(ServiceException.class, () -> registry.require(id, false).apply(original, new OperationMutation(id, "sheet-1", missing)));
+        }
+    }
+
+    @Test
     void generatedServerPlannerMutationsHaveCanonicalJavaReducers() {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
 

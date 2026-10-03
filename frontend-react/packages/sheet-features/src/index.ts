@@ -217,7 +217,8 @@ export interface DeleteRowParams {
 export interface ResizeRowParams {
   sheetId: string;
   row: number;
-  heightPx: number;
+  /** null removes the explicit override; the default remains owned by the worksheet. */
+  heightPx: number | null;
 }
 
 export interface InsertColumnParams {
@@ -235,7 +236,8 @@ export interface DeleteColumnParams {
 export interface ResizeColumnParams {
   sheetId: string;
   column: number;
-  widthPx: number;
+  /** null removes the explicit override; the default remains owned by the worksheet. */
+  widthPx: number | null;
 }
 
 export interface ColumnsVisibilityParams {
@@ -1008,6 +1010,10 @@ function assertCanonicalCheckboxCell(cell: CellData | undefined): void {
   if (cell?.editor?.kind !== 'checkbox') return;
   const normalized = normalizeCheckboxCellValue(cell, cell.editor);
   if (!Object.is(normalized, cell.value)) throw new Error('Checkbox cell value must match one configured canonical state');
+}
+
+function isDimensionOverride(value: unknown): value is number | null {
+  return value === null || (typeof value === 'number' && Number.isFinite(value) && value > 0);
 }
 
 export function registerSheetCommands(runtime: CommandRuntime): void {
@@ -2154,12 +2160,15 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
   runtime.registry.registerMutation<ResizeRowParams>({
     id: 'row.resize',
     handler: (item, context) => {
-      if (!isRecord(item.params) || typeof item.params.sheetId !== 'string' || !Number.isInteger(item.params.row) || typeof item.params.heightPx !== 'number' || item.params.heightPx <= 0) throw new Error('Invalid row.resize mutation payload');
+      if (!isRecord(item.params) || typeof item.params.sheetId !== 'string' || !Number.isSafeInteger(item.params.row) || Number(item.params.row) < 0 || !isDimensionOverride(item.params.heightPx)) throw new Error('Invalid row.resize mutation payload');
       const params = item.params as ResizeRowParams;
-      context.workbook.getSheet(params.sheetId).rowHeightsPx[params.row] = params.heightPx;
+      const sheet = context.workbook.getSheet(params.sheetId);
+      if (params.row >= sheet.rowCount) throw new Error('Row dimension is outside the worksheet');
+      if (params.heightPx === null) delete sheet.rowHeightsPx[params.row];
+      else sheet.rowHeightsPx[params.row] = params.heightPx;
     },
     metadata: {
-      schema: { name: 'ResizeRowPx', validate: (value: unknown) => isRecord(value) && typeof value.sheetId === 'string' && Number.isInteger(value.row) && typeof value.heightPx === 'number' && Number(value.row) >= 0 && Number(value.heightPx) > 0 },
+      schema: { name: 'ResizeRowPx', validate: (value: unknown) => isRecord(value) && typeof value.sheetId === 'string' && Number.isSafeInteger(value.row) && Number(value.row) >= 0 && isDimensionOverride(value.heightPx) },
       permission: { capability: 'sheet.dimension.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: rowAffectedRange, mode: 'declared' },
       inverseIds: ['row.resize'],
@@ -2168,12 +2177,15 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
   runtime.registry.registerMutation<ResizeColumnParams>({
     id: 'column.resize',
     handler: (item, context) => {
-      if (!isRecord(item.params) || typeof item.params.sheetId !== 'string' || !Number.isInteger(item.params.column) || typeof item.params.widthPx !== 'number' || item.params.widthPx <= 0) throw new Error('Invalid column.resize mutation payload');
+      if (!isRecord(item.params) || typeof item.params.sheetId !== 'string' || !Number.isSafeInteger(item.params.column) || Number(item.params.column) < 0 || !isDimensionOverride(item.params.widthPx)) throw new Error('Invalid column.resize mutation payload');
       const params = item.params as ResizeColumnParams;
-      context.workbook.getSheet(params.sheetId).columnWidthsPx[params.column] = params.widthPx;
+      const sheet = context.workbook.getSheet(params.sheetId);
+      if (params.column >= sheet.columnCount) throw new Error('Column dimension is outside the worksheet');
+      if (params.widthPx === null) delete sheet.columnWidthsPx[params.column];
+      else sheet.columnWidthsPx[params.column] = params.widthPx;
     },
     metadata: {
-      schema: { name: 'ResizeColumnPx', validate: (value: unknown) => isRecord(value) && typeof value.sheetId === 'string' && Number.isInteger(value.column) && typeof value.widthPx === 'number' && Number(value.column) >= 0 && Number(value.widthPx) > 0 },
+      schema: { name: 'ResizeColumnPx', validate: (value: unknown) => isRecord(value) && typeof value.sheetId === 'string' && Number.isSafeInteger(value.column) && Number(value.column) >= 0 && isDimensionOverride(value.widthPx) },
       permission: { capability: 'sheet.dimension.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: columnAffectedRange, mode: 'declared' },
       inverseIds: ['column.resize'],
@@ -2193,7 +2205,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
     },
   });
 
-  runtime.registry.registerCommand<{ sheetId: string; rows?: Array<Omit<ResizeRowParams, 'sheetId'> & { hidden?: boolean }>; columns?: Array<Omit<ResizeColumnParams, 'sheetId'> & { hidden?: boolean }> }>({
+  runtime.registry.registerCommand<{ sheetId: string; rows?: Array<Omit<ResizeRowParams, 'sheetId'> & { heightPx: number; hidden?: boolean }>; columns?: Array<Omit<ResizeColumnParams, 'sheetId'> & { widthPx: number; hidden?: boolean }> }>({
     id: 'sheet.dimensions.apply',
     execute: (params, context) => {
       const sheet = context.workbook.getSheet(params.sheetId);
@@ -2209,7 +2221,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
         if (!Number.isSafeInteger(row.row) || row.row < 0 || !Number.isFinite(row.heightPx) || row.heightPx <= 0) throw new Error('Invalid row pixel size');
         const mutationParams: ResizeRowParams = { sheetId: params.sheetId, row: row.row, heightPx: row.heightPx };
         if (row.hidden !== undefined) runtime.execute('sheet.rows.visibility.set', { sheetId: params.sheetId, rows: [row.row], hidden: row.hidden });
-        const previousHeightPx = sheet.rowHeightsPx[row.row] ?? sheet.defaultRowHeightPx;
+        const previousHeightPx = sheet.rowHeightsPx[row.row] ?? null;
         context.applyMutation({
           id: 'row.resize', unitId: context.workbook.unitId, sheetId: params.sheetId, params: mutationParams, affectedRanges,
           inverse: [{ id: 'row.resize', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, row: row.row, heightPx: previousHeightPx }, affectedRanges }],
@@ -2221,7 +2233,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
         if (!Number.isSafeInteger(column.column) || column.column < 0 || !Number.isFinite(column.widthPx) || column.widthPx <= 0) throw new Error('Invalid column pixel size');
         const mutationParams: ResizeColumnParams = { sheetId: params.sheetId, column: column.column, widthPx: column.widthPx };
         if (column.hidden !== undefined) runtime.execute('sheet.columns.visibility.set', { sheetId: params.sheetId, columns: [column.column], hidden: column.hidden });
-        const previousWidthPx = sheet.columnWidthsPx[column.column] ?? sheet.defaultColumnWidthPx;
+        const previousWidthPx = sheet.columnWidthsPx[column.column] ?? null;
         context.applyMutation({
             id: 'column.resize',
             unitId: context.workbook.unitId,

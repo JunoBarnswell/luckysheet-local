@@ -11,6 +11,7 @@ test.describe('SDK product UAT against Java authority', () => {
   const password = 'Uat-Private-Password-2026';
   const users = new Map<string, string>();
   const userPasswords = new Map<string, string>();
+  const roleStates = new Map<string, Awaited<ReturnType<BrowserContext['storageState']>>>();
   let adminState: Awaited<ReturnType<BrowserContext['storageState']>>;
   let unitId = '';
   let name = `SDK UAT ${runId}`;
@@ -219,6 +220,14 @@ test.describe('SDK product UAT against Java authority', () => {
         if (role === 'editor') await expect(menu(page).getByRole('button', { name: label, exact: true })).toBeVisible();
         else await expect(menu(page).getByRole('button', { name: label, exact: true })).toHaveCount(0);
       }
+      const sessionResponse = await context.request.get('/api/auth/session');
+      const csrf = (await sessionResponse.json()).csrfToken;
+      for (const suffix of ['', '/purge']) {
+        const denied = await context.request.delete(`/api/workbooks/${unitId}${suffix}`, { headers: { 'X-CSRF-TOKEN': csrf } });
+        expect(denied.status()).toBe(403);
+        expect((await denied.json()).code).toBe('FORBIDDEN');
+      }
+      roleStates.set(role, await context.storageState());
       await screenshot(page, `role-${role}`);
       await page.keyboard.press('Escape');
       await page.goto('/admin/users');
@@ -229,7 +238,7 @@ test.describe('SDK product UAT against Java authority', () => {
     });
   }
 
-  test('HUB-03: owner trash, restore and purge retain lifecycle restrictions', async ({ page, context }) => {
+  test('HUB-03: owner trash, restore and purge retain lifecycle restrictions', async ({ page, context, browser }) => {
     const diagnostics = installBrowserDiagnostics(page);
     await ownerPage(context, page);
     await openMenu(page);
@@ -241,6 +250,15 @@ test.describe('SDK product UAT against Java authority', () => {
     await expect(page.getByRole('button', { name: '恢复', exact: true })).toBeVisible();
     await expect(page.getByRole('button', { name: '永久删除', exact: true })).toBeVisible();
     await expect(menu(page).getByRole('button', { name: '共享', exact: true })).toHaveCount(0);
+    for (const role of ['editor', 'commenter', 'viewer']) {
+      const nonOwner = await browser.newContext({ baseURL: 'http://127.0.0.1:4180', storageState: roleStates.get(role)! });
+      const sessionResponse = await nonOwner.request.get('/api/auth/session');
+      const csrf = (await sessionResponse.json()).csrfToken;
+      const denied = await nonOwner.request.delete(`/api/workbooks/${unitId}/purge`, { headers: { 'X-CSRF-TOKEN': csrf } });
+      expect(denied.status()).toBe(403);
+      expect((await denied.json()).code).toBe('FORBIDDEN');
+      await nonOwner.close();
+    }
     await page.getByRole('button', { name: '恢复', exact: true }).click();
     await expect(page.getByRole('button', { name: `打开 ${name} 的更多操作`, exact: true })).toHaveCount(0);
     await page.getByRole('button', { name: '最近', exact: true }).click();
