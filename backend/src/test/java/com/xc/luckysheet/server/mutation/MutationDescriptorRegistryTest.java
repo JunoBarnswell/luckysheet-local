@@ -55,6 +55,27 @@ class MutationDescriptorRegistryTest {
     }
 
     @Test
+    void outlineRemovalRestoresAbsentStateAndRejectsMalformedPayload() throws Exception {
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        JsonNode original = mapper.readTree("""
+                {"sheets":[{"id":"sheet-1","rowCount":10,"columnCount":5}]}
+                """);
+        var params = (ObjectNode) mapper.readTree("""
+                {"sheetId":"sheet-1","outline":{"groups":[{"id":"group-1","axis":"row","start":1,"end":3,"level":1,"collapsed":false}]}}
+                """);
+        JsonNode changed = registry.require("outline.set", false).apply(original, new OperationMutation("outline.set", "sheet-1", params));
+        var inverse = params.deepCopy().putNull("outline");
+        JsonNode restored = registry.require("outline.set", false).apply(changed, new OperationMutation("outline.set", "sheet-1", inverse));
+        assertEquals(original, restored);
+        assertFalse(original.path("sheets").get(0).has("outline"));
+        for (String invalid : List.of("{}", "{\"outline\":false}", "{\"outline\":{\"groups\":false}}")) {
+            var malformed = (ObjectNode) mapper.readTree(invalid);
+            malformed.put("sheetId", "sheet-1");
+            assertThrows(ServiceException.class, () -> registry.require("outline.set", false).apply(original, new OperationMutation("outline.set", "sheet-1", malformed)));
+        }
+    }
+
+    @Test
     void generatedServerPlannerMutationsHaveCanonicalJavaReducers() {
         MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
 

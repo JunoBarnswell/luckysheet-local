@@ -481,15 +481,15 @@ export interface RibbonCommandActions {
   onCreateDataTable?: () => void;
   onCreateDataSource: () => void;
   onToggleSheetTableTotalRow: () => CommandDescriptor | undefined;
-  onApplyFilterSelection: () => CommandDescriptor | undefined;
-  onClearFilter: () => CommandDescriptor | undefined;
+  onApplyFilterSelection: () => void;
+  onClearFilter: () => void;
   onGroupRows: () => CommandDescriptor | undefined;
   onUngroupRows: () => CommandDescriptor | undefined;
   onGroupColumns: () => CommandDescriptor | undefined;
   onUngroupColumns: () => CommandDescriptor | undefined;
-  onSubtotal: () => CommandDescriptor | undefined;
-  onRemoveDuplicates: () => CommandDescriptor | undefined;
-  onTextToColumns: () => CommandDescriptor | undefined;
+  onSubtotal: () => void;
+  onRemoveDuplicates: () => void;
+  onTextToColumns: () => void;
   onResolveComment: () => void;
   onProtectSelection: () => void;
   onUnprotectSelection: () => void;
@@ -513,8 +513,8 @@ export interface RibbonCommandContext {
   disabled: boolean;
   cellStyle: RibbonCellStyleContext;
   canExecute?: (commandId: string, params?: unknown) => boolean;
-  /** Host-owned builder; it must resolve the active selection/current region. */
-  buildSortDescriptor?: (ascending: boolean) => CommandDescriptor | undefined;
+  /** Named SDK data action; the host never constructs its command. */
+  onSort?: (ascending: boolean) => void;
   /** Host-owned Create PivotTable dialog entry point. */
   openCreatePivotDialog?: () => void;
   activePivot?: { sheetId: string; pivotId: string };
@@ -2014,12 +2014,12 @@ export const RIBBON_COMMAND_CATALOG: readonly CommandDefinition[] = [
   intent('shapesLines', 'insert', 'illustrations', RIBBON_TEXT.commands.shapesLines, () => ({ type: 'panel.open', panel: 'shape' }), 'shape-square'),
 
   {
-    ...dynamicCommand('sortAscending', 'data', 'sortFilter', RIBBON_TEXT.commands.sortAscending, (context) => context.buildSortDescriptor?.(true), 'sort'),
-    enabled: (context) => Boolean(context.buildSortDescriptor),
+    ...callback('sortAscending', 'data', 'sortFilter', RIBBON_TEXT.commands.sortAscending, (context) => context.onSort?.(true), 'sort'),
+    enabled: (context) => Boolean(context.onSort),
   },
   {
-    ...dynamicCommand('sortDescending', 'data', 'sortFilter', RIBBON_TEXT.commands.sortDescending, (context) => context.buildSortDescriptor?.(false), 'sort'),
-    enabled: (context) => Boolean(context.buildSortDescriptor),
+    ...callback('sortDescending', 'data', 'sortFilter', RIBBON_TEXT.commands.sortDescending, (context) => context.onSort?.(false), 'sort'),
+    enabled: (context) => Boolean(context.onSort),
   },
   intent('customSort', 'data', 'sortFilter', RIBBON_TEXT.commands.customSort, () => ({ type: 'dialog.open', dialog: 'sort-dialog' }), 'sliders'),
   intent('dataSource', 'data', 'dataTools', RIBBON_TEXT.commands.dataSource, () => ({ type: 'panel.open', panel: 'data' }), 'table'),
@@ -2030,10 +2030,10 @@ export const RIBBON_COMMAND_CATALOG: readonly CommandDefinition[] = [
     placements: [{ tab: 'data', group: 'dataTools' }, { tab: 'home', group: 'styles' }],
   },
   {
-    ...dynamicCommand('filterSelection', 'data', 'dataTools', RIBBON_TEXT.commands.filterSelection, (context) => context.actions.onApplyFilterSelection(), 'filter'),
+    ...callback('filterSelection', 'data', 'dataTools', RIBBON_TEXT.commands.filterSelection, (context) => context.actions.onApplyFilterSelection(), 'filter'),
     placements: [{ tab: 'data', group: 'dataTools' }, { tab: 'home', group: 'editing' }],
   },
-  dynamicCommand('clearFilter', 'data', 'dataTools', RIBBON_TEXT.commands.clearFilter, (context) => context.actions.onClearFilter(), 'x'),
+  callback('clearFilter', 'data', 'dataTools', RIBBON_TEXT.commands.clearFilter, (context) => context.actions.onClearFilter(), 'x'),
   dynamicCommand('groupRows', 'data', 'outline', RIBBON_TEXT.commands.groupRows, (context) => context.actions.onGroupRows()),
   dynamicCommand('ungroupRows', 'data', 'outline', RIBBON_TEXT.commands.ungroupRows, (context) => context.actions.onUngroupRows()),
   dynamicCommand('groupColumns', 'data', 'outline', RIBBON_TEXT.commands.groupColumns, (context) => context.actions.onGroupColumns()),
@@ -2041,9 +2041,9 @@ export const RIBBON_COMMAND_CATALOG: readonly CommandDefinition[] = [
   callback('showLevel1', 'data', 'outline', RIBBON_TEXT.commands.showLevel1, (context) => context.actions.onShowOutlineLevel(1)),
   callback('showLevel2', 'data', 'outline', RIBBON_TEXT.commands.showLevel2, (context) => context.actions.onShowOutlineLevel(2)),
   callback('showLevel3', 'data', 'outline', RIBBON_TEXT.commands.showLevel3, (context) => context.actions.onShowOutlineLevel(3)),
-  dynamicCommand('subtotal', 'data', 'outline', RIBBON_TEXT.commands.subtotal, (context) => context.actions.onSubtotal()),
-  dynamicCommand('removeDuplicates', 'data', 'outline', RIBBON_TEXT.commands.removeDuplicates, (context) => context.actions.onRemoveDuplicates()),
-  dynamicCommand('textToColumns', 'data', 'outline', RIBBON_TEXT.commands.textToColumns, (context) => context.actions.onTextToColumns()),
+  callback('subtotal', 'data', 'outline', RIBBON_TEXT.commands.subtotal, (context) => context.actions.onSubtotal()),
+  callback('removeDuplicates', 'data', 'outline', RIBBON_TEXT.commands.removeDuplicates, (context) => context.actions.onRemoveDuplicates()),
+  callback('textToColumns', 'data', 'outline', RIBBON_TEXT.commands.textToColumns, (context) => context.actions.onTextToColumns()),
   {
     ...intent('findReplace', 'data', 'findTransform', RIBBON_TEXT.commands.findReplace, () => ({ type: 'dialog.open', dialog: 'find-replace', findMode: 'replace' }), 'search'),
     placements: [{ tab: 'data', group: 'findTransform' }, { tab: 'home', group: 'editing' }],

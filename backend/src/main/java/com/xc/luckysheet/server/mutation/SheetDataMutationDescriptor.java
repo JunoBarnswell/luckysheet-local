@@ -417,6 +417,10 @@ final class SheetDataMutationDescriptor extends CanonicalJsonMutationDescriptor 
     }
 
     private void setOutline(ObjectNode root, ObjectNode sheet, String sheetId, ObjectNode params) {
+        if (params.has("outline") && params.get("outline").isNull()) {
+            sheet.remove("outline");
+            return;
+        }
         ObjectNode outline = SnapshotMutationSupport.requiredObject(params, "outline");
         ArrayNode groups = SnapshotMutationSupport.requiredArray(outline, "groups");
         for (JsonNode group : groups) validateOutlineGroup(root, sheetId, group);

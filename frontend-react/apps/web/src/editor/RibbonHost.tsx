@@ -25,14 +25,9 @@ export interface RibbonHostProps {
   onOpenRowHeightDialog: (rows: number[]) => void;
   commands: Pick<
     EditorCommandController,
-    | "buildSortDescriptor"
     | "buildTotalRowCommand"
-    | "buildFilterSelectionCommand"
-    | "buildClearFilterCommand"
     | "buildOutlineCommand"
-    | "buildSubtotalCommand"
-    | "buildRemoveDuplicatesCommand"
-    | "buildTextToColumnsCommand"
+    | "data"
     | "pivotRibbonActions"
   >;
 }
@@ -141,7 +136,7 @@ export function RibbonHost({
       onHideRows={() => columnDimensions.setRowsHidden(selectedRows, true)}
       onUnhideRows={() => columnDimensions.setRowsHidden(selectedRows, false)}
       onCreatePivotDialog={() => dispatchSessionIntent({ type: "dialog.open", dialog: "create-pivot" })}
-      buildSortDescriptor={commands.buildSortDescriptor}
+      onSort={(ascending) => { void commands.data.quickSort(ascending); }}
       onCreateSheetTable={() => session.openCreateTableDialog()}
       onOpenTableSettings={() => session.openTableSettings()}
       onToggleTableOption={(option) => session.toggleActiveSheetTableOption(option)}
@@ -149,15 +144,15 @@ export function RibbonHost({
       onCreateDataTable={() => session.createDataTable()}
       onCreateDataSource={() => { void session.createDataSourceFromSelection(); }}
       onToggleSheetTableTotalRow={commands.buildTotalRowCommand}
-      onApplyFilterSelection={commands.buildFilterSelectionCommand}
-      onClearFilter={commands.buildClearFilterCommand}
+      onApplyFilterSelection={() => { void commands.data.toggleFilter(); }}
+      onClearFilter={() => { void commands.data.clearFilter(); }}
       onGroupRows={() => commands.buildOutlineCommand("row", "add")}
       onUngroupRows={() => commands.buildOutlineCommand("row", "remove")}
       onGroupColumns={() => commands.buildOutlineCommand("column", "add")}
       onUngroupColumns={() => commands.buildOutlineCommand("column", "remove")}
-      onSubtotal={commands.buildSubtotalCommand}
-      onRemoveDuplicates={commands.buildRemoveDuplicatesCommand}
-      onTextToColumns={commands.buildTextToColumnsCommand}
+      onSubtotal={() => { void commands.data.subtotal(); }}
+      onRemoveDuplicates={() => { void commands.data.removeDuplicates(); }}
+      onTextToColumns={() => { void commands.data.textToColumns(); }}
       onResolveComment={() => session.resolveComment()}
       onProtectSelection={() => session.protectSelection()}
       onUnprotectSelection={() => session.unprotectSelection()}

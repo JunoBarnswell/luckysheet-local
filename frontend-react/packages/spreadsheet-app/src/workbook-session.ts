@@ -386,7 +386,7 @@ export interface WorkbookSessionOptions {
   pivotExecution?: 'worker' | 'inline-test';
 }
 
-export type DispatchErrorCode = 'WORKBOOK_NOT_READY' | 'COMMAND_REJECTED' | 'MATERIALIZATION_FAILED';
+export type DispatchErrorCode = 'WORKBOOK_NOT_READY' | 'COMMAND_REJECTED' | 'MATERIALIZATION_FAILED' | 'PERMISSION_DENIED';
 
 export class CommandDispatchError extends Error {
   constructor(
@@ -2420,7 +2420,7 @@ export class WorkbookSession {
     this.permission.syncFromWorkbook(this.runtime.model);
     const result = this.permission.checkCommand(commandId, params, this.actorId, this.activeSheetId);
     if (!result.allowed) {
-      throw new Error(result.reason ?? 'Permission denied');
+      throw new CommandDispatchError('PERMISSION_DENIED', result.reason ?? 'Permission denied');
     }
   }
 
@@ -6233,47 +6233,7 @@ export class WorkbookSession {
     this.dispatch({ commandId: 'sheet.autoFilter.sort', params: { sheetId: this.activeSheetId, column, ascending, dataRegionContext } });
   }
 
-  applyFilterSelection(): void {
-    const sheet = this.runtime.model.getSheet(this.activeSheetId);
-    const activeFilter = resolveActiveAutoFilter(sheet);
-    const owner = resolveFilterOwner(sheet);
-    if (activeFilter && owner) {
-      if (owner.kind === 'table') {
-        const table = sheet.sheetTables.find((entry) => entry.id === owner.tableId);
-        if (table) this.dispatch({ commandId: 'sheetTable.update', params: { ...structuredClone(table), showFilterButton: false, autoFilter: undefined } });
-      }
-      else this.dispatch({ commandId: 'sheet.autoFilter.toggle', params: { sheetId: this.activeSheetId, range: this.getCurrentRegion(), dataRegionContext: this.getDataRegionContext() } });
-      return;
-    }
-    const range = this.getCurrentRegion();
-    if (range.endRow <= range.startRow) {
-      this.notify('Select a data region with a header row before enabling Filter');
-      return;
-    }
-    this.dispatch({ commandId: 'sheet.autoFilter.toggle', params: {
-      sheetId: this.activeSheetId,
-      range,
-      dataRegionContext: this.getDataRegionContext(),
-    } });
-  }
 
-  clearFilter(): void {
-    const sheet = this.runtime.model.getSheet(this.activeSheetId);
-    const autoFilter = resolveActiveAutoFilter(sheet);
-    const owner = resolveFilterOwner(sheet);
-    if (!autoFilter || !owner) {
-      this.notify('No filter is active in the current region');
-      return;
-    }
-    if (!Object.values(autoFilter.columns).some((column) => Boolean(column.criterion))) {
-      this.notify('No filter criteria are active in the current region');
-      return;
-    }
-    const columns = Object.fromEntries(Object.entries(autoFilter.columns).map(([key, value]) => [key, { ...value, criterion: undefined }]));
-    const dataRegionContext = { ...this.getDataRegionContext(), range: structuredClone(autoFilter.range), currentRegion: structuredClone(autoFilter.range) };
-    if (owner.kind === 'table') this.dispatch({ commandId: 'sheetTable.autoFilter.set', params: { sheetId: this.activeSheetId, tableId: owner.tableId, autoFilter: { ...autoFilter, columns }, dataRegionContext } });
-    else this.dispatch({ commandId: 'sheet.autoFilter.clearCriteria', params: { sheetId: this.activeSheetId, range: autoFilter.range, dataRegionContext } });
-  }
 
   closeFilter(): void {
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
@@ -7961,62 +7921,8 @@ export class WorkbookSession {
     this.refresh();
   }
 
-  async textToColumnsFromSelection(delimiter = ','): Promise<void> {
-    const range = normalizeRangeRef(this.getPrimaryRange());
-    const selection = this.selectionService.getState();
-    const sheet = this.runtime.model.getSheet(this.activeSheetId);
-    const column = selection.activeCell.column;
-    const targetRange: RangeRef = {
-      sheetId: this.activeSheetId,
-      startRow: range.startRow,
-      endRow: range.endRow,
-      startColumn: column,
-      endColumn: column,
-    };
-    await this.executeCommandAfterMaterialization('data.textToColumns', {
-      sheetId: this.activeSheetId,
-      range: targetRange,
-      delimiter,
-      maxColumns: Math.min(8, Math.max(2, sheet.columnCount - column)),
-    });
-    this.notify('Text split into columns');
-    this.refresh();
-  }
 
-  async applyDataSubtotal(): Promise<void> {
-    const range = normalizeRangeRef(this.getPrimaryRange());
-    if (range.endRow <= range.startRow || range.endColumn <= range.startColumn) {
-      this.notify('Select a data range with at least two columns');
-      return;
-    }
-    await this.executeCommandAfterMaterialization('data.subtotal', {
-      sheetId: this.activeSheetId,
-      range,
-      groupColumn: range.startColumn,
-      valueColumn: range.startColumn + 1,
-      functionName: 'SUM',
-    });
-    this.notify('Subtotal summary created below selection');
-    this.refresh();
-  }
 
-  async removeDuplicatesFromSelection(): Promise<void> {
-    const range = normalizeRangeRef(this.getPrimaryRange());
-    if (range.endRow <= range.startRow) {
-      this.notify('Select a multi-row range before removing duplicates');
-      return;
-    }
-    const columns: number[] = [];
-    for (let column = range.startColumn; column <= range.endColumn; column++) columns.push(column);
-    await this.executeCommandAfterMaterialization('data.removeDuplicates', {
-      sheetId: this.activeSheetId,
-      range,
-      columns,
-      hasHeader: true,
-    });
-    this.notify('Duplicate rows removed');
-    this.refresh();
-  }
 
   createDataTable(): void {
     const table = this.buildSelectionWorkbookTable('table');

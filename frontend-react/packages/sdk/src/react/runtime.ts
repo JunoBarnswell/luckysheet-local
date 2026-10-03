@@ -26,5 +26,5 @@ export function useWorkbook(sdk: SpreadsheetSdk, resolution: WorkbookResolution)
     return () => { disposeTimer.current = setTimeout(() => { disposeTimer.current = null; runtime.closeSession(session); }, 0); };
   }, [runtime, session]);
   const snapshot = useSyncExternalStore(session.subscribe, session.getUiSnapshot, session.getUiSnapshot);
-  return { session, snapshot, dimensions: runtime.dimensionActions(session) };
+  return { session, snapshot, data: runtime.dataActions(session), dimensions: runtime.dimensionActions(session) };
 }

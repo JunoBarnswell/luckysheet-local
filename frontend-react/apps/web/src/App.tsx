@@ -50,7 +50,7 @@ function EditorRoute({ resolution, onOpenHub }: { resolution: WorkbookResolution
   const unitId = resolution.unitId;
   const auth = useAuthSession();
   const { catalog } = useApplicationServices();
-  const { session, dimensions, snapshot: state } = useWorkbook(sdk, resolution);
+  const { session, dimensions, data, snapshot: state } = useWorkbook(sdk, resolution);
   const [locale, setLocaleState] = useState<Locale>(() => getInitialLocale());
   const [saveAsOpen, setSaveAsOpen] = useState(false);
   const [saveAsBusy, setSaveAsBusy] = useState(false);
@@ -72,7 +72,7 @@ function EditorRoute({ resolution, onOpenHub }: { resolution: WorkbookResolution
     session.dispatchUiSessionIntent(intent);
   };
 
-  const controller = useEditorCommandController({ session, state, locale, dispatchCommand, dispatchSessionIntent });
+  const controller = useEditorCommandController({ session, state, data, locale, dispatchCommand, dispatchSessionIntent });
   const copyWorkbookLink = () => { void session.createGuestShareLink("editor"); };
   const saveWorkbook = () => { void session.saveWorkbook("Manual save").catch(cause => session.notify(cause instanceof Error ? cause.message : "保存失败")); };
   const exportDocument = async () => {

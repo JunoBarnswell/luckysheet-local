@@ -20,7 +20,7 @@ function selectRange(
 }
 
 describe('WorkbookSession data tools integration', () => {
-  it('textToColumnsFromSelection splits delimited text into columns', () => {
+  it('data dispatch splits delimited text into columns', async () => {
     const app = new WorkbookSession();
     const sheetId = app.getActiveSheetId();
     app.runCommand('sheet.cell.set', {
@@ -36,7 +36,9 @@ describe('WorkbookSession data tools integration', () => {
       value: { value: '1,2,3' },
     });
     selectRange(app, 0, 0, 1, 0);
-    app.textToColumnsFromSelection(',');
+    const range = app.getPrimaryRange();
+    const outcome = await app.dispatch({ commandId: 'data.textToColumns', params: { sheetId, range, delimiter: ',', maxColumns: 8 } });
+    assert.equal(outcome.status, 'committed');
 
     const sheet = app['runtime'].model.getSheet(sheetId);
     assert.equal(sheet.cells.get(0, 0)?.value, 'a');
@@ -241,7 +243,7 @@ describe('WorkbookSession data tools integration', () => {
     assert.deepEqual(materializedRegionIds, ['canonical-range-region']);
   });
 
-  it('removeDuplicatesFromSelection keeps unique rows', () => {
+  it('data dispatch keeps unique rows', async () => {
     const app = new WorkbookSession();
     const sheetId = app.getActiveSheetId();
     app.runCommand('sheet.range.set', {
@@ -256,7 +258,9 @@ describe('WorkbookSession data tools integration', () => {
       ],
     });
     selectRange(app, 0, 0, 3, 1);
-    app.removeDuplicatesFromSelection();
+    const range = app.getPrimaryRange();
+    const outcome = await app.dispatch({ commandId: 'data.removeDuplicates', params: { sheetId, range, columns: [0, 1], hasHeader: true } });
+    assert.equal(outcome.status, 'committed');
 
     const sheet = app['runtime'].model.getSheet(sheetId);
     assert.equal(sheet.cells.get(0, 0)?.value, 'Key');
@@ -300,7 +304,7 @@ describe('WorkbookSession data tools integration', () => {
     assert.equal(sheet.cells.get(1, 1)?.value, 2);
   });
 
-  it('applyDataSubtotal writes grouped summary rows', () => {
+  it('data dispatch writes grouped summary rows', async () => {
     const app = new WorkbookSession();
     const sheetId = app.getActiveSheetId();
     app.runCommand('sheet.range.set', {
@@ -315,7 +319,9 @@ describe('WorkbookSession data tools integration', () => {
       ],
     });
     selectRange(app, 0, 0, 3, 1);
-    app.applyDataSubtotal();
+    const range = app.getPrimaryRange();
+    const outcome = await app.dispatch({ commandId: 'data.subtotal', params: { sheetId, range, groupColumn: 0, valueColumn: 1, functionName: 'SUM' } });
+    assert.equal(outcome.status, 'committed');
 
     const sheet = app['runtime'].model.getSheet(sheetId);
     assert.equal(sheet.cells.get(5, 0)?.value, 'Group');

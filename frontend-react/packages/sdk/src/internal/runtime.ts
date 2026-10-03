@@ -3,6 +3,7 @@ import { RemoteAssetStore, WorkspacePersistence, WorkspaceStorageError, isWorksp
   type WorkbookResolution, type WorkspacePersistenceState } from '@react-sheets/spreadsheet-app';
 import type { AuthDomain } from '../auth/domain';
 import { WorkbooksDomain } from '../workbooks/domain';
+import { DataDomain } from '../data/domain';
 import { DimensionsDomain } from '../dimensions/domain';
 import { SdkError } from '../error';
 
@@ -21,6 +22,7 @@ export class ApplicationRuntime {
   private snapshot: StorageReadiness = Object.freeze({ state: 'warming', error: null });
   private readonly listeners = new Set<() => void>();
   private readonly sessions = new Set<WorkbookSession>();
+  private readonly data = new Map<WorkbookSession, DataDomain>();
   private readonly dimensions = new Map<WorkbookSession, DimensionsDomain>();
   private readiness: Promise<void> | null = null;
   private disposed = false;
@@ -87,6 +89,8 @@ export class ApplicationRuntime {
   }
   private resetWorkspace(): void {
     if (this.disposed) return;
+    for (const domain of this.data.values()) domain.dispose();
+    this.data.clear();
     for (const domain of this.dimensions.values()) domain.dispose();
     this.dimensions.clear();
     for (const session of this.sessions) session.dispose();
@@ -110,21 +114,29 @@ export class ApplicationRuntime {
       onReady: () => this.catalog.markOpened(resolution).then(() => undefined),
     });
     this.sessions.add(session);
+    this.data.set(session, new DataDomain(session));
     this.dimensions.set(session, new DimensionsDomain(session, () => session.getSelectedSheet()));
     return session;
+  }
+  dataActions(session: WorkbookSession) {
+    const domain = this.data.get(session);
+    if (!domain) throw new SdkError('RUNTIME_DISPOSED', 'data', '数据会话不可用。', '请重新打开工作簿。');
+    return domain.actions;
   }
   dimensionActions(session: WorkbookSession) {
     const domain = this.dimensions.get(session);
     if (!domain) throw new SdkError('RUNTIME_DISPOSED', 'dimensions', '行列尺寸会话不可用。', '请重新打开工作簿。');
     return domain.actions;
   }
-  closeSession(session: WorkbookSession): void { this.dimensions.get(session)?.dispose(); this.dimensions.delete(session); session.dispose(); this.sessions.delete(session); }
+  closeSession(session: WorkbookSession): void { this.data.get(session)?.dispose(); this.data.delete(session); this.dimensions.get(session)?.dispose(); this.dimensions.delete(session); session.dispose(); this.sessions.delete(session); }
   async dispose(): Promise<void> {
     if (this.disposed) return;
     this.disposed = true;
     this.unsubscribeAuth();
     this.catalogDomain.retire();
     if (this.releaseTimer) clearTimeout(this.releaseTimer);
+    for (const domain of this.data.values()) domain.dispose();
+    this.data.clear();
     for (const domain of this.dimensions.values()) domain.dispose();
     this.dimensions.clear();
     for (const session of this.sessions) session.dispose();

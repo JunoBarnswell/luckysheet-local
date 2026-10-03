@@ -89,7 +89,7 @@ export interface RibbonProps {
   /** Host-owned Create PivotTable dialog entry point. */
   onCreatePivotDialog?: () => void;
   /** Host-owned selection-aware sort builder. */
-  buildSortDescriptor?: (ascending: boolean) => CommandDescriptor | undefined;
+  onSort?: (ascending: boolean) => void;
   onCreateSheetTable: () => void;
   onOpenTableSettings: () => void;
   onToggleTableOption: (option: 'hasHeaderRow' | 'showFirstColumn' | 'showLastColumn' | 'showBandedRows' | 'showBandedColumns' | 'showFilterButton') => void;
@@ -97,15 +97,15 @@ export interface RibbonProps {
   onCreateDataTable?: () => void;
   onCreateDataSource: () => void;
   onToggleSheetTableTotalRow: () => CommandDescriptor | undefined;
-  onApplyFilterSelection: () => CommandDescriptor | undefined;
-  onClearFilter: () => CommandDescriptor | undefined;
+  onApplyFilterSelection: () => void;
+  onClearFilter: () => void;
   onGroupRows: () => CommandDescriptor | undefined;
   onUngroupRows: () => CommandDescriptor | undefined;
   onGroupColumns: () => CommandDescriptor | undefined;
   onUngroupColumns: () => CommandDescriptor | undefined;
-  onSubtotal: () => CommandDescriptor | undefined;
-  onRemoveDuplicates: () => CommandDescriptor | undefined;
-  onTextToColumns: () => CommandDescriptor | undefined;
+  onSubtotal: () => void;
+  onRemoveDuplicates: () => void;
+  onTextToColumns: () => void;
   onResolveComment: () => void;
   onProtectSelection: () => void;
   onUnprotectSelection: () => void;
@@ -277,7 +277,7 @@ export function Ribbon({
   onHideRows,
   onUnhideRows,
   onCreatePivotDialog,
-  buildSortDescriptor,
+  onSort,
   onCreateSheetTable,
   onOpenTableSettings,
   onToggleTableOption,
@@ -457,7 +457,7 @@ export function Ribbon({
     disabled,
     cellStyle,
     canExecute,
-    buildSortDescriptor,
+    onSort,
     openCreatePivotDialog: onCreatePivotDialog,
     activePivot,
     pivotActions,

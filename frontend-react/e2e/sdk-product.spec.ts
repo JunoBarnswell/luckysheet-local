@@ -176,6 +176,68 @@ test.describe('SDK product UAT against Java authority', () => {
     diagnostics.assertClean();
   });
 
+  test('DATA-01 DATA-02: SDK sort, filter, subtotal and split persist and undo through Java authority', async ({ page, context }) => {
+    const diagnostics = installBrowserDiagnostics(page);
+    await ownerPage(context, page);
+    await page.addInitScript(() => localStorage.setItem('react-sheets:locale', 'en-US'));
+    await page.getByRole('button', { name: '新建工作簿', exact: true }).click();
+    const create = page.getByTestId('create-workbook-dialog');
+    await create.getByLabel('工作簿名称').fill(`SDK data UAT ${runId}`);
+    await create.getByLabel('保存位置').selectOption('server');
+    await create.getByRole('button', { name: '创建工作簿', exact: true }).click();
+    await expect(page.getByTestId('designer-shell')).toHaveAttribute('data-workspace-phase', 'ready');
+    const dataId = decodeURIComponent(new URL(page.url()).pathname.split('/').at(-1)!);
+    const nameBox = page.getByTestId('name-box');
+    const canvas = page.getByTestId('sheet-canvas');
+    const select = async (address: string) => { await nameBox.fill(address); await nameBox.press('Enter'); };
+    const enter = async (address: string, value: string) => {
+      await select(address); await canvas.focus(); await page.keyboard.type(value); await page.keyboard.press('Enter');
+    };
+    const sheet = async () => {
+      const response = await context.request.get(`/api/workbooks/${dataId}/snapshot`);
+      expect(response.ok()).toBe(true);
+      return (await response.json()).snapshot.sheets[0];
+    };
+    // Widen only this browser host so every Data group is directly accessible.
+    await page.setViewportSize({ width: 1920, height: 1080 });
+    for (const [address, value] of [['A1', 'Group'], ['B1', 'Amount'], ['A2', 'East'], ['B2', '10'], ['A3', 'East'], ['B3', '5'], ['A4', 'West'], ['B4', '7']]) await enter(address!, value!);
+    await expect.poll(async () => (await sheet()).cells['3']?.['1']?.value).toBe(7);
+    const original = await sheet();
+    await select('A1:B4');
+    await page.getByTestId('ribbon-tab-data').click();
+    await page.getByRole('button', { name: 'Subtotal', exact: true }).click();
+    await expect.poll(async () => (await sheet()).cells['6']?.['1']?.formula).toBe('=SUBTOTAL(9,B2:B3)');
+    expect((await sheet()).outline.groups).toHaveLength(2);
+    await canvas.focus(); await page.keyboard.press('Control+z');
+    await expect.poll(async () => (await sheet()).cells).toEqual(original.cells);
+    expect((await sheet()).outline).toEqual(original.outline);
+    await page.keyboard.press('Control+y');
+    await expect.poll(async () => (await sheet()).cells['7']?.['1']?.formula).toBe('=SUBTOTAL(9,B4:B4)');
+    await canvas.focus(); await page.keyboard.press('Control+z');
+    await expect.poll(async () => (await sheet()).cells).toEqual(original.cells);
+    await select('A1:B4');
+    await page.getByRole('button', { name: 'Sort Z to A', exact: true }).click();
+    await expect.poll(async () => (await sheet()).cells['1']?.['0']?.value).toBe('West');
+    await canvas.focus(); await page.keyboard.press('Control+z');
+    await expect.poll(async () => (await sheet()).cells).toEqual(original.cells);
+    await select('A1:B4');
+    await page.getByRole('button', { name: 'Filter Selection', exact: true }).click();
+    await expect.poll(async () => Boolean((await sheet()).autoFilter)).toBe(true);
+    await page.getByRole('button', { name: 'Clear Filter', exact: true }).click();
+    await page.getByRole('button', { name: 'Filter Selection', exact: true }).click();
+    await expect.poll(async () => Boolean((await sheet()).autoFilter)).toBe(false);
+    await enter('D1', 'a,b,c'); await select('D1:D2');
+    await page.getByRole('button', { name: 'Text to Columns', exact: true }).click();
+    await expect.poll(async () => (await sheet()).cells['0']?.['5']?.value).toBe('c');
+    await canvas.focus(); await page.keyboard.press('Control+z');
+    await expect.poll(async () => (await sheet()).cells['0']?.['3']?.value).toBe('a,b,c');
+    expect((await sheet()).cells['0']?.['5']).toBeUndefined();
+    await page.reload();
+    await expect(page.getByTestId('designer-shell')).toHaveAttribute('data-workspace-phase', 'ready');
+    await screenshot(page, 'sdk-data-undo');
+    diagnostics.assertClean();
+  });
+
   test('ROLE-02 HUB-02: owner menu, rename, favorite and share roles use real SDK catalog actions', async ({ page, context }) => {
     const diagnostics = installBrowserDiagnostics(page);
     await ownerPage(context, page);
