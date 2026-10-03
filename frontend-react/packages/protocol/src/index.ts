@@ -2964,7 +2964,7 @@ export class WorkbookApiClient {
       {
         method: 'PUT',
         headers: {
-          'content-type': asset.mimeType,
+          'content-type': 'application/octet-stream',
           'x-content-sha256': asset.contentHash,
           'x-asset-mime-type': asset.mimeType,
           ...(asset.width === undefined ? {} : { 'x-asset-width': String(asset.width) }),

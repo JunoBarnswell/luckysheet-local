@@ -30,9 +30,15 @@ public class ApiExceptionHandler {
         return ResponseEntity.status(error.status()).body(new ApiErrorResponse(error.code(), error.getMessage()));
     }
 
-    @ExceptionHandler({IllegalArgumentException.class, HttpMessageNotReadableException.class})
+    @ExceptionHandler({IllegalArgumentException.class, HttpMessageNotReadableException.class, org.springframework.web.bind.MissingRequestHeaderException.class})
     public ResponseEntity<ApiErrorResponse> handleValidation(Exception error) {
         return ResponseEntity.badRequest().body(new ApiErrorResponse("VALIDATION_ERROR", safeMessage(error, "Request is invalid")));
+    }
+
+    @ExceptionHandler(org.springframework.web.HttpMediaTypeNotSupportedException.class)
+    public ResponseEntity<ApiErrorResponse> handleUnsupportedMediaType(Exception error) {
+        return ResponseEntity.status(HttpStatus.UNSUPPORTED_MEDIA_TYPE).body(new ApiErrorResponse("VALIDATION_ERROR",
+                "Request content type is not supported; send the declared binary or structured transport format."));
     }
 
     @ExceptionHandler({AccessDeniedException.class})

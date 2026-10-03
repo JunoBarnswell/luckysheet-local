@@ -430,7 +430,7 @@ public class WorkbookController {
             @PathVariable String unitId,
             @PathVariable String assetId,
             @RequestHeader("X-Content-SHA256") String checksum,
-            @RequestHeader("X-Asset-MimeType") String mimeType,
+            @RequestHeader("X-Asset-Mime-Type") String mimeType,
             @RequestHeader(value = "X-Asset-Width", required = false) Integer width,
             @RequestHeader(value = "X-Asset-Height", required = false) Integer height,
             HttpServletRequest request,

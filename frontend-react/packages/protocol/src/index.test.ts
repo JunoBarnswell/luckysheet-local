@@ -1072,3 +1072,20 @@ test('no-content mutation completion failure is observable', async () => {
   const client = new WorkbookApiClient({ authTokenProvider: async () => 'test-token', fetchImpl: async () => response });
   await assert.rejects(client.purgeWorkbook('book'), error => error instanceof ApiRequestError && error.code === 'INTERNAL_ERROR' && /Response completion failed/.test(error.message));
 });
+
+
+test('asset upload uses the canonical binary transport and retains image MIME metadata', async () => {
+  const bytes = Uint8Array.from([1, 2, 3]);
+  const asset = { schema: 'AssetRef' as const, assetId: 'asset-' + 'a'.repeat(64), contentHash: 'a'.repeat(64), mimeType: 'image/png', byteLength: 3 };
+  const api = new WorkbookApiClient({ authTokenProvider: () => 'test-token', fetchImpl: async (input, init) => {
+    assert.equal(String(input), `/api/workbooks/asset-upload/assets/${asset.assetId}`);
+    assert.equal(init?.method, 'PUT');
+    const headers = new Headers(init?.headers);
+    assert.equal(headers.get('content-type'), 'application/octet-stream');
+    assert.equal(headers.get('x-asset-mime-type'), 'image/png');
+    assert.equal(headers.get('x-content-sha256'), asset.contentHash);
+    assert.deepEqual(new Uint8Array(init?.body as ArrayBuffer), bytes);
+    return Response.json({ ...asset, unitId: 'asset-upload', updatedAt: '2026-10-03T00:00:00Z' });
+  } });
+  assert.equal((await api.putAsset('asset-upload', asset, bytes.buffer)).assetId, asset.assetId);
+});
