@@ -4,6 +4,8 @@ import { WorkbookModel } from '@react-sheets/core-model';
 import { createRemoteReadySessionFixture } from './session-test-fixtures';
 import { WorkbookSession } from './workbook-session';
 import { hydrateRuntime } from './runtime';
+import { AssetReferenceError, type AssetStore } from './features/persistence';
+import { createCellSetMutationParams } from '@react-sheets/sheet-features';
 
 describe('WorkbookSession drawing integration', () => {
   it('places a text box through the placement session and commits one text-frame mutation', () => {
@@ -323,4 +325,62 @@ describe('WorkbookSession drawing integration', () => {
     app.sendSelectedDrawingToBack();
     assert.ok(sheet.drawings.every((entry) => Number.isFinite(entry.zIndex)));
   });
+});
+
+
+function pendingAssetFixture() {
+  let reads = 0;
+  const store: AssetStore = {
+    put: async () => { throw new Error('Not used in this read boundary test'); },
+    get: async () => { reads++; return new Blob([Uint8Array.from([1])], { type: 'image/png' }); },
+    release: async () => {}, reconcile: async () => {},
+  };
+  const app = new WorkbookSession({ assetStore: store });
+  const runtime = app['runtime'];
+  runtime.localOnly = false; runtime.remoteSyncRequested = true; runtime.remoteConnected = true;
+  const sheet = runtime.model.getSheet(runtime.model.primarySheetId);
+  const pending = runtime.collaboration!.enqueueLocalMutations([{
+    id: 'cell.set', unitId: runtime.model.unitId, sheetId: sheet.id,
+    params: createCellSetMutationParams(sheet, { sheetId: sheet.id, row: 0, column: 0, value: { value: 'asset reference transaction' } }, 'external-sync'),
+    affectedRanges: [{ sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }],
+  }], runtime.model.unitId);
+  const asset = { schema: 'AssetRef' as const, assetId: 'asset-read-barrier', contentHash: 'a'.repeat(64), mimeType: 'image/png', byteLength: 1 };
+  return { app, runtime, pending, asset, reads: () => reads };
+}
+
+it('first remote asset read waits for the referencing transaction ACK before fetching bytes', async () => {
+  const { app, runtime, asset, reads } = pendingAssetFixture();
+  let acknowledge!: () => void;
+  let sent!: () => void;
+  const committed = new Promise<void>(resolve => { acknowledge = resolve; });
+  const sending = new Promise<void>(resolve => { sent = resolve; });
+  runtime.collaboration!.attachTransport(async () => { sent(); await committed; return 1; });
+  try {
+    const reading = app.resolveAssetUrl(asset);
+    await sending;
+    assert.equal(reads(), 0);
+    assert.equal(runtime.collaboration!.offlineQueue.getPendingCount(), 1);
+    acknowledge();
+    const url = await reading;
+    assert.match(url, /^blob:/);
+    assert.equal(reads(), 1);
+    assert.equal(runtime.collaboration!.offlineQueue.getPendingCount(), 0);
+  } finally { app.dispose(); }
+});
+
+it('offline or rejected asset references fail visibly without reading protected bytes', async () => {
+  for (const mode of ['offline', 'rejected'] as const) {
+    const { app, runtime, pending, asset, reads } = pendingAssetFixture();
+    const before = runtime.model.snapshot();
+    if (mode === 'offline') runtime.remoteConnected = false;
+    else runtime.collaboration!.reject(pending.operationId, new Error('Reference commit rejected'));
+    try {
+      await assert.rejects(app.resolveAssetUrl(asset), (error: unknown) => error instanceof AssetReferenceError
+        && error.code === 'ASSET_REFERENCE_NOT_COMMITTED' && error.assetId === asset.assetId
+        && error.unitId === runtime.model.unitId && Boolean(error.recovery));
+      assert.equal(reads(), 0);
+      assert.equal(runtime.collaboration!.offlineQueue.getPendingCount(), 1);
+      assert.deepEqual(runtime.model.snapshot(), before);
+    } finally { app.dispose(); }
+  }
 });

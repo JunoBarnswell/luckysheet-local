@@ -357,7 +357,7 @@ import type {
   ChartElementSelection,
 } from './types';
 import type { FindReplaceParams } from './features/find-replace/commands';
-import type { AssetStore } from './features/persistence';
+import { AssetReferenceError, type AssetStore } from './features/persistence';
 import type { WorkbookResolution } from './features/workbook-catalog';
 import type { RangeDragMode } from './features/editing/range-drag';
 import { ProjectionRuntime } from './features/projection/projection-runtime';
@@ -2872,11 +2872,18 @@ export class WorkbookSession {
   /** Commit edits before exporting without rewriting the original native format. */
   async flushPendingChanges(): Promise<void> {
     if (!this.canExecute('document.export')) throw new Error('You do not have permission to export the document');
+    await this.awaitCommittedChanges();
+  }
+
+  /** One commit barrier for native export and first asset reads. */
+  private async awaitCommittedChanges(): Promise<void> {
+    if (this.runtime.disposed) throw new Error('WORKBOOK_DISPOSED: 工作簿已关闭');
     if (this.runtime.localOnly || !this.runtime.remoteSyncRequested) return;
-    if (!this.runtime.remoteConnected) throw new Error('COLLABORATION_OFFLINE: 连接中断，草稿已保留；恢复连接后才能保存或导出');
+    if (!this.runtime.remoteConnected || !this.runtime.collaboration) throw new Error('COLLABORATION_OFFLINE: 连接中断，草稿已保留；恢复连接后才能保存或读取资产');
+    await this.runtime.recoveryJournal?.flushed();
     const result = await this.runtime.collaboration?.offlineQueue.flushAll();
     if (result && (result.failed > 0 || this.runtime.collaboration?.offlineQueue.getPendingCount())) {
-      throw new Error('Pending changes could not be committed before exporting');
+      throw new Error('Pending changes could not be committed');
     }
   }
 
@@ -5904,7 +5911,10 @@ export class WorkbookSession {
     const existing = this.assetUrls.get(asset.assetId);
     if (existing) return existing;
     if (typeof URL === 'undefined' || typeof URL.createObjectURL !== 'function') throw new Error(`ASSET_URL_UNAVAILABLE: ${asset.assetId}`);
+    try { await this.awaitCommittedChanges(); }
+    catch (cause) { throw new AssetReferenceError(this.runtime.model.unitId, asset.assetId, cause); }
     const blob = await this.runtime.assetStore.get(asset);
+    if (this.runtime.disposed) throw new AssetReferenceError(this.runtime.model.unitId, asset.assetId, new Error('WORKBOOK_DISPOSED'));
     const url = URL.createObjectURL(blob);
     this.assetUrls.set(asset.assetId, url);
     return url;

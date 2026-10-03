@@ -2,6 +2,16 @@ import { assertAssetRef, isSupportedAssetMime, type AssetRef } from '@react-shee
 import { WorkbookApiClient } from '@react-sheets/protocol';
 import { memoryKey, type WorkspaceMemoryCoordinator } from './memory';
 
+/** A remote asset can be read only after its referencing operations commit. */
+export class AssetReferenceError extends Error {
+  readonly code = 'ASSET_REFERENCE_NOT_COMMITTED';
+  readonly recovery = 'Reconnect and commit or explicitly discard the rejected workbook operation before resolving the asset.';
+  constructor(readonly unitId: string, readonly assetId: string, cause: unknown) {
+    super(`ASSET_REFERENCE_NOT_COMMITTED: ${unitId}/${assetId}`, { cause });
+    this.name = 'AssetReferenceError';
+  }
+}
+
 export interface AssetPutInput {
   content: Blob;
   mimeType?: string;
