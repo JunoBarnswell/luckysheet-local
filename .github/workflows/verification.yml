@@ -65,5 +65,5 @@ jobs:
             ${{ runner.temp }}/react-sheets-build/*.log
             backend/target/surefire-reports/*.xml
             ${{ runner.temp }}/sdk-product-uat-evidence/*
-            frontend-react/test-results/provenance.json
+            frontend-react/test-results/**
           if-no-files-found: error

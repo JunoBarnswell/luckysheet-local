@@ -7,10 +7,42 @@ import { readFile, mkdir } from 'node:fs/promises';
 import { expect, test, type Page, type BrowserContext } from '@playwright/test';
 import { installBrowserDiagnostics } from './support/workbook-fixtures';
 
+// Serial acceptance has no retries; capture the original failing attempt.
+test.use({ trace: 'retain-on-failure', screenshot: 'only-on-failure' });
+
 // Requires the real Java/H2 service with an isolated data directory; no route mocks.
 test.describe('SDK product UAT against Java authority', () => {
   test.skip(!process.env.SDK_UAT_ENABLED, 'Run with SDK_UAT_ENABLED=1 against an isolated real Java/H2 service');
   test.describe.configure({ mode: 'serial' });
+  const failureDiagnostics = new WeakMap<Page, {
+    diagnostics: ReturnType<typeof installBrowserDiagnostics>;
+    rejectedResponses: { method: string; path: string; status: number }[];
+  }>();
+  test.beforeEach(async ({ page }) => {
+    const diagnostics = installBrowserDiagnostics(page);
+    const rejectedResponses: { method: string; path: string; status: number }[] = [];
+    failureDiagnostics.set(page, { diagnostics, rejectedResponses });
+    page.on('response', response => {
+      if (response.status() >= 400) rejectedResponses.push({
+        method: response.request().method(),
+        path: new URL(response.url()).pathname,
+        status: response.status(),
+      });
+    });
+  });
+  test.afterEach(async ({ page }, testInfo) => {
+    if (testInfo.status === testInfo.expectedStatus) return;
+    const captured = failureDiagnostics.get(page)!;
+    await testInfo.attach('browser-failure-diagnostics', {
+      body: JSON.stringify({
+        consoleErrors: captured.diagnostics.consoleErrors,
+        pageErrors: captured.diagnostics.pageErrors,
+        requestFailures: captured.diagnostics.requestFailures,
+        rejectedResponses: captured.rejectedResponses,
+      }, null, 2),
+      contentType: 'application/json',
+    });
+  });
   test.setTimeout(120_000);
   const runId = Date.now().toString();
   const password = 'Uat-Private-Password-2026';
