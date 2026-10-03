@@ -5,7 +5,7 @@ import type { RibbonTabId, UiSessionIntent, UiSnapshot, WorkbookSession } from "
 import type { DrawingConnectorType } from '@react-sheets/core-model';
 import type { Locale } from "../i18n";
 import type { EditorCommandController } from "./command-controller";
-import type { ColumnDimensionController } from './column-dimension-controller';
+import type { DimensionsActions } from '@react-sheets/sdk';
 
 export interface RibbonHostProps {
   state: UiSnapshot;
@@ -17,7 +17,7 @@ export interface RibbonHostProps {
   saveWorkbook: () => void;
   exportDocument: () => void | Promise<void>;
   importDocument: () => void;
-  columnDimensions: ColumnDimensionController;
+  columnDimensions: DimensionsActions;
   selectedColumns: number[];
   selectedRows: number[];
   onOpenColumnWidthDialog: (columns: number[]) => void;

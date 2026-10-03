@@ -2193,15 +2193,22 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
     },
   });
 
-  runtime.registry.registerCommand<{ sheetId: string; rows?: Array<Omit<ResizeRowParams, 'sheetId'>>; columns?: Array<Omit<ResizeColumnParams, 'sheetId'>> }>({
+  runtime.registry.registerCommand<{ sheetId: string; rows?: Array<Omit<ResizeRowParams, 'sheetId'> & { hidden?: boolean }>; columns?: Array<Omit<ResizeColumnParams, 'sheetId'> & { hidden?: boolean }> }>({
     id: 'sheet.dimensions.apply',
     execute: (params, context) => {
       const sheet = context.workbook.getSheet(params.sheetId);
-      const affectedRanges: RangeRef[] = [];
+      // Validate the entire plan before applying dimensions or visibility.
+      for (const row of params.rows ?? []) if (!Number.isSafeInteger(row.row) || row.row < 0 || row.row >= sheet.rowCount || !Number.isFinite(row.heightPx) || row.heightPx <= 0 || (row.hidden !== undefined && typeof row.hidden !== 'boolean')) throw new Error('Invalid row dimension plan');
+      for (const column of params.columns ?? []) if (!Number.isSafeInteger(column.column) || column.column < 0 || column.column >= sheet.columnCount || !Number.isFinite(column.widthPx) || column.widthPx <= 0 || (column.hidden !== undefined && typeof column.hidden !== 'boolean')) throw new Error('Invalid column dimension plan');
+      const affectedRanges: RangeRef[] = [
+        ...(params.rows ?? []).flatMap(row => rowAffectedRange({ sheetId: params.sheetId, row: row.row })),
+        ...(params.columns ?? []).flatMap(column => columnAffectedRange({ sheetId: params.sheetId, column: column.column })),
+      ];
       let mutationCount = 0;
       for (const row of params.rows ?? []) {
         if (!Number.isSafeInteger(row.row) || row.row < 0 || !Number.isFinite(row.heightPx) || row.heightPx <= 0) throw new Error('Invalid row pixel size');
-        const mutationParams: ResizeRowParams = { sheetId: params.sheetId, ...row };
+        const mutationParams: ResizeRowParams = { sheetId: params.sheetId, row: row.row, heightPx: row.heightPx };
+        if (row.hidden !== undefined) runtime.execute('sheet.rows.visibility.set', { sheetId: params.sheetId, rows: [row.row], hidden: row.hidden });
         const previousHeightPx = sheet.rowHeightsPx[row.row] ?? sheet.defaultRowHeightPx;
         context.applyMutation({
           id: 'row.resize', unitId: context.workbook.unitId, sheetId: params.sheetId, params: mutationParams, affectedRanges,
@@ -2212,7 +2219,8 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       }
       for (const column of params.columns ?? []) {
         if (!Number.isSafeInteger(column.column) || column.column < 0 || !Number.isFinite(column.widthPx) || column.widthPx <= 0) throw new Error('Invalid column pixel size');
-        const mutationParams: ResizeColumnParams = { sheetId: params.sheetId, ...column };
+        const mutationParams: ResizeColumnParams = { sheetId: params.sheetId, column: column.column, widthPx: column.widthPx };
+        if (column.hidden !== undefined) runtime.execute('sheet.columns.visibility.set', { sheetId: params.sheetId, columns: [column.column], hidden: column.hidden });
         const previousWidthPx = sheet.columnWidthsPx[column.column] ?? sheet.defaultColumnWidthPx;
         context.applyMutation({
             id: 'column.resize',

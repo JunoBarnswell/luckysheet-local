@@ -3,6 +3,7 @@ import { RemoteAssetStore, WorkspacePersistence, WorkspaceStorageError, isWorksp
   type WorkbookResolution, type WorkspacePersistenceState } from '@react-sheets/spreadsheet-app';
 import type { AuthDomain } from '../auth/domain';
 import { WorkbooksDomain } from '../workbooks/domain';
+import { DimensionsDomain } from '../dimensions/domain';
 import { SdkError } from '../error';
 
 export interface StorageReadiness {
@@ -20,6 +21,7 @@ export class ApplicationRuntime {
   private snapshot: StorageReadiness = Object.freeze({ state: 'warming', error: null });
   private readonly listeners = new Set<() => void>();
   private readonly sessions = new Set<WorkbookSession>();
+  private readonly dimensions = new Map<WorkbookSession, DimensionsDomain>();
   private readiness: Promise<void> | null = null;
   private disposed = false;
   private users = 0;
@@ -85,6 +87,8 @@ export class ApplicationRuntime {
   }
   private resetWorkspace(): void {
     if (this.disposed) return;
+    for (const domain of this.dimensions.values()) domain.dispose();
+    this.dimensions.clear();
     for (const session of this.sessions) session.dispose();
     this.sessions.clear();
     const previous = this.persistence;
@@ -106,15 +110,23 @@ export class ApplicationRuntime {
       onReady: () => this.catalog.markOpened(resolution).then(() => undefined),
     });
     this.sessions.add(session);
+    this.dimensions.set(session, new DimensionsDomain(session, () => session.getSelectedSheet()));
     return session;
   }
-  closeSession(session: WorkbookSession): void { session.dispose(); this.sessions.delete(session); }
+  dimensionActions(session: WorkbookSession) {
+    const domain = this.dimensions.get(session);
+    if (!domain) throw new SdkError('RUNTIME_DISPOSED', 'dimensions', '行列尺寸会话不可用。', '请重新打开工作簿。');
+    return domain.actions;
+  }
+  closeSession(session: WorkbookSession): void { this.dimensions.get(session)?.dispose(); this.dimensions.delete(session); session.dispose(); this.sessions.delete(session); }
   async dispose(): Promise<void> {
     if (this.disposed) return;
     this.disposed = true;
     this.unsubscribeAuth();
     this.catalogDomain.retire();
     if (this.releaseTimer) clearTimeout(this.releaseTimer);
+    for (const domain of this.dimensions.values()) domain.dispose();
+    this.dimensions.clear();
     for (const session of this.sessions) session.dispose();
     this.sessions.clear();
     this.listeners.clear();

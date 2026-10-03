@@ -58,7 +58,7 @@ import type { EffectiveAccessRegion } from '@react-sheets/protocol';
 import { createCanvasFloatingDrawables } from "./canvas/drawing-renderers";
 import type { PivotControlAction } from "./canvas/drawing-renderers";
 import { useCanvasInteraction } from "./canvas/useCanvasInteraction";
-import type { ColumnDimensionController } from '../editor/column-dimension-controller';
+import type { DimensionsActions } from '@react-sheets/sdk';
 import type { Locale } from '../i18n';
 import { pivotTemplate, pivotText } from './pivot/pivot-localization';
 import { PivotHeaderFilterPopover, type PivotValueSortOption } from './pivot/PivotHeaderFilterPopover';
@@ -114,7 +114,7 @@ export interface SheetCanvasProps {
   onSelectAllDrawings?: () => void;
   onCycleDrawingSelection?: (direction: 'next' | 'previous') => void;
   onExtendSelection?: (row: number, column: number) => void;
-  columnDimensions: ColumnDimensionController;
+  columnDimensions: DimensionsActions;
   onOpenColumnWidthDialog: (columns: number[]) => void;
   onOpenRowHeightDialog: (rows: number[]) => void;
   onOpenFormatCells: () => void;
@@ -768,14 +768,14 @@ export function SheetCanvas({
       const columns = headerTargetSelected(selection, { kind: 'column', index: column }, bounds)
         ? selectedHeaderIndices(selection, 'column', bounds)
         : [column];
-      return columnDimensions.autoFit(columns);
+      return columnDimensions.autoFit(columns).then(() => undefined);
     },
     onAutoFitRow: (row) => {
       const bounds = { rowCount: sheet.rowCount, columnCount: sheet.columnCount };
       const rows = headerTargetSelected(selection, { kind: 'row', index: row }, bounds)
         ? selectedHeaderIndices(selection, 'row', bounds)
         : [row];
-      return columnDimensions.autoFitRows(rows);
+      return columnDimensions.autoFitRows(rows).then(() => undefined);
     },
     onUnhideColumns: (columns) => columnDimensions.setHidden(columns, false),
     onUnhideRows: (rows) => columnDimensions.setRowsHidden(rows, false),

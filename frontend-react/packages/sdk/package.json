@@ -5,7 +5,12 @@
   "exports": {
     ".": "./src/index.ts"
   },
+  "devDependencies": {
+    "@react-sheets/command-runtime": "file:../command-runtime",
+    "@react-sheets/sheet-features": "file:../sheet-features"
+  },
   "dependencies": {
+    "@react-sheets/render-engine": "file:../render-engine",
     "@react-sheets/protocol": "file:../protocol",
     "oidc-client-ts": "^3.5.0",
     "@react-sheets/spreadsheet-app": "file:../spreadsheet-app",

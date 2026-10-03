@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useMemo, useRef, type ReactNode } from "react";
+import { lazy, Suspense, type ReactNode } from "react";
 import { DesignerShell, Box, Inline } from "@react-sheets/ui-system";
 import { FormulaBar } from "../components/FormulaBar";
 import { SheetTabs } from "../components/SheetTabs";
@@ -13,7 +13,7 @@ import type { EditorCommandController } from "./command-controller";
 import { RibbonHost } from "./RibbonHost";
 import { FeaturePanelHost } from "./FeaturePanelHost";
 import { EditorDialogHost } from "./EditorDialogHost";
-import { ColumnDimensionController } from './column-dimension-controller';
+import type { DimensionsActions } from '@react-sheets/sdk';
 import { ColumnWidthDialog } from '../components/dialogs/ColumnWidthDialog';
 import { RowHeightDialog } from '../components/dialogs/RowHeightDialog';
 import { buildPivotTimelineTiles, pivotMemberKey } from '@react-sheets/core-model';
@@ -24,6 +24,7 @@ const SheetCanvas = lazy(() => import("../components/SheetCanvas").then((module)
 export interface EditorShellProps {
   state: UiSnapshot;
   session: WorkbookSession;
+  columnDimensions: DimensionsActions;
   locale: Locale;
   isBusy: boolean;
   controller: EditorCommandController;
@@ -46,6 +47,7 @@ export interface EditorShellProps {
 export function EditorShell({
   state,
   session,
+  columnDimensions,
   locale,
   isBusy,
   controller,
@@ -59,13 +61,6 @@ export function EditorShell({
   renameWorkbook,
   onOpenPrintPreview,
 }: EditorShellProps): ReactNode {
-  const sheetRef = useRef(state.selectedSheet);
-  sheetRef.current = state.selectedSheet;
-  const columnDimensions = useMemo(
-    () => new ColumnDimensionController(session, () => sheetRef.current),
-    [session],
-  );
-  useEffect(() => () => columnDimensions.cancelAutoFit(), [columnDimensions]);
   const dimensionBounds = { rowCount: state.selectedSheet.rowCount, columnCount: state.selectedSheet.columnCount };
   const selectedColumns = selectedHeaderIndices(state.selection, 'column', dimensionBounds, { includeOrdinaryCellRanges: true });
   const selectedRows = selectedHeaderIndices(state.selection, 'row', dimensionBounds, { includeOrdinaryCellRanges: true });
@@ -413,7 +408,7 @@ export function EditorShell({
         open={state.dialogs.active === 'column-width'}
         columnCount={state.dialogs.columnWidth?.columns.length ?? 0}
         defaultMode={state.dialogs.columnWidth?.defaultMode}
-        maximumDigitWidthPx={state.selectedSheet.maximumDigitWidthPx}
+        dimensions={columnDimensions}
         initialWidthPx={state.dialogs.columnWidth?.defaultMode ? state.selectedSheet.defaultColumnWidthPx : state.selectedSheet.columnWidthsPx[state.dialogs.columnWidth?.columns[0] ?? -1] ?? state.selectedSheet.defaultColumnWidthPx}
         onClose={() => session.closeActiveDialog()}
         onApply={(excelWidth) => {
@@ -423,6 +418,7 @@ export function EditorShell({
         }}
       />
       <RowHeightDialog
+        dimensions={columnDimensions}
         open={state.dialogs.active === 'row-height'}
         rowCount={state.dialogs.rowHeight?.rows.length ?? 0}
         initialHeightPx={state.selectedSheet.rowHeightsPx[state.dialogs.rowHeight?.rows[0] ?? -1] ?? state.selectedSheet.defaultRowHeightPx}

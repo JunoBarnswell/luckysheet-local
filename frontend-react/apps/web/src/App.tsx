@@ -50,7 +50,7 @@ function EditorRoute({ resolution, onOpenHub }: { resolution: WorkbookResolution
   const unitId = resolution.unitId;
   const auth = useAuthSession();
   const { catalog } = useApplicationServices();
-  const { session, snapshot: state } = useWorkbook(sdk, resolution);
+  const { session, dimensions, snapshot: state } = useWorkbook(sdk, resolution);
   const [locale, setLocaleState] = useState<Locale>(() => getInitialLocale());
   const [saveAsOpen, setSaveAsOpen] = useState(false);
   const [saveAsBusy, setSaveAsBusy] = useState(false);
@@ -156,7 +156,7 @@ function EditorRoute({ resolution, onOpenHub }: { resolution: WorkbookResolution
     );
   }
 
-  return <EditorShell state={state} session={session} locale={locale} isBusy={isBusy} controller={controller} dispatchCommand={dispatchCommand} dispatchSessionIntent={dispatchSessionIntent} setLocale={setLocale} copyWorkbookLink={copyWorkbookLink} saveWorkbook={saveWorkbook} exportDocument={exportDocument} importDocument={importDocument} renameWorkbook={renameWorkbook} onOpenPrintPreview={() => dispatchSessionIntent({ type: "dialog.open", dialog: "print-preview" })} />;
+  return <EditorShell state={state} session={session} columnDimensions={dimensions} locale={locale} isBusy={isBusy} controller={controller} dispatchCommand={dispatchCommand} dispatchSessionIntent={dispatchSessionIntent} setLocale={setLocale} copyWorkbookLink={copyWorkbookLink} saveWorkbook={saveWorkbook} exportDocument={exportDocument} importDocument={importDocument} renameWorkbook={renameWorkbook} onOpenPrintPreview={() => dispatchSessionIntent({ type: "dialog.open", dialog: "print-preview" })} />;
 }
 
 function mimeTypeForFileName(fileName: string): string {
