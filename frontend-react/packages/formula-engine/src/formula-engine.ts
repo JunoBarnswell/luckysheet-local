@@ -1407,9 +1407,7 @@ export class FormulaEngine {
     const affected = new Map<string, CellAddress>();
     const queue: CellAddress[] = [];
     for (const key of roots) {
-      const cell = this.cells.get(key);
-      const [sheetId, row, column] = JSON.parse(key) as [string, number, number];
-      const address = cell?.address ?? { sheetId, row, column };
+      const address = this.calculationRootAddress(key);
       if (affected.has(key)) continue;
       affected.set(key, { ...address });
       queue.push({ ...address });
@@ -1566,11 +1564,15 @@ export class FormulaEngine {
     return result;
   }
 
+  /** Dirty input roots survive deletion of the corresponding live cell. */
+  private calculationRootAddress(key: string): CellAddress {
+    const [sheetId, row, column] = JSON.parse(key) as [string, number, number];
+    return { sheetId, row, column };
+  }
+
   private pendingCalculationRoots(): CellAddress[] {
     return [...this.pendingRecalculationRoots]
-      .map((key) => this.cells.get(key)?.address)
-      .filter((address): address is CellAddress => address !== undefined)
-      .map((address) => ({ ...address }))
+      .map((key) => this.calculationRootAddress(key))
       .sort(compareCellAddresses);
   }
 

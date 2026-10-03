@@ -854,6 +854,7 @@ export function registerPivotCommands(runtime: CommandRuntime): string[] {
     applyPivotAdd(context, item.params);
   },
       metadata: {
+        calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
     schema: { name: 'PivotModel', validate: isPivotModel },
     permission: { capability: 'pivot.edit' },
     affectedRanges: { resolve: pivotMutationRanges, mode: 'declared' },
@@ -866,6 +867,7 @@ export function registerPivotCommands(runtime: CommandRuntime): string[] {
     applyPivotRemove(context, item.params, item.sheetId);
   },
       metadata: {
+        calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
     schema: { name: 'PivotId', validate: isNonEmptyString },
     permission: { capability: 'pivot.delete' },
     affectedRanges: { resolve: () => [], mode: 'declared' },
@@ -878,6 +880,7 @@ export function registerPivotCommands(runtime: CommandRuntime): string[] {
     applyPivotUpdate(context, item.params);
   },
       metadata: {
+        calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
     schema: { name: 'PivotUpdateParams', validate: isPivotUpdate },
     permission: { capability: 'pivot.edit' },
     affectedRanges: { resolve: pivotMutationRanges, mode: 'declared' },
@@ -1028,6 +1031,7 @@ export function registerPivotCommands(runtime: CommandRuntime): string[] {
     writePivotDrillDown(context, item.params);
   },
       metadata: {
+        calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false, context: { kind: 'calculation-context', action: 'rebuild' } as const },
     schema: { name: 'PivotDrillDownParams', validate: isPivotDrillDown },
     permission: { capability: 'pivot.edit' },
     affectedRanges: { resolve: pivotMutationRanges, mode: 'declared' },
@@ -1060,6 +1064,7 @@ export function registerPivotCommands(runtime: CommandRuntime): string[] {
     context.workbook.removeSheet(item.params.targetSheetId);
   },
       metadata: {
+        calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false, context: { kind: 'calculation-context', action: 'rebuild' } as const },
     schema: { name: 'PivotDrillDownRemoveParams', validate: isPivotDrillDownRemove },
     permission: { capability: 'pivot.edit' },
     affectedRanges: { resolve: (value) => isPivotDrillDownRemove(value) ? sheetRange(value.targetSheetId) : [], mode: 'declared' },

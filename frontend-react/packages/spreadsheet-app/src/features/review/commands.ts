@@ -249,6 +249,7 @@ export function registerReviewCommands(runtime: CommandRuntime): string[] {
     context.workbook.getSheet(params.sheetId).review.setNote(params.row, params.column, params.note);
   },
       metadata: {
+        calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
     schema: { name: 'NoteSetParams', validate: isNoteSet },
     permission: { capability: 'review.note' },
     affectedRanges: { resolve: reviewAffectedRanges, mode: 'exact' },
@@ -263,6 +264,7 @@ export function registerReviewCommands(runtime: CommandRuntime): string[] {
     if (!removed) throw new Error(`Note not found at ${params.sheetId}!${params.row}:${params.column}`);
   },
       metadata: {
+        calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
     schema: { name: 'NoteRemoveParams', validate: isNoteRemove },
     permission: { capability: 'review.note' },
     affectedRanges: { resolve: reviewAffectedRanges, mode: 'exact' },
@@ -276,6 +278,7 @@ export function registerReviewCommands(runtime: CommandRuntime): string[] {
     context.workbook.getSheet(params.sheetId).review.updateNote(params.row, params.column, (note) => { note.visible = params.visible; });
   },
       metadata: {
+        calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
     schema: { name: 'NoteVisibilityParams', validate: isNoteVisibility },
     permission: { capability: 'review.note' },
     affectedRanges: { resolve: reviewAffectedRanges, mode: 'exact' },
@@ -290,6 +293,7 @@ export function registerReviewCommands(runtime: CommandRuntime): string[] {
     context.workbook.getSheet(params.sheetId).review.addThread(params.thread);
   },
       metadata: {
+        calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
     schema: { name: 'CommentAddParams', validate: isCommentAdd },
     permission: { capability: 'review.comment' },
     affectedRanges: { resolve: reviewAffectedRanges, mode: 'exact' },
@@ -306,6 +310,7 @@ export function registerReviewCommands(runtime: CommandRuntime): string[] {
     });
   },
       metadata: {
+        calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
     schema: { name: 'CommentReplyParams', validate: isCommentReplyParams },
     permission: { capability: 'review.comment' },
     affectedRanges: { resolve: reviewAffectedRanges, mode: 'declared' },
@@ -323,6 +328,7 @@ export function registerReviewCommands(runtime: CommandRuntime): string[] {
     });
   },
       metadata: {
+        calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
     schema: { name: 'CommentReplyRemoveParams', validate: isCommentReplyRemove },
     permission: { capability: 'review.comment' },
     affectedRanges: { resolve: reviewAffectedRanges, mode: 'declared' },
@@ -340,6 +346,7 @@ export function registerReviewCommands(runtime: CommandRuntime): string[] {
     });
   },
       metadata: {
+        calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
     schema: { name: 'CommentResolveParams', validate: isCommentResolve },
     permission: { capability: 'review.comment' },
     affectedRanges: { resolve: reviewAffectedRanges, mode: 'declared' },
@@ -354,6 +361,7 @@ export function registerReviewCommands(runtime: CommandRuntime): string[] {
     if (!removed) throw new Error(`Comment thread not found: ${params.threadId}`);
   },
       metadata: {
+        calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
     schema: { name: 'CommentRemoveParams', validate: isCommentRemove },
     permission: { capability: 'review.comment' },
     affectedRanges: { resolve: reviewAffectedRanges, mode: 'declared' },
@@ -371,6 +379,7 @@ export function registerReviewCommands(runtime: CommandRuntime): string[] {
     });
   },
       metadata: {
+        calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
     schema: { name: 'CommentUpdateParams', validate: isCommentUpdate },
     permission: { capability: 'review.comment' },
     affectedRanges: { resolve: (params) => isCommentUpdate(params) ? cellRange(params.sheetId, params.row, params.column) : [], mode: 'exact' },
@@ -386,6 +395,7 @@ export function registerReviewCommands(runtime: CommandRuntime): string[] {
     setCellHyperlink(sheet, params.row, params.column, params.hyperlink);
   },
       metadata: {
+        calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
     schema: { name: 'HyperlinkSetParams', validate: isHyperlinkSet },
     permission: { capability: 'review.hyperlink' },
     affectedRanges: { resolve: reviewAffectedRanges, mode: 'exact' },
@@ -402,6 +412,7 @@ export function registerReviewCommands(runtime: CommandRuntime): string[] {
     }
   },
       metadata: {
+        calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
     schema: { name: 'HyperlinkRemoveParams', validate: isHyperlinkRemove },
     permission: { capability: 'review.hyperlink' },
     affectedRanges: { resolve: reviewAffectedRanges, mode: 'exact' },

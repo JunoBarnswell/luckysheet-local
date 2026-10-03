@@ -315,84 +315,6 @@ function installCommandCellValueResolver(runtime: SpreadsheetRuntime): void {
   });
 }
 
-const FORMULA_SYNC_MUTATIONS = new Set([
-  'record.set',
-  'record.restore',
-  'cell.set',
-  'cell.restore',
-  'range.set',
-  'fill.applied',
-  'fill.restored',
-  'flashFill.applied',
-  'flashFill.restored',
-  'range.clear',
-  'range.paste',
-  'range.move',
-  'dataRegion.materialize.commit',
-  'dataRegion.materialize.restore',
-  'query.load.range',
-  'query.load.sheet-table',
-  'query.load.pivot-source',
-  'query.load.workbook-table',
-  'cells.inserted',
-  'cells.deleted',
-  'cells.inserted.restore',
-  'rows.permuted',
-  'cells.deleted.restore',
-  'rows.inserted',
-  'rows.deleted',
-  'columns.inserted',
-  'columns.deleted',
-  'sheet.rename',
-  'workbook.calculation.mode.set',
-  'row.hidden',
-  'row.unhidden',
-  'rows.unhidden.all',
-  'rows.hidden.restore',
-  'sheet.rows.visibility.set',
-  'sheet.rows.unhide.all',
-  'autoFilter.set',
-  'autoFilter.remove',
-  'sheet.autoFilter.set',
-  'sheet.autoFilter.remove',
-  'sheetTable.autoFilter.set',
-  'outline.group.toggle',
-  'outline.showLevel',
-]);
-
-const VISIBILITY_MUTATIONS = new Set([
-  'row.hidden', 'row.unhidden', 'rows.unhidden.all', 'rows.hidden.restore',
-  'sheet.rows.visibility.set', 'sheet.rows.unhide.all',
-  'autoFilter.set', 'autoFilter.remove', 'sheet.autoFilter.set', 'sheet.autoFilter.remove',
-  'sheetTable.autoFilter.set', 'sheetTable.add', 'sheetTable.remove', 'sheetTable.update',
-  'outline.group.toggle', 'outline.showLevel',
-]);
-
-const DIRECT_CELL_WRITE_MUTATIONS = new Set([
-  'record.set',
-  'record.restore',
-  'cell.set',
-  'cell.restore',
-  'range.set',
-  'fill.applied',
-  'fill.restored',
-  'flashFill.applied',
-  'flashFill.restored',
-  'range.clear',
-  'range.paste',
-  'range.move',
-  'cells.inserted',
-  'cells.deleted',
-  'cells.inserted.restore',
-  'cells.deleted.restore',
-  'dataRegion.materialize.commit',
-  'dataRegion.materialize.restore',
-  'query.load.range',
-  'query.load.sheet-table',
-  'query.load.pivot-source',
-  'query.load.workbook-table',
-]);
-
 function calculationInputUpdate(
   sheetId: string,
   row: number,
@@ -968,19 +890,21 @@ export function attachCoreListeners(runtime: SpreadsheetRuntime): void {
   runtime.detachers.push(
     runtime.commands.onMutation((mutation, source, appliedEffect) => {
       if (runtime.disposed) return;
+      const calculation = runtime.commands.registry.getMutationMetadata(mutation.id).calculation;
+      const isDirectCellWrite = calculation.inputs === 'cells';
       let structuralRoots: readonly CellAddressInput[] | undefined;
       const structuralEffect = isStructuralTransformResult(appliedEffect) ? appliedEffect : undefined;
       const calculationContextEffect = isWorkbookCalculationContextEffect(appliedEffect)
         ? appliedEffect
-        : structuralEffect?.calculationContextEffect ?? runtime.commands.registry.getMutationMetadata(mutation.id)?.calculationContextEffect;
+        : structuralEffect?.calculationContextEffect ?? calculation.context;
       const rebuildsCalculationContext = calculationContextEffect?.action === 'rebuild' || Boolean(structuralEffect && [...runtime.model.dataModel.tables.values()].some(table => table.recordIdFieldId));
-      const changesVisibilityProjection = VISIBILITY_MUTATIONS.has(mutation.id)
+      const changesVisibilityProjection = calculation.visibility
         || rebuildsCalculationContext
         || structuralEffect !== undefined
         || mutationTouchesFilterCriteria(runtime.model, mutation.affectedRanges);
       if (changesVisibilityProjection) runtime.rowVisibilityResolver.invalidate();
-      if (mutation.id === 'workbook.calculation.mode.set') {
-        const mode = (mutation.params as { mode?: unknown } | undefined)?.mode;
+      if (calculation.mode) {
+        const mode = runtime.model.calculationSettings.mode;
         if (mode !== 'automatic' && mode !== 'manual' && mode !== 'partial') throw new Error('Workbook calculation mode mutation is invalid');
         runtime.formula.setRecalculationMode(mode);
       }
@@ -1012,10 +936,9 @@ export function attachCoreListeners(runtime: SpreadsheetRuntime): void {
         );
       }
       // Geometry can change directly (merge/table) or as a side effect of a structural transform.
-      const spillBlockerGeometryRanges = mutation.id === 'merge.set' || mutation.id === 'merge.remove'
-        || mutation.id === 'sheetTable.add' || mutation.id === 'sheetTable.remove'
+      const spillBlockerGeometryRanges = calculation.spillBlockers === 'ranges'
         ? mutation.affectedRanges.filter((range) => range.sheetId === mutation.sheetId)
-        : mutation.id === 'sheetTable.update'
+        : calculation.spillBlockers === 'table-deltas'
           ? (structuralEffect?.rangeOwnerDeltas ?? [])
             .flatMap((delta) => delta.ownerKind === 'sheet-table' && delta.sheetId === mutation.sheetId
               ? [delta.before, delta.after]
@@ -1049,7 +972,7 @@ export function attachCoreListeners(runtime: SpreadsheetRuntime): void {
       // direct write into a dynamic-array child cannot leave partial model or
       // formula state behind.  Undo/redo replay is allowed to restore the
       // exact prior snapshot.
-      if (source === 'command' && DIRECT_CELL_WRITE_MUTATIONS.has(mutation.id)) {
+      if (source === 'command' && isDirectCellWrite) {
         assertNoSpillChildWrite(runtime.model, mutation);
       }
 
@@ -1059,6 +982,9 @@ export function attachCoreListeners(runtime: SpreadsheetRuntime): void {
         const column = range.startColumn + field.ordinal;
         return mutation.affectedRanges.some(affected => affected.sheetId === range.sheetId && affected.startRow <= range.endRow && affected.endRow > range.startRow && affected.startColumn <= column && affected.endColumn >= column);
       });
+      if (!rebuildsCalculationContext && !structuralEffect && isDirectCellWrite) {
+        structuralRoots = [...(structuralRoots ?? []), ...synchronizeCellMutation(runtime.formula, runtime.model, mutation)];
+      }
       if (relationMembershipChanged) structuralRoots = [...(structuralRoots ?? []), ...synchronizeRecordCalculations(runtime.formula, runtime.model)];
       const formulaOwnerDeltas = structuralEffect?.formulaOwnerDeltas ?? [];
       const definedNameOwnerDeltas = structuralEffect?.definedNameOwnerDeltas ?? [];
@@ -1078,28 +1004,19 @@ export function attachCoreListeners(runtime: SpreadsheetRuntime): void {
         || mutation.id === 'pivot.drilldown.add' || mutation.id === 'pivot.drilldown.remove') {
         initializeDataContent(runtime);
       }
-      if (FORMULA_SYNC_MUTATIONS.has(mutation.id) || calculationContextEffect !== undefined || spillBlockerGeometryChanged) {
-        const isDirectCellWrite = DIRECT_CELL_WRITE_MUTATIONS.has(mutation.id);
+      const needsCalculation = isDirectCellWrite || calculation.mode || calculationContextEffect !== undefined
+        || structuralEffect !== undefined || spillBlockerGeometryChanged || changesVisibilityProjection;
+      if (needsCalculation) {
         const roots = rebuildsCalculationContext
           ? undefined
-          : structuralRoots
-            ?? (isDirectCellWrite ? synchronizeCellMutation(runtime.formula, runtime.model, mutation) : undefined)
-            ?? (changesVisibilityProjection ? runtime.formula.getPendingRecalculationRoots() : undefined);
+          : [...new Map([
+            ...(structuralRoots ?? []),
+            ...runtime.formula.getPendingRecalculationRoots(),
+          ].map((address) => [typeof address === 'string' ? address : `${address.sheetId}:${address.row}:${address.column}`, address])).values()];
         const automatic = runtime.formula.getRecalculationMode() === 'automatic';
         if (automatic || changesVisibilityProjection || !isDirectCellWrite || rebuildsCalculationContext) {
-          void scheduleFormulaRecalculation(
-            runtime,
-            VISIBILITY_MUTATIONS.has(mutation.id),
-            isDirectCellWrite ? undefined : roots,
-            false,
-          );
+          void scheduleFormulaRecalculation(runtime, calculation.visibility, roots, false);
         }
-      } else if (changesVisibilityProjection) {
-        void scheduleFormulaRecalculation(
-          runtime,
-          VISIBILITY_MUTATIONS.has(mutation.id),
-          runtime.formula.getPendingRecalculationRoots(),
-        );
       }
     }),
   );

@@ -1812,7 +1812,7 @@ function buildWorksheetXml(
   const dimension = inferDimension(sheet);
   if (dimension) xml += `<dimension ref="${dimension}"/>`;
   const pane = sheet.pane;
-  const paneXml = pane.kind === 'none' ? '' : `<pane xSplit="${roundMetric(pane.xSplit)}" ySplit="${roundMetric(pane.ySplit)}" topLeftCell="${columnToLetter(pane.startColumn)}${pane.startRow + 1}" activePane="${pane.activePane ?? 'bottomRight'}"${pane.kind === 'frozen' ? ` state="${pane.state ?? 'frozen'}"` : ''}/>`;
+  const paneXml = pane.kind === 'none' ? '' : `<pane xSplit="${roundMetric(pane.xSplit)}" ySplit="${roundMetric(pane.ySplit)}" topLeftCell="${columnToLetter(pane.startColumn)}${pane.startRow + 1}"${pane.activePane === undefined ? '' : ` activePane="${pane.activePane}"`}${pane.kind === 'frozen' ? ` state="${pane.state}"` : ''}/>`;
   xml += `<sheetViews><sheetView workbookViewId="0" showGridLines="${sheet.showGridlines === false ? '0' : '1'}" showRowColHeaders="${sheet.showHeaders === false ? '0' : '1'}" zoomScale="${sheet.zoom ?? 100}">${paneXml}</sheetView></sheetViews>`;
   xml += `<sheetFormatPr baseColWidth="8" defaultColWidth="${roundMetric(pixelsToExcelColumnWidth(sheet.defaultColumnWidthPx, maximumDigitWidthPx))}" defaultRowHeight="${roundMetric(pixelsToPoints(sheet.defaultRowHeightPx))}"/>`;
   const outlinedColumns = sheet.outline?.groups.filter((group) => group.axis === 'column').flatMap((group) => Array.from({ length: group.end - group.start + 1 }, (_, offset) => group.start + offset)) ?? [];

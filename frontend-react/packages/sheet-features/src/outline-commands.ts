@@ -90,6 +90,7 @@ export function registerOutlineCommands(runtime: CommandRuntime): void {
     sheet.outline = params.outline === null ? undefined : structuredClone(params.outline);
     },
     metadata: {
+      calculation: { inputs: 'none' as const, visibility: true, spillBlockers: 'none' as const, mode: false },
       schema: { name: 'OutlineMutation', validate: isOutlineMutation },
       permission: { capability: 'sheet.outline.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: outlineAffectedRanges, mode: 'declared' },

@@ -2163,6 +2163,7 @@ export function registerDataToolCommands(runtime: CommandRuntime): void {
       );
     },
     metadata: {
+      calculation: { inputs: 'cells' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
       schema: { name: 'RowsPermuted', validate: isRowsPermutedMutation },
       permission: { capability: 'sheet.sort.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: rowsPermutedAffectedRanges, mode: 'exact' },

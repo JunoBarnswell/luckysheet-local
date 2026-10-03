@@ -188,6 +188,7 @@ export function registerHistoryCommands(registry: CommandRegistry): void {
       applyRestoredWorkbook(context.workbook, item.params.snapshot);
     },
     metadata: {
+      calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false, context: { kind: 'calculation-context', action: 'rebuild' } as const },
       schema: { name: 'ServerRestoreMutationParams', validate: isServerRestoreMutationParams },
       permission: { capability: 'history.restore' },
       affectedRanges: { resolve: () => [], mode: 'exact' },

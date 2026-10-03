@@ -231,7 +231,7 @@ for (const file of files) {
       continue;
     }
     const metadata = metadataObject(call);
-    for (const field of ['schema', 'permission', 'affectedRanges']) {
+    for (const field of ['schema', 'permission', 'affectedRanges', 'calculation']) {
       if (!hasMetadataField(metadata, field)) violations.push(`${location}: mutation ${id} missing metadata.${field}`);
     }
     if (!hasMetadataField(metadata, 'inversePolicy') && !hasMetadataField(metadata, 'inverseIds')) {

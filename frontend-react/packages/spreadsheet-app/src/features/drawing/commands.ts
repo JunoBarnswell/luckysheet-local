@@ -797,6 +797,7 @@ export function registerDrawingCommands(runtime: CommandRuntime, drawingRuntime:
     addDrawing(context.workbook.getSheet(item.params.sheetId), item.params.drawing, item.params.payload);
   },
       metadata: {
+        calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
     schema: { name: 'DrawingAddParams', validate: isDrawingAddParams },
     permission: { capability: 'drawing.edit' },
     affectedRanges: { resolve: rangesForParams, mode: 'declared' },
@@ -809,6 +810,7 @@ export function registerDrawingCommands(runtime: CommandRuntime, drawingRuntime:
     removeDrawing(context.workbook.getSheet(item.params.sheetId), item.params.drawingId);
   },
       metadata: {
+        calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
     schema: { name: 'DrawingRemoveParams', validate: isDrawingRemoveParams },
     permission: { capability: 'drawing.edit' },
     affectedRanges: { resolve: rangesForParams, mode: 'declared' },
@@ -821,6 +823,7 @@ export function registerDrawingCommands(runtime: CommandRuntime, drawingRuntime:
     applyTransformMutation(context.workbook.getSheet(item.params.sheetId), [{ drawingId: item.params.drawingId, before: findDrawing(context.workbook.getSheet(item.params.sheetId), item.params.drawingId).transform, after: item.params.transform }], item.params.connectorRoutes);
   },
       metadata: {
+        calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
     schema: { name: 'DrawingTransformParams', validate: isTransformParams },
     permission: { capability: 'drawing.edit' },
     affectedRanges: { resolve: rangesForParams, mode: 'declared' },
@@ -833,6 +836,7 @@ export function registerDrawingCommands(runtime: CommandRuntime, drawingRuntime:
     applyTransformMutation(context.workbook.getSheet(item.params.sheetId), item.params.entries, item.params.connectorRoutes);
   },
       metadata: {
+        calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
     schema: { name: 'DrawingTransformBatchParams', validate: isTransformBatchParams },
     permission: { capability: 'drawing.edit' },
     affectedRanges: { resolve: rangesForParams, mode: 'declared' },
@@ -845,6 +849,7 @@ export function registerDrawingCommands(runtime: CommandRuntime, drawingRuntime:
     findDrawing(context.workbook.getSheet(item.params.sheetId), item.params.drawingId).anchor = structuredClone(item.params.anchor);
   },
       metadata: {
+        calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
     schema: { name: 'DrawingAnchorParams', validate: isAnchorParams },
     permission: { capability: 'drawing.edit' },
     affectedRanges: { resolve: rangesForParams, mode: 'declared' },
@@ -857,6 +862,7 @@ export function registerDrawingCommands(runtime: CommandRuntime, drawingRuntime:
     updatePayload(context.workbook.getSheet(item.params.sheetId), item.params);
   },
       metadata: {
+        calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
     schema: { name: 'DrawingPayloadUpdateParams', validate: isPayloadUpdateParams },
     permission: { capability: 'drawing.edit' },
     affectedRanges: { resolve: rangesForParams, mode: 'declared' },
@@ -867,6 +873,7 @@ export function registerDrawingCommands(runtime: CommandRuntime, drawingRuntime:
     id: 'drawing.connector.update',
     handler: (item, context) => handleConnectorUpdate(item, context),
     metadata: {
+      calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
       schema: { name: 'DrawingConnectorUpdateParams', validate: isConnectorUpdateParams },
       permission: { capability: 'drawing.edit' },
       affectedRanges: { resolve: rangesForParams, mode: 'declared' },
@@ -877,6 +884,7 @@ export function registerDrawingCommands(runtime: CommandRuntime, drawingRuntime:
     id: 'drawing.connector.route',
     handler: (item, context) => handleConnectorUpdate(item, context),
     metadata: {
+      calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
       schema: { name: 'DrawingConnectorRouteParams', validate: isConnectorUpdateParams },
       permission: { capability: 'drawing.edit' },
       affectedRanges: { resolve: rangesForParams, mode: 'declared' },
@@ -887,6 +895,7 @@ export function registerDrawingCommands(runtime: CommandRuntime, drawingRuntime:
     id: 'drawing.group',
     handler: (item, context) => addGroup(context.workbook.getSheet(item.params.sheetId), item.params.group),
     metadata: {
+      calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
       schema: { name: 'DrawingGroupParams', validate: isGroupParams },
       permission: { capability: 'drawing.edit' },
       affectedRanges: { resolve: rangesForParams, mode: 'declared' },
@@ -897,6 +906,7 @@ export function registerDrawingCommands(runtime: CommandRuntime, drawingRuntime:
     id: 'drawing.ungroup',
     handler: (item, context) => removeGroup(context.workbook.getSheet(item.params.sheetId), item.params.groupId),
     metadata: {
+      calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
       schema: { name: 'DrawingUngroupParams', validate: isUngroupParams },
       permission: { capability: 'drawing.edit' },
       affectedRanges: { resolve: rangesForParams, mode: 'declared' },
@@ -912,6 +922,7 @@ export function registerDrawingCommands(runtime: CommandRuntime, drawingRuntime:
       sheet.snapSettings = structuredClone(item.params.after);
     },
     metadata: {
+      calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
       schema: { name: 'DrawingSnapSettingsParams', validate: isSnapSettingsParams },
       permission: { capability: 'drawing.edit' },
       affectedRanges: { resolve: rangesForParams, mode: 'declared' },
@@ -924,6 +935,7 @@ export function registerDrawingCommands(runtime: CommandRuntime, drawingRuntime:
     reorderDrawing(context.workbook.getSheet(item.params.sheetId), item.params.drawingId, item.params.direction);
   },
       metadata: {
+        calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
     schema: { name: 'DrawingZOrderParams', validate: isZOrderParams },
     permission: { capability: 'drawing.edit' },
     affectedRanges: { resolve: rangesForParams, mode: 'declared' },
@@ -936,6 +948,7 @@ export function registerDrawingCommands(runtime: CommandRuntime, drawingRuntime:
     restoreZOrder(context.workbook.getSheet(item.params.sheetId), item.params);
   },
       metadata: {
+        calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
     schema: { name: 'DrawingZOrderRestoreParams', validate: isZOrderRestoreParams },
     permission: { capability: 'drawing.edit' },
     affectedRanges: { resolve: rangesForParams, mode: 'declared' },

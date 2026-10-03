@@ -6,6 +6,7 @@
     ".": "./src/index.ts"
   },
   "devDependencies": {
+    "@react-sheets/formula-engine": "file:../formula-engine",
     "@react-sheets/command-runtime": "file:../command-runtime",
     "@react-sheets/sheet-features": "file:../sheet-features"
   },

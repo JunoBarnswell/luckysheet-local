@@ -130,3 +130,15 @@ O1.1 首轮冻结源差异在 /tmp/sdk-objects-first-pass.patch。SDK 51/52：�
 O1.1 产品 head 83261a156c45316e3c6dab60e8098ff5eaf9a047 全浏览器 17/19 Pass：原 16 项及 viewer/错误值复制 Pass；矩阵/样式/历史的业务步骤完成后，在关闭全部 Workbook 后重开失败；结构场景在 rename 提交失败。原 trace /tmp/sdk-objects-first-browser-test-results，证据 /tmp/sdk-product-uat-wc2OyW/evidence。rename 的真实 REST operations 返回 201，server StructuralPatch v10 包含完整公式改写，但本地 rename effect 对单元格公式遗漏 owner deltas，故客户端无法确认，不能重试提交或忽略 server patch。
 
 下一整批所有权修正：createSpreadsheetSdk 持有 SDK 根 lease 直至 dispose，不把最后 Workbook/UI release 等同身份/context 退休。身份切换仍统一退休旧目录/对象。rename 删除单独的 cells/rules/names/advanced owners 改写，调用已有 planWorkbookFormulaRewrite，返回所有规范 before/after facts；保留不可编辑 preserved metadata 的明确拒绝，不降级解析或放宽结构断言。实施前 O1.1-i：关闭全部 Workbook 后同 SDK 重开、原 catalog 仍有效；dispose/身份变化旧 catalog 仍拒绝。O1.1-j：rename cell/CF/DV/名称/持久化公式 owner 的本地与 Java facts 一致，一次 ACK 后 undo/redo 正确；篡改服务器 before/after 或未知 owner 拒绝且不进入 terminal，原模型/历史不修补。
+
+## O1.1 计算声明与无损快照修正批次（实施前冻结）
+
+真实 e435d678 UAT 17/19 通过；矩阵撤销恢复了 authored values 却留下清空后的计算输入，删除工作表的撤销 REST 409。保留 `/tmp/sdk-objects-ownership-browser-test-results` 与 `/tmp/sdk-product-uat-PvpoCy/evidence`。对隔离 H2 的只读 canonical operation replay 证明撤销候选与服务端 preimage 仅差 `pane.activePane`：合法可选字段被前端 snapshot/fromSnapshot/duplicate 自动补出。服务端 `UNDO_RESULT_MISMATCH` 校验保持不变。
+
+删除 runtime 的 FORMULA_SYNC_MUTATIONS / DIRECT_CELL_WRITE_MUTATIONS / VISIBILITY_MUTATIONS；MutationRegistrationMetadata 必须提供 calculation 声明，包含 inputs（none/cells）、visibility（布尔）、spillBlockers（none/ranges/table-deltas）、mode（布尔）和可选 typed context。注册时缺字段、未知字段/枚举或无效 context 均拒绝；不存在隐式按 mutation 名称补行为的通道。所有 production owner 和正式测试注册同步迁移，forward/inverse 独立声明各自真实行为。结构变换仍使用实际 StructuralTransformResult；声明负责普通输入、可见性和模式，context 重建/增量事实仍只有原 FormulaEngine/Worker owner。输入与几何 roots 合并，不能由几何更新覆盖输入同步；manual 模式同步 inputs 但不自动求值。record writes 使用其 canonical CellMatrix 投影，关系成员变化继续从现有 relation owner 派生。新增 find.replaced 同样声明真实输入变化，workbook.restore 声明重建。
+
+WorksheetModel.snapshot/fromSnapshot/duplicate 验证并复制原 pane，不归一化合法可选字段；删除无消费者的 runtime normalizeWorksheetPane。字段缺失与字段显式存在均精确保留，不在运行时改版本或补默认值。PaneMap 坐标与 OOXML 格式边界不增加新的持久化 owner。
+
+统一代码批次落地后一次执行 frontend build/SDK/calculation/boundaries/full unit 和合并后 Java 全测试/package，再在干净 head 上跑完整真实 SDK UAT。继承 main/security 变更已经保留于 371bc4d6，不以旧 Jar 或旧验证证明新 head 通过。所有失败原始证据保留，不降低服务端完整恢复、权限或公式断言。
+
+脏根地址补充契约：canonical cellAddressKey 已记录完整 sheet/row/column，清空输入仍必须导出这个根。pending 根导出与遍历共用 key 解码，不以 live cells 查找/过滤，不新建第二份脏根集合。Worker bootstrap pendingRoots 与后续 input deltas 表达同一来源变化，manual 不自动重算，显式 F9 同步结果。原冻结的 k..o 条件保持不变。

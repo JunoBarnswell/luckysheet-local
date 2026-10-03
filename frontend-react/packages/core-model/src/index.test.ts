@@ -12,9 +12,37 @@ import {
   planSheetTableRename,
   WorkbookModel,
   WorksheetModel,
+  type WorksheetPane,
 } from './index';
 import { assertCanonicalWorkbookSnapshot, migrateStoredWorkbookSnapshot, type WorkbookSnapshot } from './snapshot';
 import { commitStructuralMutation, StructuralMutationApplyError } from './structural-mutation-apply-error';
+
+test('canonical pane snapshot, load and clone preserve authored optional field presence', () => {
+  const panes: WorksheetPane[] = [
+    { kind: 'none' },
+    { kind: 'frozen', state: 'frozen', xSplit: 1, ySplit: 2, startRow: 2, startColumn: 1 },
+    { kind: 'frozen', state: 'frozenSplit', xSplit: 1, ySplit: 0, startRow: 0, startColumn: 1, activePane: 'topRight' },
+    { kind: 'split', state: 'split', xSplit: 1200, ySplit: 2400, startRow: 2, startColumn: 1 },
+    { kind: 'split', state: 'split', xSplit: 1200, ySplit: 2400, startRow: 2, startColumn: 1, activePane: 'bottomRight' },
+  ];
+  for (const pane of panes) {
+    const workbook = new WorkbookModel('pane-roundtrip', 'Pane');
+    const sheet = workbook.getSheet(workbook.primarySheetId);
+    sheet.pane = structuredClone(pane);
+    const before = workbook.snapshot();
+    const restored = WorkbookModel.fromSnapshot(before);
+    assert.deepEqual(restored.snapshot(), before);
+    const clone = sheet.cloneWithIdentity('pane-copy', 'Copy');
+    assert.deepEqual(clone.pane, pane);
+    assert.notEqual(clone.pane, sheet.pane);
+    assert.notEqual(restored.getSheet(sheet.id).pane, before.sheets[0]!.pane);
+    assert.equal(Object.hasOwn(restored.getSheet(sheet.id).pane, 'activePane'), Object.hasOwn(pane, 'activePane'));
+  }
+  const invalid = new WorksheetModel('bad-pane', 'Bad');
+  invalid.pane = { kind: 'frozen', state: 'frozen', xSplit: 1, ySplit: 2, startRow: 2, startColumn: 1, repair: true } as never;
+  assert.throws(() => invalid.snapshot(), /pane unknown-field is invalid/);
+  assert.throws(() => invalid.cloneSheet(), /pane unknown-field is invalid/);
+});
 
 test('structural mutation commit preserves success and marks partial-apply failures', () => {
   assert.equal(commitStructuralMutation(() => 42), 42);

@@ -332,14 +332,6 @@ export type WorksheetPane =
       state: 'split';
     };
 
-export function normalizeWorksheetPane(pane: WorksheetPane): WorksheetPane {
-  if (pane.kind === 'none') return { kind: 'none' };
-  const activePane = pane.activePane ?? (pane.xSplit > 0 && pane.ySplit > 0 ? 'bottomRight' : pane.xSplit > 0 ? 'topRight' : pane.ySplit > 0 ? 'bottomLeft' : 'topLeft');
-  return pane.kind === 'frozen'
-    ? { ...pane, activePane, state: pane.state }
-    : { ...pane, activePane, state: 'split' };
-}
-
 export function worksheetPaneValidationError(value: unknown): string | undefined {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return 'kind';
   const pane = value as Record<string, unknown>;
@@ -1922,6 +1914,8 @@ export class WorksheetModel {
   pane: WorksheetPane = { kind: 'none' };
 
   snapshot(): SheetSnapshot {
+    const paneError = worksheetPaneValidationError(this.pane);
+    if (paneError !== undefined) throw new Error(`Workbook snapshot pane ${paneError} is invalid`);
     return {
       kind: this.kind,
       id: this.id,
@@ -1931,7 +1925,7 @@ export class WorksheetModel {
       cells: this.cells.toJSON(),
       dataRegions: this.dataRegions.map((region) => structuredClone(region)),
       merges: structuredClone(this.merges),
-      pane: normalizeWorksheetPane(this.pane),
+      pane: structuredClone(this.pane),
       pivots: structuredClone(this.pivots),
       sparklines: structuredClone(this.sparklines),
       conditionalFormats: structuredClone(this.conditionalFormats),
@@ -1980,7 +1974,7 @@ export class WorksheetModel {
     sheet.cells.deferJSON(input.cells);
     if (input.dataRegions) sheet.replaceDataRegions(input.dataRegions);
     sheet.merges.push(...structuredClone(input.merges));
-    sheet.pane = normalizeWorksheetPane(input.pane);
+    sheet.pane = structuredClone(input.pane);
     sheet.pivots.push(...input.pivots.map((pivot) => canonicalizePivotDefinition(structuredClone(pivot))));
     sheet.sparklines.push(...structuredClone(input.sparklines));
     if (input.sparklineGroups) sheet.sparklineGroups.push(...structuredClone(input.sparklineGroups));
@@ -2022,6 +2016,8 @@ export class WorksheetModel {
   }
 
   cloneWithIdentity(id: SheetId, name: string): WorksheetModel {
+    const paneError = worksheetPaneValidationError(this.pane);
+    if (paneError !== undefined) throw new Error(`Workbook snapshot pane ${paneError} is invalid`);
     const copy = new WorksheetModel(id, name, this.rowCount, this.columnCount);
     copy.kind = this.kind;
     copy.tableSheet = this.tableSheet ? structuredClone(this.tableSheet) : undefined;
@@ -2059,7 +2055,7 @@ export class WorksheetModel {
     copy.zoom = this.zoom;
     copy.hidden = this.hidden;
     copy.tabColor = this.tabColor;
-    copy.pane = normalizeWorksheetPane(this.pane);
+    copy.pane = structuredClone(this.pane);
     return copy;
   }
 

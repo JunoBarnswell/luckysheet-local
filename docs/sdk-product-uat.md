@@ -268,3 +268,23 @@ Java 成功/拒绝与真实并发检查补齐 MWB-03.c/d/e/f：伪造循环 comm
 完整链路审查：SDK 缺少根 lease，最后 child release 触发旧 catalog 退休；rename 手工分支改写 cell 公式却不输出它们的 owner deltas。修正 SDK 根 lifetime（dispose/身份变化仍退休），删除 200 余行重复 rename 代码，统一 planWorkbookFormulaRewrite，同时保留 preserve-only source 的拒绝。新增 root catalog 生存/身份退休与 cell/CF/DV/name facts、undo/redo、恶意 server fact 拒绝检查。产品修正后冻结，只有测试的分页 URL fixture 与 readonly fact 构造同步正式契约；未改产品别名或断言。
 
 修正批次 SDK **56/56 Pass**（/tmp/sdk-objects-ownership-final-sdk.log），build/typecheck、boundaries Pass（/tmp/sdk-objects-ownership-final-build.log、/tmp/sdk-objects-ownership-final-boundaries.log），计算 **457/457 Pass**（/tmp/sdk-objects-ownership-calculation.log）；完整 unit **1570/1516 Pass/54 Fail**，失败标题增减均 0（/tmp/sdk-objects-ownership-unit.log）。下一干净提交重新执行整套 browser，O1.1 a..j 未执行成功的细项仍 Pending。GitHub 本次 head workflow runs/statuses 返回空，不宣告线上 CI 通过。
+
+### O1.1 修正批次 k..o（实施前细项）
+
+| 细项 | 成功验收 | 拒绝验收 | 初始状态 |
+| --- | --- | --- | --- |
+| O1.1-k | range.clear(contents/all) → undo/redo 后 SUM/COUNT 的值和输入恢复；copyValuesTo 取得恢复后的值；inline/Worker 使用同一输入 journal | viewer 清空/撤销拒绝且源和依赖值不变；manual 模式不擅自自动求值 | Pending |
+| O1.1-l | forward/inverse 注册显式 calculation；输入、过滤/outline 行可见性、merge/table spill 几何、find.replaced 和 workbook restore 同步原 owner | 缺失声明、非法枚举、未知字段/错误 context 注册失败，不能通过名称补行为 | Pending |
+| O1.1-m | frozen/split pane 的 activePane 缺失与显式值分别经过 snapshot/load/duplicate 精确保留且互不共享可变对象 | 非法 pane/额外字段拒绝，不归一化成可接受状态 | Pending |
+| O1.1-n | 真实 Java/H2 删除工作表 → 撤销 → 重做 → 重开；完整 snapshot 与原 preimage 一致，成功 ACK | 对不相等的恢复候选保持 UNDO_RESULT_MISMATCH；不得弱化服务端 guards | Pending |
+| O1.1-o | main/security 合并后的新 Jar + frontend 统一检查与真实 19 项 browser，记录 head/console/network | 不以旧 Jar、旧 head 或测试 mock 的成功抵消失败；真实 SSO/桌面 Excel 仍 Blocked | Pending |
+
+第二次真实 UAT e435d678 是 17/19：catalog 最后 child 关闭后能重开；rename 的 canonical owner facts 可被服务端认可。新失败是 k/n，上述两项保持 Pending。只读 replay 文件 `/tmp/sdk-undo-expected-preimage.json` 与 `/tmp/sdk-undo-candidate.json` 的唯一差异为 pane.activePane；所有源代码在分析期间冻结。
+
+首次 calculation 声明批次：SDK 57/58 Pass，新增自动 clear/undo/redo/copy 成功；Worker 手动例失败。完整 unit 1577/1522 Pass/55 Fail（新增同一 Worker 失败，旧 54 标题不变）。只读 probe `/tmp/sdk-clear-worker-proof.log` 证明 null inputs 已正确进入 journal，但 bootstrap pendingRoots 为 []，Worker completed 空结果，源值仍为 1；缺陷在 pendingCalculationRoots 从 live cells 反查地址而过滤已删除的根。脏根 canonical key 自身包含完整地址，导出与 collectAffectedFromRoots 改为同一无回退的 key→address 解码 owner；不再依赖 live cell 存在。新增 k 的手动 Worker 断言保留 1→0→1→0 与 3 次真实 protocol task，不改期望值。
+
+本次批量元数据迁移误改两处动态 StructuralTransformResult（sheet reorder / sheetTable range facts），导致 typecheck 失败；纠正到原 effect 字段，不更改它们的语义。SDK Worker 测试依赖加入正式 devDependency。Java 首次 368 tests/36 context errors/2 skipped，原因是 target/classes 残留旧 V14/V15 SQL；源码只有 V16/V17，新验证使用 clean package 清理编译产物，不删除数据库/改迁移。修正批次完整源码落地后再次统一检查。
+
+修正后 SDK 58/58、calculation 457/457、build/typecheck 和 boundaries Pass。完整 unit 1577/1524 Pass/53 Fail：旧 54 中两项 block-backed AutoFilter sort 通过，新一项结构测试在构造非法 ySplit=1.5 后仍要求 snapshot 成功，违反此批明确的 canonical snapshot 拒绝契约。仅更新 fixture：先保存合法 preimage；非法 pane 的 snapshot 在操作前后都必须拒绝、结构变换同样拒绝且 pane 不变；恢复合法 fixture pane 后比较整个 preimage。产品语义冻结，无断言删除或默认值修复。Maven clean 插件未缓存且当前 JDK 无网络代理 CA，保留原 target 到 `/tmp/sdk-objects-calculation-owner-old-target` 后进行全新 package（不删除数据库，不跳过测试）。
+
+本批统一检查最终：SDK 58/58 Pass；calculation 452+5=457 Pass；build/typecheck、boundaries Pass；Java 368/366 Pass/0 Fail/2 Skipped，package 成功。完整 unit 1577/1525 Pass/52 Fail，与旧 54 标题比较无新增，解决两项 block-backed AutoFilter sort。日志 `/tmp/sdk-objects-calculation-owner-final-{sdk,build,boundaries,formula}.log`、`/tmp/sdk-objects-calculation-owner-final-unit-canonical-fixture.log`、`/tmp/sdk-objects-calculation-owner-clean-java.log`。Java Skipped 条件保留，不能宣告全部实机验收完成。远端 538f3e41 的 canonical-build 两个 check 为 FAILURE（run 37118468043 / 37118464866），不以本地通过覆盖 GitHub 状态；PR 仍草稿。

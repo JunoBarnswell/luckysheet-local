@@ -13,6 +13,8 @@ const cellRange = (params: { row: number; column: number; sheetId?: string }) =>
 }];
 
 const cellSetMetadata = {
+
+  calculation: { inputs: 'cells' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
   schema: {
     name: 'CellSet',
     validate: (value: unknown) => {
@@ -27,6 +29,8 @@ const cellSetMetadata = {
 } as const;
 
 const cellRestoreMetadata = {
+
+  calculation: { inputs: 'cells' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
   schema: {
     name: 'CellRestore',
     validate: (value: unknown) => {
@@ -39,6 +43,22 @@ const cellRestoreMetadata = {
   affectedRanges: { resolve: cellRange },
   inversePolicy: { allowedMutationIds: ['cell.set'], minCount: 1 },
 } as const;
+
+test('CommandRegistry requires explicit calculation semantics and rejects unowned fields', () => {
+  const valid = { inputs: 'cells', visibility: false, spillBlockers: 'none', mode: false } as const;
+  const policies: unknown[] = [undefined, {}, { ...valid, inputs: 'values' }, { ...valid, visibility: 0 },
+    { ...valid, spillBlockers: 'guess' }, { ...valid, mode: undefined }, { ...valid, fallback: true },
+    { ...valid, context: { kind: 'calculation-context', action: 'unknown' } }];
+  for (const calculation of policies) {
+    const registry = new CommandRegistry();
+    assert.throws(() => registry.registerMutation({ id: 'cell.set', handler: () => undefined,
+      metadata: { ...cellSetMetadata, calculation: calculation as never } }), /must declare valid calculation semantics/);
+    assert.equal(registry.hasMutation('cell.set'), false);
+  }
+  const registry = new CommandRegistry();
+  registry.registerMutation({ id: 'cell.set', handler: () => undefined, metadata: { ...cellSetMetadata, calculation: valid } });
+  assert.deepEqual(registry.getMutationMetadata('cell.set').calculation, valid);
+});
 
 test('CommandRuntime keeps formula-rule owners synchronized with a provided FormulaEngine index', () => {
   const workbook = new WorkbookModel('unit-rule-owner-index', 'Rule Owner Index');
@@ -379,7 +399,7 @@ test('CommandRuntime restores chart linked formulas through local history', () =
     afterFormula: '=A2',
   };
   const runtime = new CommandRuntime(workbook);
-  const metadata = (name: string, inverseId: string) => ({
+  const metadata = (name: string, inverseId: string) => ({ calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
     schema: { name, validate: (value: unknown) => !!value && typeof value === 'object' },
     permission: { capability: 'test.chart.write' },
     affectedRanges: { resolve: () => [] },
@@ -447,7 +467,7 @@ test('CommandRuntime replays formula owner history without hydrating deferred ce
     after: { formula: '=Orders[Amount]', sourceFormula: null, barcodeFormula: null },
   };
   const runtime = new CommandRuntime(workbook);
-  const metadata = (name: string, inverseId: string) => ({
+  const metadata = (name: string, inverseId: string) => ({ calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
     schema: { name, validate: (value: unknown) => !!value && typeof value === 'object' },
     permission: { capability: 'test.formula.write' },
     affectedRanges: { resolve: () => [] },
@@ -519,7 +539,7 @@ test('CommandRuntime reconciles syntax-equivalent committed formula text into wo
     after: { formula: serverAfterFormula, sourceFormula: null, barcodeFormula: null },
   };
   const runtime = new CommandRuntime(workbook);
-  const metadata = (name: string, inverseId: string) => ({
+  const metadata = (name: string, inverseId: string) => ({ calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
     schema: { name, validate: (value: unknown) => !!value && typeof value === 'object' },
     permission: { capability: 'test.formula.write' },
     affectedRanges: { resolve: () => [] },
@@ -587,7 +607,7 @@ test('CommandRuntime records and guards defined-name owner patches in history', 
   runtime.onMutation((_mutation, source, effect) => {
     if (source === 'undo' || source === 'redo') replayEffects.push(effect);
   });
-  const metadata = (name: string, allowedMutationIds: string[], ranges = ownerRanges) => ({
+  const metadata = (name: string, allowedMutationIds: string[], ranges = ownerRanges) => ({ calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
     schema: { name, validate: (value: unknown) => !!value && typeof value === 'object' },
     permission: { capability: 'test.defined-name.write' },
     affectedRanges: { resolve: () => ranges, mode: 'exact' as const },
@@ -697,6 +717,7 @@ test('CommandRuntime adopts committed sheet-rename owner facts for undo history'
   });
   const runtime = new CommandRuntime(workbook);
   const metadata = {
+    calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
     schema: {
       name: 'RenameSheet',
       validate: (value: unknown) => !!value && typeof value === 'object'
@@ -822,7 +843,7 @@ test('CommandRuntime replays exact structural range-owner facts through undo and
   runtime.onMutation((_mutation, source, effect) => {
     if (source === 'undo' || source === 'redo') replayEffects.push(effect);
   });
-  const metadata = (name: string, inverseId: string) => ({
+  const metadata = (name: string, inverseId: string) => ({ calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
     schema: { name, validate: (value: unknown) => !!value && typeof value === 'object' },
     permission: { capability: 'test.range-owner.write' },
     affectedRanges: { resolve: () => affectedRanges, mode: 'exact' as const },
@@ -921,7 +942,7 @@ test('CommandRuntime invalidates range-owner history before rebasing across a re
   const localAffectedRanges = [beforeRange, localAfterRange];
   const remoteAffectedRanges = cellRange({ sheetId: sheet.id, row: 0, column: 0 });
   const runtime = new CommandRuntime(workbook);
-  const localMetadata = (name: string, inverseId: string) => ({
+  const localMetadata = (name: string, inverseId: string) => ({ calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
     schema: { name, validate: (value: unknown) => !!value && typeof value === 'object' },
     permission: { capability: 'test.range-owner.write' },
     affectedRanges: { resolve: () => localAffectedRanges, mode: 'exact' as const },
@@ -953,7 +974,7 @@ test('CommandRuntime invalidates range-owner history before rebasing across a re
   });
   const operation = runtime.execute('range.owner.transform', {});
 
-  const axisMetadata = (direction: 1 | -1, inverseId: string) => ({
+  const axisMetadata = (direction: 1 | -1, inverseId: string) => ({ calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
     schema: {
       name: 'AxisMutation',
       validate: (value: unknown) => !!value && typeof value === 'object'
@@ -1122,7 +1143,7 @@ test('CommandRuntime rejects missing or empty authoritative ACK patches when loc
   const delta: StructuralDefinedNameOwnerDelta = { owner: { name: 'Rate', scope: 'workbook' }, before, after };
   const ownerRanges = [{ sheetId, startRow: 0, endRow: 1, startColumn: 0, endColumn: 0 }];
   const runtime = new CommandRuntime(workbook);
-  const metadata = (name: string, allowedMutationIds: string[]) => ({
+  const metadata = (name: string, allowedMutationIds: string[]) => ({ calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
     schema: { name, validate: (value: unknown) => !!value && typeof value === 'object' },
     permission: { capability: 'test.defined-name.write' },
     affectedRanges: { resolve: () => ownerRanges, mode: 'exact' as const },
@@ -1188,7 +1209,7 @@ test('CommandRuntime rejects partial authoritative owner ACK mismatches without 
   const rateDelta: StructuralDefinedNameOwnerDelta = { owner: { name: 'Rate', scope: 'workbook' }, before: beforeRate, after: afterRate };
   const taxDelta: StructuralDefinedNameOwnerDelta = { owner: { name: 'Tax', scope: 'workbook' }, before: beforeTax, after: afterTax };
   const runtime = new CommandRuntime(workbook);
-  const metadata = (name: string, allowedMutationIds: string[]) => ({
+  const metadata = (name: string, allowedMutationIds: string[]) => ({ calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
     schema: { name, validate: (value: unknown) => !!value && typeof value === 'object' },
     permission: { capability: 'test.defined-name.write' },
     affectedRanges: { resolve: () => ownerRanges, mode: 'exact' as const },
@@ -1250,7 +1271,7 @@ test('CommandRuntime rejects remote structural owner facts before mutating the l
     before: { formula: '=A1', sourceFormula: null, barcodeFormula: null },
     after: { formula: '=B1', sourceFormula: null, barcodeFormula: null },
   };
-  const metadata = (name: string, allowedMutationIds: string[]) => ({
+  const metadata = (name: string, allowedMutationIds: string[]) => ({ calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
     schema: { name, validate: (value: unknown) => !!value && typeof value === 'object' },
     permission: { capability: 'test.structural.write' },
     affectedRanges: { resolve: () => [], mode: 'exact' as const },
@@ -1361,10 +1382,10 @@ test('CommandRuntime emits declared calculation-context effects for command, und
     id: 'context.set',
     handler: (item, context) => { context.workbook.name = (item.params as { name: string }).name; },
     metadata: {
+      calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false, context: CALCULATION_CONTEXT_EFFECTS.rebuild },
       schema: { name: 'ContextSet', validate: (value: unknown) => !!value && typeof value === 'object' && typeof (value as { name?: unknown }).name === 'string' },
       permission: { capability: 'test.context.write' },
       affectedRanges: { resolve: () => [] },
-      calculationContextEffect: CALCULATION_CONTEXT_EFFECTS.rebuild,
       inverseIds: ['context.restore'],
     },
   });
@@ -1372,10 +1393,10 @@ test('CommandRuntime emits declared calculation-context effects for command, und
     id: 'context.restore',
     handler: (item, context) => { context.workbook.name = (item.params as { name: string }).name; },
     metadata: {
+      calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false, context: CALCULATION_CONTEXT_EFFECTS.rebuild },
       schema: { name: 'ContextRestore', validate: (value: unknown) => !!value && typeof value === 'object' && typeof (value as { name?: unknown }).name === 'string' },
       permission: { capability: 'test.context.write' },
       affectedRanges: { resolve: () => [] },
-      calculationContextEffect: CALCULATION_CONTEXT_EFFECTS.rebuild,
       inverseIds: ['context.set'],
     },
   });
@@ -1412,13 +1433,13 @@ test('CommandRegistry rejects malformed calculation-context metadata', () => {
     id: 'context.invalid',
     handler: () => undefined,
     metadata: {
+      calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false, context: { kind: 'calculation-context', action: 'rebuild-all' } as never },
       schema: { name: 'InvalidContext', validate: () => true },
       permission: { capability: 'test.context.write' },
       affectedRanges: { resolve: () => [] },
-      calculationContextEffect: { kind: 'calculation-context', action: 'rebuild-all' } as never,
       inverseIds: ['context.invalid'],
     },
-  }), /invalid calculation context effect/);
+  }), /must declare valid calculation semantics/);
 });
 
 test('CommandRuntime rolls back applied mutations if a command throws mid-execution', () => {
@@ -1432,6 +1453,7 @@ test('CommandRuntime rolls back applied mutations if a command throws mid-execut
       context.workbook.getSheet(item.sheetId).cells.set(params.row, 0, { value: params.value });
     },
     metadata: {
+      calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
       schema: { name: 'ValueSet', validate: (value: unknown) => !!value && typeof value === 'object' && Number.isInteger((value as { row?: unknown }).row) },
       permission: { capability: 'test.value.write' },
       affectedRanges: { resolve: () => [] },
@@ -1445,6 +1467,7 @@ test('CommandRuntime rolls back applied mutations if a command throws mid-execut
       context.workbook.getSheet(item.sheetId).cells.delete(params.row, 0);
     },
     metadata: {
+      calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
       schema: { name: 'ValueRestore', validate: (value: unknown) => !!value && typeof value === 'object' && Number.isInteger((value as { row?: unknown }).row) },
       permission: { capability: 'test.value.write' },
       affectedRanges: { resolve: () => [] },
@@ -1547,6 +1570,7 @@ test('remote structural history preserves unchanged payloads and resolves formul
   workbook.addSheet('end-id', 'End');
   const runtime = new CommandRuntime(workbook);
   const rowMutationMetadata = {
+    calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
     schema: {
       name: 'RowShift',
       validate: (value: unknown) => !!value && typeof value === 'object'
@@ -1700,6 +1724,7 @@ test('CommandRuntime rejects an inverse that is not registered before applying t
     id: 'primary.set',
     handler: () => undefined,
     metadata: {
+      calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
       schema: { name: 'PrimarySet', validate: (value: unknown) => !!value && typeof value === 'object' },
       permission: { capability: 'test.write' },
       affectedRanges: { resolve: () => [{ sheetId: 'sheet-1', startRow: 1, endRow: 1, startColumn: 1, endColumn: 1 }] },
@@ -1710,6 +1735,7 @@ test('CommandRuntime rejects an inverse that is not registered before applying t
     id: 'known.inverse',
     handler: () => undefined,
     metadata: {
+      calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
       schema: { name: 'KnownInverse', validate: (value: unknown) => !!value && typeof value === 'object' },
       permission: { capability: 'test.write' },
       affectedRanges: { resolve: () => [{ sheetId: 'sheet-1', startRow: 1, endRow: 1, startColumn: 1, endColumn: 1 }] },
@@ -1750,6 +1776,7 @@ test('CommandRegistry validates schema, permission, affected ranges, and declare
   const registry = new CommandRegistry();
   const range = { sheetId: 'sheet-1', startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 };
   const metadata = {
+    calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
     schema: { name: 'EmptyParams', validate: (value: unknown) => value !== null && typeof value === 'object' },
     permission: { capability: 'sheet.write' },
     affectedRanges: { resolve: () => [range] },
@@ -1764,6 +1791,7 @@ test('CommandRegistry validates schema, permission, affected ranges, and declare
     id: 'cell.restore',
     handler: () => undefined,
     metadata: {
+      calculation: { inputs: 'cells' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
       schema: { name: 'EmptyParams', validate: (value: unknown) => value !== null && typeof value === 'object' },
       permission: { capability: 'sheet.write' },
       affectedRanges: { resolve: () => [range] },
@@ -1804,6 +1832,7 @@ test('CommandRegistry rejects incomplete metadata and declared inverse drift', (
     id: 'declared.drift',
     handler: () => undefined,
     metadata: {
+      calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
       schema: { name: 'DeclaredDrift', validate: () => true },
       permission: { capability: 'test.write' },
       affectedRanges: { resolve: () => [] },

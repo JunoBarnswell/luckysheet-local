@@ -213,16 +213,21 @@ describe('structural operations', () => {
 
     const invalidOtherAxis = seedWorkbook();
     const invalidSheet = invalidOtherAxis.workbook.getSheet('s1');
+    const invalidBefore = invalidOtherAxis.workbook.snapshot();
     invalidSheet.pane = {
       kind: 'frozen', xSplit: 0, ySplit: 1.5, startRow: 0, startColumn: 0, state: 'frozen',
     };
-    const invalidBefore = invalidOtherAxis.workbook.snapshot();
+    const invalidPane = structuredClone(invalidSheet.pane);
+    assert.throws(() => invalidOtherAxis.workbook.snapshot(), /Workbook snapshot pane ySplit is invalid/);
     assert.throws(
       () => StructuralTransform.apply(invalidOtherAxis.workbook, {
         kind: 'insert-columns', sheetId: invalidSheet.id, at: 0, count: 1,
       }),
       /UNSUPPORTED_STRUCTURAL_REFERENCE: pane ySplit is invalid/,
     );
+    assert.deepEqual(invalidSheet.pane, invalidPane);
+    assert.throws(() => invalidOtherAxis.workbook.snapshot(), /Workbook snapshot pane ySplit is invalid/);
+    invalidSheet.pane = structuredClone(invalidBefore.sheets.find(sheet => sheet.id === invalidSheet.id)!.pane);
     assert.deepEqual(invalidOtherAxis.workbook.snapshot(), invalidBefore);
   });
 

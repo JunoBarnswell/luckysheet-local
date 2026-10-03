@@ -86,6 +86,7 @@ export function registerPermissionCommands(runtime: CommandRuntime): string[] {
       else rules.push(structuredClone(params.rule));
     },
     metadata: {
+      calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
       schema: { name: 'ProtectSetParams', validate: isProtectSetParams },
       permission: { capability: 'workbook.protect', roles: ['owner'] },
       affectedRanges: { resolve: (params) => params.rule.scope === 'range' && params.rule.range ? [params.rule.range] : sheetWideRange(params.sheetId), mode: 'exact' },
@@ -100,6 +101,7 @@ export function registerPermissionCommands(runtime: CommandRuntime): string[] {
       if (index >= 0) rules.splice(index, 1);
     },
     metadata: {
+      calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
       schema: { name: 'ProtectRemoveParams', validate: isProtectRemoveParams },
       permission: { capability: 'workbook.protect', roles: ['owner'] },
       affectedRanges: { resolve: (params) => sheetWideRange(params.sheetId), mode: 'exact' },

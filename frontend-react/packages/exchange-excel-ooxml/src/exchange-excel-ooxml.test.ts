@@ -14,6 +14,19 @@ import type { NativePivotCacheDefinition, NativePivotTableDefinition } from './t
 import { strFromU8, strToU8 } from 'fflate';
 import { descendants, parseXml } from './xml';
 
+it('OOXML round-trip preserves an omitted activePane without adding a default', async () => {
+  const workbook = new WorkbookModel('pane-ooxml', 'Pane');
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.pane = { kind: 'frozen', state: 'frozen', xSplit: 1, ySplit: 2, startRow: 2, startColumn: 1 };
+  const before = structuredClone(sheet.pane);
+  const imported = await importOoxmlDocument({ fileName: 'pane.xlsx', buffer: exportSnapshotToOoxmlBuffer(workbook.snapshot()), options: { compatibilityTarget: 'B' } });
+  assert.deepEqual(imported.snapshot.sheets[0]!.pane, before);
+  assert.equal(Object.hasOwn(imported.snapshot.sheets[0]!.pane, 'activePane'), false);
+  sheet.pane = { ...before, activePane: 'bottomRight' };
+  const explicit = await importOoxmlDocument({ fileName: 'pane-explicit.xlsx', buffer: exportSnapshotToOoxmlBuffer(workbook.snapshot()), options: { compatibilityTarget: 'B' } });
+  assert.deepEqual(explicit.snapshot.sheets[0]!.pane, sheet.pane);
+});
+
 const imagePng = Uint8Array.from(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAADAAAAAgCAIAAADbtmxLAAAAN0lEQVR4nO3OQQ0AMAgEMFRgFNOTMRccjyYV0Op5p1R8ICQkJJQeCAkJCaUHQkJCQumBkJDQsg8dwKZ5fgcr3gAAAABJRU5ErkJggg==', 'base64'));
 const imageAsset = { schema: 'AssetRef' as const, assetId: 'asset-test', contentHash: createHash('sha256').update(imagePng).digest('hex'), mimeType: 'image/png', byteLength: imagePng.byteLength };
 

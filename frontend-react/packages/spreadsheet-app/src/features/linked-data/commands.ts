@@ -16,11 +16,11 @@ export function registerLinkedDataCommands(runtime: CommandRuntime): void {
     for (const other of workbook.dataModel.externalLinks.values()) if (other.id !== link.id && other.token.toUpperCase() === link.token.toUpperCase()) throw new Error('EXTERNAL_LINK_TOKEN_CONFLICT');
     workbook.dataModel.externalLinks.set(link.id, structuredClone(link));
   };
-  runtime.registry.registerMutation<{ link: ExternalLinkBinding }>({ id: 'externalLink.set', handler: (item, context) => { if (!validSet(item.params)) throw new Error('Invalid external link'); set(context.workbook, item.params.link); }, metadata: {
-    schema: { name: 'ExternalLinkSet', validate: validSet }, permission: { capability: 'workbook.external-link.write', roles: ['owner', 'editor'] }, affectedRanges: { resolve: () => [], mode: 'exact' }, calculationContextEffect: CALCULATION_CONTEXT_EFFECTS.rebuild, inverseIds: ['externalLink.set', 'externalLink.remove'],
+  runtime.registry.registerMutation<{ link: ExternalLinkBinding }>({ id: 'externalLink.set', handler: (item, context) => { if (!validSet(item.params)) throw new Error('Invalid external link'); set(context.workbook, item.params.link); }, metadata: { calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false, context: CALCULATION_CONTEXT_EFFECTS.rebuild },
+    schema: { name: 'ExternalLinkSet', validate: validSet }, permission: { capability: 'workbook.external-link.write', roles: ['owner', 'editor'] }, affectedRanges: { resolve: () => [], mode: 'exact' },  inverseIds: ['externalLink.set', 'externalLink.remove'],
   } });
-  runtime.registry.registerMutation<{ linkId: string }>({ id: 'externalLink.remove', handler: (item, context) => { if (!validRemove(item.params) || !context.workbook.dataModel.externalLinks.delete(item.params.linkId)) throw new Error('External link not found'); }, metadata: {
-    schema: { name: 'ExternalLinkRemove', validate: validRemove }, permission: { capability: 'workbook.external-link.write', roles: ['owner', 'editor'] }, affectedRanges: { resolve: () => [], mode: 'exact' }, calculationContextEffect: CALCULATION_CONTEXT_EFFECTS.rebuild, inverseIds: ['externalLink.set'],
+  runtime.registry.registerMutation<{ linkId: string }>({ id: 'externalLink.remove', handler: (item, context) => { if (!validRemove(item.params) || !context.workbook.dataModel.externalLinks.delete(item.params.linkId)) throw new Error('External link not found'); }, metadata: { calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false, context: CALCULATION_CONTEXT_EFFECTS.rebuild },
+    schema: { name: 'ExternalLinkRemove', validate: validRemove }, permission: { capability: 'workbook.external-link.write', roles: ['owner', 'editor'] }, affectedRanges: { resolve: () => [], mode: 'exact' },  inverseIds: ['externalLink.set'],
   } });
   runtime.registry.registerCommand<{ link: ExternalLinkBinding }>({ id: 'externalLink.set', execute: (params, context) => {
     if (!validSet(params)) throw new Error('Invalid external link');
@@ -52,8 +52,8 @@ export function registerRecordCommands(runtime: CommandRuntime): void {
     assertRecordTable(workbook, table);
     workbook.dataModel.tables.set(table.id, structuredClone(table));
   };
-  runtime.registry.registerMutation<{ table: import('@react-sheets/core-model').WorkbookTableModel }>({ id: 'table.configure', handler: (item, context) => { if (!validTable(item.params)) throw new Error('Invalid record table'); setTable(context.workbook, item.params.table); }, metadata: {
-    schema: { name: 'RecordTableConfigure', validate: validTable }, permission: { capability: 'workbook.table.write', roles: ['owner', 'editor'] }, affectedRanges: { resolve: params => params.table.sourceRange ? [params.table.sourceRange] : [], mode: 'declared' }, calculationContextEffect: CALCULATION_CONTEXT_EFFECTS.rebuild, inverseIds: ['table.configure'],
+  runtime.registry.registerMutation<{ table: import('@react-sheets/core-model').WorkbookTableModel }>({ id: 'table.configure', handler: (item, context) => { if (!validTable(item.params)) throw new Error('Invalid record table'); setTable(context.workbook, item.params.table); }, metadata: { calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false, context: CALCULATION_CONTEXT_EFFECTS.rebuild },
+    schema: { name: 'RecordTableConfigure', validate: validTable }, permission: { capability: 'workbook.table.write', roles: ['owner', 'editor'] }, affectedRanges: { resolve: params => params.table.sourceRange ? [params.table.sourceRange] : [], mode: 'declared' },  inverseIds: ['table.configure'],
   } });
   runtime.registry.registerCommand<{ table: import('@react-sheets/core-model').WorkbookTableModel }>({ id: 'table.configure', execute: (params, context) => {
     if (!validTable(params)) throw new Error('Invalid record table');
@@ -64,15 +64,15 @@ export function registerRecordCommands(runtime: CommandRuntime): void {
     context.applyMutation({ id: 'table.configure', ...base, params, inverse: [{ id: 'table.configure', ...base, params: { table: previous } }], apply: () => setTable(context.workbook, params.table) });
     return { operationId: context.operationId, mutationCount: 1, affectedRanges: ranges };
   } });
-  runtime.registry.registerMutation<{ relationship: import('@react-sheets/core-model').DataRelationship }>({ id: 'relationship.set', handler: (item, context) => { if (!validRelation(item.params)) throw new Error('Invalid record relation'); assertRecordRelationship(context.workbook, item.params.relationship); context.workbook.dataModel.relationships.set(item.params.relationship.id, structuredClone(item.params.relationship)); }, metadata: {
-    schema: { name: 'RecordRelationshipSet', validate: validRelation }, permission: { capability: 'workbook.table.write', roles: ['owner', 'editor'] }, affectedRanges: { resolve: () => [], mode: 'declared' }, calculationContextEffect: CALCULATION_CONTEXT_EFFECTS.rebuild, inverseIds: ['relationship.set', 'relationship.remove'],
+  runtime.registry.registerMutation<{ relationship: import('@react-sheets/core-model').DataRelationship }>({ id: 'relationship.set', handler: (item, context) => { if (!validRelation(item.params)) throw new Error('Invalid record relation'); assertRecordRelationship(context.workbook, item.params.relationship); context.workbook.dataModel.relationships.set(item.params.relationship.id, structuredClone(item.params.relationship)); }, metadata: { calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false, context: CALCULATION_CONTEXT_EFFECTS.rebuild },
+    schema: { name: 'RecordRelationshipSet', validate: validRelation }, permission: { capability: 'workbook.table.write', roles: ['owner', 'editor'] }, affectedRanges: { resolve: () => [], mode: 'declared' },  inverseIds: ['relationship.set', 'relationship.remove'],
   } });
   runtime.registry.registerMutation<{ relationshipId: string }>({ id: 'relationship.remove', handler: (item, context) => {
     if (!validRemove(item.params)) throw new Error('Invalid record relation');
     for (const table of context.workbook.dataModel.tables.values()) for (const field of table.fields) if (field.calculation && field.calculation.kind !== 'formula' && field.calculation.relationshipId === item.params.relationshipId) throw new Error('RECORD_RELATION_IN_USE');
     if (!context.workbook.dataModel.relationships.delete(item.params.relationshipId)) throw new Error('Record relation not found');
-  }, metadata: {
-    schema: { name: 'RecordRelationshipRemove', validate: validRemove }, permission: { capability: 'workbook.table.write', roles: ['owner', 'editor'] }, affectedRanges: { resolve: () => [], mode: 'declared' }, calculationContextEffect: CALCULATION_CONTEXT_EFFECTS.rebuild, inverseIds: ['relationship.set'],
+  }, metadata: { calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false, context: CALCULATION_CONTEXT_EFFECTS.rebuild },
+    schema: { name: 'RecordRelationshipRemove', validate: validRemove }, permission: { capability: 'workbook.table.write', roles: ['owner', 'editor'] }, affectedRanges: { resolve: () => [], mode: 'declared' },  inverseIds: ['relationship.set'],
   } });
   runtime.registry.registerCommand<{ relationship: import('@react-sheets/core-model').DataRelationship }>({ id: 'relationship.set', execute: (params, context) => {
     assertRecordRelationship(context.workbook, params.relationship);
@@ -89,7 +89,7 @@ export function registerRecordCommands(runtime: CommandRuntime): void {
     const target = resolveRecordField(context.workbook, item.params), sheet = context.workbook.getSheet(target.sheetId);
     if (item.params.previous === null) sheet.cells.delete(target.row, target.column);
     else sheet.cells.set(target.row, target.column, structuredClone(item.params.previous));
-  }, metadata: {
+  }, metadata: { calculation: { inputs: 'cells' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
     schema: { name: 'RecordFieldRestore', validate: validRestore }, permission: { capability: 'sheet.cell.write', roles: ['owner', 'editor'] }, affectedRanges: { resolve: () => [], mode: 'declared' }, inverseIds: ['record.set'],
   } });
   runtime.registry.registerMutation<import('@react-sheets/core-model').RecordFieldAddress & { value: import('@react-sheets/core-model').TableScalar }>({ id: 'record.set', handler: (item, context) => {
@@ -99,7 +99,7 @@ export function registerRecordCommands(runtime: CommandRuntime): void {
     if (!target.writable) throw new Error('RECORD_FIELD_READ_ONLY');
     context.workbook.getSheet(target.sheetId).cells.set(target.row, target.column, { ...target.cell, value: item.params.value, formula: undefined, formulaValue: undefined });
 
-  }, metadata: {
+  }, metadata: { calculation: { inputs: 'cells' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
     schema: { name: 'RecordFieldSet', validate: validSet }, permission: { capability: 'sheet.cell.write', roles: ['owner', 'editor'] }, affectedRanges: { resolve: () => [], mode: 'declared' }, inverseIds: ['record.restore'],
   } });
   runtime.registry.registerCommand<import('@react-sheets/core-model').RecordFieldAddress & { value: import('@react-sheets/core-model').TableScalar }>({ id: 'record.set', execute: (params, context) => {

@@ -266,6 +266,7 @@ export function registerFindReplaceCommands(runtime: CommandRuntime): string[] {
     id: 'find.replaced',
     handler: (item, context) => applyFindReplacementMutation(item.params, context),
     metadata: {
+      calculation: { inputs: 'cells' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
       schema: { name: 'FindReplacementMutationParams', validate: isFindReplacementMutation },
       permission: { capability: 'sheet.cell.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: (params) => [...params.affectedRanges], mode: 'exact' },

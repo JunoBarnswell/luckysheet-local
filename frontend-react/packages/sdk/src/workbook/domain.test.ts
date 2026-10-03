@@ -7,6 +7,7 @@ import { getWorkbookObjectPort, WorkbookSession } from '@react-sheets/spreadshee
 import { Workbook } from './workbook';
 import { SdkError } from '../error';
 import { CollabSocketClient, type OperationMessage } from '@react-sheets/protocol';
+import { consumeBrowserCalculationTaskWithEngine, type CalculationBrowserWorker, type FormulaEngine } from '@react-sheets/formula-engine';
 import { startCollaborationSession } from '../../../spreadsheet-app/src/runtime';
 function fixture(id: string, scope: object = {}) {
   const session = new WorkbookSession({ unitId: id });
@@ -258,6 +259,75 @@ test('range clear families preserve content or presentation and border operation
     assert.equal((await range.read())[0]![0]!.style, undefined);
     assert.equal((await range.read())[0]![0]!.numberFormat, undefined);
   } finally { workbook.close(); }
+});
+
+test('clear undo and redo synchronize dependent calculations and copied scalar values', async () => {
+  for (const kind of ['contents', 'all'] as const) {
+    const { workbook, session } = fixture(`clear-calculation-${kind}`);
+    try {
+      const sheet = workbook.worksheets.at(0), range = sheet.ranges.get('D8:E9'), formulas = sheet.ranges.get('G1:G2');
+      await range.setValues([[1, '=literal'], [true, null]]);
+      await formulas.setFormulas([['=SUM(D8:E8)'], ['=COUNT(D8:E9)']]);
+      assert.deepEqual(await formulas.readValues(), [[1], [1]]);
+      await range.clear(kind);
+      assert.deepEqual(await formulas.readValues(), [[0], [0]]);
+      assert.equal(await workbook.undo(), true);
+      assert.deepEqual(await range.readValues(), [[1, '=literal'], [true, null]]);
+      assert.deepEqual(await formulas.readValues(), [[1], [1]]);
+      assert.equal(await workbook.redo(), true);
+      assert.deepEqual(await formulas.readValues(), [[0], [0]]);
+      await workbook.undo();
+      await formulas.copyValuesTo(sheet.ranges.get('H1:H2'));
+      assert.deepEqual(await sheet.ranges.get('H1:H2').readValues(), [[1], [1]]);
+      session['permission'].applyServerAccess({ unitId: workbook.id, role: 'viewer', accessRevision: 1, regions: [] });
+      const before = session['runtime'].model.snapshot();
+      await assert.rejects(range.clear(kind), (cause: unknown) => cause instanceof SdkError && cause.code === 'FORBIDDEN');
+      await assert.rejects(workbook.undo(), (cause: unknown) => cause instanceof SdkError && cause.code === 'FORBIDDEN');
+      assert.deepEqual(session['runtime'].model.snapshot(), before);
+      assert.deepEqual(await formulas.readValues(), [[1], [1]]);
+    } finally { workbook.close(); }
+  }
+});
+
+test('manual clear and inverse publish the canonical input journal to the Worker executor', async () => {
+  const { workbook, session } = fixture('clear-worker-journal');
+  let workerEngine: FormulaEngine | null = null, calculationPosts = 0;
+  const listeners = new Set<(event: { data?: unknown }) => void>();
+  const worker: CalculationBrowserWorker = {
+    postMessage(message) {
+      if ((message as { kind?: string }).kind !== 'recalculate') return;
+      calculationPosts += 1;
+      const consumed = consumeBrowserCalculationTaskWithEngine(message, workerEngine);
+      workerEngine = consumed.engine;
+      queueMicrotask(() => { for (const listener of listeners) listener({ data: consumed.result }); });
+    },
+    terminate() { listeners.clear(); },
+    addEventListener(type, listener) { if (type === 'message') listeners.add(listener); },
+    removeEventListener(type, listener) { if (type === 'message') listeners.delete(listener); },
+  };
+  let port: ReturnType<FormulaEngine['createCalculationTaskPort']> | undefined;
+  try {
+    const sheet = workbook.worksheets.at(0), range = sheet.ranges.get('D8:E9'), formulas = sheet.ranges.get('G1:G2');
+    await range.setValues([[1, '=literal'], [true, null]]);
+    await formulas.setFormulas([['=SUM(D8:E8)'], ['=COUNT(D8:E9)']]);
+    assert.deepEqual(await formulas.readValues(), [[1], [1]]);
+    session.setRecalculationMode('manual');
+    const engine = session['runtime'].formula;
+    port = engine.createCalculationTaskPort({ workerFactory: () => worker });
+    await range.clear('contents');
+    assert.deepEqual(await formulas.readValues(), [[1], [1]]);
+    await engine.recalculateAsync(undefined, port);
+    assert.deepEqual(await formulas.readValues(), [[0], [0]]);
+    await workbook.undo();
+    assert.deepEqual(await formulas.readValues(), [[0], [0]]);
+    await engine.recalculateAsync(undefined, port);
+    assert.deepEqual(await formulas.readValues(), [[1], [1]]);
+    await workbook.redo();
+    assert.deepEqual(await formulas.readValues(), [[1], [1]]);
+    await engine.recalculateAsync(undefined, port);
+    assert.deepEqual(await formulas.readValues(), [[0], [0]]);
+    assert.equal(calculationPosts, 3);
+  } finally { port?.dispose?.(); workbook.close(); }
 });
 
 test('worksheet dimensions and visibility share canonical ownership and offline structural changes reject', async () => {
