@@ -19,23 +19,23 @@ SDK 拥有认证/身份/凭证/组合根/工作簿目录与生命周期/Excel �
 | ID | 前置条件与操作 | 预期结果与拒绝路径 | 状态 |
 |---|---|---|---|
 | ROLE-01 | 生成 TS/Java 契约并扫描全部角色消费者 | 一个生成 WorkbookRole 来源；非法角色拒绝；wire labels 不变 | Pass |
-| ROLE-02 | 四种角色分别打开活动/已删除工作簿菜单 | SDK capability 决定编辑/共享/移动/恢复/purge；Web 不解释角色 | Pending |
-| AUTH-01 | 新部署使用初始化凭据建立管理员 | 真实认证与 CSRF 轮换；凭据不进入公共快照/工作簿 | Pending |
-| AUTH-02 | 正确/错误密码登录、登出、刷新 | 身份跟随服务器；失败不建立身份；登出撤销会话 | Pending |
-| AUTH-03 | OIDC 登录/回调/silent renew/过期/登出 | SDK 拥有生命周期；Web 不接触 token；过期不能沿用身份 | Pending |
+| ROLE-02 | 四种角色分别打开活动/已删除工作簿菜单 | SDK capability 决定编辑/共享/移动/恢复/purge；Web 不解释角色 | Pass |
+| AUTH-01 | 新部署使用初始化凭据建立管理员 | 真实认证与 CSRF 轮换；凭据不进入公共快照/工作簿 | Pass |
+| AUTH-02 | 正确/错误密码登录、登出、刷新 | 身份跟随服务器；失败不建立身份；登出撤销会话 | Pass |
+| AUTH-03 | OIDC 登录/回调/silent renew/过期/登出 | SDK 拥有生命周期；Web 不接触 token；过期不能沿用身份 | Blocked |
 | AUTH-04 | 网络失败/未知模式/损坏会话响应后重试 | typed error 含操作与恢复办法；失效时清除身份/凭据 | Pending |
-| ID-01 | 管理员创建/禁用/启用用户、重置密码 | SDK 完成真实请求；禁用/重置使旧会话失效 | Pending |
-| ID-02 | 普通用户调用管理员动作 | SDK 拒绝且服务器独立授权；无任意 request 公共入口 | Pending |
-| RT-01 | StrictMode 挂载/清理/重挂载/最终卸载 | 唯一 SDK API/persistence/asset/session owner；释放资源 | Pending |
+| ID-01 | 管理员创建/禁用/启用用户、重置密码 | SDK 完成真实请求；禁用/重置使旧会话失效 | Pass |
+| ID-02 | 普通用户调用管理员动作 | SDK 拒绝且服务器独立授权；无任意 request 公共入口 | Pass |
+| RT-01 | StrictMode 挂载/清理/重挂载/最终卸载 | 唯一 SDK API/persistence/asset/session owner；释放资源 | Pass |
 | RT-02 | subject 切换且有工作簿与恢复记录 | 释放旧 owner；journal 按 subject 隔离，不能跨身份重放 | Pending |
-| HUB-01 | 创建→目录→打开→编辑→保存→刷新 | 服务端为唯一 authority，版本/快照一致；错误不变本地空表 | Pending |
+| HUB-01 | 创建→目录→打开→编辑→保存→刷新 | 服务端为唯一 authority，版本/快照一致；错误不变本地空表 | Pass |
 | HUB-02 | 重命名/复制/移入文件夹/星标后再打开 | SDK 生命周期动作与服务端/目录一致，无双写 | Pending |
-| HUB-03 | 删除→恢复；再次删除→永久删除 | 权限与转换正确；未删除或非 owner purge 拒绝 | Pending |
+| HUB-03 | 删除→恢复；再次删除→永久删除 | 权限与转换正确；未删除或非 owner purge 拒绝 | Pass |
 | HUB-04 | 快速切换目录/搜索/文件夹并取消旧请求 | 旧响应不覆盖新投影；folder cycle 可观察错误 | Pending |
 | DOC-01 | 含公式/样式/DV/CF/table/objects 的 XLSX 导入编辑导出 | 显式 capability，唯一 owner，未知 parts 保真 | Pending |
 | DOC-02 | XLSM/VBA/chart/pivot/OLE 等 preserve-only 文件 | 操作前可查 editable/preserved/unsupported/host-owned；破坏性编辑原子拒绝 | Pending |
 | DOC-03 | XLSB/XLS/ODS/XMLSS/CSV/Text/SJS/SSJSON 实文件往返 | 逐格式区分读/编辑/写/保留，不以 preserve 计实现 | Pending |
-| DOC-04 | 桌面 Excel 打开导出文件、重算、保存、重新导入 | 无修复提示，公式/数据/对象正确；无桌面 Excel 则 Blocked | Pending |
+| DOC-04 | 桌面 Excel 打开导出文件、重算、保存、重新导入 | 无修复提示，公式/数据/对象正确；无桌面 Excel 则 Blocked | Blocked |
 | EDIT-01 | 值/公式/富文本/格式/merge/clear/fill/Undo/Redo | SDK 写链、权限、history/persistence/server 一致 | Pending |
 | INPUT-01 | mouse/Shift/Ctrl/Enter/Tab/F2/IME/name box/autocomplete | SDK 输入语义，选中/编辑/提交地址一致；失败不丢内容 | Pending |
 | PANE-01 | frozen panes/hidden rows/columns/zoom/scroll 后编辑 | PaneMap 唯一 owner，pane 互斥；hidden 不影响 canonical read | Pending |
@@ -57,9 +57,9 @@ SDK 拥有认证/身份/凭证/组合根/工作簿目录与生命周期/Excel �
 | COLLAB-02 | Undo/Redo 与 remote move/paste/shift/sheet/table/permutation 交错 | canonical rebase 或明确事务冲突，无大面积 invalidate | Pending |
 | ACCESS-01 | 四 workbook roles × range hidden/read/edit × protection | 分层权限，server 独立拒绝越权 | Pending |
 | OUT-01 | page setup/print area/title/preview/PDF/export/save as | SDK 拥有版式/文档，Web 只下载/打印宿主动作 | Pending |
-| BOUND-01 | 扫描 Web import/API/Worker/model/command/token | 仅 sdk/ui-system 业务依赖，无内部路径/HTTP/worker | Pending |
+| BOUND-01 | 扫描 Web import/API/Worker/model/command/token | 仅 sdk/ui-system 业务依赖，无内部路径/HTTP/worker | Fail |
 | BOUND-02 | 注入越层 import/相对路径绕过/未声明依赖/cycle | 门禁全部拒绝；正常 graph 通过 | Pending |
-| GATE-01 | build/typecheck/unit/boundaries/contracts/Java/browser/PR checks | 保存实际结果；全部通过后 ready 并 merge 指定 head | Pending |
+| GATE-01 | build/typecheck/unit/boundaries/contracts/Java/browser/PR checks | 保存实际结果；全部通过后 ready 并 merge 指定 head | Fail |
 
 ## 已确认入口与删除要求
 
@@ -69,13 +69,72 @@ SDK 拥有认证/身份/凭证/组合根/工作簿目录与生命周期/Excel �
 - workbook-session.ts 8204 行，需领域拆分，不得新增 facade 后宣称完成。
 - Web column-dimension-controller/autofit worker/command-controller/canvas interaction 需逐域迁移。
 
-## 执行记录
+## 逐条执行记录
 
-完整产品目标未通过前保持草稿 PR，不合并。
+验收范围没有缩减。10 个已执行的浏览器场景不等于上面 42 个完整产品项全部通过；覆盖不足的父项继续 Pending。PR #349 保持草稿，未合并。
 
-2026-10-03：ROLE-01 已通过 TS/Java 生成契约与成功/拒绝测试；大写/未知角色被拒绝，canonical wire labels 与数据库 enum 常量不变。前端 build、boundary/contracts/mutation registry gate 通过。完整 Java/H2 测试 45 suites、319 tests、0 failures/errors/skipped（临时 Corretto JDK21 与 Maven3.9.11，代理使用系统 trust store）。
+### 已通过的可复现细项
 
-SDK auth/identity/runtime 13 项测试通过，包括 CSRF rotation、公共快照不泄露凭证、未知模式/损坏响应/网络失败、管理员拒绝路径、subject owner 切换、StrictMode 与最终释放。Web 旧 auth/session.ts、auth/oidc.ts 与 composition root 构造逻辑已删除；目录 service 实现移入 SDK，旧 service 文件删除。公共 hook 的会话领域拆分仍未完成，不能将 useWorkbook 计作完整 SDK Workbook API。
+在 **761a5a3a8fbb5e6333df20d1b9a4eaa3a4217e68** 的干净源码上运行 `SDK_UAT_EVIDENCE_DIR=/tmp/sdk-uat/evidence npm run test:sdk-uat`：**10/10 Pass，52.4 秒**。真实 Chromium + Java 21/H2，无 HTTP route mocks。每次使用全新临时 H2，结束后关闭 Java/Vite。源码/运行记录由现有 provenance gate 验证。脚本为 `frontend-react/e2e/sdk-product.spec.ts`，每项都检查浏览器 console、pageerror 和失败请求；错误密码产生的预期 401 单独校验。
 
-真实浏览器 UAT 已编写 e2e/sdk-product.spec.ts，需隔离真实 Java/H2 数据目录，SDK_UAT_ENABLED=1。当前尚未执行通过：仓库 provenance gate 要求 clean source tree，因此先提交实现后执行验收；不降低门禁。
+| 细项 | 实际动作与断言 | 结果与证据 |
+|---|---|---|
+| AUTH-01 / ID-01 | 浏览器初始化管理员；创建 editor/commenter/viewer；禁用→旧会话失效；启用→重新登录；重置密码→旧会话失效 | Pass；identity-users.png |
+| AUTH-02 | 错误密码 401 且仍匿名；正确密码登录；登出后刷新保持匿名 | Pass；auth-logged-out.png |
+| ID-02 | 三种普通用户不显示管理入口；管理员页面拒绝；真实 `/api/admin/users` 返回 403；SDK 单测拒绝管理员动作且不发请求 | Pass；role-editor/commenter/viewer.png + SDK auth tests |
+| ROLE-01 / ROLE-02 | 生成 TS/Java 唯一角色；四种角色的 capability；实际目录菜单；活动和回收站 purge/trash 越权请求带真实 CSRF，返回 FORBIDDEN | Pass；owner-catalog.png、三个角色截图、trash-purged.png；非法角色拒绝单测 |
+| RT-01 | SDK 唯一组合根；StrictMode 清理取消与最终释放；销毁后的旧 actions 拒绝；浏览器真正打开工作簿 | Pass；internal/runtime.test.ts + workbook-persisted.png |
+| HUB-01 | 新建服务器工作簿，Canvas 输入 A1，保存，轮询服务端快照，刷新后读回同一值 | Pass；workbook-persisted.png |
+| HUB-02.a | 重命名、星标/取消星标状态、给三角色设置真实 ACL | Pass；owner-catalog.png；复制、文件夹移动和重新打开尚未验收，HUB-02 父项 Pending |
+| HUB-03 | owner 删除→恢复→再次删除→永久删除；非 owner 对活动/已删工作簿 purge 均被服务器拒绝 | Pass；trash-purged.png |
+| SIZE-01.a | 多列宽度设 0 隐藏，设 12 原子取消隐藏；Undo/Redo；20pt 行高；含文本/空列 AutoFit；刷新后的服务器尺寸 | Pass；sdk-dimensions.png；手势/全部宿主路径未覆盖，SIZE-01 父项 Pending |
+| SIZE-01.b | stale AutoFit、取消、worker 失败及非法批量尺寸无部分写入；Worker 被释放；缺少 Worker 宿主明确拒绝 | Pass；SDK dimensions + internal/runtime tests |
+| DATA-01.a | 真实 Canvas 输入数据；降序排序→Undo 完整单元格恢复；worksheet filter 开/清/关；创建 Table，filter off/on 与 autoFilter owner 同步；clear 保留按钮 | Pass；sdk-data-undo.png；manual hidden/outline 全部语义未完成，DATA-01 父项 Pending |
+| DATA-01.b | 删除重复行后服务端快照正确，Undo 精确恢复整个 worksheet cells | Pass；sdk-data-undo.png；Java 拒绝范围外、其他 sheet、篡改内容与非 restore mutation |
+| DATA-02.a | SUM 分类汇总公式与 outline；Undo→Redo→再次 Undo，精确恢复空白目的地与 absent outline | Pass；sdk-data-undo.png；全部聚合及 advanced filter/DV/CF 尚未完成，DATA-02 父项 Pending |
+| EDIT-01.a | 分列覆盖已占用/空目的格，Undo 完整恢复分列前 cells；刷新后服务器快照一致 | Pass；sdk-data-undo.png；完整编辑父项仍 Pending |
+| AUTH-04.a | 未知模式、坏响应、网络失败撤销身份；可重试；snapshot 不泄露 credential/CSRF；销毁后不发布 | Pass（SDK 单测）；浏览器故障注入未完成，AUTH-04 父项 Pending |
+| STRUCT-01.a | 109 项结构/引用/尺寸 focused checks：隐式 formula rule anchor presence、歧义身份拒绝、不可变 owner carriers | Pass（单测）；所有引用 owner/客户端服务器完整一致性未完成，STRUCT-01 父项 Pending |
+| COLLAB-02.a | 重复 Undo/Redo 使用新 durable operation 身份；旧/重复 binding 拒绝；多段删除按每段 preimage 恢复公式 | Pass（真实 DATA 场景 + history/Java 单测）；远程交错重放等未完成，COLLAB-02 父项 Pending |
+| DATA-03.a | 普通/排序 block 预取不自动重试已失败 block；显式 retry 可成功；校验/长度错返回 typed storage error | Pass（19 项 focused checks）；其他 source/query/linked 场景 Pending |
 
+以上截图与日志位于 `/tmp/sdk-uat/evidence/`；runner 汇总 `/tmp/sdk-uat/result.log`。临时文件不提交进仓库，CI 将日志/截图/provenance 打包为 artifact。
+
+### 真实发现与修复
+
+1. 工作簿在 collaboration 初始同步完成前不能进入 ready，否则浏览器操作遭到离线结构授权拒绝。
+2. 204 响应必须完成 response body 消费，避免成功操作产生真实网络 aborted 错误。
+3. absent 尺寸覆盖与 outline 不能被 Undo 写成默认值或空对象；canonical row/column resize 使用 nullable 删除覆盖，outline.set null 删除 absent outline。
+4. 分列等 range.set 的逆操作必须覆盖所有写入坐标，含原本空格。
+5. Redo 是新的 durable operation；再次 Undo 必须指向新提交的 id/base revision。
+6. 纯结构删除的逆操作需允许原删除范围内、值完全一致的 cell.restore；用 canonical committed replay 还原每一删除段的前置状态，最后继续验证整个 preimage 精确相等。越界或篡改依旧拒绝。
+7. 已失败 block 不能因 Canvas 预取循环不断变成 loading；显式读取才重试。
+8. Ribbon 菜单的 React key 按 canonical menu id 设置，消除真实浏览器 console 警告。
+
+每个已完成功能或实际缺陷修复均为单独 commit 并推送同一个草稿 PR；没有提交到 main。
+
+### 门禁记录与未通过项
+
+- `npm run build`：Pass（TypeScript + Vite）。
+- `npm run test:sdk`：29/29 Pass；auth/identity/runtime/dimensions/data 成功与拒绝路径。
+- protocol focused：32/32 Pass。
+- `npm run check:boundaries`、`npm run test:calculation-domain`：前次 Pass；不能据此宣称 Web 已只依赖 SDK。
+- Java 21 `mvn ... -q package`：323 tests，0 failure/error/skipped，真实 H2 integration。
+- 完整 `npm run test:unit`：**1537 tests，1476 Pass，61 Fail**；基线为 1525 tests，1442 Pass，83 Fail。测试集和名称有变化，不能把全部 61 项未经逐项对照认定为基线问题；完整失败清单另见 sdk-product-unit-failures.md。
+- GATE-01：Fail。CI 已增加真实 SDK UAT，但既有 CI 没有运行整个 test:unit；即使 CI 通过，也不能覆盖 61 项失败。
+- BOUND-01：Fail。Web 仍有内部包业务 import；WorkbookSession 仍 8111 行并暴露给 Web，完整 WorkbookHandle/领域拆分未完成。认证、组合根、目录 service、尺寸规划/worker、六个数据 action 已实质迁移，不能据此宣称所有领域完成。
+- BOUND-02：Pending。现有 graph gate 通过，不代表更严格的 Web-only-SDK 及绕过注入门禁已经实现。
+- RT-02：Pending。subject owner 退休单测通过，但跨身份恢复 journal 的完整验收还没有完成。
+- AUTH-03：Blocked。未提供真实 OIDC issuer/provider，SDK 已迁入 OIDC 生命周期，但不能把本地认证测试作为 OIDC 验收。
+- DOC-04：Blocked。当前 Linux 环境没有桌面 Microsoft Excel；没有声称做过 Excel 打开/重算/保存检查。
+- 其他 Pending 父项按原始矩阵保留：完整结构/引用图、所有 Excel 领域和 formats、交错协作/history、输入/打印/对象等未完成。
+
+### 下一项实施前的 UAT 设计
+
+**DOC-01.b / REVIEW-01.a 空白格超链接往返（Pending）**：构造真实 XLSX，只有 A1 有值、A2:A4 为 URL/email/sheet/name 超链接锚点，native dimension 仅 A1；导入需保留四个锚点并在显式 import 边界扩展 canonical extent；编辑 A1 后导出再导入仍保留四个 target，不能创建空格假值。将 hyperlink ref 改成 A1048577 或 XFE1 时必须 typed 拒绝且原输入 bytes 不变。再通过浏览器上传、打开、编辑、保存、下载文件验证同一语义链。桌面 Excel 此项仍归 DOC-04 Blocked。
+
+### 合并与回滚
+
+只有所有必需产品项 Pass、完整门禁 Pass、PR checks 对应待合并 head 验证后才 ready/merge；现在没有达到条件。
+
+没有生产部署，验收只操作临时 H2。尺寸 null 和 outline null 是 canonical operation 语义变更，前后端必须同版本发布/回滚；出现新语义的 durable 日志后，单独回退代码不可安全读取，应使用兼容版本或恢复匹配的 operation/checkpoint 备份。旧 Web auth/service/尺寸 worker 等已删除，不保留兼容桥。schema upgrades 只在既有显式 migration boundary 执行。
