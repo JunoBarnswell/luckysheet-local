@@ -13,7 +13,7 @@ test.describe('SDK product UAT against Java authority', () => {
   const userPasswords = new Map<string, string>();
   let adminState: Awaited<ReturnType<BrowserContext['storageState']>>;
   let unitId = '';
-  const name = `SDK UAT ${runId}`;
+  let name = `SDK UAT ${runId}`;
   const evidence = process.env.SDK_UAT_EVIDENCE_DIR ?? '/tmp/sdk-uat/evidence';
 
   async function login(page: Page, username = 'uat-admin', userPassword = password) {
@@ -28,6 +28,7 @@ test.describe('SDK product UAT against Java authority', () => {
     await page.goto('/workbooks');
     await expect(page.getByTestId('workbook-hub')).toBeVisible();
   }
+  const menu = (page: Page) => page.locator('[data-menu-owners]').filter({ has: page.getByText('文件操作', { exact: true }) });
   async function openMenu(page: Page, workbookName = name) {
     await page.getByRole('button', { name: `打开 ${workbookName} 的更多操作`, exact: true }).click();
   }
@@ -127,14 +128,22 @@ test.describe('SDK product UAT against Java authority', () => {
     const diagnostics = installBrowserDiagnostics(page);
     await ownerPage(context, page);
     await openMenu(page);
-    for (const label of ['重命名', '移动到', '共享', '移到回收站']) await expect(page.getByRole('button', { name: label, exact: true })).toBeVisible();
+    for (const label of ['重命名', '移动到', '共享', '移到回收站']) await expect(menu(page).getByRole('button', { name: label, exact: true })).toBeVisible();
+    await menu(page).getByRole('button', { name: '重命名', exact: true }).click();
+    const rename = page.getByTestId('rename-workbook-dialog');
+    const newName = `${name} renamed`;
+    await rename.getByLabel('名称', { exact: true }).fill(newName);
+    await rename.getByRole('button', { name: '保存', exact: true }).click();
+    await expect(rename).not.toBeVisible();
+    name = newName;
+    await openMenu(page);
     await page.getByRole('button', { name: '添加星标', exact: true }).click();
     await openMenu(page);
     await expect(page.getByRole('button', { name: '取消星标', exact: true })).toBeVisible();
     await page.keyboard.press('Escape');
     for (const role of ['editor', 'commenter', 'viewer']) {
       await openMenu(page);
-      await page.getByRole('button', { name: '共享', exact: true }).click();
+      await menu(page).getByRole('button', { name: '共享', exact: true }).click();
       const share = page.getByTestId('share-workbook-dialog');
       await share.getByLabel('成员邮箱或账号').fill(users.get(role)!);
       await share.getByLabel('访问权限').selectOption(role);
@@ -153,10 +162,10 @@ test.describe('SDK product UAT against Java authority', () => {
       await login(page, `${role}-${runId}`, userPasswords.get(role) ?? password);
       await expect(page.getByRole('button', { name: '用户管理', exact: true })).toHaveCount(0);
       await openMenu(page);
-      for (const label of ['共享', '移到回收站', '恢复', '永久删除']) await expect(page.getByRole('button', { name: label, exact: true })).toHaveCount(0);
+      for (const label of ['共享', '移到回收站', '恢复', '永久删除']) await expect(menu(page).getByRole('button', { name: label, exact: true })).toHaveCount(0);
       for (const label of ['重命名', '移动到']) {
-        if (role === 'editor') await expect(page.getByRole('button', { name: label, exact: true })).toBeVisible();
-        else await expect(page.getByRole('button', { name: label, exact: true })).toHaveCount(0);
+        if (role === 'editor') await expect(menu(page).getByRole('button', { name: label, exact: true })).toBeVisible();
+        else await expect(menu(page).getByRole('button', { name: label, exact: true })).toHaveCount(0);
       }
       await screenshot(page, `role-${role}`);
       await page.keyboard.press('Escape');
@@ -178,7 +187,7 @@ test.describe('SDK product UAT against Java authority', () => {
     await openMenu(page);
     await expect(page.getByRole('button', { name: '恢复', exact: true })).toBeVisible();
     await expect(page.getByRole('button', { name: '永久删除', exact: true })).toBeVisible();
-    await expect(page.getByRole('button', { name: '共享', exact: true })).toHaveCount(0);
+    await expect(menu(page).getByRole('button', { name: '共享', exact: true })).toHaveCount(0);
     await page.getByRole('button', { name: '恢复', exact: true }).click();
     await page.getByRole('button', { name: '最近', exact: true }).click();
     await openMenu(page);
