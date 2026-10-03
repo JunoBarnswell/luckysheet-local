@@ -30,6 +30,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node --test scripts/check-runtime-stack.test.mjs
       - name: Build browser assets and Java service with backend tests
+        id: build
         run: ./scripts/build.ps1 -JavaHome $env:JAVA_HOME -MavenCommand mvn.cmd -LogRoot "$env:RUNNER_TEMP/react-sheets-build"
       - name: Verify frontend boundaries and generated contracts
         working-directory: frontend-react
@@ -51,6 +52,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           npm run test:sdk-uat
       - name: Verify the complete frontend unit suite
+        if: ${{ !cancelled() && steps.build.conclusion == 'success' }}
         working-directory: frontend-react
         run: |
           npm run test:unit 2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP/react-sheets-build/frontend-unit.log"

@@ -44,6 +44,10 @@ test.describe('SDK product UAT against Java authority', () => {
 
   test('AUTH-01 ID-01: bootstrap or login administrator and create three ordinary users through SDK UI actions', async ({ page, context, browser }) => {
     const diagnostics = installBrowserDiagnostics(page);
+    // Hub visibility precedes its initial folder projection. Finish that
+    // actual response before navigating away in this successful-path test.
+    const foldersReady = page.waitForResponse(response => response.request().method() === 'GET'
+      && /\/api\/spaces\/[^/]+\/folders(?:\?|$)/.test(response.url()) && response.ok());
     await page.goto('/workbooks');
     await expect(page.getByRole('heading', { name: /初始化管理员|登录 React Sheets/ })).toBeVisible();
     if (await page.getByRole('heading', { name: '初始化管理员' }).isVisible()) {
@@ -57,6 +61,7 @@ test.describe('SDK product UAT against Java authority', () => {
       expect((await committed).ok()).toBe(true);
       await expect(page.getByTestId('workbook-hub')).toBeVisible();
     } else await login(page);
+    expect(await (await foldersReady).finished()).toBeNull();
     adminState = await context.storageState();
     await page.getByRole('button', { name: '用户管理', exact: true }).click();
     await expect(page).toHaveURL('/admin/users');
