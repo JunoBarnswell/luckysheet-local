@@ -134,6 +134,7 @@ test.describe('SDK product UAT against Java authority', () => {
     const select = async () => { await nameBox.fill('A1:B2'); await nameBox.press('Enter'); };
     const format = async (label: string) => {
       await page.getByTestId('ribbon-tab-home').click();
+      await page.getByRole('button', { name: 'Cells工具', exact: true }).click();
       await page.getByRole('button', { name: 'Format', exact: true }).click();
       await page.getByRole('button', { name: label, exact: true }).click();
     };
