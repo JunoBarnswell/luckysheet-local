@@ -112,6 +112,7 @@ final class SnapshotMutationSupport {
     }
 
     static ObjectNode cell(ObjectNode sheet, CellCoordinate coordinate, boolean create) {
+        if (create) ensureCellExtent(sheet, coordinate);
         ObjectNode row = cellRow(cells(sheet), coordinate.row(), create);
         if (row == null) return null;
         JsonNode current = row.get(Integer.toString(coordinate.column()));

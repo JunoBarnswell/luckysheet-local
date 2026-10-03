@@ -21,7 +21,7 @@ export async function importOoxmlDocument(request: NativeDocumentImportRequest):
   const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
   const loaded = loadOpcPackageGraph(buffer, request.options.limits, request.fileName);
   const importedName = sanitizeImportedWorkbookName(request.fileName);
-  const parsed = parseLoadedOoxml(loaded, { workbookName: importedName });
+  const parsed = parseLoadedOoxml(loaded, { workbookName: importedName, limits: request.options.limits });
   const snapshot = parsed.snapshot;
   snapshot.name = importedName;
   const dateSystem = request.options.dateSystem ?? parsed.packageGraph.dateSystem ?? parseDateSystem('');

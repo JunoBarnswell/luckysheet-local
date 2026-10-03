@@ -43,7 +43,13 @@ public final class WebSocketAuthenticationHandshakeHandler extends DefaultHandsh
 
     @Override
     protected Principal determineUser(ServerHttpRequest request, WebSocketHandler handler, Map<String, Object> attributes) {
-        return authenticatedPrincipal(request);
+        Principal principal = authenticatedPrincipal(request);
+        if (principal instanceof LocalUserAuthentication) {
+            if (!(request instanceof org.springframework.http.server.ServletServerHttpRequest servlet)
+                    || servlet.getServletRequest().getSession(false) == null) throw new HandshakeFailureException("Local authentication session is required");
+            attributes.put(LocalAuthSessionRegistry.HTTP_SESSION_ATTRIBUTE, servlet.getServletRequest().getSession(false));
+        }
+        return principal;
     }
 
     @Override

@@ -666,6 +666,17 @@ function cameraSurface(source: CanvasSheetSnapshot, range: RangeRef): HTMLCanvas
   const cached = surfaces.get(key);
   if (cached) return cached;
   const scale = Math.min(1, CAMERA_SURFACE_MAX_EDGE / geometry.width, CAMERA_SURFACE_MAX_EDGE / geometry.height);
+  const pixels = Math.ceil(geometry.width * scale) * Math.ceil(geometry.height * scale);
+  if (pixels > 16777216) throw new Error('UNSUPPORTED_FEATURE: Camera surface exceeds the pixel budget');
+  let cachedPixels = 0;
+  for (const surface of surfaces.values()) cachedPixels += surface.width * surface.height;
+  while (surfaces.size && (surfaces.size >= 8 || cachedPixels + pixels > 16777216)) {
+    const oldest = surfaces.keys().next().value!;
+    const surface = surfaces.get(oldest)!;
+    cachedPixels -= surface.width * surface.height;
+    surface.width = 0; surface.height = 0;
+    surfaces.delete(oldest);
+  }
   const canvas = document.createElement('canvas');
   canvas.width = Math.max(1, Math.ceil(geometry.width * scale));
   canvas.height = Math.max(1, Math.ceil(geometry.height * scale));
@@ -1257,8 +1268,8 @@ function drawChartSpecial(context: CanvasRenderingContext2D, payload: ChartDrawi
   if (layout.kind === 'box-whisker') {
     const boxes = layout.boxes ?? [];
     const all = boxes.flatMap((box) => [box.minimum, box.maximum, ...box.outliers]);
-    const minimum = Math.min(0, ...all);
-    const maximum = Math.max(1, ...all);
+    const minimum = all.reduce((minimum, value) => Math.min(minimum, value), 0);
+    const maximum = all.reduce((maximum, value) => Math.max(maximum, value), 1);
     const axis = { minimum, maximum, model: { scale: 'linear' } } as NonNullable<ChartLayout['valueAxis']>;
     const y = (value: number) => plot.top + plot.height * (1 - chartScale(value, axis));
     const slot = plot.width / Math.max(1, boxes.length);
@@ -1292,7 +1303,7 @@ function drawChartSpecial(context: CanvasRenderingContext2D, payload: ChartDrawi
   }
   if (layout.kind === 'funnel') {
     const stages = layout.funnelStages ?? [];
-    const maximum = Math.max(1, ...stages.filter((stage) => stage.visible).map((stage) => stage.value));
+    const maximum = stages.reduce((maximum, stage) => stage.visible ? Math.max(maximum, stage.value) : maximum, 1);
     const band = plot.height / Math.max(1, stages.length);
     stages.forEach((stage) => {
       if (!stage.visible) return;
@@ -1344,8 +1355,8 @@ function drawChartSpecial(context: CanvasRenderingContext2D, payload: ChartDrawi
   }
   if (layout.kind === 'surface') {
     const cells = layout.surfaceCells ?? [];
-    const rows = Math.max(1, ...cells.map((cell) => cell.row + 1));
-    const columns = Math.max(1, ...cells.map((cell) => cell.column + 1));
+    const rows = cells.reduce((maximum, cell) => Math.max(maximum, cell.row + 1), 1);
+    const columns = cells.reduce((maximum, cell) => Math.max(maximum, cell.column + 1), 1);
     for (const cell of cells) {
       if (!cell.visible) continue;
       context.fillStyle = cell.color;
@@ -1698,7 +1709,7 @@ function chartHitTest(layout: ChartLayout, point: { x: number; y: number }): { a
   }
   if (layout.kind === 'funnel') {
     const stages = layout.funnelStages ?? [];
-    const maximum = Math.max(1, ...stages.filter((stage) => stage.visible).map((stage) => stage.value));
+    const maximum = stages.reduce((maximum, stage) => stage.visible ? Math.max(maximum, stage.value) : maximum, 1);
     const band = layout.plot.height / Math.max(1, stages.length);
     for (const stage of stages) {
       if (!stage.visible) continue;
@@ -1750,8 +1761,8 @@ function chartHitTest(layout: ChartLayout, point: { x: number; y: number }): { a
   }
   if (layout.kind === 'surface') {
     const cells = layout.surfaceCells ?? [];
-    const rows = Math.max(1, ...cells.map((cell) => cell.row + 1));
-    const columns = Math.max(1, ...cells.map((cell) => cell.column + 1));
+    const rows = cells.reduce((maximum, cell) => Math.max(maximum, cell.row + 1), 1);
+    const columns = cells.reduce((maximum, cell) => Math.max(maximum, cell.column + 1), 1);
     const row = Math.floor((point.y - layout.plot.top) * rows / layout.plot.height);
     const column = Math.floor((point.x - layout.plot.left) * columns / layout.plot.width);
     const cell = cells.find((candidate) => candidate.row === row && candidate.column === column);
@@ -1945,10 +1956,10 @@ interface PivotControlMember {
   hasData: boolean;
 }
 
-function pivotControlMembers(drawingId: string, payload: PivotSlicerDrawingPayload | PivotTimelineDrawingPayload, pivotResults: Record<string, PivotResultTree>): PivotControlMember[] {
+function pivotControlMembers(sheetId: string, drawingId: string, payload: PivotSlicerDrawingPayload | PivotTimelineDrawingPayload, pivotResults: Record<string, PivotResultTree>): PivotControlMember[] {
   const tree = pivotResults[payload.pivotId];
   if (payload.kind === 'slicer') {
-    const projected = tree?.slicerItems?.[drawingId];
+    const projected = tree?.slicerItems?.[JSON.stringify([sheetId, drawingId])];
     if (projected) return projected.map((item: PivotSlicerItemProjection) => ({ ...item }));
   }
   const field = tree?.fields.fields.find((entry) => entry.fieldId === payload.fieldId);
@@ -1975,8 +1986,8 @@ function pivotControlMembers(drawingId: string, payload: PivotSlicerDrawingPaylo
 }
 
 function pivotTimelinePeriods(payload: PivotTimelineDrawingPayload, pivotResults: Record<string, PivotResultTree>): ReturnType<typeof buildPivotTimelineTiles> {
-  const values = pivotControlMembers('', payload, pivotResults).map((entry) => entry.value);
-  const tiles = buildPivotTimelineTiles(values, payload.level);
+  const values = pivotControlMembers('', '', payload, pivotResults).map((entry) => entry.value);
+  const tiles = buildPivotTimelineTiles(values, payload.level, payload.bounds);
   const boundedTiles = tiles.filter((tile) => (!payload.bounds.start || tile.end >= payload.bounds.start) && (!payload.bounds.end || tile.start <= payload.bounds.end));
   const startIndex = payload.scrollPosition ? Math.max(0, boundedTiles.findIndex((tile) => tile.start >= payload.scrollPosition!)) : 0;
   return boundedTiles.slice(startIndex);
@@ -2234,7 +2245,7 @@ export function createCanvasFloatingDrawables(input: CanvasFloatingRendererInput
       continue;
     }
     if (payload.kind === "slicer" || payload.kind === "timeline") {
-      const members = pivotControlMembers(drawing.id, payload, pivotResults);
+      const members = pivotControlMembers(sheet.id, drawing.id, payload, pivotResults);
       const periods = payload.kind === 'timeline' ? pivotTimelinePeriods(payload, pivotResults) : [];
       drawables.push({
         kind: "pivot-control",

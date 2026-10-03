@@ -20,7 +20,10 @@ export function localName(name: string): string {
   return separator >= 0 ? name.slice(separator + 1) : name;
 }
 
-export function parseXml(source: string): XmlNode {
+export function parseXml(source: string, limits: { maxDepth?: number; maxNodes?: number; onElement?: (name: string) => void } = {}): XmlNode {
+  const maxDepth = limits.maxDepth ?? 256;
+  const maxNodes = limits.maxNodes ?? 2_000_000;
+  let nodeCount = 0;
   const root: XmlNode = { name: '#document', attrs: {}, children: [], text: '' };
   const stack: XmlNode[] = [root];
   let index = 0;
@@ -72,7 +75,9 @@ export function parseXml(source: string): XmlNode {
     } else {
       const selfClosing = body.endsWith('/');
       if (selfClosing) body = body.slice(0, -1).trim();
+      if (stack.length > maxDepth || ++nodeCount > maxNodes) throw new Error('NATIVE_DOCUMENT_RESOURCE_LIMIT: XML depth or node budget exceeded');
       const { name, attrs } = parseStartTag(body);
+      limits.onElement?.(name);
       const node: XmlNode = { name, attrs, children: [], text: '' };
       stack[stack.length - 1]!.children.push(node);
       if (!selfClosing) stack.push(node);

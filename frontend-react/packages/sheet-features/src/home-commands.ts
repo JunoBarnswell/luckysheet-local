@@ -1327,7 +1327,7 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
           if (!candidate) continue;
           const replaced = replaceText(candidate.text, params);
           if (replaced === undefined) continue;
-          const replacement = parseReplacementValue(replaced, {
+          const replacement = !candidate.formula && /^\s*=/.test(replaced) ? { kind: "text" as const, value: replaced } : parseReplacementValue(replaced, {
             ...params.inputContext,
             currentNumberFormat: cell.numberFormat ?? cell.style?.numberFormat,
             currentCellType: cell.editor?.kind,

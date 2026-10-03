@@ -1,3 +1,4 @@
+import { compileExcelWildcard } from './wildcard';
 import { coerceExcelNumber } from './numeric';
 import { isFormulaError, type FormulaValue } from './values';
 
@@ -15,7 +16,7 @@ export interface CriteriaRange {
   readonly columns: number;
 }
 
-const compiledWildcards = new WeakMap<CriteriaExpression, RegExp>();
+const compiledWildcards = new WeakMap<CriteriaExpression, (value: string) => boolean>();
 
 export function parseCriteria(value: FormulaValue): CriteriaExpression {
   if (isFormulaError(value)) return { operator: 'eq', operand: value };
@@ -40,8 +41,8 @@ export function matchesCriteria(value: FormulaValue, expression: CriteriaExpress
   if (isFormulaError(value) || isFormulaError(expression.operand)) return false;
   if (expression.wildcard !== undefined) {
     let pattern = compiledWildcards.get(expression);
-    if (!pattern) { pattern = compileWildcard(expression.wildcard); compiledWildcards.set(expression, pattern); }
-    const matched = pattern.test(String(value ?? ''));
+    if (!pattern) { pattern = compileExcelWildcard(expression.wildcard); compiledWildcards.set(expression, pattern); }
+    const matched = pattern(String(value ?? ''));
     return expression.operator === 'ne' ? !matched : expression.operator === 'eq' && matched;
   }
   if (expression.operand === '' && (expression.operator === 'eq' || expression.operator === 'ne')) {
@@ -84,20 +85,6 @@ function hasWildcard(value: string): boolean {
   return false;
 }
 
-function compileWildcard(pattern: string): RegExp {
-  let regex = '^';
-  for (let index = 0; index < pattern.length; index += 1) {
-    const character = pattern[index]!;
-    if (character === '~' && index + 1 < pattern.length) {
-      regex += escapeRegex(pattern[++index]!);
-    } else if (character === '*') regex += '.*';
-    else if (character === '?') regex += '.';
-    else regex += escapeRegex(character);
-  }
-  regex += '$';
-  return new RegExp(regex, 'isu');
-}
-
 function compareNumbers(operator: CriteriaOperator, left: number, right: number): boolean {
   switch (operator) {
     case 'ne': return left !== right;
@@ -118,8 +105,4 @@ function compareStrings(operator: CriteriaOperator, left: string, right: string)
     case 'le': return left <= right;
     default: return left === right;
   }
-}
-
-function escapeRegex(value: string): string {
-  return value.replace(/[\\^$.*+?()[\]{}|]/g, '\\$&');
 }

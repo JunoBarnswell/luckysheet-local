@@ -49,8 +49,8 @@ function payloadAt(sheet: DrawingGraphSheet, payloadId: string): DrawingPayload 
 
 function finiteTransform(transform: DrawingTransform): boolean {
   return Number.isFinite(transform.x) && Number.isFinite(transform.y)
-    && Number.isFinite(transform.width) && transform.width >= 0
-    && Number.isFinite(transform.height) && transform.height >= 0
+    && Number.isFinite(transform.width) && transform.width >= 0 && transform.width <= 8192
+    && Number.isFinite(transform.height) && transform.height >= 0 && transform.height <= 8192
     && (transform.rotation === undefined || Number.isFinite(transform.rotation));
 }
 

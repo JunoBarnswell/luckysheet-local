@@ -39,6 +39,7 @@ const EPOCH_MS = Date.UTC(1899, 11, 30);
 const DATE_TOKEN_CHARS = new Set(['y', 'm', 'd', 'h', 's']);
 
 export function parseSections(format: string): FormatSection[] {
+  if (typeof format !== "string" || format.length > 255) throw new Error("UNSUPPORTED_FEATURE: Number format exceeds 255 characters");
   const sections: FormatSection[] = [];
   let tokens: FormatToken[] = [];
   let index = 0;

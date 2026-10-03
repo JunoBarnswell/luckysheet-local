@@ -233,7 +233,9 @@ function buildPatches(params: FindReplaceParams, context: CommandContext): Repla
       if (!cell) throw new Error(`Find result cell disappeared at ${match.key}`);
       const replaced = replaceFindText(match.text, params, params.replace);
       if (replaced === undefined) throw new Error(`Find result no longer matches at ${match.key}`);
-      const replacement = parseReplacementValue(replaced, {
+      const replacement = match.target === 'values' && /^\s*=/.test(replaced)
+        ? { kind: 'text' as const, value: replaced }
+        : parseReplacementValue(replaced, {
         ...params.inputContext,
         currentNumberFormat: cell.numberFormat ?? cell.style?.numberFormat,
         currentCellType: cell.editor?.kind,

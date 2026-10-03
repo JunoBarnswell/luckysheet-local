@@ -155,7 +155,7 @@ function looksLikeOoxml(fileName: string, buffer: ArrayBuffer): boolean {
     const parts = unzipSync(bytes, { filter(file) {
       entries += 1;
       total += file.originalSize;
-      if (entries > DEFAULT_NATIVE_DOCUMENT_RESOURCE_LIMITS.maxEntries || file.originalSize > DEFAULT_NATIVE_DOCUMENT_RESOURCE_LIMITS.maxEntryBytes || total > DEFAULT_NATIVE_DOCUMENT_RESOURCE_LIMITS.maxUncompressedBytes) throw new Error('detection budget exceeded');
+      if (entries > DEFAULT_NATIVE_DOCUMENT_RESOURCE_LIMITS.maxEntries || file.originalSize > DEFAULT_NATIVE_DOCUMENT_RESOURCE_LIMITS.maxEntryBytes || (file.originalSize > 0 && (file.size === 0 || file.originalSize / file.size > DEFAULT_NATIVE_DOCUMENT_RESOURCE_LIMITS.maxCompressionRatio)) || total > DEFAULT_NATIVE_DOCUMENT_RESOURCE_LIMITS.maxUncompressedBytes) throw new Error('detection budget exceeded');
       return true;
     } });
     const contentTypes = parts['[Content_Types].xml'];

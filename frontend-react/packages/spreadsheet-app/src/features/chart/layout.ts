@@ -905,7 +905,7 @@ function chartKind(payload: ChartDrawingPayload): ChartLayout['kind'] {
 }
 
 function createSeriesLayouts(payload: ChartDrawingPayload, data: ResolvedChartData, plot: ChartLayout['plot'], categoryAxis: ChartAxisLayout, valueAxis: ChartAxisLayout, secondaryAxis: ChartAxisLayout | undefined, barPlacements: ReadonlyMap<number, BarPlacement>): ChartLayoutSeries[] {
-  const categoryCount = Math.max(1, data.categories.length, ...data.series.map((series) => series.values.length));
+  const categoryCount = data.series.reduce((maximum, series) => Math.max(maximum, series.values.length), Math.max(1, data.categories.length));
   const isScatter = payload.chartType === 'scatter' || payload.chartType === 'bubble';
   const xAxis = categoryAxis;
   const result: ChartLayoutSeries[] = [];
@@ -920,7 +920,7 @@ function createSeriesLayouts(payload: ChartDrawingPayload, data: ResolvedChartDa
     const errorValues = errorModel && ['standard-error', 'standard-deviation'].includes(errorModel.type) ? numberValues(series.values) : [];
     const errorStatistics = { count: errorValues.length, deviation: standardDeviation(errorValues) };
     const bubbleSizes = series.sizeValues?.map(chartNumericValue).filter((value): value is number => value !== undefined).map(Math.abs) ?? [];
-    const bubbleMaximum = payload.chartType === 'bubble' ? Math.max(1, ...bubbleSizes) : 1;
+    const bubbleMaximum = payload.chartType === 'bubble' ? bubbleSizes.reduce((maximum, value) => Math.max(maximum, value), 1) : 1;
     for (let index = 0; index < Math.max(categoryCount, series.values.length); index += 1) {
       const value = valueAt(series, index);
       const xValue = isScatter ? xValueAt(series, index) : null;
@@ -1307,7 +1307,7 @@ export function buildChartLayout(payload: ChartDrawingPayload, data: ResolvedCha
   const isScatter = payload.chartType === 'scatter' || payload.chartType === 'bubble';
   const values = summarizeAxisValues(numericValuesForSeries(data.series));
   const xValues = summarizeAxisValues(xValuesForSeries(data.series));
-  const categoryCount = Math.max(1, data.categories.length, ...data.series.map((series) => series.values.length));
+  const categoryCount = data.series.reduce((maximum, series) => Math.max(maximum, series.values.length), Math.max(1, data.categories.length));
   const barPlacements = buildBarPlacements(payload, data, categoryCount);
   const primaryValues = summarizeAxisValues(axisValuesForSeries(payload, data, 'primary', barPlacements));
   const secondaryValues = summarizeAxisValues(axisValuesForSeries(payload, data, 'secondary', barPlacements));
@@ -1485,7 +1485,7 @@ export function buildChartLayout(payload: ChartDrawingPayload, data: ResolvedCha
   }
   if (kind === 'radar') {
     const visibleSeries = data.series.flatMap((series, seriesIndex) => layout.series[seriesIndex]?.visible === false ? [] : [{ series, seriesIndex }]);
-    const count = Math.max(3, data.categories.length, ...visibleSeries.map(({ series }) => series.values.length));
+    const count = visibleSeries.reduce((maximum, { series }) => Math.max(maximum, series.values.length), Math.max(3, data.categories.length));
     const radarValues = visibleSeries.flatMap(({ series }) => numberValues(series.values));
     const centerX = layout.plot.left + layout.plot.width / 2;
     const centerY = layout.plot.top + layout.plot.height / 2;

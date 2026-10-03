@@ -118,6 +118,7 @@ export interface ParsedOpcPackageGraph {
 }
 
 export interface ParseLoadedOoxmlOptions {
+  limits?: Partial<import('./types').NativeDocumentResourceLimits>;
   fontMeasurer?: OoxmlFontMeasurer;
   workbookName?: string;
   /** Required when an imported AutoFilter contains a dynamic date criterion. */
@@ -226,6 +227,15 @@ export function loadOpcPackageGraph(input: ArrayBuffer | Uint8Array, limits: Par
 
 export function parseLoadedOoxml(loaded: LoadedOpcPackageGraph, options: ParseLoadedOoxmlOptions = {}): ParsedOpcPackageGraph {
   const files = loaded.files;
+  const limits = { ...DEFAULT_NATIVE_DOCUMENT_RESOURCE_LIMITS, ...options.limits };
+  let xmlCellsRemaining = limits.maxCells;
+  const cellBudget = { remaining: limits.maxCells, maxDepth: limits.maxXmlDepth };
+  for (const [part, bytes] of Object.entries(files)) {
+    if (!part.toLowerCase().endsWith('.xml')) continue;
+    if (bytes.byteLength > limits.maxXmlBytes) throw new Error('NATIVE_DOCUMENT_RESOURCE_LIMIT: XML byte budget exceeded');
+    // Validate package trees before any recursive helper traverses them.
+    parseXml(strFromU8(bytes), { maxDepth: limits.maxXmlDepth, onElement: (name) => { if (localName(name) === 'c' && --xmlCellsRemaining < 0) throw new Error('NATIVE_DOCUMENT_RESOURCE_LIMIT: Workbook cell budget exceeded'); } });
+  }
   const workbookPart = loaded.packageGraph.workbookPart;
   const workbookXml = parseXml(strFromU8(files[workbookPart]!));
   const workbook = firstElement(workbookXml, 'workbook');
@@ -255,7 +265,7 @@ export function parseLoadedOoxml(loaded: LoadedOpcPackageGraph, options: ParseLo
   const themePart = resolveWorkbookRelatedPart(workbookPart, workbookRels, 'theme', resolveTarget(workbookPart, 'theme/theme1.xml'));
   const styles = parseStyles(files[stylesPart], files[themePart], options.fontMeasurer ?? DEFAULT_OOXML_FONT_MEASURER);
   const sharedStrings = parseSharedStrings(files[sharedStringsPart], styles.themeColors);
-  const sheets = descriptors.map((descriptor) => parseSheet(descriptor, files, loaded.packageGraph, sharedStrings, styles, options.canonicalReferenceDate, descriptors));
+  const sheets = descriptors.map((descriptor) => parseSheet(descriptor, files, loaded.packageGraph, sharedStrings, styles, options.canonicalReferenceDate, descriptors, cellBudget));
   const definedNameModels = parseDefinedNames(child(workbook, 'definedNames'), descriptors);
   const definedNames: Record<string, string> = Object.fromEntries(definedNameModels
     .filter((name) => name.scope === 'workbook')
@@ -664,9 +674,10 @@ function parseSheet(
   styles: StyleContext,
   canonicalReferenceDate?: CanonicalExcelDateParts,
   sheetDescriptors: readonly SheetDescriptor[] = [],
+  cellBudget = { remaining: DEFAULT_NATIVE_DOCUMENT_RESOURCE_LIMITS.maxCells, maxDepth: DEFAULT_NATIVE_DOCUMENT_RESOURCE_LIMITS.maxXmlDepth },
 ): SheetSnapshot {
   const xml = strFromU8(files[descriptor.part]!);
-  const root = firstElement(parseXml(xml), 'worksheet');
+  const root = firstElement(parseXml(xml, { maxDepth: cellBudget.maxDepth }), 'worksheet');
   const cells: Record<string, Record<string, CellData>> = {};
   const hyperlinks: NonNullable<SheetSnapshot['hyperlinks']> = [];
   const hiddenRows: number[] = [];
@@ -695,6 +706,7 @@ function parseSheet(
     maxRow = Math.max(maxRow, rowNumber);
     if (rowNode.attrs.hidden === '1' || rowNode.attrs.hidden === 'true') hiddenRows.push(rowNumber);
     for (const cellNode of children(rowNode, 'c')) {
+      if (--cellBudget.remaining < 0) throw new Error('NATIVE_DOCUMENT_RESOURCE_LIMIT: Workbook cell budget exceeded');
       const address = parseA1(cellNode.attrs.r ?? 'A1');
       if (!address) throw new Error(`Worksheet ${descriptor.name} contains an invalid cell reference: ${cellNode.attrs.r ?? ''}`);
       assertOoxmlAddress(address.row, address.column, `${descriptor.name}!${cellNode.attrs.r ?? ''}`);

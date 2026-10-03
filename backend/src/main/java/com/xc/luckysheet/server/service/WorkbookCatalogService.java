@@ -188,11 +188,16 @@ public class WorkbookCatalogService {
     }
 
     @Transactional
-    public WorkbookSummary copy(String unitId, CopyWorkbookRequest request, String actor) {
-        WorkbookEntity source = requireActiveOrTrashed(unitId);
+    public WorkbookSummary copy(String unitId, CopyWorkbookRequest request, String actor, List<String> groups) {
+        WorkbookEntity source = lockActiveOrTrashed(unitId);
         if (source.getLifecycle() != WorkbookLifecycle.ACTIVE) throw ServiceException.trashed("Workbook is in trash and cannot be copied");
         requireRole(unitId, actor, WorkbookAclRole.VIEWER);
-        WorkbookSnapshotResponse sourceSnapshot = operations.readSnapshot(unitId, actor);
+        WorkbookSnapshotResponse sourceSnapshot = operations.readSnapshot(unitId, actor, groups);
+        WorkbookSourceArtifactEntity sourceArtifact = artifacts.findById(unitId).orElse(null);
+        if (sourceArtifact != null) {
+            requireFullArtifactAccess(unitId, actor, groups, source, sourceArtifact);
+            if (sourceArtifact.getContent().length != sourceArtifact.getByteLength() || !checksum(sourceArtifact.getContent()).equals(sourceArtifact.getChecksum())) throw new ServiceException("STORAGE_CORRUPT", 409, "Cannot copy a corrupt native document artifact; restore a verified backup");
+        }
         String targetSpaceId = request == null || request.spaceId() == null ? source.getSpaceId() : blankToNull(request.spaceId());
         if (targetSpaceId == null) targetSpaceId = workspace.ensurePersonalSpace(actor).getSpaceId();
         workspace.require(targetSpaceId, actor, WorkbookAclRole.EDITOR);
@@ -205,12 +210,13 @@ public class WorkbookCatalogService {
         CreateWorkbookRequest create = new CreateWorkbookRequest(targetId, name, copiedSnapshot, targetSpaceId,
                 targetFolderId, source.getSource());
         WorkbookEntity copied = createEntity(create, actor, unitId);
-        WorkbookSourceArtifactEntity sourceArtifact = artifacts.findById(unitId).orElse(null);
         if (sourceArtifact != null) {
             Instant now = Instant.now();
-            artifacts.save(new WorkbookSourceArtifactEntity(targetId, sourceArtifact.getFileName(), sourceArtifact.getMimeType(),
+            WorkbookSourceArtifactEntity copiedArtifact = new WorkbookSourceArtifactEntity(targetId, sourceArtifact.getFileName(), sourceArtifact.getMimeType(),
                     sourceArtifact.getChecksum(), sourceArtifact.getByteLength(), sourceArtifact.getContent().clone(),
-                    sourceArtifact.getNativeMetadataJson(), now, now));
+                    sourceArtifact.getNativeMetadataJson(), now, now);
+            copiedArtifact.bindRevision(copied.getRevision());
+            artifacts.save(copiedArtifact);
         }
         return summaryForActor(copied, actor);
     }
@@ -274,7 +280,7 @@ public class WorkbookCatalogService {
 
     @Transactional
     public WorkbookArtifactResponse putArtifact(String unitId, String fileName, String mimeType, String checksum,
-                                                byte[] content, long expectedRevision, String actor) {
+                                                byte[] content, long expectedRevision, String actor, List<String> groups) {
         requireRole(unitId, actor, WorkbookAclRole.EDITOR);
         WorkbookEntity workbook = lockActiveOrTrashed(unitId);
         if (workbook.getLifecycle() != WorkbookLifecycle.ACTIVE) throw ServiceException.trashed("Workbook is in trash");
@@ -282,6 +288,7 @@ public class WorkbookCatalogService {
             throw new ServiceException("ARTIFACT_REVISION_CONFLICT", 409,
                     "Workbook " + unitId + " changed during export; keep the draft and export the current revision");
         }
+        requireFullArtifactAccess(unitId, actor, groups, workbook, null);
         validateArtifact(fileName, checksum, content);
         String actual = checksum(content);
         if (!actual.equalsIgnoreCase(checksum)) throw ServiceException.validation("Native document artifact checksum mismatch");
@@ -295,13 +302,30 @@ public class WorkbookCatalogService {
         return artifactResponse(entity);
     }
 
-    public WorkbookSourceArtifactEntity getArtifact(String unitId, String actor) {
+    public WorkbookSourceArtifactEntity getArtifact(String unitId, String actor, List<String> groups) {
         requireRole(unitId, actor, WorkbookAclRole.VIEWER);
         WorkbookSourceArtifactEntity artifact = artifacts.findById(unitId).orElseThrow(() -> ServiceException.notFound("Workbook native document artifact not found"));
+        WorkbookEntity workbook = requireActiveOrTrashed(unitId);
+        if (workbook.getLifecycle() != WorkbookLifecycle.ACTIVE) throw ServiceException.trashed("Workbook is in trash");
+        requireFullArtifactAccess(unitId, actor, groups, workbook, artifact);
         if (artifact.getContent().length != artifact.getByteLength() || !checksum(artifact.getContent()).equals(artifact.getChecksum())) {
             throw new ServiceException("STORAGE_CORRUPT", 409, "Native document checksum mismatch: " + unitId + ". Restore a verified backup.");
         }
         return artifact;
+    }
+
+    private void requireFullArtifactAccess(String unitId, String actor, List<String> groups,
+                                            WorkbookEntity workbook, WorkbookSourceArtifactEntity artifact) {
+        if (requireRole(unitId, actor, WorkbookAclRole.VIEWER).includes(WorkbookAclRole.OWNER)) return;
+        if (operations.accessProjection(unitId, actor, groups).regions().stream()
+                .anyMatch(region -> region.access() == com.xc.luckysheet.server.contract.RangeAccessLevel.HIDDEN
+                        || (artifact == null && region.access() != com.xc.luckysheet.server.contract.RangeAccessLevel.EDIT))) {
+            throw new ServiceException("ACCESS_HIDDEN", 403, "Full-document access is required for native artifact operations");
+        }
+        if (artifact != null && (artifact.getSourceRevision() == null || artifact.getSourceRevision() != workbook.getRevision())) {
+            throw new ServiceException("ARTIFACT_REVISION_CONFLICT", 409,
+                    "The original artifact is from an earlier access state; ask the owner to export the current revision");
+        }
     }
 
     @Transactional
@@ -310,6 +334,9 @@ public class WorkbookCatalogService {
         if (file == null || file.isEmpty()) throw ServiceException.validation("Native document file is required");
         if (file.getSize() > MAX_NATIVE_DOCUMENT_BYTES) throw ServiceException.validation("Native document exceeds 50 MiB");
         if (snapshotJson == null || snapshotJson.isBlank()) throw ServiceException.validation("Parsed workbook snapshot is required");
+        if (snapshotJson.length() > 16 * 1024 * 1024 || nativeMetadataJson == null || nativeMetadataJson.length() > 4 * 1024 * 1024) {
+            throw ServiceException.validation("Workbook import metadata exceeds its byte budget");
+        }
         JsonNode snapshot;
         try {
             snapshot = mapper.readTree(snapshotJson);

@@ -216,9 +216,9 @@ describe('native PivotGridProjection contract', () => {
     sheet.drawingPayloads.set(regionSlicer.drawing.payloadId, regionSlicer.payload);
     sheet.drawingPayloads.set(categorySlicer.drawing.payloadId, categorySlicer.payload);
     const result = computePivotResult(workbook, pivot);
-    const items = result.slicerItems?.[regionSlicer.drawing.id] ?? [];
+    const items = result.slicerItems?.[JSON.stringify([regionSlicer.drawing.sheetId, regionSlicer.drawing.id])] ?? [];
     assert.deepEqual(items.map((item) => [item.value, item.selected, item.hasData]), [['East', true, true], ['West', true, false]]);
-    assert.deepEqual(result.slicerItems?.[categorySlicer.drawing.id]?.map((item) => [item.value, item.selected, item.hasData]), [['Gadget', false, true], ['Widget', true, true]]);
+    assert.deepEqual(result.slicerItems?.[JSON.stringify([categorySlicer.drawing.sheetId, categorySlicer.drawing.id])]?.map((item) => [item.value, item.selected, item.hasData]), [['Gadget', false, true], ['Widget', true, true]]);
   });
 
   it('bounds high-cardinality Slicer projections without changing the source member domain', () => {
@@ -236,7 +236,7 @@ describe('native PivotGridProjection contract', () => {
     sheet.drawingPayloads.set(slicer.drawing.payloadId, slicer.payload);
 
     const result = computePivotResult(workbook, pivot);
-    const items = result.slicerItems?.[slicer.drawing.id] ?? [];
+    const items = result.slicerItems?.[JSON.stringify([slicer.drawing.sheetId, slicer.drawing.id])] ?? [];
     assert.equal(member.values?.length, PIVOT_MEMBER_DISPLAY_LIMIT + 1);
     assert.equal(items.length, PIVOT_MEMBER_DISPLAY_LIMIT);
     assert.equal(new Set(items.map((item) => item.key.type + ':' + String(item.value))).size, items.length);

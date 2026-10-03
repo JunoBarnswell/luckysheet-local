@@ -29,7 +29,7 @@ export interface PivotTimelineProps {
 }
 
 export function PivotTimeline({ bounds, caption, disabled = false, end = '', fieldLabel, level, locale, onCaptionChange, onChange, onClear, onDisplayChange, onLevelChange, onStyleChange, onWindowChange, scrollPosition, showHeader, showHorizontalScrollbar, showSelectionLabel, showTimeLevel, start = '', styleName = 'TimelineStyleLight2', values = [] }: PivotTimelineProps) {
-  const tiles = buildPivotTimelineTiles(values, level);
+  const tiles = buildPivotTimelineTiles(values, level, bounds);
   const boundedTiles = tiles.filter((tile) => (!bounds.start || tile.end >= bounds.start) && (!bounds.end || tile.start <= bounds.end));
   const windowStartIndex = scrollPosition ? Math.max(0, boundedTiles.findIndex((tile) => tile.start >= scrollPosition)) : 0;
   const visibleTiles = boundedTiles.slice(windowStartIndex, windowStartIndex + 8);

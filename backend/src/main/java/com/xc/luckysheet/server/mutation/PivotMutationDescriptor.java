@@ -11,6 +11,7 @@ import com.xc.luckysheet.server.mutation.SnapshotMutationSupport.CellCoordinate;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -50,7 +51,7 @@ final class PivotMutationDescriptor extends CanonicalJsonMutationDescriptor {
     );
     private static final Set<String> REFRESH_KEYS = Set.of("mode", "preserveFormatting", "refreshOnLoad");
     private static final Set<String> NATIVE_KEYS = Set.of(
-            "cacheId", "cacheDefinitionPart", "cacheRecordsPart", "pivotTablePart", "fieldBindings", "preservedFeatures"
+            "cacheKey", "cacheFlags", "preservedPivotFilters", "preservedAutoSortScopes", "cacheId", "cacheDefinitionPart", "cacheRecordsPart", "pivotTablePart", "fieldBindings", "preservedFeatures"
     );
     private static final Set<String> PRESENTATION_KEYS = Set.of("styleName", "styleOptions", "displayOptions");
     private static final Set<String> STYLE_OPTIONS_KEYS = Set.of(
@@ -62,7 +63,7 @@ final class PivotMutationDescriptor extends CanonicalJsonMutationDescriptor {
     private static final Set<String> AGGREGATORS = Set.of(
             "sum", "count", "count-numbers", "average", "min", "max", "product", "stdev", "stdevp", "var", "varp", "distinct-count"
     );
-    private static final Set<String> FIELD_TYPES = Set.of("text", "number", "date", "boolean", "mixed");
+    private static final Set<String> FIELD_TYPES = Set.of("text", "number", "date", "boolean", "error", "mixed");
     private static final Set<String> FILTER_KINDS = Set.of("manual", "condition", "top-items");
     private static final Set<String> FILTER_SCOPES = Set.of("report", "field");
     private static final Set<String> MANUAL_MODES = Set.of("all", "include", "exclude");
@@ -352,6 +353,9 @@ final class PivotMutationDescriptor extends CanonicalJsonMutationDescriptor {
         Map<String, Set<String>> graph = new HashMap<>();
         sourceIds.forEach(sourceId -> { parent.put(sourceId, sourceId); graph.put(sourceId, new LinkedHashSet<>()); });
         boolean hasLeftJoin = false;
+        long validationRows = 0;
+        Map<String, String> fieldTypeCache = new HashMap<>();
+        Set<String> uniquenessChecked = new HashSet<>();
         for (JsonNode value : relationships) {
             if (!value.isObject()) throw ServiceException.validation("Pivot source relationship must be an object");
             ObjectNode relationship = (ObjectNode) value;
@@ -367,13 +371,20 @@ final class PivotMutationDescriptor extends CanonicalJsonMutationDescriptor {
             }
             String leftId = left.path("sourceId").asText();
             String rightId = right.path("sourceId").asText();
-            String leftType = fieldType(root, sourceRanges.get(leftId), leftId, left.path("fieldId").asText());
-            String rightType = fieldType(root, sourceRanges.get(rightId), rightId, right.path("fieldId").asText());
-            if ("mixed".equals(leftType) || "mixed".equals(rightType) || !leftType.equals(rightType)) {
-                throw ServiceException.validation("Pivot relationship key types are incompatible: " + relationshipId);
-            }
-            assertUniqueLookupKeys(root, sourceRanges.get(rightId), right.path("fieldId").asText(), rightId);
-            if ("inner".equals(join)) assertUniqueLookupKeys(root, sourceRanges.get(leftId), left.path("fieldId").asText(), leftId);
+            RangeRef leftRange = sourceRanges.get(leftId), rightRange = sourceRanges.get(rightId);
+            String leftField = left.path("fieldId").asText(), rightField = right.path("fieldId").asText();
+            String leftKey = leftRange.toString() + ":" + fieldOrdinal(leftId, leftRange, leftField);
+            String rightKey = rightRange.toString() + ":" + fieldOrdinal(rightId, rightRange, rightField);
+            if (!fieldTypeCache.containsKey(leftKey)) validationRows += leftRange.endRow() - leftRange.startRow();
+            if (!fieldTypeCache.containsKey(rightKey) && !rightKey.equals(leftKey)) validationRows += rightRange.endRow() - rightRange.startRow();
+            if (!uniquenessChecked.contains(rightKey)) validationRows += rightRange.endRow() - rightRange.startRow();
+            if ("inner".equals(join) && !uniquenessChecked.contains(leftKey) && !rightKey.equals(leftKey)) validationRows += leftRange.endRow() - leftRange.startRow();
+            if (validationRows > 1000000) throw ServiceException.unsupportedFeature("Pivot relationship validation exceeds its aggregate row budget");
+            String leftType = fieldTypeCache.computeIfAbsent(leftKey, ignored -> fieldType(root, leftRange, leftId, leftField));
+            String rightType = fieldTypeCache.computeIfAbsent(rightKey, ignored -> fieldType(root, rightRange, rightId, rightField));
+            if ("mixed".equals(leftType) || "mixed".equals(rightType) || !leftType.equals(rightType)) throw ServiceException.validation("Pivot relationship field types are incompatible");
+            if (uniquenessChecked.add(rightKey)) assertUniqueLookupKeys(root, rightRange, rightField, rightId);
+            if ("inner".equals(join) && uniquenessChecked.add(leftKey)) assertUniqueLookupKeys(root, leftRange, leftField, leftId);
             if ("left".equals(join)) { hasLeftJoin = true; incomingLeft.add(right.path("sourceId").asText()); }
             graph.get(leftId).add(rightId);
             graph.get(rightId).add(leftId);
@@ -748,7 +759,10 @@ final class PivotMutationDescriptor extends CanonicalJsonMutationDescriptor {
         ObjectNode collation = (ObjectNode) raw;
         SnapshotMutationSupport.validateKnownKeys(collation, COLLATION_KEYS, "Pivot collation");
         String locale = SnapshotMutationSupport.text(collation, "locale");
-        if (locale.isBlank()) throw ServiceException.validation("Pivot collation locale is invalid");
+        try {
+            if (locale.length() > 100 || !locale.matches("[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*")) throw new java.util.IllformedLocaleException();
+            new java.util.Locale.Builder().setLanguageTag(locale).build();
+        } catch (java.util.IllformedLocaleException error) { throw ServiceException.validation("Pivot collation locale is invalid"); }
         if (!Set.of("base", "accent", "case", "variant").contains(SnapshotMutationSupport.text(collation, "sensitivity"))) {
             throw ServiceException.validation("Pivot collation sensitivity is invalid");
         }
@@ -759,6 +773,7 @@ final class PivotMutationDescriptor extends CanonicalJsonMutationDescriptor {
     }
 
     private void validateValue(JsonNode raw, Set<String> fieldIds, Set<String> valueIds) {
+        com.xc.luckysheet.server.contract.WorkbookSnapshotValidator.requireResourceBudget(raw);
         if (!raw.isObject()) throw ServiceException.validation("Pivot value field must be an object");
         ObjectNode value = (ObjectNode) raw;
         SnapshotMutationSupport.validateKnownKeys(value, VALUE_KEYS, "Pivot value field");
@@ -915,6 +930,7 @@ final class PivotMutationDescriptor extends CanonicalJsonMutationDescriptor {
     }
 
     private void visitCalculatedItem(String itemId, Map<String, List<String>> dependencies, Map<String, Integer> state, List<String> path) {
+        if (path.size() >= 256) throw ServiceException.unsupportedFeature("Pivot calculated-item dependency depth exceeds 256");
         Integer current = state.get(itemId);
         if (current != null && current == 2) return;
         if (current != null && current == 1) throw ServiceException.validation("Pivot calculated item dependency cycle: " + String.join(" -> ", path) + " -> " + itemId);
@@ -1070,7 +1086,10 @@ final class PivotMutationDescriptor extends CanonicalJsonMutationDescriptor {
                 SnapshotMutationSupport.validateKnownKeys(group, Set.of("kind", "groups"), "Pivot manual group");
                 ArrayNode groups = SnapshotMutationSupport.requiredArray(group, "groups");
                 if (groups.size() > 10_000) throw ServiceException.validation("Pivot manual groups are invalid");
+                long groupMembers = 0;
                 for (JsonNode rawGroup : groups) {
+                    groupMembers += rawGroup.path("items").size();
+                    if (groupMembers > 100000) throw ServiceException.unsupportedFeature("Pivot manual grouping exceeds its aggregate member budget");
                     if (!rawGroup.isObject()) throw ServiceException.validation("Pivot manual group entry must be an object");
                     ObjectNode entry = (ObjectNode) rawGroup;
                     SnapshotMutationSupport.validateKnownKeys(entry, Set.of("groupId", "name", "items"), "Pivot manual group entry");
@@ -1131,7 +1150,7 @@ final class PivotMutationDescriptor extends CanonicalJsonMutationDescriptor {
         if ("text".equals(type) && (value == null || !value.isTextual())) throw ServiceException.validation("Pivot showAs text baseItem is invalid");
         if ("number".equals(type) && (value == null || !value.isNumber() || !Double.isFinite(value.asDouble()))) throw ServiceException.validation("Pivot showAs number baseItem is invalid");
         if ("boolean".equals(type) && (value == null || !value.isBoolean())) throw ServiceException.validation("Pivot showAs boolean baseItem is invalid");
-        if ("error".equals(type) && (value == null || !value.isTextual())) throw ServiceException.validation("Pivot showAs error baseItem is invalid");
+        if ("error".equals(type) && (value == null || !value.isTextual() || !Set.of("#NULL!", "#DIV/0!", "#VALUE!", "#REF!", "#NAME?", "#NUM!", "#N/A", "#CALC!", "#BLOCKED!", "#SPILL!", "#PARSE!").contains(value.asText()))) throw ServiceException.validation("Pivot showAs error baseItem is invalid");
     }
 
     private void validateRefreshPolicy(JsonNode raw) {
@@ -1159,6 +1178,29 @@ final class PivotMutationDescriptor extends CanonicalJsonMutationDescriptor {
                 if (index == null || !index.isIntegralNumber() || index.intValue() < 0) throw ServiceException.validation("Pivot nativeMetadata cacheFieldIndex is invalid");
                 if (binding.has("sourceName")) SnapshotMutationSupport.text(binding, "sourceName");
             });
+        }
+        if (metadata.has("cacheKey")) SnapshotMutationSupport.text(metadata, "cacheKey");
+        if (metadata.has("cacheFlags")) {
+            ObjectNode flags = requiredObject(metadata, "cacheFlags", "Native cache flags");
+            SnapshotMutationSupport.validateKnownKeys(flags, Set.of("refreshOnLoad", "refreshOnSave", "saveData", "enableRefresh"), "Native cache flags");
+            for (JsonNode flag : flags) if (!flag.isBoolean()) throw ServiceException.validation("Native cache flags must be boolean");
+        }
+        for (String area : List.of("preservedPivotFilters", "preservedAutoSortScopes")) {
+            if (!metadata.has(area)) continue;
+            ArrayNode entries = SnapshotMutationSupport.requiredArray(metadata, area);
+            if (entries.size() > 10000) throw ServiceException.validation("Native Pivot metadata exceeds its count budget");
+            for (JsonNode entry : entries) {
+                if (!entry.isObject() || !entry.path("fieldIndex").isIntegralNumber() || entry.path("fieldIndex").asInt(-1) < 0 || !entry.path("attributes").isObject()) throw ServiceException.validation("Native Pivot metadata is invalid");
+                entry.path("attributes").fields().forEachRemaining(attribute -> { if (!attribute.getKey().matches("[A-Za-z_][A-Za-z0-9_.:-]*") || !attribute.getValue().isTextual()) throw ServiceException.validation("Native Pivot attribute is invalid"); });
+                if ("preservedPivotFilters".equals(area) && (!entry.path("type").isTextual() || entry.path("type").asText().isBlank())) throw ServiceException.validation("Native Pivot filter type is required");
+                if ("preservedAutoSortScopes".equals(area)) {
+                    if (entry.has("sortType") && !Set.of("manual", "ascending", "descending").contains(entry.path("sortType").asText()) || entry.has("nonAutoSortDefault") && !entry.path("nonAutoSortDefault").isBoolean() || !entry.path("references").isArray()) throw ServiceException.validation("Native auto-sort scope is invalid");
+                    for (JsonNode reference : entry.path("references")) {
+                        if (!reference.isObject() || !reference.path("field").isIntegralNumber() || reference.path("field").asInt(-1) < 0 || reference.has("selected") && !reference.path("selected").isBoolean()) throw ServiceException.validation("Native auto-sort reference is invalid");
+                        if (reference.has("itemIndexes")) { if (!reference.path("itemIndexes").isArray()) throw ServiceException.validation("Native auto-sort indexes must be an array"); for (JsonNode index : reference.path("itemIndexes")) if (!index.isIntegralNumber() || index.asInt(-1) < 0) throw ServiceException.validation("Native auto-sort index is invalid"); }
+                    }
+                }
+            }
         }
         if (metadata.has("preservedFeatures")) {
             ArrayNode features = SnapshotMutationSupport.requiredArray(metadata, "preservedFeatures");
@@ -1238,7 +1280,7 @@ final class PivotMutationDescriptor extends CanonicalJsonMutationDescriptor {
     }
 
     private boolean isScalar(JsonNode raw) {
-        return raw != null && (raw.isTextual() || raw.isNumber() || raw.isBoolean() || raw.isNull());
+        return raw != null && (raw.isTextual() || raw.isNumber() && Double.isFinite(raw.asDouble()) || raw.isBoolean() || raw.isNull() || raw.isObject() && "error".equals(raw.path("kind").asText()) && Set.of("#NULL!", "#DIV/0!", "#VALUE!", "#REF!", "#NAME?", "#NUM!", "#N/A", "#CALC!", "#BLOCKED!", "#SPILL!", "#PARSE!").contains(raw.path("code").asText()) && (!raw.has("message") || raw.path("message").isTextual()));
     }
 
     private boolean finiteNumber(JsonNode raw) {

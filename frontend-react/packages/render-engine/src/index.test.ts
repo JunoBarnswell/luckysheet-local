@@ -395,7 +395,7 @@ function recordingContext() {
     fillRect(x: number, y: number, width: number, height: number) { fillCalls.push({ x, y, width, height }); },
     strokeRect() {},
     fillText(text: string, x: number, y: number) { textCalls.push({ text, x, y }); },
-    measureText() { return { width: 8 }; },
+    measureText(value: string) { return { width: value.length * 8 }; },
     setLineDash() {},
     translate() {},
     rotate() {},

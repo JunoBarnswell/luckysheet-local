@@ -187,7 +187,7 @@ function readSector(bytes: Uint8Array, sector: number, sectorSize: number): Uint
   return bytes.slice(start, start + sectorSize);
 }
 
-function readChain(bytes: Uint8Array, start: number, table: readonly number[], sectorSize: number, maxSectors: number): Uint8Array {
+function readChain(bytes: Uint8Array, start: number, table: readonly number[], sectorSize: number, maxSectors: number, ownership?: Set<number>): Uint8Array {
   if (start === CFB_END || start === CFB_FREE) return new Uint8Array();
   const parts: Uint8Array[] = [];
   const seen = new Set<number>();
@@ -195,6 +195,8 @@ function readChain(bytes: Uint8Array, start: number, table: readonly number[], s
   while (current !== CFB_END) {
     if (current < 0 || current >= table.length || seen.has(current)) invalid(`CFB sector chain is invalid at ${current}`);
     if (parts.length >= maxSectors) resource(`CFB stream exceeds ${maxSectors * sectorSize} bytes`);
+    if (ownership?.has(current)) invalid("CFB streams share a sector");
+    ownership?.add(current);
     seen.add(current);
     parts.push(readSector(bytes, current, sectorSize));
     current = table[current]!;
@@ -202,16 +204,18 @@ function readChain(bytes: Uint8Array, start: number, table: readonly number[], s
   return concatBytes(parts);
 }
 
-function readMiniChain(stream: Uint8Array, start: number, table: readonly number[], limits: NativeDocumentResourceLimits): Uint8Array {
+function readMiniChain(stream: Uint8Array, start: number, table: readonly number[], limits: NativeDocumentResourceLimits, size: number, ownership: Set<number>): Uint8Array {
   if (start < 0) invalid('CFB mini stream start sector is invalid');
   const parts: Uint8Array[] = [];
   const seen = new Set<number>();
   let current = start;
   while (current !== CFB_END) {
     if (current < 0 || current >= table.length || seen.has(current)) invalid(`CFB mini sector chain is invalid at ${current}`);
-    if ((parts.length + 1) * 64 > limits.maxStreamBytes) resource('CFB mini stream exceeds the byte limit');
+    if (parts.length >= Math.ceil(size / 64) || (parts.length + 1) * 64 > limits.maxStreamBytes) resource('CFB mini stream exceeds the byte limit');
     const offset = current * 64;
     if (offset + 64 > stream.length) invalid('CFB mini sector is outside the root mini stream');
+    if (ownership.has(current)) invalid("CFB streams share a mini sector");
+    ownership.add(current);
     seen.add(current);
     parts.push(stream.slice(offset, offset + 64));
     current = table[current]!;
@@ -261,6 +265,8 @@ function parseCfb(bytes: Uint8Array, limits: NativeDocumentResourceLimits): CfbP
   }
   if (numFat > difat.length) invalid('CFB FAT sector list is incomplete');
 
+  const sectorOwners = new Set<number>(seenDifat);
+  for (const id of difat.slice(0, numFat)) { if (sectorOwners.has(id)) invalid("CFB allocation sectors overlap"); sectorOwners.add(id); }
   const fat: number[] = [];
   for (let index = 0; index < numFat; index += 1) {
     const sector = readSector(bytes, difat[index]!, sectorSize);
@@ -268,7 +274,7 @@ function parseCfb(bytes: Uint8Array, limits: NativeDocumentResourceLimits): CfbP
     for (let entry = 0; entry < sectorSize / 4; entry += 1) fat.push(readI32(view, entry * 4));
   }
   const maxSectors = Math.max(1, Math.min(fat.length + 1, Math.ceil(limits.maxStreamBytes / sectorSize) + 1));
-  const directoryBytes = readChain(bytes, firstDirectory, fat, sectorSize, maxSectors);
+  const directoryBytes = readChain(bytes, firstDirectory, fat, sectorSize, maxSectors, sectorOwners);
   const entries: CfbDirectoryEntryGraph[] = [];
   for (let offset = 0; offset + 128 <= directoryBytes.byteLength; offset += 128) {
     const raw = directoryBytes.slice(offset, offset + 128);
@@ -289,20 +295,25 @@ function parseCfb(bytes: Uint8Array, limits: NativeDocumentResourceLimits): CfbP
     for (const reference of [entry.left, entry.right, entry.child]) if (reference < -1 || reference >= entries.length) invalid(`CFB directory reference is outside the directory: ${reference}`);
   }
 
-  const miniFatBytes = numMiniFat && firstMiniFat >= 0 ? readChain(bytes, firstMiniFat, fat, sectorSize, maxSectors) : new Uint8Array();
+  const miniFatBytes = numMiniFat && firstMiniFat >= 0 ? readChain(bytes, firstMiniFat, fat, sectorSize, Math.min(maxSectors, numMiniFat), sectorOwners) : new Uint8Array();
   const miniFat: number[] = [];
   for (let offset = 0; offset + 4 <= miniFatBytes.length; offset += 4) miniFat.push(dataView(miniFatBytes.slice(offset, offset + 4)).getInt32(0, true));
-  const rootMiniStream = root.size > 0 && root.startSector >= 0 ? readChain(bytes, root.startSector, fat, sectorSize, maxSectors).slice(0, root.size) : new Uint8Array();
+  const rootMiniStream = root.size > 0 && root.startSector >= 0 ? readChain(bytes, root.startSector, fat, sectorSize, Math.ceil(root.size / sectorSize), sectorOwners).slice(0, root.size) : new Uint8Array();
   const streams: Record<string, Uint8Array> = {};
   const streamNames = new Set<string>();
+  const miniOwners = new Set<number>();
+  let copiedStreamBytes = rootMiniStream.length + directoryBytes.length + miniFatBytes.length;
+  if (copiedStreamBytes > limits.maxUncompressedBytes) resource("CFB metadata exceeds the expanded byte budget");
   for (const entry of entries) {
     if (entry.type !== 2) continue;
+    copiedStreamBytes += entry.size;
+    if (copiedStreamBytes > limits.maxUncompressedBytes) resource("CFB aggregate stream data exceeds the expanded byte budget");
     if (!entry.name || streamNames.has(entry.name)) invalid(`CFB stream name is duplicated or empty: ${entry.name || '<empty>'}`);
     streamNames.add(entry.name);
     let value: Uint8Array;
     if (entry.size === 0) value = new Uint8Array();
-    else if (entry.size < 4096 && miniFat.length && rootMiniStream.length) value = readMiniChain(rootMiniStream, entry.startSector, miniFat, limits).slice(0, entry.size);
-    else value = readChain(bytes, entry.startSector, fat, sectorSize, maxSectors).slice(0, entry.size);
+    else if (entry.size < 4096 && miniFat.length && rootMiniStream.length) value = readMiniChain(rootMiniStream, entry.startSector, miniFat, limits, entry.size, miniOwners).slice(0, entry.size);
+    else value = readChain(bytes, entry.startSector, fat, sectorSize, Math.ceil(entry.size / sectorSize), sectorOwners).slice(0, entry.size);
     if (value.byteLength !== entry.size) invalid(`CFB stream ${entry.name} is truncated`);
     streams[entry.name] = value;
   }

@@ -24,13 +24,22 @@ public class WorkbookAssetService {
     private final WorkbookEntityRepository workbooks;
     private final AccessControlService access;
     private final WorkbookLifecycleService lifecycle;
+    private final com.xc.luckysheet.server.persistence.CheckpointEntityRepository checkpoints;
+    private final com.xc.luckysheet.server.persistence.OperationEntityRepository operations;
+    private final com.fasterxml.jackson.databind.ObjectMapper mapper;
 
     public WorkbookAssetService(AssetEntityRepository assets, WorkbookEntityRepository workbooks,
-                                AccessControlService access, WorkbookLifecycleService lifecycle) {
+                                AccessControlService access, WorkbookLifecycleService lifecycle,
+                                com.xc.luckysheet.server.persistence.CheckpointEntityRepository checkpoints,
+                                com.xc.luckysheet.server.persistence.OperationEntityRepository operations,
+                                com.fasterxml.jackson.databind.ObjectMapper mapper) {
         this.assets = assets;
         this.workbooks = workbooks;
         this.access = access;
         this.lifecycle = lifecycle;
+        this.checkpoints = checkpoints;
+        this.operations = operations;
+        this.mapper = mapper;
     }
 
     @Transactional
@@ -70,6 +79,9 @@ public class WorkbookAssetService {
     public void release(String unitId, String assetId, String actor) {
         authorize(unitId, actor, WorkbookAclRole.EDITOR);
         validateIdentity(assetId, "assetId");
+        workbooks.findForUpdate(unitId).orElseThrow(() -> ServiceException.notFound("Workbook not found"));
+        if (retainedReferences(unitId).contains(assetId)) throw new ServiceException("ASSET_REFERENCED", 409,
+                "Asset is retained by the current workbook or revision history; remove its canonical references before releasing it");
         assets.deleteById(new AssetEntity.Id(unitId, assetId));
     }
 
@@ -77,8 +89,37 @@ public class WorkbookAssetService {
     public void reconcile(String unitId, Set<String> referencedAssetIds, String actor) {
         authorize(unitId, actor, WorkbookAclRole.EDITOR);
         if (referencedAssetIds == null) throw ServiceException.validation("Referenced asset set is required");
+        workbooks.findForUpdate(unitId).orElseThrow(() -> ServiceException.notFound("Workbook not found"));
+        Set<String> retained = retainedReferences(unitId);
         for (AssetEntity entity : assets.findAllByIdUnitId(unitId)) {
-            if (!referencedAssetIds.contains(entity.getId().getAssetId())) assets.delete(entity);
+            if (!retained.contains(entity.getId().getAssetId())) assets.delete(entity);
+        }
+    }
+
+    private Set<String> retainedReferences(String unitId) {
+        Set<String> references = new java.util.HashSet<>();
+        collectReferences(workbooks.findById(unitId).orElseThrow().getSnapshotJson(), references);
+        try (var snapshots = checkpoints.streamSnapshotJsonByUnitId(unitId)) {
+            snapshots.forEach(json -> collectReferences(json, references));
+        }
+        try (var history = operations.streamEnvelopeJsonByUnitId(unitId)) {
+            history.forEach(json -> collectReferences(json, references));
+        }
+        return references;
+    }
+
+    private void collectReferences(String json, Set<String> references) {
+        try (var parser = mapper.getFactory().createParser(json)) {
+            if (parser.nextToken() != com.fasterxml.jackson.core.JsonToken.START_OBJECT) throw new IOException("Retained document must be a JSON object");
+            int depth = 1;
+            while (depth > 0 && parser.nextToken() != null) {
+                if (parser.currentToken().isStructStart()) depth++;
+                if (parser.currentToken().isStructEnd()) depth--;
+                if ("assetId".equals(parser.currentName()) && parser.currentToken() == com.fasterxml.jackson.core.JsonToken.VALUE_STRING) references.add(parser.getText());
+            }
+            if (depth != 0 || parser.nextToken() != null) throw new IOException("Retained document has trailing or incomplete JSON");
+        } catch (IOException error) {
+            throw new ServiceException("STORAGE_CORRUPT", 409, "Cannot verify retained asset references; restore a verified backup", error);
         }
     }
 

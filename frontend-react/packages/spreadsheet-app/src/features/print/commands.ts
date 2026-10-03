@@ -340,7 +340,7 @@ export function registerPrintCommands(registry: CommandRegistry): void {
       };
       context.applyMutation({
         id: 'pageLayout.printTitles.set', unitId: context.workbook.unitId, sheetId: params.sheetId,
-        params: { sheetId: params.sheetId, repeatRows: params.repeatRows ?? null, repeatColumns: params.repeatColumns ?? null }, affectedRanges: [],
+        params: { sheetId: params.sheetId, repeatRows: next.repeatRows ?? null, repeatColumns: next.repeatColumns ?? null }, affectedRanges: [],
         inverse: [{ id: 'pageLayout.printTitles.set', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, repeatRows: previous.repeatRows ?? null, repeatColumns: previous.repeatColumns ?? null }, affectedRanges: [] }],
         apply: () => replacePrintDocument(context.workbook, next),
       });
