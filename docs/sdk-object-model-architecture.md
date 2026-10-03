@@ -73,3 +73,12 @@ source close 不移除 target 中持久化的 binding。刷新失败的 denied/b
 | MWB-02.b | 保存、刷新页面、实际服务端 snapshot 与 native file 同一公式/身份 | 真实浏览器 console/pageerror/network 检查；不使用 HTTP route mocks | Pending |
 
 完成整个代码批次后统一执行 TypeScript/Vite、SDK 成功/拒绝测试、既有边界、全量 unit、真实 Java/H2 浏览器 UAT，并记录失败；不按测试输出临时拼补架构。全部原始产品项与新增多工作簿项通过，才允许合并。
+
+
+## 真实授权与 scope 补充 UAT（执行前制定；产品代码冻结）
+
+- MWB-02.c：真实 Java/H2 上经公开 SDK 创建两个普通用户、source/target 与持久化 external binding。SUM/AVERAGE/COUNT/MIN/MAX 读取同一来源 A1:A2，初始断言 30/15/2/10/20；来源 A2 改为 40 并 flush 后断言 50/25/2/10/40，sourceRevision 增加。
+- MWB-02.d：普通用户分别取得 source viewer、target editor；从用户自己的 SDK 读取上述结果。owner 真正撤销 source ACL，真实 external inputs 返回 403；刷新状态 denied，五个公式结果均为 #BLOCKED!，公式文本保留。重新 grant source viewer 后刷新为 connected，重新读到授权版本的结果。只允许该预期 403；其他网络、console/pageerror 必须为零。
+- MWB-01.b：同一个真实 SDK 从用户 A 切到用户 B；旧 Workbook/Cell 必须立即 typed 退休，新 owner 按同一 unitId 重新打开且不是旧对象，已提交值不丢失。active Workbook 存在时 dispose SDK；旧 Cell typed 退休。无未提交 journal 的跨身份恢复不在此用例范围，RT-02 保持 Pending。
+
+验收宿主可选择独立 spec，默认 UAT 包含原产品 spec 与补充 workbook spec；保留真实服务、隔离数据目录、零 retries、首次失败 trace。仅增加已预设目标的验收，不改变任何产品实现。

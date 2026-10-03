@@ -6,6 +6,8 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 const frontend = path.resolve(import.meta.dirname, '..');
+const selectedSpecs = process.argv.slice(2);
+const acceptanceSpecs = selectedSpecs.length ? selectedSpecs : ['e2e/sdk-product.spec.ts', 'e2e/sdk-workbook-acceptance.spec.ts'];
 const jar = path.resolve(frontend, '../backend/target/react-sheets.jar');
 if (!existsSync(jar)) throw new Error('Build backend/target/react-sheets.jar before running SDK UAT.');
 
@@ -48,10 +50,10 @@ try {
     await new Promise(resolve => setTimeout(resolve, 250));
   }
   if (!ready) throw new Error(`Java UAT service did not become ready; see ${evidence}/backend.log`);
-  acceptance = spawn(process.execPath, [path.join(frontend, 'node_modules/@playwright/test/cli.js'), 'test', 'e2e/sdk-product.spec.ts', '--workers=1', '--retries=0'], {
+  acceptance = spawn(process.execPath, [path.join(frontend, 'node_modules/@playwright/test/cli.js'), 'test', ...acceptanceSpecs, '--workers=1', '--retries=0'], {
     cwd: frontend, stdio: 'inherit', env: { ...process.env, SDK_UAT_ENABLED: '1',
       SDK_UAT_BOOTSTRAP_FILE: path.join(isolated, 'bootstrap-token'), SDK_UAT_EVIDENCE_DIR: evidence,
-      E2E_COMMAND: 'npm run test:sdk-uat',
+      E2E_COMMAND: selectedSpecs.length ? `npm run test:sdk-uat -- ${selectedSpecs.join(' ')}` : 'npm run test:sdk-uat',
     },
   });
   const exitCode = await new Promise((resolve, reject) => {
