@@ -1053,8 +1053,11 @@ export function registerPivotCommands(runtime: CommandRuntime): string[] {
     if ([...context.workbook.dataModel.tables.values()].some((table) => table.sourceId === item.params.sourceId)) {
       throw new Error(`Pivot drill-down data source is referenced by a workbook table: ${item.params.sourceId}`);
     }
-    context.workbook.removeSheet(item.params.targetSheetId);
+    // Remove the owned bindings in the same mutation before sheet-reference
+    // validation; unrelated references still fail the transaction preflight.
+    target.removeDataRegionAt(0);
     context.workbook.removeDataSource(item.params.sourceId);
+    context.workbook.removeSheet(item.params.targetSheetId);
   },
       metadata: {
     schema: { name: 'PivotDrillDownRemoveParams', validate: isPivotDrillDownRemove },

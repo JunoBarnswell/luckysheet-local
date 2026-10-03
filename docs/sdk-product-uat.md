@@ -71,11 +71,11 @@ SDK 拥有认证/身份/凭证/组合根/工作簿目录与生命周期/Excel �
 
 ## 逐条执行记录
 
-验收范围没有缩减。11 个已执行的浏览器场景不等于上面 42 个完整产品项全部通过；覆盖不足的父项继续 Pending。PR #349 保持草稿，未合并。
+验收范围没有缩减。12 个已执行的浏览器场景不等于上面 42 个完整产品项全部通过；覆盖不足的父项继续 Pending。PR #349 保持草稿，未合并。
 
 ### 已通过的可复现细项
 
-在 **b2461c8d18183769262e8053e91d6ad3e545e36b** 的干净源码上运行 `SDK_UAT_EVIDENCE_DIR=/tmp/sdk-uat/evidence npm run test:sdk-uat`：**11/11 Pass，59.1 秒**。真实 Chromium + Java 21/H2，无 HTTP route mocks。每次使用全新临时 H2，结束后关闭 Java/Vite。源码/运行记录由现有 provenance gate 验证。脚本为 `frontend-react/e2e/sdk-product.spec.ts`，每项都检查浏览器 console、pageerror 和失败请求；错误密码产生的预期 401 单独校验。
+在 **34c44dbe025da5d298bc0aedafadbd97731902b9** 的干净源码上运行 `SDK_UAT_EVIDENCE_DIR=/tmp/sdk-uat/evidence npm run test:sdk-uat`：**12/12 Pass，1.5 分钟**。真实 Chromium + Java 21/H2，无 HTTP route mocks。每次使用全新临时 H2，结束后关闭 Java/Vite。源码/运行记录由现有 provenance gate 验证。脚本为 `frontend-react/e2e/sdk-product.spec.ts`，每项都检查浏览器 console、pageerror 和失败请求；错误密码产生的预期 401 单独校验。
 
 | 细项 | 实际动作与断言 | 结果与证据 |
 |---|---|---|
@@ -98,6 +98,8 @@ SDK 拥有认证/身份/凭证/组合根/工作簿目录与生命周期/Excel �
 | COLLAB-02.a | 重复 Undo/Redo 使用新 durable operation 身份；旧/重复 binding 拒绝；多段删除按每段 preimage 恢复公式 | Pass（真实 DATA 场景 + history/Java 单测）；远程交错重放等未完成，COLLAB-02 父项 Pending |
 | DATA-03.a | 普通/排序 block 预取不自动重试已失败 block；显式 retry 可成功；校验/长度错返回 typed storage error | Pass（19 项 focused checks）；其他 source/query/linked 场景 Pending |
 | DOC-01.b / REVIEW-01.a | 先上传越界 hyperlink ref 的 XLSX，typed 拒绝且没有创建服务器工作簿；同一对话框重试合法文件，打开、键盘全选替换 A1、Ctrl+S、刷新、目录下载、解析真实下载 XLSX，四种 target 与值保留 | Pass；native-hyperlinks-edited.png 与 native-hyperlinks-edited.xlsx；DOC-01/REVIEW-01 完整父项仍 Pending |
+| DOC-01.c | 实际插入 48×32 PNG 浮动图片、提交引用操作后读取资产、保存→服务端快照→刷新→目录导出→验证下载 ZIP 中 media 原字节/relationship/重新导入 drawing | Pass；first-image-persisted.png、first-image.xlsx；SDK 缺失资产/错误 metadata/hash 拒绝；H2 HTTP 上传成功/400/403/415 拒绝；完整父项仍 Pending |
+| CHART-01.a | 自定义 view3D capability preserve-only、原字节保存；编辑后 typed 拒绝；合法默认 3D 饼图 codec | Pass（OOXML 单测）；完整 chart/browser/Desktop Excel 仍未通过 |
 | DOC-01.b identity | 原生数字 sheetId 与业务 ID 分离；一次映射所有 native owners；自定义/交换身份、原生 sheet 重排、保留数字 ID、v3 导入边界升级、重名/重复原生映射拒绝 | Pass（2 个原生 focused tests，均含多项成功/拒绝断言）；完整 native corpus/Desktop Excel 仍不等同通过 |
 
 以上截图与日志位于 `/tmp/sdk-uat/evidence/`；runner 汇总 `/tmp/sdk-uat/result.log`。临时文件不提交进仓库，CI 将日志/截图/provenance 打包为 artifact。
@@ -115,24 +117,31 @@ SDK 拥有认证/身份/凭证/组合根/工作簿目录与生命周期/Excel �
 9. 原生 XLSX 的 dimension 不包括合法空白格引用，在导入边界扩展 hyperlink anchors/targets 的 canonical extent；越界仍 typed 拒绝。
 10. 导出以前把任意业务 ID 写进原生 sheetId，导入只重映射单个 sheet，造成跨表引用丢失。现在统一分配/保留合法数字 ID，用 metadata v4 明确绑定业务 ID，一次重映射 native owners；v1–v3 只在显式导入边界升级。重复身份在 export 前置检查拒绝，不等到图形或链接序列化时才失败。
 
+11. 首次图片 drawing 根节点为空自闭合时，原有关闭标签替换无法插入 anchor。改为唯一 XML tree parser/serializer，校验 native drawing namespace/根节点；保留未知节点与属性，非法包 typed 拒绝。
+12. 目录导出缺少 SDK 既有 AssetStore；现在使用同一个 unit/subject owner。上传二进制 content-type、MIME header 和 nullable metadata 契约已与 Java 对齐；错误媒体类型/缺失 header 由服务器分别报告 415/400。
+13. 图片引用未 ACK 时，Canvas 资产读取被服务器正确拒绝 403。现在读取遵守既有 canonical queue commit barrier，未连接/拒绝返回 AssetReferenceError；没有放宽服务端授权或增加读取重试。
+14. 原生 chart/view3D 查询漏掉 chartSpace 根，导致自定义视角丢失。现在从原生合法树读取并报告 preserve-only，未编辑保留原 bytes，编辑拒绝。
+15. Pivot detail Undo 删除 worksheet 前，先在同一 canonical mutation 撤销该表专属 region/source，保留外部引用检查；没有忽略删除检查。真实浏览器和全部服务端 parity 仍 Pending。
+
 每个已完成功能或实际缺陷修复均为单独 commit 并推送同一个草稿 PR；没有提交到 main。
 
 ### 门禁记录与未通过项
 
 - `npm run build`：Pass（TypeScript + Vite）。
-- `npm run test:sdk`：29/29 Pass；auth/identity/runtime/dimensions/data 成功与拒绝路径。
-- protocol focused：32/32 Pass。
+- `npm run test:sdk`：30/30 Pass；auth/identity/runtime/dimensions/data 成功与拒绝路径。
+- protocol focused：33/33 Pass。
 - `npm run check:boundaries`：Pass（包含 generated contracts/registry/stack/provenance/既有 acceptance matrix）；`npm run test:calculation-domain`：446 + 5 tests Pass。不能据此宣称 Web 已只依赖 SDK。
 - `npm run test:native-codecs`：17/17 Pass；`npm run test:pointer-gesture`：7/7 Pass。
-- OOXML suite：新增身份测试后共有 61 项，前次 57 Pass / 4 Fail；最后 focused 2/2 Pass。四个未解决项为 pie view fixture/原生特性、camera 错误断言、Pivot 包 content-types、首次图片 drawing 导出。没有声称整个原生互通验收通过。
-- Java 21 `mvn ... -q package`：323 tests，0 failure/error/skipped，真实 H2 integration。
-- 完整 `npm run test:unit`：**1538 tests，1478 Pass，60 Fail**；基线为 1525 tests，1442 Pass，83 Fail。测试集和名称有变化，不能把全部 60 项未经逐项对照认定为基线问题；完整失败清单另见 sdk-product-unit-failures.md。
-- GATE-01：Fail。CI 已增加真实 SDK UAT 和完整 test:unit gate（UAT 后执行，完整日志作为 artifact 上传）；完整单测的 60 项失败会使检查失败，不允许以部分单测通过替代验收。
-- BOUND-01：Fail。Web 仍有内部包业务 import；WorkbookSession 仍 8111 行并暴露给 Web，完整 WorkbookHandle/领域拆分未完成。认证、组合根、目录 service、尺寸规划/worker、六个数据 action 已实质迁移，不能据此宣称所有领域完成。
+- OOXML suite：**63/63 Pass**；首次图片 DrawingML、合法/非法 preserved XML、业务/native sheet identity、自定义原生 3D 饼图保留与编辑拒绝。Camera typed error 与 Pivot OPC ContentTypes fixtures 已按真实契约修正。codec 通过不等于完整原生互通验收。
+- 资产引用提交屏障：2/2 Pass，真实 CollaborationSession 的 ACK 前不 GET，ACK 后读取；离线/拒绝不 GET 且队列状态保留。Pivot detail lifecycle：21/21 Pass，完整恢复和 region/hyperlink 拒绝无部分状态。
+- Java 21 `mvn ... package`：实际 Maven 汇总 **321 tests，0 failure/error/skipped**，真实 H2 integration；不使用含过期报告的 XML 目录总数。
+- 完整 `npm run test:unit`（本次 Pivot lifecycle 实现，提交前干净语义检查）：**1545 tests，1491 Pass，54 Fail**；上次 ed0f570 为 1543/1487/56。基线为 1525 tests，1442 Pass，83 Fail。不能未经逐项对照认定失败都来自基线；完整失败清单另见 sdk-product-unit-failures.md。
+- GATE-01：Fail。CI 真实 SDK UAT 与完整 test:unit 独立执行，完整日志作为 artifact。ed0f570 的 Windows push run 37093921510：12/12 UAT Pass，完整单测 56 Fail；同 head 的 PR run 37093924549 在 DATA 新工作簿打开的默认 5 秒内未 ready（3 Pass / 1 Fail / 8 未执行），缺少失败 trace，原因未确认。34c44dbe 已补首次失败 trace/截图/console/pageerror/网络拒绝记录与递归 artifact，没有增大超时或增加 action retries，后续 Windows 结果待记录。
+- BOUND-01：Fail。Web 仍有内部包业务 import；WorkbookSession 仍 8121 行并暴露给 Web，完整 WorkbookHandle/领域拆分未完成。认证、组合根、目录 service、尺寸规划/worker、六个数据 action 已实质迁移，不能据此宣称所有领域完成。
 - BOUND-02：Pending。现有 graph gate 通过，不代表更严格的 Web-only-SDK 及绕过注入门禁已经实现。
 - RT-02：Pending。subject owner 退休单测通过，但跨身份恢复 journal 的完整验收还没有完成。
-- AUTH-03：Blocked。未提供真实 OIDC issuer/provider，SDK 已迁入 OIDC 生命周期，但不能把本地认证测试作为 OIDC 验收。
-- DOC-04：Blocked。当前 Linux 环境没有桌面 Microsoft Excel；没有声称做过 Excel 打开/重算/保存检查。
+- AUTH-03：Blocked。用户明确回复没有真实 OIDC issuer/provider，SDK 已迁入 OIDC 生命周期，但不能把本地认证测试作为 OIDC 验收。
+- DOC-04：Blocked。用户确认没有可用桌面 Excel 环境；当前 Linux 环境也没有桌面 Microsoft Excel；没有声称做过 Excel 打开/重算/保存检查。
 - 其他 Pending 父项按原始矩阵保留：完整结构/引用图、所有 Excel 领域和 formats、交错协作/history、输入/打印/对象等未完成。
 
 ### 下一项实施前的 UAT 设计
@@ -143,8 +152,10 @@ SDK 拥有认证/身份/凭证/组合根/工作簿目录与生命周期/Excel �
 
 **CHART-01.a 原生 3D 饼图视角（Pass，codec 检查，先制定再执行）**：默认 3D 饼图在 canonical native writer/import chain 保持可编辑；将合法原生 chart/view3D 设置为自定义旋转，原生 capability 必须报告 preserve-only、原因可观察。未编辑保存需逐字节保留原 XLSX，编辑后再导出必须 NATIVE_DOCUMENT_UNCHANGED_SAVE_REQUIRED 拒绝且不修改原 native parts/snapshot。XML 中 view3D 必须位于 chart 下、与 plotArea 平级；codec 检查不代替真实浏览器/桌面 Excel 的 CHART-01 完整验收。
 
+**PIVOT-01.a 明细表撤销的引用生命周期（Pass，CommandRuntime 成功/拒绝检查，先制定再执行）**：用真实 canonical Pivot 命令创建 block-backed 明细表，Undo 同一个事务必须依次撤销 region binding、专属 data source 和 sheet，不能以忽略引用检查实现删除；原 sheet/source/region 快照需完整恢复，Redo→Undo 仍相同。其他 sheet region/Pivot/table 或超链接引用明细时，撤销必须拒绝且 worksheet、source、region 与 history 无部分变化。此项先做 CommandRuntime 成功/拒绝检查，公式删除的 canonical #REF! 改写及其 history、真实浏览器和服务端完整 parity 尚需另行验收，PIVOT-01 父项保持 Pending。
+
 ### 合并与回滚
 
 只有所有必需产品项 Pass、完整门禁 Pass、PR checks 对应待合并 head 验证后才 ready/merge；现在没有达到条件。
 
-没有生产部署，验收只操作临时 H2。尺寸 null 和 outline null 是 canonical operation 语义变更，前后端必须同版本发布/回滚；出现新语义的 durable 日志后，单独回退代码不可安全读取，应使用兼容版本或恢复匹配的 operation/checkpoint 备份。原生 metadata v4 是另一个文件契约变更：旧版应用不能读取新生成的 v4 文件，回滚须保留当前 codec 或从原始文档/兼容备份恢复，不能只回退应用。旧 Web auth/service/尺寸 worker 等已删除，不保留兼容桥。schema upgrades 只在显式 migration/import boundary 执行。
+没有生产部署，验收只操作临时 H2。尺寸 null 和 outline null 是 canonical operation 语义变更，前后端必须同版本发布/回滚；出现新语义的 durable 日志后，单独回退代码不可安全读取，应使用兼容版本或恢复匹配的 operation/checkpoint 备份。原生 metadata v4 是另一个文件契约变更：旧版应用不能读取新生成的 v4 文件，回滚须保留当前 codec 或从原始文档/兼容备份恢复，不能只回退应用。二进制资产 HTTP MIME header/content-type 同样要求前后端同步发布/回滚，不提供 runtime 旧 header alias。旧 Web auth/service/尺寸 worker 等已删除，不保留兼容桥。schema upgrades 只在显式 migration/import boundary 执行。

@@ -238,6 +238,7 @@ describe('pivot feature contract', () => {
     const runtime = new CommandRuntime(workbook);
     registerPivotFeature(runtime);
     executePivotCreate(runtime, workbook, pivot);
+    const before = snapshotWithStableCollectionOrder(workbook);
     const resolved = await executeDrillDown(runtime, workbook, {
       sheetId: 'sheet-1',
       pivotId: pivot.id,
@@ -251,9 +252,52 @@ describe('pivot feature contract', () => {
     assert.equal(workbook.getSheet('drill-1').dataRegions.length, 1);
     assert.equal(runtime.undo(), true);
     assert.equal(workbook.sheets.has('drill-1'), false);
+    assert.equal(workbook.dataModel.sources.has('detail:drill-1'), false);
+    assert.deepEqual(snapshotWithStableCollectionOrder(workbook), before);
     assert.equal(runtime.redo(), true);
     assert.equal(workbook.getSheet('drill-1').dataRegions.length, 1);
+    assert.equal(runtime.undo(), true);
+    assert.deepEqual(snapshotWithStableCollectionOrder(workbook), before);
   });
+
+  for (const reference of ['region', 'hyperlink'] as const) {
+    it(`refuses drill-down undo with an external ${reference} reference without removing owned state`, async () => {
+      const workbook = seedCrossSheetWorkbook();
+      const pivot = pivotDefinition()!;
+      const runtime = new CommandRuntime(workbook);
+      registerPivotFeature(runtime);
+      executePivotCreate(runtime, workbook, pivot);
+      await executeDrillDown(runtime, workbook, {
+        sheetId: 'sheet-1', pivotId: pivot.id, label: 'East',
+        sourceRowPaths: [{ sheetId: 'source-2', row: 1 }],
+        targetSheetId: 'detail-refusal', target: { row: 0, column: 0 },
+      });
+      const detail = workbook.getSheet('detail-refusal');
+      const other = workbook.getSheet('source-2');
+      if (reference === 'region') {
+        other.addDataRegion({
+          ...structuredClone(detail.dataRegions[0]!), id: 'shared-detail-region',
+          range: { ...detail.dataRegions[0]!.range, sheetId: other.id },
+        });
+      } else {
+        other.hyperlinks.set('5:0', { id: 'external-detail-link', target: { kind: 'sheet', sheetId: detail.id, row: 0, column: 0 } });
+      }
+      const before = snapshotWithStableCollectionOrder(workbook);
+      const historyBefore = structuredClone(runtime.getUndoEntries());
+      assert.throws(() => runtime.undo(), reference === 'region'
+        ? /data source is referenced by another sheet/
+        : (error: unknown) => error instanceof Error
+          && 'code' in error && error.code === 'SHEET_IDENTITY_TRANSFORM_REJECTED');
+      assert.deepEqual(snapshotWithStableCollectionOrder(workbook), before);
+      assert.deepEqual(runtime.getUndoEntries(), historyBefore);
+      assert.equal(runtime.getRedoEntries().length, 0);
+      if (reference === 'region') other.removeDataRegionAt(other.dataRegions.length - 1);
+      else other.hyperlinks.delete('5:0');
+      assert.equal(runtime.undo(), true);
+      assert.equal(workbook.sheets.has(detail.id), false);
+      assert.equal(workbook.dataModel.sources.has('detail:detail-refusal'), false);
+    });
+  }
 
   it('removes PivotChart and Pivot controls as one atomic reversible lifecycle transaction', () => {
     const workbook = seedCrossSheetWorkbook();
