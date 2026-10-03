@@ -28,7 +28,7 @@ class CanonicalFlywayMigrationIntegrationTest {
         String url = database();
         Flyway flyway = canonical(url);
         CanonicalFlywayMigrationConfiguration.migrate(flyway);
-        assertEquals("15", flyway.info().current().getVersion().getVersion());
+        assertEquals("17", flyway.info().current().getVersion().getVersion());
         int historyCount = flyway.info().applied().length;
         CanonicalFlywayMigrationConfiguration.migrate(canonical(url));
         assertEquals(historyCount, flyway.info().applied().length);
@@ -42,7 +42,7 @@ class CanonicalFlywayMigrationIntegrationTest {
     @Test
     void identityScopeUpgradePreservesExistingOwnersWithoutInventingOidcMappings() throws Exception {
         String url = database();
-        Flyway.configure().dataSource(url, "sa", "").locations("classpath:db/migration/h2").target("13").load().migrate();
+        Flyway.configure().dataSource(url, "sa", "").locations("classpath:db/migration/h2").target("15").load().migrate();
         try (var connection = DriverManager.getConnection(url, "sa", ""); var statement = connection.createStatement()) {
             statement.executeUpdate("insert into workbooks(unit_id, name, snapshot_json, snapshot_revision, revision, entity_version, created_at, updated_at, owner_subject) "
                     + "values('local-book', 'Local', '{}', 0, 0, 0, current_timestamp, current_timestamp, 'local:user'), "

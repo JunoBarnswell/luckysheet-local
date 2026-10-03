@@ -49,9 +49,8 @@ class WorkbookCatalogServiceTest {
         WorkspaceService workspace = mock(WorkspaceService.class);
         WorkbookAuthorizationService authorization = mock(WorkbookAuthorizationService.class);
         WorkbookOperationService operations = mock(WorkbookOperationService.class);
-        when(authorization.role("book-1", "editor")).thenReturn(Optional.of(com.xc.luckysheet.server.contract.WorkbookRole.EDITOR));
-        when(workbooks.findForUpdate("book-1")).thenReturn(Optional.of(new WorkbookEntity("book-1", "Book", "{}", 0, 0,
         when(operations.accessProjection("book-1", "editor", java.util.List.of())).thenReturn(new com.xc.luckysheet.server.contract.WorkbookAccessProjection("book-1", WorkbookRole.EDITOR, 0, java.util.List.of()));
+        when(authorization.role("book-1", "editor")).thenReturn(Optional.of(com.xc.luckysheet.server.contract.WorkbookRole.EDITOR));
         when(workbooks.findById("book-1")).thenReturn(Optional.of(new WorkbookEntity("book-1", "Book", "{}", 0, 0,
                 Instant.now(), Instant.now(), "owner", "space-1", null, WorkbookStorageLocation.REMOTE,
                 WorkbookSource.NATIVE, WorkbookLifecycle.ACTIVE, null)));

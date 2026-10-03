@@ -134,12 +134,6 @@ public final class LocalAuthSessionRegistry {
         catch (IOException error) { LOGGER.debug("Authentication socket already closed", error); }
     }
 
-    public void unregisterWebSocket(WebSocketSession session) {
-        if (session != null && session.getPrincipal() instanceof LocalUserAuthentication local) {
-            remove(webSocketSessions, local.getName(), session);
-        }
-    }
-
     public void closeContext(String contextId) {
         for (Set<WebSocketSession> sockets : webSocketSessions.values()) {
             for (WebSocketSession socket : sockets) {

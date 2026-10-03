@@ -73,7 +73,7 @@ function EditorRoute({ resolution, onOpenHub }: { resolution: WorkbookResolution
   };
 
   const controller = useEditorCommandController({ session, state, data, locale, dispatchCommand, dispatchSessionIntent });
-  const copyWorkbookLink = () => { void session.createGuestShareLink("editor"); };
+  const copyWorkbookLink = () => { void session.createGuestShareLink("viewer"); };
   const saveWorkbook = () => { void session.saveWorkbook("Manual save").catch(cause => session.notify(cause instanceof Error ? cause.message : "保存失败")); };
   const exportDocument = async () => {
     try {

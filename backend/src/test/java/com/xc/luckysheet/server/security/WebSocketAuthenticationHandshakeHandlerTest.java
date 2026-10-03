@@ -57,7 +57,7 @@ class WebSocketAuthenticationHandshakeHandlerTest {
 
     @Test
     void queryCredentialsAreNotAccepted() {
-        var handler = new WebSocketAuthenticationHandshakeHandler(mock(JwtDecoder.class), mock(GuestShareService.class));
+        var handler = new WebSocketAuthenticationHandshakeHandler(mock(JwtDecoder.class), mock(GuestShareService.class), identities());
         assertThrows(HandshakeFailureException.class, () -> handler.authenticatedPrincipal(request("/ws?shareToken=share-token", null)));
     }
 
