@@ -86,3 +86,17 @@ I1 先完成上述整个实现批次，再执行 build/SDK/Java/浏览器验证�
 I1 统一验证：build/typecheck、现有 boundaries Pass；SDK 42/42 Pass；Java 327/327 Pass + package 成功。首轮 Java 326 tests 只有迁移测试仍断言版本 13，而新正式迁移为 14；产品实现保持冻结，只同步该测试的显式版本契约，并增加 v13→v14 数据/owner 不变、不擅自发明 OIDC 映射及重复启动历史不变的验收。签名/issuer/audience/过期/缺 sid 五类拒绝测试和 namespace/scope/WS 检查通过。随后在干净提交 head 执行真实本地浏览器；真实 ERP/SSO 项尚未通过。
 
 I1 产品 head `1100d699cc8f8d724fcf367dde3e3276666e4af3` 的完整真实 Java 21/H2/Chromium UAT **15/15 Pass**（`/tmp/sdk-identity-browser.log`，`/tmp/sdk-product-uat-GLepoX/evidence`），无 HTTP route mocks。完整 unit 1555/1501 Pass/54 Fail，失败标题仍无增减；不会据此合并。外部 IdP/ERP 生命周期集成仍 Blocked，不将签名测试等同真实 SSO。
+
+## C2 多簿图冻结契约与实施前细项
+
+删除单 binding 输入端点/客户端方法，统一 ExternalCalculationGraph：root、受验证 subject、每个来源 unit 的 revision/accessRevision、计算快照/hidden ranges 或明确拒绝状态。服务端从 canonical snapshot externalLinks 构造闭包，图门控行串行化 topology 改变，再按 unitId 排序锁定现有来源，刷新 ORM 读取并验证闭包；一次响应中的来源版本固定。不会复制持久化依赖模型。V15 只创建图门控行，普通单簿值事务仍由原来的事务链拥有。
+
+提交后的最终候选 externalLinks、客户端绑定前置和新建/导入/复制快照在同一个图契约检查循环、来源和工作区授权。循环直接 CIRCULAR_DEPENDENCY 拒绝；没有假装实现多簿迭代。64 本、每本 100000 输入和整图 1000000 输入预算是明确 UNSUPPORTED_FEATURE 拒绝，没有截断。
+
+客户端按照拓扑顺序使用同一 FormulaEngine/Worker 计算每个来源；C1 输入 fault 沿 B→C 再次消费仍不可吞掉。版本/绑定/runtime/context 不匹配不发布；失败来源移除旧输入。来源权限撤销是图内 denied 节点，不包含快照，目标合法授权仍可获得 typed 失败图；不能把合法目标的 HTTP 200 当作失败来源已授权。
+
+WebSocket 增加正式 calculation.subscribe / calculation.changed 契约；闭包和订阅来源由服务器产生。订阅是事件投影，不是第二个模型、凭证 owner 或影子 WorkbookSession。目标当前 VIEWER 权限在每次通知前再验证；消息只标识已绑定来源变化，不发送来源数据。commit/access/lifecycle 事件触发目标重新获取授权图；关闭来源 Workbook 不取消目标的服务器依赖，关闭目标/退出 context 会撤销所有订阅。刷新期间收到新事件只标记新一轮工作，不发布旧任务。
+
+预设 MWB-03.a：A=10，B=A*2，C=SUM(B)、COUNT(B)、IFERROR(B)，一份授权图重算为 20/1/20；A 提交 40 后，不调用手动 refresh，C 自动变为 80/1/80，保存重开一致。MWB-03.b：关闭 A 的公开对象后仍观察真实服务端 A 的更新；撤销叶子 A 权限后三个 C 结果均 #BLOCKED!，图无 A 快照；恢复后自动恢复授权版本。MWB-03.c：尝试 C→A→B→C 绑定及伪造 REST externalLink.set，均 CIRCULAR_DEPENDENCY 拒绝，所有快照、revision、history/operations 不变；并发两个方向绑定至多一个成功。MWB-03.d：坏 schema、重复 node、坏版本、缺节点、越界、预算失败与过期 runtime 不能发布/留下旧来源缓存；inline/Worker 同结果。所有细项先 Pending，之后记录真实执行。
+
+当前图捕获仅接受已物化输入。带数据块的来源统一返回 UNSUPPORTED_FEATURE，避免缺少 block hydration 时读成空值；完整流式来源由 R1 批次处理。

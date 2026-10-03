@@ -25,8 +25,49 @@ import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
+import static org.mockito.ArgumentMatchers.any;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import org.mockito.ArgumentCaptor;
+import org.springframework.web.socket.TextMessage;
 
 class WebSocketSessionRegistryTest {
+    @Test
+    void calculationNotificationsCarryOnlyIdentifiersAndRecheckRootPermission() throws Exception {
+        AccessControlService access = mock(AccessControlService.class);
+        ObjectMapper mapper = new ObjectMapper().findAndRegisterModules();
+        WebSocketSessionRegistry registry = new WebSocketSessionRegistry(mapper, access,
+                mock(RangeAccessService.class), mock(AccessProjectionService.class));
+        WebSocketSession session = mock(WebSocketSession.class);
+        when(session.getPrincipal()).thenReturn((Principal) () -> "reader");
+        when(session.isOpen()).thenReturn(true);
+        when(session.getAttributes()).thenReturn(new java.util.concurrent.ConcurrentHashMap<>());
+        registry.subscribeCalculation("root", java.util.Set.of("leaf", "middle"), session);
+        registry.broadcastAccessChanged("leaf", 7);
+        var message = ArgumentCaptor.forClass(TextMessage.class);
+        verify(session).sendMessage(message.capture());
+        assertEquals(mapper.readTree("{\"type\":\"calculation.changed\",\"unitId\":\"root\",\"sourceUnitId\":\"leaf\"}"), mapper.readTree(message.getValue().getPayload()));
+        verify(access).require("root", "reader", WorkbookRole.VIEWER);
+        doThrow(ServiceException.forbidden("Root revoked")).when(access).require("root", "reader", WorkbookRole.VIEWER);
+        registry.broadcastAccessChanged("middle", 8);
+        verify(session).close(eq(CloseStatus.POLICY_VIOLATION));
+        registry.broadcastAccessChanged("leaf", 9);
+        verify(session, times(1)).sendMessage(any());
+    }
+
+    @Test
+    void calculationSubscriptionRetirementStopsSourceNotifications() throws Exception {
+        WebSocketSessionRegistry registry = new WebSocketSessionRegistry(new ObjectMapper(), mock(AccessControlService.class),
+                mock(RangeAccessService.class), mock(AccessProjectionService.class));
+        WebSocketSession session = mock(WebSocketSession.class);
+        when(session.isOpen()).thenReturn(true);
+        registry.subscribeCalculation("root", java.util.Set.of("leaf"), session);
+        registry.unsubscribeCalculation(session);
+        registry.broadcastAccessChanged("leaf", 10);
+        verify(session, never()).sendMessage(any());
+    }
+
     @Test
     void revokedOrUnauthorizedSessionIsClosedBeforeReceivingRemoteRevision() throws Exception {
         AccessControlService access = mock(AccessControlService.class);

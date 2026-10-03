@@ -234,3 +234,11 @@ SDK 拥有认证/身份/凭证/组合根/工作簿目录与生命周期/Excel �
 新增凭证检查覆盖服务端确认身份、并发单次获取与确认、同上下文续期、不变 subject 下换工作区、旧 HTTP/响应体拒绝、过期/401 清除身份、host CSRF/正式 prefix、来源不匹配与坏上下文。Java 以实际 RSA 签名/JWKS decoder 检查 issuer/audience/过期/错签名/缺 sid 拒绝，并验证不同 authority/scope 主体隔离、ACL 不能越过 scope、同 context 续期与显式可信身份映射。真实外部身份、ERP 路由和上下文恢复尚需 I2/后续验收，相关父项不升级为 Pass。
 
 产品源在统一验证期间未修改。首轮 Java 只有正式 schema 已迁到 V14、迁移测试仍断言 13 的契约陈旧问题；同步版本并增加真实 v13→v14 旧数据保留和重复启动检查后，Java 全部通过。完整 unit 仍 1555/1501 Pass/54 Fail，失败标题与 C1 相同。49 父项保持 12 Pass/2 Fail/2 Blocked/33 Pending；现有 boundaries 的绿色结果仍不代替 BOUND-01。PR 继续草稿。
+
+## C2 多簿图统一验证记录
+
+本批采用实施前冻结的 MWB-03.a/b/c/d 细项，删除旧单 binding 输入端点与消费者，统一版本图、前置循环校验、来源变化订阅及递归计算。V15 仅增加 topology 事务门控行。64 簿、单节点 100000 输入和总图 1000000 输入为显式预算；流式 block 来源当前 UNSUPPORTED_FEATURE，完整 R1 仍待实现。
+
+SDK 42/42、calculation-domain 457/457（452 主域 + 5 结构/引用域）、Java 331/331、build/typecheck 与 boundaries Pass。新增测试覆盖 A→B→C 的 20/1/20、叶子拒绝三式均 #BLOCKED!、恢复为 80/1/80、Worker 快照同结果、坏图/预算拒绝，以及并发相反绑定仅一个写入、另一操作无 history/版本写入。日志 `/tmp/sdk-graph-sdk.log`、`/tmp/sdk-graph-calculation-current-fixture.log`、`/tmp/sdk-graph-java.log`、`/tmp/sdk-graph-build-current-fixture.log`、`/tmp/sdk-graph-boundaries.log`。首次前端验收 fixture 调用了不存在的 Worker 快照方法，原始失败日志保留；按真实 exportCalculationSnapshot/fromCalculationSnapshot 契约同步后通过，产品实现未改。
+
+全量 unit 1557/1503 Pass/54 Fail；与 I1 失败标题新增/减少均为 0（`/tmp/sdk-graph-all-unit.log`）。真实浏览器的自动传播、关闭来源对象、撤权/恢复、重开和 SDK 循环拒绝此刻尚未执行，MWB-03 保持 Pending，下一步在已提交的干净 head 执行。全计划与合并门禁仍未完成。

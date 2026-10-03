@@ -200,9 +200,15 @@ public class WorkbookController {
         return operations.readSnapshot(unitId, ActorIdentity.subject(authentication), ActorIdentity.groups(authentication));
     }
 
-    @GetMapping("/{unitId}/external-links/{linkId}/inputs")
-    public JsonNode externalLinkInputs(@PathVariable String unitId, @PathVariable String linkId, Authentication authentication) {
-        return operations.readExternalLink(unitId, linkId, ActorIdentity.subject(authentication), ActorIdentity.groups(authentication));
+    @GetMapping("/{unitId}/external-calculation/inputs")
+    public JsonNode externalCalculationGraph(@PathVariable String unitId, Authentication authentication) {
+        return operations.readExternalCalculationGraph(unitId, ActorIdentity.subject(authentication), ActorIdentity.groups(authentication));
+    }
+
+    @PostMapping("/{unitId}/external-calculation/binding-validation")
+    public ResponseEntity<Void> validateExternalBinding(@PathVariable String unitId, @RequestBody JsonNode binding, Authentication authentication) {
+        operations.validateExternalBinding(unitId, binding, ActorIdentity.subject(authentication), ActorIdentity.groups(authentication));
+        return ResponseEntity.noContent().build();
     }
 
     @PostMapping("/{unitId}/operations")

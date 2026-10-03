@@ -970,6 +970,7 @@ export class WorkbookSession {
           );
           if (loaded.state.availability !== 'ready') throw new Error(`DATA_CONTENT_UNAVAILABLE: ${loaded.state.error ?? source.region.sourceId}`);
         }
+        if (this.runtime.model.dataModel.externalLinks.size) await refreshExternalLinks(this.runtime);
         await this.waitForFormulaCalculation();
         authorize();
         resolved = this.readWorkbookViewCell(this.runtime.model.getSheet(sheetId), row, column);
@@ -4542,6 +4543,7 @@ export class WorkbookSession {
       if (existing.sourceUnitId !== link.sourceUnitId) throw new Error('EXTERNAL_LINK_TOKEN_CONFLICT: link token already owns another source workbook');
       link = { ...existing, sheets: [...existing.sheets.filter(sheet => !link.sheets.some(next => next.token.toUpperCase() === sheet.token.toUpperCase())), ...link.sheets] };
     }
+    await this.runtime.api.validateExternalLinkBinding(this.runtime.model.unitId, link);
     this.runCommand('externalLink.set', { link });
     await this.flushPendingChanges();
     await refreshExternalLinks(this.runtime);

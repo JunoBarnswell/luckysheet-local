@@ -61,7 +61,7 @@ export class Workbook {
     try { this.#assertAlive(operation); const result = await action(); this.#assertAlive(operation); return result; }
     catch (cause) {
       if (cause instanceof SdkError) throw cause;
-      const code = cause instanceof CommandDispatchError && cause.code === 'PERMISSION_DENIED' ? 'FORBIDDEN' : 'REQUEST_REJECTED';
+      const code = cause instanceof Error && 'code' in cause && cause.code === 'CIRCULAR_DEPENDENCY' ? 'CIRCULAR_DEPENDENCY' : cause instanceof CommandDispatchError && cause.code === 'PERMISSION_DENIED' ? 'FORBIDDEN' : 'REQUEST_REJECTED';
       throw this.#error(code, operation, cause instanceof Error ? cause.message : '操作失败。', cause, object);
     }
   }

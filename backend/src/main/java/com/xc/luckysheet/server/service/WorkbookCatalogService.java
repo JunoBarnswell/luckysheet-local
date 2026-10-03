@@ -369,6 +369,7 @@ public class WorkbookCatalogService {
                 now, now, actor, space.getSpaceId(), folderId,
                 com.xc.luckysheet.server.contract.WorkbookStorageLocation.REMOTE,
                 request.source(), WorkbookLifecycle.ACTIVE, null);
+        if (request.snapshot().path("dataModel").path("externalLinks").size() > 0) operations.validateExternalDefinitions(request.snapshot(), actor, List.of());
         workbooks.saveAndFlush(entity);
         if (blockSourceUnitId == null) {
             dataBlockPublication.requireSnapshot(request.unitId(), request.snapshot());

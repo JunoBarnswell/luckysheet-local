@@ -74,11 +74,12 @@ test('cross-workbook formulas refresh authorized revisions and clear revoked inp
   try {
     const runtime = target.session['runtime'];
     let revision = 1, denied = false;
-    runtime.api.getExternalLinkInputs = async (_unit, linkId) => {
-      if (denied) throw Object.assign(new Error('Source access revoked'), { status: 403, code: 'FORBIDDEN' });
-      const binding = runtime.model.dataModel.externalLinks.get(linkId)!;
-      return { binding: structuredClone(binding), snapshot: source.session['runtime'].model.snapshot(), subject: 'object-owner', sourceRevision: revision, accessRevision: 0, blockedRanges: [] };
-    };
+    runtime.api.validateExternalLinkBinding = async () => {};
+    runtime.api.getExternalCalculationGraph = async () => ({ schema: 'ExternalCalculationGraph', rootUnitId: target.workbook.id, subject: 'object-owner', nodes: [
+      { unitId: target.workbook.id, state: 'connected', snapshot: runtime.model.snapshot(), revision: 0, accessRevision: 0, blockedRanges: [] },
+      denied ? { unitId: source.workbook.id, state: 'denied', error: { code: 'FORBIDDEN', message: 'Source access revoked' } }
+      : { unitId: source.workbook.id, state: 'connected', snapshot: source.session['runtime'].model.snapshot(), revision, accessRevision: 0, blockedRanges: [] },
+    ] });
     const sourceSheet = source.workbook.worksheets.at(0);
     await sourceSheet.cells.get('D8').setValue(10);
     await sourceSheet.cells.get('D9').setValue(20);

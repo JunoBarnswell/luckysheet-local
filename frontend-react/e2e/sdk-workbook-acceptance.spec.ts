@@ -74,17 +74,20 @@ test('MWB-02.c/d: five cross-workbook functions refresh real authorized versions
     expect(updated.values).toEqual([50, 25, 2, 10, 40]);
     expect(updated.links[0]!.sourceRevision).toBeGreaterThan(initial.links[0]!.sourceRevision);
     await owner.evaluate((sdk, input) => sdk.workbooks.revokeAccess(input.sourceId, input.readerId), setup);
-    const forbiddenResponse = readerPage.waitForResponse(response => response.status() === 403 && new URL(response.url()).pathname === `/api/workbooks/${setup.targetId}/external-links/Source.xlsx/inputs`);
+    const deniedGraphResponse = readerPage.waitForResponse(response => response.ok() && new URL(response.url()).pathname === `/api/workbooks/${setup.targetId}/external-calculation/inputs`);
     const denied = await calculations(reader, setup.targetId);
-    expect(await (await forbiddenResponse).finished()).toBeNull();
+    const deniedGraph = await (await deniedGraphResponse).json();
+    const deniedNode = deniedGraph.nodes.find((node: { unitId: string }) => node.unitId === setup.sourceId);
+    expect(deniedNode).toMatchObject({ state: 'denied', error: { code: 'FORBIDDEN' } });
+    expect(deniedNode).not.toHaveProperty('snapshot');
     expect(denied.links[0]!.state).toBe('denied'); expect(denied.formulas).toEqual(setup.formulas);
     for (const value of denied.values) expect(value).toMatchObject({ kind: 'error', code: '#BLOCKED!' });
     await owner.evaluate((sdk, input) => sdk.workbooks.grantAccess(input.sourceId, input.readerId, 'viewer'), setup);
     const restored = await calculations(reader, setup.targetId);
     expect(restored.links[0]!.state).toBe('connected'); expect(restored.values).toEqual([50, 25, 2, 10, 40]);
-    expect(rejected).toEqual([{ path: `/api/workbooks/${setup.targetId}/external-links/Source.xlsx/inputs`, status: 403 }]);
+    expect(rejected).toEqual([]);
     expect(readerDiagnostics.pageErrors).toEqual([]); expect(readerDiagnostics.requestFailures).toEqual([]);
-    expect(readerDiagnostics.consoleErrors.filter(message => !message.includes('Failed to load resource: the server responded with a status of 403'))).toEqual([]);
+    expect(readerDiagnostics.consoleErrors).toEqual([]);
     ownerDiagnostics.assertClean();
   } finally { if (reader) await reader.evaluate(sdk => sdk.dispose()); await readerContext.close(); await owner.evaluate(sdk => sdk.dispose()); }
 });
@@ -129,5 +132,103 @@ test('MWB-01.b: real SDK subject switch and active-workbook disposal retire old 
     expect(result.subjectRetired).toBe('RUNTIME_DISPOSED'); expect(result.sdkRetired).toBe('RUNTIME_DISPOSED');
     expect(result.freshOwner).toBe(true); expect(result.value).toBe(43);
     ownerDiagnostics.assertClean(); readerDiagnostics.assertClean();
+  } finally { if (reader) await reader.evaluate(sdk => sdk.dispose()); await readerContext.close(); await owner.evaluate(sdk => sdk.dispose()); }
+});
+
+test('MWB-03.a/b/c: three-workbook graph propagates real source commits and authorization without manual refresh', async ({ page, browser }) => {
+  const ownerDiagnostics = installBrowserDiagnostics(page);
+  const owner = await ownerSdk(page);
+  const readerContext = await browser.newContext({ baseURL: 'http://127.0.0.1:4180' });
+  const readerPage = await readerContext.newPage();
+  const readerDiagnostics = installBrowserDiagnostics(readerPage);
+  const subscriptions: string[] = [];
+  readerPage.on('websocket', socket => socket.on('framesent', frame => {
+    const message = JSON.parse(String(frame.payload)) as { type?: string; unitId?: string };
+    if (message.type === 'calculation.subscribe' && message.unitId) subscriptions.push(message.unitId);
+  }));
+  const rejected: { path: string; status: number }[] = [];
+  page.on('response', response => { if (response.status() >= 400) rejected.push({ path: new URL(response.url()).pathname, status: response.status() }); });
+  let reader: JSHandle<SpreadsheetSdk> | undefined;
+  try {
+    const setup = await owner.evaluate(async (sdk, input) => {
+      await sdk.identity.createUser({ username: input.username, displayName: 'Dependency reader', password: input.password });
+      const user = (await sdk.identity.listUsers()).find(user => user.username === input.username)!;
+      const entries = await Promise.all(['Leaf', 'Middle', 'Root'].map(name => sdk.workbooks.create({ name: `${name} ${input.username}` })));
+      const [a, b, c] = await Promise.all(entries.map(entry => sdk.workbooks.open(entry.unitId)));
+      await a!.worksheets.at(0).cells.get('A1').setValue(10); await a!.flush();
+      await b!.externalLinks.bind(a!, 'A.xlsx');
+      await b!.worksheets.at(0).cells.get('A1').setFormula(`='[A.xlsx]${a!.worksheets.at(0).name}'!A1*2`); await b!.flush();
+      await c!.externalLinks.bind(b!, 'B.xlsx');
+      const reference = `'[B.xlsx]${b!.worksheets.at(0).name}'!A1`;
+      const formulas = [`=SUM(${reference})`, `=COUNT(${reference})`, `=IFERROR(${reference},0)`];
+      for (let index = 0; index < formulas.length; index++) await c!.worksheets.at(0).cells.get(`B${index + 1}`).setFormula(formulas[index]!);
+      await c!.save();
+      for (const workbook of [a!, b!]) await sdk.workbooks.grantAccess(workbook.id, user.id, 'viewer');
+      await sdk.workbooks.grantAccess(c!.id, user.id, 'editor');
+      const result = { a: a!.id, b: b!.id, c: c!.id, readerId: user.id, username: input.username, formulas };
+      await a!.close(); await b!.close();
+      return result;
+    }, { username: `dag-reader-${Date.now()}`, password });
+    reader = await publicSdk(readerPage);
+    await reader.evaluate((sdk, input) => sdk.auth.authenticate(input.username, input.password), { username: setup.username, password });
+    const graphPath = `/api/workbooks/${setup.c}/external-calculation/inputs`;
+    const initialGraphResponse = readerPage.waitForResponse(response => response.ok() && new URL(response.url()).pathname === graphPath);
+    const readRoot = () => reader!.evaluate(async (sdk, id) => {
+      const workbook = await sdk.workbooks.open(id);
+      const cells = await Promise.all(['B1', 'B2', 'B3'].map(address => workbook.worksheets.at(0).cells.get(address).read()));
+      return { values: cells.map(cell => cell.calculatedValue), formulas: cells.map(cell => cell.formula) };
+    }, setup.c);
+    expect((await readRoot()).values).toEqual([20, 1, 20]);
+    const initialGraph = await (await initialGraphResponse).json();
+    expect(initialGraph.nodes).toHaveLength(3);
+    const leafRevision = initialGraph.nodes.find((node: { unitId: string }) => node.unitId === setup.a).revision as number;
+    await expect.poll(() => subscriptions.includes(setup.c)).toBe(true);
+
+    // This listener must observe the server-triggered request before any Cell.read,
+    // because a public read independently verifies fresh graph inputs.
+    const automaticUpdate = readerPage.waitForResponse(async response => {
+      if (!response.ok() || new URL(response.url()).pathname !== graphPath) return false;
+      const graph = await response.json();
+      return graph.nodes.some((node: { unitId: string; state: string; revision: number }) => node.unitId === setup.a && node.state === 'connected' && node.revision > leafRevision);
+    });
+    await owner.evaluate(async (sdk, id) => {
+      const source = await sdk.workbooks.open(id);
+      await source.worksheets.at(0).cells.get('A1').setValue(40); await source.flush(); await source.close();
+    }, setup.a);
+    await automaticUpdate;
+    const updated = await readRoot(); expect(updated.values).toEqual([80, 1, 80]); expect(updated.formulas).toEqual(setup.formulas);
+
+    const automaticRevoke = readerPage.waitForResponse(async response => {
+      if (!response.ok() || new URL(response.url()).pathname !== graphPath) return false;
+      return (await response.json()).nodes.some((node: { unitId: string; state: string }) => node.unitId === setup.a && node.state === 'denied');
+    });
+    await owner.evaluate((sdk, input) => sdk.workbooks.revokeAccess(input.a, input.readerId), setup);
+    const revoked = await (await automaticRevoke).json();
+    expect(revoked.nodes.find((node: { unitId: string }) => node.unitId === setup.a)).not.toHaveProperty('snapshot');
+    for (const value of (await readRoot()).values) expect(value).toMatchObject({ kind: 'error', code: '#BLOCKED!' });
+
+    const automaticRestore = readerPage.waitForResponse(async response => {
+      if (!response.ok() || new URL(response.url()).pathname !== graphPath) return false;
+      return (await response.json()).nodes.some((node: { unitId: string; state: string }) => node.unitId === setup.a && node.state === 'connected');
+    });
+    await owner.evaluate((sdk, input) => sdk.workbooks.grantAccess(input.a, input.readerId, 'viewer'), setup);
+    await automaticRestore;
+    expect((await readRoot()).values).toEqual([80, 1, 80]);
+    await reader.evaluate(async (sdk, id) => { const workbook = await sdk.workbooks.open(id); await workbook.save(); await workbook.close(); }, setup.c);
+    expect((await readRoot()).values).toEqual([80, 1, 80]);
+
+    const before = await (await page.request.get(`/api/workbooks/${setup.a}/snapshot`)).json();
+    const cycle = await owner.evaluate(async (sdk, input) => {
+      const [a, c] = await Promise.all([sdk.workbooks.open(input.a), sdk.workbooks.open(input.c)]);
+      try { await a.externalLinks.bind(c, 'C.xlsx'); return 'unexpected-success'; }
+      catch (cause) { return (cause as { code?: string }).code; }
+    }, setup);
+    expect(cycle).toBe('CIRCULAR_DEPENDENCY');
+    expect(await (await page.request.get(`/api/workbooks/${setup.a}/snapshot`)).json()).toEqual(before);
+    expect((await readRoot()).values).toEqual([80, 1, 80]);
+    expect(rejected).toEqual([{ path: `/api/workbooks/${setup.a}/external-calculation/binding-validation`, status: 422 }]);
+    expect(ownerDiagnostics.consoleErrors.filter(message => !/Failed to load resource:.*422/.test(message))).toEqual([]);
+    expect(ownerDiagnostics.pageErrors).toEqual([]); expect(ownerDiagnostics.requestFailures).toEqual([]);
+    readerDiagnostics.assertClean();
   } finally { if (reader) await reader.evaluate(sdk => sdk.dispose()); await readerContext.close(); await owner.evaluate(sdk => sdk.dispose()); }
 });

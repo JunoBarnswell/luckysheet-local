@@ -159,10 +159,13 @@ test('external refresh coalesces within one model and permits a fresh engine to 
     const binding = { id: 'source-link', token: 'Source.xlsx', sourceUnitId: 'source', sheets: [{ token: 'Sheet1', sheetId: 'sheet-1' }] };
     runtime.model.dataModel.externalLinks.set(binding.id, binding);
     const source = new WorkbookModel('source', 'Source'); source.getSheet('sheet-1').cells.set(0, 0, { value: 25 });
-    const result = { binding, snapshot: source.snapshot(), subject: 'reader', sourceRevision: 1, accessRevision: 0, blockedRanges: [] };
+    const result = { schema: 'ExternalCalculationGraph' as const, rootUnitId: runtime.model.unitId, subject: 'reader', nodes: [
+      { unitId: runtime.model.unitId, state: 'connected' as const, snapshot: runtime.model.snapshot(), revision: 0, accessRevision: 0, blockedRanges: [] },
+      { unitId: source.unitId, state: 'connected' as const, snapshot: source.snapshot(), revision: 1, accessRevision: 0, blockedRanges: [] },
+    ] };
     let resolveOld!: (value: typeof result) => void;
     let calls = 0;
-    runtime.api.getExternalLinkInputs = async () => {
+    runtime.api.getExternalCalculationGraph = async () => {
       calls += 1;
       if (calls === 1) return new Promise(resolve => { resolveOld = resolve; });
       return result;
@@ -175,7 +178,7 @@ test('external refresh coalesces within one model and permits a fresh engine to 
     await current;
     assert.equal(calls, 2);
     assert.equal(runtime.formula.getExternalCalculationLinks()[0]?.state, 'connected');
-    resolveOld({ ...result, sourceRevision: 0 }); await old;
+    resolveOld({ ...result, nodes: result.nodes.map(node => ({ ...node, revision: 0 })) }); await old;
     assert.equal(runtime.formula.getExternalCalculationLinks()[0]?.sourceRevision, 1);
   } finally { app.dispose(); }
 });
@@ -214,4 +217,56 @@ test('initial collaboration preserves a valid access projection without a persis
       assert.equal(runtime.accessProjection.accessRevision, accessRevision);
     } finally { detach?.(); app.dispose(); }
   }
+});
+
+test('one authorized multi-workbook graph evaluates shared dependencies and propagates leaf faults through COUNT and IFERROR', async () => {
+  const { calculateExternalGraph } = await import('./external-link-host');
+  const { validateExternalCalculationGraph } = await import('@react-sheets/protocol');
+  const a = new WorkbookModel('dag-a', 'A'), b = new WorkbookModel('dag-b', 'B'), c = new WorkbookModel('dag-c', 'C');
+  const bind = (source: WorkbookModel, token: string) => ({ id: token, token, sourceUnitId: source.unitId, sheets: [{ token: source.getSheet(source.primarySheetId).name, sheetId: source.primarySheetId }] });
+  a.getSheet(a.primarySheetId).cells.set(0, 0, { value: 10 });
+  const ab = bind(a, 'A.xlsx'), bc = bind(b, 'B.xlsx');
+  b.dataModel.externalLinks.set(ab.id, ab); c.dataModel.externalLinks.set(bc.id, bc);
+  b.getSheet(b.primarySheetId).cells.set(0, 0, { value: null, formula: "='[A.xlsx]Sheet1'!A1*2" });
+  const node = (book: WorkbookModel) => ({ unitId: book.unitId, state: 'connected' as const, snapshot: book.snapshot(), revision: 1, accessRevision: 0, blockedRanges: [] });
+  const graph = { schema: 'ExternalCalculationGraph' as const, rootUnitId: c.unitId, subject: 'reader', nodes: [node(c), node(b), node(a)] };
+  const engine = new FormulaEngine({ defaultSheetId: c.primarySheetId });
+  for (const [column, formula] of ["=SUM('[B.xlsx]Sheet1'!A1)", "=COUNT('[B.xlsx]Sheet1'!A1)", "=IFERROR('[B.xlsx]Sheet1'!A1,99)"].entries()) engine.setFormula({ sheetId: c.primarySheetId, row: 0, column }, formula);
+  const read = () => [0, 1, 2].map(column => engine.getCellResult({ sheetId: c.primarySheetId, row: 0, column })!.value);
+  try {
+    engine.applyExternalCalculationLinks(await calculateExternalGraph(graph, [bc])); await engine.recalculateAsync();
+    assert.deepEqual(read(), [20, 1, 20]);
+    const faultGraph = validateExternalCalculationGraph({ ...graph, nodes: [node(c), node(b), { unitId: a.unitId, state: 'denied', error: { code: 'FORBIDDEN', message: 'Leaf revoked' } }] }, c.unitId);
+    engine.applyExternalCalculationLinks(await calculateExternalGraph(faultGraph, [bc])); await engine.recalculateAsync();
+    for (const value of read()) assert.equal((value as { code: string }).code, '#BLOCKED!');
+    a.getSheet(a.primarySheetId).cells.set(0, 0, { value: 40 });
+    engine.applyExternalCalculationLinks(await calculateExternalGraph({ ...graph, nodes: [node(c), node(b), node(a)] }, [bc])); await engine.recalculateAsync();
+    assert.deepEqual(read(), [80, 1, 80]);
+    const worker = FormulaEngine.fromCalculationSnapshot(structuredClone(engine.exportCalculationSnapshot()));
+    try { await worker.recalculateAsync(undefined, undefined, true); assert.deepEqual([0, 1, 2].map(column => worker.getCellResult({ sheetId: c.primarySheetId, row: 0, column })!.value), [80, 1, 80]); }
+    finally { worker.disposeCalculationTasks(); }
+  } finally { engine.disposeCalculationTasks(); }
+});
+
+test('external calculation graph rejects missing duplicate cyclic and malformed nodes instead of partial input', async () => {
+  const { validateExternalCalculationGraph, decodeClientOperationMessage, encodeClientOperationMessage } = await import('@react-sheets/protocol');
+  const a = new WorkbookModel('invalid-a', 'A'), b = new WorkbookModel('invalid-b', 'B');
+  const binding = { id: 'B.xlsx', token: 'B.xlsx', sourceUnitId: b.unitId, sheets: [{ token: 'Sheet1', sheetId: b.primarySheetId }] };
+  a.dataModel.externalLinks.set(binding.id, binding);
+  const node = (book: WorkbookModel) => ({ unitId: book.unitId, state: 'connected', snapshot: book.snapshot(), revision: 1, accessRevision: 0, blockedRanges: [] });
+  const graph = { schema: 'ExternalCalculationGraph', rootUnitId: a.unitId, subject: 'reader', nodes: [node(a), node(b)] };
+  assert.equal(validateExternalCalculationGraph(graph, a.unitId).nodes.length, 2);
+  assert.throws(() => validateExternalCalculationGraph({ ...graph, schema: 'LegacyGraph' }, a.unitId));
+  assert.throws(() => validateExternalCalculationGraph({ ...graph, subject: '' }, a.unitId));
+  for (const nodes of [[node(a)], [node(a), node(b), node(b)], [node(a), { ...node(b), revision: -1 }], [node(a), { unitId: b.unitId, state: 'denied', snapshot: b.snapshot(), error: { code: 'FORBIDDEN', message: 'Denied' } }]]) {
+    assert.throws(() => validateExternalCalculationGraph({ ...graph, nodes }, a.unitId));
+  }
+  assert.throws(() => validateExternalCalculationGraph({ ...graph, nodes: [node(a), { ...node(b), blockedRanges: [{ sheetId: 'missing', startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }] }] }, a.unitId), /RANGE_INVALID/);
+  const oversized = b.snapshot(); oversized.sheets[0]!.rowCount = 100_001;
+  oversized.sheets[0]!.cells = Object.fromEntries(Array.from({ length: 100_001 }, (_, row) => [String(row), { '0': { value: row } }]));
+  assert.throws(() => validateExternalCalculationGraph({ ...graph, nodes: [node(a), { ...node(b), snapshot: oversized }] }, a.unitId), /INPUT_BUDGET/);
+  b.dataModel.externalLinks.set('A.xlsx', { id: 'A.xlsx', token: 'A.xlsx', sourceUnitId: a.unitId, sheets: [{ token: 'Sheet1', sheetId: a.primarySheetId }] });
+  assert.throws(() => validateExternalCalculationGraph({ ...graph, nodes: [node(a), node(b)] }, a.unitId), /CIRCULAR_DEPENDENCY/);
+  assert.deepEqual(decodeClientOperationMessage(encodeClientOperationMessage({ type: 'calculation.subscribe', unitId: a.unitId })), { type: 'calculation.subscribe', unitId: a.unitId });
+  assert.throws(() => decodeClientOperationMessage(JSON.stringify({ type: 'calculation.changed', unitId: a.unitId, sourceUnitId: b.unitId })), /Server-only/);
 });

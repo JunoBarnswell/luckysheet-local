@@ -281,10 +281,14 @@ export class FormulaEngine {
   /** Data comes from a host-authorized read; evaluation never starts network requests. */
   applyExternalCalculationLinks(links: readonly ExternalCalculationLink[], trackForWorker = true): void {
     for (const link of links) assertExternalCalculationLink(link);
-    for (const link of links) {
-      const previous = this.externalLinks.get(link.token.toUpperCase());
+    for (const incoming of links) {
+      const previous = this.externalLinks.get(incoming.token.toUpperCase());
+      const link = previous && previous.sourceUnitId === incoming.sourceUnitId && previous.subject === incoming.subject
+        && !['connected', 'stale'].includes(incoming.state)
+        ? { ...incoming, sourceRevision: Math.max(previous.sourceRevision, incoming.sourceRevision), accessRevision: Math.max(previous.accessRevision, incoming.accessRevision) }
+        : incoming;
       if (previous && previous.id !== link.id) throw new Error('EXTERNAL_LINK_TOKEN_CONFLICT');
-      if (previous && previous.sourceUnitId === link.sourceUnitId && previous.subject === link.subject && (link.accessRevision < previous.accessRevision
+      if (['connected', 'stale'].includes(link.state) && previous && previous.sourceUnitId === link.sourceUnitId && previous.subject === link.subject && (link.accessRevision < previous.accessRevision
         || link.accessRevision === previous.accessRevision && link.sourceRevision < previous.sourceRevision)) continue;
       if (sameCalculationValue(previous, link)) continue;
       for (const sheet of previous?.sheets ?? []) this.externalCells.delete(externalSheetKey(link.id, sheet.id));

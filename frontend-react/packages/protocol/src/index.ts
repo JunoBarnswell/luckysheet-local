@@ -276,6 +276,64 @@ export function normalizePageLimit(value: number | undefined): number {
   return value;
 }
 
+export type ExternalCalculationNode =
+  | { unitId: string; state: 'connected'; snapshot: import('@react-sheets/core-model').WorkbookSnapshot; revision: number; accessRevision: number; blockedRanges: import('@react-sheets/core-model').RangeRef[] }
+  | { unitId: string; state: 'denied' | 'broken' | 'unavailable'; error: { code: string; message: string } };
+export interface ExternalCalculationGraph {
+  schema: 'ExternalCalculationGraph'; rootUnitId: string; subject: string; nodes: ExternalCalculationNode[];
+}
+export function validateExternalCalculationGraph(raw: unknown, unitId: string): ExternalCalculationGraph {
+  const value = requireRecord(raw, 'External calculation graph');
+  validateExactKeys(value, ['schema', 'rootUnitId', 'subject', 'nodes'], 'External calculation graph');
+  if (value.schema !== 'ExternalCalculationGraph' || value.rootUnitId !== unitId || !isNonEmptyString(value.subject)
+    || !Array.isArray(value.nodes) || !value.nodes.length || value.nodes.length > 64) throw new Error('EXTERNAL_CALCULATION_GRAPH_CONTEXT_INVALID');
+  const ids = new Set<string>();
+  const nodes: ExternalCalculationNode[] = value.nodes.map(rawNode => {
+    const node = requireRecord(rawNode, 'External calculation node');
+    if (!isNonEmptyString(node.unitId) || ids.has(node.unitId)) throw new Error('EXTERNAL_CALCULATION_GRAPH_NODE_INVALID');
+    ids.add(node.unitId);
+    if (node.state !== 'connected') {
+      validateExactKeys(node, ['unitId', 'state', 'error'], 'External calculation fault node');
+      const error = requireRecord(node.error, 'External calculation fault');
+      validateExactKeys(error, ['code', 'message'], 'External calculation fault');
+      if (!['denied', 'broken', 'unavailable'].includes(String(node.state)) || !isNonEmptyString(error.code) || !isNonEmptyString(error.message)) throw new Error('EXTERNAL_CALCULATION_GRAPH_FAULT_INVALID');
+      return { unitId: node.unitId, state: node.state as 'denied' | 'broken' | 'unavailable', error: { code: error.code, message: error.message } };
+    }
+    validateExactKeys(node, ['unitId', 'state', 'snapshot', 'revision', 'accessRevision', 'blockedRanges'], 'External calculation node');
+    const snapshot = validateWorkbookSnapshot(node.snapshot);
+    const count = snapshot.sheets.reduce((sum, sheet) => sum + Object.values(sheet.cells).reduce((rows, row) => rows + Object.keys(row).length, 0), 0);
+    if (count > 100_000) throw new Error('EXTERNAL_CALCULATION_GRAPH_INPUT_BUDGET');
+    if (snapshot.unitId !== node.unitId || !Number.isSafeInteger(node.revision) || Number(node.revision) < 0
+      || !Number.isSafeInteger(node.accessRevision) || Number(node.accessRevision) < 0 || !Array.isArray(node.blockedRanges)) throw new Error('EXTERNAL_CALCULATION_GRAPH_VERSION_INVALID');
+    const blockedRanges = node.blockedRanges.map(rawRange => {
+      const range = requireRecord(rawRange, 'External blocked range');
+      validateExactKeys(range, ['sheetId', 'startRow', 'endRow', 'startColumn', 'endColumn'], 'External blocked range');
+      if (!isRangeRef(range as unknown as import('@react-sheets/core-model').RangeRef)) throw new Error('EXTERNAL_CALCULATION_GRAPH_RANGE_INVALID');
+      const sheet = snapshot.sheets.find(candidate => candidate.id === range.sheetId);
+      if (!sheet) throw new Error('EXTERNAL_CALCULATION_GRAPH_RANGE_INVALID');
+      return range as unknown as import('@react-sheets/core-model').RangeRef;
+    });
+    return { unitId: node.unitId, state: 'connected', snapshot, revision: Number(node.revision), accessRevision: Number(node.accessRevision), blockedRanges };
+  });
+  const byId = new Map(nodes.map(node => [node.unitId, node]));
+  const total = nodes.reduce((sum, node) => sum + (node.state === 'connected' ? node.snapshot.sheets.reduce((sheets, sheet) => sheets + Object.values(sheet.cells).reduce((rows, row) => rows + Object.keys(row).length, 0), 0) : 0), 0);
+  if (total > 1_000_000) throw new Error('EXTERNAL_CALCULATION_GRAPH_INPUT_BUDGET');
+  if (byId.get(unitId)?.state !== 'connected') throw new Error('EXTERNAL_CALCULATION_GRAPH_ROOT_INVALID');
+  const visiting = new Set<string>(), visited = new Set<string>();
+  const visit = (id: string) => {
+    if (visiting.has(id)) throw new Error('CIRCULAR_DEPENDENCY: external calculation graph must be acyclic');
+    if (visited.has(id)) return;
+    const node = byId.get(id);
+    if (!node) throw new Error('EXTERNAL_CALCULATION_GRAPH_NODE_MISSING');
+    visiting.add(id);
+    if (node.state === 'connected') for (const binding of node.snapshot.dataModel.externalLinks) visit(binding.sourceUnitId);
+    visiting.delete(id); visited.add(id);
+  };
+  visit(unitId);
+  if (visited.size !== nodes.length) throw new Error('EXTERNAL_CALCULATION_GRAPH_UNREACHABLE_NODE');
+  return { schema: 'ExternalCalculationGraph', rootUnitId: unitId, subject: value.subject, nodes };
+}
+
 export interface WorkbookApiClientOptions {
   baseUrl?: string;
   authTokenProvider?: AuthTokenProvider;
@@ -2501,25 +2559,15 @@ export class WorkbookApiClient {
     ), unitId);
   }
 
-  async getExternalLinkInputs(unitId: string, linkId: string): Promise<{
-    binding: import('@react-sheets/core-model').ExternalLinkBinding;
-    snapshot: import('@react-sheets/core-model').WorkbookSnapshot;
-    subject: string; sourceRevision: number; accessRevision: number;
-    blockedRanges: import('@react-sheets/core-model').RangeRef[];
-  }> {
-    const raw = await this.json<unknown>(`/api/workbooks/${encodeURIComponent(unitId)}/external-links/${encodeURIComponent(linkId)}/inputs`);
-    const value = requireRecord(raw, 'External link inputs');
-    validateExactKeys(value, ['binding', 'snapshot', 'subject', 'sourceRevision', 'accessRevision', 'blockedRanges'], 'External link inputs');
-    const binding = value.binding as import('@react-sheets/core-model').ExternalLinkBinding;
+  async getExternalCalculationGraph(unitId: string): Promise<ExternalCalculationGraph> {
+    return validateExternalCalculationGraph(await this.json<unknown>(`/api/workbooks/${encodeURIComponent(unitId)}/external-calculation/inputs`), unitId);
+  }
+
+  async validateExternalLinkBinding(unitId: string, binding: import('@react-sheets/core-model').ExternalLinkBinding): Promise<void> {
     assertExternalLinkBinding(binding);
-    const snapshot = validateWorkbookSnapshot(value.snapshot);
-    if (binding.id !== linkId || snapshot.unitId !== binding.sourceUnitId || !isNonEmptyString(value.subject) || !Number.isSafeInteger(value.sourceRevision) || Number(value.sourceRevision) < 0 || !Number.isSafeInteger(value.accessRevision) || Number(value.accessRevision) < 0 || !Array.isArray(value.blockedRanges)) throw new Error('EXTERNAL_LINK_INPUT_CONTEXT_INVALID');
-    const blockedRanges = value.blockedRanges.map(range => {
-      const item = requireRecord(range, 'External blocked range');
-      if (!isNonEmptyString(item.sheetId) || !['startRow', 'endRow', 'startColumn', 'endColumn'].every(key => Number.isSafeInteger(item[key]) && Number(item[key]) >= 0) || Number(item.endRow) < Number(item.startRow) || Number(item.endColumn) < Number(item.startColumn)) throw new Error('EXTERNAL_LINK_BLOCKED_RANGE_INVALID');
-      return item as unknown as import('@react-sheets/core-model').RangeRef;
+    await this.request(`/api/workbooks/${encodeURIComponent(unitId)}/external-calculation/binding-validation`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(binding),
     });
-    return { binding, snapshot, subject: value.subject, sourceRevision: Number(value.sourceRevision), accessRevision: Number(value.accessRevision), blockedRanges };
   }
 
   async getAccess(unitId: string, options: ApiRequestOptions = {}): Promise<WorkbookAccessResponse> {
@@ -3016,12 +3064,15 @@ export type OperationMessage =
   | { type: 'revision.created'; unitId: string; operationId: string; accessRevision: number; payload: CommittedOperationEnvelope; resyncRequired?: never; revision: number }
   | { type: 'revision.created'; unitId: string; operationId: string; accessRevision: number; payload?: never; resyncRequired: true; revision: number }
   | { type: 'access.changed'; unitId: string; accessRevision: number }
+  | { type: 'calculation.changed'; unitId: string; sourceUnitId: string }
+  | { type: 'calculation.subscribe'; unitId: string }
   | { type: 'presence.updated'; unitId: string; state: unknown }
   | { type: 'cursor.updated'; unitId: string; state: unknown }
   | { type: 'presence.broadcast'; unitId: string; actorId: string; state: unknown }
   | { type: 'cursor.broadcast'; unitId: string; actorId: string; state: unknown };
 
 export type ClientOperationMessage =
+  | { type: 'calculation.subscribe'; unitId: string }
   | { type: 'presence.updated'; unitId: string; state: unknown }
   | { type: 'cursor.updated'; unitId: string; state: unknown };
 
@@ -3157,6 +3208,14 @@ export function decodeOperationMessage(input: string): OperationMessage {
           revision,
         };
       }
+    case 'calculation.changed':
+      validateExactKeys(message, ['type', 'unitId', 'sourceUnitId'], 'calculation.changed');
+      if (!isNonEmptyString(message.unitId) || !isNonEmptyString(message.sourceUnitId)) throw new Error('calculation.changed identities are invalid');
+      return { type: 'calculation.changed', unitId: message.unitId, sourceUnitId: message.sourceUnitId };
+    case 'calculation.subscribe':
+      validateExactKeys(message, ['type', 'unitId'], 'calculation.subscribe');
+      if (!isNonEmptyString(message.unitId)) throw new Error('calculation.subscribe identity is invalid');
+      return { type: 'calculation.subscribe', unitId: message.unitId };
     case 'access.changed':
       if (!isNonEmptyString(message.unitId) || !Number.isSafeInteger(message.accessRevision) || Number(message.accessRevision) < 1) {
         throw new Error('access.changed metadata is invalid');
@@ -3180,7 +3239,7 @@ export function decodeOperationMessage(input: string): OperationMessage {
 
 export function decodeClientOperationMessage(input: string): ClientOperationMessage {
   const message = decodeOperationMessage(input);
-  if (message.type === 'presence.updated' || message.type === 'cursor.updated') return message;
+  if (message.type === 'presence.updated' || message.type === 'cursor.updated' || message.type === 'calculation.subscribe') return message;
   throw new Error(`Server-only collaboration message: ${message.type}`);
 }
 

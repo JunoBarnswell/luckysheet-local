@@ -59,11 +59,13 @@ class LinkedDataAcceptanceIntegrationTest {
         catalog.create(new CreateWorkbookRequest(targetId, "Range access", target), owner);
         var share = shares.create(targetId, new ShareCreateRequest("editor", Instant.now().plusSeconds(600)), owner);
         String guest = "guest:" + share.shareId();
-        assertThrows(ServiceException.class, () -> operations.readExternalLink(targetId, "link-1", guest, List.of()));
-        JsonNode input = operations.readExternalLink(targetId, "link-1", owner, List.of());
+        JsonNode denied = node(operations.readExternalCalculationGraph(targetId, guest, List.of()), sourceId);
+        assertEquals("denied", denied.path("state").asText()); assertFalse(denied.has("snapshot"));
+        JsonNode graph = operations.readExternalCalculationGraph(targetId, owner, List.of());
+        JsonNode input = node(graph, sourceId);
         com.xc.luckysheet.server.contract.WorkbookSnapshotValidator.requireCanonical(input.path("snapshot"), sourceId);
-        assertEquals(owner, input.path("subject").asText());
-        assertEquals(0, input.path("sourceRevision").asLong());
+        assertEquals(owner, graph.path("subject").asText());
+        assertEquals(0, input.path("revision").asLong());
         assertEquals(11, input.path("snapshot").path("version").asInt());
         assertTrue(input.path("snapshot").path("dataModel").path("externalLinks").isArray());
         assertEquals("SECRET-CELL-VALUE", input.path("snapshot").path("sheets").get(0).path("cells").path("0").path("1").path("value").asText());
@@ -123,11 +125,79 @@ class LinkedDataAcceptanceIntegrationTest {
         catalog.create(new CreateWorkbookRequest(targetId, "Range access", target), owner);
         acl.grant(sourceId, owner, reader, com.xc.luckysheet.server.contract.WorkbookRole.VIEWER);
         acl.grant(targetId, owner, reader, com.xc.luckysheet.server.contract.WorkbookRole.VIEWER);
-        assertEquals(0, operations.readExternalLink(targetId, "record-link", reader, List.of()).path("sourceRevision").asLong());
+        assertEquals(0, node(operations.readExternalCalculationGraph(targetId, reader, List.of()), sourceId).path("revision").asLong());
         rangeAccess.create(sourceId, owner, new RangeAccessRegionRequest("sheet-1", new RangeRef("sheet-1", 1, 1, 1, 1), RangeAccessLevel.HIDDEN, List.of()));
-        ServiceException denied = assertThrows(ServiceException.class, () -> operations.readExternalLink(targetId, "record-link", reader, List.of()));
-        assertTrue(denied.getMessage().contains("unreadable inputs"));
-        assertEquals(0, operations.readExternalLink(targetId, "record-link", owner, List.of()).path("sourceRevision").asLong());
+        JsonNode denied = node(operations.readExternalCalculationGraph(targetId, reader, List.of()), sourceId);
+        assertEquals("denied", denied.path("state").asText()); assertFalse(denied.has("snapshot"));
+        assertTrue(denied.path("error").path("message").asText().contains("unreadable inputs"));
+        assertEquals(0, node(operations.readExternalCalculationGraph(targetId, owner, List.of()), sourceId).path("revision").asLong());
+    }
+
+    @Test
+    void multiWorkbookClosurePreservesVersionsAndRejectsCircularBindingsWithoutWrites() throws Exception {
+        String owner = "graph-owner", a = "graph-a", b = "graph-b", c = "graph-c";
+        catalog.create(new CreateWorkbookRequest(a, "Range access", snapshot(a)), owner);
+        ObjectNode middle = (ObjectNode) snapshot(b);
+        ((com.fasterxml.jackson.databind.node.ArrayNode) middle.path("dataModel").path("externalLinks")).add(binding(a, "A.xlsx"));
+        catalog.create(new CreateWorkbookRequest(b, "Range access", middle), owner);
+        ObjectNode target = (ObjectNode) snapshot(c);
+        ((com.fasterxml.jackson.databind.node.ArrayNode) target.path("dataModel").path("externalLinks")).add(binding(b, "B.xlsx"));
+        catalog.create(new CreateWorkbookRequest(c, "Range access", target), owner);
+        JsonNode graph = operations.readExternalCalculationGraph(c, owner, List.of());
+        assertEquals(3, graph.path("nodes").size());
+        for (String id : List.of(a, b, c)) { assertEquals("connected", node(graph, id).path("state").asText()); assertEquals(0, node(graph, id).path("revision").asLong()); }
+        JsonNode preimage = operations.readSnapshot(a, owner).snapshot();
+        ServiceException preflight = assertThrows(ServiceException.class, () -> operations.validateExternalBinding(a, binding(c, "C.xlsx"), owner, List.of()));
+        assertEquals("CIRCULAR_DEPENDENCY", preflight.code());
+        ObjectNode params = mapper.createObjectNode(); params.set("link", binding(c, "C.xlsx"));
+        var operation = new OperationEnvelope("graph-client", OperationEnvelope.SCHEMA, "graph-cycle-rejected", a, 1, 0,
+                List.of(new OperationMutation("externalLink.set", "sheet-1", params)), Instant.now());
+        ServiceException forged = assertThrows(ServiceException.class, () -> operations.commit(a, operation, owner));
+        assertEquals("CIRCULAR_DEPENDENCY", forged.code());
+        assertEquals(preimage, operations.readSnapshot(a, owner).snapshot());
+        for (String id : List.of(a, b, c)) assertEquals(0, operations.readSnapshot(id, owner).revision());
+        assertThrows(ServiceException.class, () -> operations.operationResult(a, operation.operationId(), owner));
+    }
+
+    private JsonNode binding(String source, String token) throws Exception {
+        return mapper.readTree("{\"id\":\"" + token + "\",\"token\":\"" + token + "\",\"sourceUnitId\":\"" + source
+                + "\",\"sheets\":[{\"token\":\"Sheet1\",\"sheetId\":\"sheet-1\"}]}");
+    }
+
+    @Test
+    void concurrentOppositeBindingsCommitOnlyOneDirectionAndKeepRejectedHistoryEmpty() throws Exception {
+        String owner = "concurrent-graph-owner", a = "concurrent-graph-a", b = "concurrent-graph-b";
+        catalog.create(new CreateWorkbookRequest(a, "Range access", snapshot(a)), owner);
+        catalog.create(new CreateWorkbookRequest(b, "Range access", snapshot(b)), owner);
+        var start = new java.util.concurrent.CountDownLatch(1);
+        try (var executor = java.util.concurrent.Executors.newFixedThreadPool(2)) {
+            var results = new java.util.ArrayList<java.util.concurrent.Future<String>>();
+            for (String target : List.of(a, b)) {
+                ObjectNode params = mapper.createObjectNode(); params.set("link", binding(target.equals(a) ? b : a, target + ".xlsx"));
+                var operation = new OperationEnvelope("concurrent-client-" + target, OperationEnvelope.SCHEMA, "concurrent-bind-" + target,
+                        target, 1, 0, List.of(new OperationMutation("externalLink.set", "sheet-1", params)), Instant.now());
+                results.add(executor.submit(() -> {
+                    if (!start.await(10, java.util.concurrent.TimeUnit.SECONDS)) throw new AssertionError("Concurrent start did not arrive");
+                    try { operations.commit(target, operation, owner); return "COMMITTED"; }
+                    catch (ServiceException error) { return error.code(); }
+                }));
+            }
+            start.countDown();
+            String first = results.get(0).get(30, java.util.concurrent.TimeUnit.SECONDS), second = results.get(1).get(30, java.util.concurrent.TimeUnit.SECONDS);
+            assertEquals(1, java.util.stream.Stream.of(first, second).filter("COMMITTED"::equals).count());
+            assertEquals(1, java.util.stream.Stream.of(first, second).filter("CIRCULAR_DEPENDENCY"::equals).count());
+            String accepted = first.equals("COMMITTED") ? a : b, rejected = accepted.equals(a) ? b : a;
+            assertEquals(1, operations.readSnapshot(accepted, owner).revision());
+            assertEquals(0, operations.readSnapshot(rejected, owner).revision());
+            assertTrue(operations.readSnapshot(rejected, owner).snapshot().path("dataModel").path("externalLinks").isEmpty());
+            assertThrows(ServiceException.class, () -> operations.operationResult(rejected, "concurrent-bind-" + rejected, owner));
+            assertEquals(2, operations.readExternalCalculationGraph(accepted, owner, List.of()).path("nodes").size());
+        }
+    }
+
+    private JsonNode node(JsonNode graph, String id) {
+        for (JsonNode node : graph.path("nodes")) if (node.path("unitId").asText().equals(id)) return node;
+        throw new AssertionError("Missing calculation node " + id);
     }
 
     private JsonNode snapshot(String unitId) throws Exception {

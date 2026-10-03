@@ -1,3 +1,4 @@
+import { requestExternalRecalculation } from './features/linked-data/external-link-host';
 import { synchronizeRecordCalculations } from './features/linked-data/record-calculation';
 import { refreshExternalLinks } from './features/linked-data/external-link-host';
 import { RecoveryJournal } from './features/persistence/recovery-journal';
@@ -1611,6 +1612,9 @@ export function startCollaborationSession(
         void checkpointWorkspace(runtime, false);
         runtime.handlers.onMutationsApplied?.();
         void runtime.api.listRevisions(runtime.model.unitId).then((revs) => runtime.handlers.onRemoteRevisions?.(revs)).catch(() => undefined);
+      } else if (message.type === 'calculation.changed') {
+        if (message.unitId !== runtime.model.unitId) return;
+        void requestExternalRecalculation(runtime).catch(error => { if (!runtime.disposed) runtime.handlers.onNotice?.(error instanceof Error ? error.message : String(error)); });
       } else if (message.type === 'cursor.broadcast' || message.type === 'presence.broadcast') {
         if (!message.unitId || message.unitId !== runtime.model.unitId) return;
         if (message.type === 'presence.broadcast' && (message.state as { status?: string } | null)?.status === 'offline') {
@@ -1648,6 +1652,7 @@ export function startCollaborationSession(
       synchronizing = true;
       synchronizationFailed = false;
       client.send({ type: 'cursor.updated', unitId: runtime.model.unitId, state: { sheetId: runtime.model.primarySheetId, row: 0, column: 0 } });
+      if (runtime.model.dataModel.externalLinks.size) client.send({ type: 'calculation.subscribe', unitId: runtime.model.unitId });
       void (async () => {
         const [snapshot, access] = await Promise.all([runtime.api.getSnapshot(runtime.model.unitId), runtime.api.getAccess(runtime.model.unitId)]);
         if (!active || runtime.disposed) return;

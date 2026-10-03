@@ -37,6 +37,7 @@ public class WebSocketSessionRegistry {
     private final RangeAccessService rangeAccess;
     private final AccessProjectionService accessProjection;
     private final Map<String, Set<WebSocketSession>> sessionsByUnit = new ConcurrentHashMap<>();
+    private final Map<String, Map<WebSocketSession, String>> calculationBySource = new ConcurrentHashMap<>();
     private final Map<String, Instant> seenRevisionOperations = new ConcurrentHashMap<>();
     private final Map<String, Instant> seenEphemeralEvents = new ConcurrentHashMap<>();
 
@@ -47,6 +48,26 @@ public class WebSocketSessionRegistry {
         this.access = access;
         this.rangeAccess = rangeAccess;
         this.accessProjection = accessProjection;
+    }
+
+    public void subscribeCalculation(String rootId, java.util.Set<String> sources, WebSocketSession session) {
+        unsubscribeCalculation(session);
+        for (String source : sources) calculationBySource.computeIfAbsent(source, ignored -> new ConcurrentHashMap<>()).put(session, rootId);
+    }
+
+    public void unsubscribeCalculation(WebSocketSession session) {
+        calculationBySource.forEach((source, peers) -> {
+            peers.remove(session);
+            if (peers.isEmpty()) calculationBySource.remove(source, peers);
+        });
+    }
+
+    private void broadcastCalculationChanged(String source) {
+        calculationBySource.getOrDefault(source, Map.of()).forEach((peer, root) -> {
+            if (!peer.isOpen()) { unsubscribeCalculation(peer); return; }
+            if (!sessionCanRead(root, peer)) { closeRevokedSession(peer); unsubscribeCalculation(peer); return; }
+            sendJson(peer, mapper.createObjectNode().put("type", "calculation.changed").put("unitId", root).put("sourceUnitId", source));
+        });
     }
 
     public void join(String unitId, WebSocketSession session) {
@@ -76,6 +97,7 @@ public class WebSocketSessionRegistry {
 
     public void broadcastRevision(CommittedOperationEnvelope operation, WebSocketSession origin) {
         if (operation == null || !markSeen(seenRevisionOperations, operation.operationId())) return;
+        broadcastCalculationChanged(operation.unitId());
         Set<WebSocketSession> sessions = sessionsByUnit.getOrDefault(operation.unitId(), Set.of());
         for (WebSocketSession peer : sessions) {
             if (peer == origin || !peer.isOpen()) continue;
@@ -130,6 +152,7 @@ public class WebSocketSessionRegistry {
     }
 
     public void broadcastAccessChanged(String unitId, long accessRevision) {
+        broadcastCalculationChanged(unitId);
         ObjectNode message = mapper.createObjectNode().put("type", "access.changed")
                 .put("unitId", unitId).put("accessRevision", accessRevision);
         broadcast(unitId, null, message);
