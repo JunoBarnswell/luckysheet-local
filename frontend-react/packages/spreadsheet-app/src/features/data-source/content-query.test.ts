@@ -491,7 +491,8 @@ test('sorted viewport prefetch retains a failed block while loading unseen block
   });
   assert.equal((await query.getRowValues(1)).state.availability, 'missing');
   query.prefetchRows(0, 2);
-  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(query.getLoadState('ready')?.availability, 'loading');
+  assert.deepEqual((await query.getRowValues(0)).value, ['B', 2]);
   assert.equal(query.peekCellValue(0, 0).value, 'B');
   assert.equal(query.peekCellValue(1, 0).state.availability, 'missing');
   assert.deepEqual(reads, ['failed', 'ready']);
