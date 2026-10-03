@@ -5,6 +5,7 @@ import {
   decodeOperationMessage,
   encodeMessage,
   encodeOperationMessage,
+  ApiRequestError,
   AuthenticationRequiredError,
   WorkbookApiClient,
   CollabSocketClient,
@@ -1053,4 +1054,21 @@ test('Pivot worksheet-ranges require stable source nodes and graph endpoints', (
   assert.throws(() => validatePivotDefinition({ ...base, source: { ...base.source, ranges: [{ sourceId: 'orders', range: base.source.ranges[0]!.range }, { sourceId: 'orders', range: base.source.ranges[1]!.range }, base.source.ranges[2]! ], relationships: [] } }), /sourceId is duplicated/);
   assert.throws(() => validatePivotDefinition({ ...base, source: { ...base.source, relationships: [{ ...base.source.relationships[0]!, left: { sheetId: 'sheet-1', fieldId: 'source:orders:column:0' } }] } }), /Pivot relationship field/);
   assert.throws(() => validatePivotDefinition({ ...base, source: { ...base.source, relationships: [...base.source.relationships, { id: 'products-customers', left: { sourceId: 'products', fieldId: 'source:products:column:0' }, right: { sourceId: 'customers', fieldId: 'source:customers:column:0' }, join: 'inner' as const }] } }), /graph contains a cycle/);
+});
+
+
+test('no-content mutations settle their response body before success', async () => {
+  let completed = false;
+  const response = new Response(null, { status: 204 });
+  response.arrayBuffer = async () => { completed = true; return new ArrayBuffer(0); };
+  const client = new WorkbookApiClient({ authTokenProvider: async () => 'test-token', fetchImpl: async () => response });
+  await client.moveToTrash('book');
+  assert.equal(completed, true);
+});
+
+test('no-content mutation completion failure is observable', async () => {
+  const response = new Response(null, { status: 204 });
+  response.arrayBuffer = async () => { throw new Error('connection closed'); };
+  const client = new WorkbookApiClient({ authTokenProvider: async () => 'test-token', fetchImpl: async () => response });
+  await assert.rejects(client.purgeWorkbook('book'), error => error instanceof ApiRequestError && error.code === 'INTERNAL_ERROR' && /Response completion failed/.test(error.message));
 });

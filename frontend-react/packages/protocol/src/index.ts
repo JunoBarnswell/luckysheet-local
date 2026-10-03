@@ -2456,7 +2456,14 @@ export class WorkbookApiClient {
     const csrf = this.csrfTokenProvider?.();
     if (csrf && !['GET', 'HEAD', 'OPTIONS'].includes(init.method ?? 'GET')) headers.set('X-CSRF-TOKEN', csrf);
     const response = await this.fetchImpl(`${this.baseUrl}${path}`, { ...init, headers, credentials: 'same-origin' });
-    if (response.ok) return response;
+    if (response.ok) {
+      // Settle no-content mutations before reporting their network completion.
+      if (response.status === 204) {
+        try { await response.arrayBuffer(); }
+        catch (cause) { throw new ApiRequestError(`Response completion failed for ${path}: ${cause instanceof Error ? cause.message : String(cause)}`, response.status, 'INTERNAL_ERROR'); }
+      }
+      return response;
+    }
 
     let payload: Partial<ApiError> | undefined;
     try {
