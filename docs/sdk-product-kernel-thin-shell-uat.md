@@ -52,7 +52,7 @@
 | S05 | A 本地已写并有 undo/redo/pending，B 远端 range move/shift/permutation/sheet/table | 本地历史、pending、selection、range owner 全部正式 transform；有效核心历史不整体 invalidate；真正冲突 typed错误 | Pending | — |
 | S06 | DV 公式输入及公式界限/跨 sheet依赖/计算错误/权限源 | 客户端与服务器 evaluator同语义；Java独立算值并严格拒绝失败，不信客户端 proof、不漏数据 | Pending | — |
 | S07 | collapsed outline+manual/filter hidden 共同存在，执行 row sort | 三种 visibility owner 独立、permutation同步，值读不因隐藏消失，undo与native重开正确 | Pending | — |
-| S08 | 小计全部 Excel函数及空值/错误/嵌套subtotal/隐藏行 | sole formula engine与canonical Data API一致，undo/重开/原生公式正确 | Pending | — |
+| S08 | 小计全部 Excel函数及空值/错误/嵌套subtotal/隐藏行 | sole formula engine与canonical Data API一致，undo/重开/原生公式正确 | Pass | U07–U12、U14–U17：11 函数/101–111，source fault 与 viewer 拒绝、隐藏 canonical read、空值/错误与真实 native roundtrip。仅验收本项小计语义，不代替 D15 完整 Data API。 |
 
 ## 静态与公共契约细项
 
@@ -85,8 +85,8 @@
 | S08a | 一次 createSpreadsheetSdk 打开真实 workbook；通过 Workbook.data.subtotal 的显式 sheetId/address 对 11 个 worksheet 分别执行 AVERAGE/COUNT/COUNTA/MAX/MIN/PRODUCT/STDEV/STDEVP/SUM/VAR/VARP。源含 2、4、空值、文本、boolean、公式空字符串和嵌套 SUBTOTAL；结果分别为 3/2/5/4/2/8/sqrt(2)/1/6/2/1；保存、关闭重开、真实 XLSX 导出/重导入一致 | Pass | U07：public Data 全部 11 函数，精确值/公式、单次历史 undo/redo、真实 save/reopen/XLSX/reimport；25/25 browser Pass。 |
 | S08b | inline 与 Worker 对全部 1–11/101–111 执行三种隐藏原因、嵌套 SUBTOTAL/AGGREGATE、空集合和 ordinary error；filter hidden 始终排除，manual/outline 仅 101–111 排除。Data 只提交公式，禁止自行计算 summary cache | Pass | U08：全部 1–11/101–111，三种 visibility、nested totals、empty/error 的 inline/Worker vectors；Data 已删除独立缓存计算。 |
 | S08c | public Data 拒绝非法函数、非 boolean hidden option、越界/非法/不存在的 worksheet 地址、viewer 和已退休 workbook；错误为 SdkError，完整前像无改变；成功 summary+outline 一次历史、undo/redo 精确恢复 | Pass | U09：75/75 SDK，显式 inactive worksheet、非法/null 参数/地址/budget、退休句柄；U07 真实 viewer FORBIDDEN 且前像无改变。 |
-| S08d | public SDK 在真实 Java/H2 建立 manual-hidden worksheet：1–11 读隐藏值、101–111 排除，undo/redo 后保存；empty AVERAGE 和 ordinary-error SUM/COUNTA 保持错误/计数语义。保存/重开/XLSX/reimport 后验证公式、错误 code、hidden metadata 与 hidden-cell canonical read | Fail | U13：连续 subtotal 后 undo 的 intent 仍带创建时 base=8；目标实际提交 base=12，Java 409，save 未完成。 |
-| S08e | 预先连续写入三条操作并 undo/redo/再次 undo；每个未发送 undo 的 targetBaseRevision 跟随目标的最终 queued/committed base。ACK removal 与后续队列重排只持久化一次；journal failure 时 queue/history/revision/terminal status 不变化。已发送及恢复请求不可修改、缺失目标/重复 ACK revision 不一致必须拒绝 | Pending | 成功/拒绝单测与 S08d 真实 Java/H2 再验收；禁止测试插入 flush/delay 掩盖时序。 |
+| S08d | public SDK 在真实 Java/H2 建立 manual-hidden worksheet：1–11 读隐藏值、101–111 排除，undo/redo 后保存；empty AVERAGE 和 ordinary-error SUM/COUNTA 保持错误/计数语义。保存/重开/XLSX/reimport 后验证公式、错误 code、hidden metadata 与 hidden-cell canonical read | Pass | U13 首次 Fail 保留；U14 修正后完整 26/26 browser Pass，原步骤直接复验，无新增 flush/delay；真实 `sdk-subtotal-native-boundaries.xlsx` 与 trace。 |
+| S08e | 预先连续写入三条操作并 undo/redo/再次 undo；每个未发送 undo 的 targetBaseRevision 跟随目标的最终 queued/committed base。ACK removal 与后续队列重排只持久化一次；journal failure 时 queue/history/revision/terminal status 不变化。已发送及恢复请求不可修改、缺失目标/重复 ACK revision 不一致必须拒绝 | Pass | U15：新增三个成功/拒绝单测全部 Pass，包含真实 runtime listener、两个持久化失败点、恢复请求保持原样与拒绝错误 identity；U14 真实 Java/H2 原步骤再次通过。 |
 
 | Domain | Public API | Canonical owner | Command chain | Permission | History | Collaboration | Persistence | Server authority | Web migrated |
 |---|---|---|---|---|---|---|---|---|---|
@@ -131,7 +131,7 @@
 | SDK unit/contract/integration | npm run test:sdk，覆盖各正式领域成功+拒绝 | Pending | — |
 | calculation/Worker | npm run test:calculation-domain，包含跨bookfault与TS/Java vectors | Pending | — |
 | SDK real browser UAT | npm run test:sdk-uat，全createSpreadsheetSdk入口、console/network/native files | Pending | — |
-| frontend unit | npm run test:unit，全量结果；不隐藏当前main已有40项失败 | Fail | U05：1681 tests，1641 Pass、40 Fail；仍需完成整改 |
+| frontend unit | npm run test:unit，全量结果；不隐藏当前main已有40项失败 | Fail | U15：1689 tests，1649 Pass、40 Fail；失败名称与 U05/U11 相同，仍需完成整改 |
 | backend | Java21 Maven package/test，H2真实服务器和服务端authority | Pass | U06：375 tests，373 Pass、0 Fail、2 Skip；新增 WS 与 guest identity 合同 |
 | OIDC/ERP SSO deployment | 用户已确认没有真实身份环境 | Blocked | 用户现有会话答复 |
 | Desktop Excel interoperability | 用户已确认没有桌面Excel验收环境 | Blocked | 用户现有会话答复 |
@@ -174,3 +174,16 @@
 U07 runId `4e2b61f431a08f5cea5f2b75c31a57aa5f94aaba-20261003145301493`，Node `v24.19.0`，Chromium `151.0.7922.34`，viewport `1440x960`，lock digest 与 U02 相同。总 S08、完整领域/Data API/新边界/Session 删除及 P0 结构项仍不能以本组通过代替完成。
 
 U13：补充 S08d 运行于 clean source/build `eb5d9c62`，backend jar `4e2b61f4`（Java 源码未改变），1 Fail。`/tmp/sdk-thin-shell-subtotal-native-edge.log` 与 `/tmp/sdk-product-uat-RkDGs3/evidence/backend.log`；原始失败 trace/provenance 归档 `/tmp/sdk-product-uat-RkDGs3/playwright`。seq 13 目标提交 base 12，seq 14 undo base 13 但 intent.targetBaseRevision 8；Java 返回 `CONFLICT` / `Undo target base revision does not match the committed operation`。本次没有用等待、自动重试、客户端 repair 或放宽服务端校验改写结果。修正先完成 queue/ACK/history/持久化所有权设计，再统一执行验收。
+
+## Queued Undo 修正执行记录（2026-10-03）
+
+产品源码提交 `d96f5d838e1fa9a892a4088cbdee3096c166a7cb`，subject `fix(collaboration): reconcile undo target facts with durable ACK`。删除由 History 创建时 revision 指定 Undo target 的路径，改由唯一 pending/committed operation facts owner 决定；ACK 删除与后续 queued base/intent 重排在一个 durable image 中提交后，才发布 history/committed/terminal facts。删除无消费者的单条 queue replace/acknowledge 路径；已发送/恢复请求仍不可改写，Java authority 校验保持。
+
+| 证据 | 实际执行 | 归档 |
+|---|---|---|
+| U14 | public SDK + 真实 Java/H2/browser，完整 26/26 Pass，含 U13 原失败步骤、source/build `d96f5d83`、clean worktree | `/tmp/sdk-thin-shell-undo-queue-browser.log`；`/tmp/sdk-product-uat-p8pd7T/evidence`；26 个原始 trace/provenance `/tmp/sdk-product-uat-p8pd7T/playwright`；`sdk-subtotal-native-boundaries.xlsx` |
+| U15 | 全量 frontend unit 1689 tests，1649 Pass、40 基线 Fail；新增三项全部 Pass，失败名称无增加/减少 | `/tmp/sdk-thin-shell-undo-queue-unit.log` |
+| U16 | SDK 75/75 Pass | `/tmp/sdk-thin-shell-undo-queue-sdk.log` |
+| U17 | typecheck/build 与当前 boundary/stack/contracts/mutation gates Pass；完整零 Web 依赖 gate 尚未实施 | `/tmp/sdk-thin-shell-undo-queue-build.log`；`/tmp/sdk-thin-shell-undo-queue-boundaries.log` |
+
+U14 runId `d96f5d838e1fa9a892a4088cbdee3096c166a7cb-20261003151401168`，Node `v24.19.0`、Chromium `151.0.7922.34`、locale `en-US`、viewport `1440x960`、lock digest 与 U02 相同。backend build identity 为实际复用的 `4e2b61f4`，Java 源码未修改，不声称本组重新运行 Java 单测。GitHub 在远程产品提交 `4e2b61f4` 的两个 `canonical-build` check 为 Failure；继续保持 Draft，之后的新 SHA check 另行记录。全量领域、Session 删除、Web 薄壳、Public DTO/Error 及其他结构 P0 仍 Pending，外部环境仍 Blocked。
