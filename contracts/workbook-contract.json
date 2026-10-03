@@ -240,6 +240,7 @@
     "pivot.drillDown"
   ],
   "mutations": {
+    "name.restore": { "durability": "remote", "remote": true, "schema": "DefinedNameRestore", "minRole": "editor", "rebasePolicy": "exact", "javaReducer": true },
     "cell.set": { "durability": "remote", "remote": true, "schema": "CellSet", "minRole": "editor", "rebasePolicy": "range", "javaReducer": true },
     "workbook.editing.options.set": { "durability": "remote", "remote": true, "schema": "WorkbookEditingOptions", "minRole": "editor", "rebasePolicy": "exact", "javaReducer": true },
     "sheet.extent.grow": { "durability": "remote", "remote": true, "schema": "SheetExtentGrow", "minRole": "editor", "rebasePolicy": "exact", "javaReducer": true },
@@ -550,6 +551,7 @@
       "hyperlink.set": { "capability": "edit-cell", "protectionAction": "edit-cell", "checksProtection": true },
       "merge.remove": { "capability": "format", "protectionAction": "format", "checksProtection": true },
       "merge.set": { "capability": "format", "protectionAction": "format", "checksProtection": true },
+      "name.restore": { "capability": "format", "protectionAction": "none", "checksProtection": false },
       "name.remove": { "capability": "format", "protectionAction": "none", "checksProtection": false },
       "name.set": { "capability": "format", "protectionAction": "none", "checksProtection": false },
       "workbook.calculation.mode.set": { "capability": "format", "protectionAction": "none", "checksProtection": false },

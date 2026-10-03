@@ -341,7 +341,7 @@ public class WorkbookOperationService {
         List<CommittedOperationMutation> committedMutations = new ArrayList<>();
         long changedAccessRevision = -1;
         for (OperationMutation mutation : operation.mutations()) {
-            if (java.util.Set.of("record.restore", "range.clear.restore", "fill.restored").contains(mutation.id()) && undoTarget == null) throw ServiceException.conflict("RESTORE_REQUIRES_OWNED_UNDO");
+            if (java.util.Set.of("record.restore", "range.clear.restore", "fill.restored", "name.restore").contains(mutation.id()) && undoTarget == null) throw ServiceException.conflict("RESTORE_REQUIRES_OWNED_UNDO");
             if ("table.configure".equals(mutation.id()) && undoTarget == null) {
                 JsonNode previousTable = com.xc.luckysheet.server.contract.RecordTableValidator.table(next, mutation.params().path("table").path("id").asText());
                 if (previousTable.has("recordIdFieldId") && !previousTable.path("recordIdFieldId").equals(mutation.params().path("table").path("recordIdFieldId"))) throw ServiceException.conflict("RECORD_IDENTITY_IMMUTABLE");

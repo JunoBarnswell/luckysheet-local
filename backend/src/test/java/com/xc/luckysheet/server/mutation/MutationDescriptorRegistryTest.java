@@ -30,6 +30,32 @@ class MutationDescriptorRegistryTest {
     private final ObjectMapper mapper = new ObjectMapper();
 
     @Test
+    void nameRestorePreservesTheRemovedOwnersPositionAndRejectsInvalidRestoration() throws Exception {
+        var registry = new MutationDescriptorRegistry();
+        JsonNode before = mapper.readTree("""
+                {"sheets":[{"id":"sheet-1"}],"definedNameModels":[{"name":"First","scope":"workbook","formula":"=1"},{"name":"Last","scope":"workbook","formula":"=1"}],"definedNames":{"First":"=1","Last":"=1"}}
+                """);
+        ObjectNode params = (ObjectNode) mapper.readTree("""
+                {"model":{"name":"Middle","scope":"workbook","formula":"=2"},"position":1}
+                """);
+        var restore = registry.require("name.restore", false);
+        JsonNode changed = restore.apply(before, new OperationMutation("name.restore", "sheet-1", params));
+        assertEquals("Middle", changed.path("definedNameModels").get(1).path("name").asText());
+        assertEquals("=2", changed.path("definedNames").path("Middle").asText());
+        assertEquals(2, before.path("definedNameModels").size());
+        for (JsonNode position : List.of(mapper.readTree("-1"), mapper.readTree("3"), mapper.readTree("0.5"), mapper.readTree("\"1\""))) {
+            ObjectNode invalid = params.deepCopy(); invalid.set("position", position);
+            assertThrows(ServiceException.class, () -> restore.apply(before, new OperationMutation("name.restore", "sheet-1", invalid)));
+        }
+        ObjectNode duplicate = params.deepCopy(); ((ObjectNode) duplicate.path("model")).put("name", "first");
+        assertThrows(ServiceException.class, () -> restore.apply(before, new OperationMutation("name.restore", "sheet-1", duplicate)));
+        ObjectNode extra = params.deepCopy(); extra.put("fallback", true);
+        assertThrows(ServiceException.class, () -> restore.apply(before, new OperationMutation("name.restore", "sheet-1", extra)));
+        JsonNode removed = registry.require("name.remove", false).apply(changed, new OperationMutation("name.remove", "sheet-1", mapper.readTree("{\"name\":\"Middle\",\"scope\":\"workbook\"}")));
+        assertEquals(before, removed);
+    }
+
+    @Test
     void protectionUsesCanonicalRuleOwnershipAndRejectsMalformedParametersWithoutWriting() throws Exception {
         var registry = new MutationDescriptorRegistry();
         JsonNode before = mapper.readTree("""
@@ -1185,7 +1211,7 @@ class MutationDescriptorRegistryTest {
                 "drawing.add", "drawing.remove", "drawing.transform", "drawing.transform.batch", "drawing.anchor", "drawing.payload.update", "drawing.zorder", "drawing.zorder.restore", "drawing.visibility.set", "drawing.rename",
                 "pivot.add", "pivot.remove", "pivot.update", "pivot.refresh", "pivot.drilldown.add", "pivot.drilldown.remove",
                 "sparkline.add", "sparkline.remove", "sparkline.update", "sparkline.group.add", "sparkline.group.remove", "sparkline.group.replace",
-                "table.add", "table.remove", "name.set", "name.remove", "workbook.calculation.mode.set",
+                "table.add", "table.remove", "name.set", "name.remove", "name.restore", "workbook.calculation.mode.set",
                 "pageLayout.margins.set", "pageLayout.orientation.set", "pageLayout.paperSize.set", "pageLayout.pageSetupDetail.set", "pageLayout.scaleToFit.set", "pageLayout.printTitles.set", "pageLayout.printArea.set", "pageLayout.printArea.clear", "pageLayout.pageBreak.insert", "pageLayout.pageBreak.remove", "pageLayout.pageBreak.clear", "pageLayout.printGridlines.set", "pageLayout.printHeadings.set", "pageLayout.viewGridlines.set", "pageLayout.viewHeadings.set"
                 , "query.definition.replace", "query.load.range", "query.load.sheet-table", "query.load.pivot-source", "query.load.workbook-table",
                 "rows.inserted", "rows.deleted", "columns.inserted", "columns.deleted", "cells.inserted", "cells.deleted", "cells.inserted.restore", "cells.deleted.restore", "rows.permuted", "range.move", "rows.visibility",

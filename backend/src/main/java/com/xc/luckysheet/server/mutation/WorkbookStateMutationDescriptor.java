@@ -16,7 +16,7 @@ import java.util.Set;
 /** Reducers for workbook-owned tables, names, and persisted print documents. */
 final class WorkbookStateMutationDescriptor extends CanonicalJsonMutationDescriptor {
     static final Set<String> IDS = Set.of(
-            "table.add", "table.remove", "name.set", "name.remove", "workbook.calculation.mode.set",
+            "table.add", "table.remove", "name.set", "name.remove", "name.restore", "workbook.calculation.mode.set",
             "pageLayout.margins.set", "pageLayout.orientation.set", "pageLayout.paperSize.set", "pageLayout.pageSetupDetail.set",
             "pageLayout.scaleToFit.set", "pageLayout.printTitles.set", "pageLayout.printArea.set", "pageLayout.printArea.clear",
             "pageLayout.pageBreak.insert", "pageLayout.pageBreak.remove", "pageLayout.pageBreak.clear",
@@ -59,6 +59,7 @@ final class WorkbookStateMutationDescriptor extends CanonicalJsonMutationDescrip
             case "table.remove" -> removeTable(root, rawId(mutation.params(), "Table id"));
             case "name.set" -> setName(root, SnapshotMutationSupport.params(mutation));
             case "name.remove" -> removeName(root, SnapshotMutationSupport.params(mutation));
+            case "name.restore" -> restoreName(root, SnapshotMutationSupport.params(mutation));
             case "workbook.calculation.mode.set" -> setCalculationMode(root, SnapshotMutationSupport.params(mutation));
             case "pageLayout.margins.set", "pageLayout.orientation.set", "pageLayout.paperSize.set", "pageLayout.pageSetupDetail.set",
                     "pageLayout.scaleToFit.set", "pageLayout.printTitles.set", "pageLayout.printArea.set", "pageLayout.printArea.clear",
@@ -125,6 +126,18 @@ final class WorkbookStateMutationDescriptor extends CanonicalJsonMutationDescrip
             removeProjectedWorkbookName(formulaView, name);
             formulaView.put(name, formula);
         }
+    }
+
+    private void restoreName(ObjectNode root, ObjectNode params) {
+        if (params.size() != 2 || !params.has("model") || !params.has("position")) throw ServiceException.validation("Defined-name restore fields are invalid");
+        ObjectNode model = SnapshotMutationSupport.requiredObject(params, "model");
+        ArrayNode models = SnapshotMutationSupport.array(root, "definedNameModels");
+        JsonNode position = params.get("position");
+        if (!position.isIntegralNumber() || !position.canConvertToInt() || position.intValue() < 0 || position.intValue() > models.size()) throw ServiceException.validation("Defined-name restore position is invalid");
+        if (nameIndex(models, SnapshotMutationSupport.text(model, "name"), SnapshotMutationSupport.text(model, "scope"), SnapshotMutationSupport.optionalText(model, "sheetId")) >= 0) throw ServiceException.conflict("Defined-name restore identity already exists");
+        setName(root, params);
+        JsonNode restored = models.remove(models.size() - 1);
+        models.insert(position.intValue(), restored);
     }
 
     private void removeName(ObjectNode root, ObjectNode params) {

@@ -322,3 +322,13 @@ Java 两项 Skipped 为 QueryReadOnlyDialectIntegrationTest 的 PostgreSQL/MySQL
 原生补全统一验证首轮新语义成功：SDK 62 Pass；native 65/66 Pass，唯一旧 v3 fixture 仍从 version4 改写，已按正式 version5 生成旧包；build 两处仅测试给 readonly collection 重新赋值，改为测试 setup 对现有 collection 的 splice，不改产品语义。首轮日志 `/tmp/sdk-o21-native-{sdk,native,build,boundaries}.log` 保留。产品源仍冻结，统一迁移这三处测试契约后检查。
 
 O2.1 冻结产品统一检查：SDK 62/62 Pass；permission 11/11 Pass；native 66/66 Pass；calculation 457 Pass（本批公式引擎未变）；boundaries Pass；Java 369/367 Pass/0 Fail/2 Skipped + package。完整 unit 1584/1532 Pass/52 Fail，与 O1 产品失败标题新增0/消失0；保留完整门禁 Fail。日志 `/tmp/sdk-o21-native-sdk.log`、`/tmp/sdk-o21-corrected-permission.log`、`/tmp/sdk-o21-final-{native,unit,build}.log`、`/tmp/sdk-o21-native-boundaries.log`、`/tmp/sdk-o21-first-java.log`。build 与真实 browser 完成后记录实际结论，不先填 Pass。GitHub 0f318900 的 canonical-build FAILURE 明确发生在完整 unit 检查（run37120591294 step11），不以局部绿色覆盖。
+
+### O2.1 名称撤销整链纠正（代码前冻结）
+
+产品 ca5ba64b 完整真实 browser 20/21 Pass。失败 `/tmp/sdk-o21-browser.log`、`/tmp/sdk-product-uat-moD4I1/evidence`、`/tmp/sdk-o21-first-browser-test-results`。真实 REST 409 UNDO_RESULT_MISMATCH，前9条规范操作通过。只读 H2 +实际 Java registry 重放 `/tmp/SDKO21Replay.java`、`/tmp/sdk-o21-replay.log`、`/tmp/sdk-o21-{expected-preimage,candidate,rejected-operation}.json` 证明唯一差异是 definedNameModels 顺序：删除中间 local Rate 后，name.set 只能尾部追加。
+
+定义名称列表当前为规范 authored 顺序，不排序快照、不降低 Java preimage 守卫。新增正式 name.restore {model,position}，仅由已拥有的 undo 触发；Core 模型以单一 replaceDefinedNames 事务恢复缺失身份到有效原位置，所有正常 author name.set 仍保留既有位置。客户端 remove 的 inverse 捕获原位置；Java 同字段、范围、角色与候选验证。恢复不能覆盖已有身份，位置整数且0..当前长度，坏字段拒绝；直接非 undo REST 明确 RESTORE_REQUIRES_OWNED_UNDO。这是新增规范操作，无旧字段别名或第二个名称模型，存储 snapshot 版本不变。
+
+O2.1-f 预验收：三项名称中移除中项，undo 完整快照与名字顺序一致，redo→undo 再次恢复；依赖重算、其他名称 anchor/comment 不变；恢复重复/越界/坏scope拒绝且模型不变；无 owned undo 的 direct REST restore 无任何revision/history写入。严格前置 guard 和现有21项UAT均保留。之后统一 checks、提交同一草稿PR、干净head完整真实验收。
+
+名称恢复整批统一检查：SDK63/63 Pass；build/typecheck、boundaries Pass（45声明）；Java370/368 Pass/0 Fail/2 Skipped + package；完整unit1585/1533 Pass/52 Fail，无新失败。日志 `/tmp/sdk-o21-restore-{sdk,build,boundaries,java,unit}.log`。守卫与前置快照比较未修改，下一轮真实browser仍完整21项、retries0。

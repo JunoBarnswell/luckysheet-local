@@ -130,6 +130,7 @@ export interface MutationCapability {
   collaborationKind?: 'cell-value' | 'cell-style' | 'clear' | 'insert-rows' | 'delete-rows' | 'insert-columns' | 'delete-columns' | 'move-range' | 'sort' | 'merge' | 'table-resize' | 'drawing' | 'comment' | 'pivot-config' | 'unknown';
 }
 export const MUTATION_CAPABILITIES = {
+  "name.restore": { durability: "remote", remote: true, schema: "DefinedNameRestore", minRole: "editor", rebasePolicy: "exact", javaReducer: true, protectionAction: "none", checksProtection: false, affectedRangeMode: "none", objectScope: "workbook" },
   "cell.set": { durability: "remote", remote: true, schema: "CellSet", minRole: "editor", rebasePolicy: "range", javaReducer: true, protectionAction: "edit-cell", checksProtection: true, affectedRangeMode: "declared", objectScope: "range" },
   "workbook.editing.options.set": { durability: "remote", remote: true, schema: "WorkbookEditingOptions", minRole: "editor", rebasePolicy: "exact", javaReducer: true, protectionAction: "none", checksProtection: false, affectedRangeMode: "none", objectScope: "workbook" },
   "sheet.extent.grow": { durability: "remote", remote: true, schema: "SheetExtentGrow", minRole: "editor", rebasePolicy: "exact", javaReducer: true, protectionAction: "none", checksProtection: false, affectedRangeMode: "none", objectScope: "worksheet" },
@@ -426,6 +427,7 @@ export const MUTATION_PERMISSION_POLICIES = {
   "hyperlink.set": { capability: "edit-cell", protectionAction: "edit-cell", checksProtection: true, affectedRangeMode: "declared", objectScope: "range" },
   "merge.remove": { capability: "format", protectionAction: "format", checksProtection: true, affectedRangeMode: "declared", objectScope: "range" },
   "merge.set": { capability: "format", protectionAction: "format", checksProtection: true, affectedRangeMode: "declared", objectScope: "range" },
+  "name.restore": { capability: "format", protectionAction: "none", checksProtection: false, affectedRangeMode: "none", objectScope: "workbook" },
   "name.remove": { capability: "format", protectionAction: "none", checksProtection: false, affectedRangeMode: "none", objectScope: "workbook" },
   "name.set": { capability: "format", protectionAction: "none", checksProtection: false, affectedRangeMode: "none", objectScope: "workbook" },
   "workbook.calculation.mode.set": { capability: "format", protectionAction: "none", checksProtection: false, affectedRangeMode: "none", objectScope: "workbook" },

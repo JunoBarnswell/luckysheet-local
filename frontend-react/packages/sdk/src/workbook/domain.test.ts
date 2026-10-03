@@ -446,9 +446,11 @@ test('object defined names preserve canonical scope, anchors, immutable identity
     assert.equal((await sheet.cells.get('D4').read()).calculatedValue, 2);
     assert.equal((await sheet.cells.get('E4').read()).calculatedValue, 3);
     await local.setFormula('=4'); assert.equal((await sheet.cells.get('D1').read()).calculatedValue, 40);
+    const namePreimage = session['runtime'].model.snapshot();
     await local.remove(); assert.equal((await sheet.cells.get('D1').read()).calculatedValue, 20);
     assert.throws(() => local.snapshot(), invalid);
     await workbook.undo(); assert.equal(workbook.names.byName('Rate', 'sheet', sheet.id), local); assert.equal((await sheet.cells.get('D1').read()).calculatedValue, 40);
+    assert.deepEqual(session['runtime'].model.snapshot(), namePreimage);
     await workbook.redo(); assert.equal((await sheet.cells.get('D1').read()).calculatedValue, 20);
     const before = session['runtime'].model.snapshot(), depth = session['runtime'].commands.getHistoryDepth();
     for (const model of [{ name: 'NoScope', formula: '=1' }, { name: 'Legacy', value: '=1', scope: 'workbook' },
@@ -527,4 +529,15 @@ test('worksheet protection objects enforce canonical ownership, owner ACL and re
     assert.deepEqual(session['runtime'].model.snapshot(), before);
     workbook.close(); assert.throws(() => protection.list(), cause => cause instanceof SdkError && cause.code === 'RUNTIME_DISPOSED');
   } finally { workbook.close(); }
+});
+
+
+test('canonical name restore rejects invalid positions and duplicate owners without changing snapshots', () => {
+  const workbook = new WorkbookModel('ordered-names', 'Ordered names');
+  for (const name of ['First', 'Last']) workbook.setDefinedName({ name, scope: 'workbook', formula: '=1' });
+  const before = workbook.snapshot(), middle = { name: 'Middle', scope: 'workbook' as const, formula: '=2' };
+  for (const position of [-1, 3, 0.5, NaN]) { assert.throws(() => workbook.restoreDefinedName(middle, position), /position is invalid/); assert.deepEqual(workbook.snapshot(), before); }
+  assert.throws(() => workbook.restoreDefinedName({ ...middle, name: 'first' }, 1), /identity already exists/);
+  assert.deepEqual(workbook.snapshot(), before);
+  workbook.restoreDefinedName(middle, 1); assert.deepEqual(workbook.definedNameModels.map(name => name.name), ['First', 'Middle', 'Last']);
 });

@@ -61,6 +61,7 @@ public final class GeneratedWorkbookContract {
         "sheetTable.update"
     );
     public static final Map<String, MutationCapability> MUTATIONS = Map.ofEntries(
+        Map.entry("name.restore", new MutationCapability("remote", true, "DefinedNameRestore", "editor", "exact", true, "none", false, "none", "workbook")),
         Map.entry("cell.set", new MutationCapability("remote", true, "CellSet", "editor", "range", true, "edit-cell", true, "declared", "range")),
         Map.entry("workbook.editing.options.set", new MutationCapability("remote", true, "WorkbookEditingOptions", "editor", "exact", true, "none", false, "none", "workbook")),
         Map.entry("sheet.extent.grow", new MutationCapability("remote", true, "SheetExtentGrow", "editor", "exact", true, "none", false, "none", "worksheet")),
@@ -170,6 +171,7 @@ public final class GeneratedWorkbookContract {
         Map.entry("hyperlink.set", new PermissionPolicy("edit-cell", "edit-cell", true, "declared", "range")),
         Map.entry("merge.remove", new PermissionPolicy("format", "format", true, "declared", "range")),
         Map.entry("merge.set", new PermissionPolicy("format", "format", true, "declared", "range")),
+        Map.entry("name.restore", new PermissionPolicy("format", "none", false, "none", "workbook")),
         Map.entry("name.remove", new PermissionPolicy("format", "none", false, "none", "workbook")),
         Map.entry("name.set", new PermissionPolicy("format", "none", false, "none", "workbook")),
         Map.entry("workbook.calculation.mode.set", new PermissionPolicy("format", "none", false, "none", "workbook")),

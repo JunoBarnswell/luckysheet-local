@@ -420,9 +420,9 @@ test('O2.1-a/b/c/d: public names, rich text and protection preserve canonical st
       workbook = await sdk.workbooks.open(entry.unitId); sheet = workbook.worksheets.at(0);
       const name = workbook.names.byName('Relative', 'workbook').snapshot(), global = workbook.names.byName('Rate', 'workbook').snapshot(), reopenedRich = await sheet.ranges.get('D8:E9').read(), protection = sheet.protection.list();
       const output = await sdk.workbooks.exportWorkbook(entry.unitId, { fileName: 'sdk-o21.xlsx' });
-      return { id: entry.unitId, sheetId: sheet.id, values, changed, removed, restored, rich, richUndo, protectedCode, unlocked, unprotected, retiredName, retiredProtection, name, global, reopenedRich, protection, bytes: Array.from(new Uint8Array(output.buffer)) };
+      return { id: entry.unitId, sheetId: sheet.id, names: workbook.names.list().map(name => name.snapshot().name), values, changed, removed, restored, rich, richUndo, protectedCode, unlocked, unprotected, retiredName, retiredProtection, name, global, reopenedRich, protection, bytes: Array.from(new Uint8Array(output.buffer)) };
     });
-    expect(result.values).toEqual([30, 2, 3]); expect(result.changed).toBe(40); expect(result.removed).toBe(20); expect(result.restored).toBe(40);
+    expect(result.names).toEqual(['Rate', 'Rate', 'Relative']); expect(result.values).toEqual([30, 2, 3]); expect(result.changed).toBe(40); expect(result.removed).toBe(20); expect(result.restored).toBe(40);
     for (const row of result.rich) for (const cell of row) { expect(cell.value).toBe('=literal'); expect(cell.formula).toBeUndefined(); expect(cell.richText).toEqual([{ text: '=lit', style: { bold: true } }, { text: 'eral', style: { italic: true, textColor: '#123456' } }]); }
     expect(result.richUndo).toEqual([[null, null], [null, null]]); expect(result.protectedCode).toBe('FORBIDDEN'); expect(result.unlocked).toBe(9); expect(result.unprotected).toEqual([]);
     expect(result.retiredName).toBe('RUNTIME_DISPOSED'); expect(result.retiredProtection).toBe('RUNTIME_DISPOSED');
@@ -468,6 +468,8 @@ test('O2.1-a/b/c/e: viewer and malformed real protection operations are rejected
     const viewerCsrf = (await (await context.request.get('/api/auth/session')).json()).csrfToken;
     const forbidden = await context.request.post(`/api/workbooks/${setup.id}/operations`, { headers: { 'X-CSRF-TOKEN': viewerCsrf }, data: { ...operation, clientSessionId: crypto.randomUUID(), operationId: crypto.randomUUID(), mutations: [{ ...operation.mutations[0]!, params: { sheetId: setup.sheetId, rule: { ...rule, allow: {} } } }] } });
     expect(forbidden.status()).toBe(403); expect((await forbidden.json()).code).toBe('FORBIDDEN');
+    const unownedRestore = await page.request.post(`/api/workbooks/${setup.id}/operations`, { headers: { 'X-CSRF-TOKEN': ownerCsrf }, data: { ...operation, clientSessionId: crypto.randomUUID(), operationId: crypto.randomUUID(), mutations: [{ id: 'name.restore', sheetId: setup.sheetId, params: { model: { name: 'Injected', scope: 'workbook', formula: '=9' }, position: 0 } }] } });
+    expect(unownedRestore.status()).toBe(409); expect((await unownedRestore.json()).message).toBe('RESTORE_REQUIRES_OWNED_UNDO');
     expect(await (await page.request.get(`/api/workbooks/${setup.id}/snapshot`)).json()).toEqual(before);
     diagnostics.assertClean(); viewerDiagnostics.assertClean();
   } finally { if (viewer) await viewer.evaluate(sdk => sdk.dispose()); await context.close(); await owner.evaluate(sdk => sdk.dispose()); }

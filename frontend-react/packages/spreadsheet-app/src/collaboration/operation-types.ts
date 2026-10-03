@@ -96,6 +96,7 @@ const MUTATION_KIND_MAP: Readonly<Record<string, CollaborationOperationKind>> = 
   'find.replaced': 'cell-value',
   'pivot.layout.set': 'pivot-config',
   'name.set': 'defined-name',
+  'name.restore': 'defined-name',
   'name.remove': 'defined-name',
 };
 

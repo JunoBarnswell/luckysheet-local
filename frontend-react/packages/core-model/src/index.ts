@@ -2476,6 +2476,15 @@ export class WorkbookModel {
     return previous ? structuredClone(previous) : undefined;
   }
 
+  restoreDefinedName(input: DefinedNameModel, position: number): void {
+    const model = normalizeDefinedNameModel(input);
+    if (!Number.isSafeInteger(position) || position < 0 || position > this.definedNamesByIdentity.size) throw new Error('Defined-name restore position is invalid');
+    if (this.getDefinedNameExact(model.name, model.scope, model.sheetId)) throw new Error('Defined-name restore identity already exists');
+    const names = [...this.definedNameModels];
+    names.splice(position, 0, model);
+    this.replaceDefinedNames(names);
+  }
+
   replaceDefinedNames(inputs: readonly DefinedNameModel[]): void {
     const next = new Map<string, DefinedNameModel>();
     for (const input of inputs) {

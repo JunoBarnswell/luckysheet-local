@@ -989,6 +989,11 @@ function isNameSetMutation(value: unknown): value is { model: DefinedNameModel }
     && (value.model.scope === 'workbook' || typeof value.model.sheetId === 'string');
 }
 
+function isNameRestoreMutation(value: unknown): value is { model: DefinedNameModel; position: number } {
+  return isNameSetMutation(value) && Object.keys(value).every(key => key === 'model' || key === 'position')
+    && Number.isSafeInteger((value as { position?: unknown }).position) && Number((value as { position?: unknown }).position) >= 0;
+}
+
 function isNameRemoveMutation(value: unknown): value is { name: string } {
   return isRecord(value) && typeof value.name === 'string' && value.name.trim().length > 0;
 }
@@ -3326,6 +3331,23 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       inverseIds: ['name.set', 'name.remove'],
     },
   });
+  runtime.registry.registerMutation<{ model: DefinedNameModel; position: number }>({
+    id: 'name.restore',
+    handler: (item, context) => {
+      if (!isNameRestoreMutation(item.params)) throw new Error('Invalid name.restore mutation payload');
+      const model = item.params.model;
+      if (model.scope === 'sheet') context.workbook.getSheet(model.sheetId!);
+      if (model.anchor) context.workbook.getSheet(model.anchor.sheetId);
+      context.workbook.restoreDefinedName(model, item.params.position);
+    },
+    metadata: {
+      calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false, context: CALCULATION_CONTEXT_EFFECTS.syncDefinedNames },
+      schema: { name: 'DefinedNameRestore', validate: isNameRestoreMutation },
+      permission: { capability: 'workbook.defined-name.write', roles: ['owner', 'editor'] },
+      affectedRanges: { resolve: () => [], mode: 'exact' },
+      inverseIds: ['name.remove'],
+    },
+  });
   runtime.registry.registerMutation<{ name: string; scope?: 'workbook' | 'sheet'; sheetId?: string }>({
     id: 'name.remove',
     handler: (item, context) => {
@@ -3338,7 +3360,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       schema: { name: 'DefinedNameRemove', validate: isNameRemoveMutation },
       permission: { capability: 'workbook.defined-name.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: () => [], mode: 'exact' },
-      inverseIds: ['name.set'],
+      inverseIds: ['name.restore'],
     },
   });
   runtime.registry.registerCommand<DefinedNameModel>({
@@ -3373,6 +3395,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
     execute: (params, context) => {
       const previous = context.workbook.getDefinedNameExact(params.name, params.scope ?? 'workbook', params.sheetId);
       if (previous === undefined || previous.scope !== (params.scope ?? 'workbook') || previous.sheetId !== params.sheetId) return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
+      const position = context.workbook.definedNameModels.findIndex(model => model.name.toUpperCase() === previous.name.toUpperCase() && model.scope === previous.scope && model.sheetId === previous.sheetId);
       const affectedRanges: RangeRef[] = [];
       context.applyMutation({
         id: 'name.remove',
@@ -3381,7 +3404,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
         params,
         affectedRanges,
         inverse: [
-          { id: 'name.set', unitId: context.workbook.unitId, sheetId: context.workbook.primarySheetId, params: { model: previous }, affectedRanges },
+          { id: 'name.restore', unitId: context.workbook.unitId, sheetId: context.workbook.primarySheetId, params: { model: previous, position }, affectedRanges },
         ],
         apply: () => {
           context.workbook.removeDefinedName(params.name, previous.scope, previous.sheetId);
