@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { describe, it } from 'node:test';
 import { createPivotMemberKey, defaultChartSubtype, planConnectorRoute, planSheetIdentityTransform, WorkbookModel } from '@react-sheets/core-model';
 import { assertNativeArtifactAllowsStructuralMutation, exportOoxmlDocument } from './export';
@@ -11,6 +12,10 @@ import { mapNativePivotDefinition, readNativePivotGraph } from './native-pivot';
 import { NativeDocumentError } from './native-document-error';
 import type { NativePivotCacheDefinition, NativePivotTableDefinition } from './types';
 import { strFromU8, strToU8 } from 'fflate';
+import { descendants, parseXml } from './xml';
+
+const imagePng = Uint8Array.from(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=', 'base64'));
+const imageAsset = { schema: 'AssetRef' as const, assetId: 'asset-test', contentHash: createHash('sha256').update(imagePng).digest('hex'), mimeType: 'image/png', byteLength: imagePng.byteLength };
 
 describe('exchange-excel-ooxml', () => {
   it('preserves supported pie subtypes and fails closed on unmodeled native splits and rotations', () => {
@@ -135,7 +140,7 @@ describe('exchange-excel-ooxml', () => {
     });
     sheet.drawingPayloads.set('image-payload', {
       kind: 'image',
-      asset: { schema: 'AssetRef', assetId: 'asset-test', contentHash: 'a'.repeat(64), mimeType: 'image/png', byteLength: 2 },
+      asset: imageAsset,
     });
 
     const features = scanSnapshotFeatures(workbook.snapshot());
@@ -1938,6 +1943,70 @@ describe('exchange-excel-ooxml', () => {
     );
   });
 
+  it('exports the first real image into empty native drawings and rejects invalid drawing roots atomically', () => {
+    const workbook = new WorkbookModel('wb-first-image', 'First image');
+    const sheet = workbook.getSheet(workbook.primarySheetId);
+    sheet.drawings.push({ id: 'first-image', sheetId: sheet.id, kind: 'image',
+      anchor: { kind: 'one-cell', row: 1, column: 2 },
+      transform: { x: 0, y: 0, width: 96, height: 24 }, zIndex: 0, payloadId: 'first-image-payload' });
+    sheet.drawingPayloads.set('first-image-payload', { kind: 'image', asset: imageAsset });
+    const snapshot = workbook.snapshot();
+    const beforeSnapshot = structuredClone(snapshot);
+    const beforeBytes = imagePng.slice();
+    const options = { assetBytes: { 'asset-test': imagePng } };
+    const fresh = loadOpcPackageGraph(exportSnapshotToOoxmlBuffer(snapshot, undefined, options));
+    const sheetPart = fresh.packageGraph.sheetPartById[sheet.id]!;
+    const relation = fresh.packageGraph.relationships[sheetPart]!.find(item => item.type.endsWith('/drawing'))!;
+    assert.ok(relation);
+    const drawingPart = 'xl/drawings/drawing1.xml';
+    const assertPicture = (files: Record<string, Uint8Array>) => {
+      const xml = parseXml(strFromU8(files[drawingPart]!));
+      assert.equal(descendants(xml, 'pic').length, 1);
+      assert.equal(descendants(xml, 'col')[0]?.text, '2');
+      assert.equal(descendants(xml, 'row')[0]?.text, '1');
+      assert.equal(descendants(xml, 'cNvPr')[0]?.attrs.name, 'first-image');
+      assert.deepEqual(files['xl/media/asset-test.png'], imagePng);
+      assert.match(strFromU8(files['[Content_Types].xml']!), /image\/png/);
+    };
+    assertPicture(fresh.files);
+    const imported = parseLoadedOoxml(fresh);
+    assert.equal(imported.snapshot.sheets[0]!.drawings[0]!.id, 'first-image');
+    assert.deepEqual(imported.snapshot.sheets[0]!.drawingPayloads['first-image-payload'], { kind: 'image', asset: imageAsset });
+
+    const ns = 'http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing';
+    for (const root of [
+      `<xdr:wsDr xmlns:xdr="${ns}"/>`,
+      `<d:wsDr xmlns:d="${ns}" xmlns:xdr="urn:opaque" vendor="retained"><xdr:future flag="yes"/></d:wsDr>`,
+      `<wsDr xmlns="${ns}"/>`,
+    ]) {
+      const preserved = structuredClone(fresh.packageGraph);
+      preserved.parts[drawingPart] = strToU8(root);
+      const before = structuredClone(preserved);
+      const output = loadOpcPackageGraph(exportSnapshotToOoxmlBuffer(snapshot, preserved, options));
+      assertPicture(output.files);
+      if (root.includes('future')) {
+        assert.match(strFromU8(output.files[drawingPart]!), /xmlns:xdr="urn:opaque" vendor="retained"/);
+        assert.equal(descendants(parseXml(strFromU8(output.files[drawingPart]!)), 'future')[0]?.attrs.flag, 'yes');
+      }
+      assert.deepEqual(preserved, before);
+    }
+    for (const root of [
+      '<xdr:wsDr xmlns:xdr="urn:wrong"/>',
+      `<xdr:wsDr xmlns:xdr="${ns}">`,
+      `<d:wsDr xmlns:d="${ns}"/><d:wsDr xmlns:d="${ns}"/>`,
+    ]) {
+      const preserved = structuredClone(fresh.packageGraph);
+      preserved.parts[drawingPart] = strToU8(root);
+      const before = structuredClone(preserved);
+      assert.throws(() => exportSnapshotToOoxmlBuffer(snapshot, preserved, options), (error: unknown) =>
+        error instanceof NativeDocumentError && error.code === 'NATIVE_DOCUMENT_INVALID'
+        && error.location === drawingPart && Boolean(error.recovery) && error.cause instanceof Error);
+      assert.deepEqual(preserved, before);
+      assert.deepEqual(snapshot, beforeSnapshot);
+      assert.deepEqual(imagePng, beforeBytes);
+    }
+  });
+
   it('honors explicit OOXML export options before reusing untouched source bytes', async () => {
     const workbook = new WorkbookModel('wb-export-options', 'Export options');
     const sheet = workbook.getSheet(workbook.primarySheetId);
@@ -1953,10 +2022,10 @@ describe('exchange-excel-ooxml', () => {
     });
     sheet.drawingPayloads.set('image-payload', {
       kind: 'image',
-      asset: { schema: 'AssetRef', assetId: 'asset-test', contentHash: 'a'.repeat(64), mimeType: 'image/png', byteLength: 2 },
+      asset: imageAsset,
     });
     const original = loadOpcPackageGraph(exportSnapshotToOoxmlBuffer(workbook.snapshot(), undefined, {
-      assetBytes: { 'asset-test': Uint8Array.from([1, 2]) },
+      assetBytes: { 'asset-test': imagePng },
     }));
     original.packageGraph.parts['xl/vbaProject.bin'] = Uint8Array.from([7, 8]);
     const imported = await importOoxmlDocument({
@@ -1974,14 +2043,14 @@ describe('exchange-excel-ooxml', () => {
         dateSystem: '1904',
         includeCachedValues: false,
         preserveMacros: false,
-        assetBytes: { 'asset-test': Uint8Array.from([4, 5]) },
+        assetBytes: { 'asset-test': imagePng },
       },
     });
     const output = loadOpcPackageGraph(exported.buffer);
     assert.equal(output.files['xl/vbaProject.bin'], undefined);
     assert.match(strFromU8(output.files['xl/workbook.xml']!), /date1904="1"/);
     assert.equal(strFromU8(output.files['xl/worksheets/sheet1.xml']!).includes('<v>2</v>'), false);
-    assert.deepEqual([...output.files['xl/media/asset-test.png']!], [4, 5]);
+    assert.deepEqual(output.files['xl/media/asset-test.png'], imagePng);
     assert.equal(exported.report.exportLevel, 'C');
     assert.equal(exported.report.dateSystem, '1904');
   });

@@ -139,6 +139,8 @@ SDK 拥有认证/身份/凭证/组合根/工作簿目录与生命周期/Excel �
 
 **DOC-01.b / REVIEW-01.a 空白格超链接往返（Pass，先制定再执行）**：构造真实 XLSX，只有 A1 有值、A2:A4 为 URL/email/sheet/name 超链接锚点，native dimension 仅 A1；导入需保留四个锚点并在显式 import 边界扩展 canonical extent；编辑 A1 后导出再导入仍保留四个 target，不能创建空格假值。将 hyperlink ref 改成 A1048577 或 XFE1 时必须 typed 拒绝且原输入 bytes 不变。已通过浏览器上传、打开、真实键盘编辑、保存、下载文件验证同一语义链；越界文件明确拒绝且不创建服务器工作簿。导入业务身份的跨表恢复又揭示了原生 sheetId 缺陷，按相同往返要求追加身份成功/拒绝检查。桌面 Excel 此项仍归 DOC-04 Blocked。
 
+**DOC-01.c 首次图片导出（Pending，实施前制定）**：使用真实 PNG 和对应 AssetRef，首次生成 XLSX；检查 drawing 根节点、图片 relationship、原始 media bytes、ContentTypes 与导入后的 canonical payload。现有空 drawing 的自闭合根、不同 prefix/default namespace 都必须成功，并保留未知元素与属性；错误根 namespace、多个根或未闭合 XML 必须返回带 part/recovery 的 typed error，原 snapshot、asset bytes 与 preserved package 不变。本项只覆盖首次生成和空 drawing 的添加；补充真实浏览器步骤：新建服务器工作簿→插入 PNG 浮动图片→Ctrl+S→服务端 drawing/payload 断言→刷新→目录导出副本→检查真实下载 ZIP 的图片 relationship/media 与重新导入结果，并检查 console/network。已有图片的替换/删除/重复导出仍需单独验收，不据单测标记 OBJ-01 或 DOC-01 父项通过。桌面 Excel 仍 Blocked。
+
 ### 合并与回滚
 
 只有所有必需产品项 Pass、完整门禁 Pass、PR checks 对应待合并 head 验证后才 ready/merge；现在没有达到条件。

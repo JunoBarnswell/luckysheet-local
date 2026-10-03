@@ -420,6 +420,16 @@ export function exportSnapshotToOpcPackageGraph(
   const sheetParts = snapshot.sheets.map((sheet, index) => preserved?.sheetPartById[sheet.id] ?? `xl/worksheets/sheet${index + 1}.xml`);
   const nativeSheetIds = allocateNativeSheetIds(snapshot, sheetParts, preserved);
   const sheetPartById = Object.fromEntries(snapshot.sheets.map((sheet, index) => [sheet.id, sheetParts[index]!])) as Record<string, string>;
+  for (const [source, relations] of Object.entries(preserved?.relationships ?? {})) {
+    for (const relation of relations) {
+      if (!isRelationshipKind(relation.type, 'drawing') || relation.targetMode === 'External') continue;
+      const part = resolveTarget(source, relation.target);
+      if (!sourceFiles[part]) throw new NativeDocumentError({ code: 'NATIVE_DOCUMENT_INVALID',
+        message: 'Native spreadsheet drawing part is missing', location: part,
+        recovery: 'Restore the referenced DrawingML part from the original document before exporting' });
+      parseNativeDrawingDocument(strFromU8(sourceFiles[part]!), part);
+    }
+  }
   const nativeUpdate = synchronizeNativePivotPackage({
     files: Object.fromEntries([...files.entries()]),
     relationships: preserved?.relationships ?? {},
@@ -581,6 +591,24 @@ export function detectPackageFeatures(pkg: OpcPackageGraph, snapshot?: WorkbookS
   return [...features];
 }
 
+/** Validate the native drawing before any domain writer reads or changes it. */
+function parseNativeDrawingDocument(original: string, part: string): XmlNode {
+  try {
+    const document = parseXml(original);
+    const root = document.children[0];
+    const prefix = root?.name.includes(':') ? root.name.slice(0, root.name.indexOf(':')) : '';
+    if (document.children.length !== 1 || !root || localName(root.name) !== 'wsDr'
+      || root.attrs[prefix ? `xmlns:${prefix}` : 'xmlns'] !== 'http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing') {
+      throw new Error('Expected one spreadsheet DrawingML wsDr root');
+    }
+    return document;
+  } catch (cause) {
+    throw new NativeDocumentError({ code: 'NATIVE_DOCUMENT_INVALID',
+      message: 'Native spreadsheet drawing is invalid', location: part,
+      recovery: 'Restore a valid DrawingML part from the original document before exporting', cause });
+  }
+}
+
 /** Emits canonical image assets into native DrawingML. Bytes are supplied by
  * AssetStore at the application boundary; no binary data enters snapshots. */
 function synchronizeImageAssets(
@@ -634,21 +662,20 @@ function synchronizeImageAssets(
       relationships[sheetPart] = sheetRelations;
     }
     const original = files[drawingPart] ? strFromU8(files[drawingPart]!) : `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="${NS_DOC_REL}"/>`;
-    const closing = '</xdr:wsDr>';
-    const position = original.lastIndexOf(closing);
-    if (position < 0) throw new Error(`ASSET_EXPORT_INVALID_DRAWING: ${drawingPart}`);
-    let drawingXml = original.slice(0, position);
+    const drawingDocument = parseNativeDrawingDocument(original, drawingPart);
+    const drawingRoot = drawingDocument.children[0]!;
     let drawingRelations = relationships[drawingPart] ?? [];
-    const existingIds = descendants(parseXml(original), 'cNvPr').map((node) => Number(node.attrs.id)).filter(Number.isSafeInteger);
+    const existingIds = descendants(drawingRoot, 'cNvPr').map((node) => Number(node.attrs.id)).filter(Number.isSafeInteger);
     let objectId = Math.max(0, ...existingIds, 0) + 1;
     for (const entry of entries) {
       const mediaPart = mediaPartFor(entry.asset);
       drawingRelations = mergeRelationships(drawingRelations, [{ type: `${NS_DOC_REL}/image`, target: relativeTarget(drawingPart, mediaPart) }]);
       const imageRelation = drawingRelations.find((relation) => isRelationshipKind(relation.type, 'image') && resolveTarget(drawingPart!, relation.target) === mediaPart);
       if (!imageRelation) throw new Error(`ASSET_EXPORT_RELATIONSHIP_MISSING: ${entry.asset.assetId}`);
-      drawingXml += `<xdr:twoCellAnchor editAs="oneCell"><xdr:from><xdr:col>${entry.column}</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>${entry.row}</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from><xdr:to><xdr:col>${entry.endColumn}</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>${entry.endRow}</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:to><xdr:pic><xdr:nvPicPr><xdr:cNvPr id="${objectId++}" name="${encodeXml(entry.name ?? entry.id)}"/><xdr:cNvPicPr/></xdr:nvPicPr><xdr:blipFill><a:blip xmlns:r="${NS_DOC_REL}" r:embed="${encodeXml(imageRelation.id)}"/><a:stretch><a:fillRect/></a:stretch></xdr:blipFill><xdr:spPr><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></xdr:spPr></xdr:pic><xdr:clientData/></xdr:twoCellAnchor>`;
+      const anchorXml = `<xdr:twoCellAnchor xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="${NS_DOC_REL}" editAs="oneCell"><xdr:from><xdr:col>${entry.column}</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>${entry.row}</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from><xdr:to><xdr:col>${entry.endColumn}</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>${entry.endRow}</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:to><xdr:pic><xdr:nvPicPr><xdr:cNvPr id="${objectId++}" name="${encodeXml(entry.name ?? entry.id)}"/><xdr:cNvPicPr/></xdr:nvPicPr><xdr:blipFill><a:blip xmlns:r="${NS_DOC_REL}" r:embed="${encodeXml(imageRelation.id)}"/><a:stretch><a:fillRect/></a:stretch></xdr:blipFill><xdr:spPr><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></xdr:spPr></xdr:pic><xdr:clientData/></xdr:twoCellAnchor>`;
+      drawingRoot.children.push(...parseXml(anchorXml).children);
     }
-    files[drawingPart] = strToU8(`${drawingXml}${closing}`);
+    files[drawingPart] = strToU8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>${serializeXml(drawingDocument)}`);
     relationships[drawingPart] = drawingRelations;
     files[relationshipPartName(drawingPart)] = strToU8(buildRelationshipsXml(drawingRelations));
   }
