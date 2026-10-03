@@ -1,6 +1,6 @@
 import type { SdkError } from '../error';
 
-export type AuthPhase = 'anonymous' | 'authenticated' | 'error' | 'loading' | 'unconfigured';
+export type AuthPhase = 'anonymous' | 'guest' | 'authenticated' | 'error' | 'loading' | 'unconfigured';
 /** Verified by the spreadsheet server; contains no credential material. */
 export interface AuthContext {
   readonly authority: string;

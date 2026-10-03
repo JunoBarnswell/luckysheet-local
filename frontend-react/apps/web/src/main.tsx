@@ -1,8 +1,4 @@
 import { StrictMode } from 'react';
-import { resolveShareToken } from '@react-sheets/spreadsheet-app';
-
-// Capture and erase the route capability before any app requests or effects.
-resolveShareToken();
 import { createRoot } from 'react-dom/client';
 import App from './App';
 import { AuthProvider } from './auth/AuthProvider';

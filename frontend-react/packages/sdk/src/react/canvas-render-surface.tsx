@@ -1,6 +1,6 @@
 import { createElement, forwardRef, useImperativeHandle, useLayoutEffect, useRef } from 'react';
 import type { CSSProperties } from 'react';
-import { CanvasRenderEngine, type CanvasRenderEngineOptions } from './canvas-render-engine';
+import { CanvasRenderEngine, type CanvasRenderEngineOptions } from '@react-sheets/render-engine';
 
 export interface CanvasRenderSurfaceProps {
   engine?: CanvasRenderEngine;

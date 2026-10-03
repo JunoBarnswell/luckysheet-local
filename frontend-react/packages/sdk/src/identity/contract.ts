@@ -1,13 +1,12 @@
-export interface LocalUser {
-  readonly id: string;
-  readonly username: string;
-  readonly displayName: string;
-  readonly enabled: boolean;
-  readonly admin: boolean;
+import type { AuthContext } from '../auth/contract';
+
+/** A read-only projection of the identity verified by the spreadsheet server. */
+export interface IdentitySnapshot {
+  readonly phase: 'unverified' | 'verified' | 'retired';
+  readonly context: AuthContext | null;
+  readonly displayName: string | null;
 }
-export interface IdentityActions {
-  listUsers(): Promise<readonly LocalUser[]>;
-  createUser(input: { username: string; displayName: string; password: string }): Promise<void>;
-  setUserEnabled(userId: string, enabled: boolean): Promise<void>;
-  resetPassword(userId: string, password: string): Promise<void>;
+export interface IdentityService {
+  getSnapshot(): IdentitySnapshot;
+  subscribe(listener: () => void): () => void;
 }

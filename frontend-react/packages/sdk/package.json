@@ -3,7 +3,8 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./react": "./src/react/index.ts"
   },
   "devDependencies": {
     "@react-sheets/formula-engine": "file:../formula-engine",
@@ -16,7 +17,14 @@
     "oidc-client-ts": "^3.5.0",
     "@react-sheets/spreadsheet-app": "file:../spreadsheet-app",
     "@react-sheets/core-model": "file:../core-model",
-    "@react-sheets/exchange-excel-ooxml": "file:../exchange-excel-ooxml",
+    "@react-sheets/exchange-excel-ooxml": "file:../exchange-excel-ooxml"
+  },
+  "peerDependencies": {
     "react": "19.2.8"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    }
   }
 }

@@ -1,7 +1,8 @@
 import { cellAddress } from '@react-sheets/core-model';
 import type { CellSnapshot } from './contract';
 import { immutableSnapshot } from './value';
-import { CommandDispatchError, type WorkbookObjectPort } from '@react-sheets/spreadsheet-app';
+import { CommandDispatchError } from '../../../spreadsheet-app/src/workbook-session';
+import type { WorkbookObjectPort } from '../../../spreadsheet-app/src/workbook-object-port';
 import { SdkError } from '../error';
 import { domainFor, registerWorkbookDomain } from './object-domain';
 import { WorksheetCollection } from './worksheet-collection';

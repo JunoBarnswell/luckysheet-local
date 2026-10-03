@@ -66,6 +66,16 @@
 | B06 | 对boundary测试注入内部import、CommandDescriptor、relative escape、业务fetch | 自动拒绝各越层样例；合法SDK/host primitive通过，无广泛allowlist | Pending | — |
 | B07 | 身份/guest与管理领域检查 | capability在SDK初始化捕获并清URL，公开state无token；identity/users分离且同上下文fence | Pending | — |
 
+## 第一组实现的额外逐项细项（设计后执行）
+
+| ID | 操作与具体断言 | 状态 | 本轮证据 |
+|---|---|---|---|
+| I01 | 实际 Node SDK core 导入，主动拒绝任何 React/ReactDOM resolve；初始化、anonymous identity、users FORBIDDEN、dispose | Pending | — |
+| I02 | identity verified上下文与Auth同一来源、更新订阅、同身份refresh稳定snapshot、匿名/退休；管理方法只在users | Pending | — |
+| I03 | users真实管理成功及非管理员/非法参数/403/503/旧身份已返回response拒绝；CSRF/context仍由Auth唯一owner负责 | Pending | — |
+| I04 | SDK初始化同步清fragment/query share，私有tab凭证重载、路由退出退休上下文、signout清除；snapshot不泄漏token | Pending | — |
+| I05 | 真实Java/H2上独立公共SDK identity/admin调用；真实guest share打开、viewer读/写拒绝/管理员拒绝、URL清除、浏览器reload | Pending | — |
+
 ## 完整性矩阵（代码与行为双重证据）
 
 | Domain | Public API | Canonical owner | Command chain | Permission | History | Collaboration | Persistence | Server authority | Web migrated |

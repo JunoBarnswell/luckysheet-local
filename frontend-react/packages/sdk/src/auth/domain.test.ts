@@ -27,7 +27,7 @@ test('local login rotates CSRF internally and never publishes credentials', asyn
   assert.equal(domain.session.getSnapshot().subject, 'admin-1');
   assert.equal(domain.session.getSnapshot().capabilities.canManageUsers, true);
   assert.equal(new Headers(transport.requests[2]?.init?.headers).get('X-CSRF-TOKEN'), 'anonymous-csrf');
-  await domain.identity.listUsers();
+  await domain.users.listUsers();
   await domain.session.signOut();
   assert.equal(new Headers(transport.requests[5]?.init?.headers).get('X-CSRF-TOKEN'), 'authenticated-csrf');
   const snapshot = domain.session.getSnapshot();
@@ -100,8 +100,8 @@ test('ordinary users cannot dispatch identity mutations or arbitrary HTTP reques
   const transport = port([json({ mode: 'local' }), json({ ...admin, admin: false })]);
   const domain = new AuthDomain({ fetch: transport.fetch });
   await domain.session.initialize();
-  for (const action of [() => domain.identity.listUsers(), () => domain.identity.createUser({ username: 'new', displayName: 'New', password: 'private' }),
-    () => domain.identity.setUserEnabled('other', false), () => domain.identity.resetPassword('other', 'private')]) {
+  for (const action of [() => domain.users.listUsers(), () => domain.users.createUser({ username: 'new', displayName: 'New', password: 'private' }),
+    () => domain.users.setUserEnabled('other', false), () => domain.users.resetPassword('other', 'private')]) {
     await assert.rejects(action(), (error: unknown) => error instanceof SdkError && error.code === 'FORBIDDEN');
   }
   assert.equal(transport.requests.length, 2);
@@ -114,8 +114,8 @@ test('identity response is validated and projected without additional secret fie
   const transport = port([json({ mode: 'local' }), json(admin), json([{ ...user, passwordHash: 'secret' }]), json([{ ...user, enabled: 'yes' }])]);
   const domain = new AuthDomain({ fetch: transport.fetch });
   await domain.session.initialize();
-  assert.deepEqual(await domain.identity.listUsers(), [user]);
-  await assert.rejects(domain.identity.listUsers(), (error: unknown) => error instanceof SdkError && error.code === 'CONTRACT_INVALID');
+  assert.deepEqual(await domain.users.listUsers(), [user]);
+  await assert.rejects(domain.users.listUsers(), (error: unknown) => error instanceof SdkError && error.code === 'CONTRACT_INVALID');
   domain.dispose();
 });
 

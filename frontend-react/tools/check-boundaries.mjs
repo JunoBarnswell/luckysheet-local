@@ -136,7 +136,7 @@ function packageFromFile(file) {
 function collectPackageImports(source) {
   const imports = new Set();
   for (const match of source.matchAll(packageImportPattern)) {
-    imports.add(match[1]);
+    imports.add(match[1].split('/')[0]);
   }
   return imports;
 }

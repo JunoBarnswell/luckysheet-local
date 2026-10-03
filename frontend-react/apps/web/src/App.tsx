@@ -1,4 +1,4 @@
-import { useWorkbook } from '@react-sheets/sdk';
+import { useWorkbook } from '@react-sheets/sdk/react';
 import { sdk } from './sdk';
 import { Box, Button, CheckToggle, Inline, Select, Stack, StatePanel, Text, TextInput } from "@react-sheets/ui-system";
 import { WorkspaceErrorBoundary } from "./components/WorkspaceErrorBoundary";
@@ -9,7 +9,7 @@ import { useAuthSession, useAuthSnapshot } from "./auth/AuthProvider";
 import { navigate, useApplicationRoute } from "./app-routing";
 import type { CommandDescriptor } from "@react-sheets/command-runtime";
 import { useEffect, useRef, useState } from "react";
-import { resolveShareToken, isWorkbookResolutionError, type UiSessionIntent, type WorkbookResolution } from "@react-sheets/spreadsheet-app";
+import { isWorkbookResolutionError, type UiSessionIntent, type WorkbookResolution } from "@react-sheets/spreadsheet-app";
 import { getInitialLocale, persistLocale, type Locale } from "./i18n";
 import { useEditorCommandController } from "./editor/command-controller";
 import { EditorShell } from "./editor/EditorShell";
@@ -22,7 +22,7 @@ function WorkbookRouteGate({ unitId }: { unitId: string }) {
   const [localState, setLocalState] = useState<"checking" | "allowed" | "denied">("checking");
   const [resolution, setResolution] = useState<WorkbookResolution | null>(null);
   const [resolutionError, setResolutionError] = useState<Error | null>(null);
-  const shareToken = resolveShareToken();
+  const guest = authSnapshot.phase === 'guest';
 
   useEffect(() => {
     let active = true;
@@ -34,11 +34,11 @@ function WorkbookRouteGate({ unitId }: { unitId: string }) {
       .then((nextResolution) => { if (active) { setResolution(nextResolution); setLocalState("allowed"); } })
       .catch((error: unknown) => { if (active) { setResolutionError(error instanceof Error ? error : new Error("Workbook resolution failed")); setLocalState("denied"); } });
     return () => { active = false; controller.abort(); };
-  }, [authSnapshot.phase, catalog, shareToken, unitId]);
+  }, [authSnapshot.phase, catalog, guest, unitId]);
 
   if (localState === "checking") return <Box as="main" className="flex min-h-screen items-center justify-center bg-white p-8"><StatePanel kind="loading" title="正在打开工作簿" description="正在读取服务器版本并确认访问权限。" /></Box>;
   if (localState === "denied") {
-    const canSignIn = authSnapshot.phase !== "authenticated" && authSnapshot.phase !== "unconfigured" && !shareToken;
+    const canSignIn = authSnapshot.phase !== "authenticated" && authSnapshot.phase !== "unconfigured" && !guest;
     return <Box as="main" className="flex min-h-screen items-center justify-center bg-white p-8"><StatePanel actionLabel={canSignIn ? "登录" : "返回文件中心"} kind="error" title="无法打开工作簿" description={resolutionError?.message ?? "工作簿服务不可用，请检查服务或访问权限。"} onAction={() => canSignIn ? void auth.signIn(`/workbooks/${encodeURIComponent(unitId)}`) : navigate("/workbooks", { replace: true })} /></Box>;
   }
   if (!resolution) return <Box as="main" className="flex min-h-screen items-center justify-center bg-white p-8"><StatePanel kind="loading" title="正在建立工作簿会话" description="正在交接已解析的工作簿上下文。" /></Box>;

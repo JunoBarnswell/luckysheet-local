@@ -1,6 +1,6 @@
 import type { Workbook } from '../workbook/workbook';
 import { SdkError } from '../error';
-import type { AssetStore } from '@react-sheets/spreadsheet-app';
+import type { AssetStore } from '../../../spreadsheet-app/src/features/persistence';
 import type { WorkbookSnapshot } from '@react-sheets/core-model';
 import { NativeDocumentError, type NativeDocumentArtifact } from '@react-sheets/exchange-excel-ooxml';
 import {
@@ -14,21 +14,21 @@ import {
   type WorkbookCreateMetadata,
   type WorkbookSummary,
 } from '@react-sheets/protocol';
-import { buildOperation } from '@react-sheets/spreadsheet-app';
+import { buildOperation } from '../../../spreadsheet-app/src/collaboration';
 
 import {
   exchangeImportDocument,
   exchangeSaveAsDocument,
   exchangeSaveDocument,
-} from '@react-sheets/spreadsheet-app';
+} from '../../../spreadsheet-app/src/features/native-document';
 import {
   type WorkspaceRecord,
   type WorkspaceRecordMetadata,
   type WorkspaceUserState,
   WorkspacePersistence,
-} from '@react-sheets/spreadsheet-app';
+} from '../../../spreadsheet-app/src/features/persistence';
 
-import { createTemplateSnapshot, createWorkbookUnitId, getWorkbookTemplate } from '@react-sheets/spreadsheet-app';
+import { createTemplateSnapshot, createWorkbookUnitId, getWorkbookTemplate } from '../../../spreadsheet-app/src/features/workbook-catalog/templates';
 import type { WorkbookCreateOptions } from './contract';
 import type {
   WorkbookCatalogEntry,
@@ -42,8 +42,8 @@ import type {
   WorkbookCatalogRemoteClient,
   WorkbookRole,
   WorkbookResolution,
-} from '@react-sheets/spreadsheet-app';
-import { WorkbookResolver } from '@react-sheets/spreadsheet-app';
+} from '../../../spreadsheet-app/src/features/workbook-catalog/types';
+import { WorkbookResolver } from '../../../spreadsheet-app/src/features/workbook-catalog/resolver';
 
 import { workbookCapabilities, type WorkbookCapabilities } from '../identity/workbook-capabilities';
 

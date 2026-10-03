@@ -42,6 +42,58 @@ async function calculations(sdk: JSHandle<SpreadsheetSdk>, id: string) {
   }, id);
 }
 
+test('I01-I05: public SDK separates verified identity and users; guest capability is private, scoped and reloadable', async ({ page, browser }) => {
+  const diagnostics = installBrowserDiagnostics(page), sdk = await ownerSdk(page);
+  let guestContext: Awaited<ReturnType<typeof browser.newContext>> | undefined;
+  try {
+    const result = await sdk.evaluate(async sdk => {
+      const identity = sdk.identity.getSnapshot(), auth = sdk.auth.getSnapshot();
+      const users = await sdk.users.listUsers();
+      const entry = await sdk.workbooks.create({ name: `Identity domains ${Date.now()}` });
+      const workbook = await sdk.workbooks.open(entry.unitId); await workbook.worksheets.at(0).cells.get('A1').setValue(7); await workbook.save();
+      return { id: entry.unitId, identity, sameContext: identity.context === auth.context, publicIdentityKeys: Object.keys(sdk.identity).sort(),
+        publicUserKeys: Object.keys(sdk.users).sort(), adminFound: users.some(user => user.id === auth.subject) };
+    });
+    expect(result.identity.phase).toBe('verified'); expect(result.sameContext).toBe(true); expect(result.adminFound).toBe(true);
+    expect(result.publicIdentityKeys).toEqual(['getSnapshot', 'subscribe']);
+    expect(result.publicUserKeys).toEqual(['createUser', 'listUsers', 'resetPassword', 'setUserEnabled']);
+    // Real owner-authorized setup creates a real server share; no HTTP or calculation mocks.
+    const ownerSession = await (await page.request.get('/api/auth/session')).json();
+    const shareResponse = await page.request.post(`/api/workbooks/${result.id}/shares`, {
+      headers: { 'X-CSRF-TOKEN': ownerSession.csrfToken }, data: { role: 'viewer' },
+    });
+    expect(shareResponse.ok()).toBe(true);
+    const share = await shareResponse.json();
+    guestContext = await browser.newContext({ baseURL: 'http://127.0.0.1:4180' });
+    const guest = await guestContext.newPage(), guestDiagnostics = installBrowserDiagnostics(guest);
+    await guest.goto(`/workbooks/${result.id}#share=${encodeURIComponent(share.token)}`);
+    await expect(guest.getByTestId('designer-shell')).toHaveAttribute('data-workspace-phase', 'ready');
+    expect(new URL(guest.url()).hash).toBe(''); expect(new URL(guest.url()).searchParams.has('share')).toBe(false);
+    const read = await guest.evaluate(async ({ entryUrl, id, capability }) => {
+      const { createSpreadsheetSdk } = await import(/* @vite-ignore */ entryUrl) as typeof import('@react-sheets/sdk');
+      const sdk = createSpreadsheetSdk();
+      try {
+        await sdk.auth.initialize();
+        const workbook = await sdk.workbooks.open(id), cell = workbook.worksheets.at(0).cells.get('A1');
+        const before = await cell.read(), rejected: string[] = [];
+        for (const action of [() => cell.setValue(99), () => sdk.users.listUsers()]) {
+          try { await action(); rejected.push('unexpected-success'); } catch (cause) { rejected.push((cause as { code?: string }).code ?? ''); }
+        }
+        return { phase: sdk.auth.getSnapshot().phase, identity: sdk.identity.getSnapshot(), before, after: await cell.read(), rejected,
+          leaked: JSON.stringify([sdk.auth.getSnapshot(), sdk.identity.getSnapshot()]).includes(capability),
+          publicSecret: 'shareTokenProvider' in sdk.auth || 'getAccessToken' in sdk.auth };
+      } finally { await sdk.dispose(); }
+    }, { entryUrl, id: result.id, capability: share.token });
+    expect(read.phase).toBe('guest'); expect(read.identity.phase).toBe('unverified'); expect(read.identity.context).toBeNull();
+    expect(read.before.value).toBe(7); expect(read.after).toEqual(read.before); expect(read.rejected).toEqual(['FORBIDDEN', 'FORBIDDEN']);
+    expect(read.leaked).toBe(false); expect(read.publicSecret).toBe(false);
+    await guest.reload(); await expect(guest.getByTestId('designer-shell')).toHaveAttribute('data-workspace-phase', 'ready');
+    await guest.getByTestId('name-box').fill('A1'); await guest.getByTestId('name-box').press('Enter');
+    await expect(guest.getByTestId('formula-input')).toHaveValue('7');
+    guestDiagnostics.assertClean(); diagnostics.assertClean();
+  } finally { await guestContext?.close(); await sdk.evaluate(sdk => sdk.dispose()); }
+});
+
 test('O1.2-a/b/c/d: canonical range cut rewrites moved inputs, undoes overwritten values and survives native reimport', async ({ page }) => {
   const diagnostics = installBrowserDiagnostics(page), sdk = await ownerSdk(page);
   try {
@@ -162,8 +214,8 @@ test('MWB-02.c/d: five cross-workbook functions refresh real authorized versions
   let reader: JSHandle<SpreadsheetSdk> | undefined;
   try {
     const setup = await owner.evaluate(async (sdk, input) => {
-      await sdk.identity.createUser({ username: input.username, displayName: 'Workbook reader', password: input.password });
-      const user = (await sdk.identity.listUsers()).find(user => user.username === input.username)!;
+      await sdk.users.createUser({ username: input.username, displayName: 'Workbook reader', password: input.password });
+      const user = (await sdk.users.listUsers()).find(user => user.username === input.username)!;
       const sourceEntry = await sdk.workbooks.create({ name: `MWB source ${input.username}` });
       const targetEntry = await sdk.workbooks.create({ name: `MWB target ${input.username}` });
       const [source, target] = await Promise.all([sdk.workbooks.open(sourceEntry.unitId), sdk.workbooks.open(targetEntry.unitId)]);
@@ -214,8 +266,8 @@ test('MWB-01.b: real SDK subject switch and active-workbook disposal retire old 
   try {
     const setup = await owner.evaluate(async (sdk, input) => {
       const usernames = [`scope-a-${input.id}`, `scope-b-${input.id}`];
-      for (const username of usernames) await sdk.identity.createUser({ username, displayName: username, password: input.password });
-      const users = await sdk.identity.listUsers();
+      for (const username of usernames) await sdk.users.createUser({ username, displayName: username, password: input.password });
+      const users = await sdk.users.listUsers();
       const entry = await sdk.workbooks.create({ name: `Scope retirement ${input.id}` });
       const workbook = await sdk.workbooks.open(entry.unitId);
       await workbook.worksheets.at(0).cells.get('A1').setValue(42); await workbook.flush();
@@ -263,8 +315,8 @@ test('MWB-03.a/b/c: three-workbook graph propagates real source commits and auth
   let reader: JSHandle<SpreadsheetSdk> | undefined;
   try {
     const setup = await owner.evaluate(async (sdk, input) => {
-      await sdk.identity.createUser({ username: input.username, displayName: 'Dependency reader', password: input.password });
-      const user = (await sdk.identity.listUsers()).find(user => user.username === input.username)!;
+      await sdk.users.createUser({ username: input.username, displayName: 'Dependency reader', password: input.password });
+      const user = (await sdk.users.listUsers()).find(user => user.username === input.username)!;
       const entries = await Promise.all(['Leaf', 'Middle', 'Root'].map(name => sdk.workbooks.create({ name: `${name} ${input.username}` })));
       const [a, b, c] = await Promise.all(entries.map(entry => sdk.workbooks.open(entry.unitId)));
       await a!.worksheets.at(0).cells.get('A1').setValue(10); await a!.flush();
@@ -472,8 +524,8 @@ test('O1.1-b/g: real viewer denies a whole matrix and error-value copies leave t
   let viewer: JSHandle<SpreadsheetSdk> | undefined;
   try {
     const setup = await owner.evaluate(async (sdk, input) => {
-      await sdk.identity.createUser({ username: input.username, displayName: 'Matrix viewer', password: input.password });
-      const user = (await sdk.identity.listUsers()).find(user => user.username === input.username)!;
+      await sdk.users.createUser({ username: input.username, displayName: 'Matrix viewer', password: input.password });
+      const user = (await sdk.users.listUsers()).find(user => user.username === input.username)!;
       const entry = await sdk.workbooks.create({ name: input.username }), workbook = await sdk.workbooks.open(entry.unitId);
       await workbook.worksheets.at(0).ranges.get('A1:B2').setValues([[1, 2], [3, 4]]); await workbook.flush();
       await sdk.workbooks.grantAccess(workbook.id, user.id, 'viewer');
@@ -555,8 +607,8 @@ test('O2.1-a/b/c/e: viewer and malformed real protection operations are rejected
   const viewerDiagnostics = installBrowserDiagnostics(viewerPage); let viewer: JSHandle<SpreadsheetSdk> | undefined;
   try {
     const setup = await owner.evaluate(async (sdk, input) => {
-      await sdk.identity.createUser({ username: input.username, displayName: 'O2 viewer', password: input.password });
-      const user = (await sdk.identity.listUsers()).find(user => user.username === input.username)!;
+      await sdk.users.createUser({ username: input.username, displayName: 'O2 viewer', password: input.password });
+      const user = (await sdk.users.listUsers()).find(user => user.username === input.username)!;
       const entry = await sdk.workbooks.create({ name: input.username });
       await sdk.workbooks.grantAccess(entry.unitId, user.id, 'viewer');
       const workbook = await sdk.workbooks.open(entry.unitId), sheet = workbook.worksheets.at(0);

@@ -1,12 +1,14 @@
 import { AuthDomain } from './auth/domain';
 import type { AuthOptions, AuthSession } from './auth/contract';
-import type { IdentityActions } from './identity/contract';
+import type { IdentityService } from './identity/contract';
+import type { UserAdministrationService } from './users/contract';
 import { ApplicationRuntime, type WorkbooksActions } from './internal/runtime';
 import { SdkError } from './error';
 
 export interface SpreadsheetSdk {
   readonly auth: AuthSession;
-  readonly identity: IdentityActions;
+  readonly identity: IdentityService;
+  readonly users: UserAdministrationService;
   readonly workbooks: WorkbooksActions;
   dispose(): Promise<void>;
 }
@@ -22,7 +24,7 @@ export function createSpreadsheetSdk(options: AuthOptions = {}): SpreadsheetSdk 
   const runtime = new ApplicationRuntime(auth);
   const releaseSdk = runtime.acquire();
   const sdk: SpreadsheetSdk = Object.freeze({
-    auth: auth.session, identity: auth.identity, get workbooks() { return runtime.catalog; },
+    auth: auth.session, identity: auth.identity, users: auth.users, get workbooks() { return runtime.catalog; },
     dispose: async () => { releaseSdk(); try { await runtime.dispose(); } finally { auth.dispose(); runtimes.delete(sdk); } },
   });
   runtimes.set(sdk, runtime);

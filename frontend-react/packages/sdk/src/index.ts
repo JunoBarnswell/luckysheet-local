@@ -16,9 +16,9 @@ export { workbookCapabilities, type WorkbookCapabilities } from './identity/work
 export { createSpreadsheetSdk, type SpreadsheetSdk } from './sdk';
 export { SdkError, type SdkErrorCode } from './error';
 export type { AuthSession, AuthSnapshot, AuthPhase, AuthOptions, OidcConfiguration, AuthContext, AuthSource, BearerCredential, BearerCredentialSource, HostSessionSource, CredentialEvent } from './auth/contract';
-export type { IdentityActions, LocalUser } from './identity/contract';
+export type { IdentityService, IdentitySnapshot } from './identity/contract';
+export type { UserAdministrationService, LocalUser } from './users/contract';
 
-export { useSdkServices, useWorkbook } from './react/runtime';
 export type { CatalogEntry } from './workbooks/domain';
 
 export type { DimensionsActions, DimensionResult } from './dimensions/contract';
