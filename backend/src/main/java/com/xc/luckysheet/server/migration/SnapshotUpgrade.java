@@ -20,12 +20,14 @@ public final class SnapshotUpgrade {
         if (snapshot.path("version").asInt(-1) == GeneratedWorkbookContract.SNAPSHOT_VERSION) {
             return requireCanonical(snapshot, expectedUnitId);
         }
+        migrateLegacyModelContracts(snapshot);
         if (snapshot.path("dataModel").isObject()) ((ObjectNode) snapshot.get("dataModel")).putArray("externalLinks");
         if (snapshot.path("version").asInt(-1) == 10 && snapshot.path("sheets").isArray()) {
             snapshot.put("version", GeneratedWorkbookContract.SNAPSHOT_VERSION);
             return requireCanonical(snapshot, expectedUnitId);
         }
-        if (snapshot.path("version").asInt(-1) == 9 && snapshot.path("sheets").isArray()) {
+        if ((snapshot.path("version").asInt(-1) == 9 || snapshot.path("version").asInt(-1) == 8) && snapshot.path("sheets").isArray()) {
+            if (snapshot.path("version").asInt() == 8 && !snapshot.has("editingOptions")) snapshot.putObject("editingOptions").put("allowEditDirectly", true).put("enterDirection", "down").put("moveAfterEnter", true).put("formulaAutoComplete", true).put("valueAutoComplete", true).putNull("fixedDecimalPlaces");
             snapshot.put("version", GeneratedWorkbookContract.SNAPSHOT_VERSION);
             for (JsonNode raw : (ArrayNode) snapshot.path("sheets")) {
                 if (!raw.isObject()) throw ServiceException.validation("Stored workbook snapshot sheet is invalid");
@@ -145,6 +147,61 @@ public final class SnapshotUpgrade {
     }
 
     /** Explicit schema migration only; runtime reducers create complete sheets instead. */
+    public static void migrateLegacyModelContracts(ObjectNode snapshot) {
+        for (JsonNode raw : snapshot.path("sheets")) if (raw instanceof ObjectNode sheet) {
+            for (JsonNode entry : sheet.path("sheetTables")) if (entry instanceof ObjectNode table) {
+                if (!table.has("showFirstColumn")) table.put("showFirstColumn", false);
+                if (!table.has("showLastColumn")) table.put("showLastColumn", false);
+                if (!table.has("autoExpand")) table.put("autoExpand", true);
+            }
+            for (JsonNode entry : sheet.path("pivots")) if (entry instanceof ObjectNode pivot && pivot.get("layout") instanceof ObjectNode layout) {
+                if (layout.has("showGrandTotals")) {
+                    if (!layout.has("showRowGrandTotals")) layout.set("showRowGrandTotals", layout.get("showGrandTotals"));
+                    if (!layout.has("showColumnGrandTotals")) layout.set("showColumnGrandTotals", layout.get("showGrandTotals"));
+                    layout.remove("showGrandTotals");
+                }
+                java.util.Map<String, String> valueIds = new java.util.HashMap<>(); int ordinal = 0;
+                for (JsonNode value : layout.path("values")) if (value instanceof ObjectNode placement) {
+                    if (!placement.has("valueId")) placement.put("valueId", pivot.path("id").asText() + ":value:" + ordinal);
+                    valueIds.putIfAbsent(placement.path("fieldId").asText(), placement.path("valueId").asText()); ordinal++;
+                }
+                for (String axis : java.util.List.of("rows", "columns")) for (JsonNode placement : layout.path(axis)) if (placement.get("sort") instanceof ObjectNode sort) {
+                    if (!sort.has("by")) sort.put("by", "label");
+                    upgradeValueReference(sort, valueIds);
+                    if ("label".equals(sort.path("by").asText())) sort.remove("valueId");
+                }
+                for (JsonNode entryFilter : layout.path("filters")) if (entryFilter instanceof ObjectNode filter) {
+                    upgradeValueReference(filter, valueIds);
+                    if ("top-items".equals(filter.path("kind").asText()) && filter.has("count")) {
+                        if (!filter.has("direction")) filter.put("direction", "top");
+                        filter.put("mode", "items"); filter.set("threshold", filter.get("count")); filter.remove("count");
+                    }
+                }
+                java.util.Set<String> calculated = new java.util.HashSet<>();
+                for (String kind : java.util.List.of("calculatedFields", "calculatedItems")) for (JsonNode definition : layout.path(kind)) calculated.add(definition.path("fieldId").asText());
+                if (pivot.path("fieldCatalog").get("fields") instanceof ArrayNode fields) for (int index = fields.size() - 1; index >= 0; index--) if (calculated.contains(fields.get(index).path("fieldId").asText())) fields.remove(index);
+            }
+            for (JsonNode entry : sheet.path("drawingPayloads")) if (entry instanceof ObjectNode payload) {
+                if ("slicer".equals(payload.path("kind").asText()) && !payload.has("settings")) payload.putObject("settings")
+                        .put("showHeader", true).put("caption", payload.path("fieldId").asText()).put("multiSelect", true).put("sort", "ascending")
+                        .put("showNoDataItems", true).put("noDataItemsLast", true).put("showNoDataStyle", true).put("columnCount", 1).put("itemHeight", 28);
+                if ("textbox".equals(payload.path("kind").asText()) && !payload.has("textFrame")) {
+                    ObjectNode frame = payload.putObject("textFrame").put("fontFamily", "Inter").put("fontSize", payload.path("fontSize").asDouble(14))
+                            .put("bold", false).put("italic", false).put("underline", false).put("textColor", payload.path("textColor").asText("#1f2937"))
+                            .put("horizontalAlignment", "left").put("verticalAlignment", "top").put("direction", "horizontal").put("wrap", true).put("autofit", "none");
+                    frame.putObject("margin").put("top", 8).put("right", 8).put("bottom", 8).put("left", 8);
+                    payload.remove(java.util.List.of("textColor", "fontSize"));
+                }
+            }
+        }
+    }
+    private static void upgradeValueReference(ObjectNode value, java.util.Map<String, String> ids) {
+        if (!value.has("valueFieldId")) return;
+        String id = ids.get(value.path("valueFieldId").asText());
+        if (id == null) throw ServiceException.validation("Legacy Pivot value reference cannot be resolved");
+        value.put("valueId", id); value.remove("valueFieldId");
+    }
+
     public static void migrateStoredWorksheetDefaults(ObjectNode sheet) {
         for (String field : java.util.List.of("dataRegions", "conditionalFormats", "dataValidations", "hiddenRows", "hiddenColumns", "sheetTables", "sparklineGroups", "drawingGroups", "spillRanges", "protectionRules")) if (!sheet.has(field)) sheet.putArray(field);
         if (!sheet.has("rowHeightsPx")) sheet.putObject("rowHeightsPx");

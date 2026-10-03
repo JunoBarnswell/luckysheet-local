@@ -1,3 +1,4 @@
+import { resolveNativeDocumentResourceLimits, resourceLimit } from './native-resource-budget';
 import { strFromU8, unzipSync, zipSync } from 'fflate';
 import { WorkbookModel, type CellValue, type WorkbookSnapshot } from '@react-sheets/core-model';
 import { children, parseXml } from './xml';
@@ -123,7 +124,7 @@ interface NativeDocumentImportOptionsLike {
 }
 
 function limitsFor(options: { limits?: Partial<NativeDocumentResourceLimits> }): NativeDocumentResourceLimits {
-  return { ...DEFAULT_NATIVE_DOCUMENT_RESOURCE_LIMITS, ...(options.limits ?? {}) };
+  return resolveNativeDocumentResourceLimits(options.limits);
 }
 
 function invalid(message: string): never {
@@ -187,7 +188,7 @@ function readSector(bytes: Uint8Array, sector: number, sectorSize: number): Uint
   return bytes.slice(start, start + sectorSize);
 }
 
-function readChain(bytes: Uint8Array, start: number, table: readonly number[], sectorSize: number, maxSectors: number): Uint8Array {
+function readChain(bytes: Uint8Array, start: number, table: readonly number[], sectorSize: number, maxSectors: number, ownership?: Set<number>): Uint8Array {
   if (start === CFB_END || start === CFB_FREE) return new Uint8Array();
   const parts: Uint8Array[] = [];
   const seen = new Set<number>();
@@ -195,6 +196,8 @@ function readChain(bytes: Uint8Array, start: number, table: readonly number[], s
   while (current !== CFB_END) {
     if (current < 0 || current >= table.length || seen.has(current)) invalid(`CFB sector chain is invalid at ${current}`);
     if (parts.length >= maxSectors) resource(`CFB stream exceeds ${maxSectors * sectorSize} bytes`);
+    if (ownership?.has(current)) invalid("CFB streams share a sector");
+    ownership?.add(current);
     seen.add(current);
     parts.push(readSector(bytes, current, sectorSize));
     current = table[current]!;
@@ -202,16 +205,18 @@ function readChain(bytes: Uint8Array, start: number, table: readonly number[], s
   return concatBytes(parts);
 }
 
-function readMiniChain(stream: Uint8Array, start: number, table: readonly number[], limits: NativeDocumentResourceLimits): Uint8Array {
+function readMiniChain(stream: Uint8Array, start: number, table: readonly number[], limits: NativeDocumentResourceLimits, size: number, ownership: Set<number>): Uint8Array {
   if (start < 0) invalid('CFB mini stream start sector is invalid');
   const parts: Uint8Array[] = [];
   const seen = new Set<number>();
   let current = start;
   while (current !== CFB_END) {
     if (current < 0 || current >= table.length || seen.has(current)) invalid(`CFB mini sector chain is invalid at ${current}`);
-    if ((parts.length + 1) * 64 > limits.maxStreamBytes) resource('CFB mini stream exceeds the byte limit');
+    if (parts.length >= Math.ceil(size / 64) || (parts.length + 1) * 64 > limits.maxStreamBytes) resource('CFB mini stream exceeds the byte limit');
     const offset = current * 64;
     if (offset + 64 > stream.length) invalid('CFB mini sector is outside the root mini stream');
+    if (ownership.has(current)) invalid("CFB streams share a mini sector");
+    ownership.add(current);
     seen.add(current);
     parts.push(stream.slice(offset, offset + 64));
     current = table[current]!;
@@ -261,6 +266,8 @@ function parseCfb(bytes: Uint8Array, limits: NativeDocumentResourceLimits): CfbP
   }
   if (numFat > difat.length) invalid('CFB FAT sector list is incomplete');
 
+  const sectorOwners = new Set<number>(seenDifat);
+  for (const id of difat.slice(0, numFat)) { if (sectorOwners.has(id)) invalid("CFB allocation sectors overlap"); sectorOwners.add(id); }
   const fat: number[] = [];
   for (let index = 0; index < numFat; index += 1) {
     const sector = readSector(bytes, difat[index]!, sectorSize);
@@ -268,7 +275,7 @@ function parseCfb(bytes: Uint8Array, limits: NativeDocumentResourceLimits): CfbP
     for (let entry = 0; entry < sectorSize / 4; entry += 1) fat.push(readI32(view, entry * 4));
   }
   const maxSectors = Math.max(1, Math.min(fat.length + 1, Math.ceil(limits.maxStreamBytes / sectorSize) + 1));
-  const directoryBytes = readChain(bytes, firstDirectory, fat, sectorSize, maxSectors);
+  const directoryBytes = readChain(bytes, firstDirectory, fat, sectorSize, maxSectors, sectorOwners);
   const entries: CfbDirectoryEntryGraph[] = [];
   for (let offset = 0; offset + 128 <= directoryBytes.byteLength; offset += 128) {
     const raw = directoryBytes.slice(offset, offset + 128);
@@ -289,20 +296,25 @@ function parseCfb(bytes: Uint8Array, limits: NativeDocumentResourceLimits): CfbP
     for (const reference of [entry.left, entry.right, entry.child]) if (reference < -1 || reference >= entries.length) invalid(`CFB directory reference is outside the directory: ${reference}`);
   }
 
-  const miniFatBytes = numMiniFat && firstMiniFat >= 0 ? readChain(bytes, firstMiniFat, fat, sectorSize, maxSectors) : new Uint8Array();
+  const miniFatBytes = numMiniFat && firstMiniFat >= 0 ? readChain(bytes, firstMiniFat, fat, sectorSize, Math.min(maxSectors, numMiniFat), sectorOwners) : new Uint8Array();
   const miniFat: number[] = [];
   for (let offset = 0; offset + 4 <= miniFatBytes.length; offset += 4) miniFat.push(dataView(miniFatBytes.slice(offset, offset + 4)).getInt32(0, true));
-  const rootMiniStream = root.size > 0 && root.startSector >= 0 ? readChain(bytes, root.startSector, fat, sectorSize, maxSectors).slice(0, root.size) : new Uint8Array();
+  const rootMiniStream = root.size > 0 && root.startSector >= 0 ? readChain(bytes, root.startSector, fat, sectorSize, Math.ceil(root.size / sectorSize), sectorOwners).slice(0, root.size) : new Uint8Array();
   const streams: Record<string, Uint8Array> = {};
   const streamNames = new Set<string>();
+  const miniOwners = new Set<number>();
+  let copiedStreamBytes = rootMiniStream.length + directoryBytes.length + miniFatBytes.length;
+  if (copiedStreamBytes > limits.maxUncompressedBytes) resource("CFB metadata exceeds the expanded byte budget");
   for (const entry of entries) {
     if (entry.type !== 2) continue;
+    copiedStreamBytes += entry.size;
+    if (copiedStreamBytes > limits.maxUncompressedBytes) resource("CFB aggregate stream data exceeds the expanded byte budget");
     if (!entry.name || streamNames.has(entry.name)) invalid(`CFB stream name is duplicated or empty: ${entry.name || '<empty>'}`);
     streamNames.add(entry.name);
     let value: Uint8Array;
     if (entry.size === 0) value = new Uint8Array();
-    else if (entry.size < 4096 && miniFat.length && rootMiniStream.length) value = readMiniChain(rootMiniStream, entry.startSector, miniFat, limits).slice(0, entry.size);
-    else value = readChain(bytes, entry.startSector, fat, sectorSize, maxSectors).slice(0, entry.size);
+    else if (entry.size < 4096 && miniFat.length && rootMiniStream.length) value = readMiniChain(rootMiniStream, entry.startSector, miniFat, limits, entry.size, miniOwners).slice(0, entry.size);
+    else value = readChain(bytes, entry.startSector, fat, sectorSize, Math.ceil(entry.size / sectorSize), sectorOwners).slice(0, entry.size);
     if (value.byteLength !== entry.size) invalid(`CFB stream ${entry.name} is truncated`);
     streams[entry.name] = value;
   }
@@ -427,13 +439,13 @@ function parseBinaryRecords(bytes: Uint8Array, limits: NativeDocumentResourceLim
   let offset = 0;
   while (offset < bytes.length) {
     if (offset + 4 > bytes.length) invalid(`BIFF record header is truncated at ${offset}`);
-    const view = dataView(bytes.slice(offset));
+    const view = new DataView(bytes.buffer, bytes.byteOffset + offset, 4);
     const type = view.getUint16(0, true);
     const size = view.getUint16(2, true);
     const end = offset + 4 + size;
     if (end > bytes.length) invalid(`BIFF record payload is truncated at ${offset}`);
+    if (records.length >= limits.maxRecordCount) resource(`BIFF contains more than ${limits.maxRecordCount} records`);
     records.push({ type, offset, bytes: bytes.slice(offset, end), payload: bytes.slice(offset + 4, end) });
-    if (records.length > limits.maxRecordCount) resource(`BIFF contains more than ${limits.maxRecordCount} records`);
     offset = end;
   }
   return records;
@@ -574,7 +586,7 @@ function parseBiffCell(record: BinaryRecord, recordIndex: number, records: reado
   return { row, column, recordIndex, recordType: record.type, value, styleIndex, ...(auxiliaryRecordIndex === undefined ? {} : { auxiliaryRecordIndex }) };
 }
 
-function parseBiffMultiCells(record: BinaryRecord, recordIndex: number): BinaryCellGraph[] {
+function parseBiffMultiCells(record: BinaryRecord, recordIndex: number, budget: { remaining: number }): BinaryCellGraph[] {
   if (!BIFF_MULTI_CELL_TYPES.has(record.type)) return [];
   if (record.payload.length < (record.type === BIFF.MULRK ? 12 : 8)) invalid(`BIFF multi-cell record ${record.type} is truncated`);
   const view = dataView(record.payload);
@@ -583,6 +595,8 @@ function parseBiffMultiCells(record: BinaryRecord, recordIndex: number): BinaryC
   const lastColumn = view.getUint16(record.payload.length - 2, true);
   if (lastColumn < firstColumn) invalid(`BIFF multi-cell record ${record.type} has an invalid column range`);
   const count = lastColumn - firstColumn + 1;
+  budget.remaining -= count;
+  if (budget.remaining < 0) resourceLimit('Workbook cell budget exceeded');
   const itemBytes = record.type === BIFF.MULRK ? 6 : 2;
   const expected = 6 + count * itemBytes;
   if (record.payload.length < expected) invalid(`BIFF multi-cell record ${record.type} has a truncated item list`);
@@ -641,6 +655,7 @@ function parseBiffDocument(bytes: Uint8Array, fileName: string, limits: NativeDo
     descriptor.endRecordIndex = end >= 0 ? end : records.length - 1;
   }
   const sharedStrings = parseSst(records, limits);
+  const cellBudget = { remaining: limits.maxCells };
   const sheetCells: Record<string, BinaryCellGraph>[] = [];
   const features = new Set<string>(['cells', 'biff']);
   if (sharedStrings.length) features.add('sharedStrings');
@@ -651,11 +666,12 @@ function parseBiffDocument(bytes: Uint8Array, fileName: string, limits: NativeDo
     for (let index = descriptor.startRecordIndex; index <= descriptor.endRecordIndex; index += 1) {
       const record = records[index]!;
       if (BIFF_UNSUPPORTED_CELL_TYPES.has(record.type)) unsupported(`BIFF cell structure ${record.type} is not editable in ${descriptor.name}`, 'Leave the native formula structure unchanged or save through a format with an owned formula writer.');
-      const multi = parseBiffMultiCells(record, index);
+      const multi = parseBiffMultiCells(record, index, cellBudget);
       if (multi.length) {
         for (const cell of multi) cells[cellKey(cell.row, cell.column)] = cell;
         continue;
       }
+      if (BIFF_CELL_TYPES.has(record.type) && --cellBudget.remaining < 0) resourceLimit('Workbook cell budget exceeded');
       const cell = parseBiffCell(record, index, records, sharedStrings);
       if (!cell) continue;
       assertBiffCoordinate(cell.row, cell.column);
@@ -1021,6 +1037,7 @@ function parseXlsbDocument(bytes: Uint8Array, fileName: string, limits: NativeDo
   if (!descriptors.length) invalid('XLSB workbook has no BrtBundleSh records');
   const sharedPart = Object.keys(parts).find((name) => /sharedStrings\.bin$/i.test(name));
   const sharedStrings = sharedPart ? parseBiff12Records(parts[sharedPart]!, limits).filter((record) => record.type === XLSB.SSTITEM).map((record) => readWideString(record.payload, 0).value) : [];
+  const cellBudget = { remaining: limits.maxCells };
   const sheetGraphs: BinarySheetGraph[] = [];
   const features = new Set<string>(['cells', 'xlsb']);
   if (sharedStrings.length) features.add('sharedStrings');
@@ -1041,6 +1058,7 @@ function parseXlsbDocument(bytes: Uint8Array, fileName: string, limits: NativeDo
         row = dataView(record.payload).getUint32(0, true);
         lastColumn = -1;
       }
+      if ((XLSB_LONG_CELL_TYPES.has(record.type) || XLSB_SHORT_CELL_TYPES.has(record.type)) && --cellBudget.remaining < 0) resourceLimit('Workbook cell budget exceeded');
       const parsed = readBiff12Cell(record, row, index, sharedStrings, lastColumn);
       if (parsed.cell) {
         cells[cellKey(parsed.cell.row, parsed.cell.column)] = parsed.cell;

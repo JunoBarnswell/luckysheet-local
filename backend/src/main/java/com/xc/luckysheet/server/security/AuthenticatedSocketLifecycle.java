@@ -31,7 +31,8 @@ public final class AuthenticatedSocketLifecycle {
         return new WebSocketHandlerDecorator(handler) {
             @Override
             public void afterConnectionEstablished(WebSocketSession session) throws Exception {
-                localSessions.registerWebSocket(session);
+                if (!LocalAuthSessionRegistry.isValid(session)) { session.close(CloseStatus.POLICY_VIOLATION); return; }
+                if (!localSessions.registerWebSocket(session)) return;
                 Instant expires = session.getPrincipal() instanceof JwtAuthenticationToken jwt ? jwt.getToken().getExpiresAt()
                         : session.getPrincipal() instanceof GuestShareAuthentication guest ? guest.identity().expiresAt() : null;
                 if (expires != null) {
@@ -41,7 +42,18 @@ public final class AuthenticatedSocketLifecycle {
                         catch (IOException error) { org.slf4j.LoggerFactory.getLogger(AuthenticatedSocketLifecycle.class).debug("Expired socket already closed", error); }
                     }, Math.max(0, Duration.between(Instant.now(), expires).toMillis()), TimeUnit.MILLISECONDS));
                 }
-                super.afterConnectionEstablished(session);
+                try { super.afterConnectionEstablished(session); }
+                catch (Exception error) {
+                    ScheduledFuture<?> task = expiryTasks.remove(session.getId());
+                    if (task != null) task.cancel(false);
+                    localSessions.unregisterWebSocket(session);
+                    throw error;
+                }
+            }
+            @Override
+            public void handleMessage(WebSocketSession session, org.springframework.web.socket.WebSocketMessage<?> message) throws Exception {
+                localSessions.touch(session);
+                super.handleMessage(session, message);
             }
             @Override
             public void afterConnectionClosed(WebSocketSession session, CloseStatus status) throws Exception {

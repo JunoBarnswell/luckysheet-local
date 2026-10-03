@@ -1,3 +1,4 @@
+import { GENERATED_CHART_SUBTYPES } from './generated-chart-subtypes';
 import type { AutoFilterModel, CellAddress, CellData, RangeRef, Row, Column, SheetId, UnitId } from './index';
 import type { PivotMemberKey } from './pivot';
 import { isAssetRef } from './asset';
@@ -782,28 +783,7 @@ export type ChartSubtype =
   | 'filled-map'
   | 'region-map';
 
-export const CHART_SUBTYPES_BY_TYPE: Readonly<Record<P1ChartType, readonly ChartSubtype[]>> = {
-  column: ['clustered', 'stacked', 'percent-stacked', 'three-dimensional', 'three-dimensional-stacked', 'three-dimensional-percent-stacked', 'cone', 'cone-stacked', 'cone-percent-stacked', 'cylinder', 'cylinder-stacked', 'cylinder-percent-stacked', 'pyramid', 'pyramid-stacked', 'pyramid-percent-stacked'],
-  bar: ['clustered', 'stacked', 'percent-stacked', 'three-dimensional', 'three-dimensional-stacked', 'three-dimensional-percent-stacked', 'cone', 'cone-stacked', 'cone-percent-stacked', 'cylinder', 'cylinder-stacked', 'cylinder-percent-stacked', 'pyramid', 'pyramid-stacked', 'pyramid-percent-stacked'],
-  line: ['line', 'line-markers', 'stacked', 'stacked-markers', 'percent-stacked', 'percent-stacked-markers', 'three-dimensional'],
-  area: ['area', 'stacked', 'percent-stacked', 'three-dimensional'],
-  pie: ['pie', 'exploded-pie', 'three-dimensional', 'exploded-three-dimensional-pie', 'pie-of-pie', 'bar-of-pie'],
-  doughnut: ['doughnut', 'exploded-doughnut'],
-  scatter: ['scatter-markers', 'scatter-smooth-lines-markers', 'scatter-smooth-lines', 'scatter-straight-lines-markers', 'scatter-straight-lines'],
-  bubble: ['bubble', 'bubble-three-dimensional'],
-  treemap: ['treemap'],
-  sunburst: ['sunburst'],
-  histogram: ['histogram'],
-  pareto: ['pareto'],
-  'box-whisker': ['box-whisker'],
-  waterfall: ['waterfall'],
-  funnel: ['funnel'],
-  stock: ['stock-high-low-close', 'stock-open-high-low-close', 'stock-volume-high-low-close', 'stock-volume-open-high-low-close'],
-  surface: ['surface-three-dimensional', 'surface-wireframe', 'surface-contour', 'surface-wireframe-contour'],
-  radar: ['radar', 'radar-markers', 'radar-filled'],
-  map: ['filled-map', 'region-map'],
-  combo: ['clustered-column-line', 'clustered-column-line-secondary', 'stacked-area-clustered-column', 'custom-combo'],
-};
+export const CHART_SUBTYPES_BY_TYPE: Readonly<Record<P1ChartType, readonly ChartSubtype[]>> = GENERATED_CHART_SUBTYPES;
 
 export function defaultChartSubtype(type: P1ChartType): ChartSubtype {
   return CHART_SUBTYPES_BY_TYPE[type][0]!;

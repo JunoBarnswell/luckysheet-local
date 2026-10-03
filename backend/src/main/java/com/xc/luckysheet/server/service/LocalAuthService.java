@@ -27,6 +27,7 @@ public class LocalAuthService {
     private final PasswordEncoder passwordEncoder;
     private final BootstrapCredentialStore bootstrap;
     private final LocalAuthSessionRegistry sessions;
+    private final java.util.Map<String, AttemptWindow> attempts = new java.util.HashMap<>();
     private final Object bootstrapLock = new Object();
 
     public LocalAuthService(AuthProperties properties, LocalUserEntityRepository users,
@@ -67,12 +68,37 @@ public class LocalAuthService {
     public LocalUserAuthentication authenticate(String username, String password) {
         requireLocalMode();
         String normalized = normalizeUsername(username);
+        reserveAttempt(normalized);
         LocalUserEntity user = users.findByUsername(normalized).orElse(null);
         if (user == null || !user.isEnabled() || password == null || !passwordEncoder.matches(password, user.getPasswordHash())) {
             throw ServiceException.unauthenticated("Username or password is invalid");
         }
+        synchronized (this) { attempts.remove(normalized); }
         return LocalUserAuthentication.from(user);
     }
+
+    public synchronized void reserveSourceAttempt(String address) {
+        java.time.Instant now = java.time.Instant.now();
+        attempts.entrySet().removeIf(entry -> !entry.getValue().start().plusSeconds(300).isAfter(now));
+        String key = "\u0000source:" + address;
+        AttemptWindow source = attempts.get(key);
+        if (attempts.size() >= 10000 || (source != null && source.count() >= 30)) throw new ServiceException("AUTH_RATE_LIMITED", 429, "Too many authentication attempts from this source");
+        attempts.put(key, source == null ? new AttemptWindow(now, 1) : new AttemptWindow(source.start(), source.count() + 1));
+    }
+
+    private synchronized void reserveAttempt(String username) {
+        Instant now = Instant.now();
+        attempts.entrySet().removeIf(entry -> !entry.getValue().start().plusSeconds(300).isAfter(now));
+        AttemptWindow account = attempts.get(username);
+        AttemptWindow global = attempts.get("\u0000global");
+        if (attempts.size() >= 10_000 || (account != null && account.count() >= 10) || (global != null && global.count() >= 300)) {
+            throw new ServiceException("AUTH_RATE_LIMITED", 429, "Too many authentication attempts; retry after five minutes");
+        }
+        attempts.put(username, account == null ? new AttemptWindow(now, 1) : new AttemptWindow(account.start(), account.count() + 1));
+        attempts.put("\u0000global", global == null ? new AttemptWindow(now, 1) : new AttemptWindow(global.start(), global.count() + 1));
+    }
+
+    private record AttemptWindow(Instant start, int count) { }
 
     @Transactional(readOnly = true)
     public List<LocalUserEntity> listUsers() {

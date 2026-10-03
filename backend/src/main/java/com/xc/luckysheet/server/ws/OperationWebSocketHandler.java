@@ -42,6 +42,7 @@ public class OperationWebSocketHandler extends TextWebSocketHandler {
     @Override
     public void handleTextMessage(WebSocketSession session, TextMessage message) {
         try {
+            if (!com.xc.luckysheet.server.security.LocalAuthSessionRegistry.isValid(session)) { closeForProtocolViolation(session); return; }
             Principal principal = session.getPrincipal();
             String actor = ActorIdentity.subject(principal);
             JsonNode root = mapper.readTree(message.getPayload());

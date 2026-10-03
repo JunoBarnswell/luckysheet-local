@@ -51,6 +51,18 @@ class LinkedDataAcceptanceIntegrationTest {
     @Autowired private org.springframework.transaction.PlatformTransactionManager transactionManager;
 
     @Test
+    void auditRemainsOwnerOnlyAfterSecurityAndSdkIntegration() throws Exception {
+        String owner = "audit-owner", viewer = "audit-viewer", unit = "audit-permissions";
+        catalog.create(new CreateWorkbookRequest(unit, "Range access", snapshot(unit)), owner);
+        acl.grant(unit, owner, viewer, com.xc.luckysheet.server.contract.WorkbookRole.VIEWER);
+        assertEquals(0, operations.readSnapshot(unit, viewer).revision());
+        assertTrue(operations.audit(unit, owner, 10).isEmpty());
+        ServiceException denied = assertThrows(ServiceException.class, () -> operations.audit(unit, viewer, 10));
+        assertEquals("FORBIDDEN", denied.code());
+        assertEquals(0, operations.readSnapshot(unit, owner).revision());
+    }
+
+    @Test
     void externalInputsRequireSourceMembershipAndWithholdHiddenInputs() throws Exception {
         String owner = "linked-owner", sourceId = "linked-source", targetId = "linked-target";
         catalog.create(new CreateWorkbookRequest(sourceId, "Range access", snapshot(sourceId)), owner);

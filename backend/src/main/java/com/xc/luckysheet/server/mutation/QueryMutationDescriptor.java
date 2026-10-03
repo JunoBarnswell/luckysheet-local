@@ -52,6 +52,8 @@ final class QueryMutationDescriptor extends CanonicalJsonMutationDescriptor {
         if (payload.binding() != null && "sheet-region".equals(payload.binding().path("kind").asText())) {
             ranges.add(SnapshotMutationSupport.range(root, payload.binding().path("region").path("range")));
         }
+        if (payload.source() != null && payload.source().path("table").path("sourceRange").isObject()) ranges.add(SnapshotMutationSupport.range(root, payload.source().path("table").get("sourceRange")));
+        if (payload.binding() != null && "workbook-table".equals(payload.binding().path("kind").asText()) && payload.binding().path("table").path("sourceRange").isObject()) ranges.add(SnapshotMutationSupport.range(root, payload.binding().path("table").get("sourceRange")));
         return ranges;
     }
 
@@ -124,6 +126,7 @@ final class QueryMutationDescriptor extends CanonicalJsonMutationDescriptor {
         JsonNode bindingNode = params.get("binding");
         ObjectNode binding = null;
         if (bindingNode != null && !bindingNode.isNull()) binding = validateBinding(root, mutation, sourceId, requireObject(bindingNode, "Query load binding"), source);
+        if ("workbook-table".equals(target.path("kind").asText()) && (binding == null || !"workbook-table".equals(binding.path("kind").asText()) || !target.path("tableId").equals(binding.path("tableId")))) throw ServiceException.validation("Query target and table binding must agree");
         JsonNode extent = params.get("extent");
         if (extent != null && !extent.isNull()) validateExtent(root, requireObject(extent, "Query load extent"));
         if (extent != null && !extent.isNull() && binding != null && "sheet-region".equals(binding.path("kind").asText())) {

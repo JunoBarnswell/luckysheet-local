@@ -57,7 +57,7 @@ public class MutationDescriptorRegistry {
     private static final Set<String> TEXT_ORIENTATIONS = Set.of("horizontal", "stacked", "rotateUp", "rotateDown");
     private static final Set<String> CLEAR_FAMILIES = Set.of("all", "contents", "formats", "comments-and-notes", "hyperlinks");
     private static final Set<String> KNOWN_MUTATION_IDS = Set.of(
-            "banded.set", "sheet.extent.grow",
+            "banded.set", "sheet.extent.grow", "find.replaced",
             "cell.editor.set", "cell.restore", "cell.set", "cells.inserted", "cells.deleted", "cells.inserted.restore", "cells.deleted.restore", "cellTemplate.remove", "cellTemplate.set", "fill.applied", "fill.restored",
             "cf.add", "cf.clear", "cf.remove",
             "column.defaultWidth.resize", "column.hidden", "column.resize", "column.unhidden", "columns.deleted", "columns.hidden.restore", "columns.inserted", "columns.unhidden.all", "columns.visibility",
@@ -87,6 +87,7 @@ public class MutationDescriptorRegistry {
 
     public MutationDescriptorRegistry() {
         register(new SheetExtentDescriptor());
+        register(new FindReplacementDescriptor());
         register(new WorkbookEditingOptionsDescriptor());
         register(new CellDescriptor("cell.set"));
         register(new CellDescriptor("cell.restore"));
@@ -176,6 +177,12 @@ public class MutationDescriptorRegistry {
         rangeAuthorization.accept(ranges);
         if (descriptor.checksProtection() && role != WorkbookRole.OWNER) {
             ProtectionResolver.assertAllowed(snapshot, ranges, descriptor.protectionAction());
+        }
+        if ("find.replaced".equals(mutation.id()) && role != WorkbookRole.OWNER) {
+            for (JsonNode patch : mutation.params().path("patches")) if (!"cell".equals(patch.path("kind").asText())) {
+                var address = patch.path("match");
+                ProtectionResolver.assertAllowed(snapshot, List.of(new RangeRef(address.path("sheetId").asText(), address.path("row").asInt(), address.path("row").asInt(), address.path("column").asInt(), address.path("column").asInt())), "edit-objects");
+            }
         }
         return new MutationPreparation(descriptor, ranges);
     }
@@ -1519,13 +1526,21 @@ public class MutationDescriptorRegistry {
         private void setEditor(ObjectNode root, String sheetId, ObjectNode params) {
             ObjectNode sheet = SnapshotMutationSupport.sheet(root, sheetId);
             JsonNode editor = params.get("editor");
-            if (editor != null && !editor.isNull() && !editor.isObject()) throw ServiceException.validation("cell.editor.set editor must be an object or null");
+            com.xc.luckysheet.server.contract.WorkbookSnapshotValidator.requireCellEditor(editor);
             for (RangeRef range : SnapshotMutationSupport.styleRanges(root, sheetId, params)) {
                 for (int row = range.startRow(); row <= range.endRow(); row++) {
                     for (int column = range.startColumn(); column <= range.endColumn(); column++) {
                         ObjectNode cell = SnapshotMutationSupport.cell(sheet, new SnapshotMutationSupport.CellCoordinate(row, column), true);
                         if (editor == null || editor.isNull()) cell.remove("editor");
-                        else cell.set("editor", editor.deepCopy());
+                        else {
+                            if ("checkbox".equals(editor.path("kind").asText())) {
+                                if (cell.hasNonNull("formula")) throw ServiceException.validation("Checkbox source cannot be a formula");
+                                JsonNode scalar = cell.get("value");
+                                JsonNode value = com.xc.luckysheet.server.contract.WorkbookSnapshotValidator.normalizeCheckboxValue(editor, scalar);
+                                cell.set("value", value.deepCopy());
+                            }
+                            cell.set("editor", editor.deepCopy());
+                        }
                     }
                 }
             }

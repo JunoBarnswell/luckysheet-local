@@ -1,3 +1,4 @@
+import { requireNativeInputBudget } from './native-resource-budget';
 import type { WorkbookSnapshot } from '@react-sheets/core-model';
 import { strFromU8, unzipSync } from 'fflate';
 import { exportOoxmlDocument } from './export';
@@ -52,6 +53,7 @@ export class NativeFormatDetector {
   constructor(private readonly codecs: NativeDocumentCodec[]) {}
 
   detectCodec(fileName: string, buffer: ArrayBuffer): NativeDocumentCodec {
+    requireNativeInputBudget(buffer);
     const codec = this.codecs.find((entry) => entry.canRead(fileName, buffer));
     if (!codec) throw new Error(`NATIVE_DOCUMENT_DETECTION_FAILED: No native document codec can read ${fileName}`);
     return codec;
@@ -97,6 +99,7 @@ export class NativeDocumentCodecRegistry {
   }
 
   async import(request: NativeDocumentImportTransaction): Promise<NativeDocumentImportResult> {
+    requireNativeInputBudget(request.buffer, request.options.limits);
     if (request.execution !== 'inline-test') {
       return importNativeDocumentWithWorker({ fileName: request.fileName, buffer: request.buffer, options: request.options }, request.workerPort, request.revision ?? 0);
     }
@@ -155,7 +158,7 @@ function looksLikeOoxml(fileName: string, buffer: ArrayBuffer): boolean {
     const parts = unzipSync(bytes, { filter(file) {
       entries += 1;
       total += file.originalSize;
-      if (entries > DEFAULT_NATIVE_DOCUMENT_RESOURCE_LIMITS.maxEntries || file.originalSize > DEFAULT_NATIVE_DOCUMENT_RESOURCE_LIMITS.maxEntryBytes || total > DEFAULT_NATIVE_DOCUMENT_RESOURCE_LIMITS.maxUncompressedBytes) throw new Error('detection budget exceeded');
+      if (entries > DEFAULT_NATIVE_DOCUMENT_RESOURCE_LIMITS.maxEntries || file.originalSize > DEFAULT_NATIVE_DOCUMENT_RESOURCE_LIMITS.maxEntryBytes || (file.originalSize > 0 && (file.size === 0 || file.originalSize / file.size > DEFAULT_NATIVE_DOCUMENT_RESOURCE_LIMITS.maxCompressionRatio)) || total > DEFAULT_NATIVE_DOCUMENT_RESOURCE_LIMITS.maxUncompressedBytes) throw new Error('detection budget exceeded');
       return true;
     } });
     const contentTypes = parts['[Content_Types].xml'];

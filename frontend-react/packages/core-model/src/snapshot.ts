@@ -1,3 +1,6 @@
+import { isTableSheetDefinition } from './table-sheet-validation';
+import { createDefaultTextBoxTextFrame } from './domain';
+import { assertWorkbookResourceBudget } from './resource-budget';
 import type { CellHyperlink, DefinedNameModel, SheetSnapshot, RangeRef, CellStyleTemplate, UnitId, WorkbookModel, WorkbookTheme } from './index';
 import type { PrintDocumentSnapshot, QueryDefinitionSnapshot } from './workbook-state';
 import { WorkbookModel as WorkbookModelClass, worksheetPaneValidationError } from './index';
@@ -75,6 +78,7 @@ export function migrateStoredWorkbookSnapshot(value: unknown): WorkbookSnapshot 
     input.version = input.dimensionMetrics && input.sheets.every((sheet: Record<string, unknown>) => sheet.pane && sheet.defaultRowHeightPx && sheet.defaultColumnWidthPx) ? 4 : 2;
   }
   if (input.version === WORKBOOK_SNAPSHOT_SCHEMA_REVISION) return assertCanonicalWorkbookSnapshot(input as WorkbookSnapshot);
+  migrateLegacyModelContracts(input);
   if (input.dataModel && typeof input.dataModel === 'object') input.dataModel.externalLinks = [];
   for (const sheet of input.sheets ?? []) {
     for (const field of ['dataRegions', 'conditionalFormats', 'dataValidations', 'hiddenRows', 'hiddenColumns', 'sheetTables', 'sparklineGroups', 'drawingGroups', 'spillRanges', 'protectionRules']) if (!(field in sheet)) sheet[field] = [];
@@ -167,6 +171,61 @@ export function migrateStoredWorkbookSnapshot(value: unknown): WorkbookSnapshot 
     delete sheet.freeze;
   }
   return migrateStoredWorkbookSnapshot(input);
+}
+
+/** Only stored snapshots older than the canonical revision enter this upgrade. */
+function migrateLegacyModelContracts(input: Record<string, any>): void {
+  for (const sheet of input.sheets ?? []) {
+    for (const table of sheet.sheetTables ?? []) {
+      table.showFirstColumn ??= false; table.showLastColumn ??= false; table.autoExpand ??= true;
+    }
+    for (const pivot of sheet.pivots ?? []) {
+      const layout = pivot.layout;
+      if (!layout) continue;
+      if ('showGrandTotals' in layout) {
+        layout.showRowGrandTotals ??= layout.showGrandTotals;
+        layout.showColumnGrandTotals ??= layout.showGrandTotals;
+        delete layout.showGrandTotals;
+      }
+      const oldValueIds = new Map<string, string>();
+      for (const [index, value] of (layout.values ?? []).entries()) {
+        value.valueId ??= `${pivot.id}:value:${index}`;
+        if (!oldValueIds.has(value.fieldId)) oldValueIds.set(value.fieldId, value.valueId);
+      }
+      const upgradeValueRef = (value: Record<string, any>) => {
+        if ('valueFieldId' in value) {
+          const id = oldValueIds.get(value.valueFieldId);
+          if (!id) throw new Error('Legacy Pivot value reference cannot be resolved');
+          value.valueId = id; delete value.valueFieldId;
+        }
+      };
+      for (const placement of [...(layout.rows ?? []), ...(layout.columns ?? [])]) {
+        if (placement.sort) {
+          placement.sort.by ??= 'label';
+          upgradeValueRef(placement.sort);
+          if (placement.sort.by === 'label') delete placement.sort.valueId;
+        }
+      }
+      for (const filter of layout.filters ?? []) {
+        upgradeValueRef(filter);
+        if (filter.kind === 'top-items' && 'count' in filter) {
+          filter.direction ??= 'top'; filter.mode = 'items'; filter.threshold = filter.count; delete filter.count;
+        }
+      }
+      const calculatedIds = new Set([...(layout.calculatedFields ?? []), ...(layout.calculatedItems ?? [])].map((entry) => entry.fieldId));
+      if (pivot.fieldCatalog?.fields) pivot.fieldCatalog.fields = pivot.fieldCatalog.fields.filter((field: Record<string, any>) => !calculatedIds.has(field.fieldId));
+    }
+    for (const payload of Object.values(sheet.drawingPayloads ?? {}) as Record<string, any>[]) {
+      if (payload.kind === 'slicer' && !payload.settings) payload.settings = {
+        showHeader: true, caption: payload.fieldId, multiSelect: true, sort: 'ascending',
+        showNoDataItems: true, noDataItemsLast: true, showNoDataStyle: true, columnCount: 1, itemHeight: 28,
+      };
+      if (payload.kind === 'textbox' && !payload.textFrame) {
+        payload.textFrame = { ...createDefaultTextBoxTextFrame(), ...(payload.textColor === undefined ? {} : { textColor: payload.textColor }), ...(payload.fontSize === undefined ? {} : { fontSize: payload.fontSize }) };
+        delete payload.textColor; delete payload.fontSize;
+      }
+    }
+  }
 }
 
 function emptyReviewSnapshot(): ReviewStoreSnapshot {
@@ -350,6 +409,7 @@ function migrateLegacyFontSizes(value: unknown): void {
  * must be repaired before it enters the workbook runtime.
  */
 export function assertCanonicalWorkbookSnapshot(snapshot: WorkbookSnapshot): WorkbookSnapshot {
+  assertWorkbookResourceBudget(snapshot);
   const links = snapshot.dataModel?.externalLinks;
   if (!Array.isArray(links)) throw new Error('Canonical workbook requires external link definitions');
   if (links !== undefined) {
@@ -395,7 +455,7 @@ export function assertCanonicalWorkbookSnapshot(snapshot: WorkbookSnapshot): Wor
   const sheetTableNames = new Set<string>();
   for (const sheet of snapshot.sheets) {
     if (!['worksheet', 'table-sheet', 'gantt-sheet', 'report-sheet'].includes(sheet.kind)) throw new Error('Worksheet kind is invalid');
-    if (sheet.kind === 'table-sheet' && !sheet.tableSheet) throw new Error('TableSheet definition is required');
+    if (sheet.kind === 'table-sheet' && !isTableSheetDefinition(sheet.tableSheet)) throw new Error('TableSheet definition is required');
     if (sheet.kind === 'gantt-sheet' && !sheet.ganttSheet) throw new Error('GanttSheet definition is required');
     if (sheet.kind === 'report-sheet' && !sheet.reportSheet) throw new Error('ReportSheet definition is required');
     validateReviewSnapshot(sheet.review, sheet.id);
@@ -460,6 +520,7 @@ export function assertCanonicalWorkbookSnapshot(snapshot: WorkbookSnapshot): Wor
       if (runtimeKind === 'chart' && !['worksheet-ranges', 'pivot', 'table', 'report-range'].includes(String((payload as { source?: { kind?: string } }).source?.kind))) {
         throw new Error('MIGRATION_REQUIRED: chart payload is missing the canonical source discriminator');
       }
+      if (payload.kind === 'textbox' && (!payload.textFrame || typeof payload.textFrame.fontFamily !== 'string' || !Number.isFinite(payload.textFrame.fontSize) || payload.textFrame.fontSize <= 0)) throw new Error('Text box requires a canonical text frame');
       if (payload.kind === 'chart') validateChartSnapshotPayload(payload, snapshot, sheet.id);
       if (payload.kind === 'camera') validateDrawingSourceRange(payload.sourceRange, snapshot, 'Camera');
       if (payload.kind === 'image' && !isAssetRef(payload.asset)) throw new Error(`Drawing image asset is invalid: ${payload.asset}`);
@@ -919,6 +980,20 @@ function validateChartSnapshotPayload(payload: ChartDrawingPayload, snapshot: Wo
     chartTextFormulaRange(payload, field, ownerSheetId, sheetOrder);
   }
   if (!isChartSubtypeForType(payload.chartType, payload.subtype)) throw new Error(`Chart subtype ${payload.subtype} does not belong to ${payload.chartType}`);
+  if (payload.mapOptions?.resource) {
+    const resource = payload.mapOptions.resource;
+    let coordinates = 0;
+    if (!Array.isArray(resource.features) || resource.features.length > 10_000) throw new Error('INVALID_MAP_RESOURCE: feature budget exceeded');
+    for (const feature of resource.features) {
+      if (!feature || !Array.isArray(feature.polygons)) throw new Error('INVALID_MAP_RESOURCE: polygons are required');
+      for (const ring of feature.polygons) {
+        if (!Array.isArray(ring) || ring.length < 3) throw new Error('INVALID_MAP_RESOURCE: polygon ring is invalid');
+        for (const point of ring) {
+          if (++coordinates > 500_000 || !Array.isArray(point) || point.length !== 2 || !point.every(Number.isFinite) || Math.abs(point[0]!) > 180 || Math.abs(point[1]!) > 90) throw new Error('INVALID_MAP_RESOURCE: coordinate is invalid');
+        }
+      }
+    }
+  }
   const owned = payload.nativeIdentity?.status !== 'preserved-native';
   if (payload.source.kind === 'worksheet-ranges') {
     if (payload.source.ranges.length === 0) throw new Error(`Chart ${payload.chartId} requires at least one source range`);

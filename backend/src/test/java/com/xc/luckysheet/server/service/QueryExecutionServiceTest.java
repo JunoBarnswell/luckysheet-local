@@ -27,6 +27,31 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 class QueryExecutionServiceTest {
+    @Test void restSourceRejectsPathEncodingsAndOversizedBodiesBeforeMaterialization() throws Exception {
+        var server = com.sun.net.httpserver.HttpServer.create(new java.net.InetSocketAddress("127.0.0.1", 0), 0);
+        var calls = new java.util.concurrent.atomic.AtomicInteger();
+        server.createContext("/trusted/api/", exchange -> {
+            calls.incrementAndGet();
+            byte[] bytes = (exchange.getRequestURI().getPath().endsWith("large") ? "[{\"v\":\"" + "x".repeat(2048) + "\"}]" : "[{\"v\":1}]").getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(200, bytes.length);
+            try (var output = exchange.getResponseBody()) { output.write(bytes); }
+        });
+        server.start();
+        var store = mock(WorkbookStore.class);
+        when(store.find("unit-1")).thenReturn(Optional.of(new WorkbookRow("unit-1", "test", "{}", 0, 0, WorkbookLifecycle.ACTIVE, Instant.now(), Instant.now())));
+        var properties = new QueryProperties(true, 100, 20, 1024, 2048, Duration.ofSeconds(5), 1,
+                Map.of("api", new QuerySource("rest", null, null, null, "http://127.0.0.1:" + server.getAddress().getPort() + "/trusted/api", Map.of("Authorization", "ephemeral-test-only"), java.util.Set.of("unit-1"), java.util.Set.of("editor"))));
+        var service = new QueryExecutionService(properties, mock(AccessControlService.class), mock(WorkbookLifecycleService.class), store, mock(WorkbookDataBlockService.class), mock(AuditRecorder.class), new ObjectMapper());
+        try {
+            var response = service.execute("unit-1", new QueryExecutionRequest("q", "Items", "rest", "api", "items", "GET", null, List.of(), List.of()), "editor");
+            assertEquals(1, response.rows().getFirst().getFirst().asInt());
+            for (String path : List.of("../escape", "/escape", "%2e%2e/escape", "%252e%252e/escape", "//example.invalid/escape")) {
+                assertThrows(ServiceException.class, () -> service.execute("unit-1", new QueryExecutionRequest("denied", "Denied", "rest", "api", path, "GET", null, List.of(), List.of()), "editor"));
+            }
+            assertEquals(1, calls.get());
+            assertThrows(ServiceException.class, () -> service.execute("unit-1", new QueryExecutionRequest("large", "Large", "rest", "api", "large", "GET", null, List.of(), List.of()), "editor"));
+        } finally { service.close(); server.stop(0); }
+    }
     @Test
     void sqliteQueryRunsOnServerWithConfiguredSourceAndNoClientCredentials() throws Exception {
         Path file = Files.createTempFile("luckysheet-query-", ".db");
@@ -44,7 +69,7 @@ class QueryExecutionServiceTest {
             AuditRecorder audit = mock(AuditRecorder.class);
             QueryProperties properties = new QueryProperties(
                     true, 100, 20, 1_000_000, 2_048, Duration.ofSeconds(5), 2,
-                    Map.of("local", new QuerySource("sqlite", "jdbc:sqlite:" + file, null, null, null, Map.of()))
+                    Map.of("local", new QuerySource("sqlite", "jdbc:sqlite:" + file, null, null, null, Map.of(), java.util.Set.of(), java.util.Set.of("editor", "owner")))
             );
             QueryExecutionService service = new QueryExecutionService(properties, access, lifecycle, store, mock(WorkbookDataBlockService.class), audit, new ObjectMapper());
             var response = service.execute("unit-1", new QueryExecutionRequest(
@@ -55,6 +80,20 @@ class QueryExecutionServiceTest {
             assertEquals(1, response.rowCount());
             assertEquals("a", response.rows().get(0).get(0).asText());
             assertEquals(4, response.sourceRevision());
+            for (String statement : List.of("SELECT pg_terminate_backend(42)", "SELECT \"pg_terminate_backend\"(42)", "SELECT evil.lower('x')", "SELECT [randomblob](1000000000)", "SELECT `randomblob`(1000000000)", "SELECT \"as\"()", "SELECT sum$unknown()", "SELECT evil#comment\n()", "SELECT 1; DELETE FROM items", "WITH x AS (SELECT 1) DELETE FROM items")) {
+                assertThrows(ServiceException.class, () -> service.execute("unit-1", new QueryExecutionRequest("denied", "Denied", "sqlite", "local", statement, null, null, List.of(), List.of()), "editor"));
+            }
+            var count = service.execute("unit-1", new QueryExecutionRequest("count", "Count", "sqlite", "local", "WITH x(a) AS (SELECT amount FROM items) SELECT COUNT(a) FROM x", null, null, List.of(), List.of()), "editor");
+            assertEquals(2, count.rows().getFirst().getFirst().asInt());
+            var shortBudget = new QueryProperties(true, 100, 20, 1000000, 2048, Duration.ofMillis(100), 1, properties.sources());
+            var timeoutService = new QueryExecutionService(shortBudget, access, lifecycle, store, mock(WorkbookDataBlockService.class), audit, new ObjectMapper());
+            try {
+                org.junit.jupiter.api.Assertions.assertTimeout(Duration.ofSeconds(2), () -> assertThrows(ServiceException.class, () -> timeoutService.execute("unit-1", new QueryExecutionRequest("slow", "Slow", "sqlite", "local", "WITH RECURSIVE x(a) AS (VALUES(1) UNION ALL SELECT a+1 FROM x WHERE a<100000000) SELECT SUM(a) FROM x", null, null, List.of(), List.of()), "editor")));
+                assertEquals(2, timeoutService.execute("unit-1", new QueryExecutionRequest("control", "Control", "sqlite", "local", "SELECT COUNT(*) FROM items", null, null, List.of(), List.of()), "editor").rows().getFirst().getFirst().asInt());
+            } finally { timeoutService.close(); }
+
+            assertThrows(ServiceException.class, () -> service.execute("unit-1", new QueryExecutionRequest("unauthorized", "Denied", "sqlite", "local", "SELECT name FROM items", null, null, List.of(), List.of()), "unbound-subject"));
+
             service.close();
         } finally {
             Files.deleteIfExists(file);
@@ -78,7 +117,7 @@ class QueryExecutionServiceTest {
             AuditRecorder audit = mock(AuditRecorder.class);
             QueryProperties properties = new QueryProperties(
                     true, 100, 20, 1_000_000, 2_048, Duration.ofSeconds(5), 2,
-                    Map.of("local", new QuerySource("sqlite", "jdbc:sqlite:" + file, null, null, null, Map.of()))
+                    Map.of("local", new QuerySource("sqlite", "jdbc:sqlite:" + file, null, null, null, Map.of(), java.util.Set.of(), java.util.Set.of("editor", "owner")))
             );
             QueryExecutionService service = new QueryExecutionService(properties, access, lifecycle, store, mock(WorkbookDataBlockService.class), audit, new ObjectMapper());
             ObjectMapper mapper = new ObjectMapper();
@@ -120,7 +159,7 @@ class QueryExecutionServiceTest {
             AuditRecorder audit = mock(AuditRecorder.class);
             QueryProperties properties = new QueryProperties(
                     true, 100, 20, 1_000_000, 2_048, Duration.ofSeconds(5), 2,
-                    Map.of("local", new QuerySource("sqlite", "jdbc:sqlite:" + file, null, null, null, Map.of()))
+                    Map.of("local", new QuerySource("sqlite", "jdbc:sqlite:" + file, null, null, null, Map.of(), java.util.Set.of(), java.util.Set.of("editor", "owner")))
             );
             QueryExecutionService service = new QueryExecutionService(properties, access, lifecycle, store, mock(WorkbookDataBlockService.class), audit, new ObjectMapper());
             var request = new QueryExecutionRequest(

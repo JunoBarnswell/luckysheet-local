@@ -26,7 +26,7 @@ class WorkbookDataBlockStoreTest {
                 .thenReturn(Optional.empty());
         when(blocks.totalBytesByUnitId("unit")).thenReturn(90L);
         when(blocks.countByIdUnitId("unit")).thenReturn(1L);
-        WorkbookDataBlockStore store = new WorkbookDataBlockStore(blocks, workbooks);
+        WorkbookDataBlockStore store = new WorkbookDataBlockStore(blocks, workbooks, mock(com.xc.luckysheet.server.service.WorkbookResourceQuotaService.class));
         Instant now = Instant.now();
 
         store.lockWorkbook("unit");
@@ -49,7 +49,7 @@ class WorkbookDataBlockStoreTest {
         when(entity.getByteLength()).thenReturn(4);
         when(entity.getUpdatedAt()).thenReturn(now);
         when(blocks.findById(id)).thenReturn(Optional.of(entity));
-        WorkbookDataBlockStore store = new WorkbookDataBlockStore(blocks, workbooks);
+        WorkbookDataBlockStore store = new WorkbookDataBlockStore(blocks, workbooks, mock(com.xc.luckysheet.server.service.WorkbookResourceQuotaService.class));
 
         var metadata = store.insertWithinQuota(new DataBlockRow("unit", "source", "block", "checksum", 4, new byte[] {1, 2, 3, 4}, now, now), 1, 1);
 

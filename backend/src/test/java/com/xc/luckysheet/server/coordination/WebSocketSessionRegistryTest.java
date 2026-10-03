@@ -33,6 +33,27 @@ import org.mockito.ArgumentCaptor;
 import org.springframework.web.socket.TextMessage;
 
 class WebSocketSessionRegistryTest {
+    private Principal authenticated(String subject, Instant expiresAt) {
+        var token = org.springframework.security.oauth2.jwt.Jwt.withTokenValue("test-token")
+                .header("alg", "none").subject(subject).issuedAt(expiresAt.minusSeconds(120)).expiresAt(expiresAt).build();
+        return new org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken(token);
+    }
+
+    @Test
+    void expiredCredentialCannotReceiveCalculationNotificationsEvenWhenAclAllows() throws Exception {
+        var access = mock(AccessControlService.class);
+        var registry = new WebSocketSessionRegistry(new ObjectMapper(), access,
+                mock(RangeAccessService.class), mock(AccessProjectionService.class));
+        var session = mock(WebSocketSession.class);
+        when(session.getPrincipal()).thenReturn(authenticated("reader", Instant.now().minusSeconds(1)));
+        when(session.isOpen()).thenReturn(true);
+        registry.subscribeCalculation("root", java.util.Set.of("leaf"), session);
+        registry.broadcastAccessChanged("leaf", 7);
+        verify(session, never()).sendMessage(any());
+        verify(session).close(eq(CloseStatus.POLICY_VIOLATION));
+        org.mockito.Mockito.verifyNoInteractions(access);
+    }
+
     @Test
     void calculationNotificationsCarryOnlyIdentifiersAndRecheckRootPermission() throws Exception {
         AccessControlService access = mock(AccessControlService.class);
@@ -40,7 +61,7 @@ class WebSocketSessionRegistryTest {
         WebSocketSessionRegistry registry = new WebSocketSessionRegistry(mapper, access,
                 mock(RangeAccessService.class), mock(AccessProjectionService.class));
         WebSocketSession session = mock(WebSocketSession.class);
-        when(session.getPrincipal()).thenReturn((Principal) () -> "reader");
+        when(session.getPrincipal()).thenReturn(authenticated("reader", Instant.now().plusSeconds(60)));
         when(session.isOpen()).thenReturn(true);
         when(session.getAttributes()).thenReturn(new java.util.concurrent.ConcurrentHashMap<>());
         registry.subscribeCalculation("root", java.util.Set.of("leaf", "middle"), session);
@@ -76,7 +97,7 @@ class WebSocketSessionRegistryTest {
         WebSocketSession dependent = mock(WebSocketSession.class), source = mock(WebSocketSession.class);
         for (WebSocketSession session : List.of(dependent, source)) {
             when(session.isOpen()).thenReturn(true);
-            when(session.getPrincipal()).thenReturn((Principal) () -> "reader");
+            when(session.getPrincipal()).thenReturn(authenticated("reader", Instant.now().plusSeconds(60)));
             when(session.getAttributes()).thenReturn(new java.util.concurrent.ConcurrentHashMap<>());
         }
         registry.subscribeCalculation("root", java.util.Set.of("leaf"), dependent); registry.join("leaf", source);
@@ -97,7 +118,7 @@ class WebSocketSessionRegistryTest {
         WebSocketSessionRegistry registry = new WebSocketSessionRegistry(new ObjectMapper().findAndRegisterModules(), access,
                 mock(RangeAccessService.class), mock(AccessProjectionService.class));
         WebSocketSession session = mock(WebSocketSession.class);
-        Principal principal = () -> "editor-1";
+        Principal principal = authenticated("editor-1", Instant.now().plusSeconds(60));
         when(session.getAttributes()).thenReturn(new java.util.concurrent.ConcurrentHashMap<>(Map.of()));
         when(session.getPrincipal()).thenReturn(principal);
         when(session.isOpen()).thenReturn(true);

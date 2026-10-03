@@ -29,7 +29,7 @@ public record OperationEnvelope(
         if (unitId == null || unitId.isBlank()) throw new IllegalArgumentException("unitId is required");
         if (clientSequence < 1) throw new IllegalArgumentException("clientSequence must be positive");
         if (baseRevision < 0) throw new IllegalArgumentException("baseRevision must be non-negative");
-        if (mutations == null || mutations.isEmpty()) throw new IllegalArgumentException("mutations must not be empty");
+        if (mutations == null || mutations.isEmpty() || mutations.size() > 256) throw new IllegalArgumentException("operations require between 1 and 256 mutations");
         mutations = List.copyOf(mutations);
         Objects.requireNonNull(createdAt, "createdAt is required");
     }

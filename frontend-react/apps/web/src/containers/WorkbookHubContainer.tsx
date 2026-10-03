@@ -21,6 +21,7 @@ import {
 } from '@react-sheets/spreadsheet-app';
 import type { SpaceMember, WorkspaceFolder, WorkspaceSpace } from '@react-sheets/protocol';
 import type { UserPreferences } from '@react-sheets/protocol';
+import { assertNativeInputSize } from '@react-sheets/exchange-excel-ooxml';
 
 type ActiveDialog = 'create' | 'help' | 'import' | 'move' | 'options' | 'purge' | 'rename' | 'share' | 'trash' | null;
 
@@ -348,6 +349,7 @@ export function WorkbookHubContainer({ onOpenWorkbook }: WorkbookHubContainerPro
     void execute(async () => {
       const targetLocation = destinationFromLocation(value.locationId);
       if (targetLocation.destination === 'remote' && !await requireCloudSignIn()) return;
+      assertNativeInputSize(value.file.size);
       const result = await catalog.importWorkbook({
         fileName: value.file.name,
         buffer: await value.file.arrayBuffer(),

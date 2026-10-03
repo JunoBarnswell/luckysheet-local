@@ -72,7 +72,7 @@ public class QueryExecutionService {
     private final ObjectMapper mapper;
     private final ExecutorService workers;
     private volatile HttpClient http;
-    private final Map<String, ActiveQuery> active = new ConcurrentHashMap<>();
+    private final Map<QueryKey, ActiveQuery> active = new ConcurrentHashMap<>();
     private final Map<String, BlockQuery> blockSessions = new ConcurrentHashMap<>();
 
     public QueryExecutionService(
@@ -106,6 +106,7 @@ public class QueryExecutionService {
         QuerySource source;
         try {
             source = properties.requireSource(request.sourceRef(), request.connectorId());
+            source.requireAccess(unitId, actor);
             validateRequest(request, source);
         } catch (IllegalArgumentException error) {
             audit.rejected(request.queryId(), unitId, actor, "QUERY_EXECUTION", error.getMessage());
@@ -119,7 +120,7 @@ public class QueryExecutionService {
         } catch (RejectedExecutionException error) {
             throw ServiceException.unavailable("Query execution queue is full");
         }
-        String executionKey = unitId + ":" + request.queryId();
+        QueryKey executionKey = new QueryKey(unitId, request.queryId());
         ActiveQuery previous = active.putIfAbsent(executionKey, new ActiveQuery(actor, future));
         if (previous != null) {
             future.cancel(true);
@@ -171,6 +172,7 @@ public class QueryExecutionService {
         QuerySource source;
         try {
             source = properties.requireSource(request.sourceRef(), request.connectorId());
+            source.requireAccess(unitId, actor);
             validateRequest(request, source);
         } catch (IllegalArgumentException error) {
             audit.rejected(request.queryId(), unitId, actor, "QUERY_BLOCK_EXECUTION", error.getMessage());
@@ -185,7 +187,7 @@ public class QueryExecutionService {
         } catch (RejectedExecutionException error) {
             throw ServiceException.unavailable("Query execution queue is full");
         }
-        String executionKey = unitId + ":" + request.queryId();
+        QueryKey executionKey = new QueryKey(unitId, request.queryId());
         ActiveQuery previous = active.putIfAbsent(executionKey, new ActiveQuery(actor, future));
         if (previous != null) {
             future.cancel(true);
@@ -205,7 +207,7 @@ public class QueryExecutionService {
                     throw ServiceException.unavailable("Too many query block sessions are active for this workbook");
                 }
                 long sessionsForActor = blockSessions.values().stream()
-                        .filter(session -> session.unitId().equals(unitId) && session.actor().equals(actor)).count();
+                        .filter(session -> session.actor().equals(actor)).count();
                 if (sessionsForActor >= MAX_BLOCK_SESSIONS_PER_ACTOR) {
                     throw ServiceException.unavailable("Too many query block sessions are active for this editor");
                 }
@@ -268,6 +270,7 @@ public class QueryExecutionService {
         QuerySource source;
         try {
             source = properties.requireSource(request.sourceRef(), request.connectorId());
+            source.requireAccess(unitId, actor);
             validateRequest(request, source);
         } catch (IllegalArgumentException error) {
             audit.rejected(request.queryId(), unitId, actor, "QUERY_DATA_SOURCE_EXECUTION", error.getMessage());
@@ -289,7 +292,7 @@ public class QueryExecutionService {
         } catch (RejectedExecutionException error) {
             throw ServiceException.unavailable("Query execution queue is full");
         }
-        String executionKey = unitId + ":" + request.queryId();
+        QueryKey executionKey = new QueryKey(unitId, request.queryId());
         ActiveQuery previous = active.putIfAbsent(executionKey, new ActiveQuery(actor, future));
         if (previous != null) {
             future.cancel(true);
@@ -401,7 +404,7 @@ public class QueryExecutionService {
         int end = Math.min(start + session.blockRowCount(), session.table().rows.size());
         List<List<JsonNode>> rows = session.table().rows.subList(start, end);
         checkBlockResponseSize(session.table().columns, rows);
-        renewBlockSession(executionId);
+
         return new QueryBlockResponse(queryId, executionId, offset, rows, end < session.table().rows.size());
     }
 
@@ -424,7 +427,7 @@ public class QueryExecutionService {
     public void cancel(String unitId, String queryId, String actor) {
         access.require(unitId, actor, WorkbookRole.EDITOR);
         lifecycle.requireActive(unitId);
-        ActiveQuery query = active.get(unitId + ":" + queryId);
+        ActiveQuery query = active.get(new QueryKey(unitId, queryId));
         if (query == null) throw ServiceException.notFound("Running query not found");
         if (!query.actor().equals(actor) && !access.currentRole(unitId, actor).includes(WorkbookRole.OWNER)) {
             throw ServiceException.forbidden("Only the query owner or workbook owner may cancel a query");
@@ -463,12 +466,29 @@ public class QueryExecutionService {
             throw QueryFailure.validation("SQLite source must use a jdbc:sqlite URL");
         }
         String sql = readOnlySql(request.statement());
-        try (Connection connection = DriverManager.getConnection(source.url(), nullToEmpty(source.username()), nullToEmpty(source.password()));
-             PreparedStatement statement = connection.prepareStatement(sql, ResultSet.TYPE_FORWARD_ONLY, ResultSet.CONCUR_READ_ONLY)) {
-            statement.setQueryTimeout(timeoutSeconds());
-            for (int index = 0; index < request.parameters().size(); index++) bind(statement, index + 1, request.parameters().get(index));
-            try (ResultSet result = statement.executeQuery()) {
-                return readResult(result);
+        String url = source.url().toLowerCase(Locale.ROOT);
+        if (!url.startsWith("jdbc:sqlite:") && !url.startsWith("jdbc:postgresql:") && !url.startsWith("jdbc:mysql:")) throw QueryFailure.validation("JDBC source requires a database-enforced read-only dialect: SQLite, PostgreSQL or MySQL");
+        try (Connection connection = DriverManager.getConnection(readOnlyJdbcUrl(source.url()), nullToEmpty(source.username()), nullToEmpty(source.password()))) {
+            if (!url.startsWith("jdbc:sqlite:")) connection.setReadOnly(true);
+            connection.setAutoCommit(false);
+            if (url.startsWith("jdbc:sqlite:")) {
+                long deadline = System.nanoTime() + properties.timeout().toNanos();
+                org.sqlite.ProgressHandler.setHandler(connection, 1000, new org.sqlite.ProgressHandler() {
+                    @Override protected int progress() { return Thread.currentThread().isInterrupted() || System.nanoTime() >= deadline ? 1 : 0; }
+                });
+            }
+
+            if (!url.startsWith("jdbc:sqlite:")) try (var transaction = connection.createStatement()) {
+                transaction.setQueryTimeout(timeoutSeconds());
+                transaction.execute(url.startsWith("jdbc:postgresql:") ? "SET TRANSACTION READ ONLY" : "START TRANSACTION READ ONLY");
+            }
+            try (PreparedStatement statement = connection.prepareStatement(sql, ResultSet.TYPE_FORWARD_ONLY, ResultSet.CONCUR_READ_ONLY)) {
+                statement.setMaxRows(properties.maxRows() + 1);
+                statement.setQueryTimeout(timeoutSeconds());
+                for (int index = 0; index < request.parameters().size(); index++) bind(statement, index + 1, request.parameters().get(index));
+                try (ResultSet result = statement.executeQuery()) {
+                    try { return readResult(result); } finally { connection.rollback(); }
+                }
             }
         } catch (SQLException error) {
             throw QueryFailure.validation("Configured database query failed");
@@ -479,12 +499,12 @@ public class QueryExecutionService {
         if (source.baseUrl() == null || source.baseUrl().isBlank()) throw QueryFailure.validation("Configured REST source has no base URL");
         URI target;
         try {
-            URI base = URI.create(source.baseUrl());
+            URI base = URI.create(source.baseUrl().endsWith("/") ? source.baseUrl() : source.baseUrl() + "/");
             if (request.statement().startsWith("http://") || request.statement().startsWith("https://")) {
                 throw QueryFailure.validation("REST statement must be a path relative to sourceRef");
             }
             target = base.resolve(request.statement());
-            if (!sameOrigin(base, target)) throw QueryFailure.validation("REST path leaves the configured source origin");
+            if (!sameOrigin(base, target) || !withinBasePath(base, target)) throw QueryFailure.validation("REST path leaves the configured source origin");
         } catch (Exception error) {
             if (error instanceof QueryFailure failure) throw failure;
             throw QueryFailure.validation("REST source URL is invalid");
@@ -493,16 +513,22 @@ public class QueryExecutionService {
             HttpRequest.Builder builder = HttpRequest.newBuilder(target).timeout(properties.timeout());
             source.headers().forEach(builder::header);
             String method = request.method() == null || request.method().isBlank() ? "GET" : request.method().toUpperCase(Locale.ROOT);
+            if (!java.util.Set.of("GET", "POST").contains(method)) throw QueryFailure.validation("REST method must be GET or POST");
+            audit.accepted(request.queryId(), "query-source", "configured-source", "QUERY_REST_REQUEST", null, mapper.createObjectNode().put("method", method).put("path", target.normalize().getRawPath()));
             if (method.equals("POST")) {
                 String body = request.body() == null ? "{}" : mapper.writeValueAsString(request.body());
                 builder.header("content-type", "application/json").POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8));
             } else {
                 builder.GET();
             }
-            HttpResponse<String> response = httpClient().send(builder.build(), HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
-            if (response.body().getBytes(StandardCharsets.UTF_8).length > properties.maxResponseBytes()) throw QueryFailure.validation("REST response is too large");
+            HttpResponse<java.io.InputStream> response = httpClient().send(builder.build(), HttpResponse.BodyHandlers.ofInputStream());
+            byte[] bodyBytes;
+            try (java.io.InputStream bodyStream = response.body()) {
+                bodyBytes = bodyStream.readNBytes(properties.maxResponseBytes() + 1);
+            }
+            if (bodyBytes.length > properties.maxResponseBytes()) throw QueryFailure.validation("REST response is too large");
             if (response.statusCode() < 200 || response.statusCode() >= 300) throw QueryFailure.validation("REST source returned an unsuccessful status");
-            return parseRestResponse(mapper.readTree(response.body()));
+            return parseRestResponse(mapper.readTree(bodyBytes));
         } catch (QueryFailure error) {
             throw error;
         } catch (Exception error) {
@@ -526,11 +552,11 @@ public class QueryExecutionService {
         if (metadata.getColumnCount() > properties.maxColumns()) throw QueryFailure.validation("Query returned too many columns");
         List<String> columns = new ArrayList<>();
         for (int index = 1; index <= metadata.getColumnCount(); index++) columns.add(metadata.getColumnLabel(index));
-        List<List<JsonNode>> rows = new ArrayList<>();
+        List<List<JsonNode>> rows = new BudgetRows();
         while (result.next()) {
             if (rows.size() >= properties.maxRows()) throw QueryFailure.validation("Query returned too many rows");
             List<JsonNode> row = new ArrayList<>();
-            for (int index = 1; index <= metadata.getColumnCount(); index++) row.add(toNode(result.getObject(index)));
+            for (int index = 1; index <= metadata.getColumnCount(); index++) row.add(readCell(result, metadata.getColumnType(index), index));
             rows.add(row);
         }
         return new QueryTable(columns, rows);
@@ -586,6 +612,7 @@ public class QueryExecutionService {
         Set<Integer> selected = new HashSet<>();
         for (int index : indexes) selected.add(index);
         List<List<JsonNode>> rows = input.rows.stream().map(row -> {
+            interrupted();
             List<JsonNode> next = new ArrayList<>(row);
             for (int index : selected) {
                 JsonNode value = row.get(index);
@@ -600,6 +627,7 @@ public class QueryExecutionService {
         String column = required(step.config(), "column", step.id());
         String delimiter = required(step.config(), "delimiter", step.id());
         List<String> outputs = stringList(step.config().get("outputColumns"), step.id());
+        if ((long) input.columns.size() - 1 + outputs.size() > properties.maxColumns()) throw QueryFailure.validation("Split exceeds the column budget");
         if (outputs.size() < 2 || new HashSet<>(outputs).size() != outputs.size()) throw QueryFailure.validation("Split output columns must be unique and contain at least two entries");
         int sourceIndex = input.columnIndex(column, step.id());
         List<String> retained = input.columns.stream().filter(name -> !name.equals(column)).toList();
@@ -609,11 +637,18 @@ public class QueryExecutionService {
         columns.addAll(outputs);
         columns.addAll(input.columns.subList(sourceIndex + 1, input.columns.size()));
         List<List<JsonNode>> rows = input.rows.stream().map(row -> {
+            interrupted();
             JsonNode raw = row.get(sourceIndex);
             List<JsonNode> parts;
             if (raw != null && raw.isTextual()) {
                 parts = new ArrayList<>();
-                for (String value : raw.asText().split(java.util.regex.Pattern.quote(delimiter), -1)) parts.add(JsonNodeFactory.instance.textNode(value));
+                String text = raw.asText(); int start = 0;
+                for (int part = 0; part < outputs.size(); part++) {
+                    int end = text.indexOf(delimiter, start);
+                    parts.add(JsonNodeFactory.instance.textNode(text.substring(start, end < 0 ? text.length() : end)));
+                    if (end < 0) break;
+                    start = end + delimiter.length();
+                }
             } else {
                 parts = List.of(scalarOrNull(raw));
             }
@@ -630,7 +665,7 @@ public class QueryExecutionService {
         List<String> names = stringList(step.config().get("columns"), step.id());
         int[] indexes = names.stream().mapToInt(name -> input.columnIndex(name, step.id())).toArray();
         Set<String> seen = new HashSet<>();
-        List<List<JsonNode>> rows = new ArrayList<>();
+        List<List<JsonNode>> rows = new BudgetRows();
         for (List<JsonNode> row : input.rows) if (seen.add(indexesAsJson(row, indexes))) rows.add(List.copyOf(row));
         return new QueryTable(input.columns, rows);
     }
@@ -645,6 +680,7 @@ public class QueryExecutionService {
         }
         List<List<JsonNode>> rows = new ArrayList<>(input.rows);
         rows.sort((left, right) -> {
+            interrupted();
             for (SortKey key : keys) {
                 int comparison = compare(left.get(input.columnIndex(key.column(), step.id())), right.get(input.columnIndex(key.column(), step.id())));
                 if (comparison != 0) return key.ascending() ? comparison : -comparison;
@@ -660,10 +696,11 @@ public class QueryExecutionService {
         int[] indexes = groups.stream().mapToInt(name -> input.columnIndex(name, step.id())).toArray();
         Map<String, List<List<JsonNode>>> buckets = new LinkedHashMap<>();
         for (List<JsonNode> row : input.rows) {
+            interrupted();
             String key = indexesAsJson(row, indexes);
             buckets.computeIfAbsent(key, ignored -> new ArrayList<>()).add(row);
         }
-        List<List<JsonNode>> rows = new ArrayList<>();
+        List<List<JsonNode>> rows = new BudgetRows();
         for (List<List<JsonNode>> bucket : buckets.values()) {
             List<JsonNode> row = new ArrayList<>();
             List<JsonNode> key = bucket.get(0) == null ? List.of() : indexesAsValues(bucket.get(0), indexes);
@@ -678,6 +715,7 @@ public class QueryExecutionService {
         JsonNode rightConfig = step.config().has("right") ? step.config().get("right") : step.config().get("rightTable");
         QueryTable right = tableFromJson(rightConfig, step.id());
         checkSize(right, true);
+        if ((long) input.columns.size() + right.columns.size() > properties.maxColumns()) throw QueryFailure.validation("Join exceeds the column budget");
         List<String> leftOn = stringList(first(step.config(), "leftOn", "on"), step.id());
         List<String> rightOn = step.config().has("rightOn") ? stringList(step.config().get("rightOn"), step.id()) : leftOn;
         if (leftOn.size() != rightOn.size()) throw QueryFailure.validation("Join keys must have equal lengths");
@@ -686,7 +724,7 @@ public class QueryExecutionService {
         Map<String, List<List<JsonNode>>> matches = new HashMap<>();
         for (List<JsonNode> row : right.rows) matches.computeIfAbsent(indexesAsJson(row, rightIndexes), ignored -> new ArrayList<>()).add(row);
         String type = step.config().path("type").asText("inner");
-        List<List<JsonNode>> rows = new ArrayList<>();
+        List<List<JsonNode>> rows = new BudgetRows();
         Set<List<JsonNode>> matched = new HashSet<>();
         for (List<JsonNode> left : input.rows) {
             List<List<JsonNode>> candidates = matches.getOrDefault(indexesAsJson(left, leftIndexes), List.of());
@@ -709,11 +747,13 @@ public class QueryExecutionService {
         int[] columnIndexes = columnFields.stream().mapToInt(name -> input.columnIndex(name, step.id())).toArray();
         int[] valueIndexes = values.stream().mapToInt(name -> input.columnIndex(name, step.id())).toArray();
         List<String> columnKeys = input.rows.stream().map(row -> indexesAsJson(row, columnIndexes)).distinct().toList();
+        if ((long) rowFields.size() + (long) columnKeys.size() * values.size() > properties.maxColumns()) throw QueryFailure.validation("Pivot exceeds the column budget");
+        if ((long) input.rows.size() * Math.max(1, columnKeys.size()) > 1_000_000) throw QueryFailure.validation("Pivot exceeds the work budget");
         Map<String, List<List<JsonNode>>> groups = new LinkedHashMap<>();
         for (List<JsonNode> row : input.rows) groups.computeIfAbsent(indexesAsJson(row, rowIndexes), ignored -> new ArrayList<>()).add(row);
         List<String> columns = new ArrayList<>(rowFields);
         for (String key : columnKeys) for (String value : values) columns.add(key + " · " + value);
-        List<List<JsonNode>> rows = new ArrayList<>();
+        List<List<JsonNode>> rows = new BudgetRows();
         for (List<List<JsonNode>> group : groups.values()) {
             List<JsonNode> row = new ArrayList<>(indexesAsValues(group.get(0), rowIndexes));
             for (String key : columnKeys) {
@@ -743,7 +783,7 @@ public class QueryExecutionService {
         if (value.isObject() && value.path("data").isArray()) return recordsToTable(value.path("data"));
         if (value.isObject() && value.path("columns").isArray() && value.path("rows").isArray()) {
             List<String> columns = stringList(value.path("columns"), stepId);
-            List<List<JsonNode>> rows = new ArrayList<>();
+            List<List<JsonNode>> rows = new BudgetRows();
             for (JsonNode row : value.path("rows")) {
                 if (!row.isArray() || row.size() != columns.size()) throw QueryFailure.validation("Join row width is invalid");
                 rows.add(row.elements().hasNext() ? iterableToList(row) : List.of());
@@ -763,7 +803,7 @@ public class QueryExecutionService {
             if (columns.size() > properties.maxColumns()) throw QueryFailure.validation("Query returned too many columns");
         }
         List<String> names = new ArrayList<>(columns.keySet());
-        List<List<JsonNode>> rows = new ArrayList<>();
+        List<List<JsonNode>> rows = new BudgetRows();
         for (JsonNode record : records) rows.add(names.stream().map(name -> scalarOrNull(record.get(name))).toList());
         QueryTable table = new QueryTable(names, rows);
         checkSize(table, true);
@@ -896,6 +936,7 @@ public class QueryExecutionService {
     }
 
     private JsonNode toNode(Object value) {
+        interrupted();
         if (value == null) return JsonNodeFactory.instance.nullNode();
         if (value instanceof Boolean bool) return JsonNodeFactory.instance.booleanNode(bool);
         if (value instanceof Number number) return mapper.valueToTree(number);
@@ -912,15 +953,102 @@ public class QueryExecutionService {
         else statement.setString(index, scalar.asText());
     }
 
+    private String readOnlyJdbcUrl(String url) {
+        if (!url.toLowerCase(Locale.ROOT).startsWith("jdbc:sqlite:")) return url;
+        String file = url.substring("jdbc:sqlite:".length());
+        if (file.contains("?") || file.contains("#") || file.equals(":memory:") || file.isBlank()) {
+            throw QueryFailure.validation("SQLite sources require an explicit file without URI options");
+        }
+        if (file.startsWith("file:")) file = file.substring(5);
+        return "jdbc:sqlite:" + java.nio.file.Path.of(file).toAbsolutePath().toUri() + "?mode=ro";
+    }
+
+    private boolean withinBasePath(URI base, URI target) {
+        String path = target.normalize().getRawPath();
+        String prefix = base.normalize().getRawPath();
+        if (prefix == null || prefix.isEmpty()) prefix = "/";
+        if (!prefix.endsWith("/")) prefix += "/";
+        // Encoded separators/dot segments must not acquire a second interpretation at the remote server.
+        return path != null && !path.toLowerCase(Locale.ROOT).matches(".*%(2e|2f|5c|25).*" )
+                && (path.equals(prefix.substring(0, prefix.length() - 1)) || path.startsWith(prefix));
+    }
+
+    private JsonNode readCell(ResultSet result, int type, int index) throws SQLException {
+        if (Set.of(java.sql.Types.CHAR, java.sql.Types.VARCHAR, java.sql.Types.LONGVARCHAR,
+                java.sql.Types.NCHAR, java.sql.Types.NVARCHAR, java.sql.Types.LONGNVARCHAR, java.sql.Types.CLOB, java.sql.Types.NCLOB).contains(type)) {
+            try (java.io.Reader reader = result.getCharacterStream(index)) {
+                if (reader == null) return JsonNodeFactory.instance.nullNode();
+                StringBuilder value = new StringBuilder();
+                char[] chunk = new char[4096];
+                int count;
+                while ((count = reader.read(chunk)) != -1) {
+                    interrupted();
+                    if ((long) value.length() + count > properties.maxResponseBytes() / 6) throw QueryFailure.validation("Query text cell exceeds the byte budget");
+                    value.append(chunk, 0, count);
+                }
+                return JsonNodeFactory.instance.textNode(value.toString());
+            } catch (java.io.IOException error) { throw QueryFailure.validation("Unable to read query text cell"); }
+        }
+        if (Set.of(java.sql.Types.BLOB, java.sql.Types.BINARY, java.sql.Types.VARBINARY, java.sql.Types.LONGVARBINARY).contains(type)) {
+            throw QueryFailure.validation("Binary query cells require an explicit bounded text projection");
+        }
+        return toNode(result.getObject(index));
+    }
+
+    private static void interrupted() {
+        if (Thread.currentThread().isInterrupted()) throw QueryFailure.validation("Query was cancelled");
+    }
+
+    private final class BudgetRows extends ArrayList<List<JsonNode>> {
+        private long bytes = 2;
+        @Override public boolean add(List<JsonNode> row) {
+            interrupted();
+            if (size() >= properties.maxRows() || row.size() > properties.maxColumns()) throw QueryFailure.validation("Query exceeds its row or column budget");
+            long length = 2;
+            for (JsonNode value : row) {
+                if (value != null && value.isTextual() && value.textValue().length() > properties.maxResponseBytes() / 6) throw QueryFailure.validation("Query cell exceeds its byte budget");
+                length += value == null ? 5 : value.toString().length() * 3L + 1;
+                if (length > properties.maxResponseBytes()) throw QueryFailure.validation("Query row exceeds its byte budget");
+            }
+            if (bytes + length > properties.maxResponseBytes()) throw QueryFailure.validation("Query exceeds its cumulative byte budget");
+            bytes += length;
+            return super.add(row);
+        }
+    }
+
+    private record QueryKey(String unitId, String queryId) { }
+
     private String readOnlySql(String sql) {
         String normalized = sql.trim();
         String lower = normalized.toLowerCase(Locale.ROOT);
-        if (normalized.isBlank() || normalized.contains(";")) throw QueryFailure.validation("Only one read-only SQL statement is allowed");
+        if (normalized.isBlank() || normalized.contains(";") || normalized.contains("--") || normalized.contains("/*")) throw QueryFailure.validation("Only one read-only SQL statement is allowed");
         if (!(lower.startsWith("select") || lower.startsWith("with") || lower.startsWith("values") || lower.startsWith("explain"))) {
             throw QueryFailure.validation("Only read-only SQL statements are allowed");
         }
-        if (lower.matches(".*\\b(insert|update|delete|drop|alter|create|truncate|grant|revoke|copy|call)\\b.*")) {
+        if (lower.matches("(?s).*\\b(insert|update|delete|drop|alter|create|truncate|grant|revoke|copy|call|replace|merge|into|outfile|dumpfile|attach|detach|pragma|vacuum|analyze|load_extension|writefile|readfile|dblink|pg_read_file|pg_read_binary_file|pg_ls_dir|pg_sleep|sleep|benchmark|nextval|setval|get_lock|release_lock|lo_export|lo_import)\\b.*")) {
             throw QueryFailure.validation("Read-only SQL cannot contain a write operation");
+        }
+        // Read-only transactions also permit functions that affect other sessions.
+        // Restrict callable expressions in addition to the database-enforced write boundary.
+        String quoted = lower.replaceAll("'(?:''|[^'])*'", "''");
+        if (quoted.matches("(?s).*\\$[a-z_0-9]*\\$.*") || quoted.contains("u&") || quoted.contains("#") || quoted.matches("(?s).*\\boperator\\b.*")) throw QueryFailure.validation("Unsupported SQL expression encoding");
+        if (quoted.matches("(?s).*[\"`\\[](?:(?:pg_catalog)\\.)?(?:in|exists|over|filter|as|values)[\"`\\]]\\s*\\(.*")) throw QueryFailure.validation("Quoted SQL keyword calls are unsupported");
+        String expressions = quoted.replace("\"", "").replace("`", "").replace("[", "").replace("]", "");
+        var calls = java.util.regex.Pattern.compile("([\\p{L}_$][\\p{L}\\p{N}_$]*(?:\\s*\\.\\s*[\\p{L}_$][\\p{L}\\p{N}_$]*)*)\\s*\\(").matcher(expressions);
+        java.util.Set<String> safeCalls = java.util.Set.of("count", "sum", "avg", "min", "max", "abs", "round", "ceil", "ceiling", "floor", "sqrt", "power", "mod", "sign", "exp", "ln", "log", "lower", "upper", "length", "char_length", "trim", "ltrim", "rtrim", "substring", "substr", "concat", "concat_ws", "coalesce", "nullif", "cast", "extract", "date", "time", "datetime", "strftime", "date_trunc", "date_part", "current_date", "current_timestamp", "row_number", "rank", "dense_rank", "lag", "lead", "first_value", "last_value", "ntile", "in", "exists", "over", "filter", "as", "values");
+        int callCount = 0;
+        while (calls.find()) {
+            if (++callCount > 256) throw QueryFailure.validation("SQL callable expression budget exceeded");
+            String name = calls.group(1).replaceAll("\\s+", "");
+            // A WITH declaration may name its output columns; it is not a call.
+            int closing = expressions.indexOf(')', calls.end());
+            String prefix = expressions.substring(0, calls.start()).stripTrailing();
+            int depth = 0; for (int i = 0; i < prefix.length(); i++) { if (prefix.charAt(i) == '(') depth++; if (prefix.charAt(i) == ')') depth--; }
+            if (depth == 0 && closing >= 0 && (prefix.equals("with") || prefix.equals("with recursive") || prefix.endsWith(","))
+                    && expressions.substring(closing + 1).matches("(?s)^\\s*as\\s*\\(.*")
+                    && expressions.substring(calls.end(), closing).matches("[a-z0-9_,\\s]+")) continue;
+            if (name.startsWith("pg_catalog.")) name = name.substring("pg_catalog.".length());
+            if (!safeCalls.contains(name)) throw QueryFailure.validation("SQL function is not supported by the read-only query contract: " + name);
         }
         return normalized;
     }
@@ -983,7 +1111,7 @@ public class QueryExecutionService {
         for (List<JsonNode> row : table.rows) {
             if (row.size() != table.columns.size()) throw QueryFailure.validation("Query row width does not match columns");
         }
-        if (!enforceResponseLimit) return;
+
         try {
             if (mapper.writeValueAsBytes(Map.of("columns", table.columns, "rows", table.rows)).length > properties.maxResponseBytes()) {
                 throw QueryFailure.validation("Query response exceeds the configured byte limit");
@@ -1061,15 +1189,6 @@ public class QueryExecutionService {
         return session;
     }
 
-    private void renewBlockSession(String executionId) {
-        BlockQuery renewed = blockSessions.computeIfPresent(executionId, (ignored, current) -> new BlockQuery(
-                current.unitId(), current.queryId(), current.actor(), current.table(), current.blockRowCount(),
-                Instant.now().plus(properties.timeout().multipliedBy(3))
-        ));
-        if (renewed == null) {
-            throw ServiceException.notFound("Query block session is no longer active");
-        }
-    }
 
     private void purgeExpiredBlockSessions() {
         Instant now = Instant.now();
