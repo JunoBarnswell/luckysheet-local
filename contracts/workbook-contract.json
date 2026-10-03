@@ -183,6 +183,7 @@
       "sheet.cell.commitTypedValue": { "capability": "edit-cell", "protectionAction": "edit-cell", "checksProtection": true },
       "sheet.cell.commitRichText": { "capability": "edit-cell", "protectionAction": "edit-cell", "checksProtection": true },
       "sheet.cells.commitText": { "capability": "edit-cell", "protectionAction": "edit-cell", "checksProtection": true },
+      "sheet.cells.commitMatrix": { "capability": "edit-cell", "protectionAction": "edit-cell", "checksProtection": true },
       "sheet.cells.commitTypedValue": { "capability": "edit-cell", "protectionAction": "edit-cell", "checksProtection": true },
       "sheet.cells.commitRichText": { "capability": "edit-cell", "protectionAction": "edit-cell", "checksProtection": true },
       "find.replace": { "capability": "edit-cell", "protectionAction": "edit-cell", "checksProtection": true },

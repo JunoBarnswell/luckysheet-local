@@ -254,3 +254,9 @@ e8bf2736763c2b74793ed0b4f9e2e7e63dd695be 的第二轮真实浏览器 **15/16 Pas
 最终干净产品 head **5a938162e4326bf56e94c14e88f03b69da0e1d6b** 的完整真实 Java 21/H2/Chromium **16/16 Pass**（`/tmp/sdk-lifecycle-browser.log`、`/tmp/sdk-product-uat-uc0ERN/evidence`）。MWB-03.a/g 逐条完成：20/1/20 → source 40 自动 80/1/80；观察服务器事件触发的图请求先于 Cell.read；来源公开对象关闭后仍传播；撤权无 source snapshot、三式 #BLOCKED!；恢复、保存重开均 80/1/80；循环 SDK 前置拒绝且源 snapshot/revision 不变；来源 trash 后旧 Cell RUNTIME_DISPOSED、C 三式 #REF!；restore 新对象读 40、旧句柄继续退休；purge 自动 #REF!，无多余 access/snapshot 403。只有明确设计的循环绑定 422，console/network 其余全部干净。
 
 Java 成功/拒绝与真实并发检查补齐 MWB-03.c/d/e/f：伪造循环 commit、并发相反绑定、循环 history restore、旧 ORM cache 后独立提交版本、坏图/预算与 Worker parity 均通过。MWB-03 的声明范围现为 Pass；64 簿/输入预算、迭代不支持及 block 来源待 R1 的限制保留，不扩大到完整 Aspose。原 49 父项现 **13 Pass/2 Fail/2 Blocked/32 Pending**；BOUND-01/GATE-01、54 项全量单测失败和真实 ERP/桌面 Excel 阻塞均保留。全部计划尚未完成，PR 不合并。
+
+## O1.1 对象操作批次（浏览器前）
+
+整批交付一个 canonical sheet.cells.commitMatrix、Range 读取/写入/样式/清空/填充/合并/复制值，以及 Worksheet 身份/结构/尺寸/可见性/pane 与 Workbook typed undo/redo。10000 单元格预算与显式 extent，数据/记录 owner、真实结构规划器缺失均明确拒绝。完整 O1/O2/T1 和原 49 项 Pending 不因子批交付改变。
+
+首次 SDK 51/52 中唯一失败是测试入口拼写，保留 /tmp/sdk-objects-sdk.log；build 唯一闭包类型错误在 /tmp/sdk-objects-build.log。冻结差异 /tmp/sdk-objects-first-pass.patch，完整异步契约审查后统一修正 source/query 前置与调用输入捕获，不新增 DV 别名或放宽断言。最终 SDK **53/53 Pass**，build/typecheck 和 boundaries Pass；计算域 **457/457 Pass**。日志 /tmp/sdk-objects-final-sdk.log、/tmp/sdk-objects-final-build.log、/tmp/sdk-objects-final-boundaries.log、/tmp/sdk-objects-calculation.log。O1.1 实施前 a..h 仍等待真实浏览器逐条执行；单测中的本地结构成功不以假连接代替，明确验证 STRUCTURAL_PLANNER_OFFLINE 无写入。

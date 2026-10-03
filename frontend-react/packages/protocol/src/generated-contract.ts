@@ -182,6 +182,7 @@ export const COMMAND_PERMISSION_POLICIES = {
   "sheet.cell.commitTypedValue": { capability: "edit-cell", protectionAction: "edit-cell", checksProtection: true, affectedRangeMode: "declared", objectScope: "range" },
   "sheet.cell.commitRichText": { capability: "edit-cell", protectionAction: "edit-cell", checksProtection: true, affectedRangeMode: "declared", objectScope: "range" },
   "sheet.cells.commitText": { capability: "edit-cell", protectionAction: "edit-cell", checksProtection: true, affectedRangeMode: "declared", objectScope: "range" },
+  "sheet.cells.commitMatrix": { capability: "edit-cell", protectionAction: "edit-cell", checksProtection: true, affectedRangeMode: "declared", objectScope: "range" },
   "sheet.cells.commitTypedValue": { capability: "edit-cell", protectionAction: "edit-cell", checksProtection: true, affectedRangeMode: "declared", objectScope: "range" },
   "sheet.cells.commitRichText": { capability: "edit-cell", protectionAction: "edit-cell", checksProtection: true, affectedRangeMode: "declared", objectScope: "range" },
   "find.replace": { capability: "edit-cell", protectionAction: "edit-cell", checksProtection: true, affectedRangeMode: "declared", objectScope: "range" },

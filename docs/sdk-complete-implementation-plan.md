@@ -112,3 +112,17 @@ WebSocket 增加正式 calculation.subscribe / calculation.changed 契约；闭�
 e8bf2736 第二轮 15/16 Pass；所有旧图 409 已消失，新增 trash/restore/purge 的依赖结果均通过。最后 network 断言发现仍打开的来源自身 WS 被关闭后触发 access/snapshot 403：生命周期仅关闭连接，尚未退休宿主对象。下一完整所有权批次新增正式 server-only workbook.lifecycle.changed，单 Session 先处理生命周期再关闭 WS，dispose 通过内部 lifetime port 通知公开 Workbook 退休；ApplicationRuntime 现有 release 回收 session/object/catalog open cache。source 的 dependent subscriptions 保留，目标重取图；恢复创建新对象，旧 Cell/Range 永久 RUNTIME_DISPOSED。不再让已退休来源重新请求自身 snapshot，不放宽 network/console。
 
 实施前 MWB-03.g：来源 A 打开时 trash 后旧 Cell 报 RUNTIME_DISPOSED，C 自动 #REF!；restore 后重新 open A 能读 40、旧 Cell 仍拒绝；purge 不发生来源自己的 access/snapshot 403；来源 lifecycle 不能被客户端伪造，也不能退休别的 unit。Session 直接 dispose 同样退休全部公开句柄，仍打开的其他工作簿保持可用。
+
+## O1.1 范围与工作表对象的冻结契约
+
+此批交付矩阵值/公式、不可变范围读取、样式/number format、清空、填充、合并、工作表身份与排序、行列结构/大小/可见性、pane 和规范 undo/redo。完整 O1/O2、跨簿移动和 T1 仍不能仅凭此子批通过。所有地址显式绑定工作表稳定 ID，不消费 Web 的当前 selection。对象只调用私有领域访问器；公开 SDK 不暴露 Session、model、dispatch 或权限 owner。
+
+异构矩阵使用一个 sheet.cells.commitMatrix 命令，按行优先顺序准备完整输入，要求位于明确的 canonical extent 内（先以 Worksheet.growExtent 扩展），限制单次 10000 个单元格、精确矩形、有限标量或以 = 开头的公式。准备全部完成后才应用 cell.set，沿用 writeAuthority、spill、checkbox、DV、权限和单一历史/协作链；任何失败由同一事务回滚。公式和 typed value 保留已有样式，清除旧公式计算/来源和 rich text。禁止通过循环公开 Cell.setValue 伪造批量原子提交。记录/只读投影目标明确拒绝，不越过 record owner；数据区等其他 owner 由现有 dispatch 前置处理。
+
+读取先对整块地址和真实来源授权，再加载所需内容、等待一次规范计算，并重新授权；最后同步组装不可变结果，不逐 cell 启动外部图/计算。最大 10000 输入是明确资源拒绝而非截断。样式和 rich text 是 authored snapshot，不假装包含最终 render/computed style。copyValuesTo 是授权读取结果后对目标的一次值写入，不是 T1 的跨簿移动/一致读事务；错误值目前不是可写 CellValue，明确拒绝，不能转成字符串。
+
+Worksheet 的 rename/remove/add/duplicate/reorder、行列 insert/delete 和 pane 等使用现有规范命令/Java structural planner，不在 SDK 重写引用。工作表删除后其句柄访问明确失败；同一历史 undo 恢复稳定 ID 后句柄重新有效。Workbook close/context/lifecycle 退休仍永久有效。undo/redo 通过现有 CommandRuntime，权限或过期结构版本失败必须返回 typed 拒绝，不能仅显示 UI notice 然后宣告成功；没有历史返回 false。修改与其他对象 API 一样进入 pending canonical operation，flush/save 是持久化完成边界。
+
+实施前全部 Pending：O1.1-a 独立公开 SDK 一次写 D8:E9 的混合有限值/字面 = 文本，选区仍 A1，单次 undo/redo 整体恢复，保存重开一致；O1.1-b 一次公式矩阵计算、公式输入坏值/尺寸/预算/非有限值/隐藏或 viewer 目标整块拒绝，快照与历史不变；O1.1-c 样式/number format 保留于值写入，contents clear 保留格式，formats clear 保留值，不可变快照不可回写；O1.1-d sheet add/rename/reorder/duplicate/remove 与规范引用、稳定对象/删除后访问/undo 恢复/保存重开；O1.1-e 行列 insert/delete、像素大小与隐藏、pane 实际保存和恢复，隐藏值仍可读；O1.1-f fill/merge/unmerge 的实际值、公式移动与历史，数据损失明确确认；O1.1-g 两簿 copyValuesTo 成功和源隐藏/错误值拒绝，来源不修改且不宣称跨簿原子事务。真实浏览器所有步骤记录 console/network；真实 Excel 互操作仍 Blocked。
+
+O1.1 首轮冻结源差异在 /tmp/sdk-objects-first-pass.patch。SDK 51/52：唯一失败是验收 fixture 使用不存在的 sheet.dataValidation.add，实际正式入口为 sheet.dv.add；不添加产品别名。计算 457/457、boundaries Pass。build 的唯一失败是异步闭包中 source.region 的类型收窄丢失。完整异步契约复核还要求所有 source/query 前置检查完成后才启动加载，以及矩阵/descriptor 在 await 前捕获调用输入；下一修正批次统一落实这些条件。实施前 O1.1-h：setInputs 返回 Promise 后调用者改变原矩阵，不得改变已捕获的写入意图；缺任一 query 不启动先前查询、整块拒绝，不出现未处理 Promise 拒绝。

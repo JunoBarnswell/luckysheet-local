@@ -1,3 +1,4 @@
+export type { WorksheetAxis } from './workbook/worksheet-axis';
 export type { Workbook } from './workbook/workbook';
 export type { WorksheetCollection } from './workbook/worksheet-collection';
 export type { Worksheet } from './workbook/worksheet';
@@ -6,7 +7,7 @@ export type { Cell } from './workbook/cell';
 export type { RangeCollection } from './workbook/range-collection';
 export type { Range } from './workbook/range';
 export type { WorkbookExternalLinks } from './workbook/external-links';
-export type { CellSnapshot, ExternalLinkSnapshot } from './workbook/contract';
+export type { CellInput, CellSnapshot, ExternalLinkSnapshot, WorksheetSnapshot, WorksheetCreateOptions, RangeStyleOptions, CellStyle, RichTextRun, WorksheetPane, BorderPlacement, BorderLine, ClearFamily, FillDirection, FillMode, FillSeriesOptions } from './workbook/contract';
 
 export type { WorkbookRole } from '@react-sheets/protocol';
 export { workbookCapabilities, type WorkbookCapabilities } from './identity/workbook-capabilities';

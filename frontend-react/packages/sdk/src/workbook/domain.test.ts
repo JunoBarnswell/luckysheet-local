@@ -160,3 +160,162 @@ test('cross-scope, self and invalid-token binding refuse before touching target 
     }
   } finally { first.workbook.close(); second.workbook.close(); }
 });
+
+test('one explicit matrix preserves presentation and owns one undo/redo entry independent of selection', async () => {
+  const { session, workbook, sheet } = fixture('matrix-history');
+  try {
+    const range = workbook.worksheets.at(0).ranges.get('D8:E9');
+    sheet.cells.set(7, 3, { value: 99, style: { bold: true, borders: { bottom: { style: 'thin', color: '#112233' } } }, numberFormat: '0.00' });
+    session.selectAddress('A1');
+    const history = session['runtime'].commands.getUndoEntries().length;
+    await range.setValues([[1, '=literal'], [true, null]]);
+    assert.deepEqual(await range.readValues(), [[1, '=literal'], [true, null]]);
+    assert.equal(session['runtime'].commands.getUndoEntries().length, history + 1);
+    assert.equal((await range.read())[0]![0]!.style?.bold, true);
+    assert.equal((await range.read())[0]![0]!.numberFormat, '0.00');
+    assert.equal(await workbook.undo(), true);
+    assert.deepEqual(await range.readValues(), [[99, null], [null, null]]);
+    assert.equal(await workbook.redo(), true);
+    assert.deepEqual(await range.readValues(), [[1, '=literal'], [true, null]]);
+    assert.equal(sheet.cells.get(0, 0), undefined);
+    const read = await range.read();
+    assert.equal(Object.isFrozen(read), true); assert.equal(Object.isFrozen(read[0]), true);
+    assert.equal(Object.isFrozen(read[0]![0]!.style?.borders), true);
+    assert.throws(() => { (read[0]![0]!.style as { bold: boolean }).bold = false; }, TypeError);
+    assert.equal(sheet.cells.get(7, 3)?.style?.bold, true);
+  } finally { workbook.close(); }
+});
+
+test('typed values and formula matrices share the canonical calculation owner', async () => {
+  const { workbook } = fixture('matrix-formulas');
+  try {
+    const sheet = workbook.worksheets.at(0), range = sheet.ranges.get('B3:C4');
+    await range.setInputs([[{ kind: 'value', value: 10 }, { kind: 'formula', formula: '=B3*2' }], [{ kind: 'formula', formula: '=SUM(B3:C3)' }, { kind: 'value', value: '=literal' }]]);
+    assert.deepEqual(await range.readValues(), [[10, 20], [30, '=literal']]);
+    await sheet.ranges.get('E1:E2').setFormulas([['=SUM(B3:C3)'], ['=B4*2']]);
+    assert.deepEqual(await sheet.ranges.get('E1:E2').readValues(), [[30], [60]]);
+  } finally { workbook.close(); }
+});
+
+test('matrix shape, scalar, extent, budget and kernel target order reject before model or history changes', async () => {
+  const { session, workbook, sheet } = fixture('matrix-invalid');
+  try {
+    const range = workbook.worksheets.at(0).ranges.get('A1:B2');
+    const before = session['runtime'].model.snapshot(), history = session['runtime'].commands.getUndoEntries().length;
+    await assert.rejects(range.setValues([[1, 2]]), invalid);
+    await assert.rejects(range.setValues([[1, 2], [3, Infinity]]), invalid);
+    await assert.rejects(range.setFormulas([['=1', '=2'], ['=3', '4']]), invalid);
+    await assert.rejects(workbook.worksheets.at(0).ranges.get('A1:XFD2').read(), (cause: unknown) => cause instanceof SdkError && cause.code === 'UNSUPPORTED_FEATURE');
+    await assert.rejects(workbook.worksheets.at(0).ranges.get(`A${sheet.rowCount + 1}`).setValues([[1]]), invalid);
+    assert.throws(() => session['runtime'].commands.execute('sheet.cells.commitMatrix', { sheetId: sheet.id,
+      range: { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 1 },
+      entries: [{ row: 0, column: 0, input: { kind: 'value', value: 1 } }, { row: 0, column: 0, input: { kind: 'value', value: 2 } }] }), /row-major/);
+    assert.deepEqual(session['runtime'].model.snapshot(), before);
+    assert.equal(session['runtime'].commands.getUndoEntries().length, history);
+  } finally { workbook.close(); }
+});
+
+test('matrix DV, hidden source and viewer/history permissions reject the whole operation', async () => {
+  const { session, workbook, sheet } = fixture('matrix-permissions');
+  try {
+    session['runtime'].commands.execute('sheet.dv.add', { sheetId: sheet.id, rule: { id: 'matrix-minimum', sheetId: sheet.id,
+      ranges: [{ sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 1, endColumn: 1 }], type: 'whole', operator: 'greaterThan', formula1: '10', alertStyle: 'stop' } });
+    const range = workbook.worksheets.at(0).ranges.get('A1:B1');
+    const before = session['runtime'].model.snapshot(), history = session['runtime'].commands.getUndoEntries().length;
+    await assert.rejects(range.setValues([[2, 5]]), (cause: unknown) => cause instanceof SdkError && cause.code === 'REQUEST_REJECTED');
+    assert.deepEqual(session['runtime'].model.snapshot(), before);
+    assert.equal(session['runtime'].commands.getUndoEntries().length, history);
+    await range.setValues([[2, 11]]);
+    const written = session['runtime'].model.snapshot();
+    session['permission'].applyServerAccess({ unitId: workbook.id, role: 'viewer', accessRevision: 1, regions: [] });
+    await assert.rejects(range.setValues([[3, 12]]), (cause: unknown) => cause instanceof SdkError && cause.code === 'FORBIDDEN');
+    await assert.rejects(workbook.undo(), (cause: unknown) => cause instanceof SdkError && cause.code === 'FORBIDDEN');
+    assert.deepEqual(session['runtime'].model.snapshot(), written);
+    session['permission'].applyServerAccess({ unitId: workbook.id, role: 'owner', accessRevision: 2,
+      regions: [{ range: { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 1, endColumn: 1 }, access: 'hidden' }] });
+    await assert.rejects(range.read(), (cause: unknown) => cause instanceof SdkError && cause.code === 'FORBIDDEN');
+    await assert.rejects(range.setValues([[3, 12]]), (cause: unknown) => cause instanceof SdkError && cause.code === 'FORBIDDEN');
+    assert.deepEqual(session['runtime'].model.snapshot(), written);
+  } finally { workbook.close(); }
+});
+
+test('range clear families preserve content or presentation and border operations stay canonical', async () => {
+  const { workbook } = fixture('range-presentation');
+  try {
+    const range = workbook.worksheets.at(0).ranges.get('D8:E9');
+    await range.setValues([[1, 2], [3, 4]]); await range.setStyle({ bold: true }, { numberFormat: '0.00' });
+    await range.setBorders('outside', { style: 'thin', color: '#123456' });
+    assert.equal((await range.read())[0]![0]!.style?.borders?.top?.color, '#123456');
+    await range.clear('contents');
+    assert.deepEqual(await range.readValues(), [[null, null], [null, null]]);
+    assert.equal((await range.read())[0]![0]!.style?.bold, true);
+    await workbook.undo(); assert.deepEqual(await range.readValues(), [[1, 2], [3, 4]]);
+    await range.clear('formats');
+    assert.deepEqual(await range.readValues(), [[1, 2], [3, 4]]);
+    assert.equal((await range.read())[0]![0]!.style, undefined);
+    assert.equal((await range.read())[0]![0]!.numberFormat, undefined);
+  } finally { workbook.close(); }
+});
+
+test('worksheet dimensions and visibility share canonical ownership and offline structural changes reject', async () => {
+  const { workbook, session } = fixture('worksheet-objects');
+  try {
+    const sheet = workbook.worksheets.at(0);
+    await sheet.rows.setPixels([2], 30); await sheet.columns.setPixels([3], 90);
+    await sheet.rows.setHidden([2], true); await sheet.columns.setHidden([3], true);
+    await sheet.cells.get('D3').setValue(42); assert.equal((await sheet.cells.get('D3').read()).value, 42);
+    assert.equal(sheet.snapshot().rowHeightsPx[2], 30); assert.equal(sheet.snapshot().columnWidthsPx[3], 90);
+    assert.deepEqual(sheet.snapshot().hiddenRows, [2]); assert.deepEqual(sheet.snapshot().hiddenColumns, [3]);
+    await sheet.setPane({ kind: 'frozen', xSplit: 1, ySplit: 2, startRow: 2, startColumn: 1, state: 'frozen' });
+    assert.equal(sheet.snapshot().pane.kind, 'frozen');
+    const before = session['runtime'].model.snapshot();
+    for (const action of [() => sheet.rename('Changed'), () => sheet.rows.insert(0), () => sheet.duplicate('Copy'), () => workbook.worksheets.add({ name: 'Second' })]) {
+      await assert.rejects(action(), (cause: unknown) => cause instanceof SdkError && cause.code === 'REQUEST_REJECTED' && /STRUCTURAL_PLANNER_OFFLINE/.test(cause.message));
+    }
+    assert.deepEqual(session['runtime'].model.snapshot(), before);
+    await assert.rejects(sheet.columns.setHidden([-1], true), invalid);
+  } finally { workbook.close(); }
+});
+
+test('fill requires the real structural planner and explicit merge confirmation retains undo semantics', async () => {
+  const { workbook } = fixture('range-fill-merge');
+  try {
+    const sheet = workbook.worksheets.at(0), seed = sheet.ranges.get('A1:A2'), target = sheet.ranges.get('A1:A4');
+    await seed.setValues([[1], [2]]);
+    await assert.rejects(target.fillFrom(seed, 'down', 'series'), (cause: unknown) => cause instanceof SdkError && /STRUCTURAL_PLANNER_OFFLINE/.test(cause.message));
+    assert.deepEqual(await target.readValues(), [[1], [2], [null], [null]]);
+    const merge = sheet.ranges.get('D8:E8'); await merge.setValues([[10, 20]]);
+    await assert.rejects(merge.merge(), (cause: unknown) => cause instanceof SdkError && cause.code === 'REQUEST_REJECTED');
+    assert.deepEqual(await merge.readValues(), [[10, 20]]);
+    await merge.merge({ confirmDataLoss: true }); assert.deepEqual(await merge.readValues(), [[10, null]]);
+    assert.equal(sheet.snapshot().merges.length, 1);
+    await workbook.undo(); assert.deepEqual(await merge.readValues(), [[10, 20]]); assert.equal(sheet.snapshot().merges.length, 0);
+  } finally { workbook.close(); }
+});
+
+test('two-workbook value copy preserves source and rejects errors or another SDK scope', async () => {
+  const scope = {}, source = fixture('values-source', scope), target = fixture('values-target', scope), other = fixture('values-other');
+  try {
+    const from = source.workbook.worksheets.at(0).ranges.get('A1:B1'), to = target.workbook.worksheets.at(0).ranges.get('D8:E8');
+    await from.setInputs([[{ kind: 'formula', formula: '=2+3' }, { kind: 'value', value: 10 }]]);
+    await from.copyValuesTo(to); assert.deepEqual(await to.readValues(), [[5, 10]]); assert.deepEqual(await from.readValues(), [[5, 10]]);
+    assert.equal((await to.read())[0]![0]!.formula, undefined);
+    await assert.rejects(from.copyValuesTo(other.workbook.worksheets.at(0).ranges.get('A1:B1')), invalid);
+    await source.workbook.worksheets.at(0).cells.get('A1').setFormula('=1/0');
+    const before = target.session['runtime'].model.snapshot();
+    await assert.rejects(from.copyValuesTo(to), (cause: unknown) => cause instanceof SdkError && cause.code === 'UNSUPPORTED_FEATURE');
+    assert.deepEqual(target.session['runtime'].model.snapshot(), before);
+  } finally { source.workbook.close(); target.workbook.close(); other.workbook.close(); }
+});
+
+test('matrix intent is captured before async authorization and calculation waits', async () => {
+  const { workbook } = fixture('matrix-intent');
+  try {
+    const range = workbook.worksheets.at(0).ranges.get('A1');
+    const inputs: { kind: 'value'; value: number }[][] = [[{ kind: 'value', value: 1 }]];
+    const pending = range.setInputs(inputs);
+    inputs[0]![0]!.value = 999;
+    await pending;
+    assert.deepEqual(await range.readValues(), [[1]]);
+  } finally { workbook.close(); }
+});

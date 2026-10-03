@@ -1,11 +1,19 @@
 import type { Workbook } from './workbook';
 import { Worksheet } from './worksheet';
 import { domainFor } from './object-domain';
+import type { WorksheetCreateOptions } from './contract';
 
 export class WorksheetCollection {
   readonly #workbook: Workbook;
   readonly #objects = new Map<string, Worksheet>();
   constructor(workbook: Workbook) { this.#workbook = workbook; Object.freeze(this); }
+  async add(options: WorksheetCreateOptions): Promise<Worksheet> {
+    domainFor(this.#workbook).sheets();
+    if (!options || typeof options.name !== 'string') domainFor(this.#workbook).invalid('worksheets.add', new Error('Worksheet name is required.'));
+    const id = globalThis.crypto.randomUUID();
+    await domainFor(this.#workbook).command('worksheets.add', { commandId: 'sheet.add', params: { id, name: options.name, ...(options.rowCount === undefined ? {} : { rowCount: options.rowCount }), ...(options.columnCount === undefined ? {} : { columnCount: options.columnCount }) } });
+    return this.byId(id);
+  }
   list(): readonly Worksheet[] { return Object.freeze(domainFor(this.#workbook).sheets().map(sheet => this.byId(sheet.id))); }
   byId(id: string): Worksheet {
     if (!domainFor(this.#workbook).sheets().some(sheet => sheet.id === id)) return domainFor(this.#workbook).invalid('worksheets.byId', new Error(`Unknown sheet ID: ${id}`));

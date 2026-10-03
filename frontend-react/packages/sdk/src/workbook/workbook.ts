@@ -1,4 +1,6 @@
 import { cellAddress } from '@react-sheets/core-model';
+import type { CellSnapshot } from './contract';
+import { immutableSnapshot } from './value';
 import { CommandDispatchError, type WorkbookObjectPort } from '@react-sheets/spreadsheet-app';
 import { SdkError } from '../error';
 import { domainFor, registerWorkbookDomain } from './object-domain';
@@ -58,29 +60,61 @@ export class Workbook {
     this.#closeReady?.();
     this.#release();
   }
+  async undo(): Promise<boolean> { return domainFor(this).history('undo'); }
+  async redo(): Promise<boolean> { return domainFor(this).history('redo'); }
   async save(): Promise<void> { await this.#perform('workbook.save', () => this.#port.save()); }
   async flush(): Promise<void> { await this.#perform('workbook.flush', () => this.#port.flush()); }
   async #perform<T>(operation: string, action: () => Promise<T>, object?: { sheetId?: string; address?: string }): Promise<T> {
     try { this.#assertAlive(operation); const result = await action(); this.#assertAlive(operation); return result; }
     catch (cause) {
       if (cause instanceof SdkError) throw cause;
-      const code = cause instanceof Error && 'code' in cause && cause.code === 'CIRCULAR_DEPENDENCY' ? 'CIRCULAR_DEPENDENCY' : cause instanceof CommandDispatchError && cause.code === 'PERMISSION_DENIED' ? 'FORBIDDEN' : 'REQUEST_REJECTED';
+      const code = cause instanceof Error && 'code' in cause && cause.code === 'CIRCULAR_DEPENDENCY' ? 'CIRCULAR_DEPENDENCY' : cause instanceof CommandDispatchError && cause.code === 'PERMISSION_DENIED' ? 'FORBIDDEN' : cause instanceof Error && 'code' in cause && cause.code === 'STALE_OPERATION' ? 'STALE_OPERATION' : 'REQUEST_REJECTED';
       throw this.#error(code, operation, cause instanceof Error ? cause.message : '操作失败。', cause, object);
     }
+  }
+  #cellSnapshot(resolved: Awaited<ReturnType<WorkbookObjectPort['readCell']>>): CellSnapshot {
+    return immutableSnapshot({ value: resolved.cell?.value ?? null,
+      ...(resolved.cell?.formula === undefined ? {} : { formula: resolved.cell.formula }),
+      calculatedValue: resolved.calculatedValue, formulaHidden: resolved.formulaHidden,
+      ...(resolved.cell?.style === undefined ? {} : { style: resolved.cell.style }),
+      ...(resolved.cell?.numberFormat === undefined ? {} : { numberFormat: resolved.cell.numberFormat }),
+      ...(resolved.cell?.richText === undefined ? {} : { richText: resolved.cell.richText }),
+    });
   }
   #initializeDomain(scope: object): void {
     registerWorkbookDomain(this, {
       scope,
+      sheet: (sheetId) => {
+        this.#assertAlive('worksheet.read');
+        try { return this.#port.readWorksheet(sheetId); }
+        catch (cause) { throw this.#error('REQUEST_REJECTED', 'worksheet.read', cause instanceof Error ? cause.message : 'Worksheet metadata unavailable.', cause, { sheetId }); }
+      },
       sheets: () => { this.#assertAlive('worksheets.read'); return this.#port.sheets(); },
       invalid: (operation, cause, object) => { this.#assertAlive(operation); throw this.#error('INVALID_ARGUMENT', operation, cause instanceof Error ? cause.message : String(cause), cause, object); },
-      read: (sheetId, row, column) => this.#perform('cell.read', async () => {
-        const resolved = await this.#port.readCell(sheetId, row, column);
-        const result = { value: resolved.cell?.value ?? null,
-          ...(resolved.cell?.formula === undefined ? {} : { formula: resolved.cell.formula }),
-          calculatedValue: structuredClone(resolved.calculatedValue), formulaHidden: resolved.formulaHidden };
-        if (result.calculatedValue && typeof result.calculatedValue === 'object') Object.freeze(result.calculatedValue);
-        return Object.freeze(result);
-      }, { sheetId, address: cellAddress(row, column) }),
+      read: (sheetId, row, column) => this.#perform('cell.read', async () => this.#cellSnapshot(await this.#port.readCell(sheetId, row, column)), { sheetId, address: cellAddress(row, column) }),
+      readRange: (range) => this.#perform('range.read', async () => {
+        const cells = await this.#port.readCells(range), rows: CellSnapshot[][] = [];
+        const width = range.endColumn - range.startColumn + 1;
+        for (let index = 0; index < cells.length; index += width) rows.push(cells.slice(index, index + width).map(cell => this.#cellSnapshot(cell)));
+        return immutableSnapshot(rows);
+      }, { sheetId: range.sheetId }),
+      writeRange: (range, inputs) => this.#perform('range.write', async () => {
+        const plan = structuredClone(inputs);
+        const sheet = this.#port.sheets().find(sheet => sheet.id === range.sheetId);
+        if (!sheet || sheet.kind !== 'worksheet' || range.endRow >= sheet.rowCount || range.endColumn >= sheet.columnCount) throw this.#error('INVALID_ARGUMENT', 'range.write', 'Matrix must fit the canonical worksheet extent; use Worksheet.growExtent first.', undefined, { sheetId: range.sheetId });
+        const cells = await this.#port.readCells(range);
+        if (cells.some(cell => !cell.writable || cell.recordField || cell.sheetId !== range.sheetId)) throw this.#error('UNSUPPORTED_FEATURE', 'range.write', 'Matrix targets must be writable worksheet cells owned by this sheet.', undefined, { sheetId: range.sheetId });
+        const width = range.endColumn - range.startColumn + 1;
+        const entries = cells.map((cell, index) => ({ row: cell.row, column: cell.column, input: plan[Math.floor(index / width)]![index % width]!, inputContext: cell.inputContext }));
+        this.#assertAlive('range.write');
+        const result = await this.#port.dispatch({ commandId: 'sheet.cells.commitMatrix', params: { sheetId: range.sheetId, range, entries } });
+        if (result.status === 'rejected') throw result.error;
+      }, { sheetId: range.sheetId }),
+      command: (operation, descriptor) => this.#perform(operation, async () => {
+        const outcome = await this.#port.dispatch(structuredClone(descriptor));
+        if (outcome.status === 'rejected') throw outcome.error;
+      }),
+      history: (direction) => this.#perform(`workbook.${direction}`, async () => this.#port.history(direction)),
       write: (sheetId, row, column, input) => this.#perform(input.kind === 'value' ? 'cell.setValue' : 'cell.setFormula', async () => {
         const resolved = await this.#port.readCell(sheetId, row, column);
         if (!resolved.writable) throw this.#error('UNSUPPORTED_FEATURE', 'cell.write', '此单元格由只读派生 owner 管理。', undefined, { sheetId });
@@ -92,7 +126,7 @@ export class Workbook {
             ? { commandId: 'sheet.cell.commitTypedValue', params: { ...canonical, value: input.value } }
             : { commandId: 'sheet.cell.commitText', params: { ...canonical, text: input.formula } };
         this.#assertAlive('cell.write');
-        const outcome = await this.#port.dispatch(descriptor);
+        const outcome = await this.#port.dispatch(structuredClone(descriptor));
         if (outcome.status === 'rejected') throw outcome.error;
       }, { sheetId, address: cellAddress(row, column) }),
       bind: (source, token) => this.#perform('externalLinks.bind', async () => {

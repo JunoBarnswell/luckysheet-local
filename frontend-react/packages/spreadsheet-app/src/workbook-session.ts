@@ -138,6 +138,7 @@ import {
   type FormatPainterStylePattern,
   isCellEntryError,
   preflightDataToolCommand,
+  MAX_OBJECT_RANGE_CELLS,
 } from '@react-sheets/sheet-features';
 import { compareWorkbookValues, isSpillChild, type CanonicalExcelDateParts, type ExcelDateSystem, type RecalculationMode } from '@react-sheets/formula-engine';
 import {
@@ -739,7 +740,7 @@ export interface LocalObjectInsertInput {
   relationship?: EmbeddedObjectDrawingPayload['relationship'];
 }
 
-import { registerWorkbookObjectPort } from './workbook-object-port';
+import { registerWorkbookObjectPort, type WorkbookCellRead } from './workbook-object-port';
 
 export class WorkbookSession {
   private readonly runtime: SpreadsheetRuntime;
@@ -948,54 +949,17 @@ export class WorkbookSession {
       unitId: this.runtime.model.unitId,
       state: () => ({ phase: this.phase, notice: this.notice, name: this.runtime.model.name, disposed: this.disposed || this.runtime.disposed }),
       subscribeDisposed: (listener) => { this.disposedListeners.add(listener); return () => this.disposedListeners.delete(listener); },
-      sheets: () => this.runtime.model.getSheets().map(({ id, name, kind }) => ({ id, name, kind })),
-      readCell: async (sheetId, row, column) => {
-        const authorize = () => {
-          if (this.disposed || this.runtime.disposed) throw new Error('WORKBOOK_DISPOSED: 工作簿已关闭');
-          if (this.phase !== 'ready') throw new CommandDispatchError('WORKBOOK_NOT_READY', 'Workbook is not ready');
-          this.permission.syncFromWorkbook(this.runtime.model);
-          const result = this.permission.canSelectRange({ sheetId, startRow: row, endRow: row, startColumn: column, endColumn: column });
-          if (!result.allowed) throw new CommandDispatchError('PERMISSION_DENIED', result.reason ?? 'Cell is hidden');
-        };
-        authorize();
-        let resolved = this.readWorkbookViewCell(this.runtime.model.getSheet(sheetId), row, column);
-        const initialSourceAccess = this.permission.canSelectRange({ sheetId: resolved.owner.id, startRow: resolved.row, endRow: resolved.row, startColumn: resolved.column, endColumn: resolved.column });
-        if (!initialSourceAccess.allowed) throw new CommandDispatchError('PERMISSION_DENIED', initialSourceAccess.reason ?? 'Source cell is hidden');
-        const source = this.cellResolver.resolve(resolved.owner, resolved.row, resolved.column);
-        if (source?.region && source.state?.availability !== 'ready'
-          && resolved.row !== source.region.headerRow) {
-          const query = this.runtime.dataContent.get(source.region.sourceId);
-          if (!query) throw new Error(`DATA_CONTENT_UNAVAILABLE: ${source.region.sourceId}`);
-          const loaded = await query.getCellValue(
-            resolved.row - source.region.range.startRow - (source.region.headerRow === undefined ? 0 : 1),
-            resolved.column - source.region.range.startColumn,
-          );
-          if (loaded.state.availability !== 'ready') throw new Error(`DATA_CONTENT_UNAVAILABLE: ${loaded.state.error ?? source.region.sourceId}`);
-        }
-        if (this.runtime.model.dataModel.externalLinks.size) await refreshExternalLinks(this.runtime);
-        await this.waitForFormulaCalculation();
-        authorize();
-        resolved = this.readWorkbookViewCell(this.runtime.model.getSheet(sheetId), row, column);
-        const sourceAccess = this.permission.canSelectRange({ sheetId: resolved.owner.id, startRow: resolved.row, endRow: resolved.row, startColumn: resolved.column, endColumn: resolved.column });
-        if (!sourceAccess.allowed) throw new CommandDispatchError('PERMISSION_DENIED', sourceAccess.reason ?? 'Source cell is hidden');
-        const cell = resolved.cell ? structuredClone(resolved.cell) : undefined;
-        const formulaHidden = protectionResolver.isFormulaHidden(resolved.owner.protectionRules, resolved.owner.id, resolved.row, resolved.column, cell?.style);
-        const result = this.runtime.formula.getCellResult({ sheetId: resolved.owner.id, row: resolved.row, column: resolved.column });
-        const spill = this.runtime.formula.getSpillValueAt(resolved.owner.id, resolved.row, resolved.column);
-        const calculatedValue = spill !== undefined ? spill : result !== undefined ? result.value
-          : cell?.formulaValue !== undefined ? cell.formulaValue : cell?.value ?? null;
-        if (calculatedValue !== null && typeof calculatedValue !== 'string' && typeof calculatedValue !== 'boolean'
-          && !(typeof calculatedValue === 'number' && Number.isFinite(calculatedValue)) && !isCanonicalFormulaError(calculatedValue)) {
-          throw new Error('CALCULATION_CELL_VALUE_INVALID: Cell.read requires the canonical scalar or formula error');
-        }
-        if (cell?.formula && result === undefined && cell.formulaValue === undefined) throw new Error('CALCULATION_RESULT_UNAVAILABLE: explicit calculation is required');
-        if (cell && formulaHidden) { delete cell.formula; delete cell.formulaMetadata; }
-        return { sheetId: resolved.owner.id, row: resolved.row, column: resolved.column, cell,
-          calculatedValue: structuredClone(calculatedValue) as import('@react-sheets/core-model').FormulaValue,
-          writable: resolved.writable, formulaHidden, recordField: resolved.recordField,
-          inputContext: this.createInputContext('script-text', resolved.cell),
-        };
+      sheets: () => this.runtime.model.getSheets().map(({ id, name, kind, rowCount, columnCount, hidden, pane }) => ({ id, name, kind, rowCount, columnCount, hidden, pane: structuredClone(pane) })),
+      readWorksheet: (sheetId) => {
+        if (this.disposed || this.runtime.disposed || this.phase !== 'ready') throw new CommandDispatchError('WORKBOOK_NOT_READY', 'Workbook is not ready');
+        const sheet = this.runtime.model.getSheet(sheetId);
+        return structuredClone({ id: sheet.id, name: sheet.name, kind: sheet.kind, rowCount: sheet.rowCount, columnCount: sheet.columnCount, hidden: sheet.hidden,
+          pane: sheet.pane, defaultRowHeightPx: sheet.defaultRowHeightPx, defaultColumnWidthPx: sheet.defaultColumnWidthPx,
+          rowHeightsPx: sheet.rowHeightsPx, columnWidthsPx: sheet.columnWidthsPx, hiddenRows: [...sheet.hiddenRows], hiddenColumns: [...sheet.hiddenColumns], merges: sheet.merges });
       },
+      readCell: async (sheetId, row, column) => (await this.readObjectCells({ sheetId, startRow: row, endRow: row, startColumn: column, endColumn: column }))[0]!,
+      readCells: (range) => this.readObjectCells(range),
+      history: (direction) => this.replayObjectHistory(direction),
       dispatch: (descriptor) => this.dispatch(descriptor),
       subscribe: this.subscribe,
       flush: () => this.flushPendingChanges(),
@@ -1003,6 +967,63 @@ export class WorkbookSession {
       bindExternalLink: (binding) => this.bindExternalLink(binding),
       refreshExternalLinks: () => this.refreshWorkbookExternalLinks(),
     });
+  }
+
+  /** One authorized, calculated range read; no data escapes before all sources pass. */
+  private async readObjectCells(range: RangeRef): Promise<readonly WorkbookCellRead[]> {
+    if (![range.startRow, range.endRow, range.startColumn, range.endColumn].every(Number.isSafeInteger)
+      || range.startRow < 0 || range.startColumn < 0 || range.endRow < range.startRow || range.endColumn < range.startColumn
+      || range.endRow >= MAX_SHEET_ROW_COUNT || range.endColumn >= MAX_SHEET_COLUMN_COUNT
+      || (range.endRow - range.startRow + 1) * (range.endColumn - range.startColumn + 1) > MAX_OBJECT_RANGE_CELLS) throw new CommandDispatchError('COMMAND_REJECTED', 'Object range exceeds the canonical bounds or cell budget');
+    const authorize = () => {
+      if (this.disposed || this.runtime.disposed) throw new Error('WORKBOOK_DISPOSED: 工作簿已关闭');
+      if (this.phase !== 'ready') throw new CommandDispatchError('WORKBOOK_NOT_READY', 'Workbook is not ready');
+      this.permission.syncFromWorkbook(this.runtime.model);
+      const result = this.permission.canSelectRange(range);
+      if (!result.allowed) throw new CommandDispatchError('PERMISSION_DENIED', result.reason ?? 'Range is hidden');
+    };
+    const resolve = (row: number, column: number) => {
+      const resolved = this.readWorkbookViewCell(this.runtime.model.getSheet(range.sheetId), row, column);
+      const access = this.permission.canSelectRange({ sheetId: resolved.owner.id, startRow: resolved.row, endRow: resolved.row, startColumn: resolved.column, endColumn: resolved.column });
+      if (!access.allowed) throw new CommandDispatchError('PERMISSION_DENIED', access.reason ?? 'Source cell is hidden');
+      return resolved;
+    };
+    authorize();
+    const pending: Array<() => Promise<void>> = [], initial: ReturnType<typeof resolve>[] = [];
+    for (let row = range.startRow; row <= range.endRow; row++) for (let column = range.startColumn; column <= range.endColumn; column++) initial.push(resolve(row, column));
+    for (const resolved of initial) {
+      const source = this.cellResolver.resolve(resolved.owner, resolved.row, resolved.column);
+      if (source?.region && source.state?.availability !== 'ready' && resolved.row !== source.region.headerRow) {
+        const region = source.region, query = this.runtime.dataContent.get(region.sourceId);
+        if (!query) throw new Error(`DATA_CONTENT_UNAVAILABLE: ${region.sourceId}`);
+        pending.push(() => query.getCellValue(resolved.row - region.range.startRow - (region.headerRow === undefined ? 0 : 1), resolved.column - region.range.startColumn).then(loaded => {
+          if (loaded.state.availability !== 'ready') throw new Error(`DATA_CONTENT_UNAVAILABLE: ${loaded.state.error ?? region.sourceId}`);
+        }));
+      }
+    }
+    await Promise.all(pending.map(load => load()));
+    if (this.runtime.model.dataModel.externalLinks.size) await refreshExternalLinks(this.runtime);
+    await this.waitForFormulaCalculation();
+    authorize();
+    const output: WorkbookCellRead[] = [];
+    for (let row = range.startRow; row <= range.endRow; row++) for (let column = range.startColumn; column <= range.endColumn; column++) {
+      const resolved = resolve(row, column), source = this.cellResolver.resolve(resolved.owner, resolved.row, resolved.column);
+      if (source?.region && source.state?.availability !== 'ready' && resolved.row !== source.region.headerRow) throw new Error(`DATA_CONTENT_UNAVAILABLE: ${source.region.sourceId}`);
+      const cell = resolved.cell ? structuredClone(resolved.cell) : undefined;
+      const formulaHidden = protectionResolver.isFormulaHidden(resolved.owner.protectionRules, resolved.owner.id, resolved.row, resolved.column, cell?.style);
+      const result = this.runtime.formula.getCellResult({ sheetId: resolved.owner.id, row: resolved.row, column: resolved.column });
+      const spill = this.runtime.formula.getSpillValueAt(resolved.owner.id, resolved.row, resolved.column);
+      const calculatedValue = spill !== undefined ? spill : result !== undefined ? result.value : cell?.formulaValue !== undefined ? cell.formulaValue : cell?.value ?? null;
+      if (calculatedValue !== null && typeof calculatedValue !== 'string' && typeof calculatedValue !== 'boolean'
+        && !(typeof calculatedValue === 'number' && Number.isFinite(calculatedValue)) && !isCanonicalFormulaError(calculatedValue)) throw new Error('CALCULATION_CELL_VALUE_INVALID: Object reads require canonical scalars or formula errors');
+      if (cell?.formula && result === undefined && cell.formulaValue === undefined) throw new Error('CALCULATION_RESULT_UNAVAILABLE: explicit calculation is required');
+      if (cell && formulaHidden) { delete cell.formula; delete cell.formulaMetadata; }
+      output.push({ sheetId: resolved.owner.id, row: resolved.row, column: resolved.column, cell,
+        calculatedValue: structuredClone(calculatedValue) as import('@react-sheets/core-model').FormulaValue,
+        writable: resolved.writable, formulaHidden, recordField: resolved.recordField,
+        inputContext: this.createInputContext('script-text', resolved.cell) });
+    }
+    return output;
   }
 
   private ensureActiveSheetSession(): void {
@@ -3036,53 +3057,27 @@ export class WorkbookSession {
     return true;
   }
 
-  undo(): void {
-    const entry = this.runtime.commands.getUndoEntries().at(-1);
-    const hasStructuralMutation = entry?.forwardMutations.some((mutation) => (
-      mutation.id === 'rows.inserted' || mutation.id === 'rows.deleted'
-      || mutation.id === 'columns.inserted' || mutation.id === 'columns.deleted'
-      || mutation.id === 'cells.inserted' || mutation.id === 'cells.deleted'
-    )) ?? false;
-    if (entry?.committedRevision !== undefined
-      && this.runtime.collaboration
-      && hasStructuralMutation
-      && entry.committedRevision !== this.runtime.collaboration.getRevision()) {
-      this.notify('Structural Undo is no longer safe after a later workbook revision');
-      return;
-    }
-    if (entry && !this.canReplayHistory(entry.inversePlan)) {
-      this.notify('Undo is no longer allowed for the protected selection');
-      return;
-    }
+  private replayObjectHistory(direction: 'undo' | 'redo'): boolean {
+    if (this.disposed || this.runtime.disposed || this.phase !== 'ready') throw new CommandDispatchError('WORKBOOK_NOT_READY', 'Workbook is not ready for history replay');
+    this.permission.syncFromWorkbook(this.runtime.model);
+    const entry = (direction === 'undo' ? this.runtime.commands.getUndoEntries() : this.runtime.commands.getRedoEntries()).at(-1);
+    if (!entry) return false;
+    const structural = entry.forwardMutations.some(mutation => ['rows.inserted', 'rows.deleted', 'columns.inserted', 'columns.deleted', 'cells.inserted', 'cells.deleted'].includes(mutation.id));
+    if (entry.committedRevision !== undefined && this.runtime.collaboration && structural && entry.committedRevision !== this.runtime.collaboration.getRevision()) throw Object.assign(new Error('Structural history is no longer safe after a later workbook revision'), { code: 'STALE_OPERATION' });
+    if (!this.canReplayHistory(direction === 'undo' ? entry.inversePlan : entry.forwardMutations)) throw new CommandDispatchError('PERMISSION_DENIED', 'History replay is no longer permitted');
     try {
-      if (this.runtime.commands.undo()) {
-        this.ensureActiveSheetSession();
-        this.reconcileDrawingSessionState();
-        this.syncDraftFromPrimary();
-        this.notify('Undo applied');
-        this.refresh();
-      }
-    } catch (error) {
-      if (!this.handleMutationRecovery(error)) throw error;
-    }
+      const applied = direction === 'undo' ? this.runtime.commands.undo() : this.runtime.commands.redo();
+      if (applied) { this.ensureActiveSheetSession(); this.reconcileDrawingSessionState(); this.syncDraftFromPrimary(); this.notify(direction === 'undo' ? 'Undo applied' : 'Redo applied'); this.refresh(); }
+      return applied;
+    } catch (error) { this.handleMutationRecovery(error); throw error; }
   }
-
-  redo(): void {
-    const entry = this.runtime.commands.getRedoEntries().at(-1);
-    if (entry && !this.canReplayHistory(entry.forwardMutations)) {
-      this.notify('Redo is no longer allowed for the protected selection');
-      return;
-    }
-    try {
-      if (this.runtime.commands.redo()) {
-        this.ensureActiveSheetSession();
-        this.reconcileDrawingSessionState();
-        this.syncDraftFromPrimary();
-        this.notify('Redo applied');
-        this.refresh();
-      }
-    } catch (error) {
-      if (!this.handleMutationRecovery(error)) throw error;
+  undo(): void { this.replayUiHistory('undo'); }
+  redo(): void { this.replayUiHistory('redo'); }
+  private replayUiHistory(direction: 'undo' | 'redo'): void {
+    try { this.replayObjectHistory(direction); }
+    catch (error) {
+      if (error instanceof CommandDispatchError || error instanceof Error && 'code' in error && error.code === 'STALE_OPERATION') this.notify(error.message);
+      else if (!this.handleMutationRecovery(error)) throw error;
     }
   }
 

@@ -16,7 +16,8 @@ export class RangeCollection {
       const start = parseCellAddress(parts[0]!), end = parseCellAddress(parts.at(-1)!);
       if (end.row < start.row || end.column < start.column) throw new Error('Range endpoints must be ordered');
       domainFor(this.#workbook).sheets();
-      return new Range(this.#sheet, start, end);
+      this.#sheet.name;
+      return new Range(this.#workbook, this.#sheet, start, end);
     } catch (cause) { return domainFor(this.#workbook).invalid('ranges.get', cause, { sheetId: this.#sheet.id, address: input }); }
   }
 }

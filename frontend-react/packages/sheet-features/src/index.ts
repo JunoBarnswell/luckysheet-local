@@ -138,6 +138,14 @@ export interface CommitTextCellsParams {
   validationConfirmation?: boolean;
 }
 
+export const MAX_OBJECT_RANGE_CELLS = 10_000;
+export interface CommitMatrixParams {
+  sheetId: string;
+  range: RangeRef;
+  entries: Array<{ row: number; column: number; input: { kind: 'value'; value: CellData['value'] } | { kind: 'formula'; formula: string }; inputContext: CellInputInterpretationContext }>;
+  validationConfirmation?: boolean;
+}
+
 export interface CommitTypedValueCellsParams {
   value: CellData['value'];
   targets: Array<{ sheetId: string; row: number; column: number }>;
@@ -1661,6 +1669,31 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       });
       for (const entry of prepared) applyPreparedCellEntry(entry, context);
       return { operationId: context.operationId, mutationCount: prepared.length, affectedRanges: prepared.flatMap((entry) => entry.affectedRanges) };
+    },
+  });
+
+  runtime.registry.registerCommand<CommitMatrixParams>({
+    id: 'sheet.cells.commitMatrix',
+    execute: (params, context) => {
+      const target = { sheetId: params.sheetId, row: params.range?.startRow ?? 0, column: params.range?.startColumn ?? 0 };
+      if (!isRange(params.range) || params.range.sheetId !== params.sheetId || !Array.isArray(params.entries)) rejectCellEntry(target, 'Matrix requires a canonical rectangular range and complete entries', 'Submit one ordered explicit matrix.');
+      const sheet = context.workbook.getSheet(params.sheetId), width = params.range.endColumn - params.range.startColumn + 1;
+      const area = (params.range.endRow - params.range.startRow + 1) * width;
+      if (sheet.kind !== 'worksheet' || area < 1 || area > MAX_OBJECT_RANGE_CELLS || area !== params.entries.length || params.range.endRow >= sheet.rowCount || params.range.endColumn >= sheet.columnCount) rejectCellEntry(target, 'Matrix exceeds its worksheet ownership, extent, dimensions or cell budget', 'Use writable worksheet cells and explicit extent growth before a bounded matrix.');
+      const prepared = params.entries.map((entry, index) => {
+        if (!entry || entry.row !== params.range.startRow + Math.floor(index / width) || entry.column !== params.range.startColumn + index % width) rejectCellEntry(target, 'Matrix entries must cover the range exactly in row-major order', 'Submit all unique targets in canonical order.');
+        const previous = sheet.cells.get(entry.row, entry.column), input = entry.input;
+        let next: CellData;
+        if (input?.kind === 'value' && (input.value === null || typeof input.value === 'string' || typeof input.value === 'boolean' || typeof input.value === 'number' && Number.isFinite(input.value))) {
+          next = clearFormulaProvenance(previous ? structuredClone(previous) : { value: null });
+          next.value = input.value; delete next.formula; delete next.formulaValue; delete next.displayValue; delete next.richText;
+        } else if (input?.kind === 'formula' && typeof input.formula === 'string' && input.formula.startsWith('=') && input.formula.length > 1) next = buildCellFromText(input.formula, previous, entry.inputContext);
+        else rejectCellEntry({ sheetId: params.sheetId, row: entry.row, column: entry.column }, 'Matrix input must be a finite typed scalar or an explicit formula', 'Correct the entire matrix before resubmitting.');
+        if (previous?.editor?.kind === 'checkbox') next.value = normalizeCheckboxCellValue(next, previous.editor);
+        return prepareCellEntry({ sheetId: params.sheetId, row: entry.row, column: entry.column, validationConfirmation: params.validationConfirmation }, next, context);
+      });
+      for (const entry of prepared) applyPreparedCellEntry(entry, context);
+      return { operationId: context.operationId, mutationCount: prepared.length, affectedRanges: prepared.flatMap(entry => entry.affectedRanges) };
     },
   });
 
