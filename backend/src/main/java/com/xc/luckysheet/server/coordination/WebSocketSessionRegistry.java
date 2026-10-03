@@ -70,6 +70,14 @@ public class WebSocketSessionRegistry {
         });
     }
 
+    public void broadcastLifecycleChanged(String unitId) {
+        broadcastCalculationChanged(unitId);
+        for (WebSocketSession peer : sessionsByUnit.getOrDefault(unitId, Set.of())) {
+            unsubscribeCalculation(peer);
+            closeRevokedSession(peer);
+        }
+    }
+
     public void join(String unitId, WebSocketSession session) {
         String previous = unitId(session);
         if (previous != null && !previous.equals(unitId)) leave(previous, session);

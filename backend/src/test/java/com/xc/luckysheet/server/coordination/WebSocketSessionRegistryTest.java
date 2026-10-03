@@ -69,6 +69,23 @@ class WebSocketSessionRegistryTest {
     }
 
     @Test
+    void lifecycleNotificationKeepsDependentSubscriptionAndClosesTheSourceSession() throws Exception {
+        AccessControlService access = mock(AccessControlService.class);
+        WebSocketSessionRegistry registry = new WebSocketSessionRegistry(new ObjectMapper(), access,
+                mock(RangeAccessService.class), mock(AccessProjectionService.class));
+        WebSocketSession dependent = mock(WebSocketSession.class), source = mock(WebSocketSession.class);
+        for (WebSocketSession session : List.of(dependent, source)) {
+            when(session.isOpen()).thenReturn(true);
+            when(session.getPrincipal()).thenReturn((Principal) () -> "reader");
+            when(session.getAttributes()).thenReturn(new java.util.concurrent.ConcurrentHashMap<>());
+        }
+        registry.subscribeCalculation("root", java.util.Set.of("leaf"), dependent); registry.join("leaf", source);
+        registry.broadcastLifecycleChanged("leaf"); registry.broadcastLifecycleChanged("leaf");
+        verify(dependent, times(2)).sendMessage(any()); verify(dependent, never()).close(any());
+        verify(source, times(2)).close(eq(CloseStatus.POLICY_VIOLATION));
+    }
+
+    @Test
     void revokedOrUnauthorizedSessionIsClosedBeforeReceivingRemoteRevision() throws Exception {
         AccessControlService access = mock(AccessControlService.class);
         WebSocketSessionRegistry registry = new WebSocketSessionRegistry(new ObjectMapper().findAndRegisterModules(), access,

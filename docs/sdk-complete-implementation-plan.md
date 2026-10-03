@@ -100,3 +100,11 @@ WebSocket 增加正式 calculation.subscribe / calculation.changed 契约；闭�
 预设 MWB-03.a：A=10，B=A*2，C=SUM(B)、COUNT(B)、IFERROR(B)，一份授权图重算为 20/1/20；A 提交 40 后，不调用手动 refresh，C 自动变为 80/1/80，保存重开一致。MWB-03.b：关闭 A 的公开对象后仍观察真实服务端 A 的更新；撤销叶子 A 权限后三个 C 结果均 #BLOCKED!，图无 A 快照；恢复后自动恢复授权版本。MWB-03.c：尝试 C→A→B→C 绑定及伪造 REST externalLink.set，均 CIRCULAR_DEPENDENCY 拒绝，所有快照、revision、history/operations 不变；并发两个方向绑定至多一个成功。MWB-03.d：坏 schema、重复 node、坏版本、缺节点、越界、预算失败与过期 runtime 不能发布/留下旧来源缓存；inline/Worker 同结果。所有细项先 Pending，之后记录真实执行。
 
 当前图捕获仅接受已物化输入。带数据块的来源统一返回 UNSUPPORTED_FEATURE，避免缺少 block hydration 时读成空值；完整流式来源由 R1 批次处理。
+
+### C2 事务契约审查后的完整修正批次
+
+首轮 b8a9fbdd 浏览器 7 Pass/3 Fail/6 未执行；实际三簿计算、自动更新、撤权、恢复和重开断言通过，但图 GET 的额外 409 导致 network/console 验收失败，原始 trace 在 `/tmp/sdk-graph-first-attempt-test-results`。409 body 是 ORM 乐观版本冲突，不是声明的 EXTERNAL_GRAPH_CHANGED。未锁读取的 JPA entity 留在 persistence context，随后升级 pessimistic lock 验证旧版本，说明锁前 entity 生命周期违反版本捕获契约。不得隐藏这些 409 或重试请求。
+
+完整修正采用一次规范拓扑闭包收集（仅内部锁集，不是持久化/read model），锁前 flush/clear 去掉未锁 entity，按稳定 ID 获取所有规范依赖的数据库锁，再清理 ORM 并产生授权响应。拒绝节点的后代也只内部锁定，响应只遍历授权可见闭包，禁止暴露拒绝节点的快照或内部后代；这样权限变化不会改变已锁集合。新建/复制/导入、永久删除和历史恢复都经过同一图门控；恢复候选必须重新检查循环和授权。来源 trash/purge 是 broken 输入并发送生命周期失效通知，restore-from-trash 重新获取授权版本。
+
+新增实施前细项 MWB-03.e：事务已有旧 source entity 后另一真实事务写入 40，图必须读到新的版本与值且无 409；锁前缓存不能代表来源版本。MWB-03.f：A→B 曾合法，移除后 B→A，再恢复旧 A→B 必须整体拒绝，无新 operation/revision；来源 trash→restore→trash/purge 自动触发 #REF!→80/1/80→#REF!，坏来源节点无 snapshot。修正整个上述事务链后再统一验证，既有拒绝断言保持。

@@ -137,9 +137,14 @@ public class WorkbookOperationService {
         graphJdbc.queryForObject("select gate_id from workbook_dependency_gate where gate_id='canonical' for update", String.class);
     }
 
+    /** Catalog births/removals and restores change the canonical dependency topology. */
+    @Transactional
+    public void lockExternalTopology() { lockCalculationGraph(); }
+
     /** Authorized, fixed-version closure. The graph is a projection of canonical snapshots. */
     @Transactional
     public JsonNode readExternalCalculationGraph(String rootId, String actor, List<String> groups) {
+        access.require(rootId, actor, WorkbookRole.VIEWER);
         lockCalculationGraph();
         var nodes = captureCalculationGraph(rootId, null, actor, groups);
         ObjectNode result = mapper.createObjectNode().put("schema", "ExternalCalculationGraph").put("rootUnitId", rootId).put("subject", actor);
@@ -148,12 +153,29 @@ public class WorkbookOperationService {
     }
 
     private java.util.LinkedHashMap<String, ObjectNode> captureCalculationGraph(String rootId, JsonNode candidate, String actor, List<String> groups) {
-        var before = collectCalculationGraph(rootId, candidate, actor, groups);
-        before.keySet().stream().sorted().forEach(id -> store.findForUpdate(id));
         graphEntities.flush(); graphEntities.clear();
+        var locked = new java.util.TreeSet<String>();
+        collectCanonicalCalculationClosure(rootId, rootId, candidate, locked, new java.util.LinkedHashSet<>());
+        // Unlocked discovery entities cannot be upgraded to current-version locks.
+        graphEntities.flush(); graphEntities.clear();
+        locked.forEach(id -> store.findForUpdate(id));
+        graphEntities.clear();
         var nodes = collectCalculationGraph(rootId, candidate, actor, groups);
-        if (!before.keySet().equals(nodes.keySet())) throw new ServiceException("EXTERNAL_GRAPH_CHANGED", 409, "Dependency closure changed during capture; request current inputs");
+        if (!locked.containsAll(nodes.keySet())) throw new ServiceException("EXTERNAL_GRAPH_CHANGED", 409, "Dependency closure changed during capture; request current inputs");
         return nodes;
+    }
+
+    /** Internal lock identities only; inaccessible snapshots never enter the wire graph. */
+    private void collectCanonicalCalculationClosure(String id, String rootId, JsonNode candidate, java.util.Set<String> ids, java.util.Set<String> visiting) {
+        if (visiting.contains(id)) throw new ServiceException("CIRCULAR_DEPENDENCY", 422, "External workbook dependency cycle");
+        if (ids.contains(id)) return;
+        if (ids.size() >= 64) throw ServiceException.unsupportedFeature("External calculation graph exceeds 64 workbooks");
+        ids.add(id); visiting.add(id);
+        JsonNode snapshot = candidate != null && id.equals(rootId) ? candidate : store.find(id).map(this::currentSnapshot).orElse(null);
+        if (snapshot != null) for (JsonNode link : snapshot.path("dataModel").path("externalLinks")) {
+            collectCanonicalCalculationClosure(link.path("sourceUnitId").asText(), rootId, candidate, ids, visiting);
+        }
+        visiting.remove(id);
     }
 
     @Transactional
@@ -207,7 +229,7 @@ public class WorkbookOperationService {
         try { node = calculationNode(id, candidate != null && id.equals(rootId) ? candidate : null, actor, groups, !id.equals(rootId)); }
         catch (ServiceException error) {
             if (id.equals(rootId)) throw error;
-            String state = error.status() == 401 || error.status() == 403 ? "denied" : error.status() == 404 ? "broken" : "unavailable";
+            String state = error.status() == 401 || error.status() == 403 ? "denied" : error.status() == 404 || error.code().equals("WORKBOOK_TRASHED") ? "broken" : "unavailable";
             node = mapper.createObjectNode().put("unitId", id).put("state", state);
             node.putObject("error").put("code", error.code()).put("message", error.getMessage());
         }
@@ -223,6 +245,7 @@ public class WorkbookOperationService {
         RangeAccessResolver resolver = null;
         JsonNode canonical;
         if (candidate == null) {
+            if (requireWorkbook(id).lifecycle() != WorkbookLifecycle.ACTIVE) throw ServiceException.trashed("External calculation workbook is in trash");
             var source = readSnapshot(id, actor, groups);
             resolver = rangeAccess.resolver(id, actor, groups);
             canonical = source.snapshot(); revision = source.revision(); accessRevision = resolver.accessRevision();
@@ -777,12 +800,19 @@ public class WorkbookOperationService {
 
     @Transactional
     public RestoreResult restore(String unitId, RestoreRequest request, String actor) {
+        return restore(unitId, request, actor, List.of());
+    }
+
+    @Transactional
+    public RestoreResult restore(String unitId, RestoreRequest request, String actor, List<String> groups) {
+        lockCalculationGraph();
         return withWorkbookLock(unitId, () -> {
             access.require(unitId, actor, WorkbookRole.OWNER);
             WorkbookRow row = store.findForUpdate(unitId).orElseThrow(() -> ServiceException.notFound("Workbook not found: " + unitId));
             if (request.targetRevision() > row.revision()) throw ServiceException.notFound("Revision not found: " + request.targetRevision());
             JsonNode target = snapshotAtRevision(row, request.targetRevision());
             WorkbookSnapshotValidator.requireCanonical(target, unitId);
+            validateExternalDefinitions(target, actor, groups);
             dataBlockPublication.requireSnapshot(unitId, target);
             registry.require("workbook.restore", true);
             long revision = row.revision() + 1;

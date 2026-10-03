@@ -189,6 +189,7 @@ public class WorkbookCatalogService {
 
     @Transactional
     public WorkbookSummary copy(String unitId, CopyWorkbookRequest request, String actor) {
+        operations.lockExternalTopology();
         WorkbookEntity source = requireActiveOrTrashed(unitId);
         if (source.getLifecycle() != WorkbookLifecycle.ACTIVE) throw ServiceException.trashed("Workbook is in trash and cannot be copied");
         requireRole(unitId, actor, WorkbookRole.VIEWER);
@@ -217,6 +218,7 @@ public class WorkbookCatalogService {
 
     @Transactional
     public WorkbookSummary moveToTrash(String unitId, String actor) {
+        operations.lockExternalTopology();
         WorkbookEntity entity = lockActiveOrTrashed(unitId);
         requireRole(unitId, actor, WorkbookRole.OWNER);
         if (entity.getLifecycle() == WorkbookLifecycle.TRASHED) return summaryForActor(entity, actor);
@@ -227,6 +229,7 @@ public class WorkbookCatalogService {
 
     @Transactional
     public WorkbookSummary restoreFromTrash(String unitId, String actor) {
+        operations.lockExternalTopology();
         WorkbookEntity entity = lockActiveOrTrashed(unitId);
         requireRole(unitId, actor, WorkbookRole.OWNER);
         if (entity.getLifecycle() != WorkbookLifecycle.TRASHED) return summaryForActor(entity, actor);
@@ -237,6 +240,7 @@ public class WorkbookCatalogService {
 
     @Transactional
     public void purge(String unitId, String actor) {
+        operations.lockExternalTopology();
         WorkbookEntity entity = lockActiveOrTrashed(unitId);
         requireRole(unitId, actor, WorkbookRole.OWNER);
         if (entity.getLifecycle() != WorkbookLifecycle.TRASHED) throw ServiceException.conflict("Workbook must be in trash before purge");
@@ -369,6 +373,7 @@ public class WorkbookCatalogService {
                 now, now, actor, space.getSpaceId(), folderId,
                 com.xc.luckysheet.server.contract.WorkbookStorageLocation.REMOTE,
                 request.source(), WorkbookLifecycle.ACTIVE, null);
+        operations.lockExternalTopology();
         if (request.snapshot().path("dataModel").path("externalLinks").size() > 0) operations.validateExternalDefinitions(request.snapshot(), actor, List.of());
         workbooks.saveAndFlush(entity);
         if (blockSourceUnitId == null) {

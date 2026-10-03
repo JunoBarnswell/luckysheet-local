@@ -138,17 +138,21 @@ public class WorkbookController {
     @DeleteMapping("/{unitId}")
     public ResponseEntity<Void> moveToTrash(@PathVariable String unitId, Authentication authentication) {
         catalog.moveToTrash(unitId, ActorIdentity.subject(authentication));
+        sessions.broadcastLifecycleChanged(unitId);
         return ResponseEntity.noContent().build();
     }
 
     @PostMapping("/{unitId}/restore-from-trash")
     public WorkbookSummary restoreFromTrash(@PathVariable String unitId, Authentication authentication) {
-        return catalog.restoreFromTrash(unitId, ActorIdentity.subject(authentication));
+        var summary = catalog.restoreFromTrash(unitId, ActorIdentity.subject(authentication));
+        sessions.broadcastLifecycleChanged(unitId);
+        return summary;
     }
 
     @DeleteMapping("/{unitId}/purge")
     public ResponseEntity<Void> purge(@PathVariable String unitId, Authentication authentication) {
         catalog.purge(unitId, ActorIdentity.subject(authentication));
+        sessions.broadcastLifecycleChanged(unitId);
         return ResponseEntity.noContent().build();
     }
 
@@ -248,7 +252,7 @@ public class WorkbookController {
 
     @PostMapping("/{unitId}/restore")
     public WorkbookOperationService.RestoreResult restore(@PathVariable String unitId, @Valid @RequestBody RestoreRequest request, Authentication authentication) {
-        WorkbookOperationService.RestoreResult result = operations.restore(unitId, request, ActorIdentity.subject(authentication));
+        WorkbookOperationService.RestoreResult result = operations.restore(unitId, request, ActorIdentity.subject(authentication), ActorIdentity.groups(authentication));
         sessions.broadcastRevision(result.operation());
         return result;
     }

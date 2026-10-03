@@ -226,6 +226,27 @@ test('MWB-03.a/b/c: three-workbook graph propagates real source commits and auth
     expect(cycle).toBe('CIRCULAR_DEPENDENCY');
     expect(await (await page.request.get(`/api/workbooks/${setup.a}/snapshot`)).json()).toEqual(before);
     expect((await readRoot()).values).toEqual([80, 1, 80]);
+
+    const waitLeafState = (state: 'broken' | 'connected') => readerPage.waitForResponse(async response => {
+      if (!response.ok() || new URL(response.url()).pathname !== graphPath) return false;
+      return (await response.json()).nodes.some((node: { unitId: string; state: string }) => node.unitId === setup.a && node.state === state);
+    });
+    const automaticTrash = waitLeafState('broken');
+    await owner.evaluate((sdk, id) => sdk.workbooks.moveToTrash(id), setup.a);
+    const trashed = await (await automaticTrash).json();
+    expect(trashed.nodes.find((node: { unitId: string }) => node.unitId === setup.a)).not.toHaveProperty('snapshot');
+    for (const value of (await readRoot()).values) expect(value).toMatchObject({ kind: 'error', code: '#REF!' });
+    const automaticUntrash = waitLeafState('connected');
+    await owner.evaluate((sdk, id) => sdk.workbooks.restore(id), setup.a); await automaticUntrash;
+    expect((await readRoot()).values).toEqual([80, 1, 80]);
+    const secondTrash = waitLeafState('broken');
+    await owner.evaluate((sdk, id) => sdk.workbooks.moveToTrash(id), setup.a); await secondTrash;
+    const automaticPurge = readerPage.waitForResponse(async response => {
+      if (!response.ok() || new URL(response.url()).pathname !== graphPath) return false;
+      return (await response.json()).nodes.some((node: { unitId: string; error?: { code: string } }) => node.unitId === setup.a && node.error?.code === 'NOT_FOUND');
+    });
+    await owner.evaluate((sdk, id) => sdk.workbooks.purge(id), setup.a); await automaticPurge;
+    for (const value of (await readRoot()).values) expect(value).toMatchObject({ kind: 'error', code: '#REF!' });
     expect(rejected).toEqual([{ path: `/api/workbooks/${setup.a}/external-calculation/binding-validation`, status: 422 }]);
     expect(ownerDiagnostics.consoleErrors.filter(message => !/Failed to load resource:.*422/.test(message))).toEqual([]);
     expect(ownerDiagnostics.pageErrors).toEqual([]); expect(ownerDiagnostics.requestFailures).toEqual([]);

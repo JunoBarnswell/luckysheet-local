@@ -242,3 +242,7 @@ SDK 拥有认证/身份/凭证/组合根/工作簿目录与生命周期/Excel �
 SDK 42/42、calculation-domain 457/457（452 主域 + 5 结构/引用域）、Java 331/331、build/typecheck 与 boundaries Pass。新增测试覆盖 A→B→C 的 20/1/20、叶子拒绝三式均 #BLOCKED!、恢复为 80/1/80、Worker 快照同结果、坏图/预算拒绝，以及并发相反绑定仅一个写入、另一操作无 history/版本写入。日志 `/tmp/sdk-graph-sdk.log`、`/tmp/sdk-graph-calculation-current-fixture.log`、`/tmp/sdk-graph-java.log`、`/tmp/sdk-graph-build-current-fixture.log`、`/tmp/sdk-graph-boundaries.log`。首次前端验收 fixture 调用了不存在的 Worker 快照方法，原始失败日志保留；按真实 exportCalculationSnapshot/fromCalculationSnapshot 契约同步后通过，产品实现未改。
 
 全量 unit 1557/1503 Pass/54 Fail；与 I1 失败标题新增/减少均为 0（`/tmp/sdk-graph-all-unit.log`）。真实浏览器的自动传播、关闭来源对象、撤权/恢复、重开和 SDK 循环拒绝此刻尚未执行，MWB-03 保持 Pending，下一步在已提交的干净 head 执行。全计划与合并门禁仍未完成。
+
+C2 首轮干净 head b8a9fbddffac618d63c6a285aee31e134f2fb675 的真实浏览器 **7 Pass/3 Fail/6 未执行**；三簿数值、服务器通知自动请求、撤权恢复、保存重开与循环前置拒绝已逐条通过，但意外图 GET 409 使 console/network 检查失败，不能报整项通过。原始日志 `/tmp/sdk-graph-browser.log`、trace `/tmp/sdk-graph-first-attempt-test-results`、后端证据 `/tmp/sdk-product-uat-nNd04n/evidence`。实际 409 为 stale ORM entity 升级锁时的乐观版本冲突；完成整体锁/ORM/拓扑入口审查后，统一更换为规范内部闭包锁集合、锁前 flush/clear、授权响应重新读取，并补齐 history restore 与 source 生命周期。
+
+修正批次 Java **334/334 Pass**（`/tmp/sdk-graph-capture-java-current-fixture.log`）、typecheck/boundaries Pass。真实两事务旧 entity 后源提交 40 的读图验证通过；循环历史恢复零快照/版本变化、trash/restore/purge 无失效来源 snapshot、订阅生命周期检查通过。首轮新增来源写入 fixture 未携 canonical writeAuthority，服务端正确拒绝；按既有写入契约补全测试输入后通过，修正批次产品源保持冻结。浏览器待此批提交后执行，当前完整 C2 验收仍未通过。
