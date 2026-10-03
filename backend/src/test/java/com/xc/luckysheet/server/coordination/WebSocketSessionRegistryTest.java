@@ -143,4 +143,64 @@ class WebSocketSessionRegistryTest {
 
         verify(session).close(eq(CloseStatus.POLICY_VIOLATION));
     }
+    @Test
+    void concurrentAccessAndCalculationBroadcastsShareOneConnectionWriter() throws Exception {
+        var registry = new WebSocketSessionRegistry(new ObjectMapper(), mock(AccessControlService.class),
+                mock(RangeAccessService.class), mock(AccessProjectionService.class));
+        var session = mock(WebSocketSession.class);
+        when(session.isOpen()).thenReturn(true);
+        when(session.getPrincipal()).thenReturn(authenticated("reader", Instant.now().plusSeconds(60)));
+        when(session.getAttributes()).thenReturn(new java.util.concurrent.ConcurrentHashMap<>());
+        registry.join("root", session);
+        registry.subscribeCalculation("root", java.util.Set.of("source"), session);
+        var entered = new java.util.concurrent.CountDownLatch(1);
+        var release = new java.util.concurrent.CountDownLatch(1);
+        var writes = new java.util.concurrent.atomic.AtomicInteger();
+        var active = new java.util.concurrent.atomic.AtomicInteger();
+        org.mockito.Mockito.doAnswer(invocation -> {
+            assertEquals(1, active.incrementAndGet(), "a WebSocket cannot accept concurrent writers");
+            try {
+                if (writes.incrementAndGet() == 1) {
+                    entered.countDown();
+                    if (!release.await(5, java.util.concurrent.TimeUnit.SECONDS)) throw new IllegalStateException("Writer timed out");
+                }
+            } finally { active.decrementAndGet(); }
+            return null;
+        }).when(session).sendMessage(any());
+        try (var executor = java.util.concurrent.Executors.newFixedThreadPool(2)) {
+            var first = executor.submit(() -> registry.broadcastAccessChanged("source", 7));
+            org.junit.jupiter.api.Assertions.assertTrue(entered.await(5, java.util.concurrent.TimeUnit.SECONDS));
+            var second = executor.submit(() -> registry.broadcastAccessChanged("root", 8));
+            try {
+                org.junit.jupiter.api.Assertions.assertThrows(java.util.concurrent.TimeoutException.class,
+                        () -> second.get(100, java.util.concurrent.TimeUnit.MILLISECONDS));
+            } finally { release.countDown(); }
+            first.get(5, java.util.concurrent.TimeUnit.SECONDS);
+            second.get(5, java.util.concurrent.TimeUnit.SECONDS);
+        }
+        assertEquals(2, writes.get());
+        verify(session, never()).close(any());
+    }
+
+    @Test
+    void failedTransportRetiresMembershipAndCalculationWithoutRejectingCommittedFacts() throws Exception {
+        for (Exception failure : List.of(new java.io.IOException("Transport closed"), new IllegalStateException("Writer unavailable"))) {
+            var registry = new WebSocketSessionRegistry(new ObjectMapper(), mock(AccessControlService.class),
+                    mock(RangeAccessService.class), mock(AccessProjectionService.class));
+            var session = mock(WebSocketSession.class);
+            when(session.isOpen()).thenReturn(true);
+            when(session.getPrincipal()).thenReturn(authenticated("reader", Instant.now().plusSeconds(60)));
+            when(session.getAttributes()).thenReturn(new java.util.concurrent.ConcurrentHashMap<>());
+            registry.join("root", session);
+            registry.subscribeCalculation("root", java.util.Set.of("source"), session);
+            doThrow(failure).when(session).sendMessage(any());
+            org.junit.jupiter.api.Assertions.assertDoesNotThrow(() -> registry.broadcastAccessChanged("source", 7));
+            verify(session).close(eq(CloseStatus.SERVER_ERROR));
+            assertEquals(null, registry.unitId(session));
+            registry.broadcastAccessChanged("source", 8);
+            registry.broadcastAccessChanged("root", 9);
+            verify(session, times(1)).sendMessage(any());
+        }
+    }
+
 }

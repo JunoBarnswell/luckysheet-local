@@ -1279,7 +1279,10 @@ export class WorkbookSession {
         this.persistenceMetaDirty = false;
       }
       let artifact = await this.runtime.workspacePersistence.nativeDocuments.load(this.runtime.model.unitId);
-      if (!this.runtime.localOnly) {
+      // Guest access owns the authorized snapshot, without a registered user's
+      // catalog metadata or original package. Its viewer/commenter role cannot
+      // perform native document edits or exports.
+      if (!this.runtime.localOnly && this.runtime.resolution?.source !== 'shared') {
         const summary = await this.runtime.api.getWorkbookSummary(this.runtime.model.unitId);
         if (summary.sourceFileName) {
           const source = await this.runtime.api.getWorkbookSourceArtifact(this.runtime.model.unitId);

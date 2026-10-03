@@ -139,7 +139,7 @@ export class ApplicationRuntime {
       collaborationUrl: this.auth.collaborationUrl,
       recoverySubject: this.auth.session.getSnapshot().context?.contextId,
       pivotExecution: 'worker', assetStore: this.assetStoreFor(resolution.unitId),
-      onReady: () => this.catalog.markOpened(resolution).then(() => undefined),
+      onReady: resolution.source === 'shared' ? undefined : () => this.catalog.markOpened(resolution).then(() => undefined),
     });
     this.sessions.add(session);
     this.sessionByUnit.set(resolution.unitId, session);
