@@ -4,6 +4,7 @@ import { importOoxmlDocument } from '../packages/exchange-excel-ooxml/src/import
 import { strFromU8, strToU8 } from 'fflate';
 import { descendants, parseXml } from '../packages/exchange-excel-ooxml/src/xml';
 import { readFile, mkdir } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
 import { expect, test, type Page, type BrowserContext } from '@playwright/test';
 import { installBrowserDiagnostics } from './support/workbook-fixtures';
 
@@ -45,6 +46,9 @@ test.describe('SDK product UAT against Java authority', () => {
   });
   test.setTimeout(120_000);
   const runId = Date.now().toString();
+  // Resolve the package's public export; Vite's root is apps/web.
+  const sdkEntryPath = fileURLToPath(import.meta.resolve('@react-sheets/sdk')).replaceAll('\\', '/');
+  const sdkEntryUrl = `/@fs${sdkEntryPath.startsWith('/') ? sdkEntryPath : `/${sdkEntryPath}`}`;
   const password = 'Uat-Private-Password-2026';
   const users = new Map<string, string>();
   const userPasswords = new Map<string, string>();
@@ -442,9 +446,8 @@ test.describe('SDK product UAT against Java authority', () => {
   test('OO-01 MWB-01 MWB-02: one public SDK opens two workbooks and calculates cross-workbook SUM through Java authority', async ({ page, context }) => {
     const diagnostics = installBrowserDiagnostics(page);
     await ownerPage(context, page);
-    const result = await page.evaluate(async (runId) => {
-      const sdkUrl = '/packages/sdk/src/index.ts';
-      const { createSpreadsheetSdk } = await import(/* @vite-ignore */ sdkUrl) as typeof import('@react-sheets/sdk');
+    const result = await page.evaluate(async ({ runId, sdkEntryUrl }) => {
+      const { createSpreadsheetSdk } = await import(/* @vite-ignore */ sdkEntryUrl) as typeof import('@react-sheets/sdk');
       const sdk = createSpreadsheetSdk();
       try {
         await sdk.auth.initialize();
@@ -480,7 +483,7 @@ test.describe('SDK product UAT against Java authority', () => {
         target.close();
         return output;
       } finally { await sdk.dispose(); }
-    }, runId);
+    }, { runId, sdkEntryUrl });
     expect(result.first).toBe(30); expect(result.updated).toBe(50); expect(result.state).toBe('connected');
     expect(result.sourceRevision).toBeGreaterThan(0);
     const source = await context.request.get(`/api/workbooks/${result.sourceId}/snapshot`);

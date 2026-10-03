@@ -175,3 +175,12 @@ SDK 拥有认证/身份/凭证/组合根/工作簿目录与生命周期/Excel �
 只有所有必需产品项 Pass、完整门禁 Pass、PR checks 对应待合并 head 验证后才 ready/merge；现在没有达到条件。
 
 没有生产部署，验收只操作临时 H2。尺寸 null 和 outline null 是 canonical operation 语义变更，前后端必须同版本发布/回滚；出现新语义的 durable 日志后，单独回退代码不可安全读取，应使用兼容版本或恢复匹配的 operation/checkpoint 备份。原生 metadata v4 是另一个文件契约变更：旧版应用不能读取新生成的 v4 文件，回滚须保留当前 codec 或从原始文档/兼容备份恢复，不能只回退应用。二进制资产 HTTP MIME header/content-type 同样要求前后端同步发布/回滚，不提供 runtime 旧 header alias。旧 Web auth/service/尺寸 worker 等已删除，不保留兼容桥。schema upgrades 只在显式 migration/import boundary 执行。
+
+
+## 对象模型与多工作簿：首轮验证记录（2026-10-03）
+
+产品代码 head `5ce6111179f7fdbe687cbbb2a7fc60d73af4ecbf`。统一实现后 build/typecheck、boundaries 通过，SDK 成功/拒绝检查 36/36 Pass。完整 unit 1551 tests /1497 Pass /54 Fail；与上一 head 的失败标题逐条对比，新增 0、消失 0；GATE-01 仍 Fail。
+
+首轮真实 Java/H2 UAT：6 Pass /1 Fail /6 未执行。OO-01/MWB-01/MWB-02 用例在加载 SDK 时即失败；`/packages/sdk/src/index.ts` 返回 404，业务场景没有执行，相关父项保持 Pending。原始 trace 同时证明 Web 正常消费的公开入口 `/@fs/.../packages/sdk/src/index.ts` 返回 200。首次失败证据保存在 `/tmp/sdk-oo-uat/first-attempt-test-results`，不以重新运行覆盖首次失败。
+
+验收宿主修正边界：依据 package.json 的 `exports["."]` 使用 Node 的 `import.meta.resolve('@react-sheets/sdk')` 定位公开入口，转换为 Vite 的实际 filesystem module URL；保留真实 Java/H2、浏览器同源认证、无 route mocks、零 retries 和原断言。只调整验收消费入口，不修改冻结的产品实现或 Vite 配置；Linux/Windows 路径均在进入浏览器前归一为 URL。修正后执行真实 UAT 并分别记录结果。
