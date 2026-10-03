@@ -154,3 +154,15 @@ WorksheetModel.snapshot/fromSnapshot/duplicate 验证并复制原 pane，不归�
 保护的 canonical 校验由 core rule validator 与 Java reducer 分别在各自正式边界落实，scope/range/sheet/allow 布尔/未知字段均严格校验，错误不进入 model/history/server storage。消除 Number.MAX_SAFE_INTEGER 伪造整张范围：sheet-wide 保护使用已存在的 Java 空 affected-range 全表语义，range 保护使用真实范围；owner ACL 与工作表保护仍独立，设置保护不授予 ACL。worksheet/range 才由 Worksheet.protection 修改；workbook structure/password 安全能力属于 S1，不能用单张 sheet rule 假装实现。不存在的保护 remove 拒绝且不产生 history。当前规范状态 snapshot/load 保留全部合法元数据，不改版本、不隐式迁移。
 
 Theme 和模板库 owner 的完整改造留给 O2.2；本批不把部分字段暴露算 O2 全量完成。实现全部子批改动后再统一 build/SDK/calculation/full unit/boundaries/Java 和真实 UAT；每完成一子批推送同一草稿 PR。
+
+## O1.2 同表范围移动：实施前冻结
+
+公开 Range.moveTo(destination) 只接受同 Workbook、同 Worksheet、相同矩形尺寸且各不超过 10000 单元格；跨表/跨簿移动属于 T1，明确 UNSUPPORTED_FEATURE，不能拆成 copy+clear。移动为显式 cut/replace，目标已有内容被替换并由规范历史完整恢复；句柄仍绑定原地址，不追随单元格。命令入口为已有 sheet.range.move，经 Session 的 resolved-write 前置、Java structural planner、CommandRuntime 和完整 preimage/history 提交。离线不能绕过 planner。
+
+删除 TS 与 Java 的 moved-formula-owner 跳过路径。移动区域内公式、normal sourceFormula 与 barcode formula 同样通过已有 moved-reference transform；指向移动源的绝对/相对引用改为目标，区域外引用保留，不按 copy 偏移。TS 在源地址预先准备并记录目标 afterAddress，Java 在移动后的目标解析原 beforeAddress；两者使用同一正式 StructuralPatch v10 事实。失效计算 cache 不回填；规则、名称、图表及其他 persisted owner 继续通过原 transform。保留可逆性、未知/公式组、区域/元数据不支持、权限与目标重叠拒绝。无快照/协议升级，无额外模型或逆操作栈。
+
+实施前全部 Pending：O1.2-a 移动包含值与公式的矩形，区域内/外及跨工作表依赖正确，原地址空、目标旧内容替换，绝对引用与 sourceFormula/barcode 一致；单独移动公式但其输入不移动时引用不变。O1.2-b Java 与前端 before/after 地址和公式一致；单次 undo/redo 完整恢复源、目标旧值、外部引用并经真实 REST 确认。O1.2-c 重叠、错尺寸、跨表/簿、超预算、已退休对象、离线、viewer/hidden、未知公式组和不可逆引用前置拒绝，模型/历史/原输入不改变。O1.2-d 独立公开 SDK 真 Java/H2/Chromium 保存重开、导出实 xlsx 并原生解析/服务器重导入后结果相同，console/network 干净；桌面 Excel 仍 Blocked。先完成这一整个实现批次再统一检查，失败冻结证据与代码，不逐断言改语义。
+
+O1.2 整批实现后统一检查：SDK64/64、calculation-domain549/549、boundaries Pass；full unit1681/1641 Pass/40 Fail，范围移动原失败真实修正，其他失败标题无新增。实际移动区域内外引用、绝对/未移动引用、sourceFormula/barcode、before/after地址、cache失效及公式组/不可逆拒绝都有断言。统一构建、Java及干净head真实UAT结果待记录，不以本段局部结果宣告验收完成。
+
+统一 build/typecheck Pass，Java21 package Pass：370 tests、368 Pass、2 Skip（外部 PostgreSQL/MySQL 环境缺失，仍 Blocked）；日志 `/tmp/sdk-o12-build.log`、`/tmp/sdk-o12-java.log`。产品源保持本批冻结，提交后执行完整真实 Java/H2/Chromium UAT，不能以通过的单元断言替代真实撤销/原生往返。

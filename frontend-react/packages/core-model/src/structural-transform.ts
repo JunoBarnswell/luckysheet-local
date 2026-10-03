@@ -1721,6 +1721,7 @@ function rewriteReferencesForMovedRegion(
   rowDelta: number,
   columnDelta: number,
   referenceOwners: StructuralReferenceOwnerIndex,
+  movedCells: readonly { row: Row; column: Column; cell: CellData }[],
 ): MovedFormulaRewritePlan {
   const plan: MovedFormulaRewritePlan = { cells: [], names: [], rules: [], hyperlinks: [], participantChanges: [] };
   assertDefinedNameReferenceIndexUsable(referenceOwners);
@@ -1752,14 +1753,26 @@ function rewriteReferencesForMovedRegion(
   for (const owner of referenceOwners.getInvalidFormulaOwners()) {
     referenceOwnersByAddress.set(structuralOwnerKey(owner), owner);
   }
+  // Source formula owners survive at new addresses, including provenance and
+  // barcode owners that need not have an executable calculation formula.
+  for (const entry of movedCells) {
+    if (entry.cell.formula === undefined && entry.cell.formulaMetadata?.sourceFormula === undefined
+      && !(entry.cell.presentation?.kind === 'barcode' && entry.cell.presentation.source.kind === 'formula')) continue;
+    const owner = { sheetId: targetSheet.id, row: entry.row, column: entry.column };
+    referenceOwnersByAddress.set(structuralOwnerKey(owner), owner);
+  }
   for (const referenceOwner of referenceOwnersByAddress.values()) {
     const owner = workbook.getSheet(referenceOwner.sheetId);
     const cell = owner.cells.getFormulaOwnerWithoutHydration(referenceOwner.row, referenceOwner.column);
     if (!cell) {
       throw new Error(`STRUCTURAL_REFERENCE_INDEX_INVARIANT: formula reference owner ${referenceOwner.sheetId}!${referenceOwner.row}:${referenceOwner.column} is missing from the workbook`);
     }
-    if (owner.id === targetSheet.id
-      && (insideCell(selection, referenceOwner.row, referenceOwner.column) || insideCell(destination, referenceOwner.row, referenceOwner.column))) continue;
+    // Old destination owners are overwritten. Source owners retain their
+    // references to unmoved cells and follow references to moved inputs.
+    if (owner.id === targetSheet.id && insideCell(destination, referenceOwner.row, referenceOwner.column)) continue;
+    const afterAddress = owner.id === targetSheet.id && insideCell(selection, referenceOwner.row, referenceOwner.column)
+      ? { ...referenceOwner, row: referenceOwner.row + rowDelta, column: referenceOwner.column + columnDelta }
+      : referenceOwner;
     const formula = cell.formula === undefined ? undefined : transformMovedFormula(cell.formula, owner.id);
     const formulaChanged = formula !== undefined && formula !== cell.formula;
     if (formulaChanged && formula !== undefined && cell.formula !== undefined) {
@@ -1791,11 +1804,14 @@ function rewriteReferencesForMovedRegion(
         cell.presentation.source.formula, barcode, (value) => inverseTransformMovedFormula(value, owner.id));
     }
     if (formulaChanged || sourceFormulaChanged || barcodeFormulaChanged) {
-      plan.cells.push(planFormulaCellChange(cell, referenceOwner, referenceOwner, {
+      const change = planFormulaCellChange(cell, referenceOwner, afterAddress, {
         ...(formulaChanged && formula !== undefined ? { formula } : {}),
         ...(sourceFormulaChanged && sourceFormula !== undefined ? { sourceFormula } : {}),
         ...(barcodeFormulaChanged && barcode !== undefined ? { barcodeFormula: barcode } : {}),
-      }));
+      });
+      // Prepared writes must not restore a cache invalidated by the move.
+      delete change.cell.formulaValue;
+      plan.cells.push(change);
     }
   }
   for (const identity of referenceOwners.getRangeFormulaRuleDependents(targetSheet.id, selection)) {
@@ -3551,7 +3567,7 @@ function applyMoveRange(
     return { ...entry, cell };
   });
   const overwritten = sheet.cells.getRegion(target.startRow, target.endRow, target.startColumn, target.endColumn);
-  const formulaRewrite = rewriteReferencesForMovedRegion(workbook, sheet, normalizedSource, target, rowDelta, colDelta, referenceOwners);
+  const formulaRewrite = rewriteReferencesForMovedRegion(workbook, sheet, normalizedSource, target, rowDelta, colDelta, referenceOwners, cellsToMove);
   return commitStructuralMutation<StructuralTransformResult>(() => {
     sheet.ensureRangeExtent(target.startRow, target.endRow, target.startColumn, target.endColumn);
     for (const item of cellsToMove) sheet.cells.delete(item.row, item.column);

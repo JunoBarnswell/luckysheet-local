@@ -380,3 +380,10 @@ F1.1 干净产品head **e568053a** 完整真实Java21/H2/Chromium **22/22 Pass**
 A1.1 首轮typecheck/boundaries Pass；完整unit1678/1636 Pass/42 Fail，旧52中10项消失、新标题0。最后同一Pivot成功fixture进入了真实读路径，暴露第二处契约：rowOrder [2,0,3,1] 下 overlay.rowIndex 是 immutable physical index，而原fixture用0却期待改首个展示行；源row paths同样必须反映真实physical+header偏移。完整只读审查确认block-source API文档、query.getPhysicalRow/getLoadedPhysicalRow、cell overlay owner与rowPathAt一致，产品源未改。整批验收输入修正为physical2覆盖首展示行、sourcepaths明确[3,1,4,2]；增加physical0只改第二展示行、之前source view不被改写与rowOrder不变断言，不能改源计算或用逻辑行假装来源地址。首轮 `/tmp/sdk-a11-{typecheck,boundaries,unit}.log`、`/tmp/sdk-a11-first-pass.patch`保留。
 
 A1.1 最终统一typecheck/boundaries Pass；完整unit **1678/1637 Pass/41 Fail**，相对52消失11、新增0。原54历史清单保留，当前41已逐条更新至sdk-product-unit-failures.md。成功/拒绝与物理row path/view独立性全通过；产品源保持e568053a（其真实22/22证据有效），本批只调整验收契约。日志 `/tmp/sdk-a11-final-{typecheck,unit}.log`、`/tmp/sdk-a11-boundaries.log`，比对清单 `/tmp/sdk-a11-current-failures.json`。A1.1-a..c范围通过，不代表完整A1、CI或其他41错误已解决。
+
+### O1.2 实施前细项（Pending）
+
+- a：同表 cut/replace，内部、外部、绝对、跨表和区域外未移动引用；provenance/barcode/cache 正确。
+- b：真实 Java ACK、一次 undo/redo 恢复全部源/目标和依赖，不增加 SDK 逆操作栈。
+- c：错尺寸、跨表/簿、重叠、预算、offline、退休、权限/隐藏、公式组/不可逆引用明确拒绝，状态不变。
+- d：真实浏览器 SDK、保存重开、实际 xlsx 导出/原生解析/服务器重导入、console/network；桌面 Excel Blocked。

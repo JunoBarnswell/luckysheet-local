@@ -77,6 +77,20 @@ export class Range {
     if (source.#workbook !== this.#workbook || source.#sheet.id !== this.#sheet.id) domainFor(this.#workbook).invalid('range.fillFrom', new Error('Fill requires source and target on the same worksheet.'));
     await domainFor(this.#workbook).command('range.fillFrom', { commandId: 'sheet.range.fill', params: { sheetId: this.#sheet.id, sourceRange: source.#range, targetRange: this.#range, direction, mode, ...(series ? { series } : {}) } });
   }
+  /** Cut and replace an equal-sized range on this worksheet in one canonical transaction. */
+  async moveTo(destination: Range): Promise<void> {
+    this.#assertBounded('range.moveTo'); destination.#assertBounded('range.moveTo');
+    if (this.#workbook !== destination.#workbook || this.#sheet.id !== destination.#sheet.id) {
+      throw new SdkError('UNSUPPORTED_FEATURE', 'range.moveTo', 'Range moves require the same workbook and worksheet.', 'Use a same-worksheet destination; cross-worksheet and cross-workbook moves require a shared transaction.', { object: { workbookId: this.#workbook.id, sheetId: this.#sheet.id, address: this.address } });
+    }
+    if (this.rowCount !== destination.rowCount || this.columnCount !== destination.columnCount) {
+      domainFor(this.#workbook).invalid('range.moveTo', new Error('Move source and destination must have equal dimensions.'), { sheetId: this.#sheet.id, address: this.address });
+    }
+    await domainFor(this.#workbook).command('range.moveTo', { commandId: 'sheet.range.move', params: {
+      sheetId: this.#sheet.id, sourceRange: this.#range,
+      targetOrigin: { row: destination.#range.startRow, column: destination.#range.startColumn },
+    } });
+  }
   async copyValuesTo(target: Range): Promise<void> {
     this.#assertBounded('range.copyValuesTo'); target.#assertBounded('range.copyValuesTo');
     if (domainFor(this.#workbook).scope !== domainFor(target.#workbook).scope || this.rowCount !== target.rowCount || this.columnCount !== target.columnCount) domainFor(this.#workbook).invalid('range.copyValuesTo', new Error('Copy requires equal dimensions and workbooks in the same SDK context.'));

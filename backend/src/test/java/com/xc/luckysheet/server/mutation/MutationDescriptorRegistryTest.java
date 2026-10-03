@@ -2973,13 +2973,20 @@ class MutationDescriptorRegistryTest {
                 """));
 
         var prepared = registry.prepare(snapshot, move, WorkbookRole.EDITOR);
+        MutationApplication facts = prepared.descriptor().applyWithPatch(snapshot, move);
+        assertTrue(facts.structuralPatch().formulaOwnerDeltas().stream().anyMatch(delta ->
+                "formula-cell".equals(delta.kind())
+                && new StructuralPatch.CellAddress("sheet-1", 0, 1).equals(delta.beforeAddress())
+                && new StructuralPatch.CellAddress("sheet-1", 2, 3).equals(delta.afterAddress())
+                && "=A1".equals(delta.before().formula()) && "=C3".equals(delta.after().formula())));
+
         assertEquals(2, prepared.affectedRanges().size());
         JsonNode moved = registry.applyPublicMutations(snapshot, List.of(move));
         JsonNode sheet = moved.path("sheets").get(0);
         assertEquals(7, sheet.path("cells").path("2").path("2").path("value").asInt());
-        assertEquals("=A1", sheet.path("cells").path("2").path("3").path("formula").asText());
-        assertEquals("=A1", sheet.path("cells").path("2").path("3").path("formulaMetadata").path("sourceFormula").asText());
-        assertEquals("=A1", sheet.path("cells").path("2").path("3").path("presentation").path("source").path("formula").asText());
+        assertEquals("=C3", sheet.path("cells").path("2").path("3").path("formula").asText());
+        assertEquals("=C3", sheet.path("cells").path("2").path("3").path("formulaMetadata").path("sourceFormula").asText());
+        assertEquals("=C3", sheet.path("cells").path("2").path("3").path("presentation").path("source").path("formula").asText());
         assertTrue(sheet.path("cells").path("2").path("3").path("formulaValue").isMissingNode());
         assertEquals("=C3", sheet.path("cells").path("0").path("4").path("formula").asText());
         assertEquals("=C3", sheet.path("cells").path("0").path("4").path("formulaMetadata").path("sourceFormula").asText());
@@ -2988,6 +2995,29 @@ class MutationDescriptorRegistryTest {
         assertEquals("=C3", sheet.path("cells").path("0").path("5").path("presentation").path("source").path("formula").asText());
         assertTrue(sheet.path("cells").path("2").path("3").path("value").isMissingNode());
         assertEquals(7, snapshot.path("sheets").get(0).path("cells").path("0").path("0").path("value").asInt());
+
+        ObjectNode absoluteSnapshot = (ObjectNode) snapshot.deepCopy();
+        ((ObjectNode) absoluteSnapshot.path("sheets").get(0).path("cells").path("0").path("1"))
+                .put("formula", "=$A$1+F1");
+        ((ObjectNode) absoluteSnapshot.path("sheets").get(0).path("cells").path("0"))
+                .set("5", mapper.readTree("{\"value\":11}"));
+        JsonNode absoluteMoved = registry.applyPublicMutations(absoluteSnapshot, List.of(move));
+        assertEquals("=$C$3+F1", absoluteMoved.path("sheets").get(0).path("cells").path("2").path("3").path("formula").asText());
+        assertTrue(absoluteMoved.path("sheets").get(0).path("cells").path("2").path("3").path("formulaValue").isMissingNode());
+        OperationMutation formulaOnly = new OperationMutation("range.move", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","sourceRange":{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":1,"endColumn":1},"targetOrigin":{"row":2,"column":2}}
+                """));
+        JsonNode formulaOnlyMoved = registry.applyPublicMutations(snapshot, List.of(formulaOnly));
+        assertEquals("=A1", formulaOnlyMoved.path("sheets").get(0).path("cells").path("2").path("2").path("formula").asText());
+        assertEquals(7, formulaOnlyMoved.path("sheets").get(0).path("cells").path("0").path("0").path("value").asInt());
+        ObjectNode ambiguous = (ObjectNode) snapshot.deepCopy();
+        ((ObjectNode) ambiguous.path("sheets").get(0).path("cells").path("0").path("1"))
+                .put("formula", "=A1+C3");
+        JsonNode ambiguousBefore = ambiguous.deepCopy();
+        ServiceException inverseRejected = assertThrows(ServiceException.class,
+                () -> registry.applyPublicMutations(ambiguous, List.of(move)));
+        assertEquals("UNSUPPORTED_FEATURE", inverseRejected.code());
+        assertEquals(ambiguousBefore, ambiguous);
 
         OperationMutation overlap = new OperationMutation("range.move", "sheet-1", mapper.readTree("""
                 {"sheetId":"sheet-1","sourceRange":{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":0},"targetOrigin":{"row":0,"column":0}}

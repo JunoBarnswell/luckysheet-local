@@ -42,6 +42,62 @@ async function calculations(sdk: JSHandle<SpreadsheetSdk>, id: string) {
   }, id);
 }
 
+test('O1.2-a/b/c/d: canonical range cut rewrites moved inputs, undoes overwritten values and survives native reimport', async ({ page }) => {
+  const diagnostics = installBrowserDiagnostics(page), sdk = await ownerSdk(page);
+  try {
+    const result = await sdk.evaluate(async sdk => {
+      const entry = await sdk.workbooks.create({ name: `Range cut ${Date.now()}` });
+      let workbook = await sdk.workbooks.open(entry.unitId), sheet = workbook.worksheets.at(0);
+      const dependent = await workbook.worksheets.add({ name: 'Dependent', rowCount: 20, columnCount: 20 }); await workbook.flush();
+      await sheet.ranges.get('A1:B1').setInputs([[{ kind: 'value', value: 7 }, { kind: 'formula', formula: '=A1+$A$1+H1' }]]);
+      await sheet.cells.get('H1').setValue(11); await sheet.cells.get('F1').setFormula('=$A$1'); await sheet.cells.get('G1').setFormula('=B1');
+      await sheet.ranges.get('C3:D3').setValues([[88, 99]]); await dependent.cells.get('A1').setFormula(`=${sheet.name}!B1`); await workbook.flush();
+      const read = async () => ({ source: await sheet.ranges.get('A1:B1').readValues(), target: await sheet.ranges.get('C3:D3').readValues(),
+        formula: (await sheet.cells.get('D3').read()).formula, external: await sheet.ranges.get('F1:H1').readValues(),
+        absolute: (await sheet.cells.get('F1').read()).formula, other: await dependent.cells.get('A1').read() });
+      const before = await read();
+      await sheet.ranges.get('A1:B1').moveTo(sheet.ranges.get('C3:D3')); await workbook.flush(); const moved = await read();
+      await workbook.undo(); await workbook.flush(); const undone = await read();
+      await workbook.redo(); await workbook.flush(); const redone = await read();
+      await sheet.ranges.get('D3').moveTo(sheet.ranges.get('J1')); await workbook.flush();
+      const formulaOnly = await sheet.cells.get('J1').read(), formulaOnlyExternal = await sheet.cells.get('G1').read();
+      await workbook.undo(); await workbook.flush();
+      const rejected: string[] = [];
+      for (const action of [
+        () => sheet.ranges.get('C3:D3').moveTo(sheet.ranges.get('E5')),
+        () => sheet.ranges.get('C3:D3').moveTo(dependent.ranges.get('C3:D3')),
+        () => sheet.ranges.get('C3:D3').moveTo(sheet.ranges.get('D3:E3')),
+      ]) { try { await action(); rejected.push('unexpected-success'); } catch (error) { rejected.push((error as { code?: string }).code ?? ''); } }
+      const afterRejected = await read(); await workbook.save(); const ids = { sheet: sheet.id, dependent: dependent.id }; workbook.close();
+      workbook = await sdk.workbooks.open(entry.unitId); sheet = workbook.worksheets.byId(ids.sheet);
+      const reopened = { target: await sheet.ranges.get('C3:D3').readValues(), formula: (await sheet.cells.get('D3').read()).formula,
+        external: await sheet.ranges.get('F1:H1').readValues(), other: await workbook.worksheets.byId(ids.dependent).cells.get('A1').read() };
+      const output = await sdk.workbooks.exportWorkbook(entry.unitId, { fileName: 'sdk-range-cut.xlsx' });
+      return { before, moved, undone, redone, formulaOnly, formulaOnlyExternal, rejected, afterRejected, reopened, bytes: Array.from(new Uint8Array(output.buffer)) };
+    });
+    expect(result.before.source).toEqual([[7, 25]]); expect(result.before.target).toEqual([[88, 99]]);
+    expect(result.moved.source).toEqual([[null, null]]); expect(result.moved.target).toEqual([[7, 25]]);
+    expect(result.moved.formula).toBe('=C3+$C$3+H1'); expect(result.moved.absolute).toBe('=$C$3');
+    expect(result.moved.external).toEqual([[7, 25, 11]]); expect(result.moved.other.formula).toBe('=Sheet1!D3'); expect(result.moved.other.calculatedValue).toBe(25);
+    expect(result.undone).toEqual(result.before); expect(result.redone).toEqual(result.moved);
+    expect(result.formulaOnly.formula).toBe('=C3+$C$3+H1'); expect(result.formulaOnly.calculatedValue).toBe(25);
+    expect(result.formulaOnlyExternal.formula).toBe('=J1'); expect(result.formulaOnlyExternal.calculatedValue).toBe(25);
+    expect(result.rejected).toEqual(['INVALID_ARGUMENT', 'UNSUPPORTED_FEATURE', 'REQUEST_REJECTED']); expect(result.afterRejected).toEqual(result.moved);
+    expect(result.reopened.target).toEqual(result.moved.target); expect(result.reopened.formula).toBe(result.moved.formula);
+    expect(result.reopened.external).toEqual(result.moved.external); expect(result.reopened.other.formula).toBe(result.moved.other.formula); expect(result.reopened.other.calculatedValue).toBe(25);
+    const bytes = Uint8Array.from(result.bytes); await writeFile(path.join(process.env.SDK_UAT_EVIDENCE_DIR!, 'sdk-range-cut.xlsx'), bytes);
+    const native = await importOoxmlDocument({ fileName: 'sdk-range-cut.xlsx', buffer: bytes.buffer, options: { compatibilityTarget: 'B' } });
+    expect(native.snapshot.sheets[0]!.cells['2']!['3']!.formula).toBe('=C3+$C$3+H1');
+    expect(native.snapshot.sheets[0]!.cells['0']!['5']!.formula).toBe('=$C$3'); expect(native.snapshot.sheets[1]!.cells['0']!['0']!.formula).toBe('=Sheet1!D3');
+    const reimported = await sdk.evaluate(async (sdk, bytes) => {
+      const imported = await sdk.workbooks.importWorkbook({ fileName: 'sdk-range-cut.xlsx', buffer: Uint8Array.from(bytes).buffer, options: { compatibilityTarget: 'B' } });
+      const workbook = await sdk.workbooks.open(imported.entry.unitId);
+      return { target: await workbook.worksheets.at(0).ranges.get('C3:D3').readValues(), other: (await workbook.worksheets.at(1).cells.get('A1').read()).calculatedValue };
+    }, result.bytes);
+    expect(reimported.target).toEqual([[7, 25]]); expect(reimported.other).toBe(25); diagnostics.assertClean();
+  } finally { await sdk.evaluate(sdk => sdk.dispose()); }
+});
+
 test('F1.1-e: twelve financial functions save, reopen, export and reimport through public SDK; source faults remain visible', async ({ page }) => {
   const diagnostics = installBrowserDiagnostics(page), sdk = await ownerSdk(page);
   const fixtures = Object.values(FINANCIAL_FUNCTION_CORPUS), formulas = fixtures.map(fixture => fixture.formula);
@@ -427,9 +483,10 @@ test('O1.1-b/g: real viewer denies a whole matrix and error-value copies leave t
     const result = await viewer.evaluate(async (sdk, id) => {
       const workbook = await sdk.workbooks.open(id), range = workbook.worksheets.at(0).ranges.get('A1:B2'), before = await range.readValues();
       let code = ''; try { await range.setValues([[10, 20], [30, 40]]); } catch (error) { code = (error as { code?: string }).code ?? ''; }
-      return { before, after: await range.readValues(), code };
+      let moveCode = ''; try { await range.moveTo(workbook.worksheets.at(0).ranges.get('D4:E5')); } catch (error) { moveCode = (error as { code?: string }).code ?? ''; }
+      return { before, after: await range.readValues(), code, moveCode, destination: await workbook.worksheets.at(0).ranges.get('D4:E5').readValues() };
     }, setup.id);
-    expect(result.before).toEqual([[1, 2], [3, 4]]); expect(result.after).toEqual(result.before); expect(result.code).toBe('FORBIDDEN');
+    expect(result.before).toEqual([[1, 2], [3, 4]]); expect(result.after).toEqual(result.before); expect(result.code).toBe('FORBIDDEN'); expect(result.moveCode).toBe('FORBIDDEN'); expect(result.destination).toEqual([[null, null], [null, null]]);
     const copy = await owner.evaluate(async (sdk, id) => {
       const source = await sdk.workbooks.open(id), targetEntry = await sdk.workbooks.create({ name: `Error copy ${Date.now()}` }), target = await sdk.workbooks.open(targetEntry.unitId);
       const to = target.worksheets.at(0).ranges.get('A1:B2'); await to.setValues([[5, 6], [7, 8]]); await target.flush();

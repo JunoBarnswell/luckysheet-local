@@ -541,3 +541,20 @@ test('canonical name restore rejects invalid positions and duplicate owners with
   assert.deepEqual(workbook.snapshot(), before);
   workbook.restoreDefinedName(middle, 1); assert.deepEqual(workbook.definedNameModels.map(name => name.name), ['First', 'Middle', 'Last']);
 });
+
+
+test('Range.moveTo uses the canonical planner and rejects unequal, cross-workbook, oversized and retired destinations', async () => {
+  const first = fixture('sdk-cut'), second = fixture('sdk-cut-other');
+  try {
+    const sheet = first.workbook.worksheets.at(0), source = sheet.ranges.get('A1:B1');
+    await source.setValues([[7, 11]]); const before = first.session['runtime'].model.snapshot();
+    await assert.rejects(source.moveTo(sheet.ranges.get('C3')), invalid);
+    await assert.rejects(source.moveTo(second.workbook.worksheets.at(0).ranges.get('C3:D3')), (cause: unknown) => cause instanceof SdkError && cause.code === 'UNSUPPORTED_FEATURE');
+    await assert.rejects(sheet.ranges.get('A1:A10001').moveTo(sheet.ranges.get('B1:B10001')), (cause: unknown) => cause instanceof SdkError && cause.code === 'UNSUPPORTED_FEATURE');
+    await assert.rejects(source.moveTo(sheet.ranges.get('C3:D3')), (cause: unknown) => cause instanceof SdkError && cause.code === 'REQUEST_REJECTED' && /STRUCTURAL_PLANNER_OFFLINE/.test(cause.message));
+    assert.deepEqual(first.session['runtime'].model.snapshot(), before);
+    const retired = second.workbook.worksheets.at(0).ranges.get('C3:D3'); second.workbook.close();
+    await assert.rejects(source.moveTo(retired), (cause: unknown) => cause instanceof SdkError && cause.code === 'RUNTIME_DISPOSED');
+    assert.deepEqual(first.session['runtime'].model.snapshot(), before);
+  } finally { first.workbook.close(); second.workbook.close(); }
+});
