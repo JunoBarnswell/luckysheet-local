@@ -1,3 +1,4 @@
+import { resolveNativeDocumentResourceLimits, resourceLimit } from './native-resource-budget';
 import type {
   CellData,
   CellStyleTemplate,
@@ -154,7 +155,7 @@ interface SheetDescriptor {
 
 export function loadOpcPackageGraph(input: ArrayBuffer | Uint8Array, limits: Partial<NativeDocumentResourceLimits> = {}, fileName = 'workbook.xlsx'): LoadedOpcPackageGraph {
   const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
-  const effective = { ...DEFAULT_NATIVE_DOCUMENT_RESOURCE_LIMITS, ...limits };
+  const effective = resolveNativeDocumentResourceLimits(limits);
   if (bytes.byteLength > effective.maxArchiveBytes) {
     throw new Error(`XLSX archive exceeds ${effective.maxArchiveBytes} byte limit`);
   }
@@ -227,9 +228,9 @@ export function loadOpcPackageGraph(input: ArrayBuffer | Uint8Array, limits: Par
 
 export function parseLoadedOoxml(loaded: LoadedOpcPackageGraph, options: ParseLoadedOoxmlOptions = {}): ParsedOpcPackageGraph {
   const files = loaded.files;
-  const limits = { ...DEFAULT_NATIVE_DOCUMENT_RESOURCE_LIMITS, ...options.limits };
+  const limits = resolveNativeDocumentResourceLimits(options.limits);
   let xmlCellsRemaining = limits.maxCells;
-  const cellBudget = { remaining: limits.maxCells, maxDepth: limits.maxXmlDepth };
+  const cellBudget = { remaining: limits.maxCells, maxDepth: limits.maxXmlDepth, mergesRemaining: limits.maxMerges, comparisonsRemaining: limits.maxMergeComparisons };
   for (const [part, bytes] of Object.entries(files)) {
     if (!part.toLowerCase().endsWith('.xml')) continue;
     if (bytes.byteLength > limits.maxXmlBytes) throw new Error('NATIVE_DOCUMENT_RESOURCE_LIMIT: XML byte budget exceeded');
@@ -674,7 +675,7 @@ function parseSheet(
   styles: StyleContext,
   canonicalReferenceDate?: CanonicalExcelDateParts,
   sheetDescriptors: readonly SheetDescriptor[] = [],
-  cellBudget = { remaining: DEFAULT_NATIVE_DOCUMENT_RESOURCE_LIMITS.maxCells, maxDepth: DEFAULT_NATIVE_DOCUMENT_RESOURCE_LIMITS.maxXmlDepth },
+  cellBudget = { remaining: DEFAULT_NATIVE_DOCUMENT_RESOURCE_LIMITS.maxCells, maxDepth: DEFAULT_NATIVE_DOCUMENT_RESOURCE_LIMITS.maxXmlDepth, mergesRemaining: DEFAULT_NATIVE_DOCUMENT_RESOURCE_LIMITS.maxMerges, comparisonsRemaining: DEFAULT_NATIVE_DOCUMENT_RESOURCE_LIMITS.maxMergeComparisons },
 ): SheetSnapshot {
   const xml = strFromU8(files[descriptor.part]!);
   const root = firstElement(parseXml(xml, { maxDepth: cellBudget.maxDepth }), 'worksheet');
@@ -745,10 +746,13 @@ function parseSheet(
     const hyperlink = hyperlinkForCell(root, pkg.relationships[descriptor.part] ?? [], address.row, address.column, sheetDescriptors);
     if (hyperlink) hyperlinks.push({ row: address.row, column: address.column, hyperlink });
   }
-  const merges = children(child(root, 'mergeCells'), 'mergeCell')
+  const mergeNodes = children(child(root, 'mergeCells'), 'mergeCell');
+  cellBudget.mergesRemaining -= mergeNodes.length;
+  if (cellBudget.mergesRemaining < 0) resourceLimit('Workbook merge budget exceeded');
+  const merges = mergeNodes
     .map((node) => requireSheetRange(node.attrs.ref, descriptor, 'merge'))
     .map((range) => ({ range: { ...range, sheetId: descriptor.id }, anchor: { row: range.startRow, column: range.startColumn } } satisfies MergeSpan));
-  validateNonOverlappingMerges(merges, descriptor);
+  validateNonOverlappingMerges(merges, descriptor, cellBudget);
   const hiddenColumns = parseHiddenColumns(root);
   const tabColor = resolveColor(child(child(root, 'sheetPr'), 'tabColor'), styles.themeColors);
   const review = parseNotes(root, descriptor, files, pkg);
@@ -3225,11 +3229,12 @@ function parseSqref(value: string | undefined, descriptor: SheetDescriptor, feat
   return value.trim().split(/\s+/).map((entry) => requireSheetRange(entry, descriptor, feature));
 }
 
-function validateNonOverlappingMerges(merges: MergeSpan[], descriptor: SheetDescriptor): void {
+function validateNonOverlappingMerges(merges: MergeSpan[], descriptor: SheetDescriptor, budget: { comparisonsRemaining: number }): void {
   const sorted = [...merges].sort((left, right) => left.range.startRow - right.range.startRow || left.range.startColumn - right.range.startColumn);
   for (let index = 0; index < sorted.length; index += 1) {
     const current = sorted[index]!;
     for (let candidateIndex = index + 1; candidateIndex < sorted.length; candidateIndex += 1) {
+      if (--budget.comparisonsRemaining < 0) resourceLimit('Workbook merge comparison budget exceeded');
       const candidate = sorted[candidateIndex]!;
       if (candidate.range.startRow > current.range.endRow) break;
       if (current.range.startColumn <= candidate.range.endColumn && candidate.range.startColumn <= current.range.endColumn) {

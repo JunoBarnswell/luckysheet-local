@@ -18,9 +18,13 @@ public final class LocalAuthWebSocketHandlerDecoratorFactory implements WebSocke
             @Override
             public void afterConnectionEstablished(org.springframework.web.socket.WebSocketSession session) throws Exception {
                 if (!LocalAuthSessionRegistry.isValid(session)) { session.close(org.springframework.web.socket.CloseStatus.POLICY_VIOLATION); return; }
-                sessions.registerWebSocket(session);
+                if (!sessions.registerWebSocket(session)) return;
                 try { super.afterConnectionEstablished(session); }
                 catch (Exception error) { sessions.unregisterWebSocket(session); throw error; }
+            }
+            @Override public void handleMessage(org.springframework.web.socket.WebSocketSession session, org.springframework.web.socket.WebSocketMessage<?> message) throws Exception {
+                sessions.touch(session);
+                super.handleMessage(session, message);
             }
             @Override public void afterConnectionClosed(org.springframework.web.socket.WebSocketSession session, org.springframework.web.socket.CloseStatus status) throws Exception {
                 try { super.afterConnectionClosed(session, status); }

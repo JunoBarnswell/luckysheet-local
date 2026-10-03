@@ -2715,7 +2715,7 @@ export class WorkbookSession {
     return buildCollaborationSnapshot(this.runtime.collaboration, this.peers);
   }
 
-  async createGuestShareLink(role: GuestShareRole = 'editor'): Promise<string | null> {
+  async createGuestShareLink(role: GuestShareRole = 'viewer'): Promise<string | null> {
     if (this.runtime.localOnly || typeof window === 'undefined') {
       this.notify('Connect to the Java backend before creating a guest share link');
       return null;
@@ -2727,7 +2727,7 @@ export class WorkbookSession {
     try {
       const share = await this.runtime.api.createGuestShare(this.runtime.model.unitId, { role });
       if (!share.token) throw new Error('Java backend did not return a guest share token');
-      const link = `${window.location.origin}/workbooks/${encodeURIComponent(share.unitId)}?share=${encodeURIComponent(share.token)}`;
+      const link = `${window.location.origin}/workbooks/${encodeURIComponent(share.unitId)}#share=${encodeURIComponent(share.token)}`;
       await navigator.clipboard?.writeText(link);
       this.notify('Guest editor link copied');
       return link;

@@ -20,6 +20,7 @@ import java.util.Set;
 public class WorkbookAssetService {
     public static final int MAX_ASSET_BYTES = 32 * 1024 * 1024;
 
+    private final WorkbookResourceQuotaService quota;
     private final AssetEntityRepository assets;
     private final WorkbookEntityRepository workbooks;
     private final AccessControlService access;
@@ -32,7 +33,8 @@ public class WorkbookAssetService {
                                 AccessControlService access, WorkbookLifecycleService lifecycle,
                                 com.xc.luckysheet.server.persistence.CheckpointEntityRepository checkpoints,
                                 com.xc.luckysheet.server.persistence.OperationEntityRepository operations,
-                                com.fasterxml.jackson.databind.ObjectMapper mapper) {
+                                com.fasterxml.jackson.databind.ObjectMapper mapper, WorkbookResourceQuotaService quota) {
+        this.quota = quota;
         this.assets = assets;
         this.workbooks = workbooks;
         this.access = access;
@@ -50,6 +52,11 @@ public class WorkbookAssetService {
         validateImageMime(mimeType);
         validateDimension(width, "width");
         validateDimension(height, "height");
+        workbooks.findForUpdate(unitId).orElseThrow(() -> ServiceException.notFound("Workbook not found"));
+        authorize(unitId, actor, WorkbookAclRole.EDITOR);
+        if (contentLength == 0 || contentLength > MAX_ASSET_BYTES) throw ServiceException.validation("Asset size is invalid");
+        // Reserve the bounded maximum for unknown-length streams before reading.
+        if (!assets.existsById(new AssetEntity.Id(unitId, assetId))) quota.requireCapacity(unitId, contentLength >= 0 ? contentLength : MAX_ASSET_BYTES, 1);
         byte[] content = readBounded(source, contentLength);
         String actualChecksum = sha256(content);
         if (!actualChecksum.equals(checksum) || !assetId.equals("asset-" + actualChecksum)) {
@@ -62,6 +69,7 @@ public class WorkbookAssetService {
             }
             return metadata(existing);
         }
+        quota.requireCapacity(unitId, content.length, 1);
         Instant now = Instant.now();
         AssetEntity entity = new AssetEntity(unitId, assetId, actualChecksum, mimeType, content.length, width, height, content, now, now);
         assets.save(entity);

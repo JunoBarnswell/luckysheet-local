@@ -60,6 +60,8 @@ export interface NativeDocumentResourceLimits {
   maxXmlDepth: number;
   maxXmlBytes: number;
   maxCells: number;
+  maxMerges: number;
+  maxMergeComparisons: number;
 }
 
 export const DEFAULT_NATIVE_DOCUMENT_RESOURCE_LIMITS: Readonly<NativeDocumentResourceLimits> = {
@@ -74,6 +76,8 @@ export const DEFAULT_NATIVE_DOCUMENT_RESOURCE_LIMITS: Readonly<NativeDocumentRes
   maxXmlDepth: 256,
   maxXmlBytes: 100 * 1024 * 1024,
   maxCells: 10_000_000,
+  maxMerges: 10_000,
+  maxMergeComparisons: 1_000_000,
 };
 
 export interface NativeRelationship {

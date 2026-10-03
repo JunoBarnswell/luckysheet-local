@@ -10,7 +10,7 @@ import static org.mockito.Mockito.*;
 
 class LocalAuthSessionLifetimeTest {
     @Test void repeatedRegistrationRetainsRevocationAndLogoutClosesOnlyItsOrigin() throws Exception {
-        var registry = new LocalAuthSessionRegistry();
+        var registry = new LocalAuthSessionRegistry(mock(com.xc.luckysheet.server.service.GuestShareService.class));
         var principal = mock(LocalUserAuthentication.class);
         when(principal.getName()).thenReturn("local:user");
         var first = new MockHttpSession(); var second = new MockHttpSession();
@@ -35,8 +35,36 @@ class LocalAuthSessionLifetimeTest {
         when(socket.getPrincipal()).thenReturn(new org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken(token));
         when(socket.isOpen()).thenReturn(true);
         assertFalse(LocalAuthSessionRegistry.isValid(socket));
-        var registry = new LocalAuthSessionRegistry(); registry.registerWebSocket(socket); registry.closeExpiredSockets();
+        var registry = new LocalAuthSessionRegistry(mock(com.xc.luckysheet.server.service.GuestShareService.class)); registry.registerWebSocket(socket); registry.closeExpiredSockets();
         verify(socket).close(any());
         registry.closeExpiredSockets(); verify(socket, times(1)).close(any());
+    }
+
+    @Test void guestExpiryRevocationAndAtomicAdmissionReleaseIdleSockets() throws Exception {
+        var shares = mock(com.xc.luckysheet.server.service.GuestShareService.class);
+        var registry = new LocalAuthSessionRegistry(shares);
+        var id = java.util.UUID.randomUUID();
+        var identity = new com.xc.luckysheet.server.service.GuestShareService.GuestIdentity("guest:" + id, id, "book",
+                com.xc.luckysheet.server.contract.WorkbookAclRole.VIEWER, Instant.now().plusSeconds(60));
+        when(shares.roleFor("book", identity.subject())).thenReturn(identity.role());
+        var admitted = new java.util.ArrayList<WebSocketSession>();
+        for (int i = 0; i < LocalAuthSessionRegistry.MAX_SUBJECT_SOCKETS; i++) {
+            var socket = guestSocket(identity); assertTrue(registry.registerWebSocket(socket)); admitted.add(socket);
+        }
+        var rejected = guestSocket(identity); assertFalse(registry.registerWebSocket(rejected)); verify(rejected).close(any());
+        registry.unregisterWebSocket(admitted.removeFirst());
+        var replacement = guestSocket(identity); assertTrue(registry.registerWebSocket(replacement)); admitted.add(replacement);
+        registry.closeExpiredSockets(); for (var socket : admitted) verify(socket, never()).close(any());
+        when(shares.roleFor("book", identity.subject())).thenReturn(null);
+        registry.closeExpiredSockets(); for (var socket : admitted) verify(socket).close(any());
+        var expired = new com.xc.luckysheet.server.service.GuestShareService.GuestIdentity(identity.subject(), id, "book", identity.role(), Instant.now().minusSeconds(1));
+        assertFalse(LocalAuthSessionRegistry.isValid(guestSocket(expired)));
+        var fresh = guestSocket(identity); assertTrue(registry.registerWebSocket(fresh));
+        registry.shareRevoked(new com.xc.luckysheet.server.service.GuestShareService.ShareRevoked(id)); verify(fresh).close(any());
+    }
+    private WebSocketSession guestSocket(com.xc.luckysheet.server.service.GuestShareService.GuestIdentity identity) {
+        var socket = mock(WebSocketSession.class);
+        when(socket.getPrincipal()).thenReturn(new GuestShareAuthentication(identity)); when(socket.isOpen()).thenReturn(true);
+        return socket;
     }
 }

@@ -19,6 +19,14 @@ public final class LocalAuthSessionRegistry {
     private static final Logger LOGGER = LoggerFactory.getLogger(LocalAuthSessionRegistry.class);
 
     public static final String HTTP_SESSION_ATTRIBUTE = "localAuthHttpSession";
+    public static final int MAX_SOCKETS = 1024;
+    public static final int MAX_SUBJECT_SOCKETS = 16;
+    public static final int MAX_GUEST_WORKBOOK_SOCKETS = 128;
+    public static final int MAX_ADDRESS_SOCKETS = 64;
+    private final com.xc.luckysheet.server.service.GuestShareService shares;
+    private final Map<WebSocketSession, Instant> openedAt = new ConcurrentHashMap<>();
+    private final Map<WebSocketSession, Instant> lastActivity = new ConcurrentHashMap<>();
+    public LocalAuthSessionRegistry(com.xc.luckysheet.server.service.GuestShareService shares) { this.shares = shares; }
     private final Set<WebSocketSession> openedSockets = ConcurrentHashMap.newKeySet();
 
     private final Map<String, Set<HttpSession>> httpSessions = new ConcurrentHashMap<>();
@@ -44,19 +52,36 @@ public final class LocalAuthSessionRegistry {
         remove(httpSessions, subject, session);
     }
 
-    public void registerWebSocket(WebSocketSession session) {
-        if (session == null) return;
+    public synchronized boolean registerWebSocket(WebSocketSession session) {
+        if (session == null) return false;
+        if (openedSockets.contains(session)) return true;
+        if (openedSockets.size() >= MAX_SOCKETS || openedSockets.stream().filter(s ->
+                java.util.Objects.equals(s.getPrincipal().getName(), session.getPrincipal().getName())).count() >= MAX_SUBJECT_SOCKETS
+                || session.getRemoteAddress() != null && openedSockets.stream().filter(s -> s.getRemoteAddress() != null
+                    && s.getRemoteAddress().getAddress().equals(session.getRemoteAddress().getAddress())).count() >= MAX_ADDRESS_SOCKETS
+                || session.getPrincipal() instanceof GuestShareAuthentication guest && openedSockets.stream().filter(s ->
+                    s.getPrincipal() instanceof GuestShareAuthentication other && other.identity().unitId().equals(guest.identity().unitId())).count() >= MAX_GUEST_WORKBOOK_SOCKETS) {
+            close(session);
+            return false;
+        }
         openedSockets.add(session);
-        if (!(session.getPrincipal() instanceof LocalUserAuthentication authentication)) return;
+        openedAt.put(session, Instant.now());
+        touch(session);
+        if (!(session.getPrincipal() instanceof LocalUserAuthentication authentication)) return true;
         webSocketSessions.compute(authentication.getName(), (key, existing) -> {
             Set<WebSocketSession> sockets = existing == null ? ConcurrentHashMap.newKeySet() : existing;
             sockets.add(session);
             return sockets;
         });
+        return true;
     }
 
-    public void unregisterWebSocket(WebSocketSession session) {
+    public void touch(WebSocketSession session) { lastActivity.put(session, Instant.now()); }
+
+    public synchronized void unregisterWebSocket(WebSocketSession session) {
         openedSockets.remove(session);
+        openedAt.remove(session);
+        lastActivity.remove(session);
         if (session.getPrincipal() instanceof LocalUserAuthentication authentication) remove(webSocketSessions, authentication.getName(), session);
     }
 
@@ -71,13 +96,29 @@ public final class LocalAuthSessionRegistry {
             try { return http.getAttribute("localAuthSocketLifetime") != null; }
             catch (IllegalStateException expired) { return false; }
         }
-        return session.getPrincipal() instanceof GuestShareAuthentication;
+        return session.getPrincipal() instanceof GuestShareAuthentication guest && guest.identity().expiresAt().isAfter(Instant.now());
     }
 
     @org.springframework.scheduling.annotation.Scheduled(fixedDelay = 1000)
     public void closeExpiredSockets() {
         for (WebSocketSession socket : openedSockets) {
-            if (!socket.isOpen() || !isValid(socket)) { close(socket); unregisterWebSocket(socket); }
+            boolean valid = isValid(socket);
+            if (valid && socket.getPrincipal() instanceof GuestShareAuthentication guest) {
+                try { valid = shares.roleFor(guest.identity().unitId(), guest.getName()) == guest.identity().role(); }
+                catch (RuntimeException unavailable) { valid = false; }
+            }
+            Instant now = Instant.now();
+            if (!socket.isOpen() || !valid || openedAt.getOrDefault(socket, Instant.MIN).plusSeconds(86_400).isBefore(now)
+                    || lastActivity.getOrDefault(socket, Instant.MIN).plusSeconds(900).isBefore(now)) { close(socket); unregisterWebSocket(socket); }
+        }
+    }
+
+    @org.springframework.transaction.event.TransactionalEventListener
+    public void shareRevoked(com.xc.luckysheet.server.service.GuestShareService.ShareRevoked event) {
+        for (WebSocketSession socket : openedSockets) {
+            if (socket.getPrincipal() instanceof GuestShareAuthentication guest && guest.identity().shareId().equals(event.shareId())) {
+                close(socket); unregisterWebSocket(socket);
+            }
         }
     }
 

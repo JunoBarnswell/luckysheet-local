@@ -24,10 +24,12 @@ public class GuestShareService {
     private final ShareProperties properties;
     private final WorkbookLifecycleService lifecycle;
     private final WorkbookAuthorizationService authorization;
+    private final org.springframework.context.ApplicationEventPublisher events;
     private final SecureRandom random = new SecureRandom();
 
     public GuestShareService(WorkbookStore store, ShareProperties properties, WorkbookLifecycleService lifecycle,
-                             WorkbookAuthorizationService authorization) {
+                             WorkbookAuthorizationService authorization, org.springframework.context.ApplicationEventPublisher events) {
+        this.events = events;
         this.store = store;
         this.properties = properties;
         this.lifecycle = lifecycle;
@@ -65,6 +67,7 @@ public class GuestShareService {
         requireOwner(unitId, actor);
         lifecycle.requireActive(unitId);
         if (store.revokeShare(unitId, shareId, Instant.now()) == 0) throw ServiceException.notFound("Share link not found or already revoked");
+        events.publishEvent(new ShareRevoked(shareId));
     }
 
     public GuestIdentity authenticate(String token) {
@@ -135,6 +138,8 @@ public class GuestShareService {
             return java.util.HexFormat.of().formatHex(value);
         }
     }
+
+    public record ShareRevoked(UUID shareId) {}
 
     public record GuestIdentity(String subject, UUID shareId, String unitId, WorkbookAclRole role, Instant expiresAt) {
     }

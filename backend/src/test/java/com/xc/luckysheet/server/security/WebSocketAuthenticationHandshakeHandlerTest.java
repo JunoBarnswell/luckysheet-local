@@ -49,10 +49,16 @@ class WebSocketAuthenticationHandshakeHandlerTest {
         when(shares.authenticate("share-token")).thenReturn(identity);
         WebSocketAuthenticationHandshakeHandler handler = new WebSocketAuthenticationHandshakeHandler(decoder, shares);
 
-        var principal = handler.authenticatedPrincipal(request("/ws?shareToken=share-token", null));
+        var principal = handler.authenticatedPrincipal(request("/ws", "share." + Base64.getUrlEncoder().withoutPadding().encodeToString("share-token".getBytes(StandardCharsets.UTF_8))));
 
         assertEquals("guest:share-1", principal.getName());
         assertInstanceOf(GuestShareAuthentication.class, principal);
+    }
+
+    @Test
+    void queryCredentialsAreNotAccepted() {
+        var handler = new WebSocketAuthenticationHandshakeHandler(mock(JwtDecoder.class), mock(GuestShareService.class));
+        assertThrows(HandshakeFailureException.class, () -> handler.authenticatedPrincipal(request("/ws?shareToken=share-token", null)));
     }
 
     @Test

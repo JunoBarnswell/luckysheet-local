@@ -3211,12 +3211,6 @@ function encodeBase64Url(value: string): string {
   return btoa(binary).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/g, '');
 }
 
-function withShareToken(url: string, shareToken: string): string {
-  const target = new URL(url, typeof window === 'undefined' ? 'ws://localhost' : window.location.origin);
-  target.searchParams.set('shareToken', shareToken);
-  return target.toString();
-}
-
 /** Browser-safe bearer token transport for a WebSocket handshake. */
 export function createBearerSubprotocol(token: string): string {
   const normalized = token.trim();
@@ -3329,7 +3323,7 @@ export class CollabSocketClient {
     const factory = this.options.webSocketFactory ?? ((target: string, protocols: string | string[]) => new WebSocket(target, protocols));
     const socket = token
       ? factory(this.url, createBearerSubprotocol(token))
-      : factory(shareToken ? withShareToken(this.url, shareToken) : this.url, []);
+      : factory(this.url, shareToken ? `share.${encodeBase64Url(shareToken)}` : []);
     this.socket = socket;
     this.connecting = false;
 

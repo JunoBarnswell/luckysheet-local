@@ -1054,3 +1054,16 @@ test('Pivot worksheet-ranges require stable source nodes and graph endpoints', (
   assert.throws(() => validatePivotDefinition({ ...base, source: { ...base.source, relationships: [{ ...base.source.relationships[0]!, left: { sheetId: 'sheet-1', fieldId: 'source:orders:column:0' } }] } }), /Pivot relationship field/);
   assert.throws(() => validatePivotDefinition({ ...base, source: { ...base.source, relationships: [...base.source.relationships, { id: 'products-customers', left: { sourceId: 'products', fieldId: 'source:products:column:0' }, right: { sourceId: 'customers', fieldId: 'source:customers:column:0' }, join: 'inner' as const }] } }), /graph contains a cycle/);
 });
+
+test('guest collaboration credentials use subprotocol headers and never the URL', async () => {
+  let target = ''; let protocols: string | string[] = [];
+  const socket = { readyState: 0, close() {}, send() {}, onopen: null, onclose: null, onerror: null, onmessage: null };
+  const client = new CollabSocketClient('ws://localhost/ws', {
+    shareTokenProvider: () => 'opaque-share-token',
+    webSocketFactory: (url, value) => { target = url; protocols = value; return socket as unknown as WebSocket; },
+  });
+  client.open(); await new Promise<void>(resolve => setTimeout(resolve, 0));
+  assert.equal(target, 'ws://localhost/ws');
+  assert.equal(protocols, 'share.' + Buffer.from('opaque-share-token').toString('base64url'));
+  client.close();
+});

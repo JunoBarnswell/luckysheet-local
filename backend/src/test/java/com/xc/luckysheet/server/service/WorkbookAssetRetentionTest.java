@@ -20,7 +20,7 @@ class WorkbookAssetRetentionTest {
         when(workbooks.findForUpdate("book")).thenAnswer(invocation -> workbooks.findById("book"));
         when(checkpoints.streamSnapshotJsonByUnitId("book")).thenAnswer(invocation -> Stream.of("{\"assetId\":\"asset-retained\"}"));
         when(operations.streamEnvelopeJsonByUnitId("book")).thenAnswer(invocation -> Stream.of("{\"mutations\":[{\"before\":{\"assetId\":\"asset-undo\"}}]}"));
-        var service = new WorkbookAssetService(assets, workbooks, mock(AccessControlService.class), mock(WorkbookLifecycleService.class), checkpoints, operations, new ObjectMapper());
+        var service = new WorkbookAssetService(assets, workbooks, mock(AccessControlService.class), mock(WorkbookLifecycleService.class), checkpoints, operations, new ObjectMapper(), mock(WorkbookResourceQuotaService.class));
         assertEquals("ASSET_REFERENCED", assertThrows(ServiceException.class, () -> service.release("book", "asset-retained", "editor")).code());
         assertEquals("ASSET_REFERENCED", assertThrows(ServiceException.class, () -> service.release("book", "asset-undo", "editor")).code());
         verify(assets, never()).deleteById(any());
@@ -44,7 +44,7 @@ class WorkbookAssetRetentionTest {
         when(retained.getId()).thenReturn(new AssetEntity.Id("book", "asset-live"));
         when(unused.getId()).thenReturn(new AssetEntity.Id("book", "asset-unused"));
         when(assets.findAllByIdUnitId("book")).thenReturn(java.util.List.of(retained, unused));
-        var service = new WorkbookAssetService(assets, workbooks, mock(AccessControlService.class), mock(WorkbookLifecycleService.class), checkpoints, operations, new ObjectMapper());
+        var service = new WorkbookAssetService(assets, workbooks, mock(AccessControlService.class), mock(WorkbookLifecycleService.class), checkpoints, operations, new ObjectMapper(), mock(WorkbookResourceQuotaService.class));
         service.reconcile("book", Set.of(), "editor");
         verify(assets, never()).delete(retained);
         verify(assets).delete(unused);
