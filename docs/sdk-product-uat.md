@@ -364,3 +364,19 @@ F1.1 首轮统一检查：calculation主套544/543 Pass/1 Fail，新增失败为
 F1.1 统一修正后：calculation **544+5=549/549 Pass**，全部12函数registry/语料/arity、零/微小/负rate与大正rate长期折现、期初/期末本金利息、标量二维broadcast/错形状、普通错误处理、隐藏读值与12函数三类跨簿fault/Worker恢复均通过。build/typecheck与boundary Pass。完整unit **1677/1625 Pass/52 Fail**，与O2失败清单新增0/消失0；不能算完整门禁通过。产品financial源与首轮一致，仅验收输入统一修正；日志 `/tmp/sdk-f11-final-{calculation,build,unit}.log`。实际registry148，其中12新增官方函数；官方455对齐仍缺308，F1整项Pending。真实SDK保存/重开/原生文件流程待干净提交后完整22项browser，无真实Excel环境仍Blocked。Java产品未变，沿用本轮已编译370/368 Pass/2 Skipped的Jar，不伪造服务端函数计算。
 
 F1.1 干净产品head **e568053a** 完整真实Java21/H2/Chromium **22/22 Pass**（retries0，无HTTP mocks）。12个公共SDK公式矩阵真实Java提交→保存→close/open→原生xlsx导出→解析逐条公式原文→真实服务器import→公共SDK重算12黄金值，C1无关值77不变；独立Rates簿 .5→0 使PMT与IFERROR(PMT) -225→-125；真实trash使两式带sourceId的#REF!，restore恢复-125。全部console/network检查通过。F1.1-a..e声明范围Pass；实际文件 `/tmp/sdk-product-uat-XsjbOW/evidence/sdk-financial.xlsx`，日志 `/tmp/sdk-f11-browser.log`。完整F1/其他计划仍Pending，原49父项与52个全量unit Fail未扩大。68aec758两个canonical-build实际FAIL，已确认step11 complete frontend unit，不称CI通过。
+
+### A1.1 规范验收输入同步（代码前整批审查）
+
+审查真实入口后限定本批为已确认的验收契约，产品源保持e568053a不变：CellMatrix.get只规范化该单元格，forEach才显式整簿materialization，count/point读不递增内容revision；非法font的point、整读取与持久化均拒绝且原输入/内容版本不变。规则引用索引的structural query表示插入位置及之后的suffix，A7仍属于at5，精确A6/A7应使用正式range query，同时增加suffix断言而非减少约束。Remote replay fixture必须注册真实inverse handler，并明确注入真正的preflight failure，不能在注册不完整时宣称observer路径验收。buildOperation生成正式UUID，会话owner另外提供稳定会话identity；不能期待无来源的fixture-session常量。坏schema fixture携全必需字段，另验missing-session拒绝。Pivot已拥有worksheet identity的manifest必须给header+rowCount完整sourceRange；孤立sourceSheetId不是合法来源。
+
+| 细项 | 成功验收 | 拒绝验收 | 初始状态 |
+| --- | --- | --- | --- |
+| A1.1-a | 单格/稀疏读取不整体水合、不改revision；显式forEach结果相同且materialization成功 | 坏font单格/whole/persistence拒绝；零callback/无部分水合、原输入与内容版本不变 | Pending |
+| A1.1-b | CF引用A6→A7精确索引移动，结构suffix仍正确；清索引重建正确 | 重放participant故障保持已提交全内容，之后fail-stop；handler前置拒绝无内容改动 | Pending |
+| A1.1-c | 完整OperationEnvelope所有公开字段与UUID合规；真实Pivot block值/row paths一致 | missing-session、wrong-schema、unknown-mutation分别精确拒绝；坏source pair/尺寸/owner在读block前拒绝 | Pending |
+
+完成统一验收代码pass后一次检查相关套件、完整unit与typecheck/boundaries；不要把修正某些fixture概括为其他52问题均为fixture，也不移除或降低原成功/拒绝断言。所有其他门禁与功能继续逐条处理。
+
+A1.1 首轮typecheck/boundaries Pass；完整unit1678/1636 Pass/42 Fail，旧52中10项消失、新标题0。最后同一Pivot成功fixture进入了真实读路径，暴露第二处契约：rowOrder [2,0,3,1] 下 overlay.rowIndex 是 immutable physical index，而原fixture用0却期待改首个展示行；源row paths同样必须反映真实physical+header偏移。完整只读审查确认block-source API文档、query.getPhysicalRow/getLoadedPhysicalRow、cell overlay owner与rowPathAt一致，产品源未改。整批验收输入修正为physical2覆盖首展示行、sourcepaths明确[3,1,4,2]；增加physical0只改第二展示行、之前source view不被改写与rowOrder不变断言，不能改源计算或用逻辑行假装来源地址。首轮 `/tmp/sdk-a11-{typecheck,boundaries,unit}.log`、`/tmp/sdk-a11-first-pass.patch`保留。
+
+A1.1 最终统一typecheck/boundaries Pass；完整unit **1678/1637 Pass/41 Fail**，相对52消失11、新增0。原54历史清单保留，当前41已逐条更新至sdk-product-unit-failures.md。成功/拒绝与物理row path/view独立性全通过；产品源保持e568053a（其真实22/22证据有效），本批只调整验收契约。日志 `/tmp/sdk-a11-final-{typecheck,unit}.log`、`/tmp/sdk-a11-boundaries.log`，比对清单 `/tmp/sdk-a11-current-failures.json`。A1.1-a..c范围通过，不代表完整A1、CI或其他41错误已解决。

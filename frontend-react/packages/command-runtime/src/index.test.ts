@@ -76,8 +76,9 @@ test('CommandRuntime keeps formula-rule owners synchronized with a provided Form
   runtime.registry.registerCommand({
     id: 'formula-rule.index.inspect',
     execute: (_params, context) => {
-      rowFiveOwners = context.structuralReferenceOwners.getStructuralFormulaRuleDependents(sheet.id, 'row', 5);
-      rowSixOwners = context.structuralReferenceOwners.getStructuralFormulaRuleDependents(sheet.id, 'row', 6);
+      rowFiveOwners = context.structuralReferenceOwners.getRangeFormulaRuleDependents(sheet.id, { startRow: 5, endRow: 5, startColumn: 0, endColumn: 0 });
+      rowSixOwners = context.structuralReferenceOwners.getRangeFormulaRuleDependents(sheet.id, { startRow: 6, endRow: 6, startColumn: 0, endColumn: 0 });
+      assert.equal(context.structuralReferenceOwners.getStructuralFormulaRuleDependents(sheet.id, 'row', 5).length, 1, 'insertion at row 5 changes both A6 and A7');
       return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
     },
   });
@@ -230,14 +231,27 @@ test('CommandRuntime fail-stops without rolling back an incomplete structural co
 });
 
 test('CommandRuntime finishes committed replay before fail-stopping on a participant failure', () => {
-  const registerCellSet = (runtime: CommandRuntime) => runtime.registry.registerMutation({
+  const registerCellSet = (runtime: CommandRuntime) => {
+    runtime.registry.registerMutation({
     id: 'cell.set',
     handler: (item, context) => {
       const params = item.params as { row: number; column: number; value: string };
+      if (params.value === 'preflight-rejection') throw new Error('preflight rejection');
       context.workbook.getSheet(item.sheetId).cells.set(params.row, params.column, { value: params.value });
     },
     metadata: cellSetMetadata,
-  });
+    });
+    runtime.registry.registerMutation({
+      id: 'cell.restore',
+      handler: (item, context) => {
+        const params = item.params as { row: number; column: number; previous?: { value: string } };
+        const sheet = context.workbook.getSheet(item.sheetId);
+        if (params.previous) sheet.cells.set(params.row, params.column, params.previous);
+        else sheet.cells.delete(params.row, params.column);
+      },
+      metadata: cellRestoreMetadata,
+    });
+  };
   const remoteMutation = (unitId: string, value: string): MutationInfo => ({
     id: 'cell.set',
     unitId,

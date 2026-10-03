@@ -61,6 +61,7 @@ function manifest(source: string, blocks: DataBlockRef[], rowCount: number): Dat
     name: 'Orders',
     kind: 'chunked-table',
     sourceSheetId: 'source-sheet',
+    sourceRange: { sheetId: 'source-sheet', startRow: 0, endRow: rowCount, startColumn: 0, endColumn: fields.length - 1 },
     rowCount,
     fields: fields.map((field) => ({ ...field })),
     blockRowCount: 65_536,
@@ -110,7 +111,7 @@ test('reads a canonical data-source Pivot source with stable field ids and sourc
 
   const result = await readPivotBlockSource(pivot(source), query, {
     sourceRowStart: 1,
-    resolveCellOverlays: () => [{ rowIndex: 0, fieldOrdinal: 1, value: 99 }],
+    resolveCellOverlays: () => [{ rowIndex: 2, fieldOrdinal: 1, value: 99 }],
     onState: (state) => events.push(state.status),
   });
 
@@ -124,12 +125,21 @@ test('reads a canonical data-source Pivot source with stable field ids and sourc
   assert.deepEqual(pivotSourceColumnValues(result.source, 0), ['East', 'East', 'North', 'West']);
   assert.deepEqual(pivotSourceColumnValues(result.source, 1), [99, 10, 40, 20]);
   assert.deepEqual(Array.from({ length: result.source.rowCount }, (_, row) => pivotSourceRowPaths(result.source, row)), [
-    [{ sheetId: 'source-sheet', row: 1 }],
-    [{ sheetId: 'source-sheet', row: 2 }],
     [{ sheetId: 'source-sheet', row: 3 }],
+    [{ sheetId: 'source-sheet', row: 1 }],
     [{ sheetId: 'source-sheet', row: 4 }],
+    [{ sheetId: 'source-sheet', row: 2 }],
   ]);
   assert.deepEqual(events, ['loading', 'ready']);
+  const firstPhysicalRow = await readPivotBlockSource(pivot(source), query, {
+    sourceRowStart: 1, resolveCellOverlays: () => [{ rowIndex: 0, fieldOrdinal: 1, value: 99 }],
+  });
+  assert.equal(firstPhysicalRow.status, 'ready');
+  if (firstPhysicalRow.status !== 'ready') return;
+  assert.deepEqual(pivotSourceColumnValues(firstPhysicalRow.source, 1), [30, 99, 40, 20]);
+  assert.deepEqual(pivotSourceRowPaths(firstPhysicalRow.source, 1), [{ sheetId: 'source-sheet', row: 1 }]);
+  assert.deepEqual(query.manifest.rowOrder, [2, 0, 3, 1]);
+  assert.deepEqual(pivotSourceColumnValues(result.source, 1), [99, 10, 40, 20], 'the second source view must not rewrite the previous source');
 });
 
 test('returns explicit missing state instead of an empty source when a block is unavailable', async () => {
@@ -170,8 +180,25 @@ test('source row identity is required and never replaced with a fabricated empty
   await store.put(stored.ref, stored.bytes);
   const sourceManifest = manifest(source, [stored.ref], 1);
   delete sourceManifest.sourceSheetId;
+  delete sourceManifest.sourceRange;
   const query = new DataSourceContentQuery(sourceManifest, store);
   const result = await readPivotBlockSource(pivot(source), query);
   assert.equal(result.status, 'error');
   if (result.status === 'error') assert.match(result.error, /worksheet identity/i);
+});
+
+test('block source rejects incomplete worksheet ownership and wrong dimensions before reading storage', async () => {
+  const source = sourceId(), stored = await block(source, 'block-1', 0, [['East', 10]]);
+  const valid = manifest(source, [stored.ref], 1), store = new LocalDataBlockStore(new WorkspaceMemoryCoordinator());
+  const onlyIdentity = structuredClone(valid); delete onlyIdentity.sourceRange;
+  const onlyRange = structuredClone(valid); delete onlyRange.sourceSheetId;
+  for (const malformed of [onlyIdentity, onlyRange]) {
+    const before = structuredClone(malformed);
+    assert.throws(() => new DataSourceContentQuery(malformed, store), /worksheet identity and range must be declared together/);
+    assert.deepEqual(malformed, before);
+  }
+  const wrongOwner = structuredClone(valid); wrongOwner.sourceRange!.sheetId = 'other-sheet';
+  assert.throws(() => new DataSourceContentQuery(wrongOwner, store), /must target sourceSheetId/);
+  const wrongExtent = structuredClone(valid); wrongExtent.sourceRange!.endRow = 2;
+  assert.throws(() => new DataSourceContentQuery(wrongExtent, store), /dimensions do not match/);
 });

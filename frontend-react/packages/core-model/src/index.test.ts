@@ -645,11 +645,17 @@ test('CellMatrix visits all persisted sparse cells without hydration and propaga
   const addresses: string[] = [];
   matrix.forEachWithoutHydration((_cell, row, column) => {
     addresses.push(`${row}:${column}`);
-    // A caller can explicitly request materialization during enumeration.
+    // Point reads normalize only the requested cell during sparse enumeration.
     if (row === 0 && column === 0) matrix.get(0, 0);
   });
   assert.deepEqual(addresses, visited);
+  assert.equal(matrix.isHydrated, false);
+  assert.equal(matrix.revision, revision);
+  const materialized: string[] = [];
+  matrix.forEach((_cell, row, column) => materialized.push(`${row}:${column}`));
+  assert.deepEqual(materialized, visited);
   assert.equal(matrix.isHydrated, true);
+  assert.equal(matrix.revision, revision);
 });
 
 test('CellMatrix enumerates non-calculation formula owners without hydrating deferred cells', () => {
@@ -736,6 +742,9 @@ test('CellMatrix applies sparse additions, replacements and deletions without lo
   const serialized = matrix.toJSON();
   assert.equal(matrix.get(2, 5), insertedCell, 'deferred writes keep the canonical cell identity on subsequent reads');
   assert.equal(matrix.get(2, 5)?.value, 'new column');
+  assert.equal(matrix.isHydrated, false);
+  assert.equal(matrix.revision, revision);
+  matrix.forEach(() => undefined);
   assert.equal(matrix.isHydrated, true);
   assert.equal(matrix.revision, revision, 'materialization cannot invalidate an unchanged content token');
   assert.deepEqual(matrix.toJSON(), serialized);
@@ -794,9 +803,24 @@ test('CellMatrix keeps deferred cells intact when normalization fails during hyd
     },
   };
   matrix.deferJSON(deferred);
-  assert.throws(() => matrix.get(0, 0), /Font family must not be empty/);
+  const before = structuredClone(deferred), revision = matrix.revision;
+  assert.equal(matrix.get(0, 0)?.value, 'valid');
+  assert.throws(() => matrix.get(0, 1), /Font family must not be empty/);
+  let callbacks = 0;
+  assert.throws(() => matrix.forEach(() => { callbacks += 1; }), /Font family must not be empty/);
+  assert.equal(callbacks, 0, 'whole materialization rejects before publishing any cell');
   assert.equal(matrix.isHydrated, false);
-  assert.deepEqual(matrix.toJSON(), deferred);
+  assert.equal(matrix.revision, revision);
+  assert.deepEqual(deferred, before);
+  assert.equal(matrix.getWithoutHydration(0, 1), deferred['0']['1']);
+  assert.throws(() => matrix.toJSON(), /Font family must not be empty/);
+  matrix.set(0, 1, { value: 'repaired', style: { fontFamily: 'Arial' } });
+  assert.equal(matrix.revision, revision + 1);
+  const values: unknown[] = [];
+  matrix.forEach(cell => values.push(cell.value));
+  assert.deepEqual(values, ['valid', 'repaired']);
+  assert.equal(matrix.isHydrated, true);
+  assert.deepEqual(deferred, before, 'explicit owner repair never mutates imported input');
 });
 
 test('CellMatrix maintains sparse occupied bounds through overwrite, delete, and clear', () => {
@@ -1375,10 +1399,16 @@ test('defers sparse worksheet cell hydration across point reads', () => {
     sheetId: 'sheet-2', startRow: 100, endRow: 100, startColumn: 4, endColumn: 4,
   });
   assert.equal(deferred.cells.count(), 1);
-  assert.equal(deferred.cells.revision, 1);
+  assert.equal(deferred.cells.revision, 0, 'loading persisted cells is not an authored content edit');
   assert.equal(deferred.cells.isHydrated, false);
   assert.equal(deferred.cells.get(100, 4)?.value, 'second');
   assert.equal(deferred.cells.isHydrated, false);
+  assert.equal(deferred.cells.revision, 0);
+  assert.equal(first.cells.isHydrated, false);
+  deferred.cells.forEach(() => undefined);
+  assert.equal(deferred.cells.isHydrated, true);
+  assert.equal(deferred.cells.revision, 0);
+  assert.equal(first.cells.isHydrated, false);
 });
 
 test('sheet lifecycle restores only its own deferred cells while preserving other scoped names', () => {
