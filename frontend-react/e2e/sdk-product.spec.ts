@@ -124,6 +124,56 @@ test.describe('SDK product UAT against Java authority', () => {
     diagnostics.assertClean();
   });
 
+  test('SIZE-01: SDK dimensions persist multi-column width, atomic unhide and AutoFit', async ({ page, context }) => {
+    const diagnostics = installBrowserDiagnostics(page);
+    await context.addCookies(adminState.cookies);
+    await page.addInitScript(() => localStorage.setItem('react-sheets:locale', 'en-US'));
+    await page.goto(`/workbooks/${unitId}`);
+    await expect(page.getByTestId('designer-shell')).toHaveAttribute('data-workspace-phase', 'ready');
+    const nameBox = page.getByTestId('name-box');
+    const select = async () => { await nameBox.fill('A1:B2'); await nameBox.press('Enter'); };
+    const format = async (label: string) => {
+      await page.getByTestId('ribbon-tab-home').click();
+      await page.getByRole('button', { name: 'Format', exact: true }).click();
+      await page.getByRole('button', { name: label, exact: true }).click();
+    };
+    const width = async (value: string) => {
+      await format('Column Width…');
+      const dialog = page.getByRole('dialog', { name: 'Column Width', exact: true });
+      await dialog.getByLabel('Excel character width').fill(value);
+      await dialog.getByRole('button', { name: 'OK', exact: true }).click();
+    };
+    const sheet = async () => {
+      const response = await context.request.get(`/api/workbooks/${unitId}/snapshot`);
+      expect(response.ok()).toBe(true);
+      return (await response.json()).snapshot.sheets[0];
+    };
+    await select(); await width('0');
+    await expect.poll(async () => (await sheet()).hiddenColumns).toEqual([0, 1]);
+    await select(); await width('12');
+    await expect.poll(async () => (await sheet()).hiddenColumns).toEqual([]);
+    const sized = await sheet();
+    expect(sized.columnWidthsPx[0]).toBeGreaterThan(64);
+    expect(sized.columnWidthsPx[0]).toBe(sized.columnWidthsPx[1]);
+    await page.getByTestId('sheet-canvas').focus(); await page.keyboard.press('Control+z');
+    await expect.poll(async () => (await sheet()).hiddenColumns).toEqual([0, 1]);
+    await page.keyboard.press('Control+y');
+    await expect.poll(async () => (await sheet()).hiddenColumns).toEqual([]);
+    await select(); await format('Row Height…');
+    const rowDialog = page.getByRole('dialog', { name: 'Row Height', exact: true });
+    await rowDialog.getByLabel('Row height in points').fill('20');
+    await rowDialog.getByRole('button', { name: 'OK', exact: true }).click();
+    await expect.poll(async () => (await sheet()).rowHeightsPx[0]).toBeGreaterThan(26);
+    expect((await sheet()).rowHeightsPx[0]).toBe((await sheet()).rowHeightsPx[1]);
+    await select(); await format('AutoFit Column Width');
+    await expect.poll(async () => (await sheet()).columnWidthsPx[1]).toBe(8);
+    expect((await sheet()).columnWidthsPx[0]).toBeGreaterThan(8);
+    await page.reload();
+    await expect(page.getByTestId('designer-shell')).toHaveAttribute('data-workspace-phase', 'ready');
+    await screenshot(page, 'sdk-dimensions');
+    diagnostics.assertClean();
+  });
+
   test('ROLE-02 HUB-02: owner menu, rename, favorite and share roles use real SDK catalog actions', async ({ page, context }) => {
     const diagnostics = installBrowserDiagnostics(page);
     await ownerPage(context, page);
