@@ -1,11 +1,12 @@
 import { WorkbookApiClient } from '@react-sheets/protocol';
-import { RemoteAssetStore, WorkspacePersistence, WorkspaceStorageError, isWorkspaceStorageError, resolveShareToken, WorkbookSession,
-  type WorkbookResolution, type WorkspacePersistenceState } from '@react-sheets/spreadsheet-app';
+import { RemoteAssetStore, WorkspacePersistence, WorkspaceStorageError, isWorkspaceStorageError, type WorkspacePersistenceState } from '../../../spreadsheet-app/src/features/persistence';
+import { WorkbookSession } from '../../../spreadsheet-app/src/workbook-session';
+import type { WorkbookResolution } from '../../../spreadsheet-app/src/features/workbook-catalog';
 import type { AuthDomain } from '../auth/domain';
 import { WorkbooksDomain } from '../workbooks/domain';
 import { DataDomain } from '../data/domain';
 import { DimensionsDomain } from '../dimensions/domain';
-import { getWorkbookObjectPort } from '@react-sheets/spreadsheet-app';
+import { getWorkbookObjectPort } from '../../../spreadsheet-app/src/workbook-object-port';
 import { Workbook } from '../workbook/workbook';
 import { SdkError } from '../error';
 
@@ -38,25 +39,24 @@ export class ApplicationRuntime {
   private owner: string | null = null;
   private readonly unsubscribeAuth: () => void;
   private releaseTimer: ReturnType<typeof setTimeout> | null = null;
-  private readonly shareTokenProvider = () => resolveShareToken();
 
   constructor(private readonly auth: AuthDomain) {
     this.api = this.createApi();
     this.catalogDomain = this.createCatalog();
     this.unsubscribeAuth = auth.session.subscribe(() => {
-      const subject = auth.session.getSnapshot().context?.contextId ?? null;
+      const subject = auth.accessContextKey;
       if (subject !== this.owner) { this.owner = subject; this.resetWorkspace(); }
     });
   }
   private createApi(): WorkbookApiClient {
-    return new WorkbookApiClient({ ...this.auth.createTransport(), shareTokenProvider: this.shareTokenProvider });
+    return new WorkbookApiClient(this.auth.createTransport());
   }
   private createCatalog(): WorkbooksDomain {
     return new WorkbooksDomain({
       openWorkbook: (resolution) => this.openWorkbook(resolution),
       persistence: this.persistence, remote: this.api, assetStoreFor: (unitId) => this.assetStoreFor(unitId),
-      remoteAvailable: () => !this.disposed && (this.auth.session.getSnapshot().phase === 'authenticated' || Boolean(this.shareTokenProvider())),
-      shareTokenProvider: this.shareTokenProvider,
+      remoteAvailable: () => !this.disposed && (['authenticated', 'guest'].includes(this.auth.session.getSnapshot().phase)),
+      shareTokenProvider: this.auth.createTransport().shareTokenProvider,
     });
   }
   private assetStoreFor(unitId: string): RemoteAssetStore {
@@ -135,11 +135,11 @@ export class ApplicationRuntime {
     if (existing) return existing;
     const session = new WorkbookSession({
       unitId: resolution.unitId, initialPhase: 'loading', resolution, api: this.api, workspacePersistence: this.persistence,
-      authTokenProvider: this.auth.createTransport().authTokenProvider, shareTokenProvider: this.shareTokenProvider,
+      authTokenProvider: this.auth.createTransport().authTokenProvider, shareTokenProvider: this.auth.createTransport().shareTokenProvider,
       collaborationUrl: this.auth.collaborationUrl,
       recoverySubject: this.auth.session.getSnapshot().context?.contextId,
       pivotExecution: 'worker', assetStore: this.assetStoreFor(resolution.unitId),
-      onReady: () => this.catalog.markOpened(resolution).then(() => undefined),
+      onReady: resolution.source === 'shared' ? undefined : () => this.catalog.markOpened(resolution).then(() => undefined),
     });
     this.sessions.add(session);
     this.sessionByUnit.set(resolution.unitId, session);
@@ -174,6 +174,10 @@ export class ApplicationRuntime {
         this.workbookObjects.delete(resolution.unitId); this.workbookOpens.delete(resolution.unitId);
       }
       releaseSession(); releaseRuntime();
+    }, assertCurrent => {
+      const data = this.data.get(session);
+      if (!data) throw new SdkError('RUNTIME_DISPOSED', 'data', '数据领域已释放。', '请重新打开工作簿。');
+      return data.actionsFor(assertCurrent);
     });
     this.workbookObjects.set(resolution.unitId, workbook);
     const opening = workbook.ready().catch(cause => { workbook.close(); throw cause; });

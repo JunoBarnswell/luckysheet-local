@@ -1,5 +1,9 @@
 import { SdkError } from '../error';
-import type { IdentityActions, LocalUser } from '../identity/contract';
+import type { IdentityService } from '../identity/contract';
+import { IdentityDomain } from '../identity/domain';
+import type { UserAdministrationService } from '../users/contract';
+import { UserAdministrationDomain } from '../users/domain';
+import { GuestCapabilityDomain } from './guest-capability';
 import type { AuthOptions, AuthSession, AuthSnapshot, BearerCredential, CredentialEvent } from './contract';
 import { authContext } from './context';
 import { BrowserOidcSession } from './oidc';
@@ -27,7 +31,11 @@ export class AuthDomain {
   private generation = 0;
   private disposed = false;
   readonly session: AuthSession;
-  readonly identity: IdentityActions;
+  private readonly identityDomain = new IdentityDomain();
+  private readonly guest: GuestCapabilityDomain;
+  private readonly usersDomain: UserAdministrationDomain;
+  readonly identity: IdentityService;
+  readonly users: UserAdministrationService;
 
   constructor(private readonly options: AuthOptions = {}) {
     if (options.baseUrl && (!/^https?:\/\//.test(options.baseUrl) || /[?#]/.test(options.baseUrl))) {
@@ -50,15 +58,20 @@ export class AuthDomain {
       bootstrap: (token: string, username: string, password: string, displayName: string) => this.bootstrap(token, username, password, displayName),
       signIn: (returnTo?: string) => this.signIn(returnTo), signOut: () => this.signOut(),
     });
-    this.identity = Object.freeze({
-      listUsers: () => this.listUsers(),
-      createUser: (input: { username: string; displayName: string; password: string }) => this.adminRequest('/api/admin/users', 'POST', input).then(() => undefined),
-      setUserEnabled: (userId: string, enabled: boolean) => this.adminRequest(`/api/admin/users/${encodeURIComponent(userId)}`, 'PATCH', { enabled }).then(() => undefined),
-      resetPassword: (userId: string, password: string) => this.adminRequest(`/api/admin/users/${encodeURIComponent(userId)}/password`, 'POST', { password }).then(() => undefined),
-    });
+    this.identity = this.identityDomain.service;
+    this.guest = new GuestCapabilityDomain(() => this.retireGuestContext());
+    this.usersDomain = new UserAdministrationDomain({ snapshot: () => this.snapshot, request: (path, method, body) => this.administrationRequest(path, method, body) });
+    this.users = this.usersDomain.service;
     const source = options.source;
     if (source?.kind === 'external-bearer') this.sourceUnsubscribe = source.credentials.subscribe(event => this.sourceChanged(event));
     if (source?.kind === 'host-session') this.sourceUnsubscribe = source.session.subscribe(event => this.sourceChanged(event));
+  }
+  get accessContextKey(): string | null {
+    return this.snapshot.context?.contextId ?? (this.snapshot.phase === 'guest' ? `guest:${this.guest.scope}` : null);
+  }
+  private retireGuestContext(): void {
+    this.generation++;
+    if (!this.disposed && this.snapshot.phase === 'guest') this.publish({ ...emptySnapshot(), mode: this.mode, phase: 'anonymous' });
   }
   private origin(): string { return typeof window === 'undefined' ? 'http://sdk.invalid' : window.location.origin; }
   private endpoint(path: string): string { return `${this.options.baseUrl?.replace(/\/$/, '') ?? ''}${path}`; }
@@ -82,6 +95,7 @@ export class AuthDomain {
   private publish(snapshot: AuthSnapshot): void {
     if (this.disposed) return;
     if (snapshot.context?.contextId !== this.snapshot.context?.contextId) this.generation++;
+    this.identityDomain.publish(snapshot.context, snapshot.displayName);
     this.snapshot = Object.freeze({ ...snapshot, capabilities: Object.freeze({ ...snapshot.capabilities }) });
     for (const listener of this.listeners) listener();
   }
@@ -101,7 +115,7 @@ export class AuthDomain {
     if (event !== 'signed-out' && this.mode) void this.refresh().catch(() => undefined);
   }
   // Providers are bound to a context generation before a runtime or socket can use them.
-  createTransport(): { baseUrl?: string; fetchImpl: typeof fetch; authTokenProvider: () => Promise<string | null>; csrfTokenProvider: () => string | null } {
+  createTransport(): { baseUrl?: string; fetchImpl: typeof fetch; authTokenProvider: () => Promise<string | null>; csrfTokenProvider: () => string | null; shareTokenProvider: () => string | null } {
     const generation = this.generation;
     const expected = this.snapshot.context?.contextId ?? null;
     const assert = () => this.assertGeneration(generation);
@@ -109,6 +123,7 @@ export class AuthDomain {
       baseUrl: this.options.baseUrl?.replace(/\/$/, ''),
       authTokenProvider: async () => { assert(); const token = await this.getAccessToken(); assert(); return token; },
       csrfTokenProvider: () => { assert(); return this.csrfToken; },
+      shareTokenProvider: () => { assert(); const token = this.snapshot.phase === 'authenticated' ? null : this.guest.read(); assert(); return token; },
       fetchImpl: async (input, init) => {
         assert();
         const url = new URL(input instanceof Request ? input.url : String(input), this.origin());
@@ -214,7 +229,7 @@ export class AuthDomain {
         });
       }
       if (this.mode === 'oidc' && !source) {
-        this.publish({ ...emptySnapshot(), mode: this.mode, phase: 'unconfigured' }); return;
+        this.publish({ ...emptySnapshot(), mode: this.mode, phase: this.guest.scope ? 'guest' : 'unconfigured' }); return;
       }
       await this.refresh();
     } catch (cause) { this.rejectIdentity(cause, 'auth.initialize'); }
@@ -263,7 +278,8 @@ export class AuthDomain {
     }
     if (version !== this.sourceVersion) throw new SdkError('STALE_OPERATION', 'auth.session', '会话验证期间工作区已变化。', '请使用当前工作区重新打开对象。');
     this.csrfToken = csrf || null; this.bearer = token;
-    this.publish({ mode: this.mode, context, phase: value.authenticated ? 'authenticated' : 'anonymous', subject: value.subject as string | null,
+    if (value.authenticated) this.guest.revoke();
+    this.publish({ mode: this.mode, context, phase: value.authenticated ? 'authenticated' : this.guest.scope ? 'guest' : 'anonymous', subject: value.subject as string | null,
       displayName: value.displayName as string | null, bootstrapRequired: value.bootstrapRequired, error: null,
       capabilities: { canManageUsers: this.mode === 'local' && value.authenticated && value.admin } });
   }
@@ -293,6 +309,7 @@ export class AuthDomain {
     this.assertActive();
     const source = this.options.source;
     try {
+      this.guest.revoke();
       if (this.oidc) await this.oidc.signOut();
       else if (source?.kind === 'external-bearer') await source.credentials.signOut();
       else if (source?.kind === 'host-session') await source.session.signOut();
@@ -300,9 +317,8 @@ export class AuthDomain {
       if (source) this.sourceChanged('signed-out');
     } catch (cause) { throw this.rejectIdentity(cause, 'auth.logout'); }
   }
-  private async adminRequest(path: string, method: string, body?: object): Promise<Response> {
+  private async administrationRequest(path: string, method: string, body?: object): Promise<Response> {
     this.assertActive();
-    if (!this.snapshot.capabilities.canManageUsers) throw new SdkError('FORBIDDEN', 'identity.users', '需要用户管理权限。', '请使用具有用户管理权限的账号登录。');
     const transport = this.createTransport();
     const headers = new Headers();
     const token = await transport.authTokenProvider();
@@ -310,19 +326,12 @@ export class AuthDomain {
     if (body) headers.set('Content-Type', 'application/json');
     if (method !== 'GET' && this.csrfToken) headers.set('X-CSRF-TOKEN', this.csrfToken);
     const response = await transport.fetchImpl(this.endpoint(path), { method, headers, ...(body ? { body: JSON.stringify(body) } : {}) });
-    if (!response.ok) throw new SdkError(response.status === 403 ? 'FORBIDDEN' : 'REQUEST_REJECTED', path, `身份管理请求被拒绝 (${response.status})。`, '请检查管理权限后重试。', { status: response.status });
+    if (!response.ok) throw new SdkError(response.status === 403 ? 'FORBIDDEN' : response.status >= 500 ? 'SERVICE_UNAVAILABLE' : 'REQUEST_REJECTED', path, `用户管理请求被拒绝 (${response.status})。`, '请检查管理权限后重试。', { status: response.status });
     return response;
-  }
-  private async listUsers(): Promise<readonly LocalUser[]> {
-    const value = await this.json(await this.adminRequest('/api/admin/users', 'GET'), 'identity.listUsers');
-    if (!Array.isArray(value) || value.some(user => !record(user) || typeof user.id !== 'string' || !user.id
-      || typeof user.username !== 'string' || typeof user.displayName !== 'string' || typeof user.enabled !== 'boolean' || typeof user.admin !== 'boolean')) {
-      throw new SdkError('CONTRACT_INVALID', 'identity.listUsers', '用户列表契约无效。', '请修复服务器用户列表后重试。');
-    }
-    return Object.freeze(value.map(user => Object.freeze({ id: user.id, username: user.username, displayName: user.displayName, enabled: user.enabled, admin: user.admin })));
   }
   dispose(): void {
     this.disposed = true; this.generation++; this.sourceVersion++; this.csrfToken = null; this.bearer = null;
+    this.usersDomain.dispose(); this.identityDomain.dispose(); this.guest.dispose();
     this.sourceUnsubscribe?.(); this.oidc?.dispose(); this.oidc = null; this.listeners.clear(); this.snapshot = emptySnapshot();
   }
 }

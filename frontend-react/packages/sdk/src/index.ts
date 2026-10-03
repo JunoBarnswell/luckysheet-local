@@ -16,14 +16,14 @@ export { workbookCapabilities, type WorkbookCapabilities } from './identity/work
 export { createSpreadsheetSdk, type SpreadsheetSdk } from './sdk';
 export { SdkError, type SdkErrorCode } from './error';
 export type { AuthSession, AuthSnapshot, AuthPhase, AuthOptions, OidcConfiguration, AuthContext, AuthSource, BearerCredential, BearerCredentialSource, HostSessionSource, CredentialEvent } from './auth/contract';
-export type { IdentityActions, LocalUser } from './identity/contract';
+export type { IdentityService, IdentitySnapshot } from './identity/contract';
+export type { UserAdministrationService, LocalUser } from './users/contract';
 
-export { useSdkServices, useWorkbook } from './react/runtime';
 export type { CatalogEntry } from './workbooks/domain';
 
 export type { DimensionsActions, DimensionResult } from './dimensions/contract';
 export { MAX_EXCEL_ROW_HEIGHT_POINTS } from './dimensions/domain';
 
-export type { DataActions, DataActionResult } from './data/contract';
+export type { DataActions, DataActionResult, DataRangeAddress, SubtotalOptions, SubtotalFunction } from './data/contract';
 
 export type { WorkbookCreateOptions, WorkbookTemplateId } from './workbooks/contract';

@@ -132,6 +132,83 @@ describe('collaboration helpers', () => {
     assert.deepEqual(queue.getPendingOperation(original.operationId), original);
   });
 
+  it('commits ACK removal, queued bases and undo target facts in one durable image before publishing history', () => {
+    const workbook = new WorkbookModel('wb-atomic-undo', 'Collab');
+    const runtime = new CommandRuntime(workbook);
+    registerSheetCommands(runtime);
+    let rejectWrites = false;
+    const writes: OperationEnvelope[][] = [];
+    const session = new CollaborationSession(runtime, {
+      persistPending: (operations) => {
+        if (rejectWrites) throw new Error('journal write failed');
+        writes.push(structuredClone([...operations]));
+      },
+    });
+    const entries = [0, 1].map((column) => {
+      runtime.execute('sheet.cell.set', { sheetId: workbook.primarySheetId, row: 0, column, value: { value: column + 1 } });
+      const entry = runtime.getUndoEntries().at(-1)!;
+      session.enqueueLocalMutations(entry.forwardMutations, workbook.unitId, entry.operationId);
+      return entry;
+    });
+    const [predecessor, target] = entries;
+    runtime.undo();
+    const undo = session.enqueueCompensatingMutations(target!.inversePlan, workbook.unitId, target!.operationId);
+    const initial = session.getPendingOperations();
+    const writesBeforeAck = writes.length;
+    rejectWrites = true;
+    assert.throws(() => session.acknowledge(predecessor!.operationId, 1), /journal write failed/);
+    assert.deepEqual(session.getPendingOperations(), initial);
+    assert.equal(session.offlineQueue.getStatus(predecessor!.operationId), 'pending');
+    assert.equal(predecessor!.committedRevision, undefined);
+    assert.equal(session.getRevision(), 0);
+    assert.equal(writes.length, writesBeforeAck);
+
+    rejectWrites = false;
+    assert.equal(session.acknowledge(predecessor!.operationId, 1), true);
+    assert.equal(writes.length, writesBeforeAck + 1);
+    const afterPredecessor = session.getPendingOperations();
+    assert.deepEqual(afterPredecessor.map((operation) => operation.baseRevision), [1, 2]);
+    assert.equal(afterPredecessor[1]!.intent!.targetBaseRevision, 1);
+    assert.deepEqual(writes.at(-1), afterPredecessor);
+    assert.equal(predecessor!.committedRevision, 1);
+
+    rejectWrites = true;
+    assert.throws(() => session.acknowledge(target!.operationId, 2), /journal write failed/);
+    assert.deepEqual(session.getPendingOperations(), afterPredecessor);
+    assert.equal(target!.committedRevision, undefined);
+    assert.equal(session.getRevision(), 1);
+    rejectWrites = false;
+    assert.equal(session.acknowledge(target!.operationId, 2), true);
+    assert.equal(target!.baseRevision, 1);
+    assert.equal(target!.committedRevision, 2);
+    assert.equal(session.offlineQueue.getPendingOperation(undo.operationId)!.intent!.targetBaseRevision, 1);
+    assert.equal(session.acknowledge(target!.operationId, 2), false);
+    assert.throws(() => session.acknowledge(target!.operationId, 3), /OPERATION_ACK_MISMATCH/);
+    assert.throws(() => session.enqueueCompensatingMutations(target!.inversePlan, workbook.unitId, 'unknown-target'), /UNDO_TARGET_UNRESOLVED/);
+  });
+
+  it('rejects ACK images that change a restored request or another remaining operation identity', () => {
+    const target = buildOperation('op-restored-target', 'wb-restored', 1, 0,
+      [{ id: 'cell.set', sheetId: 'sheet-1', params: {} }], '2026-08-23T00:00:00.000Z');
+    const undo: OperationEnvelope = {
+      ...buildOperation('op-restored-undo', 'wb-restored', 2, 1,
+        [{ id: 'cell.restore', sheetId: 'sheet-1', params: {} }], '2026-08-23T00:00:00.000Z'),
+      intent: { type: 'undo', targetOperationId: target.operationId, targetBaseRevision: 0 },
+    };
+    let writes = 0;
+    const queue = new OfflineQueue({ load: () => [target, undo], persist: () => { writes += 1; } });
+    assert.throws(() => queue.acknowledgeMany([target.operationId], [{ ...undo, intent: { ...undo.intent!, targetBaseRevision: 1 } }]), /OPERATION_REQUEST_IMMUTABLE/);
+    assert.throws(() => queue.acknowledgeMany([target.operationId], [{ ...undo, operationId: 'replacement' }]), /OPERATION_QUEUE_IDENTITY_MISMATCH/);
+    assert.throws(() => queue.acknowledgeMany([target.operationId], []), /OPERATION_QUEUE_IDENTITY_MISMATCH/);
+    assert.deepEqual(queue.getPending().map((entry) => entry.operation), [target, undo]);
+    assert.equal(queue.getStatus(target.operationId), 'pending');
+    assert.equal(writes, 0);
+    queue.acknowledgeMany([target.operationId], [undo]);
+    assert.deepEqual(queue.getPendingOperation(undo.operationId), undo);
+    assert.equal(queue.requiresResultLookup(undo.operationId), true);
+    assert.equal(writes, 1);
+  });
+
   it('flushes a REST-style async transport and clears only after the returned revision', async () => {
     const workbook = new WorkbookModel('wb-rest', 'Collab');
     const runtime = new CommandRuntime(workbook);

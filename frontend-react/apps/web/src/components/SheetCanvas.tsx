@@ -1,3 +1,4 @@
+import { CanvasRenderSurface } from '@react-sheets/sdk/react';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Box,
@@ -13,7 +14,6 @@ import {
   Textarea,
 } from "@react-sheets/ui-system";
 import {
-  CanvasRenderSurface,
   CanvasRenderEngine,
   SheetSkeleton,
   type CellRenderData,

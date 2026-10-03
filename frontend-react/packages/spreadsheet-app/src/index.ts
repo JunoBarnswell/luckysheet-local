@@ -3,7 +3,6 @@ export {
   getInitialSessionPhase,
   resolveUnitId,
   resolveActorId,
-  resolveShareToken,
   type WorkbookSessionOptions,
   type PivotCreateOutcome,
   type PivotUpdateOutcome,

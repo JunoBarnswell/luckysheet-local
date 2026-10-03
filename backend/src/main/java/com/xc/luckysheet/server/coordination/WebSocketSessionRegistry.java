@@ -204,7 +204,7 @@ public class WebSocketSessionRegistry {
 
     private void sendJson(WebSocketSession session, ObjectNode message) {
         try {
-            sendQuietly(session, new TextMessage(mapper.writeValueAsString(message)));
+            sendMessage(session, new TextMessage(mapper.writeValueAsString(message)));
         } catch (Exception error) {
             throw new IllegalStateException("Unable to encode collaboration message", error);
         }
@@ -229,11 +229,23 @@ public class WebSocketSessionRegistry {
         }
     }
 
-    private void sendQuietly(WebSocketSession session, TextMessage message) {
-        try {
-            if (session.isOpen()) session.sendMessage(message);
-        } catch (IOException error) {
-            LOGGER.debug("WebSocket peer closed while broadcasting", error);
+    private void sendMessage(WebSocketSession session, TextMessage message) {
+        // Tomcat requires a single writer per connection. Revision, access,
+        // calculation and ephemeral broadcasts share this connection owner.
+        synchronized (session) {
+            try {
+                if (session.isOpen()) session.sendMessage(message);
+            } catch (IOException | IllegalStateException error) {
+                // The operation was committed before notification. Retire the
+                // failed transport so the peer observes closure and must read
+                // a fresh authorized revision when reconnecting.
+                LOGGER.warn("Collaboration transport failed; retiring peer {}", session.getId(), error);
+                String unitId = unitId(session);
+                leave(unitId, session);
+                unsubscribeCalculation(session);
+                try { if (session.isOpen()) session.close(CloseStatus.SERVER_ERROR); }
+                catch (IOException closeError) { LOGGER.warn("Failed collaboration transport could not close", closeError); }
+            }
         }
     }
 }

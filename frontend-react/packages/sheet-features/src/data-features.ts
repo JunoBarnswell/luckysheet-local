@@ -36,6 +36,9 @@ import {
   type FormulaAst,
   type FormulaValue,
   type ScalarValue,
+  subtotalFunctionNumber,
+  isFormulaInputFault,
+  type SubtotalFunctionName,
 } from "@react-sheets/formula-engine";
 
 // ---------- 基础 ----------
@@ -1677,7 +1680,8 @@ function preflightRemoveDuplicates(workbook: WorkbookModel, params: RemoveDuplic
 }
 
 function preflightSubtotal(workbook: WorkbookModel, params: SubtotalParams): void {
-  if (!['SUM', 'COUNT', 'AVERAGE'].includes(params.functionName)) throw new Error('Unsupported Subtotal function');
+  if (subtotalFunctionNumber(params.functionName) === undefined) throw new Error('Unsupported Subtotal function');
+  if (params.excludeHiddenRows !== undefined && typeof params.excludeHiddenRows !== 'boolean') throw new Error('Subtotal excludeHiddenRows must be a boolean');
   const sheet = workbook.getSheet(params.sheetId);
   const range = selectedRange(params);
   assertRangeWithinSheet(sheet, range, 'Subtotal');
@@ -1749,7 +1753,8 @@ export interface SubtotalParams {
   range: RangeRef;
   groupColumn: number;
   valueColumn: number;
-  functionName: 'SUM' | 'COUNT' | 'AVERAGE';
+  functionName: SubtotalFunctionName;
+  excludeHiddenRows?: boolean;
 }
 
 /** A resolved scalar only; array/range formula results are not sortable. */
@@ -1935,8 +1940,9 @@ function assertNoDataRegionIntersection(sheet: WorksheetModel, range: RangeRef, 
   if (region) throw new Error(`UNSUPPORTED_FEATURE: ${operation} does not support data-region ${region.id} without the canonical resolved-cell transaction`);
 }
 
-function subtotalFormula(functionName: SubtotalParams['functionName'], column: number, startRow: number, endRow: number): string {
-  const code = functionName === 'SUM' ? 9 : functionName === 'COUNT' ? 2 : 1;
+function subtotalFormula(params: SubtotalParams, startRow: number, endRow: number): string {
+  const code = subtotalFunctionNumber(params.functionName)! + (params.excludeHiddenRows ? 100 : 0);
+  const column = params.valueColumn;
   return `=SUBTOTAL(${code},${columnLabel(column)}${startRow + 1}:${columnLabel(column)}${endRow + 1})`;
 }
 
@@ -2356,6 +2362,12 @@ export function registerDataToolCommands(runtime: CommandRuntime): void {
       const range = selectedRange(params);
       const groups = contiguousGroups(sheet, { ...params, range }, context.resolveCellValue);
       if (groups.length === 0) return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
+      // Availability and access are prerequisites. Aggregate values belong only
+      // to the formula runtime; no independently calculated cache is committed.
+      for (const group of groups) for (let row = group.start; row <= group.end; row += 1) {
+        const value = resolvedDataCellValue(sheet, row, params.valueColumn, context.resolveCellValue, 'Subtotal');
+        if (isFormulaInputFault(value)) throw new Error(`Subtotal source unavailable at ${sheet.id}!${row}:${params.valueColumn}: ${value.inputFault.reason}`);
+      }
       const summaryRange: RangeRef = {
         sheetId: params.sheetId,
         startRow: range.endRow + 2,
@@ -2389,26 +2401,9 @@ export function registerDataToolCommands(runtime: CommandRuntime): void {
       values.push(header);
       for (const group of groups) {
         const rowValues: CellData[] = [];
-        let sum = 0;
-        let count = 0;
-        for (let row = group.start; row <= group.end; row += 1) {
-          const numeric = numericOf(
-            sheet.cells.get(row, params.valueColumn),
-            resolvedDataCellValue(sheet, row, params.valueColumn, context.resolveCellValue, 'Subtotal'),
-          );
-          if (numeric !== undefined) {
-            sum += numeric;
-            count += 1;
-          }
-        }
-        const cachedValue = params.functionName === 'SUM'
-          ? sum
-          : params.functionName === 'COUNT'
-            ? count
-            : count > 0 ? sum / count : null;
         for (let column = range.startColumn; column <= range.endColumn; column += 1) {
           if (column === params.groupColumn) rowValues.push({ value: group.key, style: { bold: true } });
-          else if (column === params.valueColumn) rowValues.push({ value: cachedValue, formula: subtotalFormula(params.functionName, params.valueColumn, group.start, group.end), style: { bold: true } });
+          else if (column === params.valueColumn) rowValues.push({ value: null, formula: subtotalFormula(params, group.start, group.end), style: { bold: true } });
           else rowValues.push({ value: null });
         }
         values.push(rowValues);

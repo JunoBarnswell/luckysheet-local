@@ -136,34 +136,7 @@ export function resolveActorId(): string {
     : `local-${Date.now().toString(36)}-${localActorSequence}`;
 }
 
-let routeShareCredential: { path: string; token: string } | null = null;
-let priorSharePath: string | null = null;
-export function resolveShareToken(): string | null {
-  if (typeof window === 'undefined') return null;
-  if (priorSharePath && priorSharePath !== window.location.pathname) {
-    try { window.sessionStorage.removeItem(`share:${priorSharePath}`); } catch { /* storage can be disabled */ }
-  }
-  priorSharePath = window.location.pathname;
-  const fragment = new URLSearchParams(window.location.hash?.slice(1));
-  const token = fragment.get('share')?.trim();
-  if (token) {
-    routeShareCredential = { path: window.location.pathname, token };
-    try { window.sessionStorage.setItem(`share:${window.location.pathname}`, token); } catch { /* memory remains available */ }
-  } else if (routeShareCredential?.path !== window.location.pathname) {
-    let persisted: string | null = null;
-    try { persisted = window.sessionStorage.getItem(`share:${window.location.pathname}`); } catch { /* storage can be disabled */ }
-    routeShareCredential = persisted ? { path: window.location.pathname, token: persisted } : null;
-  }
-  if (token || new URLSearchParams(window.location.search).has('share')) {
-    fragment.delete('share');
-    const target = new URL(window.location.href);
-    target.hash = fragment.toString();
-    target.searchParams.delete('share');
-    window.history.replaceState(window.history.state, '', target.pathname + target.search + target.hash);
-  }
-  if (routeShareCredential?.path !== window.location.pathname) routeShareCredential = null;
-  return routeShareCredential?.token ?? null;
-}
+
 
 export function createSpreadsheetRuntime(options: {
   unitId?: string;
@@ -1084,7 +1057,6 @@ export function attachCoreListeners(runtime: SpreadsheetRuntime): void {
           replayMutations,
           runtime.model.unitId,
           entry.operationId,
-          entry.baseRevision,
         )
         : runtime.collaboration.enqueueLocalMutations(replayMutations, runtime.model.unitId);
       if (source === 'redo') runtime.commands.bindRedoOperation(entry, operation.operationId, operation.baseRevision);

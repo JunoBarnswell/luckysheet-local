@@ -9,7 +9,7 @@ import { expect, test, type Page, type BrowserContext } from '@playwright/test';
 import { installBrowserDiagnostics } from './support/workbook-fixtures';
 
 // Serial acceptance has no retries; capture the original failing attempt.
-test.use({ trace: 'retain-on-failure', screenshot: 'only-on-failure' });
+test.use({ trace: 'on', screenshot: 'only-on-failure' });
 
 // Requires the real Java/H2 service with an isolated data directory; no route mocks.
 test.describe('SDK product UAT against Java authority', () => {

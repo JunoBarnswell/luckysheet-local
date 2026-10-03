@@ -27,6 +27,17 @@ interface AckWaiter {
   reject: (cause: unknown) => void;
 }
 
+interface CommittedOperationFact {
+  readonly baseRevision: number;
+  readonly revision: number;
+}
+
+interface QueueRebasePlan {
+  readonly operations: readonly OperationEnvelope[];
+  readonly classifications: ReadonlyMap<string, ReturnType<typeof classifyMutation>[]>;
+  readonly remoteCount: number;
+}
+
 function assertStructuralPatch(value: unknown, mutationId: string): void {
   validateStructuralPatch(value, mutationId);
 }
@@ -96,7 +107,7 @@ export class CollaborationSession {
   private readonly committedMutations: ReturnType<typeof classifyMutation>[] = [];
   private readonly remoteMutations: ReturnType<typeof classifyMutation>[] = [];
   private rebasedRemoteCount = 0;
-  private readonly committedOperationIds = new Set<string>();
+  private readonly committedOperations = new Map<string, CommittedOperationFact>();
   private readonly localClassified = new Map<string, ReturnType<typeof classifyMutation>[]>();
   private readonly ackWaiters = new Map<string, AckWaiter>();
 
@@ -186,14 +197,18 @@ export class CollaborationSession {
     mutations: MutationInfo[],
     unitId: string,
     targetOperationId: string,
-    targetBaseRevision: number,
   ): OperationEnvelope {
     if (mutations.length === 0) throw new Error('At least one compensating mutation is required');
     if (!targetOperationId.trim()) throw new Error('Undo target operationId is required');
+    const pendingTarget = this.offlineQueue.getPendingOperation(targetOperationId);
+    const target = pendingTarget ?? this.committedOperations.get(targetOperationId);
+    if (!target || (pendingTarget && pendingTarget.unitId !== unitId)) {
+      throw new Error('UNDO_TARGET_UNRESOLVED: undo requires a queued or acknowledged operation in this workbook');
+    }
     return this.enqueueLocalMutations(mutations, unitId, this.createOperationId(), {
       type: 'undo',
       targetOperationId,
-      targetBaseRevision,
+      targetBaseRevision: target.baseRevision,
     });
   }
 
@@ -203,7 +218,7 @@ export class CollaborationSession {
     if (operation.unitId !== this.runtime.workbook.unitId) throw new Error('Remote operation belongs to another workbook');
     if (!Number.isSafeInteger(operation.revision) || operation.revision < 1) throw new Error('Remote operation revision is invalid');
     const pendingLocal = this.offlineQueue.getPendingOperation(operation.operationId);
-    if (pendingLocal && !this.committedOperationIds.has(operation.operationId)) {
+    if (pendingLocal && !this.committedOperations.has(operation.operationId)) {
       const requested = pendingLocal;
       const committedMutations = operation.mutations.map(({ id, sheetId, params }) => ({ id, sheetId, params }));
       if (operation.origin !== 'client'
@@ -216,7 +231,11 @@ export class CollaborationSession {
         throw new Error('Committed operation does not match the pending local operation');
       }
     }
-    if (this.committedOperationIds.has(operation.operationId)) {
+    const committedFact = this.committedOperations.get(operation.operationId);
+    if (committedFact) {
+      if (committedFact.baseRevision !== operation.baseRevision || committedFact.revision !== operation.revision) {
+        throw new Error('COMMITTED_OPERATION_IDENTITY_MISMATCH: committed revision facts cannot change');
+      }
       this.applyValidatedStructuralPatches(operation);
       this.baseRevision = Math.max(this.baseRevision, operation.revision);
       return;
@@ -242,7 +261,7 @@ export class CollaborationSession {
         structuralRangeOwnerDeltas: structuredClone(mutation.structuralPatch.rangeOwnerDeltas),
       } : {}),
     })), { operationId: operation.operationId, baseRevision: operation.baseRevision, revision: operation.revision });
-    this.committedOperationIds.add(operation.operationId);
+    this.committedOperations.set(operation.operationId, { baseRevision: operation.baseRevision, revision: operation.revision });
     for (const classified of incoming) {
       this.committedMutations.push(classified);
       this.remoteMutations.push(classified);
@@ -269,8 +288,9 @@ export class CollaborationSession {
   /** ACK is the only normal path that removes an operation from the queue. */
   acknowledge(operationId: string, revision: number): boolean {
     if (!Number.isSafeInteger(revision) || revision < 1) throw new Error('ACK revision is invalid');
-    if (this.committedOperationIds.has(operationId)) {
-      this.baseRevision = Math.max(this.baseRevision, revision);
+    const committed = this.committedOperations.get(operationId);
+    if (committed) {
+      if (committed.revision !== revision) throw new Error('OPERATION_ACK_MISMATCH: an acknowledged operation cannot change revision');
       return false;
     }
     if (!this.localClassified.has(operationId) && !this.offlineQueue.hasPendingOperation(operationId)) {
@@ -279,13 +299,20 @@ export class CollaborationSession {
     const local = this.localClassified.get(operationId);
     const pending = this.offlineQueue.getPendingOperation(operationId);
     if (!pending) throw new Error('ACK operation lacks its durable base revision');
+    if (pending.baseRevision >= revision) throw new Error('ACK revision must follow its durable base revision');
+    const nextRevision = Math.max(this.baseRevision, revision);
+    const plan = this.planQueuedOperations(nextRevision,
+      this.getPendingOperations().filter((operation) => operation.operationId !== operationId),
+      { operationId, baseRevision: pending.baseRevision, revision });
+    // No history fact or waiter becomes terminal until the single journal image
+    // contains both the ACK removal and all unsent dependent undo requests.
+    const removed = this.offlineQueue.acknowledgeMany([operationId], plan.operations).length > 0;
     this.runtime.markOperationCommitted(operationId, revision, pending.baseRevision);
     if (local) this.committedMutations.push(...local);
-    this.committedOperationIds.add(operationId);
+    this.committedOperations.set(operationId, { baseRevision: pending.baseRevision, revision });
     this.localClassified.delete(operationId);
-    this.baseRevision = Math.max(this.baseRevision, revision);
-    const removed = this.offlineQueue.acknowledge(operationId);
-    this.rebaseQueuedOperations(this.baseRevision);
+    this.baseRevision = nextRevision;
+    this.publishQueueRebase(plan);
     this.ackWaiters.get(operationId)?.resolve(revision);
     this.ackWaiters.delete(operationId);
     return removed;
@@ -346,14 +373,15 @@ export class CollaborationSession {
       throw new Error(`COLLABORATION_HISTORY_AHEAD_OF_MODEL: history exceeds applied revision ${appliedThroughRevision}`);
     }
     const pendingOperationIds = new Set(this.offlineQueue.getPendingOperationIds());
-    const acknowledgedPending: string[] = [];
-    for (const operation of ordered) {
-      if (operation.unitId !== this.runtime.workbook.unitId || this.committedOperationIds.has(operation.operationId)) continue;
+    const newOperations = ordered.filter((operation) => operation.unitId === this.runtime.workbook.unitId
+      && !this.committedOperations.has(operation.operationId));
+    const acknowledgedPending = newOperations.filter((operation) => pendingOperationIds.has(operation.operationId)).map((operation) => operation.operationId);
+    this.offlineQueue.acknowledgeMany(acknowledgedPending);
+    for (const operation of newOperations) {
       if (pendingOperationIds.delete(operation.operationId)) {
         this.localClassified.delete(operation.operationId);
-        acknowledgedPending.push(operation.operationId);
       }
-      this.committedOperationIds.add(operation.operationId);
+      this.committedOperations.set(operation.operationId, { baseRevision: operation.baseRevision, revision: operation.revision });
       for (const mutation of operation.mutations) {
         const classified = committedMutationToClassified(mutation);
         this.committedMutations.push(classified);
@@ -361,7 +389,6 @@ export class CollaborationSession {
       }
       this.baseRevision = Math.max(this.baseRevision, operation.revision);
     }
-    this.offlineQueue.acknowledgeMany(acknowledgedPending);
     // Hydration already contains these revisions. Replaying their transforms
     // would move pending addresses a second time and create false conflicts.
     this.rebasedRemoteCount = this.remoteMutations.length;
@@ -500,22 +527,29 @@ export class CollaborationSession {
   }
 
   private rebaseQueuedOperations(revision: number): void {
-    const queued = this.offlineQueue.getPending();
-    if (queued.length === 0) {
-      // A future local edit starts from the workbook after this entire remote history.
-      this.rebasedRemoteCount = this.remoteMutations.length;
-      return;
-    }
+    const plan = this.planQueuedOperations(revision, this.getPendingOperations());
+    if (plan.operations.length > 0) this.offlineQueue.rewrite(plan.operations);
+    this.publishQueueRebase(plan);
+  }
+
+  private planQueuedOperations(
+    revision: number,
+    queued: readonly OperationEnvelope[],
+    acknowledged?: CommittedOperationFact & { readonly operationId: string },
+  ): QueueRebasePlan {
     const rewritten: OperationEnvelope[] = [];
     const rebasedClassifications = new Map<string, ReturnType<typeof classifyMutation>[]>();
+    const targetBases = new Map([...this.committedOperations].map(([operationId, fact]) => [operationId, fact.baseRevision]));
+    if (acknowledged) targetBases.set(acknowledged.operationId, acknowledged.baseRevision);
+    const newRemoteHistory = this.remoteMutations.slice(this.rebasedRemoteCount);
     for (let index = 0; index < queued.length; index += 1) {
-      const queuedOperation = queued[index]!.operation;
+      const queuedOperation = queued[index]!;
       if (!this.offlineQueue.canRewrite(queuedOperation.operationId)) {
         rewritten.push(queuedOperation);
+        targetBases.set(queuedOperation.operationId, queuedOperation.baseRevision);
         continue;
       }
       const current = this.localClassified.get(queuedOperation.operationId) ?? this.classifyEnvelope(queuedOperation);
-      const newRemoteHistory = this.remoteMutations.slice(this.rebasedRemoteCount);
       const rebased = current.map((mutation) => this.rebasePending(
         mutation.mutationId,
         mutation.params,
@@ -524,19 +558,29 @@ export class CollaborationSession {
         newRemoteHistory,
       ).rebased);
       rebasedClassifications.set(queuedOperation.operationId, rebased);
-      rewritten.push({
+      const operation: OperationEnvelope = {
         ...structuredClone(queuedOperation),
         baseRevision: revision + index,
         mutations: queuedOperation.mutations.map((mutation, mutationIndex) => ({
           ...mutation,
-          params: rebased[mutationIndex]?.params ?? mutation.params,
+          params: rebased[mutationIndex]!.params,
         })),
-      });
+      };
+      if (operation.intent) {
+        const targetBaseRevision = targetBases.get(operation.intent.targetOperationId);
+        if (targetBaseRevision === undefined) throw new Error('UNDO_TARGET_UNRESOLVED: queued undo must follow its queued or acknowledged target');
+        operation.intent = { ...operation.intent, targetBaseRevision };
+      }
+      targetBases.set(operation.operationId, operation.baseRevision);
+      rewritten.push(operation);
     }
-    this.offlineQueue.rewrite(rewritten);
-    for (const [operationId, mutations] of rebasedClassifications) {
+    return { operations: rewritten, classifications: rebasedClassifications, remoteCount: this.remoteMutations.length };
+  }
+
+  private publishQueueRebase(plan: QueueRebasePlan): void {
+    for (const [operationId, mutations] of plan.classifications) {
       this.localClassified.set(operationId, mutations);
     }
-    this.rebasedRemoteCount = this.remoteMutations.length;
+    this.rebasedRemoteCount = plan.remoteCount;
   }
 }

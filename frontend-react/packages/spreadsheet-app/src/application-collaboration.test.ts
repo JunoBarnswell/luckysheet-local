@@ -857,3 +857,37 @@ it('collaborative redo binds the new operation identity for repeated undo and re
     assert.equal(runtime.model.getSheet(sheetId).cells.get(0, 0), undefined);
   } finally { disposeSpreadsheetRuntime(runtime); }
 });
+
+it('serializes burst edits, undo, redo and repeated undo with the actual queued target base before first send', async () => {
+  const runtime = createSpreadsheetRuntime();
+  try {
+    const sheetId = runtime.model.primarySheetId;
+    const collaboration = runtime.collaboration!;
+    for (let column = 0; column < 3; column += 1) {
+      runtime.commands.execute('sheet.cell.set', { sheetId, row: 0, column, value: { value: column + 1 } });
+    }
+    assert.equal(runtime.commands.undo(), true);
+    assert.equal(runtime.commands.redo(), true);
+    assert.equal(runtime.commands.undo(), true);
+    assert.equal(collaboration.getPendingOperations().length, 6);
+    const committed: ReturnType<typeof collaboration.getPendingOperations>[number][] = [];
+    collaboration.attachTransport(async (operation) => {
+      assert.equal(operation.baseRevision, committed.length);
+      if (operation.intent) {
+        const target = committed.at(-1)!;
+        assert.equal(operation.intent.targetOperationId, target.operationId);
+        assert.equal(operation.intent.targetBaseRevision, target.baseRevision);
+      }
+      committed.push(structuredClone(operation));
+      return committed.length;
+    });
+    assert.deepEqual(await collaboration.offlineQueue.flushAll(), { flushed: 6, failed: 0 });
+    assert.deepEqual(committed.map((operation) => operation.baseRevision), [0, 1, 2, 3, 4, 5]);
+    assert.equal(committed[3]!.intent!.targetBaseRevision, 2);
+    assert.equal(committed[5]!.intent!.targetBaseRevision, 4);
+    assert.equal(collaboration.getPendingOperations().length, 0);
+    assert.equal(runtime.model.getSheet(sheetId).cells.get(0, 0)!.value, 1);
+    assert.equal(runtime.model.getSheet(sheetId).cells.get(0, 1)!.value, 2);
+    assert.equal(runtime.model.getSheet(sheetId).cells.get(0, 2), undefined);
+  } finally { disposeSpreadsheetRuntime(runtime); }
+});

@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { CommandRuntime } from '@react-sheets/command-runtime';
 import { WorkbookModel } from '@react-sheets/core-model';
-import { createFormulaError } from '@react-sheets/formula-engine';
+import { createFormulaError, createFormulaInputFault, FormulaEngine } from '@react-sheets/formula-engine';
+import type { WorksheetModel } from '@react-sheets/core-model';
 import {
   computeConditionalOverlays,
   computeFilterHiddenRows,
@@ -25,6 +26,16 @@ function runtime(): { workbook: WorkbookModel; commands: CommandRuntime } {
   const commands = new CommandRuntime(workbook);
   registerSheetCommands(commands);
   return { workbook, commands };
+}
+
+function calculatedCell(sheet: WorksheetModel, row: number, column: number) {
+  const engine = new FormulaEngine({ defaultSheetId: sheet.id, sheetOrder: [{ id: sheet.id, name: sheet.name }] });
+  sheet.cells.forEach((cell, row, column) => {
+    const address = { sheetId: sheet.id, row, column };
+    if (cell.formula !== undefined) engine.setFormula(address, cell.formula);
+    else engine.setValue(address, cell.value ?? null);
+  });
+  return engine.getCellValue({ sheetId: sheet.id, row, column });
 }
 
 test('sorting uses resolved formula results, keeps stable ties, and replays/undoes as one permutation', () => {
@@ -489,8 +500,21 @@ test('Subtotal COUNT counts numeric cells and emits the Excel COUNT aggregate co
     functionName: 'COUNT',
   });
 
-  assert.equal(sheet.cells.get(5, 1)?.value, 1);
+  assert.equal(calculatedCell(sheet, 5, 1), 1);
   assert.equal(sheet.cells.get(5, 1)?.formula, '=SUBTOTAL(2,B2:B3)');
+});
+
+test('Subtotal cannot convert a source prerequisite fault into COUNTA or a partially inserted summary', () => {
+  const { workbook, commands } = runtime(), sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.cells.set(0, 0, { value: 'Group' }); sheet.cells.set(0, 1, { value: 'Amount' });
+  sheet.cells.set(1, 0, { value: 'East' }); sheet.cells.set(1, 1, { value: 7 });
+  sheet.cells.set(3, 0, { value: 'Keep occupied output' });
+  commands.setCellValueResolver((_sheet, row, column) => row === 1 && column === 1
+    ? createFormulaInputFault('#BLOCKED!', 'Source access denied', 'access-denied', 'source-workbook') : undefined);
+  const before = workbook.snapshot();
+  assert.throws(() => commands.execute('data.subtotal', { sheetId: sheet.id,
+    range: { sheetId: sheet.id, startRow: 0, endRow: 1, startColumn: 0, endColumn: 1 }, groupColumn: 0, valueColumn: 1, functionName: 'COUNTA' }), /Subtotal source unavailable/);
+  assert.deepEqual(workbook.snapshot(), before); assert.equal(commands.getUndoEntries().length, 0);
 });
 
 test('remove duplicates compares current resolved formula values', () => {
@@ -545,7 +569,7 @@ test('text-to-columns and subtotal consume current resolved formula values', () 
     valueColumn: 1,
     functionName: 'SUM',
   });
-  assert.equal(sheet.cells.get(6, 1)?.value, 12);
+  assert.equal(calculatedCell(sheet, 6, 1), 12);
 });
 
 test('formula-backed data transforms reject unresolved inputs before changing the workbook', () => {

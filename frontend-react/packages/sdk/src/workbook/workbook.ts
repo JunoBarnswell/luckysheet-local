@@ -1,29 +1,33 @@
 import { cellAddress } from '@react-sheets/core-model';
 import type { CellSnapshot } from './contract';
 import { immutableSnapshot } from './value';
-import { CommandDispatchError, type WorkbookObjectPort } from '@react-sheets/spreadsheet-app';
+import { CommandDispatchError } from '../../../spreadsheet-app/src/workbook-session';
+import type { WorkbookObjectPort } from '../../../spreadsheet-app/src/workbook-object-port';
 import { SdkError } from '../error';
 import { domainFor, registerWorkbookDomain } from './object-domain';
 import { WorksheetCollection } from './worksheet-collection';
 import { DefinedNameCollection } from './defined-name';
 import { WorkbookExternalLinks } from './external-links';
+import type { DataActions } from '../data/contract';
 
 export class Workbook {
   readonly id: string;
   readonly worksheets: WorksheetCollection;
   readonly names: DefinedNameCollection;
   readonly externalLinks: WorkbookExternalLinks;
+  readonly data: DataActions;
   #closed = false;
   #closeReady: (() => void) | null = null;
   #opening: Promise<Workbook> | null = null;
   #unsubscribeLifetime: () => void = () => {};
-  constructor(readonlyPort: WorkbookObjectPort, scope: object, close: () => void) {
+  constructor(readonlyPort: WorkbookObjectPort, scope: object, close: () => void, dataFor: (assertCurrent: () => void) => DataActions) {
     this.#port = readonlyPort;
     this.#release = close;
     this.id = readonlyPort.unitId;
     this.worksheets = new WorksheetCollection(this);
     this.externalLinks = new WorkbookExternalLinks(this);
     this.names = new DefinedNameCollection(this);
+    this.data = dataFor(() => this.#assertAlive('data'));
     this.#initializeDomain(scope);
     this.#unsubscribeLifetime = readonlyPort.subscribeDisposed(() => this.close());
     Object.freeze(this);

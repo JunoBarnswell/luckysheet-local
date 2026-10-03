@@ -16,7 +16,7 @@ export function AdminUsersPage() {
   const [busy, setBusy] = useState(false);
   const auth = sdk.auth;
   async function load() {
-    setUsers(await sdk.identity.listUsers());
+    setUsers(await sdk.users.listUsers());
   }
   useEffect(() => { void load().catch(cause => setError(cause instanceof Error ? cause.message : '无法加载用户')); }, []);
   async function run(action: () => Promise<void>) {
@@ -28,7 +28,7 @@ export function AdminUsersPage() {
   function create(event: FormEvent<HTMLElement>) {
     event.preventDefault();
     void run(async () => {
-      await sdk.identity.createUser({ username, displayName, password });
+      await sdk.users.createUser({ username, displayName, password });
       setUsername(''); setDisplayName(''); setPassword('');
     });
   }
@@ -48,11 +48,11 @@ export function AdminUsersPage() {
       { key: 'id', header: '用户 ID', render: user => <Text className="select-all text-xs">{user.id}</Text> },
       { key: 'enabled', header: '状态', render: user => user.enabled ? '启用' : '禁用' },
       { key: 'actions', header: '操作', render: user => <Box className="flex gap-3">
-        <Button disabled={busy || user.id === auth.getSnapshot().subject} onClick={() => void run(async () => { await sdk.identity.setUserEnabled(user.id, !user.enabled); })}>{user.enabled ? '禁用' : '启用'}</Button>
+        <Button disabled={busy || user.id === auth.getSnapshot().subject} onClick={() => void run(async () => { await sdk.users.setUserEnabled(user.id, !user.enabled); })}>{user.enabled ? '禁用' : '启用'}</Button>
         <Button disabled={busy} onClick={() => { setSelected(user); setResetPassword(''); }}>重置密码</Button>
       </Box> },
     ]} />
-    {selected && <Box as="form" className="space-x-3 rounded border p-4" onSubmit={event => { event.preventDefault(); void run(async () => { await sdk.identity.resetPassword(selected.id, resetPassword); setSelected(null); setResetPassword(''); }); }}>
+    {selected && <Box as="form" className="space-x-3 rounded border p-4" onSubmit={event => { event.preventDefault(); void run(async () => { await sdk.users.resetPassword(selected.id, resetPassword); setSelected(null); setResetPassword(''); }); }}>
       <Text as="label">{selected.displayName} 的新密码 <TextInput required type="password" autoComplete="new-password" minLength={12} className="rounded border p-2" value={resetPassword} onChange={e => setResetPassword(e.target.value)} /></Text>
       <Button type="submit" disabled={busy}>确认重置</Button><Button type="button" onClick={() => setSelected(null)}>取消</Button>
     </Box>}

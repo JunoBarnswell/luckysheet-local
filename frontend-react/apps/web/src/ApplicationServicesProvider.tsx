@@ -1,5 +1,5 @@
 import { createContext, useContext, type ReactNode } from 'react';
-import { useSdkServices } from '@react-sheets/sdk';
+import { useSdkServices } from '@react-sheets/sdk/react';
 import { sdk } from './sdk';
 
 type ApplicationServices = ReturnType<typeof useSdkServices>;

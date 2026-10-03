@@ -181,7 +181,6 @@ import {
   rehydrateFormulaAfterRestore,
   rebuildFormulaCalculation,
   resolveActorId,
-  resolveShareToken,
   resolveUnitId,
   scheduleFormulaRecalculation,
   setRuntimeDateContext,
@@ -892,7 +891,6 @@ export class WorkbookSession {
   constructor({ unitId, api, recoverySubject, workspacePersistence, assetStore, resolution, onReady, initialPhase = 'ready', authTokenProvider, shareTokenProvider, dateSystem, canonicalReferenceDate, collaborationUrl, nativeDocumentExecution = 'worker', pivotTaskPort, pivotExecution = 'inline-test' }: WorkbookSessionOptions = {}) {
     const sessionUnitId = resolution?.unitId ?? unitId;
     if (resolution && unitId && resolution.unitId !== unitId) throw new Error('Workbook resolution unitId does not match session unitId');
-    const routeShareToken = shareTokenProvider ? null : resolveShareToken();
     this.runtime = createSpreadsheetRuntime({
       unitId: sessionUnitId,
       api,
@@ -901,7 +899,7 @@ export class WorkbookSession {
       assetStore,
       resolution,
       authTokenProvider,
-      shareTokenProvider: shareTokenProvider ?? (routeShareToken ? () => routeShareToken : undefined),
+      shareTokenProvider,
       dateSystem,
       canonicalReferenceDate,
       collaborationUrl,
@@ -1281,7 +1279,10 @@ export class WorkbookSession {
         this.persistenceMetaDirty = false;
       }
       let artifact = await this.runtime.workspacePersistence.nativeDocuments.load(this.runtime.model.unitId);
-      if (!this.runtime.localOnly) {
+      // Guest access owns the authorized snapshot, without a registered user's
+      // catalog metadata or original package. Its viewer/commenter role cannot
+      // perform native document edits or exports.
+      if (!this.runtime.localOnly && this.runtime.resolution?.source !== 'shared') {
         const summary = await this.runtime.api.getWorkbookSummary(this.runtime.model.unitId);
         if (summary.sourceFileName) {
           const source = await this.runtime.api.getWorkbookSourceArtifact(this.runtime.model.unitId);
@@ -8189,4 +8190,4 @@ export class WorkbookSession {
   }
 }
 
-export { resolveUnitId, resolveActorId, resolveShareToken };
+export { resolveUnitId, resolveActorId };

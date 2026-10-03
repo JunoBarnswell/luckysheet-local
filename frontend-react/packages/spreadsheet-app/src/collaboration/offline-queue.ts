@@ -123,24 +123,20 @@ export class OfflineQueue {
   }
 
   /** Remove only after the matching server ACK has been received. */
-  acknowledge(operationId: string): boolean {
-    return this.acknowledgeMany([operationId]).length > 0;
-  }
-
-  acknowledgeMany(operationIds: readonly string[]): string[] {
+  acknowledgeMany(operationIds: readonly string[], remainingOperations?: readonly OperationEnvelope[]): string[] {
     const requested = new Set(operationIds);
-    const removed: string[] = [];
-    for (let index = this.queue.length - 1; index >= 0; index -= 1) {
-      const operationId = this.queue[index]!.operation.operationId;
-      if (!requested.has(operationId)) continue;
-      this.terminalStatuses.set(operationId, 'acked');
-      removed.push(operationId);
-      this.queue.splice(index, 1);
-    }
+    const removed = this.queue.filter((entry) => requested.has(entry.operation.operationId)).map((entry) => entry.operation.operationId);
     if (removed.length === 0) return [];
+    const remaining = this.queue.filter((entry) => !requested.has(entry.operation.operationId));
+    // Removing the ACK and rebasing its dependants is one durable transition.
+    this.commitQueueImage(remainingOperations ?? remaining.map((entry) => entry.operation), remaining);
+    for (const operationId of removed) {
+      this.terminalStatuses.set(operationId, 'acked');
+      this.immutableRequests.delete(operationId);
+      this.resultLookups.delete(operationId);
+    }
     if (this.queue.length === 0 && this.state === 'syncing') this.state = 'idle';
-    this.persistQueue();
-    return removed.reverse();
+    return removed;
   }
 
   /** Keep the rejected operation for audit/retry visibility. */
@@ -179,37 +175,37 @@ export class OfflineQueue {
     if (online) void this.flushAll();
   }
 
-  /** Replace one operation after a structural OT transform. */
-  replace(operationId: string, operation: OperationEnvelope): boolean {
-    operation = validateOperation(operation);
-    const item = this.queue.find((entry) => entry.operation.operationId === operationId);
-    if (!item) return false;
-    if (!this.canRewrite(operationId)) throw new Error('OPERATION_REQUEST_IMMUTABLE: 已发送或恢复的操作必须先核对服务器结果');
-    item.operation = structuredClone(operation);
-    item.status = 'pending';
-    item.rejection = undefined;
-    this.persistQueue();
-    return true;
-  }
-
   /** Rewrite all queued operations in sequence and persist one journal image. */
   rewrite(operations: readonly OperationEnvelope[]): void {
+    this.commitQueueImage(operations, this.queue);
+  }
+
+  private commitQueueImage(operations: readonly OperationEnvelope[], previousEntries: readonly QueuedOperation[]): void {
     operations = operations.map((operation) => validateOperation(operation));
-    const byId = new Map(this.queue.map((entry) => [entry.operation.operationId, entry]));
+    if (operations.length !== previousEntries.length
+      || operations.some((operation, index) => operation.operationId !== previousEntries[index]!.operation.operationId)) {
+      throw new Error('OPERATION_QUEUE_IDENTITY_MISMATCH: queue transitions must preserve remaining operation order and identity');
+    }
     const rewritten: QueuedOperation[] = [];
-    for (const operation of operations) {
-      const previous = byId.get(operation.operationId);
-      if (previous && !this.canRewrite(operation.operationId)) {
+    for (let index = 0; index < operations.length; index += 1) {
+      const operation = operations[index]!;
+      const previous = previousEntries[index]!;
+      if (operation.clientSessionId !== previous.operation.clientSessionId
+        || operation.clientSequence !== previous.operation.clientSequence
+        || operation.unitId !== previous.operation.unitId || operation.createdAt !== previous.operation.createdAt) {
+        throw new Error('OPERATION_QUEUE_IDENTITY_MISMATCH: rebasing cannot change an operation identity');
+      }
+      if (!this.canRewrite(operation.operationId)) {
         if (JSON.stringify(previous.operation) !== JSON.stringify(operation)) throw new Error('OPERATION_REQUEST_IMMUTABLE: 不得改写待确认请求');
         rewritten.push(previous);
         continue;
       }
       rewritten.push({
         operation: structuredClone(operation),
-        enqueuedAt: previous?.enqueuedAt ?? this.now(),
-        retryCount: previous?.retryCount ?? 0,
-        status: previous?.status === 'rejected' ? 'rejected' : 'pending',
-        rejection: previous?.status === 'rejected' ? previous.rejection : undefined,
+        enqueuedAt: previous.enqueuedAt,
+        retryCount: previous.retryCount,
+        status: previous.status === 'rejected' ? 'rejected' : 'pending',
+        rejection: previous.status === 'rejected' ? previous.rejection : undefined,
       });
     }
     // Commit the durable image before swapping the in-memory queue reference.

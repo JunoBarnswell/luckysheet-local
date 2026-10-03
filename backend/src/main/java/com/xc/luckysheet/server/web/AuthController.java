@@ -60,7 +60,8 @@ public class AuthController {
                                       HttpServletResponse response) {
         boolean authenticated = authentication != null
                 && authentication.isAuthenticated()
-                && !(authentication instanceof AnonymousAuthenticationToken);
+                && !(authentication instanceof AnonymousAuthenticationToken)
+                && !(authentication instanceof com.xc.luckysheet.server.security.GuestShareAuthentication);
         String subject = null;
         String displayName = null;
         boolean admin = false;
@@ -75,7 +76,7 @@ public class AuthController {
         String csrf = properties.authMode() == AuthProperties.AuthMode.LOCAL
                 ? csrfToken(request, response).getToken()
                 : "";
-        com.xc.luckysheet.server.security.VerifiedAuthContext context = authenticated && !(authentication instanceof com.xc.luckysheet.server.security.GuestShareAuthentication)
+        com.xc.luckysheet.server.security.VerifiedAuthContext context = authenticated
                 ? identities.context(authentication, request) : null;
         return new AuthSessionResponse(authenticated, subject, displayName, admin, bootstrapRequired, csrf, context);
     }
