@@ -5,13 +5,13 @@ import { loadOpcPackageGraph } from '@react-sheets/exchange-excel-ooxml';
 import { WorkbookModel } from '@react-sheets/core-model';
 import { AuthDomain } from '../auth/domain';
 import { ApplicationRuntime } from './runtime';
-import { createSpreadsheetSdk } from '../sdk';
+import { createSpreadsheetSdk, runtimeFor } from '../sdk';
 import { SdkError } from '../error';
 
 function authPort() {
   let subject: string | null = null;
   return async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
-    const path = String(input);
+    const path = new URL(String(input), 'http://sdk-fixture.test').pathname;
     if (path === '/api/auth/config') return Response.json({ mode: 'local' });
     if (path === '/api/auth/login') subject = 'user-a';
     if (path === '/api/auth/logout') subject = null;
@@ -97,7 +97,7 @@ test('SDK catalog export resolves canonical remote assets and rejects missing or
   let assetReads = 0;
   const auth = authPort();
   const fetchPort: typeof fetch = async (input, init) => {
-    const path = String(input);
+    const path = new URL(String(input), 'http://sdk-fixture.test').pathname;
     if (path === '/api/workbooks/export-assets/snapshot') return Response.json({ snapshot, revision: 0 });
     if (path === '/api/workbooks/export-assets/access') return Response.json({ unitId: snapshot.unitId, role: 'owner', accessRevision: 0, regions: [] });
     if (path === '/api/workbooks/export-assets') return Response.json({ unitId: snapshot.unitId, name: snapshot.name });
@@ -129,5 +129,19 @@ test('SDK catalog export resolves canonical remote assets and rejects missing or
     assetMode = 'success';
     const retried = await sdk.workbooks.exportWorkbook(snapshot.unitId, { execution: 'inline-test' });
     assert.deepEqual(loadOpcPackageGraph(retried.buffer).files[`xl/media/${asset.assetId}.png`], png);
+  } finally { await sdk.dispose(); }
+});
+
+test('SDK root lifetime retains catalog across final child release and still retires it on identity change', async () => {
+  const sdk = createSpreadsheetSdk({ fetch: authPort() });
+  try {
+    await sdk.auth.initialize(); await sdk.auth.authenticate('a', 'password');
+    const catalog = sdk.workbooks, release = runtimeFor(sdk).acquire();
+    release(); await new Promise(resolve => setTimeout(resolve, 10));
+    assert.equal(sdk.workbooks, catalog);
+    assert.deepEqual(await catalog.list(), []);
+    await sdk.auth.signOut();
+    await assert.rejects(catalog.list(), /unavailable/);
+    assert.notEqual(sdk.workbooks, catalog);
   } finally { await sdk.dispose(); }
 });

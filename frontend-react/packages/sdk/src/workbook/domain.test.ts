@@ -1,3 +1,6 @@
+import { WorkbookModel } from '@react-sheets/core-model';
+import { CommandRuntime } from '@react-sheets/command-runtime';
+import { registerSheetCommands } from '@react-sheets/sheet-features';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { getWorkbookObjectPort, WorkbookSession } from '@react-sheets/spreadsheet-app';
@@ -318,4 +321,39 @@ test('matrix intent is captured before async authorization and calculation waits
     await pending;
     assert.deepEqual(await range.readValues(), [[1]]);
   } finally { workbook.close(); }
+});
+
+test('canonical worksheet rename publishes cell, rule and name facts for committed undo/redo', () => {
+  const model = new WorkbookModel('rename-facts', 'Rename facts'), owner = model.getSheet(model.primarySheetId), source = model.addSheet('source', 'Source');
+  owner.cells.set(0, 0, { value: null, formula: '=Source!A1' });
+  model.setDefinedName({ name: 'Rate', formula: '=Source!A1', scope: 'workbook' });
+  const runtime = new CommandRuntime(model); registerSheetCommands(runtime);
+  const range = { sheetId: owner.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 };
+  runtime.execute('sheet.cf.add', { sheetId: owner.id, rule: { id: 'cf', sheetId: owner.id, ranges: [range], type: 'highlight', operator: 'formula', value1: '=Source!A1>0' } });
+  runtime.execute('sheet.dv.add', { sheetId: owner.id, rule: { id: 'dv', sheetId: owner.id, ranges: [range], type: 'list', listSource: { kind: 'formula', formula: '=Source!A1:A2' } } });
+  const result = runtime.execute('sheet.rename', { sheetId: source.id, name: 'Renamed' });
+  const entry = runtime.getUndoEntries().at(-1)!, forward = entry.forwardMutations[0]!;
+  assert.equal(forward.structuralFormulaOwnerDeltas?.length, 3);
+  assert.equal(forward.structuralDefinedNameOwnerDeltas?.length, 1);
+  runtime.applyCommittedStructuralPatches(result.operationId, [{ ...structuredClone(forward), structuralRangeOwnerDeltas: [] }], 1);
+  assert.equal(runtime.undo(), true);
+  assert.equal(source.name, 'Source'); assert.equal(owner.cells.get(0, 0)?.formula, '=Source!A1');
+  assert.equal(model.getDefinedNameExact('Rate', 'workbook')?.formula, '=Source!A1');
+  assert.equal(runtime.redo(), true);
+  assert.equal(source.name, 'Renamed'); assert.match(owner.cells.get(0, 0)!.formula!, /Renamed/);
+});
+
+test('committed worksheet rename rejects forged owner semantics without repairing model or history', () => {
+  const model = new WorkbookModel('rename-rejection', 'Rename rejection'), owner = model.getSheet(model.primarySheetId), source = model.addSheet('source', 'Source');
+  owner.cells.set(0, 0, { value: null, formula: '=Source!A1' });
+  const runtime = new CommandRuntime(model); registerSheetCommands(runtime);
+  const result = runtime.execute('sheet.rename', { sheetId: source.id, name: 'Renamed' });
+  const before = model.snapshot(), history = structuredClone(runtime.getUndoEntries());
+  const forged = structuredClone(history.at(-1)!.forwardMutations[0]!);
+  forged.structuralDefinedNameOwnerDeltas = []; forged.structuralRangeOwnerDeltas = [];
+  const delta = forged.structuralFormulaOwnerDeltas![0]!;
+  if (delta.kind !== 'formula-cell') throw new Error('Expected canonical cell owner');
+  forged.structuralFormulaOwnerDeltas = [{ ...delta, after: { ...delta.after, formula: '=Other!B99' } }];
+  assert.throws(() => runtime.applyCommittedStructuralPatches(result.operationId, [forged], 1), /STRUCTURAL_PATCH_MISMATCH/);
+  assert.deepEqual(model.snapshot(), before); assert.deepEqual(runtime.getUndoEntries(), history);
 });

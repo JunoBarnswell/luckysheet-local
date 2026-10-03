@@ -260,3 +260,11 @@ Java 成功/拒绝与真实并发检查补齐 MWB-03.c/d/e/f：伪造循环 comm
 整批交付一个 canonical sheet.cells.commitMatrix、Range 读取/写入/样式/清空/填充/合并/复制值，以及 Worksheet 身份/结构/尺寸/可见性/pane 与 Workbook typed undo/redo。10000 单元格预算与显式 extent，数据/记录 owner、真实结构规划器缺失均明确拒绝。完整 O1/O2/T1 和原 49 项 Pending 不因子批交付改变。
 
 首次 SDK 51/52 中唯一失败是测试入口拼写，保留 /tmp/sdk-objects-sdk.log；build 唯一闭包类型错误在 /tmp/sdk-objects-build.log。冻结差异 /tmp/sdk-objects-first-pass.patch，完整异步契约审查后统一修正 source/query 前置与调用输入捕获，不新增 DV 别名或放宽断言。最终 SDK **53/53 Pass**，build/typecheck 和 boundaries Pass；计算域 **457/457 Pass**。日志 /tmp/sdk-objects-final-sdk.log、/tmp/sdk-objects-final-build.log、/tmp/sdk-objects-final-boundaries.log、/tmp/sdk-objects-calculation.log。O1.1 实施前 a..h 仍等待真实浏览器逐条执行；单测中的本地结构成功不以假连接代替，明确验证 STRUCTURAL_PLANNER_OFFLINE 无写入。
+
+### O1.1 首轮真实执行与完整所有权修正
+
+产品 head 83261a156c45316e3c6dab60e8098ff5eaf9a047：19 项真实 browser **17 Pass/2 Fail**。矩阵/格式/历史/值复制步骤到保存均执行，关闭全部对象后的 open 失败；结构场景在真实 Java rename operation 201 后客户端不确认而失败。viewer 整块拒绝与公式错误值复制不写入的独立场景 Pass。保留 /tmp/sdk-objects-browser.log、/tmp/sdk-objects-first-browser-test-results、/tmp/sdk-product-uat-wc2OyW/evidence。没有因 HTTP 201 将 rename 验收计为成功，也没有重试写入或放宽 console/network。
+
+完整链路审查：SDK 缺少根 lease，最后 child release 触发旧 catalog 退休；rename 手工分支改写 cell 公式却不输出它们的 owner deltas。修正 SDK 根 lifetime（dispose/身份变化仍退休），删除 200 余行重复 rename 代码，统一 planWorkbookFormulaRewrite，同时保留 preserve-only source 的拒绝。新增 root catalog 生存/身份退休与 cell/CF/DV/name facts、undo/redo、恶意 server fact 拒绝检查。产品修正后冻结，只有测试的分页 URL fixture 与 readonly fact 构造同步正式契约；未改产品别名或断言。
+
+修正批次 SDK **56/56 Pass**（/tmp/sdk-objects-ownership-final-sdk.log），build/typecheck、boundaries Pass（/tmp/sdk-objects-ownership-final-build.log、/tmp/sdk-objects-ownership-final-boundaries.log），计算 **457/457 Pass**（/tmp/sdk-objects-ownership-calculation.log）；完整 unit **1570/1516 Pass/54 Fail**，失败标题增减均 0（/tmp/sdk-objects-ownership-unit.log）。下一干净提交重新执行整套 browser，O1.1 a..j 未执行成功的细项仍 Pending。GitHub 本次 head workflow runs/statuses 返回空，不宣告线上 CI 通过。

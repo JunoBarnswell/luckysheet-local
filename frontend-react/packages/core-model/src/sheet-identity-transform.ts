@@ -6,7 +6,6 @@ import {
   rewriteSheetLifecycleFormula,
 } from '@react-sheets/formula-engine';
 import type {
-  CellStyleTemplate,
   RangeRef,
   SheetId,
   WorksheetModel,
@@ -16,7 +15,6 @@ import type {
   DataValidationRule,
 } from './index';
 import { planWorkbookFormulaRewrite } from './structural-transform';
-import { CALCULATION_CONTEXT_EFFECTS } from './calculation-context-effect';
 import type {
   DrawingPayload,
   DefinedNameModel,
@@ -25,7 +23,7 @@ import type {
 import { chartTextFormulaEntries, writeChartTextFormula } from './chart-text-reference';
 import { assertCanonicalWorksheetName } from './worksheet-name';
 import type { PivotModel, PivotSource } from './pivot';
-import type { StructuralFormulaObjectOwnerDelta, StructuralTransformResult } from './structural-transform';
+import type { StructuralTransformResult } from './structural-transform';
 
 export type SheetIdentityTransformKind = 'rename' | 'duplicate' | 'delete';
 
@@ -74,15 +72,6 @@ export interface SheetIdentityTransformPlan {
   readonly invalidations: readonly SheetReferenceInvalidation[];
   apply(): StructuralTransformResult | undefined;
 }
-
-type FormulaChange = {
-  sheetId: SheetId;
-  row: number;
-  column: number;
-  formula?: { before: string; after: string };
-  sourceFormula?: { before: string; after: string };
-  barcodeFormula?: { before: string; after: string };
-};
 
 function mapSheetId(sheetId: SheetId, sourceSheetId: SheetId, targetSheetId: SheetId): SheetId {
   return sheetId === sourceSheetId ? targetSheetId : sheetId;
@@ -184,52 +173,13 @@ function mapFormulaReference(
   return mapFormula(formula, oldName, newName, participant);
 }
 
-function collectFormulaChanges(
-  workbook: WorkbookModel,
-  oldName: string,
-  newName: string,
-): { changes: FormulaChange[]; requiresCalculationContextRebuild: boolean } {
-  const changes: FormulaChange[] = [];
-  let requiresCalculationContextRebuild = false;
-  for (const sheet of workbook.getSheets()) {
-    sheet.cells.forEachFormulaOwner((cell, row, column) => {
-      const hasBarcodeFormula = cell.presentation?.kind === 'barcode' && cell.presentation.source.kind === 'formula';
-      if (!cell.formula && !cell.formulaMetadata?.sourceFormula && !hasBarcodeFormula) return;
-      const participant = `cell:${sheet.id}!${row},${column}`;
-      const change: FormulaChange = { sheetId: sheet.id, row, column };
-      if (cell.formula) {
-        if (formulaReferencesSheet(cell.formula, newName, participant, sheet.id)) {
-          requiresCalculationContextRebuild = true;
-        }
-        const formula = mapFormula(cell.formula, oldName, newName, participant);
-        if (formula !== cell.formula) change.formula = { before: cell.formula, after: formula };
-      }
-      if (cell.formulaMetadata?.sourceFormula) {
-        if (formulaReferencesSheet(cell.formulaMetadata.sourceFormula, newName, `${participant}.sourceFormula`, sheet.id)) {
-          requiresCalculationContextRebuild = true;
-        }
-        const sourceFormula = mapFormulaReference(cell.formulaMetadata.sourceFormula, oldName, newName, `${participant}.sourceFormula`, sheet.id, cell.formulaMetadata.preservedOnly);
-        if (sourceFormula !== cell.formulaMetadata.sourceFormula) change.sourceFormula = { before: cell.formulaMetadata.sourceFormula, after: sourceFormula };
-      }
-      if (cell.presentation?.kind === 'barcode' && cell.presentation.source.kind === 'formula') {
-        if (formulaReferencesSheet(cell.presentation.source.formula, newName, `${participant}.barcode`, sheet.id)) {
-          requiresCalculationContextRebuild = true;
-        }
-        const formula = mapFormulaReference(cell.presentation.source.formula, oldName, newName, `${participant}.barcode`, sheet.id);
-        if (formula !== cell.presentation.source.formula) change.barcodeFormula = { before: cell.presentation.source.formula, after: formula };
-      }
-      if (change.formula || change.sourceFormula || change.barcodeFormula) changes.push(change);
-    });
-  }
-  return { changes, requiresCalculationContextRebuild };
-}
-
-function transformDefinedNames(workbook: WorkbookModel, oldName: string, newName: string): DefinedNameModel[] {
-  return workbook.definedNameModels.map((entry) => ({
-    ...entry,
-    formula: mapFormula(entry.formula, oldName, newName, `defined-name:${entry.name}`),
-    anchor: entry.anchor ? { ...entry.anchor } : undefined,
-  }));
+/** Preserve-only metadata has no editable formula owner. Reject before any rename. */
+function assertPreservedRenameReferences(workbook: WorkbookModel, oldName: string, newName: string): void {
+  for (const sheet of workbook.getSheets()) sheet.cells.forEachFormulaOwner((cell, row, column) => {
+    if (cell.formulaMetadata?.preservedOnly && cell.formulaMetadata.sourceFormula !== undefined) {
+      mapFormulaReference(cell.formulaMetadata.sourceFormula, oldName, newName, `cell:${sheet.id}!${row},${column}.sourceFormula`, sheet.id, true);
+    }
+  });
 }
 
 function rewriteRuleFormulas<T extends ConditionalFormatRule | DataValidationRule>(
@@ -252,18 +202,6 @@ function rewriteRuleFormulas<T extends ConditionalFormatRule | DataValidationRul
     next.listSource = { ...next.listSource, formula: map(next.listSource.formula, 'listSource') };
   }
   return next as T;
-}
-
-function rewriteCellStyleTemplateFormulas(template: CellStyleTemplate, oldName: string, newName: string): CellStyleTemplate {
-  const next = structuredClone(template);
-  const validation = next.dataValidation;
-  if (!validation) return next;
-  if (validation.formula1) validation.formula1 = mapFormulaReference(validation.formula1, oldName, newName, `cell-style-template:${template.id}.formula1`);
-  if (validation.formula2) validation.formula2 = mapFormulaReference(validation.formula2, oldName, newName, `cell-style-template:${template.id}.formula2`);
-  if (validation.listSource?.kind === 'formula') {
-    validation.listSource.formula = mapFormulaReference(validation.listSource.formula, oldName, newName, `cell-style-template:${template.id}.listSource`);
-  }
-  return next;
 }
 
 function remapHyperlinkTarget(target: HyperlinkTarget, sourceSheetId: SheetId, targetSheetId: SheetId): HyperlinkTarget {
@@ -703,145 +641,21 @@ export function planSheetIdentityTransform(workbook: WorkbookModel, input: Sheet
     const nameOwner = workbook.getSheetByName(targetName);
     if (nameOwner && nameOwner.id !== source.id) throw new SheetIdentityTransformError(`Sheet name already exists: ${targetName}`);
     const sourceName = source.name;
-    const formulaChangePlan = targetName === sourceName
-      ? { changes: [], requiresCalculationContextRebuild: false }
-      : collectFormulaChanges(workbook, sourceName, targetName);
-    const formulaChanges = formulaChangePlan.changes;
-    const definedNameResolvesToRenamedSheet = targetName !== sourceName
-      && workbook.definedNameModels.some((entry) =>
-        formulaReferencesSheet(
-          entry.formula,
-          targetName,
-          `defined-name:${entry.name}`,
-          entry.sheetId,
-        ));
-    const definedNames = targetName === sourceName ? workbook.definedNameModels.map((entry) => structuredClone(entry)) : transformDefinedNames(workbook, sourceName, targetName);
-    const conditionalFormatChanges = new Map(workbook.getSheets().map((sheet) => [sheet.id, targetName === sourceName ? structuredClone(sheet.conditionalFormats) : sheet.conditionalFormats.map((rule) => rewriteRuleFormulas(rule, sourceName, targetName))] as const));
-    const dataValidationChanges = new Map(workbook.getSheets().map((sheet) => [sheet.id, targetName === sourceName ? structuredClone(sheet.dataValidations) : sheet.dataValidations.map((rule) => rewriteRuleFormulas(rule, sourceName, targetName))] as const));
-    const tableSheetChanges = targetName === sourceName ? [] : workbook.getSheets().flatMap((sheet) => sheet.tableSheet ? [{
-      sheetId: sheet.id,
-      definition: {
-        ...structuredClone(sheet.tableSheet),
-        columns: sheet.tableSheet.columns.map((column) => ({
-          ...column,
-          ...(column.formula ? { formula: mapFormulaReference(column.formula, sourceName, targetName, `table-sheet:${sheet.id}.${column.fieldId}`, sheet.id) } : {}),
-        })),
-      },
-    }] : []);
-    const dataViewChanges = targetName === sourceName ? [] : [...workbook.dataModel.views.values()].map((view) => ({
-      id: view.id,
-      view: {
-        ...structuredClone(view),
-        fields: view.fields.map((field) => ({
-          ...field,
-          ...(field.formula ? { formula: mapFormulaReference(field.formula, sourceName, targetName, `data-view:${view.id}.${field.fieldId}`) } : {}),
-        })),
-      },
-    }));
-    const cellStyleTemplateChanges = targetName === sourceName ? [] : [...workbook.cellStyleTemplates.values()]
-      .map((template) => rewriteCellStyleTemplateFormulas(template, sourceName, targetName));
-    type DrawingPayloadChange = {
-      sheetId: string;
-      payloadId: string;
-      payload: DrawingPayload;
-      formulaOwnerDeltas: StructuralFormulaObjectOwnerDelta[];
-    };
-    const drawingPayloadChanges: DrawingPayloadChange[] = targetName === sourceName
-      ? []
-      : workbook.getSheets().flatMap((sheet) =>
-        [...sheet.drawingPayloads.entries()].flatMap(([payloadId, payload]): DrawingPayloadChange[] => {
-          if (payload.kind === 'shape' && payload.propertyFormula) {
-            const propertyFormula = mapFormulaReference(payload.propertyFormula, sourceName, targetName, `drawing:${payloadId}.propertyFormula`, sheet.id);
-            return propertyFormula === payload.propertyFormula ? [] : [{ sheetId: sheet.id, payloadId, payload: { ...structuredClone(payload), propertyFormula }, formulaOwnerDeltas: [] }];
-          }
-          if (payload.kind !== 'chart') return [];
-          const next = structuredClone(payload);
-          const formulaOwnerDeltas: StructuralFormulaObjectOwnerDelta[] = [];
-          for (const { field, formula } of chartTextFormulaEntries(payload)) {
-            const afterFormula = mapFormulaReference(formula, sourceName, targetName, `drawing:${payloadId}.${field}`, sheet.id);
-            if (afterFormula === formula) continue;
-            writeChartTextFormula(next, field, afterFormula);
-            formulaOwnerDeltas.push({
-              kind: 'formula-object',
-              ownerKind: 'chart-text',
-              sheetId: sheet.id,
-              payloadId,
-              field,
-              beforeFormula: formula,
-              afterFormula,
-            });
-          }
-          return formulaOwnerDeltas.length === 0 ? [] : [{ sheetId: sheet.id, payloadId, payload: next, formulaOwnerDeltas }];
-        }));
-    const drawingFormulaOwnerDeltas = drawingPayloadChanges.flatMap((change) => change.formulaOwnerDeltas);
-    const recordFieldChanges = targetName === sourceName ? [] : [...workbook.dataModel.tables.values()].flatMap(table => table.fields.flatMap(field => {
-      if (field.calculation?.kind !== 'formula') return [];
-      const beforeFormula = field.calculation.formula;
-      const afterFormula = mapFormula(beforeFormula, sourceName, targetName, `record-field:${table.id}.${field.id}`);
-      return afterFormula === beforeFormula ? [] : [{ kind: 'formula-object' as const, ownerKind: 'record-field' as const, tableId: table.id, fieldId: field.id, beforeFormula, afterFormula }];
-    }));
+    if (targetName !== sourceName) assertPreservedRenameReferences(workbook, sourceName, targetName);
+    const formulas = planWorkbookFormulaRewrite(workbook, source,
+      (formula, ownerSheetId) => targetName === sourceName ? formula : mapFormulaReference(formula, sourceName, targetName, `sheet-rename:${ownerSheetId}`, ownerSheetId),
+      (formula, ownerSheetId) => targetName === sourceName ? formula : mapFormulaReference(formula, targetName, sourceName, `sheet-rename-inverse:${ownerSheetId}`, ownerSheetId), undefined, false);
     return {
       spec: { ...spec, targetName },
       invalidations: [],
       apply: () => {
-        const formulaOwners = formulaChanges.map((change) => {
-          const sheet = workbook.getSheet(change.sheetId);
-          const cell = sheet.cells.get(change.row, change.column);
-          if (!cell) throw new SheetIdentityTransformError(`Formula owner disappeared: ${change.sheetId}!${change.row},${change.column}`);
-          if ((change.formula && cell.formula !== change.formula.before)
-            || (change.sourceFormula && cell.formulaMetadata?.sourceFormula !== change.sourceFormula.before)
-            || (change.barcodeFormula && (cell.presentation?.kind !== 'barcode' || cell.presentation.source.kind !== 'formula' || cell.presentation.source.formula !== change.barcodeFormula.before))) {
-            throw new SheetIdentityTransformError(`Formula owner changed before rename: ${change.sheetId}!${change.row},${change.column}`);
-          }
-          return { change, sheet, cell };
-        });
-        for (const change of recordFieldChanges) {
-          const field = workbook.getTable(change.tableId).fields.find(field => field.id === change.fieldId);
-          if (field?.calculation?.kind !== 'formula' || field.calculation.formula !== change.beforeFormula) throw new SheetIdentityTransformInvariantError('Record formula changed during rename');
-        }
+        const effect = formulas.apply();
         source.name = targetName;
-        for (const { change, sheet, cell } of formulaOwners) {
-          const next = { ...cell };
-          if (change.formula) next.formula = change.formula.after;
-          if (change.sourceFormula && cell.formulaMetadata) {
-            next.formulaMetadata = { ...cell.formulaMetadata, sourceFormula: change.sourceFormula.after };
-          }
-          if (change.barcodeFormula && cell.presentation?.kind === 'barcode' && cell.presentation.source.kind === 'formula') {
-            next.presentation = { ...cell.presentation, source: { ...cell.presentation.source, formula: change.barcodeFormula.after } };
-          }
-          sheet.cells.set(change.row, change.column, next);
-        }
-        workbook.replaceDefinedNames(definedNames);
-        for (const sheet of workbook.getSheets()) {
-          sheet.conditionalFormats.splice(0, sheet.conditionalFormats.length, ...(conditionalFormatChanges.get(sheet.id) ?? []));
-          sheet.dataValidations.splice(0, sheet.dataValidations.length, ...(dataValidationChanges.get(sheet.id) ?? []));
-        }
-        for (const change of tableSheetChanges) workbook.getSheet(change.sheetId).tableSheet = change.definition;
-        for (const change of dataViewChanges) workbook.dataModel.views.set(change.id, change.view);
-        for (const template of cellStyleTemplateChanges) workbook.cellStyleTemplates.set(template.id, template);
-        for (const change of drawingPayloadChanges) workbook.getSheet(change.sheetId).drawingPayloads.set(change.payloadId, change.payload);
-        for (const change of recordFieldChanges) {
-          const calculation = workbook.getTable(change.tableId).fields.find(field => field.id === change.fieldId)!.calculation!;
-          if (calculation.kind === 'formula') calculation.formula = change.afterFormula;
-        }
-        return {
-          kind: 'structural-transform',
-          removedCells: [],
-          clearInputRanges: [],
-          populateInputRanges: [],
-          rewrittenFormulaOwners: formulaOwners.map(({ change }) => ({
-            sheetId: change.sheetId,
-            row: change.row,
-            column: change.column,
-          })),
-          ...([ ...drawingFormulaOwnerDeltas, ...recordFieldChanges ].length > 0 ? { formulaOwnerDeltas: [...drawingFormulaOwnerDeltas, ...recordFieldChanges] } : {}),
-          ...(recordFieldChanges.length > 0 || formulaChangePlan.requiresCalculationContextRebuild || definedNameResolvesToRenamedSheet
-            ? { calculationContextEffect: CALCULATION_CONTEXT_EFFECTS.rebuild }
-            : {}),
-        };
+        return effect;
       },
     };
   }
+
   if (spec.kind === 'duplicate') {
     const targetSheetId = spec.targetSheetId?.trim();
     const targetName = spec.targetName?.trim();

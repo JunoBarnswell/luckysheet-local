@@ -20,9 +20,10 @@ export function runtimeFor(sdk: SpreadsheetSdk): ApplicationRuntime {
 export function createSpreadsheetSdk(options: AuthOptions = {}): SpreadsheetSdk {
   const auth = new AuthDomain(options);
   const runtime = new ApplicationRuntime(auth);
+  const releaseSdk = runtime.acquire();
   const sdk: SpreadsheetSdk = Object.freeze({
     auth: auth.session, identity: auth.identity, get workbooks() { return runtime.catalog; },
-    dispose: async () => { try { await runtime.dispose(); } finally { auth.dispose(); runtimes.delete(sdk); } },
+    dispose: async () => { releaseSdk(); try { await runtime.dispose(); } finally { auth.dispose(); runtimes.delete(sdk); } },
   });
   runtimes.set(sdk, runtime);
   return sdk;
