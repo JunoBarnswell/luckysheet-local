@@ -189,3 +189,6 @@ SDK 拥有认证/身份/凭证/组合根/工作簿目录与生命周期/Excel �
 真实授权补充 UAT 的首次独立执行（`7e0acdba118a26c9c009feae2356cd3fd29ba6fb`）：身份 A→B 的旧 Workbook/Cell 退休、重新打开读取已提交 43、active SDK dispose 退休旧 Cell 全部 Pass。五函数/撤权用例在 bootstrap 前置步骤返回 403，业务断言未执行。trace 的两个匿名 session 响应证明：bootstrap 使用第一个响应的 CSRF，却携带第二个响应写入的 session cookie；Web 和独立 SDK 的初始化竞争。没有输出 token/cookie，也不放宽服务器 CSRF。
 
 验收宿主修正为 Vite 提供的独立 `e2e/support/sdk-consumer.html`，只启动被测公开 SDK，不挂载 Web 的另一个认证组合根。这符合预设“无编辑器 SDK consumer”前置条件；页面保留真实 origin/HttpOnly cookie/Worker。首次失败保留在 `/tmp/sdk-mwb-authority-uat/first-attempt-test-results`，产品代码仍冻结于 `5ce6111179f7fdbe687cbbb2a7fc60d73af4ecbf`。
+
+
+独立 SDK consumer 的原始 filesystem HTML 尝试在 React dev preamble 校验时失败（2 Fail，业务未执行；head `425519666f8324506c11a1a8181aa2e97b163c2c`）。`/@fs` 静态 HTML 没有经过 Vite 的 HTML/React transform。宿主最终设为 Web 开发根中的 `sdk-consumer.uat.html`，由实际 Vite HTML 管线处理；不手工置入成功标志或省略 React 前置校验，不挂载 Web。生产构建仍只有既有 index.html 入口；该文件仅是开发服务器的验收入口。证据保存在 `/tmp/sdk-mwb-standalone-uat/first-attempt-test-results`，产品实现继续冻结。

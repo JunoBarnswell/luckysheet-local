@@ -9,8 +9,8 @@ test.skip(!process.env.SDK_UAT_ENABLED, 'Requires the isolated real Java/H2 SDK 
 test.setTimeout(120_000);
 const entryPath = fileURLToPath(import.meta.resolve('@react-sheets/sdk')).replaceAll('\\', '/');
 const entryUrl = `/@fs${entryPath.startsWith('/') ? entryPath : `/${entryPath}`}`;
-const consumerPath = fileURLToPath(new URL('./support/sdk-consumer.html', import.meta.url)).replaceAll('\\', '/');
-const consumerUrl = `/@fs${consumerPath.startsWith('/') ? consumerPath : `/${consumerPath}`}`;
+// A real Vite HTML entry runs its normal React transform without mounting Web.
+const consumerUrl = '/sdk-consumer.uat.html';
 const password = 'Uat-Private-Password-2026';
 
 async function publicSdk(page: Page): Promise<JSHandle<SpreadsheetSdk>> {
