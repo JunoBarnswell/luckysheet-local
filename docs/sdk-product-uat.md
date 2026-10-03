@@ -18,7 +18,7 @@ SDK 拥有认证/身份/凭证/组合根/工作簿目录与生命周期/Excel �
 
 | ID | 前置条件与操作 | 预期结果与拒绝路径 | 状态 |
 |---|---|---|---|
-| ROLE-01 | 生成 TS/Java 契约并扫描全部角色消费者 | 一个生成 WorkbookRole 来源；非法角色拒绝；wire labels 不变 | Pending |
+| ROLE-01 | 生成 TS/Java 契约并扫描全部角色消费者 | 一个生成 WorkbookRole 来源；非法角色拒绝；wire labels 不变 | Pass |
 | ROLE-02 | 四种角色分别打开活动/已删除工作簿菜单 | SDK capability 决定编辑/共享/移动/恢复/purge；Web 不解释角色 | Pending |
 | AUTH-01 | 新部署使用初始化凭据建立管理员 | 真实认证与 CSRF 轮换；凭据不进入公共快照/工作簿 | Pending |
 | AUTH-02 | 正确/错误密码登录、登出、刷新 | 身份跟随服务器；失败不建立身份；登出撤销会话 | Pending |
@@ -71,4 +71,11 @@ SDK 拥有认证/身份/凭证/组合根/工作簿目录与生命周期/Excel �
 
 ## 执行记录
 
-尚未验收。完整产品目标未通过前保持草稿 PR，不合并。
+完整产品目标未通过前保持草稿 PR，不合并。
+
+2026-10-03：ROLE-01 已通过 TS/Java 生成契约与成功/拒绝测试；大写/未知角色被拒绝，canonical wire labels 与数据库 enum 常量不变。前端 build、boundary/contracts/mutation registry gate 通过。完整 Java/H2 测试 45 suites、319 tests、0 failures/errors/skipped（临时 Corretto JDK21 与 Maven3.9.11，代理使用系统 trust store）。
+
+SDK auth/identity/runtime 13 项测试通过，包括 CSRF rotation、公共快照不泄露凭证、未知模式/损坏响应/网络失败、管理员拒绝路径、subject owner 切换、StrictMode 与最终释放。Web 旧 auth/session.ts、auth/oidc.ts 与 composition root 构造逻辑已删除；目录 service 实现移入 SDK，旧 service 文件删除。公共 hook 的会话领域拆分仍未完成，不能将 useWorkbook 计作完整 SDK Workbook API。
+
+真实浏览器 UAT 已编写 e2e/sdk-product.spec.ts，需隔离真实 Java/H2 数据目录，SDK_UAT_ENABLED=1。当前尚未执行通过：仓库 provenance gate 要求 clean source tree，因此先提交实现后执行验收；不降低门禁。
+

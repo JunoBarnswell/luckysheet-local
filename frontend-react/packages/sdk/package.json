@@ -2,6 +2,15 @@
   "name": "@react-sheets/sdk",
   "private": true,
   "type": "module",
-  "exports": { ".": "./src/index.ts" },
-  "dependencies": { "@react-sheets/protocol": "file:../protocol" }
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@react-sheets/protocol": "file:../protocol",
+    "oidc-client-ts": "^3.5.0",
+    "@react-sheets/spreadsheet-app": "file:../spreadsheet-app",
+    "@react-sheets/core-model": "file:../core-model",
+    "@react-sheets/exchange-excel-ooxml": "file:../exchange-excel-ooxml",
+    "react": "19.2.8"
+  }
 }

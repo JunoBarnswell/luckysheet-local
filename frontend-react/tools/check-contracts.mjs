@@ -10,7 +10,7 @@ const generatedJava = await readFile(resolve(root, '../backend/src/main/java/com
 const permissionService = await readFile(resolve(root, 'packages/spreadsheet-app/src/permission-service.ts'), 'utf8');
 const protectionResolver = await readFile(resolve(root, '../backend/src/main/java/com/xc/luckysheet/server/mutation/ProtectionResolver.java'), 'utf8');
 const protocol = await readFile(resolve(root, 'packages/protocol/src/index.ts'), 'utf8');
-const catalog = await readFile(resolve(root, 'packages/spreadsheet-app/src/features/workbook-catalog/service.ts'), 'utf8');
+const catalog = await readFile(resolve(root, 'packages/sdk/src/workbooks/domain.ts'), 'utf8');
 const hub = await readFile(resolve(root, 'apps/web/src/containers/WorkbookHubContainer.tsx'), 'utf8');
 const frontend = await Promise.all([
   readFile(resolve(root, 'packages/sheet-features/src/index.ts'), 'utf8'),

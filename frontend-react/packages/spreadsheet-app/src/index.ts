@@ -119,7 +119,7 @@ export {
   type KeyTipTransition,
 } from './input/key-tip-state';
 export { canExecuteCommand, buildPermissionCapabilities, type PermissionAction } from './features/permission';
-export { buildCollaborationSnapshot, type CollaborationSnapshot } from './collaboration';
+export { buildOperation, buildCollaborationSnapshot, type CollaborationSnapshot } from './collaboration';
 export { buildRestoreParams, revisionToHistoryMeta } from './features/history';
 export {
   exchangeExportDocument,
@@ -151,6 +151,8 @@ export {
   type PersistenceSnapshotMeta,
   type WorkspaceRecord,
   type WorkspaceRecordInput,
+  type WorkspaceRecordMetadata,
+  type WorkspaceUserState,
   type PendingOperationJournal,
   type LocalWorkspaceSummary,
   type WorkspacePersistenceOptions,

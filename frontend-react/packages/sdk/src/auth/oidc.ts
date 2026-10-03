@@ -1,42 +1,11 @@
 import { UserManager, WebStorageStateStore, type User } from 'oidc-client-ts';
-import type { AuthTokenProvider } from '@react-sheets/protocol';
-
-export type AuthPhase = 'anonymous' | 'authenticated' | 'error' | 'loading' | 'unconfigured';
-
-export interface AuthSnapshot {
-  mode?: 'local' | 'oidc';
-  admin?: boolean;
-  bootstrapRequired?: boolean;
-  accessToken: string | null;
-  displayName: string | null;
-  error: string | null;
-  phase: AuthPhase;
-  subject: string | null;
-}
-
-export interface AuthSession {
-  getCsrfToken?: () => string | null;
-  authenticate?: (username: string, password: string) => Promise<void>;
-  bootstrap?: (token: string, username: string, password: string, displayName: string) => Promise<void>;
-  getAccessToken: AuthTokenProvider;
-  getSnapshot: () => AuthSnapshot;
-  initialize: () => Promise<void>;
-  signIn: (returnTo?: string) => Promise<void>;
-  signOut: () => Promise<void>;
-  subscribe: (listener: () => void) => () => void;
-}
-
-interface OidcConfiguration {
-  audience?: string;
-  authority: string;
-  clientId: string;
-  scope: string;
-  silentRedirectUri: string;
-}
+import type { AuthPhase, AuthSnapshot, OidcConfiguration } from './contract';
+import { SdkError } from '../error';
 
 const AUTH_RETURN_TO_KEY = 'react-sheets:oidc:return-to';
 const initialSnapshot: AuthSnapshot = {
-  accessToken: null,
+  bootstrapRequired: false,
+  capabilities: Object.freeze({ canManageUsers: false }),
   displayName: null,
   error: null,
   phase: 'loading',
@@ -51,23 +20,11 @@ function silentCallbackUri(): string {
   return new URL('/auth/silent-renew', window.location.origin).toString();
 }
 
-function readConfiguration(): OidcConfiguration | null {
-  const authority = import.meta.env.VITE_OIDC_ISSUER?.trim();
-  const clientId = import.meta.env.VITE_OIDC_CLIENT_ID?.trim();
-  if (!authority || !clientId) return null;
-  return {
-    authority,
-    clientId,
-    scope: import.meta.env.VITE_OIDC_SCOPE?.trim() || 'openid profile email',
-    audience: import.meta.env.VITE_OIDC_AUDIENCE?.trim() || undefined,
-    silentRedirectUri: import.meta.env.VITE_OIDC_SILENT_REDIRECT_URI?.trim() || silentCallbackUri(),
-  };
-}
-
-function toSnapshot(user: User | null, phase: AuthPhase, error: string | null = null): AuthSnapshot {
+function toSnapshot(user: User | null, phase: AuthPhase, error: SdkError | null = null): AuthSnapshot {
   if (!user || user.expired) {
     return {
-      accessToken: null,
+      bootstrapRequired: false,
+      capabilities: Object.freeze({ canManageUsers: false }),
       displayName: null,
       error,
       phase,
@@ -76,7 +33,8 @@ function toSnapshot(user: User | null, phase: AuthPhase, error: string | null = 
   }
   const profile = user.profile as Record<string, unknown>;
   return {
-    accessToken: user.access_token || null,
+    bootstrapRequired: false,
+    capabilities: Object.freeze({ canManageUsers: false }),
     displayName: typeof profile.name === 'string'
       ? profile.name
       : typeof profile.preferred_username === 'string'
@@ -90,14 +48,15 @@ function toSnapshot(user: User | null, phase: AuthPhase, error: string | null = 
   };
 }
 
-export class BrowserOidcSession implements AuthSession {
-  private readonly configuration = readConfiguration();
+export class BrowserOidcSession {
+  private readonly configuration: OidcConfiguration | undefined;
   private readonly listeners = new Set<() => void>();
   private readonly manager: UserManager | null;
   private snapshot: AuthSnapshot = initialSnapshot;
   private initialized = false;
 
-  constructor() {
+  constructor(configuration?: OidcConfiguration) {
+    this.configuration = configuration?.authority.trim() && configuration.clientId.trim() ? configuration : undefined;
     if (!this.configuration) {
       this.manager = null;
       this.snapshot = { ...initialSnapshot, phase: 'unconfigured' };
@@ -107,9 +66,9 @@ export class BrowserOidcSession implements AuthSession {
       authority: this.configuration.authority,
       client_id: this.configuration.clientId,
       redirect_uri: callbackUri(),
-      silent_redirect_uri: this.configuration.silentRedirectUri,
+      silent_redirect_uri: this.configuration.silentRedirectUri ?? silentCallbackUri(),
       response_type: 'code',
-      scope: this.configuration.scope,
+      scope: this.configuration.scope ?? 'openid profile email',
       automaticSilentRenew: true,
       filterProtocolClaims: true,
       loadUserInfo: false,
@@ -122,14 +81,14 @@ export class BrowserOidcSession implements AuthSession {
     this.manager.events.addUserUnloaded(() => this.publish({ ...initialSnapshot, phase: 'anonymous' }));
     this.manager.events.addAccessTokenExpired(() => this.publish({ ...initialSnapshot, phase: 'anonymous' }));
     this.manager.events.addSilentRenewError((cause) => this.publish({
-      ...toSnapshot(null, 'error', cause instanceof Error ? cause.message : 'Unable to renew the access token'),
+      ...toSnapshot(null, 'error', new SdkError('UNAUTHENTICATED', 'auth.oidc.renew', '登录凭证续期失败。', '请重新登录。', { cause })),
     }));
   }
 
-  getAccessToken: AuthTokenProvider = async () => {
+  getAccessToken = async (): Promise<string | null> => {
     if (!this.manager) return null;
     const user = await this.manager.getUser();
-    if (!user || user.expired) return null;
+    if (!user || user.expired) { this.publish({ ...initialSnapshot, phase: 'anonymous' }); return null; }
     return user.access_token || null;
   };
 
@@ -150,7 +109,8 @@ export class BrowserOidcSession implements AuthSession {
     try {
       if (window.location.pathname === '/auth/callback' && new URLSearchParams(window.location.search).has('code')) {
         const user = await this.manager.signinRedirectCallback();
-        const returnTo = window.sessionStorage.getItem(AUTH_RETURN_TO_KEY) || '/workbooks';
+        const storedReturnTo = window.sessionStorage.getItem(AUTH_RETURN_TO_KEY);
+        const returnTo = storedReturnTo?.startsWith('/') && !storedReturnTo.startsWith('//') ? storedReturnTo : '/workbooks';
         window.sessionStorage.removeItem(AUTH_RETURN_TO_KEY);
         window.history.replaceState({}, '', returnTo);
         window.dispatchEvent(new PopStateEvent('popstate'));
@@ -166,7 +126,7 @@ export class BrowserOidcSession implements AuthSession {
     } catch (cause) {
       this.publish({
         ...initialSnapshot,
-        error: cause instanceof Error ? cause.message : 'Unable to initialize authentication',
+        error: new SdkError('AUTH_CONFIGURATION_ERROR', 'auth.oidc.initialize', 'OIDC 登录初始化失败。', '请检查 OIDC 部署配置后重新登录。', { cause }),
         phase: 'error',
       });
     }
@@ -176,12 +136,12 @@ export class BrowserOidcSession implements AuthSession {
     if (!this.manager) {
       this.publish({
         ...initialSnapshot,
-        error: 'Cloud workbooks require VITE_OIDC_ISSUER and VITE_OIDC_CLIENT_ID.',
+        error: new SdkError('AUTH_CONFIGURATION_ERROR', 'auth.oidc.signIn', '缺少 OIDC issuer 和 client ID。', '请提供 OIDC 部署配置。'),
         phase: 'unconfigured',
       });
       return;
     }
-    window.sessionStorage.setItem(AUTH_RETURN_TO_KEY, returnTo.startsWith('/') ? returnTo : '/workbooks');
+    window.sessionStorage.setItem(AUTH_RETURN_TO_KEY, returnTo.startsWith('/') && !returnTo.startsWith('//') ? returnTo : '/workbooks');
     await this.manager.signinRedirect();
   }
 
@@ -191,8 +151,14 @@ export class BrowserOidcSession implements AuthSession {
     this.publish({ ...initialSnapshot, phase: 'anonymous' });
   }
 
+  dispose(): void {
+    void this.manager?.stopSilentRenew();
+    this.listeners.clear();
+    this.snapshot = initialSnapshot;
+  }
+
   private publish(snapshot: AuthSnapshot): void {
-    this.snapshot = snapshot;
+    this.snapshot = Object.freeze({ ...snapshot });
     for (const listener of this.listeners) listener();
   }
 }

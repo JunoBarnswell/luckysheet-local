@@ -1,4 +1,4 @@
-import { workbookCapabilities } from '@react-sheets/sdk';
+import type { CatalogEntry } from '@react-sheets/sdk';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Button, CheckToggle, Dialog, LocationPicker, Select, Stack, Text, TextInput, type LocationOption } from '@react-sheets/ui-system';
 import {
@@ -20,7 +20,6 @@ import {
   createTemplateSnapshot,
   createWorkbookUnitId,
   isWorkspaceStorageError,
-  type WorkbookCatalogEntry,
   type WorkbookTemplateId,
 } from '@react-sheets/spreadsheet-app';
 import type { SpaceMember, WorkspaceFolder, WorkspaceSpace } from '@react-sheets/protocol';
@@ -37,7 +36,7 @@ interface WorkbookHubContainerProps {
   onOpenWorkbook: (unitId: string, options?: WorkbookOpenOptions) => void;
 }
 
-function itemFromEntry(entry: WorkbookCatalogEntry): WorkbookCatalogItem {
+function itemFromEntry(entry: CatalogEntry): WorkbookCatalogItem {
   const locationLabel = entry.locationPath.length > 0
     ? entry.locationPath.join(' › ')
     : entry.storage === 'local'
@@ -54,7 +53,7 @@ function itemFromEntry(entry: WorkbookCatalogEntry): WorkbookCatalogItem {
     syncStatus: entry.syncState,
     lifecycle: entry.lifecycle,
     role: entry.role,
-    capabilities: workbookCapabilities(entry.role, entry.lifecycle),
+    capabilities: entry.capabilities,
     sourceKind: entry.source,
     ownerName: entry.ownerName,
     ownerSubject: entry.ownerId,
@@ -129,7 +128,7 @@ export function WorkbookHubContainer({ onOpenWorkbook }: WorkbookHubContainerPro
   const authSnapshot = useAuthSnapshot();
   const [activeSection, setActiveSection] = useState<WorkbookHubSection>('start');
   const [activeTab, setActiveTab] = useState<WorkbookCategoryTab>('recent');
-  const [entries, setEntries] = useState<readonly WorkbookCatalogEntry[]>([]);
+  const [entries, setEntries] = useState<readonly CatalogEntry[]>([]);
   const [spaces, setSpaces] = useState<readonly WorkspaceSpace[]>([]);
   const [folders, setFolders] = useState<readonly WorkspaceFolder[]>([]);
   const [spaceMembers, setSpaceMembers] = useState<readonly SpaceMember[]>([]);
