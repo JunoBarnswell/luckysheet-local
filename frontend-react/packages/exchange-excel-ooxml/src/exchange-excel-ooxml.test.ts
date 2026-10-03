@@ -19,10 +19,10 @@ const imageAsset = { schema: 'AssetRef' as const, assetId: 'asset-test', content
 
 describe('exchange-excel-ooxml', () => {
   it('preserves supported pie subtypes and fails closed on unmodeled native splits and rotations', () => {
-    const chartFrom = (plotChart: string) => readNativeChartGraph({
+    const chartFrom = (plotChart: string, chartSettings = '') => readNativeChartGraph({
       files: {
         'xl/drawings/drawing1.xml': strToU8('<xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><xdr:twoCellAnchor><xdr:graphicFrame><xdr:nvGraphicFramePr><xdr:cNvPr name="pie-chart"/></xdr:nvGraphicFramePr><a:graphic><a:graphicData><c:chart r:id="rIdChart"/></a:graphicData></a:graphic></xdr:graphicFrame></xdr:twoCellAnchor></xdr:wsDr>'),
-        'xl/charts/chart1.xml': strToU8(`<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart"><c:chart><c:plotArea>${plotChart}</c:plotArea></c:chart></c:chartSpace>`),
+        'xl/charts/chart1.xml': strToU8(`<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart"><c:chart>${chartSettings}<c:plotArea>${plotChart}</c:plotArea></c:chart></c:chartSpace>`),
       },
       relationships: {
         'xl/worksheets/sheet1.xml': [{ id: 'rIdDrawing', type: 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing', target: '../drawings/drawing1.xml' }],
@@ -41,7 +41,7 @@ describe('exchange-excel-ooxml', () => {
     const threeDimensional = chartFrom('<c:pie3DChart/>');
     assert.equal(threeDimensional.subtype, 'three-dimensional');
     assert.equal(threeDimensional.editable, true);
-    const custom3dView = chartFrom('<c:view3D><c:rotX val="15"/></c:view3D><c:pie3DChart/>');
+    const custom3dView = chartFrom('<c:pie3DChart/>', '<c:view3D><c:rotX val="15"/></c:view3D>');
     assert.equal(custom3dView.editable, false);
     assert.match(custom3dView.reason ?? '', /3-D pie view settings/);
     const customSplit = chartFrom('<c:ofPieChart><c:ofPieType val="pie"/><c:splitType val="pos"/></c:ofPieChart>');
@@ -50,6 +50,45 @@ describe('exchange-excel-ooxml', () => {
     const rotatedPie = chartFrom('<c:pieChart><c:firstSliceAng val="90"/></c:pieChart>');
     assert.equal(rotatedPie.editable, false);
     assert.match(rotatedPie.reason ?? '', /pie rotation/);
+  });
+
+  it('preserves custom native 3D pie view bytes and refuses regeneration without a canonical view owner', async () => {
+    const workbook = new WorkbookModel('native-pie-view', 'Native pie');
+    const sheet = workbook.getSheet(workbook.primarySheetId);
+    [['Category', 'Amount'], ['A', 10], ['B', 20]].forEach((row, rowIndex) => row.forEach((value, columnIndex) => sheet.cells.set(rowIndex, columnIndex, { value })));
+    sheet.drawings.push({ id: 'native-pie', sheetId: sheet.id, kind: 'chart', payloadId: 'native-pie-payload',
+      anchor: { kind: 'one-cell', row: 4, column: 3 }, transform: { x: 0, y: 0, width: 320, height: 200 }, zIndex: 0 });
+    const source = { sheetId: sheet.id, startRow: 0, endRow: 2, startColumn: 0, endColumn: 1 };
+    sheet.drawingPayloads.set('native-pie-payload', { kind: 'chart', chartId: 'native-pie-payload', chartType: 'pie', subtype: 'three-dimensional',
+      source: { kind: 'worksheet-ranges', ranges: [source] },
+      categoryRange: { ...source, startRow: 1, endColumn: 0 },
+      series: [{ id: 'amount', name: 'Amount', range: { ...source, startRow: 1, startColumn: 1 } }],
+      elements: { hiddenData: 'show', title: 'Native pie' } });
+    const native = loadOpcPackageGraph(exportSnapshotToOoxmlBuffer(workbook.snapshot()));
+    const chartPart = native.packageGraph.nativeChartGraph!.charts[0]!.chartPart;
+    assert.equal(native.packageGraph.nativeChartGraph!.charts[0]!.editable, true);
+    const originalChart = strFromU8(native.files[chartPart]!);
+    assert.match(originalChart, /<c:pie3DChart>/);
+    native.packageGraph.parts[chartPart] = strToU8(originalChart.replace('<c:plotArea>', '<c:view3D><c:rotX val="15"/><c:rotY val="30"/></c:view3D><c:plotArea>'));
+    const buffer = zipOpcPartsBuffer(native.packageGraph.parts);
+    const inputBefore = buffer.slice(0);
+    const imported = await importOoxmlDocument({ fileName: 'custom-pie.xlsx', buffer, options: { compatibilityTarget: 'B' } });
+    const graph = imported.artifact.nativeGraph.kind === 'opc' ? imported.artifact.nativeGraph.package : undefined;
+    assert.equal(graph?.nativeChartGraph?.charts[0]?.editable, false);
+    assert.match(graph?.nativeChartGraph?.charts[0]?.reason ?? '', /3-D pie view settings/);
+    assert.ok(imported.report.issues.some(issue => issue.feature === 'preserved-native-chart' && issue.preserved));
+    const unchanged = await exportOoxmlDocument({ snapshot: imported.snapshot, artifact: imported.artifact, fileName: 'custom-pie.xlsx', options: { compatibilityTarget: 'B' } });
+    assert.deepEqual(new Uint8Array(unchanged.buffer), new Uint8Array(inputBefore));
+    const edited = structuredClone(imported.snapshot);
+    edited.name = 'Edited native pie';
+    const before = structuredClone(edited);
+    const beforeGraph = structuredClone(graph);
+    await assert.rejects(exportOoxmlDocument({ snapshot: edited, artifact: imported.artifact, fileName: 'custom-pie.xlsx', options: { compatibilityTarget: 'B' } }),
+      (error: unknown) => error instanceof NativeDocumentError && error.code === 'NATIVE_DOCUMENT_UNCHANGED_SAVE_REQUIRED'
+        && error.location === chartPart && Boolean(error.recovery));
+    assert.deepEqual(edited, before);
+    assert.deepEqual(graph, beforeGraph);
+    assert.deepEqual(new Uint8Array(buffer), new Uint8Array(inputBefore));
   });
 
   it('preserves native Pivot error cache items as typed error members', () => {
@@ -402,7 +441,8 @@ describe('exchange-excel-ooxml', () => {
 
     await assert.rejects(
       importOoxmlDocument({ fileName: 'malicious.xlsx', buffer, options: { compatibilityTarget: 'B' } }),
-      /Camera source range/,
+      (error: unknown) => error instanceof NativeDocumentError && error.code === 'NATIVE_DOCUMENT_INVALID'
+        && error.location === sheet.id && error.message.includes('camera source range') && Boolean(error.recovery),
     );
   });
 
@@ -1182,6 +1222,10 @@ describe('exchange-excel-ooxml', () => {
     parts['xl/worksheets/sheet1.xml'] = strToU8(strFromU8(parts['xl/worksheets/sheet1.xml']!).replace('</worksheet>', '<pivotTableParts count="1"><pivotTablePart r:id="rIdPivotTable"/></pivotTableParts></worksheet>'));
     parts['xl/worksheets/_rels/sheet1.xml.rels'] = strToU8(strFromU8(parts['xl/worksheets/_rels/sheet1.xml.rels']!).replace('</Relationships>', '<Relationship Id="rIdPivotTable" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/pivotTable" Target="../pivotTables/pivotTable1.xml"/></Relationships>'));
     parts['xl/pivotTables/pivotTable1.xml'] = strToU8('<?xml version="1.0"?><pivotTableDefinition xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" name="PivotTable1" cacheId="1" rowGrandTotals="0" colGrandTotals="1" subtotalTop="1"><location ref="D1:E3"/><pivotFields count="2"><pivotField axis="axisRow" defaultSubtotal="0" sortType="descending"><autoSortScope><pivotArea dataOnly="0" fieldPosition="0"><references count="1"><reference field="4294967294" count="1" selected="0"><x v="0"/></reference></references></pivotArea></autoSortScope></pivotField><pivotField/></pivotFields><rowFields count="1"><field x="0"/></rowFields><dataFields count="1"><dataField fld="1" name="Sum of Amount" subtotal="sum" showDataAs="difference" baseField="0" baseItem="0" numFmtId="2"/></dataFields><pivotFilters count="4"><filter fld="0" type="captionEqual" stringValue1="A"/><filter fld="0" type="valueGreaterThan" iMeasureFld="0" val="10"/><filter fld="0" type="valueTop10" iMeasureFld="0" val="3" top="1"/><filter fld="1" type="futureFilter" id="7" stringValue1="preserve"/></pivotFilters></pivotTableDefinition>');
+    parts['[Content_Types].xml'] = strToU8(strFromU8(parts['[Content_Types].xml']!).replace('</Types>',
+      '<Override PartName="/xl/pivotCache/pivotCacheDefinition1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.pivotCacheDefinition+xml"/>'
+      + '<Override PartName="/xl/pivotCache/pivotCacheRecords1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.pivotCacheRecords+xml"/>'
+      + '<Override PartName="/xl/pivotTables/pivotTable1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.pivotTable+xml"/></Types>'));
     const imported = await importOoxmlDocument({ fileName: 'native-pivot.xlsx', buffer: zipOpcPartsBuffer(parts), options: { compatibilityTarget: 'B' } });
     assert.equal(imported.artifact.nativeGraph.kind === 'opc' ? imported.artifact.nativeGraph.package.nativePivotGraph?.caches[0]?.source.kind : undefined, 'worksheet-range');
     assert.equal(imported.artifact.nativeGraph.kind === 'opc' ? imported.artifact.nativeGraph.package.nativePivotGraph?.caches[0]?.fields[1]?.name : undefined, 'Amount');
