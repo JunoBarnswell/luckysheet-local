@@ -11,8 +11,8 @@
 | ID | Domain | 具体成功细项 | 具体拒绝细项 | 状态 | 本轮证据 |
 |---|---|---|---|---|---|
 | D01 | Auth | 登录、刷新、注销、guest 路由捕获及凭证切换 | token/CSRF 不出公开 snapshot；跨上下文异步响应与旧句柄退休 | Pending | — |
-| D02 | Identity | 独立读取当前 verified identity 并订阅变化 | 未验证 JWT/profile 不授予权限；身份与管理用户职责分离 | Pending | — |
-| D03 | Users | 真实管理员列表/创建/禁用/密码重置 | 非管理员 FORBIDDEN；错误只有 SdkError | Pending | — |
+| D02 | Identity | 独立读取当前 verified identity 并订阅变化 | 未验证 JWT/profile 不授予权限；身份与管理用户职责分离 | Pass | U01：SDK identity/users contract；U02：真实公共入口同 verified context、只读 identity API。未验证和匿名不发布身份。 |
+| D03 | Users | 真实管理员列表/创建/禁用/密码重置 | 非管理员 FORBIDDEN；错误只有 SdkError | Pass | U01：非法输入、403/503、旧上下文响应拒绝；U02：真实列表/创建/禁用/启用/重置密码及会话失效、guest FORBIDDEN。 |
 | D04 | Workbook Center | 目录 create/list/open/import/export/share/trash/restore/purge | 非法 ID/名称、无权限与 retired catalog；公开面没有 resolve/retire | Pending | — |
 | D05 | Workbook | 公开入口并发 open 两本、关闭/重新打开、dispose | 旧对象/任务退休；Web 永远不拿 Session/Resolution | Pending | — |
 | D06 | Worksheet | 新增/重命名/移动/删除、axes/extent/freeze | 最后可见 sheet、非法 extent 与 protected sheet | Pending | — |
@@ -60,21 +60,21 @@
 |---|---|---|---|---|
 | B01 | 扫描 Web 全部非测试业务源码与 manifest | 八种内部 spreadsheet imports 全部0；仅SDK/UI system/React/ReactDOM 业务依赖 | Pending | — |
 | B02 | 搜索 Web Session/Resolution/Command/Mutation/客户端/engine/patch 与业务fetch | 全部0；不存在相对路径越层或包装旧内部类型的绕过 | Pending | — |
-| B03 | 检查 SDK核心公共入口及依赖闭包，在非React consumer导入并使用 | 无React依赖/自动加载；React只从 sdk/react导出 | Pending | — |
+| B03 | 检查 SDK核心公共入口及依赖闭包，在非React consumer导入并使用 | 无React依赖/自动加载；React只从 sdk/react导出 | Pass | U01：core-entry.test.ts 主动拒绝 React/ReactDOM resolve 后真实 import/初始化/拒绝/dispose；React 表面仅 sdk/react。 |
 | B04 | 检查全部公共DTO、actions、失败类型；非法输入与真实HTTP拒绝 | 显式SDKDTO与actions，无 Omit/internal继承/resolve/markOpened/retire；所有抛出的错误均SdkError | Pending | — |
 | B05 | Web交互读取/写入及原Session搜索 | WorkbookView单一只读发布，SDK对象和领域直接行为；WorkbookSession已职责分解并删除，非改名/转发 | Pending | — |
 | B06 | 对boundary测试注入内部import、CommandDescriptor、relative escape、业务fetch | 自动拒绝各越层样例；合法SDK/host primitive通过，无广泛allowlist | Pending | — |
-| B07 | 身份/guest与管理领域检查 | capability在SDK初始化捕获并清URL，公开state无token；identity/users分离且同上下文fence | Pending | — |
+| B07 | 身份/guest与管理领域检查 | capability在SDK初始化捕获并清URL，公开state无token；identity/users分离且同上下文fence | Pass | U01：guest-capability/context retirement；U02：真实 capability 打开、URL 清除、第二 SDK、reload；公开身份和认证状态无 token。 |
 
 ## 第一组实现的额外逐项细项（设计后执行）
 
 | ID | 操作与具体断言 | 状态 | 本轮证据 |
 |---|---|---|---|
-| I01 | 实际 Node SDK core 导入，主动拒绝任何 React/ReactDOM resolve；初始化、anonymous identity、users FORBIDDEN、dispose | Pending | — |
-| I02 | identity verified上下文与Auth同一来源、更新订阅、同身份refresh稳定snapshot、匿名/退休；管理方法只在users | Pending | — |
-| I03 | users真实管理成功及非管理员/非法参数/403/503/旧身份已返回response拒绝；CSRF/context仍由Auth唯一owner负责 | Pending | — |
-| I04 | SDK初始化同步清fragment/query share，私有tab凭证重载、路由退出退休上下文、signout清除；snapshot不泄漏token | Pending | — |
-| I05 | 真实Java/H2上独立公共SDK identity/admin调用；真实guest share打开、viewer读/写拒绝/管理员拒绝、URL清除、浏览器reload | Pending | — |
+| I01 | 实际 Node SDK core 导入，主动拒绝任何 React/ReactDOM resolve；初始化、anonymous identity、users FORBIDDEN、dispose | Pass | U01：core-entry.test.ts；独立 Node 非 React 消费者实际执行。 |
+| I02 | identity verified上下文与Auth同一来源、更新订阅、同身份refresh稳定snapshot、匿名/退休；管理方法只在users | Pass | U01：users/domain.test.ts；U02：同 context 与精确公开 identity/users keys。 |
+| I03 | users真实管理成功及非管理员/非法参数/403/503/旧身份已返回response拒绝；CSRF/context仍由Auth唯一owner负责 | Pass | U01：auth/domain.test.ts + users/domain.test.ts；U02：真实管理员四种操作和 guest 拒绝。 |
+| I04 | SDK初始化同步清fragment/query share，私有tab凭证重载、路由退出退休上下文、signout清除；snapshot不泄漏token | Pass | U01：guest-capability.test.ts；U02：真实 fragment 清除、私有 tab 重用和 reload。 |
+| I05 | 真实Java/H2上独立公共SDK identity/admin调用；真实guest share打开、viewer读/写拒绝/管理员拒绝、URL清除、浏览器reload | Pass | U02：sdk-workbook-acceptance.spec.ts 的 I01-I05，Java/H2 真实请求，无 HTTP/计算 mock。 |
 
 ## 完整性矩阵（代码与行为双重证据）
 
@@ -115,14 +115,35 @@
 
 | Gate | 命令/观察 | 状态 | 本轮证据 |
 |---|---|---|---|
-| typecheck/build | npm run build（包括 tsc） | Pending | — |
+| typecheck/build | npm run build（包括 tsc） | Pass | U03；首组实现通过，后续产品修改须重新执行 |
 | boundary/stack | npm run check:boundaries（含拒绝测试与真实全源码扫描） | Pending | — |
-| contracts/mutation | generated TS/Java contracts 与 registry，无漂移 | Pending | — |
+| contracts/mutation | generated TS/Java contracts 与 registry，无漂移 | Pass | U04；首组当前契约/45 mutation registry 无漂移 |
 | SDK unit/contract/integration | npm run test:sdk，覆盖各正式领域成功+拒绝 | Pending | — |
 | calculation/Worker | npm run test:calculation-domain，包含跨bookfault与TS/Java vectors | Pending | — |
 | SDK real browser UAT | npm run test:sdk-uat，全createSpreadsheetSdk入口、console/network/native files | Pending | — |
-| frontend unit | npm run test:unit，全量结果；不隐藏当前main已有40项失败 | Pending | — |
-| backend | Java21 Maven package/test，H2真实服务器和服务端authority | Pending | — |
+| frontend unit | npm run test:unit，全量结果；不隐藏当前main已有40项失败 | Fail | U05：1681 tests，1641 Pass、40 Fail；仍需完成整改 |
+| backend | Java21 Maven package/test，H2真实服务器和服务端authority | Pass | U06：375 tests，373 Pass、0 Fail、2 Skip；新增 WS 与 guest identity 合同 |
 | OIDC/ERP SSO deployment | 用户已确认没有真实身份环境 | Blocked | 用户现有会话答复 |
 | Desktop Excel interoperability | 用户已确认没有桌面Excel验收环境 | Blocked | 用户现有会话答复 |
 | External PostgreSQL/MySQL | 当前无真实外部数据库验收环境 | Blocked | 环境事实；不得禁用TLS或重建真实库 |
+
+## 首组执行记录（2026-10-03）
+
+本组产品源码提交为 `9910ed01909bbda1e451576ad0f6491bd7adc4a8`（`fix(auth): separate workbook capabilities from verified identities`），浏览器执行时 worktree clean，source/build/backend ID 全部为此 SHA。基线远程 `main` 仍为 `3ff47ca6`。
+
+| 证据 | 实际执行与结果 | 日志/产物 |
+|---|---|---|
+| U01 | `npm run test:sdk`，71/71 Pass | `/tmp/sdk-thin-shell-identity-sdk.log` |
+| U02 | `npm run test:sdk-uat`，真实 Java21/H2 + Chromium，24/24 Pass；逐用例 console/page error/network 断言；真实保存、重开、跨工作簿授权计算和 native 导出/重导入 | `/tmp/sdk-thin-shell-identity-browser-verified.log`；`/tmp/sdk-product-uat-SJC2EQ/evidence`；provenance 见下文 |
+| U03 | TypeScript + production build Pass | `/tmp/sdk-thin-shell-identity-build.log` |
+| U04 | 当前 boundary/stack/contracts/mutation/e2e-artifacts/acceptance-matrix Pass；这仍是旧边界门禁，不能替代 B01/B02/B06 要求 | `/tmp/sdk-thin-shell-identity-boundaries.log` |
+| U05 | 全量 frontend unit 40 Fail，失败名称与 main 基线一致；没有跳过或隐藏 | `/tmp/sdk-thin-shell-identity-unit.log` |
+| U06 | Java21 Maven package：375 tests，0 Fail、0 Error、2 Skip | `/tmp/sdk-thin-shell-guest-contract-java.log` |
+
+浏览器 provenance：runId `9910ed01909bbda1e451576ad0f6491bd7adc4a8-20261003141920607`；Node `v24.19.0`；Chromium `151.0.7922.34`；viewport `1440x960`；package-lock SHA256 `9199bcde46b91ac0b9f165f621bad8566476680db2b341162cc31fea76d1313c`；原始记录 `frontend-react/test-results/provenance.json`。
+
+真实文件保留在 U02 evidence 目录：`native-hyperlinks-edited.xlsx`、`first-image.xlsx`、`sdk-range-cut.xlsx`、`sdk-financial.xlsx`、`sdk-o21.xlsx`，并有各流程截图和后端日志。本次采用 retain-on-failure trace，成功用例没有保留 trace ZIP；后续完整 UAT 需要开启 trace on，不能把已有截图称为 trace。
+
+首次真实浏览器运行还发现两个真实链路缺陷：WebSocket 并发广播写入同一 transport 导致已提交 HTTP 动作返回失败；guest capability 被服务端错误标记为注册身份。分别由 `4779428c` 和 `9910ed01` 连贯修正，并在新增成功/拒绝合同测试后重新执行整组，当前 24/24 通过。
+
+本记录只将已经逐项执行的 I01–I05、B03/B07、D02/D03 标记 Pass。SDK 全领域 gate、完整 browser gate 与其余领域仍为 Pending；WorkbookSession 删除、公开 DTO/错误统一、零 Web 内部依赖、结构 P0、全部小计/outline 和完整矩阵仍需实现。OIDC、desktop Excel、外部数据库继续 Blocked。
