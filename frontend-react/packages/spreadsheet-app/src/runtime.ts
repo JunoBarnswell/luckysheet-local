@@ -1144,6 +1144,7 @@ export function attachCoreListeners(runtime: SpreadsheetRuntime): void {
           entry.baseRevision,
         )
         : runtime.collaboration.enqueueLocalMutations(replayMutations, runtime.model.unitId);
+      if (source === 'redo') runtime.commands.bindRedoOperation(entry, operation.operationId, operation.baseRevision);
       scheduleOperation(runtime, operation);
       void runtime.checkpointWorkspace();
     }),

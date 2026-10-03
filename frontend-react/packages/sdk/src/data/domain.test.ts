@@ -61,7 +61,7 @@ test('SDK table filter clear retains its owner and buttons; offline structural t
   try {
     const sheetId = sheet.id;
     const range = { sheetId, startRow: 0, endRow: 2, startColumn: 0, endColumn: 1 };
-    const seed = validateSheetTableModel({ id: 't', name: 'Sales', sheetId, range, hasHeaderRow: true, hasTotalRow: false, showFilterButton: true, autoExpand: 'none',
+    const seed = validateSheetTableModel({ id: 't', name: 'Sales', sheetId, range, hasHeaderRow: true, hasTotalRow: false, showFilterButton: true, autoExpand: 'none', showBandedRows: false, showBandedColumns: false, showFirstColumn: false, showLastColumn: false,
       columns: [{ id: 'group', name: 'Group' }, { id: 'amount', name: 'Amount' }],
       autoFilter: undefined }, sheet);
     seed.autoFilter!.columns[0]!.criterion = { kind: 'values', values: ['East'], includeBlank: false };

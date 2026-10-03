@@ -1567,10 +1567,24 @@ export class CommandRuntime {
     }
   }
 
-  markOperationCommitted(operationId: string, revision: number): void {
+  /** Redo is a new durable operation; subsequent Undo must target that operation. */
+  bindRedoOperation(entry: HistoryEntry, operationId: string, baseRevision: number): void {
+    if (this.undoStack.at(-1) !== entry || entry.status !== 'active') throw new Error('Redo history entry is not active');
+    if (!operationId.trim() || operationId === entry.operationId
+      || !Number.isSafeInteger(baseRevision) || baseRevision < 0
+      || [...this.undoStack, ...this.redoStack].some(candidate => candidate !== entry && candidate.operationId === operationId)) {
+      throw new Error('Invalid redo operation identity');
+    }
+    entry.operationId = operationId;
+    entry.baseRevision = baseRevision;
+    delete entry.committedRevision;
+  }
+
+  markOperationCommitted(operationId: string, revision: number, baseRevision: number): void {
     if (!Number.isSafeInteger(revision) || revision < 1) throw new Error('Committed revision must be a positive safe integer');
+    if (!Number.isSafeInteger(baseRevision) || baseRevision < 0 || baseRevision >= revision) throw new Error('Committed base revision is invalid');
     for (const entry of [...this.undoStack, ...this.redoStack, ...this.invalidHistory]) {
-      if (entry.operationId === operationId) entry.committedRevision = revision;
+      if (entry.operationId === operationId) { entry.committedRevision = revision; entry.baseRevision = baseRevision; }
     }
     this.currentRevision = Math.max(this.currentRevision, revision);
   }
