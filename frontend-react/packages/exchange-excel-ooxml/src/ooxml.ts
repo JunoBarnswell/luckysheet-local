@@ -418,6 +418,7 @@ export function exportSnapshotToOpcPackageGraph(
   const corePropertiesPart = relationshipTarget(preserved, '', REL_CORE_PROPERTIES) ?? 'docProps/core.xml';
   const extendedPropertiesPart = relationshipTarget(preserved, '', REL_EXTENDED_PROPERTIES) ?? 'docProps/app.xml';
   const sheetParts = snapshot.sheets.map((sheet, index) => preserved?.sheetPartById[sheet.id] ?? `xl/worksheets/sheet${index + 1}.xml`);
+  const nativeSheetIds = allocateNativeSheetIds(snapshot, sheetParts, preserved);
   const sheetPartById = Object.fromEntries(snapshot.sheets.map((sheet, index) => [sheet.id, sheetParts[index]!])) as Record<string, string>;
   const nativeUpdate = synchronizeNativePivotPackage({
     files: Object.fromEntries([...files.entries()]),
@@ -476,7 +477,6 @@ export function exportSnapshotToOpcPackageGraph(
       ...sheetParts.map((part) => ({ id: '', type: REL_WORKSHEET, target: relativeTarget(workbookPart, part) })),
     ],
   );
-  const nativeSheetIds = allocateNativeSheetIds(snapshot, sheetParts, preserved);
   files.set(workbookPart, strToU8(buildWorkbookXml(snapshot, workbookPart, workbookRelations, descriptorsForSnapshot(snapshot, sheetParts), nativeSheetIds, options.dateSystem, nativeUpdate.graph, preserved)));
   files.set(relationshipPartName(workbookPart), strToU8(buildRelationshipsXml(workbookRelations)));
   files.set(REACT_SHEETS_METADATA_PART, strToU8(buildReactSheetsMetadata(snapshot, nativeSheetIds)));

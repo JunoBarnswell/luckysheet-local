@@ -315,7 +315,8 @@ test.describe('SDK product UAT against Java authority', () => {
     await nameBox.fill('A1'); await nameBox.press('Enter');
     const formula = page.getByTestId('formula-input');
     await formula.fill('Native hyperlinks edited'); await formula.press('Enter');
-    await page.getByTestId('designer-save').click();
+    await page.getByTestId('sheet-canvas').focus();
+    await page.keyboard.press('Control+s');
     await expect.poll(async () => (await readSnapshot()).sheets[0].cells['0']?.['0']?.value).toBe('Native hyperlinks edited');
     await page.reload();
     await expect(page.getByTestId('designer-shell')).toHaveAttribute('data-workspace-phase', 'ready');
