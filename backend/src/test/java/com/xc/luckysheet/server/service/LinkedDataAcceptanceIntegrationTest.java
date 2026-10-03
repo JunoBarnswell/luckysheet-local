@@ -53,7 +53,7 @@ class LinkedDataAcceptanceIntegrationTest {
     @Test
     void auditRemainsOwnerOnlyAfterSecurityAndSdkIntegration() throws Exception {
         String owner = "audit-owner", viewer = "audit-viewer", unit = "audit-permissions";
-        catalog.create(new CreateWorkbookRequest(unit, "Audit access", snapshot(unit)), owner);
+        catalog.create(new CreateWorkbookRequest(unit, "Range access", snapshot(unit)), owner);
         acl.grant(unit, owner, viewer, com.xc.luckysheet.server.contract.WorkbookRole.VIEWER);
         assertEquals(0, operations.readSnapshot(unit, viewer).revision());
         assertTrue(operations.audit(unit, owner, 10).isEmpty());
