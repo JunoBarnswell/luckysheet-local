@@ -1,3 +1,4 @@
+import { requireNativeInputBudget } from './native-resource-budget';
 import type { NativeDocumentExportRequest } from './export';
 import type { NativeDocumentImportRequest } from './import';
 import {
@@ -138,11 +139,12 @@ export function createBrowserNativeDocumentWorkerPort(): BrowserNativeDocumentWo
 }
 
 export async function importNativeDocumentWithWorker(request: NativeDocumentImportRequest, port?: NativeDocumentWorkerPort, revision = 0): Promise<NativeDocumentImportResult> {
+  requireNativeInputBudget(request.buffer, request.options.limits);
   const active = port ?? createBrowserNativeDocumentWorkerPort();
   if (!active) throw new Error('Native document import requires a browser Worker; no Worker is available');
   const owned = !port;
   const taskId = `import-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  const bytes = request.buffer instanceof Uint8Array ? request.buffer.slice() : new Uint8Array(request.buffer);
+  const bytes = request.buffer instanceof Uint8Array ? request.buffer : new Uint8Array(request.buffer);
   const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
   try {
     const result = await active.submit(createNativeDocumentImportRequest(taskId, revision, { fileName: request.fileName, buffer, options: request.options }));

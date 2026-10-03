@@ -10,11 +10,9 @@ import org.springframework.security.oauth2.server.resource.authentication.JwtAut
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Component;
-import org.springframework.util.MultiValueMap;
 import org.springframework.web.socket.WebSocketHandler;
 import org.springframework.web.socket.server.HandshakeFailureException;
 import org.springframework.web.socket.server.support.DefaultHandshakeHandler;
-import org.springframework.web.util.UriComponentsBuilder;
 
 import java.nio.charset.StandardCharsets;
 import java.security.Principal;
@@ -26,11 +24,12 @@ import java.util.Map;
  * Authenticates a browser WebSocket upgrade without accepting a browser actor
  * or role. Browser WebSocket APIs cannot set Authorization headers, so a
  * verified bearer token is carried in the existing base64url subprotocol.
- * Share links use only the server-issued share token query parameter.
+ * Guests use the server-issued credential in a share subprotocol header.
  */
 @Component
 public final class WebSocketAuthenticationHandshakeHandler extends DefaultHandshakeHandler {
     private static final String BEARER_PROTOCOL_PREFIX = "bearer.";
+    private static final String SHARE_PROTOCOL_PREFIX = "share.";
     private static final String WEBSOCKET_PROTOCOL_HEADER = "Sec-WebSocket-Protocol";
 
     private final JwtDecoder jwtDecoder;
@@ -56,7 +55,7 @@ public final class WebSocketAuthenticationHandshakeHandler extends DefaultHandsh
     protected String selectProtocol(List<String> requestedProtocols, WebSocketHandler handler) {
         return requestedProtocols.stream()
                 .map(String::trim)
-                .filter(protocol -> protocol.startsWith(BEARER_PROTOCOL_PREFIX))
+                .filter(protocol -> protocol.startsWith(BEARER_PROTOCOL_PREFIX) || protocol.startsWith(SHARE_PROTOCOL_PREFIX))
                 .findFirst()
                 .orElse(null);
     }
@@ -72,7 +71,7 @@ public final class WebSocketAuthenticationHandshakeHandler extends DefaultHandsh
         Authentication context = SecurityContextHolder.getContext().getAuthentication();
         if (isAuthenticatedPrincipal(context)) return context;
 
-        String bearer = bearerToken(request.getHeaders());
+        String bearer = credentialToken(request.getHeaders(), BEARER_PROTOCOL_PREFIX);
         if (bearer != null) {
             try {
                 Jwt jwt = jwtDecoder.decode(bearer);
@@ -83,8 +82,7 @@ public final class WebSocketAuthenticationHandshakeHandler extends DefaultHandsh
             }
         }
 
-        MultiValueMap<String, String> query = UriComponentsBuilder.fromUri(request.getURI()).build().getQueryParams();
-        String shareToken = query.getFirst(GuestShareAuthenticationFilter.TOKEN_PARAMETER);
+        String shareToken = credentialToken(request.getHeaders(), SHARE_PROTOCOL_PREFIX);
         if (shareToken != null && !shareToken.isBlank()) {
             try {
                 return new GuestShareAuthentication(shares.authenticate(shareToken));
@@ -101,12 +99,12 @@ public final class WebSocketAuthenticationHandshakeHandler extends DefaultHandsh
                 || principal instanceof LocalUserAuthentication;
     }
 
-    private String bearerToken(HttpHeaders headers) {
+    private String credentialToken(HttpHeaders headers, String prefix) {
         for (String rawHeader : headers.getOrEmpty(WEBSOCKET_PROTOCOL_HEADER)) {
             for (String rawProtocol : rawHeader.split(",")) {
                 String protocol = rawProtocol.trim();
-                if (!protocol.startsWith(BEARER_PROTOCOL_PREFIX)) continue;
-                String encoded = protocol.substring(BEARER_PROTOCOL_PREFIX.length());
+                if (!protocol.startsWith(prefix)) continue;
+                String encoded = protocol.substring(prefix.length());
                 if (encoded.isBlank()) throw new HandshakeFailureException("Authentication failed");
                 try {
                     String token = new String(Base64.getUrlDecoder().decode(encoded), StandardCharsets.UTF_8).trim();

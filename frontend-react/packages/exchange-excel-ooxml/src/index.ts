@@ -7,6 +7,7 @@ export * from './capability-manifest';
 export * from './archive';
 export * from './native-document-artifact';
 export * from './native-document-error';
+export * from './native-resource-budget';
 export * from './native-pivot';
 export * from './native-chart';
 export * from './worker-protocol';

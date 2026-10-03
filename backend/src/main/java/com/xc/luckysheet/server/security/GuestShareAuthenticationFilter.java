@@ -14,7 +14,6 @@ import java.io.IOException;
 /** Authenticates a share token without accepting a client actor or role. */
 public class GuestShareAuthenticationFilter extends OncePerRequestFilter {
     public static final String TOKEN_HEADER = "X-Workbook-Share-Token";
-    public static final String TOKEN_PARAMETER = "shareToken";
 
     private final GuestShareService shares;
 
@@ -29,9 +28,6 @@ public class GuestShareAuthenticationFilter extends OncePerRequestFilter {
         // cannot replace or downgrade an authenticated identity.
         if (request.getHeader("Authorization") == null && SecurityContextHolder.getContext().getAuthentication() == null) {
             String token = request.getHeader(TOKEN_HEADER);
-            if (token == null || token.isBlank()) {
-                token = request.getParameter(TOKEN_PARAMETER);
-            }
             if (token != null && !token.isBlank()) {
                 try {
                     GuestShareService.GuestIdentity identity = shares.authenticate(token);

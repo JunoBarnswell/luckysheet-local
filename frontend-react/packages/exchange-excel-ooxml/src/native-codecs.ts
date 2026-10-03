@@ -1,3 +1,4 @@
+import { resolveNativeDocumentResourceLimits, resourceLimit } from './native-resource-budget';
 import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate';
 import { WorkbookModel, type WorkbookSnapshot, type CellValue } from '@react-sheets/core-model';
 import { child, children, descendants, localName, parseXml, serializeXml, textContent, type XmlNode } from './xml';
@@ -12,7 +13,7 @@ const ODS_MIMETYPE = 'application/vnd.oasis.opendocument.spreadsheet';
 const TEXT_FEATURES = ['cells'];
 
 function limitsFor(options: { limits?: Partial<NativeDocumentResourceLimits> }): NativeDocumentResourceLimits {
-  return { ...DEFAULT_NATIVE_DOCUMENT_RESOURCE_LIMITS, ...(options.limits ?? {}) };
+  return resolveNativeDocumentResourceLimits(options.limits);
 }
 
 function assertInputBudget(bytes: Uint8Array, limits: NativeDocumentResourceLimits, format: string): void {

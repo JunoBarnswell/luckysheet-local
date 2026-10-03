@@ -747,7 +747,7 @@ public class WorkbookOperationService {
     }
 
     public List<AuditRecord> audit(String unitId, String actor, int limit) {
-        access.require(unitId, actor, WorkbookAclRole.VIEWER);
+        access.require(unitId, actor, WorkbookAclRole.OWNER);
         requireWorkbook(unitId);
         return store.listAudit(unitId, limit);
     }

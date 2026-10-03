@@ -40,4 +40,13 @@ class GuestShareAuthenticationFilterTest {
         assertEquals("guest:share-1", authentication.getName());
         assertEquals("ROLE_GUEST", authentication.getAuthorities().iterator().next().getAuthority());
     }
+
+    @Test void queryCredentialCannotAuthenticateHttpRequests() throws Exception {
+        var shares = mock(GuestShareService.class);
+        var request = new MockHttpServletRequest("GET", "/api/workbooks/unit-1/snapshot");
+        request.addParameter("shareToken", "token");
+        new GuestShareAuthenticationFilter(shares).doFilter(request, new MockHttpServletResponse(), new MockFilterChain());
+        org.junit.jupiter.api.Assertions.assertNull(SecurityContextHolder.getContext().getAuthentication());
+        org.mockito.Mockito.verifyNoInteractions(shares);
+    }
 }

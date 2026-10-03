@@ -61,7 +61,7 @@ class WorkbookCatalogServiceTest {
                 members, workspace, authorization, operations, mock(CheckpointEntityRepository.class),
                 mock(OperationEntityRepository.class), mock(OutboxEntityRepository.class), mock(AuditEntityRepository.class),
                 mock(ShareEntityRepository.class), mock(DataBlockEntityRepository.class),
-                mock(WorkbookDataBlockPublicationGuard.class), mapper);
+                mock(WorkbookDataBlockPublicationGuard.class), mapper, mock(WorkbookResourceQuotaService.class));
 
         byte[] content = "xlsx-bytes".getBytes(java.nio.charset.StandardCharsets.UTF_8);
         String checksum = java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(content));
@@ -130,7 +130,7 @@ class WorkbookCatalogServiceTest {
                 members, workspace, authorization, operations, mock(CheckpointEntityRepository.class),
                 mock(OperationEntityRepository.class), mock(OutboxEntityRepository.class), mock(AuditEntityRepository.class),
                 mock(ShareEntityRepository.class), mock(DataBlockEntityRepository.class),
-                mock(WorkbookDataBlockPublicationGuard.class), mapper);
+                mock(WorkbookDataBlockPublicationGuard.class), mapper, mock(WorkbookResourceQuotaService.class));
 
         service.copy("source-1", new CopyWorkbookRequest("Copied", null, null), "actor", java.util.List.of("verified-group"));
         verify(operations).readSnapshot("source-1", "actor", java.util.List.of("verified-group"));

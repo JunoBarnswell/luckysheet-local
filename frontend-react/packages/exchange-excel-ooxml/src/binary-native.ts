@@ -1,3 +1,4 @@
+import { resolveNativeDocumentResourceLimits, resourceLimit } from './native-resource-budget';
 import { strFromU8, unzipSync, zipSync } from 'fflate';
 import { WorkbookModel, type CellValue, type WorkbookSnapshot } from '@react-sheets/core-model';
 import { children, parseXml } from './xml';
@@ -123,7 +124,7 @@ interface NativeDocumentImportOptionsLike {
 }
 
 function limitsFor(options: { limits?: Partial<NativeDocumentResourceLimits> }): NativeDocumentResourceLimits {
-  return { ...DEFAULT_NATIVE_DOCUMENT_RESOURCE_LIMITS, ...(options.limits ?? {}) };
+  return resolveNativeDocumentResourceLimits(options.limits);
 }
 
 function invalid(message: string): never {
@@ -438,13 +439,13 @@ function parseBinaryRecords(bytes: Uint8Array, limits: NativeDocumentResourceLim
   let offset = 0;
   while (offset < bytes.length) {
     if (offset + 4 > bytes.length) invalid(`BIFF record header is truncated at ${offset}`);
-    const view = dataView(bytes.slice(offset));
+    const view = new DataView(bytes.buffer, bytes.byteOffset + offset, 4);
     const type = view.getUint16(0, true);
     const size = view.getUint16(2, true);
     const end = offset + 4 + size;
     if (end > bytes.length) invalid(`BIFF record payload is truncated at ${offset}`);
+    if (records.length >= limits.maxRecordCount) resource(`BIFF contains more than ${limits.maxRecordCount} records`);
     records.push({ type, offset, bytes: bytes.slice(offset, end), payload: bytes.slice(offset + 4, end) });
-    if (records.length > limits.maxRecordCount) resource(`BIFF contains more than ${limits.maxRecordCount} records`);
     offset = end;
   }
   return records;
@@ -585,7 +586,7 @@ function parseBiffCell(record: BinaryRecord, recordIndex: number, records: reado
   return { row, column, recordIndex, recordType: record.type, value, styleIndex, ...(auxiliaryRecordIndex === undefined ? {} : { auxiliaryRecordIndex }) };
 }
 
-function parseBiffMultiCells(record: BinaryRecord, recordIndex: number): BinaryCellGraph[] {
+function parseBiffMultiCells(record: BinaryRecord, recordIndex: number, budget: { remaining: number }): BinaryCellGraph[] {
   if (!BIFF_MULTI_CELL_TYPES.has(record.type)) return [];
   if (record.payload.length < (record.type === BIFF.MULRK ? 12 : 8)) invalid(`BIFF multi-cell record ${record.type} is truncated`);
   const view = dataView(record.payload);
@@ -594,6 +595,8 @@ function parseBiffMultiCells(record: BinaryRecord, recordIndex: number): BinaryC
   const lastColumn = view.getUint16(record.payload.length - 2, true);
   if (lastColumn < firstColumn) invalid(`BIFF multi-cell record ${record.type} has an invalid column range`);
   const count = lastColumn - firstColumn + 1;
+  budget.remaining -= count;
+  if (budget.remaining < 0) resourceLimit('Workbook cell budget exceeded');
   const itemBytes = record.type === BIFF.MULRK ? 6 : 2;
   const expected = 6 + count * itemBytes;
   if (record.payload.length < expected) invalid(`BIFF multi-cell record ${record.type} has a truncated item list`);
@@ -652,6 +655,7 @@ function parseBiffDocument(bytes: Uint8Array, fileName: string, limits: NativeDo
     descriptor.endRecordIndex = end >= 0 ? end : records.length - 1;
   }
   const sharedStrings = parseSst(records, limits);
+  const cellBudget = { remaining: limits.maxCells };
   const sheetCells: Record<string, BinaryCellGraph>[] = [];
   const features = new Set<string>(['cells', 'biff']);
   if (sharedStrings.length) features.add('sharedStrings');
@@ -662,11 +666,12 @@ function parseBiffDocument(bytes: Uint8Array, fileName: string, limits: NativeDo
     for (let index = descriptor.startRecordIndex; index <= descriptor.endRecordIndex; index += 1) {
       const record = records[index]!;
       if (BIFF_UNSUPPORTED_CELL_TYPES.has(record.type)) unsupported(`BIFF cell structure ${record.type} is not editable in ${descriptor.name}`, 'Leave the native formula structure unchanged or save through a format with an owned formula writer.');
-      const multi = parseBiffMultiCells(record, index);
+      const multi = parseBiffMultiCells(record, index, cellBudget);
       if (multi.length) {
         for (const cell of multi) cells[cellKey(cell.row, cell.column)] = cell;
         continue;
       }
+      if (BIFF_CELL_TYPES.has(record.type) && --cellBudget.remaining < 0) resourceLimit('Workbook cell budget exceeded');
       const cell = parseBiffCell(record, index, records, sharedStrings);
       if (!cell) continue;
       assertBiffCoordinate(cell.row, cell.column);
@@ -1032,6 +1037,7 @@ function parseXlsbDocument(bytes: Uint8Array, fileName: string, limits: NativeDo
   if (!descriptors.length) invalid('XLSB workbook has no BrtBundleSh records');
   const sharedPart = Object.keys(parts).find((name) => /sharedStrings\.bin$/i.test(name));
   const sharedStrings = sharedPart ? parseBiff12Records(parts[sharedPart]!, limits).filter((record) => record.type === XLSB.SSTITEM).map((record) => readWideString(record.payload, 0).value) : [];
+  const cellBudget = { remaining: limits.maxCells };
   const sheetGraphs: BinarySheetGraph[] = [];
   const features = new Set<string>(['cells', 'xlsb']);
   if (sharedStrings.length) features.add('sharedStrings');
@@ -1052,6 +1058,7 @@ function parseXlsbDocument(bytes: Uint8Array, fileName: string, limits: NativeDo
         row = dataView(record.payload).getUint32(0, true);
         lastColumn = -1;
       }
+      if ((XLSB_LONG_CELL_TYPES.has(record.type) || XLSB_SHORT_CELL_TYPES.has(record.type)) && --cellBudget.remaining < 0) resourceLimit('Workbook cell budget exceeded');
       const parsed = readBiff12Cell(record, row, index, sharedStrings, lastColumn);
       if (parsed.cell) {
         cells[cellKey(parsed.cell.row, parsed.cell.column)] = parsed.cell;

@@ -1,3 +1,4 @@
+import { requireNativeInputBudget } from './native-resource-budget';
 import type { WorkbookSnapshot } from '@react-sheets/core-model';
 import { strFromU8, unzipSync } from 'fflate';
 import { exportOoxmlDocument } from './export';
@@ -52,6 +53,7 @@ export class NativeFormatDetector {
   constructor(private readonly codecs: NativeDocumentCodec[]) {}
 
   detectCodec(fileName: string, buffer: ArrayBuffer): NativeDocumentCodec {
+    requireNativeInputBudget(buffer);
     const codec = this.codecs.find((entry) => entry.canRead(fileName, buffer));
     if (!codec) throw new Error(`NATIVE_DOCUMENT_DETECTION_FAILED: No native document codec can read ${fileName}`);
     return codec;
@@ -97,6 +99,7 @@ export class NativeDocumentCodecRegistry {
   }
 
   async import(request: NativeDocumentImportTransaction): Promise<NativeDocumentImportResult> {
+    requireNativeInputBudget(request.buffer, request.options.limits);
     if (request.execution !== 'inline-test') {
       return importNativeDocumentWithWorker({ fileName: request.fileName, buffer: request.buffer, options: request.options }, request.workerPort, request.revision ?? 0);
     }

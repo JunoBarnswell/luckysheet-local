@@ -155,7 +155,7 @@ foreach ($templateName in @('application.properties', 'ReactSheetsService.xml'))
     $content = (Get-Content -LiteralPath $source -Raw).Replace('@PROGRAMDATA@', $replacement)
     [IO.File]::WriteAllText($destination, $content, [Text.UTF8Encoding]::new($false))
 }
-foreach ($toolName in @('backup-data.ps1', 'restore-backup.ps1')) {
+foreach ($toolName in @('backup-data.ps1', 'restore-backup.ps1', 'restore-archive.ps1')) {
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot $toolName) -Destination (Join-Path $stageRoot "tools\$toolName") -Force
 }
 Copy-Item -LiteralPath (Join-Path $installerRoot 'health-check.ps1') -Destination (Join-Path $stageRoot 'tools\health-check.ps1') -Force

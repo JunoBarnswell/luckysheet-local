@@ -77,6 +77,7 @@ public class WorkbookCatalogService {
     private final ShareEntityRepository shares;
     private final DataBlockEntityRepository blocks;
     private final WorkbookDataBlockPublicationGuard dataBlockPublication;
+    private final WorkbookResourceQuotaService quota;
     private final ObjectMapper mapper;
 
     public WorkbookCatalogService(
@@ -97,8 +98,9 @@ public class WorkbookCatalogService {
             ShareEntityRepository shares,
             DataBlockEntityRepository blocks,
             WorkbookDataBlockPublicationGuard dataBlockPublication,
-            ObjectMapper mapper
+            ObjectMapper mapper, WorkbookResourceQuotaService quota
     ) {
+        this.quota = quota;
         this.workbooks = workbooks;
         this.acl = acl;
         this.userStates = userStates;
@@ -180,6 +182,7 @@ public class WorkbookCatalogService {
         }
         workspace.requireFolder(targetSpaceId, targetFolderId, actor, WorkbookAclRole.EDITOR);
         workspace.require(targetSpaceId, actor, WorkbookAclRole.EDITOR);
+        if (crossSpace) quota.requireSpaceDestinationCapacity(unitId, targetSpaceId);
         Instant now = Instant.now();
         entity.updateLocation(targetSpaceId, targetFolderId, now);
         workbooks.save(entity);
@@ -211,6 +214,7 @@ public class WorkbookCatalogService {
                 targetFolderId, source.getSource());
         WorkbookEntity copied = createEntity(create, actor, unitId);
         if (sourceArtifact != null) {
+            quota.requireCapacity(targetId, sourceArtifact.getByteLength(), 1);
             Instant now = Instant.now();
             WorkbookSourceArtifactEntity copiedArtifact = new WorkbookSourceArtifactEntity(targetId, sourceArtifact.getFileName(), sourceArtifact.getMimeType(),
                     sourceArtifact.getChecksum(), sourceArtifact.getByteLength(), sourceArtifact.getContent().clone(),
@@ -292,8 +296,10 @@ public class WorkbookCatalogService {
         validateArtifact(fileName, checksum, content);
         String actual = checksum(content);
         if (!actual.equalsIgnoreCase(checksum)) throw ServiceException.validation("Native document artifact checksum mismatch");
+        WorkbookSourceArtifactEntity previous = artifacts.findById(unitId).orElse(null);
+        quota.requireCapacity(unitId, content.length - (previous == null ? 0 : previous.getByteLength()), previous == null ? 1 : 0);
         Instant now = Instant.now();
-        WorkbookSourceArtifactEntity entity = artifacts.findById(unitId).orElseGet(() ->
+        WorkbookSourceArtifactEntity entity = java.util.Optional.ofNullable(previous).orElseGet(() ->
                 new WorkbookSourceArtifactEntity(unitId, safeFileName(fileName), safeMimeType(mimeType), actual,
                         content.length, content.clone(), nativeArtifactMetadata(fileName), now, now));
         entity.update(safeFileName(fileName), safeMimeType(mimeType), actual, content.length, content.clone(), nativeArtifactMetadata(fileName), now);
@@ -339,6 +345,7 @@ public class WorkbookCatalogService {
         }
         JsonNode snapshot;
         try {
+            com.xc.luckysheet.server.security.JsonIngressFilter.validate(snapshotJson.getBytes(StandardCharsets.UTF_8));
             snapshot = mapper.readTree(snapshotJson);
         } catch (IOException error) {
             throw ServiceException.validation("Parsed workbook snapshot is invalid");
@@ -346,17 +353,12 @@ public class WorkbookCatalogService {
         if (snapshot == null || !snapshot.isObject()) throw ServiceException.validation("Parsed workbook snapshot must be an object");
         String resolvedName = name == null || name.isBlank() ? file.getOriginalFilename() : name;
         if (resolvedName == null || resolvedName.isBlank()) resolvedName = "导入的工作簿";
-        byte[] content;
-        try {
-            content = file.getBytes();
-        } catch (IOException error) {
-            throw ServiceException.unavailable("Unable to read native document artifact");
-        }
         String unitId = snapshot.path("unitId").asText("").trim();
         if (unitId.isBlank() || unitId.length() > 200) throw ServiceException.validation("Parsed workbook snapshot must contain a valid unitId");
         WorkbookSnapshotValidator.requireCanonical(snapshot, unitId);
         JsonNode nativeMetadata;
         try {
+            com.xc.luckysheet.server.security.JsonIngressFilter.validate(nativeMetadataJson.getBytes(StandardCharsets.UTF_8));
             nativeMetadata = mapper.readTree(nativeMetadataJson);
         } catch (Exception error) {
             throw ServiceException.validation("Native package metadata is invalid");
@@ -369,6 +371,14 @@ public class WorkbookCatalogService {
         artifactMetadata.setAll((ObjectNode) nativeMetadata.deepCopy());
         WorkbookEntity entity = createEntity(new CreateWorkbookRequest(unitId, resolvedName, snapshot, spaceId, folderId,
                 WorkbookSource.DOCUMENT_IMPORT), actor, null);
+        quota.requireCapacity(unitId, file.getSize(), 1);
+        byte[] content;
+        try (var input = file.getInputStream()) {
+            content = input.readNBytes((int) MAX_NATIVE_DOCUMENT_BYTES + 1);
+        } catch (IOException error) {
+            throw ServiceException.unavailable("Unable to read native document artifact");
+        }
+        if (content.length != file.getSize() || content.length > MAX_NATIVE_DOCUMENT_BYTES) throw ServiceException.validation("Native document size mismatch");
         String digest = checksum(content);
         Instant now = Instant.now();
         WorkbookSourceArtifactEntity artifact = new WorkbookSourceArtifactEntity(unitId,
