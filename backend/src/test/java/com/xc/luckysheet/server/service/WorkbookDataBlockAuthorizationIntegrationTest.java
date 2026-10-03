@@ -252,7 +252,7 @@ class WorkbookDataBlockAuthorizationIntegrationTest {
         commits.commit(sourceBlock, 100, 10, "owner");
         operations.commit(sourceUnitId, sourceOperation(sourceUnitId, sourceBlock), "owner");
 
-        var copied = catalog.copy(sourceUnitId, new CopyWorkbookRequest("Blocks Copy", null, null), "owner");
+        var copied = catalog.copy(sourceUnitId, new CopyWorkbookRequest("Blocks Copy", null, null), "owner", java.util.List.of());
         DataBlockRow copiedBlock = blocks.find(copied.unitId(), sourceBlock.sourceId(), sourceBlock.blockId()).orElseThrow();
 
         assertEquals(sourceBlock.checksum(), copiedBlock.checksum());

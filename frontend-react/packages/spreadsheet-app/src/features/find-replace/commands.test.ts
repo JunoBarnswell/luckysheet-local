@@ -140,3 +140,16 @@ test('WorkbookSession Find Next/Previous/All use transient cursor state and do n
   assert.equal(app.findAll(params), 2);
   assert.equal(app['runtime'].commands.getHistoryDepth().undo, 0);
 });
+
+test('value replacement preserves formula-like text across undo and remote replay', () => {
+  for (const replace of ['=SUM(1,2)', '  =1+2', '=HYPERLINK("https://example.invalid","x")']) {
+    const { workbook, runtime } = setup();
+    const sheet = workbook.getSheet(workbook.primarySheetId);
+    sheet.cells.set(0, 0, { value: 'needle' });
+    runtime.execute('find.replace', { sheetId: sheet.id, query: 'needle', replace, inputContext: TEST_INPUT_CONTEXT, mode: 'all', searchOrder: 'rows', scope: 'sheet', targets: ['values'] });
+    assert.equal(sheet.cells.get(0, 0)?.value, replace);
+    assert.equal(sheet.cells.get(0, 0)?.formula, undefined);
+    runtime.undo();
+    assert.equal(sheet.cells.get(0, 0)?.value, 'needle');
+  }
+});

@@ -62,6 +62,7 @@ export interface FormulaEvaluationContext {
   /** Host-provided order-independent random source for volatile functions. */
   readonly random?: (functionName: string, occurrence?: string, elementIndex?: number) => number | FormulaError;
   /** Evaluate a formula AST while overriding one or more input cells. */
+  readonly tableBudget?: { depth: number; remaining: number; deadline: number };
   readonly evaluateWithCellOverrides?: (ast: FormulaAst, overrides: readonly FormulaCellOverride[]) => FormulaValue;
 }
 
@@ -689,6 +690,10 @@ function evaluateSjsTable(
     return createFormulaError('#VALUE!', 'SJS.TABLE expects resultReference and one or more input pairs');
   }
 
+  const budget = context.tableBudget ?? { depth: 0, remaining: 100_000, deadline: Date.now() + 1000 };
+  if (budget.depth >= 8 || budget.remaining <= 0 || Date.now() > budget.deadline) return createFormulaError('#CALC!', 'SJS.TABLE exceeds the shared calculation budget');
+  budget.depth += 1;
+  try {
   const inputPairs: Array<{ values: FormulaValue[]; address: CellAddress }> = [];
   for (let index = 1; index < args.length; index += 2) {
     const inputNode = args[index]!;
@@ -706,6 +711,7 @@ function evaluateSjsTable(
 
   const result: ArrayValue = [];
   for (let row = 0; row < rowCount; row += 1) {
+    if (--budget.remaining < 0 || Date.now() > budget.deadline) return createFormulaError('#CALC!', 'SJS.TABLE exceeds the shared calculation budget');
     const overrides = inputPairs.map((pair) => ({ address: pair.address, value: scalarForTable(pair.values[row]!) }));
     const value = context.evaluateWithCellOverrides(args[0]!, overrides);
     trace?.(args[0]!, value as EvaluationValue);
@@ -714,6 +720,7 @@ function evaluateSjsTable(
     result.push([value]);
   }
   return result;
+  } finally { budget.depth -= 1; }
 }
 
 function referenceCellAddress(node: FormulaAst, context: FormulaEvaluationContext): CellAddress | undefined {
@@ -724,8 +731,9 @@ function referenceCellAddress(node: FormulaAst, context: FormulaEvaluationContex
 function referenceValues(node: FormulaAst, context: FormulaEvaluationContext, trace?: EvaluationTraceSink): FormulaValue[] | FormulaError {
   const value = evaluateNode(node, context, trace);
   if (isFormulaError(value)) return value;
-  if (isEvaluationRange(value)) return [...context.readRange(value.range)];
-  if (isEvaluationReference(value)) return value.ranges.flatMap((range) => [...context.readRange(range)]);
+  const rangeWithinBudget = (range: Parameters<FormulaEvaluationContext['readRange']>[0]) => (Math.abs(range.end.row - range.start.row) + 1) * (Math.abs(range.end.column - range.start.column) + 1) <= (context.tableBudget?.remaining ?? 100_000);
+  if (isEvaluationRange(value)) return rangeWithinBudget(value.range) ? [...context.readRange(value.range)] : createFormulaError('#CALC!', 'SJS.TABLE input range exceeds the calculation budget');
+  if (isEvaluationReference(value)) return value.ranges.every(rangeWithinBudget) ? value.ranges.flatMap((range) => [...context.readRange(range)]) : createFormulaError('#CALC!', 'SJS.TABLE input ranges exceed the calculation budget');
   if (isArrayValue(value)) return value.flat();
   if (isReferenceValue(value)) return createFormulaError('#VALUE!', 'SJS.TABLE inputs must be cell or range references');
   return [materializeEvaluationValue(value, context)];
@@ -738,6 +746,7 @@ function scalarForTable(value: FormulaValue): ScalarValue {
 }
 
 function readRangeAsMatrix(range: RangeDependency, context: FormulaEvaluationContext): ArrayValue {
+  if ((range.end.row - range.start.row + 1) * (range.end.column - range.start.column + 1) > 100000) return [[createFormulaError("#CALC!", "Range matrix exceeds 100000 cells")]];
   if (context.readRangeMatrix) {
     return context.readRangeMatrix(range);
   }
@@ -769,6 +778,7 @@ function isEvaluationReference(value: EvaluationValue): value is FormulaEvaluati
 }
 
 function readReferenceAsMatrix(ranges: readonly RangeDependency[], context: FormulaEvaluationContext): ArrayValue {
+  if (ranges.reduce((sum, range) => sum + (range.end.row - range.start.row + 1) * (range.end.column - range.start.column + 1), 0) > 100000) return [[createFormulaError("#CALC!", "Reference matrix exceeds 100000 cells")]];
   const matrix: ArrayValue = [];
   for (const range of ranges) for (const row of readRangeAsMatrix(range, context)) matrix.push(row);
   return matrix;

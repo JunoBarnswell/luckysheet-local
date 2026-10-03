@@ -1,3 +1,4 @@
+import { requireNativeInputBudget } from './native-resource-budget';
 import { parseDateSystem } from './date-system';
 import { createCompatibilityReport, refreshCompatibilitySummary } from './compatibility-report';
 import { scanFormulaPreserveIssues, scanSnapshotFeatures } from './feature-scan';
@@ -17,11 +18,12 @@ export interface NativeDocumentImportRequest {
 
 /** Parse an OOXML document and generate its Compatibility Report. */
 export async function importOoxmlDocument(request: NativeDocumentImportRequest): Promise<NativeDocumentImportResult> {
-  const bytes = request.buffer instanceof Uint8Array ? request.buffer.slice() : new Uint8Array(request.buffer);
+  requireNativeInputBudget(request.buffer, request.options.limits);
+  const bytes = request.buffer instanceof Uint8Array ? request.buffer : new Uint8Array(request.buffer);
   const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
   const loaded = loadOpcPackageGraph(buffer, request.options.limits, request.fileName);
   const importedName = sanitizeImportedWorkbookName(request.fileName);
-  const parsed = parseLoadedOoxml(loaded, { workbookName: importedName });
+  const parsed = parseLoadedOoxml(loaded, { workbookName: importedName, limits: request.options.limits });
   const snapshot = parsed.snapshot;
   snapshot.name = importedName;
   const dateSystem = request.options.dateSystem ?? parsed.packageGraph.dateSystem ?? parseDateSystem('');

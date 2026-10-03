@@ -30,7 +30,12 @@ public final class BootstrapCredentialStore {
                 Path parent = path.getParent();
                 if (parent != null) Files.createDirectories(parent);
                 String token = Base64.getUrlEncoder().withoutPadding().encodeToString(random.generateSeed(32));
-                Files.writeString(path, token, StandardCharsets.UTF_8, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE);
+                try {
+                    Files.createFile(path, java.nio.file.attribute.PosixFilePermissions.asFileAttribute(java.nio.file.attribute.PosixFilePermissions.fromString("rw-------")));
+                    Files.writeString(path, token, StandardCharsets.UTF_8, StandardOpenOption.WRITE);
+                } catch (UnsupportedOperationException nonPosix) {
+                    Files.writeString(path, token, StandardCharsets.UTF_8, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE);
+                }
             } catch (java.nio.file.FileAlreadyExistsException ignored) {
                 // Another request created the credential while this request raced.
             } catch (IOException error) {

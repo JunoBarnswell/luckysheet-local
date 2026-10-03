@@ -32,7 +32,7 @@ class GuestShareServiceTest {
         when(store.findForUpdate("unit-1")).thenReturn(Optional.of(new WorkbookRow(
                 "unit-1", "Book", "{}", 0, 0, WorkbookLifecycle.ACTIVE, Instant.now(), Instant.now())));
         ShareProperties properties = new ShareProperties(Duration.ofHours(1), Duration.ofDays(7));
-        GuestShareService service = new GuestShareService(store, properties, lifecycle, authorization);
+        GuestShareService service = new GuestShareService(store, properties, lifecycle, authorization, mock(org.springframework.context.ApplicationEventPublisher.class));
         ShareRow[] stored = new ShareRow[1];
         doAnswer(invocation -> { stored[0] = invocation.getArgument(0); return null; }).when(store).insertShare(any(ShareRow.class));
         var response = service.create("unit-1", new ShareCreateRequest("viewer", null), "owner");
@@ -49,7 +49,7 @@ class GuestShareServiceTest {
     void expiredOrMalformedTokenIsRejected() {
         WorkbookStore store = mock(WorkbookStore.class);
         GuestShareService service = new GuestShareService(store, new ShareProperties(Duration.ofHours(1), Duration.ofDays(7)),
-                mock(WorkbookLifecycleService.class), mock(WorkbookAuthorizationService.class));
+                mock(WorkbookLifecycleService.class), mock(WorkbookAuthorizationService.class), mock(org.springframework.context.ApplicationEventPublisher.class));
         assertThrows(ServiceException.class, () -> service.authenticate("not-a-token"));
     }
 }

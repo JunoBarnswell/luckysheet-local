@@ -29,6 +29,9 @@ public interface DataBlockEntityRepository extends JpaRepository<DataBlockEntity
             @Param("blockId") String blockId
     );
 
+    @Query("select new com.xc.luckysheet.server.contract.DataBlockMetadata(b.id.unitId, b.id.sourceId, b.id.blockId, b.checksum, b.byteLength, b.updatedAt) from DataBlockEntity b where b.updatedAt < :before order by b.updatedAt, b.id.unitId, b.id.sourceId, b.id.blockId")
+    java.util.List<DataBlockMetadata> expiredMetadata(@Param("before") java.time.Instant before, org.springframework.data.domain.Pageable page);
+    @Query("select coalesce(sum(b.byteLength), 0) from DataBlockEntity b") long totalBytes();
     void deleteByIdUnitId(String unitId);
 
     long countByIdUnitId(String unitId);

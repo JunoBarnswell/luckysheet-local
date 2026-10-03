@@ -1302,15 +1302,16 @@ function normalizePivotDefinitionWithCalculator(workbook: WorkbookModel, pivot: 
 export function normalizePivotDefinitionFromCatalog(pivot: PivotModel): PivotDefinition {
   const source = getPivotSource(pivot);
   const fieldCatalog = structuredClone(pivot.fieldCatalog);
+  const effectiveCatalog = structuredClone(fieldCatalog);
   const calculatedFields = (pivot.layout.calculatedFields ?? []).map((field) => ({ fieldId: field.fieldId, name: field.name }));
   for (const calculated of calculatedFields) {
-    if (!fieldCatalog.fields.some((field) => field.fieldId === calculated.fieldId || field.name === calculated.name)) {
-      fieldCatalog.fields.push({ fieldId: calculated.fieldId, name: calculated.name, dataType: 'mixed', ordinal: fieldCatalog.fields.length, values: [] });
+    if (!effectiveCatalog.fields.some((field) => field.fieldId === calculated.fieldId || field.name === calculated.name)) {
+      effectiveCatalog.fields.push({ fieldId: calculated.fieldId, name: calculated.name, dataType: 'mixed', ordinal: effectiveCatalog.fields.length, values: [] });
     }
   }
-  normalizeCalculatedItemDefinitions(pivot.layout.calculatedItems, fieldCatalog, new Set(calculatedFields.map((field) => field.fieldId)));
-  appendCalculatedItemMembers(fieldCatalog, pivot.layout.calculatedItems);
-  const layout = normalizeLayout(pivot.layout, fieldCatalog);
+  normalizeCalculatedItemDefinitions(pivot.layout.calculatedItems, effectiveCatalog, new Set(calculatedFields.map((field) => field.fieldId)));
+  appendCalculatedItemMembers(effectiveCatalog, pivot.layout.calculatedItems);
+  const layout = normalizeLayout(pivot.layout, effectiveCatalog);
   return {
     schema: 'PivotDefinition',
     id: pivot.id,
@@ -1530,6 +1531,7 @@ function createCalculatedItemPlan(
   const state = new Map<string, 'visiting' | 'visited'>();
   const ordered: CalculatedItemPlanEntry[] = [];
   const visit = (fieldId: string, path: string[]): void => {
+    if (path.length >= 256) throw new Error("UNSUPPORTED_FEATURE: Pivot dependency depth exceeds 256");
     const current = state.get(fieldId);
     if (current === 'visited') return;
     if (current === 'visiting') throw new Error(`Pivot calculated item dependency cycle: ${[...path, fieldId].join(' -> ')}`);
@@ -1675,6 +1677,7 @@ function createCalculatedFieldPlan(fields: PivotFieldDefinition[], calculatedFie
   const state = new Map<string, 'visiting' | 'visited'>();
   const ordered: PivotCalculatedField[] = [];
   const visit = (fieldId: string, path: string[]): void => {
+    if (path.length >= 256) throw new Error("UNSUPPORTED_FEATURE: Pivot dependency depth exceeds 256");
     const current = state.get(fieldId);
     if (current === 'visited') return;
     if (current === 'visiting') throw new Error(`Pivot calculated field dependency cycle: ${[...path, fieldId].join(' -> ')}`);
@@ -2222,7 +2225,7 @@ function indexedManualFilterRows(rows: SourceRow[], matchers: readonly PivotSour
     const rowNumbers: number[] = [];
     for (const member of memberSet) {
       const matches = index.get(member);
-      if (matches) rowNumbers.push(...matches);
+      if (matches) for (const match of matches) rowNumbers.push(match);
     }
     rowNumbers.sort((left, right) => left - right);
     const candidates = rowNumbers.map((row) => sourceRows(table)[row]!);
@@ -2415,20 +2418,22 @@ function topItems(
   return result;
 }
 
-function matchesSlicer(row: SourceRow, slicer: PivotSlicerDrawingPayload, fieldId: string, memberSet?: ReadonlySet<string>): boolean {
+function matchesSlicer(row: SourceRow, slicer: PivotSlicerDrawingPayload, fieldId: string, memberSet?: ReadonlySet<string>, group?: PivotGroup): boolean {
   const { filter } = slicer;
   if (filter.mode === 'all') return true;
-  const key = pivotMemberKey(createPivotMemberKey(sourceRowValue(row, fieldId)));
+  const key = pivotMemberKey(createPivotMemberKey(grouped(sourceRowValue(row, fieldId), group)));
   const included = memberSet
     ? memberSet.has(key)
-    : filter.memberKeys.some((candidate) => pivotMemberKeyEquals(candidate, createPivotMemberKey(sourceRowValue(row, fieldId))));
+    : filter.memberKeys.some((candidate) => pivotMemberKeyEquals(candidate, createPivotMemberKey(grouped(sourceRowValue(row, fieldId), group))));
   return filter.mode === 'include' ? included : !included;
 }
 
 export interface PivotTaskControl {
+  sheetId: string;
   drawingId: string;
   payload: PivotSlicerDrawingPayload | PivotTimelineDrawingPayload;
   fieldId: string;
+  group?: PivotGroup;
 }
 
 export function collectPivotTaskControls(workbook: WorkbookModel, pivot: PivotModel): PivotTaskControl[] {
@@ -2460,8 +2465,11 @@ export function collectPivotTaskControls(workbook: WorkbookModel, pivot: PivotMo
         throw new Error(`Pivot control connection field is stale: ${drawing.id}`);
       }
     }
-    if (!drawingIds.add(drawing.id)) throw new Error(`Duplicate Pivot control drawing id: ${drawing.id}`);
-    return [{ drawingId: drawing.id, payload, fieldId }];
+    const key = JSON.stringify([sheet.id, drawing.id]);
+    if (drawingIds.has(key)) throw new Error(`Duplicate Pivot control drawing identity: ${key}`);
+    drawingIds.add(key);
+    const group = [...pivot.layout.rows, ...pivot.layout.columns].find((placement) => placement.fieldId === fieldId)?.group;
+    return [{ sheetId: sheet.id, drawingId: drawing.id, payload, fieldId, ...(group ? { group: structuredClone(group) } : {}) }];
   }));
 }
 
@@ -2551,7 +2559,7 @@ function buildPivotControlMatcher(rows: SourceRow[], controls: readonly PivotTas
     let acceptedCount = 0;
     const payload = control.payload;
     if (payload.kind === 'slicer') {
-      const indexed = indexedSlicerMask(rows, control.fieldId, payload);
+      const indexed = control.group ? undefined : indexedSlicerMask(rows, control.fieldId, payload);
       if (indexed) {
         mask.set(indexed.mask);
         acceptedCount = indexed.acceptedCount;
@@ -2559,7 +2567,7 @@ function buildPivotControlMatcher(rows: SourceRow[], controls: readonly PivotTas
       } else {
         const memberSet = new Set(payload.filter.memberKeys.map((member) => pivotMemberKey(member)));
         rows.forEach((row, rowIndex) => {
-          const accepted = matchesSlicer(row, payload, control.fieldId, memberSet);
+          const accepted = matchesSlicer(row, payload, control.fieldId, memberSet, control.group);
           mask[rowIndex] = accepted ? 1 : 0;
           if (accepted) acceptedCount += 1;
           if (!accepted) hasRestriction = true;
@@ -2574,8 +2582,8 @@ function buildPivotControlMatcher(rows: SourceRow[], controls: readonly PivotTas
         if (!accepted) hasRestriction = true;
       });
     }
-    matches.set(control.drawingId, mask);
-    if (!hasRestriction) unrestricted.add(control.drawingId);
+    matches.set(JSON.stringify([control.sheetId, control.drawingId]), mask);
+    if (!hasRestriction) unrestricted.add(JSON.stringify([control.sheetId, control.drawingId]));
     orderedControls.push({ control, acceptedCount, order });
   }
   orderedControls.sort((left, right) => left.acceptedCount - right.acceptedCount || left.order - right.order);
@@ -2583,9 +2591,9 @@ function buildPivotControlMatcher(rows: SourceRow[], controls: readonly PivotTas
 }
 
 function rowsMatchingControls(matcher: PivotControlMatcher, excludedDrawingId?: string): SourceRow[] {
-  if (matcher.controls.length === 0 || matcher.controls.every((control) => control.drawingId === excludedDrawingId)) return matcher.rows;
-  return matcher.rows.filter((_, rowIndex) => matcher.controls.every((control) => control.drawingId === excludedDrawingId
-    || matcher.matches.get(control.drawingId)?.[rowIndex] === 1));
+  if (matcher.controls.length === 0 || matcher.controls.every((control) => JSON.stringify([control.sheetId, control.drawingId]) === excludedDrawingId)) return matcher.rows;
+  return matcher.rows.filter((_, rowIndex) => matcher.controls.every((control) => JSON.stringify([control.sheetId, control.drawingId]) === excludedDrawingId
+    || matcher.matches.get(JSON.stringify([control.sheetId, control.drawingId]))?.[rowIndex] === 1));
 }
 
 function slicerItemProjection(
@@ -2603,8 +2611,10 @@ function slicerItemProjection(
 ): PivotSlicerItemProjection[] {
   const fieldValues = indexedSlicerMembers(rows, fieldId)
     ?? rows.map((row) => sourceRowValue(row, fieldId));
+  const group = [...definition.layout.rows, ...definition.layout.columns].find((placement) => placement.fieldId === fieldId)?.group;
   const members = new Map<string, PivotSlicerItemProjection>();
-  for (const value of fieldValues) {
+  for (const raw of fieldValues) {
+    const value = grouped(raw, group);
     const key = createPivotMemberKey(value);
     const identity = pivotMemberKey(key);
     if (!members.has(identity)) members.set(identity, { key, value, label: formatPivotMember(value), selected: false, hasData: false });
@@ -2619,7 +2629,7 @@ function slicerItemProjection(
     definition,
     aggregates,
   );
-  const available = new Set(availableRows.map((row) => pivotMemberKey(createPivotMemberKey(sourceRowValue(row, fieldId)))));
+  const available = new Set(availableRows.map((row) => pivotMemberKey(createPivotMemberKey(grouped(sourceRowValue(row, fieldId), group)))));
   const selectedMembers = new Set(payload.filter.memberKeys.map((member) => pivotMemberKey(member)));
   for (const item of members.values()) {
     item.hasData = available.has(pivotMemberKey(item.key));
@@ -2799,6 +2809,7 @@ function applyShowAs(tree: PivotResultTree, fields: PivotValueField[], layout: P
   const leafContexts = rowContexts.filter((context) => context.node?.children.length === 0);
 
   const numericSum = (cells: PivotShowAsCellContext[], valueIndex: number, columnIndex: number): number => cells.reduce((sum, context) => {
+    if (context.columnIndex !== columnIndex) return sum;
     const cell = context.node?.values[columnIndex];
     return sum + (pivotNumericValue(rawValue(cell, valueIndex)) ?? 0);
   }, 0);
@@ -3019,7 +3030,7 @@ function computePivotResultFromTable(
   const tree: PivotResultTree = {
     schema: PIVOT_RESULT_TREE_SCHEMA,
     pivotId: definition.id,
-    fields: definition.fieldCatalog,
+    fields: structuredClone(definition.fieldCatalog),
     columnPaths: columns.map((column) => column.values),
     valueFields: resultFields,
     rows: resultNodes(filtered, definition.layout.rows, 0, columns, resultFields, definition.layout.subtotalLocation, definition.layout.showRowGrandTotals, definition.fieldCatalog, collator, calculatedFields, aggregates, [], rootRowGroups),
@@ -3027,11 +3038,12 @@ function computePivotResultFromTable(
     grandTotal,
     sourceRowPaths: filtered.flatMap((row) => sourceRowPaths(row)),
   };
+  appendCalculatedItemMembers(tree.fields, definition.layout.calculatedItems);
   const slicerItems: Record<string, PivotSlicerItemProjection[]> = {};
   for (const control of controls) {
     if (control.payload.kind !== 'slicer') continue;
-    const availableRows = controlMatcher.unrestricted.has(control.drawingId) ? filtered : undefined;
-    slicerItems[control.drawingId] = slicerItemProjection(definition, rows, control.drawingId, control.payload, control.fieldId, collator, calculatedFields, controlMatcher, sourceFilterMatchers, aggregates, availableRows);
+    const availableRows = controlMatcher.unrestricted.has(JSON.stringify([control.sheetId, control.drawingId])) ? filtered : undefined;
+    slicerItems[JSON.stringify([control.sheetId, control.drawingId])] = slicerItemProjection(definition, rows, JSON.stringify([control.sheetId, control.drawingId]), control.payload, control.fieldId, collator, calculatedFields, controlMatcher, sourceFilterMatchers, aggregates, availableRows);
   }
   if (Object.keys(slicerItems).length > 0) tree.slicerItems = slicerItems;
   applyShowAs(tree, resultFields, definition.layout);
@@ -3328,15 +3340,16 @@ export function detectPivotCollision(workbook: WorkbookModel, pivot: PivotModel,
   const reasons = new Set<import('@react-sheets/core-model').PivotCollisionReason>();
   const conflictingRanges: RangeRef[] = [];
   const conflicts: import('@react-sheets/core-model').PivotCollisionConflict[] = [];
+  const rangeKeys = new Set<string>();
+  const conflictKeys = new Set<string>();
   const addConflict = (reason: import('@react-sheets/core-model').PivotCollisionReason, conflictRange: RangeRef, participantId?: string): void => {
     const normalized = structuredClone(conflictRange);
     reasons.add(reason);
-    if (!conflictingRanges.some((existing) => existing.sheetId === normalized.sheetId && existing.startRow === normalized.startRow && existing.endRow === normalized.endRow && existing.startColumn === normalized.startColumn && existing.endColumn === normalized.endColumn)) {
-      conflictingRanges.push(normalized);
-    }
-    if (!conflicts.some((existing) => existing.reason === reason && existing.participantId === participantId && existing.range.sheetId === normalized.sheetId && existing.range.startRow === normalized.startRow && existing.range.endRow === normalized.endRow && existing.range.startColumn === normalized.startColumn && existing.range.endColumn === normalized.endColumn)) {
-      conflicts.push({ reason, range: normalized, ...(participantId ? { participantId } : {}) });
-    }
+    const key = JSON.stringify([normalized.sheetId, normalized.startRow, normalized.endRow, normalized.startColumn, normalized.endColumn]);
+    if (!rangeKeys.has(key)) { rangeKeys.add(key); conflictingRanges.push(normalized); }
+    const conflictKey = JSON.stringify([reason, participantId, key]);
+    if (!conflictKeys.has(conflictKey)) { conflictKeys.add(conflictKey); conflicts.push({ reason, range: normalized, ...(participantId ? { participantId } : {}) }); }
+
   };
   const wholeSheet = { sheetId: sheet.id, startRow: 0, endRow: Math.max(sheet.rowCount - 1, 0), startColumn: 0, endColumn: Math.max(sheet.columnCount - 1, 0) };
   if (range.endRow >= sheet.rowCount || range.endColumn >= sheet.columnCount) addConflict('worksheet-bounds', range);

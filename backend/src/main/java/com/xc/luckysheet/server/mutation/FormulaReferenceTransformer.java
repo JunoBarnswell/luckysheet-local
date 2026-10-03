@@ -141,6 +141,37 @@ final class FormulaReferenceTransformer {
         return mapCellShiftCoordinate(row, column, selection, axis, direction);
     }
 
+    static String offsetForCopy(String formula, int rowOffset, int columnOffset) {
+        int cursor = 0;
+        while (cursor < formula.length()) {
+            if (formula.charAt(cursor) == '"') { cursor = consumeString(formula, cursor); continue; }
+            if (threeDimensionalReferenceEnd(formula, cursor) > cursor) throw ServiceException.unsupportedFeature("Fill cannot relocate an unsupported three-dimensional reference");
+            if (formula.charAt(cursor) == '[') {
+                if (consumeExternalReference(formula, cursor) > cursor) throw ServiceException.unsupportedFeature("Fill cannot relocate an unsupported external-workbook reference");
+                cursor = consumeBracketedReference(formula, cursor); continue;
+            }
+            SheetPrefix prefix = parseSheetPrefix(formula, cursor);
+            if (prefix != null && prefix.name().contains("[")) throw ServiceException.unsupportedFeature("Fill cannot relocate an unsupported external-workbook reference");
+            cursor = nextReferenceCandidate(formula, cursor, prefix);
+        }
+        return rewrite(formula, reference -> {
+            long row = reference.absoluteRow() ? reference.row() : (long) reference.row() + rowOffset;
+            long column = reference.absoluteColumn() ? reference.column() : (long) reference.column() + columnOffset;
+            if (row < 0 || row > MAX_ROW || column < 0 || column > MAX_COLUMN) throw ServiceException.unsupportedFeature("Fill formula reference exceeds worksheet bounds");
+            return reference.withCoordinates((int) row, (int) column);
+        }, null, false, (reference, prefix) -> {
+            int offset = reference.axis() == Axis.ROW ? rowOffset : columnOffset;
+            boolean firstAbsolute = reference.firstCoordinateStart() > reference.startIndex();
+            boolean secondAbsolute = formula.charAt(reference.secondCoordinateStart() - 1) == '$';
+            long first = (long) reference.start() + (firstAbsolute ? 0 : offset), second = (long) reference.end() + (secondAbsolute ? 0 : offset);
+            int maximum = reference.axis() == Axis.ROW ? MAX_ROW : MAX_COLUMN;
+            if (first < 0 || second < 0 || first > maximum || second > maximum) throw ServiceException.unsupportedFeature("Fill whole-axis reference exceeds worksheet bounds");
+            String start = reference.axis() == Axis.ROW ? Long.toString(first + 1) : columnLabel((int) first);
+            String end = reference.axis() == Axis.ROW ? Long.toString(second + 1) : columnLabel((int) second);
+            return (prefix == null ? "" : prefix.raw() + "!") + (firstAbsolute ? "$" : "") + start + ":" + (secondAbsolute ? "$" : "") + end;
+        });
+    }
+
     static String offsetForPermutation(String formula, int rowOffset) {
         return rewrite(formula, reference -> {
             long row = reference.absoluteRow() ? reference.row() : (long) reference.row() + rowOffset;

@@ -248,6 +248,12 @@ function measureTextRuns(
 
 function widestLineFromRuns(context: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D, text: string, runs: readonly CellMeasuredTextRun[]): number {
   if (runs.length === 0) return 0;
+  if (runs.length === 1) {
+    context.font = runs[0]!.font;
+    let widest = 0;
+    for (const line of text.split('\n')) widest = Math.max(widest, context.measureText(line).width);
+    return widest;
+  }
   const widths: number[] = [];
   let lineWidth = 0;
   let runIndex = 0;
@@ -341,28 +347,32 @@ function wrapParagraph(context: CanvasRenderingContext2D | OffscreenCanvasRender
   const lines: string[] = [];
   let current = '';
   for (const token of tokens) {
-    const candidate = current + token;
-    if (current && context.measureText(candidate).width > widthPx) {
-      lines.push(current.trimEnd());
-      current = token.trimStart();
-      while (current && context.measureText(current).width > widthPx) {
-        const split = splitToken(context, current, widthPx);
-        lines.push(split.head);
-        current = split.tail;
+    if (context.measureText(current + token).width <= widthPx) { current += token; continue; }
+    if (current) { lines.push(current.trimEnd()); current = ''; }
+    const graphemes = Array.from(token.trimStart());
+    let offset = 0;
+    while (offset < graphemes.length) {
+      let low = 0;
+      let high = 1;
+      const remaining = graphemes.length - offset;
+      while (high < remaining && context.measureText(graphemes.slice(offset, offset + high).join('')).width <= widthPx) {
+        low = high;
+        high = Math.min(remaining, high * 2);
       }
-    } else current = candidate;
+      while (low < high) {
+        const middle = Math.ceil((low + high) / 2);
+        if (context.measureText(graphemes.slice(offset, offset + middle).join('')).width <= widthPx) low = middle;
+        else high = middle - 1;
+      }
+      const count = Math.max(1, low);
+      const chunk = graphemes.slice(offset, offset + count).join('');
+      offset += count;
+      if (offset < graphemes.length) lines.push(chunk);
+      else current = chunk;
+    }
   }
   if (current || lines.length === 0) lines.push(current.trimEnd());
   return lines;
-}
-
-function splitToken(context: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D, token: string, widthPx: number): { head: string; tail: string } {
-  const graphemes = Array.from(token);
-  let head = '';
-  let index = 0;
-  while (index < graphemes.length && context.measureText(head + graphemes[index]).width <= widthPx) head += graphemes[index++];
-  if (!head) head = graphemes[index++] ?? '';
-  return { head, tail: graphemes.slice(index).join('') };
 }
 
 function resolveHorizontalAlignment(alignment: CellHorizontalAlignment | undefined, value: CellRenderData['value']): CellHorizontalAlignment {

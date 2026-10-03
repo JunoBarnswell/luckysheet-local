@@ -4331,7 +4331,7 @@ final class StructuralSnapshotReducer {
                 ((ObjectNode) group).put("start", mapped.get(0).startRow()).put("end", mapped.get(0).endRow());
             }
         }
-        for (JsonNode rule : SnapshotMutationSupport.array(sheet, "protectionRules")) if (rule.has("range")) writeSingleRange(rule.get("range"), metadataScope, targetRowsBySource, "protection rule");
+        for (JsonNode rule : SnapshotMutationSupport.array(sheet, "protectionRules")) if (rule.has("range")) writeSingleRange(rule.get("range"), range, targetRowsBySource, "protection rule");
         JsonNode bandedRaw = sheet.get("bandedRule");
         if (bandedRaw != null && !bandedRaw.isNull()) {
             ObjectNode banded = requireObject(bandedRaw, "Banded rule");
@@ -4693,7 +4693,7 @@ final class StructuralSnapshotReducer {
             }
         }
         for (JsonNode raw : SnapshotMutationSupport.array(sheet, "merges")) requireSingleRange(requireObject(raw, "Merge").get("range"), range, targetRowsBySource, "merge");
-        for (JsonNode raw : SnapshotMutationSupport.array(sheet, "protectionRules")) if (raw.has("range")) requireSingleRange(raw.get("range"), metadataScope, targetRowsBySource, "protection rule");
+        for (JsonNode raw : SnapshotMutationSupport.array(sheet, "protectionRules")) if (raw.has("range")) requireSingleRange(raw.get("range"), range, targetRowsBySource, "protection rule");
         JsonNode bandedRaw = sheet.get("bandedRule");
         if (bandedRaw != null && !bandedRaw.isNull()) {
             ObjectNode banded = requireObject(bandedRaw, "Banded rule");

@@ -73,7 +73,7 @@ public class WorkbookOperationService {
      * checkpoint cannot race the operation replay entity update. The
      * database lock remains authoritative for future instances.
      */
-    private final ConcurrentHashMap<String, ReentrantLock> workbookLocks = new ConcurrentHashMap<>();
+    private final ReentrantLock[] workbookLocks = java.util.stream.IntStream.range(0, 256).mapToObj(ignored -> new ReentrantLock()).toArray(ReentrantLock[]::new);
     private final ReentrantLock invalidWorkbookLock = new ReentrantLock();
 
     @Autowired
@@ -105,6 +105,7 @@ public class WorkbookOperationService {
 
     public CommitResult operationResult(String unitId, String operationId, String actor, List<String> groups) {
         access.require(unitId, actor, WorkbookRole.VIEWER);
+        requireWorkbook(unitId);
         OperationRow row = store.findOperation(operationId).orElseThrow(() -> ServiceException.notFound("Operation not committed"));
         if (!row.unitId().equals(unitId) || !row.actorSubject().equals(actor)) throw ServiceException.forbidden("Operation belongs to another subject");
         CommittedOperationEnvelope operation = readCommittedHistoryRow(row);
@@ -335,11 +336,12 @@ public class WorkbookOperationService {
             throw ServiceException.conflict("Revision conflict; rebase against revision " + row.revision());
         }
 
+        com.xc.luckysheet.server.contract.WorkbookSnapshotValidator.requireResourceBudget(mapper.valueToTree(operation));
         JsonNode next = currentSnapshot(row);
         List<CommittedOperationMutation> committedMutations = new ArrayList<>();
         long changedAccessRevision = -1;
         for (OperationMutation mutation : operation.mutations()) {
-            if ("record.restore".equals(mutation.id()) && undoTarget == null) throw ServiceException.conflict("RECORD_RESTORE_REQUIRES_UNDO");
+            if (java.util.Set.of("record.restore", "range.clear.restore", "fill.restored").contains(mutation.id()) && undoTarget == null) throw ServiceException.conflict("RESTORE_REQUIRES_OWNED_UNDO");
             if ("table.configure".equals(mutation.id()) && undoTarget == null) {
                 JsonNode previousTable = com.xc.luckysheet.server.contract.RecordTableValidator.table(next, mutation.params().path("table").path("id").asText());
                 if (previousTable.has("recordIdFieldId") && !previousTable.path("recordIdFieldId").equals(mutation.params().path("table").path("recordIdFieldId"))) throw ServiceException.conflict("RECORD_IDENTITY_IMMUTABLE");
@@ -382,7 +384,7 @@ public class WorkbookOperationService {
             if (isStructuralPatchMutation(mutation.id()) && committedPatch == null) {
                 throw ServiceException.unavailable("STRUCTURAL_PATCH_UNAVAILABLE: structural mutation did not produce server-owned reference facts");
             }
-            WorkbookSnapshotValidator.requireCanonicalWorksheetNames(candidate.path("sheets"));
+            WorkbookSnapshotValidator.requireCanonical(candidate, routeUnitId);
             if (committedPatch != null) for (var delta : committedPatch.formulaOwnerDeltas()) {
                 if ("record-field".equals(delta.ownerKind())) {
                     JsonNode table = com.xc.luckysheet.server.contract.RecordTableValidator.table(candidate, delta.tableId());
@@ -755,6 +757,7 @@ public class WorkbookOperationService {
 
     public CursorPage<RevisionRecord> revisions(String unitId, String actor, long beforeRevision, int limit, String nextCursor, List<String> groups) {
         WorkbookRole role = access.require(unitId, actor, WorkbookRole.VIEWER);
+        requireWorkbook(unitId);
         RangeAccessResolver resolver = rangeAccess.resolver(unitId, actor, role, groups);
         long accessRevision = resolver.accessRevision();
         List<RevisionRecord> items = store.listOperationsBefore(unitId, beforeRevision, limit).stream()
@@ -844,7 +847,7 @@ public class WorkbookOperationService {
     private <T> T withWorkbookLock(String unitId, Supplier<T> action) {
         ReentrantLock lock = unitId == null || unitId.isBlank()
                 ? invalidWorkbookLock
-                : workbookLocks.computeIfAbsent(unitId, ignored -> new ReentrantLock());
+                : workbookLocks[Math.floorMod(unitId.hashCode(), workbookLocks.length)];
         lock.lock();
         boolean releaseAfterCompletion = false;
         try {
@@ -873,6 +876,7 @@ public class WorkbookOperationService {
     }
 
     public WorkbookAccessProjection accessProjection(String unitId, String actor, List<String> groups) {
+        requireWorkbook(unitId);
         return rangeAccess.projection(unitId, actor, groups);
     }
 
@@ -1044,7 +1048,9 @@ public class WorkbookOperationService {
     }
 
     private WorkbookRow requireWorkbook(String unitId) {
-        return store.find(unitId).orElseThrow(() -> ServiceException.notFound("Workbook not found: " + unitId));
+        WorkbookRow row = store.find(unitId).orElseThrow(() -> ServiceException.notFound("Workbook not found: " + unitId));
+        if (row.lifecycle() != WorkbookLifecycle.ACTIVE) throw ServiceException.trashed("Workbook is in trash");
+        return row;
     }
 
     private void verifyCheckpoint(CheckpointRow checkpoint) {

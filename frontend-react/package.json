@@ -47,7 +47,8 @@
     "benchmark:formulas": "tsx tools/formula-benchmark.ts",
     "test:formula-engine": "tsx --test packages/formula-engine/src/calculation-domain.test.ts packages/formula-engine/src/calculation-worker-entry.test.ts packages/formula-engine/src/collation.test.ts packages/formula-engine/src/defined-names.test.ts packages/formula-engine/src/external-formula-normalizer.test.ts packages/formula-engine/src/formula-trace.test.ts packages/formula-engine/src/function-catalog.test.ts packages/formula-engine/src/functions/dynamic-array.test.ts packages/formula-engine/src/functions/extended-matrix.test.ts packages/formula-engine/src/functions/sjs-table.test.ts packages/formula-engine/src/index.test.ts packages/formula-engine/src/linked-lifecycle.test.ts packages/formula-engine/src/input-fault.test.ts packages/formula-engine/src/recalculation-mode.test.ts packages/formula-engine/src/reference-transform-domain.test.ts packages/formula-engine/src/runtime-scaling.test.ts packages/formula-engine/src/sheet-table-resolver.test.ts packages/formula-engine/src/spill-resolver.test.ts",
     "test:sdk-uat": "node tools/run-sdk-uat.mjs",
-    "test:sdk": "tsx --test packages/sdk/src/identity/workbook-capabilities.test.ts packages/sdk/src/auth/domain.test.ts packages/sdk/src/internal/runtime.test.ts packages/sdk/src/dimensions/domain.test.ts packages/sdk/src/dimensions/transaction.test.ts packages/sdk/src/data/domain.test.ts packages/sdk/src/workbook/domain.test.ts"
+    "test:sdk": "tsx --test packages/sdk/src/identity/workbook-capabilities.test.ts packages/sdk/src/auth/domain.test.ts packages/sdk/src/internal/runtime.test.ts packages/sdk/src/dimensions/domain.test.ts packages/sdk/src/dimensions/transaction.test.ts packages/sdk/src/data/domain.test.ts packages/sdk/src/workbook/domain.test.ts",
+    "test:security-remediation": "tsx --test packages/core-model/src/security-remediation.test.ts"
   },
   "dependencies": {
     "@bwip-js/browser": "^4.11.4",

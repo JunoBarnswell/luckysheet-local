@@ -21,7 +21,7 @@ class WorkbookSnapshotValidatorTest {
         ObjectNode snapshot = snapshot();
         ObjectNode sheet = (ObjectNode) snapshot.path("sheets").get(0);
         ObjectNode source = mapper.createObjectNode().put("kind", "table").put("tableId", "table-1");
-        source.put("unrecognizedExtension", "x".repeat(500_000));
+        source.put("unrecognizedExtension", "x".repeat(32767));
         sheet.withArray("pivots").add(pivot("pivot-1", source));
         sheet.withObject("drawingPayloads").set("payload-1", slicerPayload("pivot-1", mapper.createArrayNode()));
         ArrayNode drawings = sheet.withArray("drawings");

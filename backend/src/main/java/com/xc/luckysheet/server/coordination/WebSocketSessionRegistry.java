@@ -38,8 +38,8 @@ public class WebSocketSessionRegistry {
     private final AccessProjectionService accessProjection;
     private final Map<String, Set<WebSocketSession>> sessionsByUnit = new ConcurrentHashMap<>();
     private final Map<String, Map<WebSocketSession, String>> calculationBySource = new ConcurrentHashMap<>();
-    private final Map<String, Instant> seenRevisionOperations = new ConcurrentHashMap<>();
-    private final Map<String, Instant> seenEphemeralEvents = new ConcurrentHashMap<>();
+    private final Map<String, Instant> seenRevisionOperations = new java.util.LinkedHashMap<>();
+    private final Map<String, Instant> seenEphemeralEvents = new java.util.LinkedHashMap<>();
 
     @Autowired
     public WebSocketSessionRegistry(ObjectMapper mapper, AccessControlService access,
@@ -171,12 +171,19 @@ public class WebSocketSessionRegistry {
     }
 
     private boolean markSeen(Map<String, Instant> seen, String id) {
-        Instant now = Instant.now();
-        if (seen.size() > MAX_SEEN_EVENTS) {
+        synchronized (seen) {
+            Instant now = Instant.now();
             Instant cutoff = now.minus(SEEN_EVENT_RETENTION);
-            seen.entrySet().removeIf(entry -> entry.getValue().isBefore(cutoff));
+            var oldest = seen.entrySet().iterator();
+            while (oldest.hasNext()) { if (!oldest.next().getValue().isBefore(cutoff)) break; oldest.remove(); }
+            if (seen.containsKey(id)) return false;
+            if (seen.size() >= MAX_SEEN_EVENTS) {
+                // Bounded deduplication retains the newest identities; replay is still checked by revision.
+                var iterator = seen.entrySet().iterator(); if (iterator.hasNext()) { iterator.next(); iterator.remove(); }
+            }
+            seen.put(id, now);
+            return true;
         }
-        return seen.putIfAbsent(id, now) == null;
     }
 
     private void broadcast(String unitId, WebSocketSession origin, ObjectNode message) {
@@ -206,6 +213,7 @@ public class WebSocketSessionRegistry {
     /** Re-check persistent ACL/share state before every remote delivery. */
     private boolean sessionCanRead(String unitId, WebSocketSession session) {
         try {
+            if (!com.xc.luckysheet.server.security.LocalAuthSessionRegistry.isValid(session)) return false;
             access.require(unitId, ActorIdentity.subject(session.getPrincipal()), WorkbookRole.VIEWER);
             return true;
         } catch (ServiceException error) {

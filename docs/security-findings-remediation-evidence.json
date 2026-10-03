@@ -1,0 +1,143 @@
+{
+  "schema": "security-findings-remediation.acceptance.v1",
+  "base": "22d82876fd63fa253e51f9d4ffbbe5b288518409",
+  "implementationCommit": "711bcf24e0bd2d950cff6ebcd2fd0d83a874e55f",
+  "overallAcceptance": "Blocked",
+  "findingCounts": {
+    "total": 179,
+    "reported": {
+      "new": 103,
+      "fixed": 76
+    },
+    "outcomes": {
+      "Fixed": 83,
+      "HistoricalRemoved": 10,
+      "CurrentSafe": 53,
+      "Blocked": 33
+    },
+    "blockedIds": [
+      "F021",
+      "F022",
+      "F031",
+      "F032",
+      "F035",
+      "F038",
+      "F042",
+      "F081",
+      "F082",
+      "F086",
+      "F087",
+      "F103",
+      "F104",
+      "F107",
+      "F108",
+      "F109",
+      "F121",
+      "F128",
+      "F131",
+      "F149",
+      "F150",
+      "F151",
+      "F152",
+      "F153",
+      "F154",
+      "F156",
+      "F158",
+      "F160",
+      "F164",
+      "F166",
+      "F172",
+      "F175",
+      "F179"
+    ]
+  },
+  "checks": {
+    "backend": {
+      "tests": 335,
+      "failures": 0,
+      "errors": 0,
+      "skips": 0,
+      "liveDialects": [
+        "PostgreSQL 16",
+        "MySQL 8.4"
+      ]
+    },
+    "frontendBuild": "Passed",
+    "architectureAndContracts": "Passed",
+    "unit": {
+      "tests": 1526,
+      "passed": 1445,
+      "failed": 81
+    },
+    "baselineUnit": {
+      "tests": 1525,
+      "passed": 1442,
+      "failed": 83
+    },
+    "unitComparison": {
+      "candidateOnlyFailures": [],
+      "resolvedBaselineFailures": [
+        "anchors the AutoFilter sort context to the full region after selecting a filter column",
+        "sorts a block-backed query through AutoFilter without materializing cells"
+      ]
+    },
+    "independentFillPlans": 28,
+    "calculationTests": [
+      446,
+      5
+    ],
+    "pivotRenderTests": 98,
+    "chartFindCanvasTests": 50,
+    "securityBudgetTests": 5,
+    "nativeCodecTests": 19,
+    "cellUiTests": 9,
+    "actualCsvRows": 180,
+    "browser": {
+      "passed": 1,
+      "failed": 0,
+      "skipped": 0,
+      "seconds": 6.7,
+      "consoleErrors": 0,
+      "pageErrors": 0,
+      "requestFailures": 0,
+      "httpErrors": 0
+    }
+  },
+  "browserProvenance": {
+    "schema": "luckysheet-local.e2e-provenance.v1",
+    "runId": "711bcf24e0bd2d950cff6ebcd2fd0d83a874e55f-20261003041416573",
+    "sourceSha": "711bcf24e0bd2d950cff6ebcd2fd0d83a874e55f",
+    "buildSha": "711bcf24e0bd2d950cff6ebcd2fd0d83a874e55f",
+    "sourceDirty": false,
+    "packageLockSha256": "764e2b98ed20ef478f83b05e83fd4dbc1b440f3990d431825455a073c27f609b",
+    "nodeVersion": "v24.19.0",
+    "playwrightVersion": "^1.51.0",
+    "browserVersion": "151.0.7922.34",
+    "backendBuildIdentity": "711bcf24e0bd2d950cff6ebcd2fd0d83a874e55f",
+    "locale": "en-US",
+    "viewport": "1440x960",
+    "baseURL": "http://127.0.0.1:4180",
+    "command": "npm run test:e2e -- e2e/security-remediation.spec.ts --workers=1",
+    "startedAt": "2026-10-03T04:14:16.573Z",
+    "artifactRoot": "frontend-react/test-results"
+  },
+  "backendJarSha256": "eb45574c9ae3201cafc598ed561a0eb518319fb4a8e1c2a916a184bcd34678a2",
+  "localLogSha256": {
+    "backend-final.log": "919c4bb0a5c5dc8fb66584c25a246216ca102d96aa651df0036642f324f789ff",
+    "frontend-build-final.log": "eee39695d1ffe35c0bbc837449bf0aac1d04f6affe1743959d3d7bb80d376f41",
+    "boundaries-final.log": "b8fecfe8c0ab5fbc2eddb85c864188360b2848705a24ffda5b8994047e83449a",
+    "frontend-unit-final.log": "6537d9e8864c270a5782e786018b84d36095cae0c0f5c7f62d656dbf5b05e2c2",
+    "baseline-frontend-unit.log": "5532858c25f20169378cdaf696a0ec95ffdc734e455263ec38791b1afbc144c3",
+    "calculation-final.log": "a2f1ec8fb03f4337d509bab34b4084638c7b980ffc332e9dd2e3dfef7dc1761b",
+    "focused-final.log": "c1fc5ebb770ae21adf464aef7c878c351468bf3c045cb10e75ff511ffe15542a",
+    "targeted-final.log": "46ac4a593620d1a748c746ab7a58cd0826b3cf5c0ed517fea9a8c49ab7e699f3",
+    "security-tests-final.log": "b98c5167e5fe3a21e67885e0676c0bef52e57dd4a90496ccf3cd4d999c91ed9b",
+    "native-codecs-final.log": "ff02d2b2ef3df0cd62e900475849a1d8553310335064fbefdc5f55444c09e9c7",
+    "cell-ui-final.log": "1facaaea8cc392329369436089c594aee165fd6f0170f8e63b8e8a8eec57bed9",
+    "real-csv-corpus.log": "dc8098c1f94955a34cc8a91708c976aa0fed5385c49ab29317cafd9b0fd61903",
+    "browser-final.log": "432a76f23edc21af3a9e0aa146e4ce014214f05873c471ce0eedf70fd8708f59"
+  },
+  "browserScreenshotSha256": {
+    "frontend-react/test-results/security-remediation-secur-1ea4d-rt-replacements-and-AutoSum-chromium/acceptance.png": "375994785d4065922fa1ba3a2210e8f3b56d5c25d4992315db2fdcbfc7aa61ab"
+  }
+}

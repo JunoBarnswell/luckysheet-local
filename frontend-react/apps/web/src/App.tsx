@@ -9,7 +9,7 @@ import { useAuthSession, useAuthSnapshot } from "./auth/AuthProvider";
 import { navigate, useApplicationRoute } from "./app-routing";
 import type { CommandDescriptor } from "@react-sheets/command-runtime";
 import { useEffect, useRef, useState } from "react";
-import { isWorkbookResolutionError, type UiSessionIntent, type WorkbookResolution } from "@react-sheets/spreadsheet-app";
+import { resolveShareToken, isWorkbookResolutionError, type UiSessionIntent, type WorkbookResolution } from "@react-sheets/spreadsheet-app";
 import { getInitialLocale, persistLocale, type Locale } from "./i18n";
 import { useEditorCommandController } from "./editor/command-controller";
 import { EditorShell } from "./editor/EditorShell";
@@ -22,7 +22,7 @@ function WorkbookRouteGate({ unitId }: { unitId: string }) {
   const [localState, setLocalState] = useState<"checking" | "allowed" | "denied">("checking");
   const [resolution, setResolution] = useState<WorkbookResolution | null>(null);
   const [resolutionError, setResolutionError] = useState<Error | null>(null);
-  const shareToken = typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("share")?.trim() : null;
+  const shareToken = resolveShareToken();
 
   useEffect(() => {
     let active = true;

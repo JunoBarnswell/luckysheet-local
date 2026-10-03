@@ -203,6 +203,7 @@ final class DrawingMutationDescriptor extends CanonicalJsonMutationDescriptor {
     }
 
     private void validatePayloadPair(ObjectNode root, ObjectNode drawing, ObjectNode payload) {
+        com.xc.luckysheet.server.contract.WorkbookSnapshotValidator.requireDrawingPayload(root, payload);
         String drawingKind = SnapshotMutationSupport.text(drawing, "kind");
         String payloadKind = SnapshotMutationSupport.text(payload, "kind");
         if (!Set.of("image", "shape", "textbox", "chart", "camera", "form-control", "slicer", "timeline").contains(drawingKind) || !drawingKind.equals(payloadKind)) {
@@ -262,7 +263,7 @@ final class DrawingMutationDescriptor extends CanonicalJsonMutationDescriptor {
             JsonNode value = transform.get(key);
             if (value == null || !value.isNumber() || !Double.isFinite(value.asDouble())) throw ServiceException.validation("Drawing transform " + key + " is invalid");
         }
-        if (transform.path("width").asDouble() < 0 || transform.path("height").asDouble() < 0) throw ServiceException.validation("Drawing transform dimensions are invalid");
+        if (transform.path("width").asDouble() < 0 || transform.path("height").asDouble() < 0 || transform.path("width").asDouble() > 8192 || transform.path("height").asDouble() > 8192) throw ServiceException.validation("Drawing transform dimensions are invalid");
         JsonNode rotation = transform.get("rotation");
         if (rotation != null && (!rotation.isNumber() || !Double.isFinite(rotation.asDouble()))) throw ServiceException.validation("Drawing rotation is invalid");
     }

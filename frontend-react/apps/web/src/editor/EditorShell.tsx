@@ -245,7 +245,7 @@ export function EditorShell({
                   if (payload?.kind !== 'timeline') return;
                   const tree = state.selectedSheet.pivotResults[payload.pivotId];
                   const values = tree?.fields.fields.find((entry) => entry.fieldId === payload.fieldId)?.values ?? [];
-                  const periods = buildPivotTimelineTiles(values, payload.level)
+                  const periods = buildPivotTimelineTiles(values, payload.level, payload.bounds)
                     .filter((period) => (!payload.bounds.start || period.end >= payload.bounds.start) && (!payload.bounds.end || period.start <= payload.bounds.end));
                   if (action.kind === 'timeline-period') {
                     session.setPivotTimelinePeriod(drawingId, action.start, action.end);

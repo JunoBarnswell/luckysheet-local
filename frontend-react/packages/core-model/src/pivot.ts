@@ -161,7 +161,8 @@ function parsePivotTimelineString(value: string): number | undefined {
 export function pivotTimelineInstant(value: PivotScalar): number | undefined {
   if (typeof value === 'number') {
     if (!Number.isFinite(value)) return undefined;
-    return Date.UTC(1899, 11, 30) + value * PIVOT_DAY_MS;
+    const instant = Date.UTC(1899, 11, 30) + value * PIVOT_DAY_MS;
+    return Number.isFinite(instant) && Math.abs(instant) <= 8.64e15 ? instant : undefined;
   }
   return typeof value === 'string' ? parsePivotTimelineString(value) : undefined;
 }
@@ -223,12 +224,18 @@ function timelineTileLabel(start: Date, level: PivotTimelineLevel): string {
 }
 
 /** Build contiguous, data-aware period tiles from the canonical Pivot date values. */
-export function buildPivotTimelineTiles(values: readonly PivotScalar[], level: PivotTimelineLevel): PivotTimelineTile[] {
+export function buildPivotTimelineTiles(values: readonly PivotScalar[], level: PivotTimelineLevel, bounds?: { start?: string; end?: string }): PivotTimelineTile[] {
   if (!['years', 'quarters', 'months', 'days'].includes(level)) throw new Error(`Invalid Pivot timeline level: ${String(level)}`);
   const instants = values.map(pivotTimelineInstant).filter((value): value is number => value !== undefined && Number.isFinite(value));
   if (instants.length === 0) return [];
-  const first = timelineTileStart(Math.min(...instants), level);
-  const last = timelineTileStart(Math.max(...instants), level);
+  let minimum = Number.POSITIVE_INFINITY; let maximum = Number.NEGATIVE_INFINITY;
+  for (const instant of instants) { minimum = Math.min(minimum, instant); maximum = Math.max(maximum, instant); }
+  if (bounds?.start !== undefined) minimum = Math.max(minimum, pivotTimelineInstant(bounds.start) ?? NaN);
+  if (bounds?.end !== undefined) maximum = Math.min(maximum, pivotTimelineInstant(bounds.end) ?? NaN);
+  if (!Number.isFinite(minimum) || !Number.isFinite(maximum)) throw new Error("Invalid Pivot timeline bounds");
+  if (minimum > maximum) return [];
+  const first = timelineTileStart(minimum, level);
+  const last = timelineTileStart(maximum, level);
   const dataKeys = new Set(instants.map((instant) => timelineTileStart(instant, level).getTime()));
   const tiles: PivotTimelineTile[] = [];
   let cursor = first;
@@ -1075,7 +1082,7 @@ export function canonicalizePivotDefinition(input: PivotDefinition): PivotDefini
     if (filter.kind === 'condition' && filter.family !== 'value' && filter.valueId !== undefined) {
       throw new Error(`Pivot ${input.id} condition filter references an invalid Values placement`);
     }
-    const identity = pivotFilterIdentity(filter);
+    const identity = pivotFilterIdentity({ ...filter, scope: filter.scope ?? (axisFields.has(filter.fieldId) ? 'field' : 'report') });
     if (identities.has(identity)) throw new Error(`Pivot ${input.id} contains duplicate filter family ${identity}`);
     identities.add(identity);
   }

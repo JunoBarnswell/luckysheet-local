@@ -34,30 +34,12 @@ New-Item -ItemType Directory -Path $stagingRoot -Force | Out-Null
 $previousRoot = "$DataRoot.before-restore-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
 $movedPrevious = $false
 try {
-    Expand-Archive -LiteralPath $BackupPath -DestinationPath $stagingRoot -Force
-    $manifestPath = Join-Path $stagingRoot 'manifest.json'
-    if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) { throw 'BACKUP_MANIFEST_MISSING' }
-    $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
-    if ($manifest.format -ne 'react-sheets-backup' -or [int]$manifest.version -ne 1) {
-        throw 'BACKUP_MANIFEST_UNSUPPORTED'
-    }
-    $manifestFiles = @($manifest.files)
-    if ($manifestFiles.Count -eq 0) { throw 'BACKUP_MANIFEST_EMPTY' }
-
-    foreach ($entry in $manifestFiles) {
-        $relativePath = [string]$entry.path
-        if ([string]::IsNullOrWhiteSpace($relativePath) -or [IO.Path]::IsPathRooted($relativePath)) {
-            throw "BACKUP_MANIFEST_PATH_INVALID: $relativePath"
-        }
-        $filePath = [IO.Path]::GetFullPath((Join-Path $stagingRoot $relativePath))
-        $stagingPrefix = "$([IO.Path]::GetFullPath($stagingRoot))$([IO.Path]::DirectorySeparatorChar)"
-        if (-not $filePath.StartsWith($stagingPrefix, [StringComparison]::OrdinalIgnoreCase)) { throw "BACKUP_MANIFEST_PATH_INVALID: $relativePath" }
-        if (-not (Test-Path -LiteralPath $filePath -PathType Leaf)) { throw "BACKUP_FILE_MISSING: $relativePath" }
-        $actual = Get-FileHash -Algorithm SHA256 -LiteralPath $filePath
-        if ($actual.Hash.ToLowerInvariant() -ne ([string]$entry.sha256).ToLowerInvariant()) { throw "BACKUP_FILE_CHECKSUM_MISMATCH: $relativePath" }
-        if ((Get-Item -LiteralPath $filePath).Length -ne [int64]$entry.length) { throw "BACKUP_FILE_LENGTH_MISMATCH: $relativePath" }
-    }
-    if (-not ($manifestFiles.path -match '\.mv\.db$')) { throw 'BACKUP_DATABASE_MISSING' }
+    . (Join-Path $PSScriptRoot 'restore-archive.ps1')
+    $manifestFiles = @(Expand-VerifiedBackup -BackupPath $BackupPath -StagingRoot $stagingRoot)
+    $restoreBytes = [long]0
+    foreach ($entry in $manifestFiles) { $restoreBytes += [long]$entry.length }
+    $targetDrive = [IO.DriveInfo]::new([IO.Path]::GetPathRoot($DataRoot))
+    if ($targetDrive.AvailableFreeSpace -lt $restoreBytes + 64MB) { throw 'BACKUP_TARGET_SPACE_INSUFFICIENT' }
 
     if (Test-Path -LiteralPath $DataRoot) {
         if (-not $PSCmdlet.ShouldProcess($DataRoot, "Move existing data to $previousRoot")) { return }

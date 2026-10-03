@@ -154,6 +154,8 @@ function biffFixture(formula = false, version = 0x0600, sharedStrings = false): 
     maxXmlDepth: 256,
     maxXmlBytes: 100 * 1024 * 1024,
     maxCells: 10_000_000,
+    maxMerges: 10_000,
+    maxMergeComparisons: 1_000_000,
   });
 }
 
@@ -409,4 +411,40 @@ describe('native document codec registry', () => {
       (error: unknown) => error instanceof NativeDocumentError && error.code === 'NATIVE_DOCUMENT_RESOURCE_LIMIT',
     );
   });
+});
+
+it('bounds CSV cells, XML indices, and ODS repetition before allocating expanded rows', async () => {
+  await assert.rejects(nativeDocumentCodecRegistry.import({ fileName: 'budget.csv', buffer: strToU8('a,b,c').buffer as ArrayBuffer, options: { compatibilityTarget: 'B', limits: { maxCells: 2 } }, execution: 'inline-test' }), /cell budget|cells/i);
+  const xml = '<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"><Worksheet ss:Name="s"><Table><Row><Cell ss:Index="1000000000"><Data ss:Type="String">x</Data></Cell></Row></Table></Worksheet></Workbook>';
+  await assert.rejects(nativeDocumentCodecRegistry.import({ fileName: 'index.xml', buffer: strToU8(xml).buffer as ArrayBuffer, options, execution: 'inline-test' }), /index|budget/i);
+  const nested = '<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet">' + '<a>'.repeat(40) + '</a>'.repeat(40) + '</Workbook>';
+  await assert.rejects(nativeDocumentCodecRegistry.import({ fileName: 'deep.xml', buffer: strToU8(nested).buffer as ArrayBuffer, options: { compatibilityTarget: 'B', limits: { maxXmlDepth: 10 } }, execution: 'inline-test' }), /depth|budget/i);
+});
+
+it('escapes malicious untouched CSV artifacts instead of returning their unsafe source bytes', async () => {
+  for (const source of ['=1+2', '+CMD', '@SUM(1)', '\t=1+2']) {
+    const imported = await nativeDocumentCodecRegistry.import({ fileName: 'unsafe.csv', buffer: strToU8(source).buffer as ArrayBuffer, options, execution: 'inline-test' });
+    const saved = await nativeDocumentCodecRegistry.export({ snapshot: imported.snapshot, artifact: imported.artifact, fileName: 'unsafe.csv', options, execution: 'inline-test' });
+    assert.match(strFromU8(bytesOf(saved.buffer)), /'/);
+  }
+});
+
+it('charges BIFF scalar and expanded MULRK cells before materialization', async () => {
+  const buffer = biffFixture();
+  await assert.rejects(nativeDocumentCodecRegistry.import({ fileName: 'budget.xls', buffer, options: { ...options, limits: { maxCells: 3 } }, execution: 'inline-test' }), (error: unknown) => error instanceof NativeDocumentError && error.code === 'NATIVE_DOCUMENT_RESOURCE_LIMIT');
+  const imported = await nativeDocumentCodecRegistry.import({ fileName: 'budget.xls', buffer, options: { ...options, limits: { maxCells: 4 } }, execution: 'inline-test' });
+  assert.equal(imported.snapshot.sheets[0]!.cells['0']!['3']!.value, 8);
+});
+it('shares the XLSB cell budget across worksheets', async () => {
+  const parts = unzipSync(new Uint8Array(xlsbFixture()));
+  const relationId = wideString('rId2'); const name = wideString('Sheet2');
+  const bundle = new Uint8Array(8 + relationId.length + name.length);
+  new DataView(bundle.buffer).setUint32(4, 2, true); bundle.set(relationId, 8); bundle.set(name, 8 + relationId.length);
+  parts['xl/workbook.bin'] = Uint8Array.from([...parts['xl/workbook.bin']!, ...biff12Record(156, bundle)]);
+  parts['xl/_rels/workbook.bin.rels'] = new TextEncoder().encode('<Relationships><Relationship Id="rId1" Type="worksheet" Target="worksheets/sheet1.bin"/><Relationship Id="rId2" Type="worksheet" Target="worksheets/sheet2.bin"/></Relationships>');
+  parts['xl/worksheets/sheet2.bin'] = parts['xl/worksheets/sheet1.bin']!;
+  const buffer = zipSync(parts).buffer as ArrayBuffer;
+  await assert.rejects(nativeDocumentCodecRegistry.import({ fileName: 'budget.xlsb', buffer, options: { ...options, limits: { maxCells: 3 } }, execution: 'inline-test' }), (error: unknown) => error instanceof NativeDocumentError && error.code === 'NATIVE_DOCUMENT_RESOURCE_LIMIT');
+  const imported = await nativeDocumentCodecRegistry.import({ fileName: 'budget.xlsb', buffer, options: { ...options, limits: { maxCells: 4 } }, execution: 'inline-test' });
+  assert.equal(imported.snapshot.sheets.length, 2);
 });

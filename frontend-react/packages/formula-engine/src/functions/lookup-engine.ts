@@ -1,3 +1,4 @@
+import { compileExcelWildcard } from '../wildcard';
 import { isFormulaError, isReferenceValue, type FormulaValue } from '../values';
 import { compareWorkbookValues, type WorkbookCollationContext } from '../collation';
 
@@ -6,18 +7,6 @@ export type LookupMatchMode = 0 | -1 | 1 | 2;
 export function lookupCompare(left: FormulaValue, right: FormulaValue, context?: WorkbookCollationContext): number | null {
   if (isFormulaError(left) || isFormulaError(right) || isReferenceValue(left) || isReferenceValue(right) || Array.isArray(left) || Array.isArray(right)) return null;
   return compareWorkbookValues(left, right, context);
-}
-
-function wildcardRegex(pattern: string): RegExp {
-  let expression = '^';
-  for (let index = 0; index < pattern.length; index += 1) {
-    const char = pattern[index]!;
-    if (char === '~' && index + 1 < pattern.length) expression += pattern[++index]!.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    else if (char === '*') expression += '.*';
-    else if (char === '?') expression += '.';
-    else expression += char.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  }
-  return new RegExp(`${expression}$`, 'i');
 }
 
 export interface LookupVector {
@@ -46,12 +35,12 @@ export function findLookupIndex(value: FormulaValue | undefined, vector: readonl
     return index >= 0 && index < vector.length ? index : -1;
   }
   const reverse = searchMode === -1;
-  const pattern = mode === 2 ? wildcardRegex(String(value ?? '')) : undefined;
+  const pattern = mode === 2 ? compileExcelWildcard(String(value ?? '')) : undefined;
   let best = -1;
   for (let index = reverse ? vector.length - 1 : 0; reverse ? index >= 0 : index < vector.length; index += reverse ? -1 : 1) {
     const candidate = read(index);
     if (mode === 2) {
-      if (typeof candidate === 'string' && pattern!.test(candidate)) return index;
+      if (typeof candidate === 'string' && pattern!(candidate)) return index;
       continue;
     }
     const comparison = lookupCompare(candidate, value ?? null, context);
