@@ -135,7 +135,7 @@
       "definedNames": {
         "attributes": [],
         "mustHaveWhitespaceText": true,
-        "child": { "name": "definedName", "attributes": ["name", "localSheetId", "hidden"], "mustBeLeaf": true }
+        "child": { "name": "definedName", "attributes": ["name", "localSheetId", "hidden", "comment"], "mustBeLeaf": true }
       }
     },
     "extensionUris": {

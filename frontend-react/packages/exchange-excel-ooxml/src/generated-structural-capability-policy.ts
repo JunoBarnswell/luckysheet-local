@@ -312,7 +312,8 @@ export const NATIVE_DOCUMENT_STRUCTURAL_CAPABILITY_POLICY = {
           "attributes": [
             "name",
             "localSheetId",
-            "hidden"
+            "hidden",
+            "comment"
           ],
           "mustBeLeaf": true
         }

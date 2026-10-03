@@ -2282,6 +2282,16 @@ it('native name anchors augment unchanged owners, preserve comments and reject i
   const importParts = () => importOoxmlDocument({ fileName: 'names.xlsx', buffer: zipOpcPartsBuffer(graph.packageGraph.parts), options: { compatibilityTarget: 'B' } });
   const imported = await importParts(), name = imported.snapshot.definedNameModels![0]!;
   assert.deepEqual(name, workbook.snapshot().definedNameModels![0]);
+  const saved = await exportOoxmlDocument({ snapshot: { ...imported.snapshot, name: 'Edited names' }, artifact: imported.artifact, fileName: 'edited-names.xlsx', options: { compatibilityTarget: 'B' } });
+  const reopened = await importOoxmlDocument({ fileName: 'edited-names.xlsx', buffer: saved.buffer, options: { compatibilityTarget: 'B' } });
+  assert.deepEqual(reopened.snapshot.definedNameModels![0], name);
+  const unknownParts = structuredClone(graph.packageGraph.parts);
+  unknownParts['xl/workbook.xml'] = strToU8(strFromU8(unknownParts['xl/workbook.xml']!).replace('<definedName name=', '<definedName futureAttribute="preserve-me" name='));
+  const unknown = await importOoxmlDocument({ fileName: 'unknown-name.xlsx', buffer: zipOpcPartsBuffer(unknownParts), options: { compatibilityTarget: 'B' } });
+  const unknownBytes = unknown.artifact.sourceBytes.slice(0);
+  await assert.rejects(exportOoxmlDocument({ snapshot: { ...unknown.snapshot, name: 'Reject edit' }, artifact: unknown.artifact, fileName: 'unknown-name-edited.xlsx', options: { compatibilityTarget: 'B' } }), cause => cause instanceof NativeDocumentError && cause.code === 'NATIVE_DOCUMENT_UNCHANGED_SAVE_REQUIRED');
+  assert.deepEqual(unknown.artifact.sourceBytes, unknownBytes);
+
   const engine = new FormulaEngine({ defaultSheetId: sheet.id, sheetOrder: [{ id: sheet.id, name: sheet.name }] });
   engine.setDefinedNameModels(imported.snapshot.definedNameModels!); engine.setValue('A1', 2); engine.setValue('B1', 3);
   engine.setFormula('D4', '=Relative'); engine.setFormula('E4', '=Relative');

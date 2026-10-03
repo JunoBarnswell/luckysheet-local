@@ -332,3 +332,11 @@ O2.1 冻结产品统一检查：SDK 62/62 Pass；permission 11/11 Pass；native 
 O2.1-f 预验收：三项名称中移除中项，undo 完整快照与名字顺序一致，redo→undo 再次恢复；依赖重算、其他名称 anchor/comment 不变；恢复重复/越界/坏scope拒绝且模型不变；无 owned undo 的 direct REST restore 无任何revision/history写入。严格前置 guard 和现有21项UAT均保留。之后统一 checks、提交同一草稿PR、干净head完整真实验收。
 
 名称恢复整批统一检查：SDK63/63 Pass；build/typecheck、boundaries Pass（45声明）；Java370/368 Pass/0 Fail/2 Skipped + package；完整unit1585/1533 Pass/52 Fail，无新失败。日志 `/tmp/sdk-o21-restore-{sdk,build,boundaries,java,unit}.log`。守卫与前置快照比较未修改，下一轮真实browser仍完整21项、retries0。
+
+### O2.1 原生属性契约同步（代码前复核）
+
+产品4b8a4e7b完整真实browser再次20/21 Pass；名称中项 undo 已实际通过 Java 严格preimage，后续富文本/保护的undo→redo、保存重开都执行到native export。失败为 NATIVE_DOCUMENT_UNCHANGED_SAVE_REQUIRED（非 HTTP 提交失败），证据 `/tmp/sdk-o21-restore-browser.log`、`/tmp/sdk-product-uat-AE97W0/evidence`、`/tmp/sdk-o21-restore-browser-test-results`。只读契约审查确认 definedName.comment 读写已实现，唯一源策略 contracts/native-document-structural-capability.json 的 child attributes 仍仅 name/localSheetId/hidden；源码生成的comment被当unknown-workbook-node，正常Save As拒绝。补全正式comment属性与全部generated消费者，不能绕过guard/改判定unknown。
+
+新增 O2.1-g：带 comment/anchor 名称的native import→编辑workbook属性→实际artifact Save As→再import，comment/anchor全部保留；未知future属性仍触发严格UNCHANGED_SAVE_REQUIRED且未修改sourcebytes。完成这一个契约同步批后检查与干净head真实UAT。49父项/完整unit/SSO/桌面Excel状态仍不扩大。
+
+属性契约同步统一检查：native66/66 Pass；build/typecheck、boundaries Pass；Java370/368 Pass/0 Fail/2 Skipped + package。日志 `/tmp/sdk-o21-comment-{native,build,boundaries,java}.log`。未知属性拒绝与sourcebytes不变测试通过，服务端guard未放宽。完整unit已记录52 Fail且未修改公式/应用运行时；干净提交后完整21项真实browser仍待执行。
