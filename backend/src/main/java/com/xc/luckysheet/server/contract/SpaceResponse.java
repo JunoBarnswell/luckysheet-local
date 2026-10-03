@@ -7,7 +7,7 @@ public record SpaceResponse(
         String name,
         WorkspaceSpaceType kind,
         String createdBy,
-        WorkbookAclRole role,
+        WorkbookRole role,
         Instant createdAt,
         Instant updatedAt
 ) {

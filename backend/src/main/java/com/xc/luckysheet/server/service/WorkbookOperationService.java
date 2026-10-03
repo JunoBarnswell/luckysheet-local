@@ -21,7 +21,7 @@ import com.xc.luckysheet.server.contract.RangeAccessRegionRequest;
 import com.xc.luckysheet.server.contract.RestoreRequest;
 import com.xc.luckysheet.server.contract.RevisionRecord;
 import com.xc.luckysheet.server.contract.StructuralPatch;
-import com.xc.luckysheet.server.contract.WorkbookAclRole;
+import com.xc.luckysheet.server.contract.WorkbookRole;
 import com.xc.luckysheet.server.contract.WorkbookAccessProjection;
 import com.xc.luckysheet.server.contract.WorkbookSnapshotResponse;
 import com.xc.luckysheet.server.contract.WorkbookLifecycle;
@@ -104,7 +104,7 @@ public class WorkbookOperationService {
     }
 
     public CommitResult operationResult(String unitId, String operationId, String actor, List<String> groups) {
-        access.require(unitId, actor, WorkbookAclRole.VIEWER);
+        access.require(unitId, actor, WorkbookRole.VIEWER);
         requireWorkbook(unitId);
         OperationRow row = store.findOperation(operationId).orElseThrow(() -> ServiceException.notFound("Operation not committed"));
         if (!row.unitId().equals(unitId) || !row.actorSubject().equals(actor)) throw ServiceException.forbidden("Operation belongs to another subject");
@@ -121,7 +121,7 @@ public class WorkbookOperationService {
     }
 
     public WorkbookSnapshotResponse readSnapshot(String unitId, String actor, List<String> groups) {
-        WorkbookAclRole role = access.require(unitId, actor, WorkbookAclRole.VIEWER);
+        WorkbookRole role = access.require(unitId, actor, WorkbookRole.VIEWER);
         WorkbookRow row = requireWorkbook(unitId);
         JsonNode snapshot = currentSnapshot(row);
         if (snapshot.isObject()) ((ObjectNode) snapshot).put("name", row.name());
@@ -131,54 +131,153 @@ public class WorkbookOperationService {
         return response(unitId, snapshot, row.revision(), checksum(json));
     }
 
-    /** A subject-safe, revision-consistent input graph for one persisted external binding. */
-    public JsonNode readExternalLink(String targetUnitId, String linkId, String actor, List<String> groups) {
-        WorkbookSnapshotResponse target = readSnapshot(targetUnitId, actor, groups);
-        JsonNode binding = null;
-        for (JsonNode link : target.snapshot().path("dataModel").path("externalLinks")) {
-            if (link.path("id").asText().equals(linkId)) { binding = link; break; }
+    @Autowired private org.springframework.jdbc.core.JdbcTemplate graphJdbc;
+    @jakarta.persistence.PersistenceContext private jakarta.persistence.EntityManager graphEntities;
+
+    private void lockCalculationGraph() {
+        graphJdbc.queryForObject("select gate_id from workbook_dependency_gate where gate_id='canonical' for update", String.class);
+    }
+
+    /** Catalog births/removals and restores change the canonical dependency topology. */
+    @Transactional
+    public void lockExternalTopology() { lockCalculationGraph(); }
+
+    /** Authorized, fixed-version closure. The graph is a projection of canonical snapshots. */
+    @Transactional
+    public JsonNode readExternalCalculationGraph(String rootId, String actor, List<String> groups) {
+        access.require(rootId, actor, WorkbookRole.VIEWER);
+        lockCalculationGraph();
+        var nodes = captureCalculationGraph(rootId, null, actor, groups);
+        ObjectNode result = mapper.createObjectNode().put("schema", "ExternalCalculationGraph").put("rootUnitId", rootId).put("subject", actor);
+        var array = result.putArray("nodes"); nodes.values().forEach(array::add);
+        return result;
+    }
+
+    private java.util.LinkedHashMap<String, ObjectNode> captureCalculationGraph(String rootId, JsonNode candidate, String actor, List<String> groups) {
+        graphEntities.flush(); graphEntities.clear();
+        var locked = new java.util.TreeSet<String>();
+        collectCanonicalCalculationClosure(rootId, rootId, candidate, locked, new java.util.LinkedHashSet<>());
+        // Unlocked discovery entities cannot be upgraded to current-version locks.
+        graphEntities.flush(); graphEntities.clear();
+        locked.forEach(id -> store.findForUpdate(id));
+        graphEntities.clear();
+        var nodes = collectCalculationGraph(rootId, candidate, actor, groups);
+        if (!locked.containsAll(nodes.keySet())) throw new ServiceException("EXTERNAL_GRAPH_CHANGED", 409, "Dependency closure changed during capture; request current inputs");
+        return nodes;
+    }
+
+    /** Internal lock identities only; inaccessible snapshots never enter the wire graph. */
+    private void collectCanonicalCalculationClosure(String id, String rootId, JsonNode candidate, java.util.Set<String> ids, java.util.Set<String> visiting) {
+        if (visiting.contains(id)) throw new ServiceException("CIRCULAR_DEPENDENCY", 422, "External workbook dependency cycle");
+        if (ids.contains(id)) return;
+        if (ids.size() >= 64) throw ServiceException.unsupportedFeature("External calculation graph exceeds 64 workbooks");
+        ids.add(id); visiting.add(id);
+        JsonNode snapshot = candidate != null && id.equals(rootId) ? candidate : store.find(id).map(this::currentSnapshot).orElse(null);
+        if (snapshot != null) for (JsonNode link : snapshot.path("dataModel").path("externalLinks")) {
+            collectCanonicalCalculationClosure(link.path("sourceUnitId").asText(), rootId, candidate, ids, visiting);
         }
-        if (binding == null) throw ServiceException.notFound("External link binding not found");
-        final JsonNode selected = binding.deepCopy();
-        String sourceId = selected.path("sourceUnitId").asText();
-        return withWorkbookLock(sourceId, () -> {
-            var resolver = rangeAccess.resolver(sourceId, actor, groups);
-            long accessRevision = resolver.accessRevision();
-            JsonNode canonicalSource = currentSnapshot(requireWorkbook(sourceId));
-            for (JsonNode table : canonicalSource.path("dataModel").path("tables")) if (table.has("recordIdFieldId")) {
-                JsonNode range = table.path("sourceRange");
-                if (!resolver.canRead(new RangeRef(range.path("sheetId").asText(), range.path("startRow").asInt(), range.path("endRow").asInt(), range.path("startColumn").asInt(), range.path("endColumn").asInt()))) throw new ServiceException("ACCESS_HIDDEN", 403, "Record calculation source contains unreadable inputs");
+        visiting.remove(id);
+    }
+
+    @Transactional
+    public void validateExternalBinding(String targetId, JsonNode binding, String actor, List<String> groups) {
+        access.require(targetId, actor, WorkbookRole.EDITOR);
+        com.xc.luckysheet.server.contract.ExternalLinkDefinitionValidator.validate(binding);
+        lockCalculationGraph();
+        ObjectNode candidate = (ObjectNode) currentSnapshot(requireWorkbook(targetId)).deepCopy();
+        var links = (com.fasterxml.jackson.databind.node.ArrayNode) candidate.path("dataModel").path("externalLinks");
+        for (int index = links.size() - 1; index >= 0; index--) if (links.get(index).path("id").asText().equals(binding.path("id").asText())) links.remove(index);
+        links.add(binding.deepCopy());
+        validateExternalDefinitions(candidate, actor, groups);
+    }
+
+    @Transactional
+    public void validateExternalDefinitions(JsonNode candidate, String actor, List<String> groups) {
+        lockCalculationGraph();
+        var graph = captureCalculationGraph(candidate.path("unitId").asText(), candidate, actor, groups);
+        for (ObjectNode node : graph.values()) {
+            if (!node.path("state").asText().equals("connected")) {
+                String state = node.path("state").asText();
+                throw new ServiceException(node.path("error").path("code").asText(), state.equals("denied") ? 403 : state.equals("broken") ? 404 : 422,
+                        "External source cannot be bound: " + node.path("unitId").asText());
             }
-            WorkbookSnapshotResponse source = readSnapshot(sourceId, actor, groups);
-            ObjectNode graph = ((ObjectNode) source.snapshot()).deepCopy();
-            int inputCount = 0;
-            for (JsonNode sheet : graph.path("sheets")) for (JsonNode row : sheet.path("cells")) inputCount += row.size();
-            if (inputCount > 100000) throw new ServiceException("UNSUPPORTED_FEATURE", 422, "External input graph exceeds the bounded calculation limit");
-            // Only calculation inputs cross this boundary. Drawings, review, and opaque blocks remain source-owned.
-            for (JsonNode rawSheet : graph.path("sheets")) {
-                ObjectNode sheet = (ObjectNode) rawSheet;
-                sheet.put("kind", "worksheet");
-                for (String key : List.of("drawings", "drawingGroups", "pivots", "sparklines", "hyperlinks", "dataRegions", "conditionalFormats", "dataValidations")) sheet.putArray(key);
-                sheet.putObject("drawingPayloads");
-                ObjectNode review = sheet.putObject("review");
-                for (String key : List.of("notesByCell", "notesById", "threadIdsByCell", "threadsById")) review.putObject(key);
-                sheet.remove(List.of("tableSheet", "ganttSheet", "reportSheet", "lifecycleDefinedNames", "lifecyclePrintDocument"));
+            for (JsonNode link : node.path("snapshot").path("dataModel").path("externalLinks")) {
+                JsonNode source = graph.get(link.path("sourceUnitId").asText()).path("snapshot");
+                for (JsonNode bound : link.path("sheets")) {
+                    boolean found = false;
+                    for (JsonNode sheet : source.path("sheets")) if (sheet.path("id").asText().equals(bound.path("sheetId").asText())) { found = true; break; }
+                    if (!found) throw ServiceException.validation("External source worksheet is missing: " + bound.path("sheetId").asText());
+                }
             }
-            for (String key : List.of("printDocuments", "queryDefinitions", "cellStyleTemplates")) graph.putArray(key);
-            ObjectNode data = (ObjectNode) graph.path("dataModel");
-            data.putArray("views");
-            data.putArray("externalLinks");
-            ObjectNode response = mapper.createObjectNode();
-            response.set("binding", selected);
-            response.set("snapshot", graph);
-            response.put("subject", actor);
-            response.put("sourceRevision", source.revision());
-            response.put("accessRevision", accessRevision);
-            var blocked = response.putArray("blockedRanges");
-            for (var region : resolver.hiddenRegions()) blocked.add(mapper.valueToTree(region.range()));
-            if (rangeAccess.resolver(sourceId, actor, groups).accessRevision() != accessRevision) throw new ServiceException("ACCESS_REVISION_CHANGED", 409, "External source access changed during refresh");
-            return response;
-        });
+        }
+    }
+
+    private java.util.LinkedHashMap<String, ObjectNode> collectCalculationGraph(String rootId, JsonNode candidate, String actor, List<String> groups) {
+        var nodes = new java.util.LinkedHashMap<String, ObjectNode>();
+        collectCalculationNode(rootId, rootId, candidate, actor, groups, nodes, new java.util.LinkedHashSet<>());
+        long total = 0;
+        for (ObjectNode node : nodes.values()) for (JsonNode sheet : node.path("snapshot").path("sheets")) for (JsonNode row : sheet.path("cells")) total += row.size();
+        if (total > 1_000_000) throw ServiceException.unsupportedFeature("External calculation graph exceeds 1000000 inputs");
+        return nodes;
+    }
+
+    private void collectCalculationNode(String id, String rootId, JsonNode candidate, String actor, List<String> groups,
+                                        java.util.LinkedHashMap<String, ObjectNode> nodes, java.util.LinkedHashSet<String> visiting) {
+        if (visiting.contains(id)) throw new ServiceException("CIRCULAR_DEPENDENCY", 422, "External dependency cycle: " + String.join(" -> ", visiting) + " -> " + id);
+        if (nodes.containsKey(id)) return;
+        if (nodes.size() >= 64) throw ServiceException.unsupportedFeature("External calculation graph exceeds 64 workbooks");
+        ObjectNode node;
+        try { node = calculationNode(id, candidate != null && id.equals(rootId) ? candidate : null, actor, groups, !id.equals(rootId)); }
+        catch (ServiceException error) {
+            if (id.equals(rootId)) throw error;
+            String state = error.status() == 401 || error.status() == 403 ? "denied" : error.status() == 404 || error.code().equals("WORKBOOK_TRASHED") ? "broken" : "unavailable";
+            node = mapper.createObjectNode().put("unitId", id).put("state", state);
+            node.putObject("error").put("code", error.code()).put("message", error.getMessage());
+        }
+        nodes.put(id, node); visiting.add(id);
+        if (node.path("state").asText().equals("connected")) for (JsonNode binding : node.path("snapshot").path("dataModel").path("externalLinks")) {
+            collectCalculationNode(binding.path("sourceUnitId").asText(), rootId, candidate, actor, groups, nodes, visiting);
+        }
+        visiting.remove(id);
+    }
+
+    private ObjectNode calculationNode(String id, JsonNode candidate, String actor, List<String> groups, boolean inputSource) {
+        long revision, accessRevision;
+        RangeAccessResolver resolver = null;
+        JsonNode canonical;
+        if (candidate == null) {
+            if (requireWorkbook(id).lifecycle() != WorkbookLifecycle.ACTIVE) throw ServiceException.trashed("External calculation workbook is in trash");
+            var source = readSnapshot(id, actor, groups);
+            resolver = rangeAccess.resolver(id, actor, groups);
+            canonical = source.snapshot(); revision = source.revision(); accessRevision = resolver.accessRevision();
+        } else { canonical = candidate; revision = 0; accessRevision = 0; }
+        JsonNode recordDefinitions = candidate == null ? currentSnapshot(requireWorkbook(id)) : candidate;
+        if (inputSource) for (String kind : List.of("sources", "tables")) for (JsonNode source : recordDefinitions.path("dataModel").path(kind)) {
+            if (!source.path("blocks").isEmpty()) throw ServiceException.unsupportedFeature("External calculation requires materialized inputs; block-backed source hydration is not available");
+        }
+        if (inputSource && resolver != null) for (JsonNode table : recordDefinitions.path("dataModel").path("tables")) if (table.has("recordIdFieldId")) {
+            JsonNode range = table.path("sourceRange");
+            if (!resolver.canRead(new RangeRef(range.path("sheetId").asText(), range.path("startRow").asInt(), range.path("endRow").asInt(), range.path("startColumn").asInt(), range.path("endColumn").asInt()))) throw new ServiceException("ACCESS_HIDDEN", 403, "Record calculation source contains unreadable inputs");
+        }
+        ObjectNode snapshot = ((ObjectNode) canonical).deepCopy();
+        long count = 0;
+        for (JsonNode sheet : snapshot.path("sheets")) for (JsonNode row : sheet.path("cells")) count += row.size();
+        if (count > 100000) throw ServiceException.unsupportedFeature("External source exceeds 100000 calculation inputs");
+        for (JsonNode rawSheet : snapshot.path("sheets")) {
+            ObjectNode sheet = (ObjectNode) rawSheet; sheet.put("kind", "worksheet");
+            for (String key : List.of("drawings", "drawingGroups", "pivots", "sparklines", "hyperlinks", "dataRegions", "conditionalFormats", "dataValidations")) sheet.putArray(key);
+            sheet.putObject("drawingPayloads");
+            ObjectNode review = sheet.putObject("review");
+            for (String key : List.of("notesByCell", "notesById", "threadIdsByCell", "threadsById")) review.putObject(key);
+            sheet.remove(List.of("tableSheet", "ganttSheet", "reportSheet", "lifecycleDefinedNames", "lifecyclePrintDocument"));
+        }
+        for (String key : List.of("printDocuments", "queryDefinitions", "cellStyleTemplates")) snapshot.putArray(key);
+        ((ObjectNode) snapshot.path("dataModel")).putArray("views");
+        ObjectNode result = mapper.createObjectNode().put("unitId", id).put("state", "connected").put("revision", revision).put("accessRevision", accessRevision);
+        result.set("snapshot", snapshot);
+        var blocked = result.putArray("blockedRanges");
+        if (resolver != null) for (var region : resolver.hiddenRegions()) blocked.add(mapper.valueToTree(region.range()));
+        return result;
     }
 
     @Transactional
@@ -188,6 +287,7 @@ public class WorkbookOperationService {
 
     @Transactional
     public CommitResult commit(String routeUnitId, OperationEnvelope operation, String actor, List<String> groups) {
+        if (operation != null && operation.mutations() != null && operation.mutations().stream().anyMatch(mutation -> mutation.id().startsWith("externalLink."))) lockCalculationGraph();
         return withWorkbookLock(routeUnitId, () -> {
             try {
                 if (operation == null) throw ServiceException.validation("Operation is required");
@@ -201,7 +301,7 @@ public class WorkbookOperationService {
 
     private CommitResult commitInternal(String routeUnitId, OperationEnvelope operation, String actor, List<String> groups) {
         if (!routeUnitId.equals(operation.unitId())) throw ServiceException.validation("Operation unitId does not match route");
-        WorkbookAclRole actorRole = access.require(routeUnitId, actor, WorkbookAclRole.VIEWER);
+        WorkbookRole actorRole = access.require(routeUnitId, actor, WorkbookRole.VIEWER);
         WorkbookRow row = store.findForUpdate(routeUnitId).orElseThrow(() -> ServiceException.notFound("Workbook not found: " + routeUnitId));
         if (row.lifecycle() != WorkbookLifecycle.ACTIVE) throw ServiceException.trashed("Workbook is in trash and cannot accept operations");
         OperationRow existing = store.findOperation(operation.operationId()).orElse(null);
@@ -241,7 +341,7 @@ public class WorkbookOperationService {
         List<CommittedOperationMutation> committedMutations = new ArrayList<>();
         long changedAccessRevision = -1;
         for (OperationMutation mutation : operation.mutations()) {
-            if (java.util.Set.of("record.restore", "range.clear.restore", "fill.restored").contains(mutation.id()) && undoTarget == null) throw ServiceException.conflict("RESTORE_REQUIRES_OWNED_UNDO");
+            if (java.util.Set.of("record.restore", "range.clear.restore", "fill.restored", "name.restore").contains(mutation.id()) && undoTarget == null) throw ServiceException.conflict("RESTORE_REQUIRES_OWNED_UNDO");
             if ("table.configure".equals(mutation.id()) && undoTarget == null) {
                 JsonNode previousTable = com.xc.luckysheet.server.contract.RecordTableValidator.table(next, mutation.params().path("table").path("id").asText());
                 if (previousTable.has("recordIdFieldId") && !previousTable.path("recordIdFieldId").equals(mutation.params().path("table").path("recordIdFieldId"))) throw ServiceException.conflict("RECORD_IDENTITY_IMMUTABLE");
@@ -305,6 +405,7 @@ public class WorkbookOperationService {
             committedMutations.add(CommittedOperationMutation.from(mutation, committedRanges, structuralImpactRanges, committedPatch));
         }
 
+        if (operation.mutations().stream().anyMatch(mutation -> mutation.id().startsWith("externalLink."))) validateExternalDefinitions(next, actor, groups);
         if (undoContext != null) requireUndoRestoredPreimage(undoContext.preimage(), next);
 
         if (operation.baseRevision() < row.revision()) {
@@ -372,7 +473,7 @@ public class WorkbookOperationService {
             throw ServiceException.conflict("Undo requires its target to be the current workbook revision");
         }
         JsonNode preimage = snapshotAtRevision(row, targetRow.revision() - 1);
-        validateStructuralUndoMutations(operation, target, preimage);
+        validateStructuralUndoMutations(operation, target, preimage, registry);
         return new UndoContext(target, preimage);
     }
 
@@ -388,7 +489,8 @@ public class WorkbookOperationService {
     static void validateStructuralUndoMutations(
             OperationEnvelope operation,
             CommittedOperationEnvelope target,
-            JsonNode structuralUndoPreimage
+            JsonNode structuralUndoPreimage,
+            MutationDescriptorRegistry registry
     ) {
         boolean[] matchedInverseMutations = new boolean[operation.mutations().size()];
         for (CommittedOperationMutation original : target.mutations()) {
@@ -421,12 +523,95 @@ public class WorkbookOperationService {
         boolean targetContainsNonStructuralMutations = target.mutations().stream()
                 .anyMatch(mutation -> !isStructuralPatchMutation(mutation.id()));
         if (!targetContainsNonStructuralMutations) {
+            boolean allMatched = true;
+            for (boolean matched : matchedInverseMutations) allMatched &= matched;
+            if (allMatched) return;
+            List<StructuralRemovedCellFact> remainingFacts = structuralRemovedCellFacts(target, structuralUndoPreimage, registry);
             for (int index = 0; index < operation.mutations().size(); index++) {
-                if (!matchedInverseMutations[index]) {
+                if (matchedInverseMutations[index]) continue;
+                int factIndex = matchingRemovedCellIndex(operation.mutations().get(index), remainingFacts);
+                if (factIndex < 0) {
                     throw ServiceException.conflict("Structural undo contains a mutation outside its target operation");
                 }
+                remainingFacts.remove(factIndex);
             }
         }
+    }
+
+    private record StructuralRemovedCellFact(String sheetId, int row, int column, JsonNode previous) {}
+
+    /** Canonical intermediate preimages own deleted and move-overwritten cells; each restore consumes one fact. */
+    private static List<StructuralRemovedCellFact> structuralRemovedCellFacts(
+            CommittedOperationEnvelope target, JsonNode preimage, MutationDescriptorRegistry registry
+    ) {
+        if (preimage == null) return List.of();
+        List<StructuralRemovedCellFact> facts = new ArrayList<>();
+        JsonNode current = preimage;
+        for (int index = 0; index < target.mutations().size(); index++) {
+            CommittedOperationMutation original = target.mutations().get(index);
+            if ("rows.deleted".equals(original.id()) || "columns.deleted".equals(original.id())) {
+                boolean rows = "rows.deleted".equals(original.id());
+                long start = original.params().path("at").asLong(-1);
+                long count = original.params().path("count").asLong(0);
+                for (JsonNode sheet : current.path("sheets")) {
+                    if (!original.sheetId().equals(sheet.path("id").asText())) continue;
+                    var rowEntries = sheet.path("cells").fields();
+                    while (rowEntries.hasNext()) {
+                        var row = rowEntries.next();
+                        int rowIndex = Integer.parseInt(row.getKey());
+                        var columns = row.getValue().fields();
+                        while (columns.hasNext()) {
+                            var column = columns.next();
+                            int columnIndex = Integer.parseInt(column.getKey());
+                            long coordinate = rows ? rowIndex : columnIndex;
+                            if (start >= 0 && count > 0 && coordinate >= start && coordinate - start < count) {
+                                facts.add(new StructuralRemovedCellFact(original.sheetId(), rowIndex, columnIndex, column.getValue()));
+                            }
+                        }
+                    }
+                }
+            }
+            if ("range.move".equals(original.id())) {
+                OperationMutation move = new OperationMutation(original.id(), original.sheetId(), original.params());
+                List<RangeRef> ranges = registry.require(move.id(), false).affectedRanges(current, move);
+                if (ranges.size() != 2) throw ServiceException.conflict("STRUCTURAL_PATCH_INVARIANT: range move has no exact destination");
+                RangeRef destination = ranges.get(1);
+                for (JsonNode sheet : current.path("sheets")) {
+                    if (!destination.sheetId().equals(sheet.path("id").asText())) continue;
+                    var rows = sheet.path("cells").fields();
+                    while (rows.hasNext()) {
+                        var row = rows.next();
+                        int rowIndex = Integer.parseInt(row.getKey());
+                        if (rowIndex < destination.startRow() || rowIndex > destination.endRow()) continue;
+                        var columns = row.getValue().fields();
+                        while (columns.hasNext()) {
+                            var column = columns.next();
+                            int columnIndex = Integer.parseInt(column.getKey());
+                            if (columnIndex >= destination.startColumn() && columnIndex <= destination.endColumn()) {
+                                facts.add(new StructuralRemovedCellFact(destination.sheetId(), rowIndex, columnIndex, column.getValue()));
+                            }
+                        }
+                    }
+                }
+            }
+            if (index + 1 < target.mutations().size()) {
+                current = registry.applyCommittedMutations(current, List.of(original), java.util.Collections.singletonList(null));
+            }
+        }
+        return facts;
+    }
+
+    private static int matchingRemovedCellIndex(OperationMutation mutation, List<StructuralRemovedCellFact> facts) {
+        if (!"cell.restore".equals(mutation.id())) return -1;
+        JsonNode row = mutation.params().path("row");
+        JsonNode column = mutation.params().path("column");
+        if (!row.isIntegralNumber() || !row.canConvertToInt() || !column.isIntegralNumber() || !column.canConvertToInt()) return -1;
+        for (int index = 0; index < facts.size(); index++) {
+            StructuralRemovedCellFact fact = facts.get(index);
+            if (fact.sheetId().equals(mutation.sheetId()) && fact.row() == row.intValue()
+                    && fact.column() == column.intValue() && fact.previous().equals(mutation.params().path("previous"))) return index;
+        }
+        return -1;
     }
 
     private static boolean isStructuralPatchMutation(String mutationId) {
@@ -600,8 +785,8 @@ public class WorkbookOperationService {
     }
 
     public CursorPage<RevisionRecord> revisions(String unitId, String actor, long beforeRevision, int limit, String nextCursor, List<String> groups) {
+        WorkbookRole role = access.require(unitId, actor, WorkbookRole.VIEWER);
         requireWorkbook(unitId);
-        WorkbookAclRole role = access.require(unitId, actor, WorkbookAclRole.VIEWER);
         RangeAccessResolver resolver = rangeAccess.resolver(unitId, actor, role, groups);
         long accessRevision = resolver.accessRevision();
         List<RevisionRecord> items = store.listOperationsBefore(unitId, beforeRevision, limit).stream()
@@ -615,7 +800,7 @@ public class WorkbookOperationService {
     }
 
     public WorkbookSnapshotResponse readRevision(String unitId, long revision, String actor, List<String> groups) {
-        WorkbookAclRole role = access.require(unitId, actor, WorkbookAclRole.VIEWER);
+        WorkbookRole role = access.require(unitId, actor, WorkbookRole.VIEWER);
         WorkbookRow current = requireWorkbook(unitId);
         if (revision < 0 || revision > current.revision()) throw ServiceException.notFound("Revision not found: " + revision);
         JsonNode snapshot = snapshotAtRevision(current, revision);
@@ -628,7 +813,7 @@ public class WorkbookOperationService {
     @Transactional
     public CheckpointResponse checkpoint(String unitId, String actor) {
         return withWorkbookLock(unitId, () -> {
-            access.require(unitId, actor, WorkbookAclRole.EDITOR);
+            access.require(unitId, actor, WorkbookRole.EDITOR);
             WorkbookRow row = store.findForUpdate(unitId).orElseThrow(() -> ServiceException.notFound("Workbook not found: " + unitId));
             if (row.lifecycle() != WorkbookLifecycle.ACTIVE) throw ServiceException.trashed("Workbook is in trash and cannot be checkpointed");
             if (row.snapshotRevision() == row.revision()) {
@@ -647,12 +832,19 @@ public class WorkbookOperationService {
 
     @Transactional
     public RestoreResult restore(String unitId, RestoreRequest request, String actor) {
+        return restore(unitId, request, actor, List.of());
+    }
+
+    @Transactional
+    public RestoreResult restore(String unitId, RestoreRequest request, String actor, List<String> groups) {
+        lockCalculationGraph();
         return withWorkbookLock(unitId, () -> {
-            access.require(unitId, actor, WorkbookAclRole.OWNER);
+            access.require(unitId, actor, WorkbookRole.OWNER);
             WorkbookRow row = store.findForUpdate(unitId).orElseThrow(() -> ServiceException.notFound("Workbook not found: " + unitId));
             if (request.targetRevision() > row.revision()) throw ServiceException.notFound("Revision not found: " + request.targetRevision());
             JsonNode target = snapshotAtRevision(row, request.targetRevision());
             WorkbookSnapshotValidator.requireCanonical(target, unitId);
+            validateExternalDefinitions(target, actor, groups);
             dataBlockPublication.requireSnapshot(unitId, target);
             registry.require("workbook.restore", true);
             long revision = row.revision() + 1;
@@ -734,7 +926,7 @@ public class WorkbookOperationService {
         return rangeAccess.delete(unitId, regionId, actor);
     }
 
-    public AclEntry grantAcl(String unitId, String actor, String target, WorkbookAclRole role) {
+    public AclEntry grantAcl(String unitId, String actor, String target, WorkbookRole role) {
         return access.grant(unitId, actor, target, role);
     }
 
@@ -747,7 +939,7 @@ public class WorkbookOperationService {
     }
 
     public List<AuditRecord> audit(String unitId, String actor, int limit) {
-        access.require(unitId, actor, WorkbookAclRole.OWNER);
+        access.require(unitId, actor, WorkbookRole.OWNER);
         requireWorkbook(unitId);
         return store.listAudit(unitId, limit);
     }

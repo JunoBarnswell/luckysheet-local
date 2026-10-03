@@ -45,7 +45,7 @@ class LocalAuthSessionLifetimeTest {
         var registry = new LocalAuthSessionRegistry(shares);
         var id = java.util.UUID.randomUUID();
         var identity = new com.xc.luckysheet.server.service.GuestShareService.GuestIdentity("guest:" + id, id, "book",
-                com.xc.luckysheet.server.contract.WorkbookAclRole.VIEWER, Instant.now().plusSeconds(60));
+                com.xc.luckysheet.server.contract.WorkbookRole.VIEWER, Instant.now().plusSeconds(60));
         when(shares.roleFor("book", identity.subject())).thenReturn(identity.role());
         var admitted = new java.util.ArrayList<WebSocketSession>();
         for (int i = 0; i < LocalAuthSessionRegistry.MAX_SUBJECT_SOCKETS; i++) {

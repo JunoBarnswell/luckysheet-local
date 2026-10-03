@@ -4,7 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.xc.luckysheet.server.contract.OperationMutation;
-import com.xc.luckysheet.server.contract.WorkbookAclRole;
+import com.xc.luckysheet.server.contract.WorkbookRole;
 import com.xc.luckysheet.server.service.ServiceException;
 import org.junit.jupiter.api.Test;
 
@@ -34,7 +34,7 @@ class AutoFilterOwnershipMutationTest {
     void worksheetFilterAcceptsDisjointTableRangeAndReplayProducesTheSameOwnerState() {
         ObjectNode snapshot = snapshotWithTableFilter(0, 4, 0, 2);
         OperationMutation mutation = worksheetFilter(6, 9, 0, 2);
-        assertDoesNotThrow(() -> registry.prepare(snapshot, mutation, WorkbookAclRole.EDITOR));
+        assertDoesNotThrow(() -> registry.prepare(snapshot, mutation, WorkbookRole.EDITOR));
         JsonNode next = registry.applyPublicMutations(snapshot, List.of(mutation));
         assertEquals(6, next.path("sheets").get(0).path("autoFilter").path("range").path("startRow").asInt());
         assertEquals(0, next.path("sheets").get(0).path("sheetTables").get(0).path("autoFilter").path("range").path("startRow").asInt());
@@ -57,7 +57,7 @@ class AutoFilterOwnershipMutationTest {
         ObjectNode disjointSnapshot = snapshotWithWorksheetFilter(0, 4, 0, 2);
         ((ObjectNode) disjointSnapshot.path("sheets").get(0)).withArray("sheetTables").add(table("table-1", 6, 9, 0, 2, false));
         OperationMutation disjoint = tableFilter("table-1", 6, 9, 0, 2);
-        assertDoesNotThrow(() -> registry.prepare(disjointSnapshot, disjoint, WorkbookAclRole.EDITOR));
+        assertDoesNotThrow(() -> registry.prepare(disjointSnapshot, disjoint, WorkbookRole.EDITOR));
         JsonNode next = registry.applyPublicMutations(disjointSnapshot, List.of(disjoint));
         assertEquals(6, next.path("sheets").get(0).path("sheetTables").get(0).path("autoFilter").path("range").path("startRow").asInt());
 
@@ -80,7 +80,7 @@ class AutoFilterOwnershipMutationTest {
     void sameOwnerReplacementAndExplicitRemovalRemainAtomic() {
         ObjectNode snapshot = snapshotWithTableFilter(0, 4, 0, 2);
         OperationMutation replacement = tableFilter("table-1", 0, 4, 0, 2);
-        assertDoesNotThrow(() -> registry.prepare(snapshot, replacement, WorkbookAclRole.EDITOR));
+        assertDoesNotThrow(() -> registry.prepare(snapshot, replacement, WorkbookRole.EDITOR));
         JsonNode replaced = registry.applyPublicMutations(snapshot, List.of(replacement));
         assertEquals(0, replaced.path("sheets").get(0).path("sheetTables").get(0).path("autoFilter").path("range").path("startRow").asInt());
 
@@ -93,7 +93,7 @@ class AutoFilterOwnershipMutationTest {
 
     private void assertRejectedWithoutMutation(ObjectNode snapshot, OperationMutation mutation) {
         JsonNode before = snapshot.deepCopy();
-        ServiceException prepared = assertThrows(ServiceException.class, () -> registry.prepare(snapshot, mutation, WorkbookAclRole.EDITOR));
+        ServiceException prepared = assertThrows(ServiceException.class, () -> registry.prepare(snapshot, mutation, WorkbookRole.EDITOR));
         assertEquals("VALIDATION_ERROR", prepared.code());
         assertEquals(before, snapshot);
         assertThrows(ServiceException.class, () -> registry.applyPublicMutations(snapshot, List.of(mutation)));

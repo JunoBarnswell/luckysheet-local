@@ -9,7 +9,7 @@ import com.xc.luckysheet.server.contract.CommittedOperationMutation;
 import com.xc.luckysheet.server.contract.RangeRef;
 import com.xc.luckysheet.server.contract.StructuralPatch;
 import com.xc.luckysheet.server.contract.GeneratedWorkbookContract;
-import com.xc.luckysheet.server.contract.WorkbookAclRole;
+import com.xc.luckysheet.server.contract.WorkbookRole;
 import com.xc.luckysheet.server.contract.WorkbookSnapshotValidator;
 import com.xc.luckysheet.server.service.ServiceException;
 import org.springframework.stereotype.Component;
@@ -66,7 +66,7 @@ public class MutationDescriptorRegistry {
             "drawing.add", "drawing.anchor", "drawing.payload.update", "drawing.remove", "drawing.transform", "drawing.transform.batch", "drawing.zorder", "drawing.zorder.restore",
             "dv.add", "dv.remove", "autoFilter.remove", "autoFilter.set", "freeze.set",
             "hyperlink.remove", "hyperlink.set", "merge.remove", "merge.set",
-            "name.remove", "name.set", "workbook.calculation.mode.set", "workbook.editing.options.set", "note.remove", "note.set", "note.visibility", "outline.set",
+            "name.remove", "name.restore", "name.set", "workbook.calculation.mode.set", "workbook.editing.options.set", "note.remove", "note.set", "note.visibility", "outline.set",
             "pivot.add", "pivot.chart.create", "pivot.drilldown.add", "pivot.drilldown.remove", "pivot.refresh", "pivot.remove", "pivot.update",
             "pageLayout.margins.set", "pageLayout.orientation.set", "pageLayout.paperSize.set", "pageLayout.pageSetupDetail.set", "pageLayout.scaleToFit.set", "pageLayout.printTitles.set", "pageLayout.printArea.set", "pageLayout.printArea.clear", "pageLayout.pageBreak.insert", "pageLayout.pageBreak.remove", "pageLayout.pageBreak.clear", "pageLayout.printGridlines.set", "pageLayout.printHeadings.set", "pageLayout.viewGridlines.set", "pageLayout.viewHeadings.set",
             "query.definition.replace", "query.load.pivot-source", "query.load.range", "query.load.sheet-table", "query.load.workbook-table",
@@ -161,12 +161,12 @@ public class MutationDescriptorRegistry {
     }
 
     /** Resolve the client-independent mutation policy before reducing it. */
-    public MutationPreparation prepare(JsonNode snapshot, OperationMutation mutation, WorkbookAclRole role) {
+    public MutationPreparation prepare(JsonNode snapshot, OperationMutation mutation, WorkbookRole role) {
         return prepare(snapshot, mutation, role, ignored -> { });
     }
 
     /** Run subject-specific range access after server range resolution and before worksheet protection. */
-    public MutationPreparation prepare(JsonNode snapshot, OperationMutation mutation, WorkbookAclRole role,
+    public MutationPreparation prepare(JsonNode snapshot, OperationMutation mutation, WorkbookRole role,
                                        Consumer<List<RangeRef>> rangeAuthorization) {
         MutationDescriptor descriptor = require(mutation.id(), false);
         if (!role.includes(descriptor.requiredRole())) {
@@ -175,10 +175,10 @@ public class MutationDescriptorRegistry {
         List<RangeRef> ranges = descriptor.affectedRanges(snapshot, mutation);
         com.xc.luckysheet.server.contract.RecordTableValidator.guardWrites(snapshot, mutation.id(), ranges);
         rangeAuthorization.accept(ranges);
-        if (descriptor.checksProtection() && role != WorkbookAclRole.OWNER) {
+        if (descriptor.checksProtection() && role != WorkbookRole.OWNER) {
             ProtectionResolver.assertAllowed(snapshot, ranges, descriptor.protectionAction());
         }
-        if ("find.replaced".equals(mutation.id()) && role != WorkbookAclRole.OWNER) {
+        if ("find.replaced".equals(mutation.id()) && role != WorkbookRole.OWNER) {
             for (JsonNode patch : mutation.params().path("patches")) if (!"cell".equals(patch.path("kind").asText())) {
                 var address = patch.path("match");
                 ProtectionResolver.assertAllowed(snapshot, List.of(new RangeRef(address.path("sheetId").asText(), address.path("row").asInt(), address.path("row").asInt(), address.path("column").asInt(), address.path("column").asInt())), "edit-objects");
@@ -192,11 +192,11 @@ public class MutationDescriptorRegistry {
      * Protected edit-cell operations retain a detached preimage because their
      * final owner check also reads each old cell's explicit unlocked style.
      */
-    public boolean usesOwnedSnapshotCommit(MutationPreparation prepared, WorkbookAclRole role) {
+    public boolean usesOwnedSnapshotCommit(MutationPreparation prepared, WorkbookRole role) {
         MutationDescriptor descriptor = prepared.descriptor();
         String protectionAction = descriptor.protectionAction();
         return descriptor instanceof OwnedSnapshotMutationDescriptor
-                && (!descriptor.checksProtection() || role == WorkbookAclRole.OWNER
+                && (!descriptor.checksProtection() || role == WorkbookRole.OWNER
                         || (protectionAction != null && OWNED_SNAPSHOT_RULE_ONLY_PROTECTION_ACTIONS.contains(protectionAction)));
     }
 
@@ -204,13 +204,13 @@ public class MutationDescriptorRegistry {
     public JsonNode captureProtectionPreimageForOwnedCommit(
             JsonNode snapshot,
             MutationPreparation prepared,
-            WorkbookAclRole role
+            WorkbookRole role
     ) {
         if (!usesOwnedSnapshotCommit(prepared, role)) {
             throw new IllegalArgumentException("Mutation cannot use an owned-snapshot commit");
         }
         MutationDescriptor descriptor = prepared.descriptor();
-        return descriptor.checksProtection() && role != WorkbookAclRole.OWNER
+        return descriptor.checksProtection() && role != WorkbookRole.OWNER
                 ? ProtectionResolver.structuralProtectionPreimage(snapshot)
                 : snapshot;
     }
@@ -220,7 +220,7 @@ public class MutationDescriptorRegistry {
             JsonNode snapshot,
             OperationMutation mutation,
             MutationPreparation prepared,
-            WorkbookAclRole role
+            WorkbookRole role
     ) {
         if (usesOwnedSnapshotCommit(prepared, role)) {
             MutationApplication application = ((OwnedSnapshotMutationDescriptor) prepared.descriptor())
@@ -237,7 +237,7 @@ public class MutationDescriptorRegistry {
     public List<RangeRef> committedRanges(
             JsonNode before,
             MutationPreparation prepared,
-            WorkbookAclRole role,
+            WorkbookRole role,
             StructuralPatch structuralPatch
     ) {
         if (structuralPatch != null) {
@@ -258,7 +258,7 @@ public class MutationDescriptorRegistry {
                     ownerPreconditions.addAll(delta.afterOwnerRanges());
                 }
             }
-            if (prepared.descriptor().checksProtection() && role != WorkbookAclRole.OWNER) {
+            if (prepared.descriptor().checksProtection() && role != WorkbookRole.OWNER) {
                 List<RangeRef> protectedRanges = new ArrayList<>(prepared.affectedRanges());
                 protectedRanges.addAll(ownerPreconditions);
                 ProtectionResolver.assertAllowed(before, List.copyOf(new LinkedHashSet<>(protectedRanges)), prepared.descriptor().protectionAction());
@@ -564,10 +564,10 @@ public class MutationDescriptorRegistry {
 
     private static abstract class BaseDescriptor implements MutationDescriptor {
         private final String id;
-        private final WorkbookAclRole role;
+        private final WorkbookRole role;
         private final GeneratedWorkbookContract.PermissionPolicy permission;
 
-        private BaseDescriptor(String id, WorkbookAclRole role) {
+        private BaseDescriptor(String id, WorkbookRole role) {
             GeneratedWorkbookContract.PermissionPolicy permission = GeneratedWorkbookContract.mutationPermission(id);
             if (permission == null) throw new IllegalStateException("Mutation is missing a generated permission policy: " + id);
             this.id = id;
@@ -577,7 +577,7 @@ public class MutationDescriptorRegistry {
 
         @Override public String id() { return id; }
         @Override public boolean internalOnly() { return false; }
-        @Override public WorkbookAclRole requiredRole() { return role; }
+        @Override public WorkbookRole requiredRole() { return role; }
         @Override public MutationRebasePolicy rebasePolicy() { return MutationRebasePolicy.EXACT_BASE; }
         @Override public boolean checksProtection() { return permission.checksProtection(); }
         @Override public String protectionAction() { return permission.protectionAction(); }
@@ -585,7 +585,7 @@ public class MutationDescriptorRegistry {
 
     private static final class SheetExtentDescriptor extends BaseDescriptor {
         private SheetExtentDescriptor() {
-            super("sheet.extent.grow", WorkbookAclRole.EDITOR);
+            super("sheet.extent.grow", WorkbookRole.EDITOR);
         }
 
         @Override
@@ -632,7 +632,7 @@ public class MutationDescriptorRegistry {
 
     private static final class CellDescriptor extends BaseDescriptor {
         private CellDescriptor(String id) {
-            super(id, WorkbookAclRole.EDITOR);
+            super(id, WorkbookRole.EDITOR);
         }
 
         @Override
@@ -1267,7 +1267,7 @@ public class MutationDescriptorRegistry {
 
     private static final class PresentationDescriptor extends BaseDescriptor {
         private PresentationDescriptor(String id) {
-            super(id, WorkbookAclRole.EDITOR);
+            super(id, WorkbookRole.EDITOR);
         }
 
         @Override
@@ -1431,8 +1431,10 @@ public class MutationDescriptorRegistry {
         private void resize(ObjectNode root, ObjectNode sheet, String sheetId, ObjectNode params, String collection, String coordinateName, String valueName) {
             int coordinate = SnapshotMutationSupport.index(root, sheetId, params, coordinateName);
             JsonNode value = params.get(valueName);
-            if (value == null || !value.isNumber() || value.asDouble() <= 0 || !Double.isFinite(value.asDouble())) throw ServiceException.validation(valueName + " must be a positive number");
-            SnapshotMutationSupport.object(sheet, collection).set(Integer.toString(coordinate), value.deepCopy());
+            if (value == null || (!value.isNull() && (!value.isNumber() || value.asDouble() <= 0 || !Double.isFinite(value.asDouble())))) throw ServiceException.validation(valueName + " must be a positive number or null to remove the override");
+            ObjectNode overrides = SnapshotMutationSupport.object(sheet, collection);
+            if (value.isNull()) overrides.remove(Integer.toString(coordinate));
+            else overrides.set(Integer.toString(coordinate), value.deepCopy());
         }
 
         private void view(ObjectNode params, ObjectNode sheet) {
@@ -1472,7 +1474,7 @@ public class MutationDescriptorRegistry {
      * are workbook scoped; editor writes are range-scoped presentation changes. */
     private static final class CellTemplateDescriptor extends BaseDescriptor {
         private CellTemplateDescriptor(String id) {
-            super(id, WorkbookAclRole.EDITOR);
+            super(id, WorkbookRole.EDITOR);
         }
 
         @Override
@@ -1547,7 +1549,7 @@ public class MutationDescriptorRegistry {
 
     private static final class ReviewDescriptor extends BaseDescriptor {
         private ReviewDescriptor(String id) {
-            super(id, WorkbookAclRole.COMMENTER);
+            super(id, WorkbookRole.COMMENTER);
         }
 
         @Override
@@ -1650,58 +1652,70 @@ public class MutationDescriptorRegistry {
     }
 
     private static final class ProtectionDescriptor extends BaseDescriptor {
-        private ProtectionDescriptor(String id) {
-            super(id, WorkbookAclRole.OWNER);
+        private ProtectionDescriptor(String id) { super(id, WorkbookRole.OWNER); }
+
+        private ObjectNode parameters(OperationMutation mutation) {
+            ObjectNode params = SnapshotMutationSupport.params(mutation);
+            Set<String> fields = "sheet.protect.set".equals(id()) ? Set.of("sheetId", "rule") : Set.of("sheetId", "ruleId");
+            params.fieldNames().forEachRemaining(field -> { if (!fields.contains(field)) throw ServiceException.validation("Protection params contain an unknown field"); });
+            if (!mutation.sheetId().equals(SnapshotMutationSupport.text(params, "sheetId"))) throw ServiceException.validation("Protection params sheet does not match operation");
+            return params;
         }
 
-        @Override
-        public List<RangeRef> affectedRanges(JsonNode snapshot, OperationMutation mutation) {
-            ObjectNode root = SnapshotMutationSupport.root(snapshot);
-            ObjectNode params = SnapshotMutationSupport.params(mutation);
+        private ObjectNode requireRule(ObjectNode root, ObjectNode sheet, JsonNode value) {
+            if (value == null || !value.isObject()) throw ServiceException.validation("Protection rule must be an object");
+            ObjectNode rule = (ObjectNode) value;
+            Set<String> fields = Set.of("id", "scope", "sheetId", "range", "passwordHash", "locked", "allow");
+            rule.fieldNames().forEachRemaining(field -> { if (!fields.contains(field)) throw ServiceException.validation("Protection rule contains an unknown field"); });
+            String key = SnapshotMutationSupport.text(rule, "id"), scope = SnapshotMutationSupport.text(rule, "scope");
+            if (!key.equals(key.trim()) || !Set.of("workbook", "sheet", "range").contains(scope) || !rule.path("locked").isBoolean()) throw ServiceException.validation("Protection rule identity, scope or locked flag is invalid");
+            if ("workbook".equals(scope)) throw ServiceException.unsupportedFeature("Workbook protection requires its workbook owner");
+            if (rule.has("sheetId") && !sheet.path("id").asText().equals(SnapshotMutationSupport.text(rule, "sheetId"))) throw ServiceException.validation("Protection rule belongs to another sheet");
+            if (rule.has("passwordHash") && (!rule.path("passwordHash").isTextual() || rule.path("passwordHash").asText().isEmpty() || rule.path("passwordHash").asText().length() > 512)) throw ServiceException.validation("Protection password hash is invalid");
+            ObjectNode allow = SnapshotMutationSupport.requiredObject(rule, "allow");
+            allow.fields().forEachRemaining(entry -> { if (!GeneratedWorkbookContract.PROTECTION_ALLOW_FIELDS.containsValue(entry.getKey()) || !entry.getValue().isBoolean()) throw ServiceException.validation("Protection allow field is invalid"); });
+            if ("range".equals(scope)) {
+                JsonNode rangeValue = rule.get("range");
+                if (rangeValue == null || !rangeValue.isObject()) throw ServiceException.validation("Protection range is required");
+                rangeValue.fieldNames().forEachRemaining(field -> { if (!Set.of("sheetId", "startRow", "endRow", "startColumn", "endColumn").contains(field)) throw ServiceException.validation("Protection range contains an unknown field"); });
+                RangeRef range = SnapshotMutationSupport.range(root, rangeValue);
+                if (!sheet.path("id").asText().equals(range.sheetId()) || range.endRow() >= sheet.path("rowCount").asInt() || range.endColumn() >= sheet.path("columnCount").asInt()) throw ServiceException.validation("Protection range does not belong to this worksheet extent");
+            } else if (rule.has("range")) throw ServiceException.validation("Sheet protection cannot declare a range");
+            return rule;
+        }
+
+        @Override public List<RangeRef> affectedRanges(JsonNode snapshot, OperationMutation mutation) {
+            ObjectNode root = SnapshotMutationSupport.root(snapshot), params = parameters(mutation), sheet = SnapshotMutationSupport.sheet(root, mutation.sheetId());
             if ("sheet.protect.set".equals(id())) {
-                JsonNode rule = params.get("rule");
-                if (rule == null || !rule.isObject() || rule.path("id").asText().isBlank()) throw ServiceException.validation("sheet.protect.set requires a rule with id");
+                ObjectNode rule = requireRule(root, sheet, params.get("rule"));
                 if ("range".equals(rule.path("scope").asText())) return List.of(SnapshotMutationSupport.range(root, rule.get("range")));
-            }
-            SnapshotMutationSupport.sheet(root, mutation.sheetId());
+            } else SnapshotMutationSupport.text(params, "ruleId");
             return List.of();
         }
 
-        @Override
-        public JsonNode apply(JsonNode snapshot, OperationMutation mutation) {
-            ObjectNode root = SnapshotMutationSupport.root(snapshot.deepCopy());
-            ObjectNode params = SnapshotMutationSupport.params(mutation);
-            ObjectNode sheet = SnapshotMutationSupport.sheet(root, mutation.sheetId());
-            ArrayNode rules = SnapshotMutationSupport.array(sheet, "protectionRules");
+        @Override public JsonNode apply(JsonNode snapshot, OperationMutation mutation) {
+            ObjectNode root = SnapshotMutationSupport.root(snapshot.deepCopy()), params = parameters(mutation), sheet = SnapshotMutationSupport.sheet(root, mutation.sheetId());
+            if (!sheet.path("protectionRules").isArray()) throw ServiceException.validation("Canonical protectionRules array is required");
+            ArrayNode rules = (ArrayNode) sheet.get("protectionRules");
+            Set<String> identities = new HashSet<>();
+            for (JsonNode existing : rules) {
+                if (!existing.isObject() || !identities.add(SnapshotMutationSupport.text((ObjectNode) existing, "id"))) throw ServiceException.validation("Protection rule identities are invalid");
+                requireRule(root, sheet, existing);
+            }
             if ("sheet.protect.set".equals(id())) {
-                JsonNode rule = params.get("rule");
-                if (rule == null || !rule.isObject() || rule.path("id").asText().isBlank()) throw ServiceException.validation("sheet.protect.set requires a rule with id");
-                String scope = rule.path("scope").asText();
-                if (!Set.of("workbook", "sheet", "range").contains(scope) || !rule.path("locked").isBoolean()) throw ServiceException.validation("Protection rule is invalid");
-                if ("range".equals(scope)) SnapshotMutationSupport.range(root, rule.get("range"));
-                for (int index = 0; index < rules.size(); index++) {
-                    if (rule.path("id").asText().equals(rules.get(index).path("id").asText())) {
-                        rules.set(index, rule.deepCopy());
-                        return root;
-                    }
-                }
-                rules.add(rule.deepCopy());
-                return root;
+                ObjectNode rule = requireRule(root, sheet, params.get("rule"));
+                for (int index = 0; index < rules.size(); index++) if (rule.path("id").asText().equals(rules.get(index).path("id").asText())) { rules.set(index, rule.deepCopy()); return root; }
+                rules.add(rule.deepCopy()); return root;
             }
             String ruleId = SnapshotMutationSupport.text(params, "ruleId");
-            for (int index = 0; index < rules.size(); index++) {
-                if (ruleId.equals(rules.get(index).path("id").asText())) {
-                    rules.remove(index);
-                    return root;
-                }
-            }
+            for (int index = 0; index < rules.size(); index++) if (ruleId.equals(rules.get(index).path("id").asText())) { rules.remove(index); return root; }
             throw ServiceException.notFound("Protection rule not found");
         }
     }
 
     private static final class WorkbookRenameDescriptor extends BaseDescriptor {
         private WorkbookRenameDescriptor() {
-            super("workbook.renamed", WorkbookAclRole.EDITOR);
+            super("workbook.renamed", WorkbookRole.EDITOR);
         }
 
         @Override public List<RangeRef> affectedRanges(JsonNode snapshot, OperationMutation mutation) { SnapshotMutationSupport.root(snapshot); SnapshotMutationSupport.params(mutation); return List.of(); }
@@ -1722,7 +1736,7 @@ public class MutationDescriptorRegistry {
         private static final Set<String> DIRECTIONS = Set.of("down", "up", "right", "left");
 
         private WorkbookEditingOptionsDescriptor() {
-            super("workbook.editing.options.set", WorkbookAclRole.EDITOR);
+            super("workbook.editing.options.set", WorkbookRole.EDITOR);
         }
 
         @Override
@@ -1755,7 +1769,7 @@ public class MutationDescriptorRegistry {
     }
 
     private static final class RestoreDescriptor extends BaseDescriptor {
-        private RestoreDescriptor() { super("workbook.restore", WorkbookAclRole.OWNER); }
+        private RestoreDescriptor() { super("workbook.restore", WorkbookRole.OWNER); }
         @Override public boolean internalOnly() { return true; }
         @Override public List<RangeRef> affectedRanges(JsonNode snapshot, OperationMutation mutation) { return List.of(); }
         @Override public JsonNode apply(JsonNode snapshot, OperationMutation mutation) { throw ServiceException.forbidden("Workbook restore is generated only by the server restore operation"); }
@@ -1765,7 +1779,7 @@ public class MutationDescriptorRegistry {
         private final String reason;
 
         private UnavailableDescriptor(String id, String reason) {
-            super(id, WorkbookAclRole.OWNER);
+            super(id, WorkbookRole.OWNER);
             this.reason = reason;
         }
 

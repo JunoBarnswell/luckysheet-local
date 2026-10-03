@@ -1,4 +1,5 @@
 import type { FormulaValue } from '../values';
+import { FINANCIAL_FUNCTION_CORPUS } from './financial-corpus';
 
 export interface FunctionCase { readonly formula: string; readonly expected: FormulaValue }
 /** Fixed examples with independently specified results, shared with browser acceptance. */
@@ -42,4 +43,7 @@ const vectors: readonly (readonly [string, string, FormulaValue])[] = [
   ['GROUPBY', 'GROUPBY(B1:B3,A1:A3,SUM)', [['x',8],['y',4]]], ['PIVOTBY', 'PIVOTBY(B1:B3,C1:C3,A1:A3,SUM)', [[null,true,false],['x',8,0],['y',0,4]]],
   ['LET', 'LET(amount,2,amount*3)', 6], ['LAMBDA', 'LAMBDA(amount,amount*3)(2)', 6], ['SJS.TABLE', 'SJS.TABLE(A1*D1,A1:A3,D1)', [[4],[8],[12]]],
 ];
-export const FUNCTION_CORPUS: Readonly<Record<string, FunctionCase>> = Object.fromEntries(vectors.map(([id, formula, expected]) => [id, { formula: `=${formula}`, expected }]));
+export const FUNCTION_CORPUS: Readonly<Record<string, FunctionCase>> = {
+  ...Object.fromEntries(vectors.map(([id, formula, expected]) => [id, { formula: `=${formula}`, expected }])),
+  ...FINANCIAL_FUNCTION_CORPUS,
+};

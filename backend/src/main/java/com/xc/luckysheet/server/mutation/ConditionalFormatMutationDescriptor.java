@@ -6,7 +6,7 @@ import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.xc.luckysheet.server.contract.OperationMutation;
 import com.xc.luckysheet.server.contract.RangeRef;
-import com.xc.luckysheet.server.contract.WorkbookAclRole;
+import com.xc.luckysheet.server.contract.WorkbookRole;
 import com.xc.luckysheet.server.service.ServiceException;
 
 import java.util.ArrayList;
@@ -21,7 +21,7 @@ final class ConditionalFormatMutationDescriptor extends CanonicalJsonMutationDes
     private static final Set<String> IDS = Set.of("cf.reorder", "cf.update");
 
     ConditionalFormatMutationDescriptor(String mutationId) {
-        super(mutationId, WorkbookAclRole.EDITOR);
+        super(mutationId, WorkbookRole.EDITOR);
         if (!IDS.contains(mutationId)) throw new IllegalArgumentException("Unsupported conditional-format mutation: " + mutationId);
     }
 

@@ -1,3 +1,4 @@
+import type { CatalogEntry, WorkbookTemplateId } from '@react-sheets/sdk';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Button, CheckToggle, Dialog, LocationPicker, Select, Stack, Text, TextInput, type LocationOption } from '@react-sheets/ui-system';
 import {
@@ -16,11 +17,7 @@ import {
 import { useApplicationServices } from '../ApplicationServicesProvider';
 import { useAuthSession, useAuthSnapshot } from '../auth/AuthProvider';
 import {
-  createTemplateSnapshot,
-  createWorkbookUnitId,
   isWorkspaceStorageError,
-  type WorkbookCatalogEntry,
-  type WorkbookTemplateId,
 } from '@react-sheets/spreadsheet-app';
 import type { SpaceMember, WorkspaceFolder, WorkspaceSpace } from '@react-sheets/protocol';
 import type { UserPreferences } from '@react-sheets/protocol';
@@ -37,7 +34,7 @@ interface WorkbookHubContainerProps {
   onOpenWorkbook: (unitId: string, options?: WorkbookOpenOptions) => void;
 }
 
-function itemFromEntry(entry: WorkbookCatalogEntry): WorkbookCatalogItem {
+function itemFromEntry(entry: CatalogEntry): WorkbookCatalogItem {
   const locationLabel = entry.locationPath.length > 0
     ? entry.locationPath.join(' › ')
     : entry.storage === 'local'
@@ -54,6 +51,7 @@ function itemFromEntry(entry: WorkbookCatalogEntry): WorkbookCatalogItem {
     syncStatus: entry.syncState,
     lifecycle: entry.lifecycle,
     role: entry.role,
+    capabilities: entry.capabilities,
     sourceKind: entry.source,
     ownerName: entry.ownerName,
     ownerSubject: entry.ownerId,
@@ -128,7 +126,7 @@ export function WorkbookHubContainer({ onOpenWorkbook }: WorkbookHubContainerPro
   const authSnapshot = useAuthSnapshot();
   const [activeSection, setActiveSection] = useState<WorkbookHubSection>('start');
   const [activeTab, setActiveTab] = useState<WorkbookCategoryTab>('recent');
-  const [entries, setEntries] = useState<readonly WorkbookCatalogEntry[]>([]);
+  const [entries, setEntries] = useState<readonly CatalogEntry[]>([]);
   const [spaces, setSpaces] = useState<readonly WorkspaceSpace[]>([]);
   const [folders, setFolders] = useState<readonly WorkspaceFolder[]>([]);
   const [spaceMembers, setSpaceMembers] = useState<readonly SpaceMember[]>([]);
@@ -302,13 +300,10 @@ export function WorkbookHubContainer({ onOpenWorkbook }: WorkbookHubContainerPro
       const targetLocation = destinationFromLocation(value.locationId);
       if (targetLocation.destination === 'remote' && !await requireCloudSignIn()) return;
       await ensureStorageReady();
-      const unitId = createWorkbookUnitId();
-      const snapshot = createTemplateSnapshot(pendingTemplate, unitId, value.name);
       const entry = await catalog.create({
-        snapshot,
-        destination: targetLocation.destination,
-        metadata: { spaceId: targetLocation.spaceId, folderId: targetLocation.folderId },
-        source: 'native',
+        name: value.name,
+        template: pendingTemplate,
+        spaceId: targetLocation.spaceId, folderId: targetLocation.folderId,
       });
       onOpenWorkbook(entry.unitId, pendingTemplate === 'designer-demo' ? { initialCell: 'B1' } : undefined);
     });
@@ -325,13 +320,10 @@ export function WorkbookHubContainer({ onOpenWorkbook }: WorkbookHubContainerPro
           if (pendingCreateValue) {
             const targetLocation = destinationFromLocation(pendingCreateValue.locationId);
             if (targetLocation.destination === 'remote' && !await requireCloudSignIn()) return;
-            const unitId = createWorkbookUnitId();
-            const snapshot = createTemplateSnapshot(pendingTemplate, unitId, pendingCreateValue.name);
             const entry = await catalog.create({
-              snapshot,
-              destination: targetLocation.destination,
-              metadata: { spaceId: targetLocation.spaceId, folderId: targetLocation.folderId },
-              source: 'native',
+              name: pendingCreateValue.name,
+              template: pendingTemplate,
+              spaceId: targetLocation.spaceId, folderId: targetLocation.folderId,
             });
             setPendingCreateValue(undefined);
             setActiveDialog(null);

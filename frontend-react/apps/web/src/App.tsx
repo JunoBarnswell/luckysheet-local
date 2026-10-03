@@ -1,3 +1,5 @@
+import { useWorkbook } from '@react-sheets/sdk';
+import { sdk } from './sdk';
 import { Box, Button, CheckToggle, Inline, Select, Stack, StatePanel, Text, TextInput } from "@react-sheets/ui-system";
 import { WorkspaceErrorBoundary } from "./components/WorkspaceErrorBoundary";
 import { SaveAsDocumentDialog, WorkbookBackstageShell } from "./workbooks";
@@ -7,7 +9,7 @@ import { useAuthSession, useAuthSnapshot } from "./auth/AuthProvider";
 import { navigate, useApplicationRoute } from "./app-routing";
 import type { CommandDescriptor } from "@react-sheets/command-runtime";
 import { useEffect, useRef, useState } from "react";
-import { resolveShareToken, getInitialSessionPhase, isWorkbookResolutionError, useWorkbookSession, type UiSessionIntent, type WorkbookResolution } from "@react-sheets/spreadsheet-app";
+import { resolveShareToken, isWorkbookResolutionError, type UiSessionIntent, type WorkbookResolution } from "@react-sheets/spreadsheet-app";
 import { getInitialLocale, persistLocale, type Locale } from "./i18n";
 import { useEditorCommandController } from "./editor/command-controller";
 import { EditorShell } from "./editor/EditorShell";
@@ -47,13 +49,8 @@ function WorkbookRouteGate({ unitId }: { unitId: string }) {
 function EditorRoute({ resolution, onOpenHub }: { resolution: WorkbookResolution; onOpenHub: () => void }) {
   const unitId = resolution.unitId;
   const auth = useAuthSession();
-  const { catalog, createWorkbookSessionOptions } = useApplicationServices();
-  const { session, snapshot: state } = useWorkbookSession({
-    ...createWorkbookSessionOptions(unitId, auth.getAccessToken),
-    initialPhase: getInitialSessionPhase(),
-    resolution,
-    onReady: () => catalog.markOpened(resolution),
-  });
+  const { catalog } = useApplicationServices();
+  const { session, dimensions, data, snapshot: state } = useWorkbook(sdk, resolution);
   const [locale, setLocaleState] = useState<Locale>(() => getInitialLocale());
   const [saveAsOpen, setSaveAsOpen] = useState(false);
   const [saveAsBusy, setSaveAsBusy] = useState(false);
@@ -75,7 +72,7 @@ function EditorRoute({ resolution, onOpenHub }: { resolution: WorkbookResolution
     session.dispatchUiSessionIntent(intent);
   };
 
-  const controller = useEditorCommandController({ session, state, locale, dispatchCommand, dispatchSessionIntent });
+  const controller = useEditorCommandController({ session, state, data, locale, dispatchCommand, dispatchSessionIntent });
   const copyWorkbookLink = () => { void session.createGuestShareLink("viewer"); };
   const saveWorkbook = () => { void session.saveWorkbook("Manual save").catch(cause => session.notify(cause instanceof Error ? cause.message : "保存失败")); };
   const exportDocument = async () => {
@@ -159,7 +156,7 @@ function EditorRoute({ resolution, onOpenHub }: { resolution: WorkbookResolution
     );
   }
 
-  return <EditorShell state={state} session={session} locale={locale} isBusy={isBusy} controller={controller} dispatchCommand={dispatchCommand} dispatchSessionIntent={dispatchSessionIntent} setLocale={setLocale} copyWorkbookLink={copyWorkbookLink} saveWorkbook={saveWorkbook} exportDocument={exportDocument} importDocument={importDocument} renameWorkbook={renameWorkbook} onOpenPrintPreview={() => dispatchSessionIntent({ type: "dialog.open", dialog: "print-preview" })} />;
+  return <EditorShell state={state} session={session} columnDimensions={dimensions} locale={locale} isBusy={isBusy} controller={controller} dispatchCommand={dispatchCommand} dispatchSessionIntent={dispatchSessionIntent} setLocale={setLocale} copyWorkbookLink={copyWorkbookLink} saveWorkbook={saveWorkbook} exportDocument={exportDocument} importDocument={importDocument} renameWorkbook={renameWorkbook} onOpenPrintPreview={() => dispatchSessionIntent({ type: "dialog.open", dialog: "print-preview" })} />;
 }
 
 function mimeTypeForFileName(fileName: string): string {
@@ -178,8 +175,8 @@ export default function App() {
   const auth = useAuthSnapshot();
   useEffect(() => { if (typeof window !== "undefined" && window.location.pathname === "/") navigate("/workbooks", { replace: true }); }, []);
   if (route.kind === "auth-callback" || route.kind === "auth-silent-renew" || auth.phase === "loading") return <Box as="main" className="flex min-h-screen items-center justify-center bg-white p-8"><StatePanel kind="loading" title="正在验证登录状态" description="正在建立云端工作簿会话。" /></Box>;
-  if (route.kind === 'admin-users') return auth.admin ? <AdminUsersPage /> : <main role="alert" className="p-8">需要管理员权限。</main>;
-  if (route.kind === "hub") return <><Box className="flex justify-end gap-4 border-b px-6 py-2 text-sm">{auth.displayName}{auth.admin && <Button onClick={() => navigate('/admin/users')}>用户管理</Button>}</Box><WorkbookHubContainer onOpenWorkbook={(unitId, options) => {
+  if (route.kind === 'admin-users') return auth.capabilities.canManageUsers ? <AdminUsersPage /> : <main role="alert" className="p-8">需要管理员权限。</main>;
+  if (route.kind === "hub") return <><Box className="flex justify-end gap-4 border-b px-6 py-2 text-sm">{auth.displayName}<Button onClick={() => { void sdk.auth.signOut().catch(() => { /* AuthProvider renders the SDK error snapshot. */ }); }}>退出登录</Button>{auth.capabilities.canManageUsers && <Button onClick={() => navigate('/admin/users')}>用户管理</Button>}</Box><WorkbookHubContainer onOpenWorkbook={(unitId, options) => {
     const query = options?.initialCell ? `?initialCell=${encodeURIComponent(options.initialCell)}` : "";
     navigate(`/workbooks/${encodeURIComponent(unitId)}${query}`);
   }} /></>;

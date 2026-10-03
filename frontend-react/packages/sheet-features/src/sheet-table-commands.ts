@@ -103,11 +103,11 @@ export function registerSheetTableCommands(runtime: CommandRuntime): void {
       sheet.sheetTables.push(structuredClone(table));
     },
     metadata: {
+      calculation: { inputs: 'none' as const, visibility: true, spillBlockers: 'ranges' as const, mode: false, context: CALCULATION_CONTEXT_EFFECTS.syncTables },
       schema: { name: 'SheetTableModel', validate: isSheetTable },
       permission: { capability: 'sheet.table.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: tableRange, mode: 'exact' },
       historyRebase: { kind: 'invalidate', reason: 'sheet table geometry and structured references have no canonical history transform' },
-      calculationContextEffect: CALCULATION_CONTEXT_EFFECTS.syncTables,
       inverseIds: ['sheetTable.remove'],
     },
   });
@@ -123,6 +123,7 @@ export function registerSheetTableCommands(runtime: CommandRuntime): void {
         : undefined;
     },
     metadata: {
+      calculation: { inputs: 'none' as const, visibility: true, spillBlockers: 'none' as const, mode: false },
       schema: { name: 'SheetTableAutoFilterSet', validate: isTableAutoFilter },
       permission: { capability: 'sheet.table.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: (params) => params.autoFilter ? [structuredClone(params.autoFilter.range)] : [], mode: 'declared' },
@@ -139,11 +140,11 @@ export function registerSheetTableCommands(runtime: CommandRuntime): void {
       if (index >= 0) sheet.sheetTables.splice(index, 1);
     },
     metadata: {
+      calculation: { inputs: 'none' as const, visibility: true, spillBlockers: 'ranges' as const, mode: false, context: CALCULATION_CONTEXT_EFFECTS.syncTables },
       schema: { name: 'SheetTableRemove', validate: isSheetTableRemove },
       permission: { capability: 'sheet.table.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: removedTableRange, mode: 'exact' },
       historyRebase: { kind: 'invalidate', reason: 'sheet table geometry and structured references have no canonical history transform' },
-      calculationContextEffect: CALCULATION_CONTEXT_EFFECTS.syncTables,
       inverseIds: ['sheetTable.add'],
     },
   });
@@ -168,11 +169,11 @@ export function registerSheetTableCommands(runtime: CommandRuntime): void {
       }, rangeOwnerDeltas);
     },
     metadata: {
+      calculation: { inputs: 'none' as const, visibility: true, spillBlockers: 'table-deltas' as const, mode: false, context: CALCULATION_CONTEXT_EFFECTS.syncTables },
       schema: { name: 'SheetTableModel', validate: isSheetTable },
       permission: { capability: 'sheet.table.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: tableRange, mode: 'exact' },
       historyRebase: { kind: 'invalidate', reason: 'sheet table geometry and structured references have no canonical history transform' },
-      calculationContextEffect: CALCULATION_CONTEXT_EFFECTS.syncTables,
       inverseIds: ['sheetTable.update'],
     },
   });

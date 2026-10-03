@@ -22,6 +22,7 @@ export function registerEditingFeatures(runtime: CommandRuntime): void {
       context.workbook.setEditingOptions(item.params);
     },
     metadata: {
+      calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
       schema: { name: 'WorkbookEditingOptions', validate: isWorkbookEditingOptions },
       permission: { capability: 'workbook.editing.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: () => [], mode: 'exact' },

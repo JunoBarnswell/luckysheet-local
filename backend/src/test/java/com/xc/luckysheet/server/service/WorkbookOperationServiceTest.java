@@ -9,7 +9,7 @@ import com.xc.luckysheet.server.contract.CommittedOperationEnvelope;
 import com.xc.luckysheet.server.contract.CommittedOperationMutation;
 import com.xc.luckysheet.server.contract.StructuralPatch;
 import com.xc.luckysheet.server.service.ServiceException;
-import com.xc.luckysheet.server.contract.WorkbookAclRole;
+import com.xc.luckysheet.server.contract.WorkbookRole;
 import com.xc.luckysheet.server.contract.WorkbookLifecycle;
 import com.xc.luckysheet.server.mutation.MutationDescriptorRegistry;
 import com.xc.luckysheet.server.store.WorkbookRow;
@@ -63,6 +63,115 @@ class WorkbookOperationServiceTest {
     }
 
     @Test
+    void structuralDeletionUndoAcceptsOnlyExactDeletedCellFacts() throws Exception {
+        Instant time = Instant.parse("2026-10-03T00:00:00Z");
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        JsonNode preimage = mapper.readTree("""
+                {"sheets":[{"id":"sheet-1","rowCount":8,"columnCount":4,"cells":{"2":{"0":{"value":"deleted"}},"4":{"0":{"value":"retained"}}}}]}
+                """);
+        for (String axis : List.of("rows", "columns")) {
+            int at = axis.equals("rows") ? 2 : 0;
+            OperationMutation deletion = new OperationMutation(axis + ".deleted", "sheet-1", mapper.createObjectNode().put("at", at).put("count", 1));
+            StructuralPatch patch = new StructuralPatch(StructuralPatch.VERSION, deletion.id(), List.of(), List.of(), List.of());
+            OperationEnvelope request = new OperationEnvelope("session", OperationEnvelope.SCHEMA, "delete", "book", 1, 0, List.of(deletion), time);
+            CommittedOperationEnvelope target = CommittedOperationEnvelope.from(request, "actor", 1, time,
+                    List.of(CommittedOperationMutation.from(deletion, List.of(), List.of(), patch)));
+            OperationMutation insertion = new OperationMutation(axis + ".inserted", "sheet-1", deletion.params());
+            var params = mapper.createObjectNode().put("row", 2).put("column", 0);
+            params.set("previous", mapper.readTree("{\"value\":\"deleted\"}"));
+            OperationMutation restore = new OperationMutation("cell.restore", "sheet-1", params);
+            OperationEnvelope undo = new OperationEnvelope("session", OperationEnvelope.SCHEMA, "undo", "book", 2, 1, List.of(insertion, restore), time);
+            assertDoesNotThrow(() -> WorkbookOperationService.validateStructuralUndoMutations(undo, target, preimage, registry));
+            for (OperationMutation invalid : List.of(
+                    new OperationMutation("cell.restore", "other-sheet", params),
+                    new OperationMutation("cell.restore", "sheet-1", params.deepCopy().put("column", 3)),
+                    new OperationMutation("cell.restore", "sheet-1", params.deepCopy().put("previous", "tampered")),
+                    new OperationMutation("cell.set", "sheet-1", params))) {
+                OperationEnvelope malformed = new OperationEnvelope("session", OperationEnvelope.SCHEMA, "invalid", "book", 2, 1, List.of(insertion, invalid), time);
+                assertThrows(ServiceException.class, () -> WorkbookOperationService.validateStructuralUndoMutations(malformed, target, preimage, registry));
+            }
+        }
+    }
+
+    @Test
+    void deletionUndoValidatesTheIntermediateFormulaPreimageOfEachDeletedRun() throws Exception {
+        Instant time = Instant.parse("2026-10-03T00:00:00Z");
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        JsonNode preimage = mapper.readTree("""
+                {"sheets":[{"id":"sheet-1","name":"Sheet1","rowCount":10,"columnCount":4,"pane":{"kind":"none"},"review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}},"cells":{"2":{"1":{"value":null,"formula":"=A8"}},"7":{"0":{"value":8}}}}]}
+                """);
+        OperationMutation first = new OperationMutation("rows.deleted", "sheet-1", mapper.createObjectNode().put("at", 6).put("count", 1));
+        OperationMutation second = new OperationMutation("rows.deleted", "sheet-1", mapper.createObjectNode().put("at", 2).put("count", 1));
+        var firstApplication = registry.require(first.id(), false).applyWithPatch(preimage, first);
+        var secondApplication = registry.require(second.id(), false).applyWithPatch(firstApplication.snapshot(), second);
+        OperationEnvelope request = new OperationEnvelope("session", OperationEnvelope.SCHEMA, "delete-runs", "book", 1, 0, List.of(first, second), time);
+        CommittedOperationEnvelope target = CommittedOperationEnvelope.from(request, "actor", 1, time, List.of(
+                CommittedOperationMutation.from(first, List.of(), registry.structuralImpactRanges(firstApplication.structuralPatch()), firstApplication.structuralPatch()),
+                CommittedOperationMutation.from(second, List.of(), registry.structuralImpactRanges(secondApplication.structuralPatch()), secondApplication.structuralPatch())));
+        var params = mapper.createObjectNode().put("row", 2).put("column", 1);
+        JsonNode intermediate = firstApplication.snapshot().path("sheets").get(0).path("cells").path("2").path("1");
+        assertEquals("=A7", intermediate.path("formula").asText());
+        params.set("previous", intermediate);
+        OperationMutation restore = new OperationMutation("cell.restore", "sheet-1", params);
+        OperationEnvelope undo = new OperationEnvelope("session", OperationEnvelope.SCHEMA, "undo-runs", "book", 2, 1,
+                List.of(new OperationMutation("rows.inserted", "sheet-1", second.params()), restore, new OperationMutation("rows.inserted", "sheet-1", first.params())), time);
+        assertDoesNotThrow(() -> WorkbookOperationService.validateStructuralUndoMutations(undo, target, preimage, registry));
+        var wrongParams = params.deepCopy();
+        wrongParams.set("previous", preimage.path("sheets").get(0).path("cells").path("2").path("1"));
+        OperationEnvelope wrong = new OperationEnvelope("session", OperationEnvelope.SCHEMA, "wrong-preimage", "book", 2, 1,
+                List.of(new OperationMutation("rows.inserted", "sheet-1", second.params()), new OperationMutation("cell.restore", "sheet-1", wrongParams), new OperationMutation("rows.inserted", "sheet-1", first.params())), time);
+        assertThrows(ServiceException.class, () -> WorkbookOperationService.validateStructuralUndoMutations(wrong, target, preimage, registry));
+    }
+
+    @Test
+    void rangeMoveUndoAcceptsOnlyExactOverwrittenCellFactsOnceAndRestoresTheWholePreimage() throws Exception {
+        Instant time = Instant.parse("2026-10-03T00:00:00Z");
+        MutationDescriptorRegistry registry = new MutationDescriptorRegistry();
+        // Canonical WorkbookModel snapshot with authored source, destination and dependent cells.
+        JsonNode preimage = mapper.readTree("""
+                {"schema":"WorkbookSnapshot","version":11,"unitId":"book","name":"Range undo","dimensionMetrics":{"normalFontFamily":"Calibri","normalFontSizePx":14.6666666667,"maximumDigitWidthPx":7},"collationContext":{"cultureId":"invariant","caseSensitive":true,"accentSensitive":true,"numericTextMode":"lexical","blankOrder":"last","typeOrder":["number","text","boolean","error","blank"],"customLists":[]},"calculationSettings":{"mode":"automatic","iterativeCalculation":false,"maximumIterations":100,"maximumChange":0.001,"precisionAsDisplayed":false,"calculateBeforeSave":true,"fullCalculationOnLoad":false},"editingOptions":{"allowEditDirectly":true,"moveAfterEnter":true,"enterDirection":"down","formulaAutoComplete":true,"valueAutoComplete":true,"fixedDecimalPlaces":null},"theme":{"id":"workbook-theme-default","colors":{}},"definedNames":{},"definedNameModels":[],"dataModel":{"externalLinks":[],"sources":[],"tables":[],"relationships":[],"views":[]},"printDocuments":[],"queryDefinitions":[],"cellStyleTemplates":[],"sheets":[{"kind":"worksheet","id":"sheet-1","name":"Sheet1","rowCount":1000,"columnCount":26,"cells":{"0":{"0":{"value":7},"1":{"value":null,"formula":"=A1"},"4":{"value":null,"formula":"=A1"}},"2":{"2":{"value":88},"3":{"value":99}}},"dataRegions":[],"merges":[],"pane":{"kind":"none"},"pivots":[],"sparklines":[],"conditionalFormats":[],"dataValidations":[],"defaultRowHeightPx":20,"defaultColumnWidthPx":64,"rowHeightsPx":{},"columnWidthsPx":{},"hiddenRows":[],"hiddenColumns":[],"sheetTables":[],"sparklineGroups":[],"drawings":[],"drawingPayloads":{},"drawingGroups":[],"snapSettings":{"enabled":true,"snapToGrid":true,"snapToShape":true,"gridSize":8},"hyperlinks":[],"review":{"notesByCell":{},"notesById":{},"threadIdsByCell":{},"threadsById":{}},"spillRanges":[],"protectionRules":[],"showGridlines":true,"showHeaders":true,"zoom":100,"hidden":false}]}
+                """);
+        JsonNode unchanged = preimage.deepCopy();
+        OperationMutation move = new OperationMutation("range.move", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","sourceRange":{"sheetId":"sheet-1","startRow":0,"endRow":0,"startColumn":0,"endColumn":1},"targetOrigin":{"row":2,"column":2}}
+                """));
+        var application = registry.require(move.id(), false).applyWithPatch(preimage, move);
+        OperationEnvelope request = new OperationEnvelope("session", OperationEnvelope.SCHEMA, "move", "book", 1, 0, List.of(move), time);
+        CommittedOperationEnvelope target = CommittedOperationEnvelope.from(request, "actor", 1, time,
+                List.of(CommittedOperationMutation.from(move, List.of(), registry.structuralImpactRanges(application.structuralPatch()), application.structuralPatch())));
+        OperationMutation reverse = new OperationMutation("range.move", "sheet-1", mapper.readTree("""
+                {"sheetId":"sheet-1","sourceRange":{"sheetId":"sheet-1","startRow":2,"endRow":2,"startColumn":2,"endColumn":3},"targetOrigin":{"row":0,"column":0}}
+                """));
+        var restoreParams = mapper.createObjectNode().put("sheetId", "sheet-1").put("row", 2).put("column", 2);
+        restoreParams.set("previous", preimage.path("sheets").get(0).path("cells").path("2").path("2"));
+        OperationMutation firstRestore = new OperationMutation("cell.restore", "sheet-1", restoreParams);
+        var lastParams = restoreParams.deepCopy().put("column", 3);
+        lastParams.set("previous", preimage.path("sheets").get(0).path("cells").path("2").path("3"));
+        OperationMutation lastRestore = new OperationMutation("cell.restore", "sheet-1", lastParams);
+        OperationEnvelope undo = new OperationEnvelope("session", OperationEnvelope.SCHEMA, "undo-move", "book", 2, 1, List.of(reverse, firstRestore, lastRestore), time);
+        assertDoesNotThrow(() -> WorkbookOperationService.validateStructuralUndoMutations(undo, target, preimage, registry));
+        JsonNode restored = registry.applyPublicMutations(application.snapshot(), undo.mutations());
+        assertDoesNotThrow(() -> WorkbookOperationService.requireUndoRestoredPreimage(preimage, restored));
+        for (OperationMutation invalid : List.of(
+                new OperationMutation("cell.restore", "other-sheet", restoreParams),
+                new OperationMutation("cell.restore", "sheet-1", restoreParams.deepCopy().put("row", 0)),
+                new OperationMutation("cell.restore", "sheet-1", restoreParams.deepCopy().put("column", 4)),
+                new OperationMutation("cell.restore", "sheet-1", restoreParams.deepCopy().put("row", 2.5)),
+                new OperationMutation("cell.restore", "sheet-1", restoreParams.deepCopy().put("previous", "tampered")),
+                new OperationMutation("cell.restore", "sheet-1", restoreParams.deepCopy().putNull("previous")),
+                new OperationMutation("cell.set", "sheet-1", restoreParams))) {
+            OperationEnvelope bad = new OperationEnvelope("session", OperationEnvelope.SCHEMA, "bad-move", "book", 2, 1, List.of(reverse, invalid, lastRestore), time);
+            assertThrows(ServiceException.class, () -> WorkbookOperationService.validateStructuralUndoMutations(bad, target, preimage, registry));
+            assertEquals(unchanged, preimage);
+        }
+        OperationEnvelope duplicate = new OperationEnvelope("session", OperationEnvelope.SCHEMA, "duplicate-restore", "book", 2, 1, List.of(reverse, firstRestore, firstRestore, lastRestore), time);
+        assertThrows(ServiceException.class, () -> WorkbookOperationService.validateStructuralUndoMutations(duplicate, target, preimage, registry));
+        JsonNode missingTarget = registry.applyPublicMutations(application.snapshot(), List.of(reverse, firstRestore));
+        assertThrows(ServiceException.class, () -> WorkbookOperationService.requireUndoRestoredPreimage(preimage, missingTarget));
+        assertEquals(unchanged, preimage);
+    }
+
+    @Test
     void structuralUndoRejectsReusedInversesAndMutationsOutsideAnAllStructuralTarget() throws Exception {
         Instant committedAt = Instant.parse("2026-09-27T00:00:00Z");
         OperationMutation insertion = new OperationMutation("rows.inserted", "sheet-1",
@@ -87,7 +196,7 @@ class WorkbookOperationServiceTest {
                 "structural-undo-extra", "book-1", 2, 1, List.of(deletion, unrelated), committedAt);
 
         assertThrows(ServiceException.class,
-                () -> WorkbookOperationService.validateStructuralUndoMutations(withExtraMutation, target, null));
+                () -> WorkbookOperationService.validateStructuralUndoMutations(withExtraMutation, target, null, new MutationDescriptorRegistry()));
 
         OperationEnvelope duplicateTargetRequest = new OperationEnvelope("test-session", OperationEnvelope.SCHEMA,
                 "duplicate-structural-target", "book-1", 1, 0, List.of(insertion, insertion), committedAt);
@@ -97,7 +206,7 @@ class WorkbookOperationServiceTest {
                 "structural-undo-reused", "book-1", 2, 1, List.of(deletion), committedAt);
 
         assertThrows(ServiceException.class,
-                () -> WorkbookOperationService.validateStructuralUndoMutations(reusedInverse, duplicateTarget, null));
+                () -> WorkbookOperationService.validateStructuralUndoMutations(reusedInverse, duplicateTarget, null, new MutationDescriptorRegistry()));
     }
 
     @Test
@@ -127,7 +236,7 @@ class WorkbookOperationServiceTest {
                 com.xc.luckysheet.server.migration.SnapshotUpgrade.migrateStored(mapper.readTree(canonicalSnapshot()), "book-1"));
         String checksum = java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
                 .digest(snapshot.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
-        when(access.require("book-1", "actor-1", WorkbookAclRole.EDITOR)).thenReturn(WorkbookAclRole.EDITOR);
+        when(access.require("book-1", "actor-1", WorkbookRole.EDITOR)).thenReturn(WorkbookRole.EDITOR);
         when(store.findForUpdate("book-1")).thenReturn(Optional.of(new WorkbookRow(
                 "book-1", "Book", snapshot, 0, 0, WorkbookLifecycle.ACTIVE, now, now)));
         when(store.findCheckpoint("book-1", 0)).thenReturn(Optional.of(
@@ -169,7 +278,7 @@ class WorkbookOperationServiceTest {
     void rejectedWriteKeepsWorkbookLockUntilRollbackCompletion() throws Exception {
         WorkbookStore store = mock(WorkbookStore.class);
         AccessControlService access = mock(AccessControlService.class);
-        when(access.require("book-1", "actor-1", WorkbookAclRole.EDITOR)).thenReturn(WorkbookAclRole.EDITOR);
+        when(access.require("book-1", "actor-1", WorkbookRole.EDITOR)).thenReturn(WorkbookRole.EDITOR);
         when(store.findForUpdate("book-1")).thenReturn(Optional.empty());
         WorkbookOperationService service = serviceWithAccess(store, access, new MutationDescriptorRegistry(), mapper,
                 mock(AuditRecorder.class), new CoordinationProperties(false, false, null, "coordination",
@@ -221,7 +330,7 @@ class WorkbookOperationServiceTest {
         String snapshot = mapper.writeValueAsString(com.xc.luckysheet.server.migration.SnapshotUpgrade.migrateStored(mapper.readTree(canonicalSnapshot()), "book-1"));
         when(store.findCheckpoint("book-1", 0)).thenReturn(Optional.of(new com.xc.luckysheet.server.store.CheckpointRow("book-1", 0, snapshot,
                 java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(snapshot.getBytes(java.nio.charset.StandardCharsets.UTF_8))), Instant.now())));
-        when(access.require("book-1", "guest:share-1", WorkbookAclRole.VIEWER)).thenReturn(WorkbookAclRole.COMMENTER);
+        when(access.require("book-1", "guest:share-1", WorkbookRole.VIEWER)).thenReturn(WorkbookRole.COMMENTER);
         when(store.findForUpdate("book-1")).thenReturn(Optional.of(new WorkbookRow(
                 "book-1", "Book", snapshot, 0, 0, WorkbookLifecycle.ACTIVE, Instant.now(), Instant.now()
         )));
@@ -261,7 +370,7 @@ class WorkbookOperationServiceTest {
         String snapshot = mapper.writeValueAsString(com.xc.luckysheet.server.migration.SnapshotUpgrade.migrateStored(mapper.readTree(canonicalSnapshot()), "book-1"));
         when(store.findCheckpoint("book-1", 0)).thenReturn(Optional.of(new com.xc.luckysheet.server.store.CheckpointRow("book-1", 0, snapshot,
                 java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(snapshot.getBytes(java.nio.charset.StandardCharsets.UTF_8))), Instant.now())));
-        when(access.require("book-1", "editor-1", WorkbookAclRole.VIEWER)).thenReturn(WorkbookAclRole.EDITOR);
+        when(access.require("book-1", "editor-1", WorkbookRole.VIEWER)).thenReturn(WorkbookRole.EDITOR);
         when(store.findForUpdate("book-1")).thenReturn(Optional.of(new WorkbookRow("book-1", "Book", snapshot, 0, 0,
                 WorkbookLifecycle.ACTIVE, Instant.now(), Instant.now())));
         when(store.findOperation("op-2")).thenReturn(Optional.empty());
@@ -296,7 +405,7 @@ class WorkbookOperationServiceTest {
                                                         WorkbookDataBlockPublicationGuard dataBlockPublication) {
         RangeAccessService rangeAccess = mock(RangeAccessService.class);
         when(rangeAccess.resolver(org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString(),
-                org.mockito.ArgumentMatchers.any(WorkbookAclRole.class), org.mockito.ArgumentMatchers.anyCollection()))
+                org.mockito.ArgumentMatchers.any(WorkbookRole.class), org.mockito.ArgumentMatchers.anyCollection()))
                 .thenAnswer(invocation -> new RangeAccessResolver(new RangeAccessIndex(List.of()), List.of(),
                         new RangeAccessContext(invocation.getArgument(1), invocation.getArgument(2),
                                 invocation.getArgument(3), 0)));

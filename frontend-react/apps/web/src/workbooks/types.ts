@@ -1,7 +1,8 @@
 import type { ReactNode } from 'react';
 import type { IconName, TemplatePreviewKind } from '@react-sheets/ui-system';
 
-export type WorkbookRole = 'owner' | 'editor' | 'commenter' | 'viewer';
+import type { WorkbookRole, WorkbookCapabilities } from '@react-sheets/sdk';
+export type { WorkbookRole } from '@react-sheets/sdk';
 export type WorkbookStorageLocation = 'local' | 'remote' | 'mirrored';
 export type WorkbookSyncStatus = 'synced' | 'syncing' | 'pending' | 'offline' | 'conflict' | 'error';
 export type WorkbookLifecycle = 'active' | 'trashed';
@@ -16,6 +17,7 @@ export interface WorkbookCatalogItem {
   syncStatus: WorkbookSyncStatus;
   lifecycle: WorkbookLifecycle;
   role: WorkbookRole;
+  capabilities: WorkbookCapabilities;
   sourceKind: WorkbookSourceKind;
   ownerName?: string;
   ownerSubject?: string;

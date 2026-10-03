@@ -388,6 +388,7 @@ function registerMutationContracts(registry: CommandRegistry): void {
     id: 'dataSource.add',
     handler: (item, context) => applyDataSourceMutation(context.workbook, 'dataSource.add', item.params, item.sheetId),
     metadata: {
+      calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
       schema: { name: 'DataSourceAddMutation', validate: sourceSchema },
       permission: { capability: 'data-source.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: (params) => params.source.sourceRange ? [structuredClone(params.source.sourceRange)] : [], mode: 'declared' },
@@ -398,6 +399,7 @@ function registerMutationContracts(registry: CommandRegistry): void {
     id: 'dataSource.update',
     handler: (item, context) => applyDataSourceMutation(context.workbook, 'dataSource.update', item.params, item.sheetId),
     metadata: {
+      calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
       schema: { name: 'DataSourceUpdateMutation', validate: sourceUpdateSchema },
       permission: { capability: 'data-source.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: (params) => params.source.sourceRange ? [structuredClone(params.source.sourceRange)] : [], mode: 'declared' },
@@ -408,6 +410,7 @@ function registerMutationContracts(registry: CommandRegistry): void {
     id: 'dataSource.remove',
     handler: (item, context) => applyDataSourceMutation(context.workbook, 'dataSource.remove', item.params, item.sheetId),
     metadata: {
+      calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
       schema: { name: 'DataSourceRemoveMutation', validate: sourceRemoveSchema },
       permission: { capability: 'data-source.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: () => [], mode: 'declared' },
@@ -418,6 +421,7 @@ function registerMutationContracts(registry: CommandRegistry): void {
     id: 'dataRegion.add',
     handler: (item, context) => applyDataSourceMutation(context.workbook, 'dataRegion.add', item.params, item.sheetId),
     metadata: {
+      calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
       schema: { name: 'DataRegionAddMutation', validate: regionAddSchema },
       permission: { capability: 'data-source.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: (params) => [structuredClone(params.region.range)], mode: 'exact' },
@@ -428,6 +432,7 @@ function registerMutationContracts(registry: CommandRegistry): void {
     id: 'dataRegion.remove',
     handler: (item, context) => applyDataSourceMutation(context.workbook, 'dataRegion.remove', item.params, item.sheetId),
     metadata: {
+      calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
       schema: { name: 'DataRegionRemoveMutation', validate: regionRemoveSchema },
       permission: { capability: 'data-source.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: () => [], mode: 'declared' },

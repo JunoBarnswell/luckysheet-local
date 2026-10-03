@@ -165,6 +165,7 @@ export function registerCellTemplateCommands(runtime: CommandRuntime): void {
     id: 'cellTemplate.set',
     handler: (item, context) => context.workbook.setCellStyleTemplate(item.params.template),
     metadata: {
+      calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
       schema: { name: 'CellStyleTemplateSet', validate: isSetParams },
       permission: { capability: 'sheet.format.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: () => [], mode: 'exact' },
@@ -175,6 +176,7 @@ export function registerCellTemplateCommands(runtime: CommandRuntime): void {
     id: 'cellTemplate.remove',
     handler: (item, context) => { context.workbook.removeCellStyleTemplate(item.params.templateId); },
     metadata: {
+      calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
       schema: { name: 'CellStyleTemplateRemove', validate: isRemoveParams },
       permission: { capability: 'sheet.format.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: () => [], mode: 'exact' },
@@ -185,6 +187,7 @@ export function registerCellTemplateCommands(runtime: CommandRuntime): void {
     id: 'cell.editor.set',
     handler: (item, context) => applyEditorMutation(item.params, context),
     metadata: {
+      calculation: { inputs: 'cells' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
       schema: { name: 'CellEditorSet', validate: isEditorSetParams },
       permission: { capability: 'sheet.format.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: editorAffectedRanges, mode: 'exact' },

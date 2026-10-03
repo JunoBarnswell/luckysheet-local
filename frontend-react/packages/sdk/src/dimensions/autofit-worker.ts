@@ -1,6 +1,6 @@
 import { DEFAULT_RENDER_THEME, hasMeasurableCellContent, measureCellAutoFit, type CellRenderStyle } from '@react-sheets/render-engine';
 import type { CellPhoneticMetadata, RichTextRun } from '@react-sheets/core-model';
-import type { AutoFitWorkerRequest } from './column-autofit-protocol';
+import type { AutoFitWorkerRequest } from './autofit-protocol';
 
 type AutoFitCell = { column: number; value: string; style?: CellRenderStyle; richText?: RichTextRun[]; phonetic?: CellPhoneticMetadata; filterButton?: boolean };
 

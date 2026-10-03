@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { ColumnDimensionController } from './column-dimension-controller';
-import { createAutoFitBlock } from './column-autofit-protocol';
+import { SdkError } from '../error';
+import { DimensionsDomain } from './domain';
+import { createAutoFitBlock } from './autofit-protocol';
 import { headerTargetSelected, selectedHeaderIndices } from '@react-sheets/spreadsheet-app';
 import type { CanvasSheetSnapshot, WorkbookSession } from '@react-sheets/spreadsheet-app';
 
@@ -74,11 +75,11 @@ function installCanvas(): { restore: () => void } {
   return { restore: () => { (globalThis as { document?: unknown }).document = previousDocument; } };
 }
 
-function controllerFor(sheet: CanvasSheetSnapshot, calls: { columns?: unknown[]; rows?: unknown[] }): ColumnDimensionController {
-  return new ColumnDimensionController(
+function controllerFor(sheet: CanvasSheetSnapshot, calls: { columns?: unknown[]; rows?: unknown[] }): DimensionsDomain {
+  return new DimensionsDomain(
     {
-      applyColumnWidths: (entries: readonly unknown[]) => { calls.columns = [...entries]; },
-      applyRowHeights: (entries: readonly unknown[]) => { calls.rows = [...entries]; },
+      runCommand: (_id: string, plan: { rows?: unknown[]; columns?: unknown[] }) => { calls.columns = plan.columns; calls.rows = plan.rows; },
+      notify: () => {},
     } as unknown as WorkbookSession,
     () => sheet,
   );
@@ -159,7 +160,7 @@ test('AutoFit worker uses the compact block protocol with the same typed-content
   (globalThis as { self?: unknown }).self = worker;
   (globalThis as { OffscreenCanvas?: unknown }).OffscreenCanvas = FakeOffscreenCanvas;
   try {
-    await import('./column-autofit-worker');
+    await import('./autofit-worker');
     worker.onmessage!({ data: { kind: 'start', taskId: 'test', columns: [0, 1, 2, 3] } } as MessageEvent);
     worker.onmessage!({ data: {
       kind: 'chunk',
@@ -182,4 +183,69 @@ test('AutoFit worker uses the compact block protocol with the same typed-content
     (globalThis as { self?: unknown }).self = previousSelf;
     (globalThis as { OffscreenCanvas?: unknown }).OffscreenCanvas = previousOffscreenCanvas;
   }
+});
+
+
+test('SDK dimensions reject invalid indices before dispatch and expose only named actions', () => {
+  const calls = {};
+  const domain = controllerFor(makeSheet({}), calls);
+  assert.throws(() => domain.setPixels([0, 99], 100), error => error instanceof SdkError && error.code === 'INVALID_ARGUMENT');
+  assert.deepEqual(calls, {});
+  assert.equal('session' in domain.actions, false);
+  assert.equal('getSheet' in domain.actions, false);
+  domain.dispose();
+  assert.throws(() => domain.actions.setPixels([0], 100), error => error instanceof SdkError && error.code === 'RUNTIME_DISPOSED');
+});
+
+test('a stale AutoFit never writes to a different or changed worksheet', async () => {
+  const canvas = installCanvas();
+  const initial = makeSheet({ '0:0': { value: 'wide text' } });
+  let current = initial;
+  let writes = 0;
+  const notices: string[] = [];
+  const domain = new DimensionsDomain({ runCommand: () => { writes++; }, notify: (message: string) => notices.push(message) } as unknown as WorkbookSession, () => current);
+  try {
+    const pending = domain.autoFit([0]);
+    current = { ...initial, id: 'another-sheet' };
+    const result = await pending;
+    assert.equal(result.status, 'rejected');
+    if (result.status === 'rejected') assert.equal(result.error.code, 'STALE_OPERATION');
+    assert.equal(writes, 0);
+    assert.match(notices[0]!, /STALE_OPERATION/);
+  } finally { canvas.restore(); }
+});
+
+test('cancelling AutoFit leaves dimensions unchanged and is an explicit result', async () => {
+  const canvas = installCanvas();
+  const calls = {};
+  const domain = controllerFor(makeSheet({ '0:0': { value: 'wide text' } }), calls);
+  try {
+    const pending = domain.autoFit([0]);
+    domain.cancelAutoFit();
+    assert.equal((await pending).status, 'cancelled');
+    assert.deepEqual(calls, {});
+  } finally { canvas.restore(); }
+});
+
+test('a failed large-range worker is terminated and never commits partial widths', async () => {
+  const previous = globalThis.Worker;
+  let terminated = false;
+  class FailedWorker {
+    onerror: ((event: { message: string }) => void) | null = null;
+    onmessage: unknown;
+    onmessageerror: unknown;
+    postMessage(message: { kind: string }) { if (message.kind === 'chunk') this.onerror?.({ message: 'measurement failed' }); }
+    terminate() { terminated = true; }
+  }
+  globalThis.Worker = FailedWorker as unknown as typeof Worker;
+  const cells = Object.fromEntries(Array.from({ length: 5001 }, (_, row) => [`${row}:0`, { value: 'data' }]));
+  const calls = {};
+  const domain = controllerFor(makeSheet(cells, 5001, 1), calls);
+  try {
+    const result = await domain.autoFit([0]);
+    assert.equal(result.status, 'rejected');
+    if (result.status === 'rejected') assert.match(result.error.message, /measurement failed/);
+    assert.equal(terminated, true);
+    assert.deepEqual(calls, {});
+  } finally { globalThis.Worker = previous; }
 });

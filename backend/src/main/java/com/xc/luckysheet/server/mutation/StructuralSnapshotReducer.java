@@ -1425,8 +1425,7 @@ final class StructuralSnapshotReducer {
                             ownerIdentity.id(), entry, targetIdentity.id(), source, destination, rowDelta, columnDelta),
                     false,
                     true,
-                    entry -> !ownerIdentity.id().equals(targetIdentity.id())
-                            || !contains(destination, entry.row(), entry.column()));
+                    entry -> true);
             movedFormulaDeltas.addAll(formulaOwnerDeltas);
             for (String property : List.of("conditionalFormats", "dataValidations")) {
                 for (JsonNode rawRule : SnapshotMutationSupport.array(owner, property)) {

@@ -864,20 +864,18 @@ function permutationRuleFormulaDeltas<T extends StructuralFormulaRule>(
     }
     const after = matches[0]!;
     const afterFormulas = structuralRuleFormulaFields(after);
-    if ((before.formulaAnchor === undefined) !== (after.formulaAnchor === undefined)) {
-      throw new Error(`STRUCTURAL_PATCH_INVARIANT: formula rule anchor ${before.sheetId}:${before.id} was added or removed during row permutation`);
-    }
-    if (before.formulaAnchor && after.formulaAnchor
-      && (before.formulaAnchor.sheetId !== after.formulaAnchor.sheetId
-        || before.formulaAnchor.row !== after.formulaAnchor.row
-        || before.formulaAnchor.column !== after.formulaAnchor.column)) {
+    if ((before.formulaAnchor === undefined) !== (after.formulaAnchor === undefined)
+      || before.formulaAnchor && after.formulaAnchor
+        && (before.formulaAnchor.sheetId !== after.formulaAnchor.sheetId
+          || before.formulaAnchor.row !== after.formulaAnchor.row
+          || before.formulaAnchor.column !== after.formulaAnchor.column)) {
       deltas.push({
         kind: 'formula-rule-anchor',
         sheetId: before.sheetId,
         ruleKind,
         ruleId: before.id,
-        beforeAddress: { ...before.formulaAnchor },
-        afterAddress: { ...after.formulaAnchor },
+        beforeAddress: before.formulaAnchor ? { ...before.formulaAnchor } : undefined,
+        afterAddress: after.formulaAnchor ? { ...after.formulaAnchor } : undefined,
       });
     }
     const rangesChanged = JSON.stringify(before.ranges) !== JSON.stringify(after.ranges);

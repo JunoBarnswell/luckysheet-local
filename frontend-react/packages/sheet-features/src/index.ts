@@ -118,6 +118,23 @@ export interface CommitTypedValueParams {
   validationConfirmation?: boolean;
 }
 
+function authoredRichText(text: unknown, runs: unknown): RichTextRun[] {
+  if (typeof text !== 'string' || text.length > 32_767 || !Array.isArray(runs) || runs.length > 32_767
+    || runs.some(run => !isRecord(run) || typeof run.text !== 'string' || Object.keys(run).some(key => !['text', 'style', 'preservedProperties'].includes(key)))
+    || runs.map(run => run.text).join('') !== text) throw new Error('CELL_ENTRY_RICH_TEXT_INVALID: runs must reproduce bounded canonical text');
+  return runs.map(run => {
+    if (run.preservedProperties !== undefined && (!Array.isArray(run.preservedProperties) || run.preservedProperties.length > 0)) throw new Error('UNSUPPORTED_FEATURE: preserved run properties cannot be authored');
+    if (run.style === undefined) return { text: run.text };
+    const style = run.style;
+    if (!isRecord(style) || Object.keys(style).some(key => !['fontFamily', 'fontSizePx', 'bold', 'italic', 'underline', 'strikethrough', 'textColor', 'verticalAlignment'].includes(key))
+      || ['bold', 'italic', 'underline', 'strikethrough'].some(key => style[key] !== undefined && typeof style[key] !== 'boolean')
+      || style.fontSizePx !== undefined && (typeof style.fontSizePx !== 'number' || !Number.isFinite(style.fontSizePx) || style.fontSizePx <= 0 || style.fontSizePx > 8192)
+      || style.textColor !== undefined && (typeof style.textColor !== 'string' || !style.textColor.trim())
+      || style.verticalAlignment !== undefined && (typeof style.verticalAlignment !== 'string' || !['baseline', 'superscript', 'subscript'].includes(style.verticalAlignment))) throw new Error('CELL_ENTRY_RICH_TEXT_INVALID: run style is invalid');
+    return { text: run.text, style: { ...style, ...(style.fontFamily === undefined ? {} : { fontFamily: normalizeFontFamily(style.fontFamily) }) } } as RichTextRun;
+  });
+}
+
 export interface CommitRichTextParams {
   sheetId: string;
   row: number;
@@ -136,6 +153,14 @@ export interface CommitTextCellsParams {
     inputContext: CellInputInterpretationContext;
     style?: Partial<CellStyle>;
   }>;
+  validationConfirmation?: boolean;
+}
+
+export const MAX_OBJECT_RANGE_CELLS = 10_000;
+export interface CommitMatrixParams {
+  sheetId: string;
+  range: RangeRef;
+  entries: Array<{ row: number; column: number; input: { kind: 'value'; value: CellData['value'] } | { kind: 'formula'; formula: string }; inputContext: CellInputInterpretationContext }>;
   validationConfirmation?: boolean;
 }
 
@@ -218,7 +243,8 @@ export interface DeleteRowParams {
 export interface ResizeRowParams {
   sheetId: string;
   row: number;
-  heightPx: number;
+  /** null removes the explicit override; the default remains owned by the worksheet. */
+  heightPx: number | null;
 }
 
 export interface InsertColumnParams {
@@ -236,7 +262,8 @@ export interface DeleteColumnParams {
 export interface ResizeColumnParams {
   sheetId: string;
   column: number;
-  widthPx: number;
+  /** null removes the explicit override; the default remains owned by the worksheet. */
+  widthPx: number | null;
 }
 
 export interface ColumnsVisibilityParams {
@@ -962,6 +989,11 @@ function isNameSetMutation(value: unknown): value is { model: DefinedNameModel }
     && (value.model.scope === 'workbook' || typeof value.model.sheetId === 'string');
 }
 
+function isNameRestoreMutation(value: unknown): value is { model: DefinedNameModel; position: number } {
+  return isNameSetMutation(value) && Object.keys(value).every(key => key === 'model' || key === 'position')
+    && Number.isSafeInteger((value as { position?: unknown }).position) && Number((value as { position?: unknown }).position) >= 0;
+}
+
 function isNameRemoveMutation(value: unknown): value is { name: string } {
   return isRecord(value) && typeof value.name === 'string' && value.name.trim().length > 0;
 }
@@ -990,6 +1022,10 @@ function assertCanonicalCheckboxCell(cell: CellData | undefined): void {
   if (!Object.is(normalized, cell.value)) throw new Error('Checkbox cell value must match one configured canonical state');
 }
 
+function isDimensionOverride(value: unknown): value is number | null {
+  return value === null || (typeof value === 'number' && Number.isFinite(value) && value > 0);
+}
+
 export function registerSheetCommands(runtime: CommandRuntime): void {
   registerEditingCommands(runtime);
   registerDataToolCommands(runtime);
@@ -1011,6 +1047,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       sheet.columnCount = item.params.columnCount;
     },
     metadata: {
+      calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
       schema: { name: 'SheetExtentGrow', validate: isSheetExtentMutation },
       permission: { capability: 'sheet.cell.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: () => [], mode: 'exact' },
@@ -1026,6 +1063,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       sheet.columnCount = item.params.columnCount;
     },
     metadata: {
+      calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
       schema: { name: 'SheetExtentRestore', validate: isSheetExtentMutation },
       permission: { capability: 'navigate', roles: ['owner', 'editor', 'commenter', 'viewer'] },
       affectedRanges: { resolve: () => [], mode: 'exact' },
@@ -1076,6 +1114,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       context.workbook.name = item.params.name;
     },
     metadata: {
+      calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
       schema: { name: 'RenameWorkbook', validate: isRenameWorkbookMutation },
       permission: { capability: 'workbook.rename', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: () => [], mode: 'exact' },
@@ -1111,11 +1150,11 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       context.workbook.addSheet(params.id, params.name, params.rowCount, params.columnCount);
     },
     metadata: {
+      calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false, context: CALCULATION_CONTEXT_EFFECTS.rebuild },
       schema: { name: 'AddSheet', validate: isAddSheetMutation },
       permission: { capability: 'sheet.structure.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: () => [], mode: 'exact' },
       historyRebase: { kind: 'invalidate', reason: 'worksheet identity changes have no canonical history transform' },
-      calculationContextEffect: CALCULATION_CONTEXT_EFFECTS.rebuild,
       inverseIds: ['sheet.remove'],
     },
   });
@@ -1127,11 +1166,11 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       return planSheetIdentityTransform(context.workbook, { kind: 'delete', sourceSheetId: source.id, sourceName: source.name }).apply();
     },
     metadata: {
+      calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false, context: CALCULATION_CONTEXT_EFFECTS.rebuild },
       schema: { name: 'RemoveSheet', validate: isSheetIdMutation },
       permission: { capability: 'sheet.structure.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: () => [], mode: 'declared' },
       historyRebase: { kind: 'invalidate', reason: 'worksheet identity changes have no canonical history transform' },
-      calculationContextEffect: CALCULATION_CONTEXT_EFFECTS.rebuild,
       inverseIds: ['sheet.restore'],
     },
   });
@@ -1146,6 +1185,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       return context.workbook.renameSheet(params.sheetId, params.name);
     },
     metadata: {
+      calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
       schema: { name: 'RenameSheet', validate: isRenameSheetMutation },
       permission: { capability: 'sheet.structure.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: () => [], mode: 'exact' },
@@ -1160,11 +1200,11 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       context.workbook.restoreSheetSnapshot(item.params.sheet, item.params.index);
     },
     metadata: {
+      calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false, context: CALCULATION_CONTEXT_EFFECTS.rebuild },
       schema: { name: 'RestoreSheet', validate: isSheetRestoreMutation },
       permission: { capability: 'sheet.structure.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: ({ sheet }) => [{ sheetId: sheet.id, startRow: 0, endRow: sheet.rowCount - 1, startColumn: 0, endColumn: sheet.columnCount - 1 }], mode: 'exact' },
       historyRebase: { kind: 'invalidate', reason: 'worksheet identity changes have no canonical history transform' },
-      calculationContextEffect: CALCULATION_CONTEXT_EFFECTS.rebuild,
       inverseIds: ['sheet.remove'],
     },
   });
@@ -1177,6 +1217,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       context.workbook.getSheet(params.sheetId).tableSheet = definition;
     },
     metadata: {
+      calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
       schema: { name: 'TableSheetDefinitionUpdate', validate: (value: unknown) => isRecord(value) && typeof value.sheetId === 'string' && isTableSheetDefinition(value.definition) },
       permission: { capability: 'table-sheet.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: (params) => sheetScopeRange(params), mode: 'declared' },
@@ -1191,6 +1232,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       context.workbook.getSheet(params.sheetId).ganttSheet = normalizeGanttSheetDefinition(context.workbook, params);
     },
     metadata: {
+      calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
       schema: { name: 'GanttSheetDefinitionUpdate', validate: (value: unknown) => isRecord(value) && typeof value.sheetId === 'string' && isGanttSheetDefinition(value.definition) },
       permission: { capability: 'gantt-sheet.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: (params) => sheetScopeRange(params), mode: 'declared' },
@@ -1205,6 +1247,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       context.workbook.getSheet(params.sheetId).reportSheet = normalizeReportSheetDefinition(context.workbook, params);
     },
     metadata: {
+      calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
       schema: { name: 'ReportSheetDefinitionUpdate', validate: (value: unknown) => isRecord(value) && typeof value.sheetId === 'string' && isReportSheetDefinition(value.definition) },
       permission: { capability: 'report-sheet.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: (params) => sheetScopeRange(params), mode: 'declared' },
@@ -1383,10 +1426,10 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       context.workbook.addTable(item.params);
     },
     metadata: {
+      calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false, context: CALCULATION_CONTEXT_EFFECTS.syncTables },
       schema: { name: 'WorkbookTableModel', validate: isWorkbookTableMutation },
       permission: { capability: 'workbook.table.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: workbookTableRanges, mode: 'exact' },
-      calculationContextEffect: CALCULATION_CONTEXT_EFFECTS.syncTables,
       inverseIds: ['table.remove'],
     },
   });
@@ -1397,10 +1440,10 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       context.workbook.removeTable(item.params.tableId);
     },
     metadata: {
+      calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false, context: CALCULATION_CONTEXT_EFFECTS.syncTables },
       schema: { name: 'TableRemove', validate: isTableRemoveMutation },
       permission: { capability: 'workbook.table.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: tableRemoveRanges, mode: 'declared' },
-      calculationContextEffect: CALCULATION_CONTEXT_EFFECTS.syncTables,
       inverseIds: ['table.add'],
     },
   });
@@ -1450,6 +1493,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       context.workbook.getSheet(params.sheetId).cells.set(params.row, params.column, value);
     },
     metadata: {
+      calculation: { inputs: 'cells' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
       schema: { name: 'SetCellValue', validate: isCellSetMutationParams },
       permission: { capability: 'sheet.cell.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: cellRange, mode: 'exact' },
@@ -1464,6 +1508,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       restoreCell(context.workbook, item as MutationInfo<{ row: number; column: number; previous?: CellData }>);
     },
     metadata: {
+      calculation: { inputs: 'cells' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
       schema: { name: 'RestoreCell', validate: isCellRestoreMutation },
       permission: { capability: 'sheet.cell.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: cellRange, mode: 'declared' },
@@ -1540,31 +1585,12 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
   runtime.registry.registerCommand<CommitRichTextParams>({
     id: 'sheet.cell.commitRichText',
     execute: (params, context) => {
-      if (typeof params.text !== 'string' || !Array.isArray(params.runs) || params.runs.some((run) => typeof run.text !== 'string')) {
-        throw new CellEntryError({
-          code: 'CELL_ENTRY_RICH_TEXT_INVALID',
-          message: 'Rich-text commit requires text and canonical runs',
-          sheetId: params.sheetId,
-          row: params.row,
-          column: params.column,
-          recovery: 'Submit a canonical rich-text draft with text-preserving runs.',
-        });
-      }
-      if (params.runs.map((run) => run.text).join('') !== params.text) {
-        throw new CellEntryError({
-          code: 'CELL_ENTRY_RICH_TEXT_INVALID',
-          message: 'Rich-text runs do not reproduce the canonical plain text',
-          sheetId: params.sheetId,
-          row: params.row,
-          column: params.column,
-          recovery: 'Normalize the run sequence before committing.',
-        });
-      }
+      const runs = authoredRichText(params.text, params.runs);
       const sheet = context.workbook.getSheet(params.sheetId);
       const previous = sheet.cells.get(params.row, params.column);
       const next = clearFormulaProvenance(previous ? structuredClone(previous) : { value: null });
       next.value = params.text;
-      next.richText = structuredClone(params.runs);
+      next.richText = structuredClone(runs);
       delete next.formula;
       delete next.formulaValue;
       delete next.displayValue;
@@ -1638,10 +1664,36 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
     },
   });
 
+  runtime.registry.registerCommand<CommitMatrixParams>({
+    id: 'sheet.cells.commitMatrix',
+    execute: (params, context) => {
+      const target = { sheetId: params.sheetId, row: params.range?.startRow ?? 0, column: params.range?.startColumn ?? 0 };
+      if (!isRange(params.range) || params.range.sheetId !== params.sheetId || !Array.isArray(params.entries)) rejectCellEntry(target, 'Matrix requires a canonical rectangular range and complete entries', 'Submit one ordered explicit matrix.');
+      const sheet = context.workbook.getSheet(params.sheetId), width = params.range.endColumn - params.range.startColumn + 1;
+      const area = (params.range.endRow - params.range.startRow + 1) * width;
+      if (sheet.kind !== 'worksheet' || area < 1 || area > MAX_OBJECT_RANGE_CELLS || area !== params.entries.length || params.range.endRow >= sheet.rowCount || params.range.endColumn >= sheet.columnCount) rejectCellEntry(target, 'Matrix exceeds its worksheet ownership, extent, dimensions or cell budget', 'Use writable worksheet cells and explicit extent growth before a bounded matrix.');
+      const prepared = params.entries.map((entry, index) => {
+        if (!entry || entry.row !== params.range.startRow + Math.floor(index / width) || entry.column !== params.range.startColumn + index % width) rejectCellEntry(target, 'Matrix entries must cover the range exactly in row-major order', 'Submit all unique targets in canonical order.');
+        const previous = sheet.cells.get(entry.row, entry.column), input = entry.input;
+        let next: CellData;
+        if (input?.kind === 'value' && (input.value === null || typeof input.value === 'string' || typeof input.value === 'boolean' || typeof input.value === 'number' && Number.isFinite(input.value))) {
+          next = clearFormulaProvenance(previous ? structuredClone(previous) : { value: null });
+          next.value = input.value; delete next.formula; delete next.formulaValue; delete next.displayValue; delete next.richText;
+        } else if (input?.kind === 'formula' && typeof input.formula === 'string' && input.formula.startsWith('=') && input.formula.length > 1) next = buildCellFromText(input.formula, previous, entry.inputContext);
+        else rejectCellEntry({ sheetId: params.sheetId, row: entry.row, column: entry.column }, 'Matrix input must be a finite typed scalar or an explicit formula', 'Correct the entire matrix before resubmitting.');
+        if (previous?.editor?.kind === 'checkbox') next.value = normalizeCheckboxCellValue(next, previous.editor);
+        return prepareCellEntry({ sheetId: params.sheetId, row: entry.row, column: entry.column, validationConfirmation: params.validationConfirmation }, next, context);
+      });
+      for (const entry of prepared) applyPreparedCellEntry(entry, context);
+      return { operationId: context.operationId, mutationCount: prepared.length, affectedRanges: prepared.flatMap(entry => entry.affectedRanges) };
+    },
+  });
+
   runtime.registry.registerCommand<CommitRichTextCellsParams>({
     id: 'sheet.cells.commitRichText',
     execute: (params, context) => {
-      if (!Array.isArray(params.targets) || params.targets.length === 0 || params.runs.map((run) => run.text).join('') !== params.text) rejectCellEntry(params.targets?.[0] ?? { sheetId: context.workbook.primarySheetId, row: 0, column: 0 }, 'Multi-cell rich-text commit payload is invalid', 'Submit text-preserving rich-text runs and at least one canonical target.');
+      const runs = authoredRichText(params.text, params.runs);
+      if (!Array.isArray(params.targets) || params.targets.length === 0 || params.targets.length > MAX_OBJECT_RANGE_CELLS) rejectCellEntry(params.targets?.[0] ?? { sheetId: context.workbook.primarySheetId, row: 0, column: 0 }, 'Multi-cell rich-text commit payload is invalid', 'Submit text-preserving rich-text runs and at least one canonical target.');
       const identities = new Set<string>();
       const prepared = params.targets.map((target) => {
         const identity = `${target.sheetId}:${target.row}:${target.column}`;
@@ -1651,7 +1703,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
         const previous = sheet.cells.get(target.row, target.column);
         const next = clearFormulaProvenance(previous ? structuredClone(previous) : { value: null });
         next.value = params.text;
-        next.richText = structuredClone(params.runs);
+        next.richText = structuredClone(runs);
         delete next.formula;
         delete next.formulaValue;
         delete next.displayValue;
@@ -1678,6 +1730,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       }
     },
     metadata: {
+      calculation: { inputs: 'cells' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
       schema: { name: 'SetRangeValues', validate: isSetRangeMutation },
       permission: { capability: 'sheet.cell.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: setRangeAffectedRanges, mode: 'declared' },
@@ -1781,6 +1834,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       applyClearRangePlan(sheet, createClearRangePlan(sheet, params));
     },
     metadata: {
+      calculation: { inputs: 'cells' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
       schema: { name: 'ClearRange', validate: isClearRangeMutation },
       permission: { capability: 'sheet.cell.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: (params) => [structuredClone(params.range)], mode: 'exact' },
@@ -1797,6 +1851,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       restoreClearRangeSnapshot(sheet, params.range, params.snapshot);
     },
     metadata: {
+      calculation: { inputs: 'cells' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
       schema: { name: 'ClearRangeRestore', validate: isClearRangeRestoreMutation },
       permission: { capability: 'sheet.cell.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: (params) => [structuredClone(params.range)], mode: 'exact' },
@@ -1837,6 +1892,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
     }
     },
     metadata: {
+      calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
       schema: { name: 'StyleSet', validate: isStyleMutation },
       permission: { capability: 'sheet.format.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: styleAffectedRanges, mode: 'declared' },
@@ -1991,6 +2047,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       sheet.merges.push({ range: params.range, anchor: { row: params.range.startRow, column: params.range.startColumn } });
     },
     metadata: {
+      calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'ranges' as const, mode: false },
       schema: { name: 'SetMerge', validate: (value: unknown) => isRecord(value) && typeof value.sheetId === 'string' && isRange(value.range) },
       permission: { capability: 'sheet.merge.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: (params) => [structuredClone(params.range)], mode: 'exact' },
@@ -2007,6 +2064,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       if (idx >= 0) sheet.merges.splice(idx, 1);
     },
     metadata: {
+      calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'ranges' as const, mode: false },
       schema: { name: 'RemoveMerge', validate: (value: unknown) => isRecord(value) && typeof value.sheetId === 'string' && isRange(value.range) },
       permission: { capability: 'sheet.merge.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: (params) => [structuredClone(params.range)], mode: 'exact' },
@@ -2093,6 +2151,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       context.workbook.getSheet(params.sheetId).pane = { ...params.pane };
     },
     metadata: {
+      calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
       schema: { name: 'SetPane', validate: (value: unknown) => isRecord(value) && typeof value.sheetId === 'string' && isCanonicalWorksheetPane(value.pane) },
       permission: { capability: 'sheet.view.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: () => [], mode: 'exact' },
@@ -2134,12 +2193,16 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
   runtime.registry.registerMutation<ResizeRowParams>({
     id: 'row.resize',
     handler: (item, context) => {
-      if (!isRecord(item.params) || typeof item.params.sheetId !== 'string' || !Number.isInteger(item.params.row) || typeof item.params.heightPx !== 'number' || item.params.heightPx <= 0) throw new Error('Invalid row.resize mutation payload');
+      if (!isRecord(item.params) || typeof item.params.sheetId !== 'string' || !Number.isSafeInteger(item.params.row) || Number(item.params.row) < 0 || !isDimensionOverride(item.params.heightPx)) throw new Error('Invalid row.resize mutation payload');
       const params = item.params as ResizeRowParams;
-      context.workbook.getSheet(params.sheetId).rowHeightsPx[params.row] = params.heightPx;
+      const sheet = context.workbook.getSheet(params.sheetId);
+      if (params.row >= sheet.rowCount) throw new Error('Row dimension is outside the worksheet');
+      if (params.heightPx === null) delete sheet.rowHeightsPx[params.row];
+      else sheet.rowHeightsPx[params.row] = params.heightPx;
     },
     metadata: {
-      schema: { name: 'ResizeRowPx', validate: (value: unknown) => isRecord(value) && typeof value.sheetId === 'string' && Number.isInteger(value.row) && typeof value.heightPx === 'number' && Number(value.row) >= 0 && Number(value.heightPx) > 0 },
+      calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
+      schema: { name: 'ResizeRowPx', validate: (value: unknown) => isRecord(value) && typeof value.sheetId === 'string' && Number.isSafeInteger(value.row) && Number(value.row) >= 0 && isDimensionOverride(value.heightPx) },
       permission: { capability: 'sheet.dimension.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: rowAffectedRange, mode: 'declared' },
       inverseIds: ['row.resize'],
@@ -2148,12 +2211,16 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
   runtime.registry.registerMutation<ResizeColumnParams>({
     id: 'column.resize',
     handler: (item, context) => {
-      if (!isRecord(item.params) || typeof item.params.sheetId !== 'string' || !Number.isInteger(item.params.column) || typeof item.params.widthPx !== 'number' || item.params.widthPx <= 0) throw new Error('Invalid column.resize mutation payload');
+      if (!isRecord(item.params) || typeof item.params.sheetId !== 'string' || !Number.isSafeInteger(item.params.column) || Number(item.params.column) < 0 || !isDimensionOverride(item.params.widthPx)) throw new Error('Invalid column.resize mutation payload');
       const params = item.params as ResizeColumnParams;
-      context.workbook.getSheet(params.sheetId).columnWidthsPx[params.column] = params.widthPx;
+      const sheet = context.workbook.getSheet(params.sheetId);
+      if (params.column >= sheet.columnCount) throw new Error('Column dimension is outside the worksheet');
+      if (params.widthPx === null) delete sheet.columnWidthsPx[params.column];
+      else sheet.columnWidthsPx[params.column] = params.widthPx;
     },
     metadata: {
-      schema: { name: 'ResizeColumnPx', validate: (value: unknown) => isRecord(value) && typeof value.sheetId === 'string' && Number.isInteger(value.column) && typeof value.widthPx === 'number' && Number(value.column) >= 0 && Number(value.widthPx) > 0 },
+      calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
+      schema: { name: 'ResizeColumnPx', validate: (value: unknown) => isRecord(value) && typeof value.sheetId === 'string' && Number.isSafeInteger(value.column) && Number(value.column) >= 0 && isDimensionOverride(value.widthPx) },
       permission: { capability: 'sheet.dimension.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: columnAffectedRange, mode: 'declared' },
       inverseIds: ['column.resize'],
@@ -2166,6 +2233,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       context.workbook.getSheet(item.params.sheetId).defaultColumnWidthPx = item.params.widthPx;
     },
     metadata: {
+      calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
       schema: { name: 'ResizeDefaultColumnWidthPx', validate: (value: unknown) => isRecord(value) && typeof value.sheetId === 'string' && typeof value.widthPx === 'number' && Number.isFinite(value.widthPx) && value.widthPx > 0 },
       permission: { capability: 'sheet.dimension.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: sheetScopeRange, mode: 'declared' },
@@ -2173,16 +2241,23 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
     },
   });
 
-  runtime.registry.registerCommand<{ sheetId: string; rows?: Array<Omit<ResizeRowParams, 'sheetId'>>; columns?: Array<Omit<ResizeColumnParams, 'sheetId'>> }>({
+  runtime.registry.registerCommand<{ sheetId: string; rows?: Array<Omit<ResizeRowParams, 'sheetId'> & { heightPx: number; hidden?: boolean }>; columns?: Array<Omit<ResizeColumnParams, 'sheetId'> & { widthPx: number; hidden?: boolean }> }>({
     id: 'sheet.dimensions.apply',
     execute: (params, context) => {
       const sheet = context.workbook.getSheet(params.sheetId);
-      const affectedRanges: RangeRef[] = [];
+      // Validate the entire plan before applying dimensions or visibility.
+      for (const row of params.rows ?? []) if (!Number.isSafeInteger(row.row) || row.row < 0 || row.row >= sheet.rowCount || !Number.isFinite(row.heightPx) || row.heightPx <= 0 || (row.hidden !== undefined && typeof row.hidden !== 'boolean')) throw new Error('Invalid row dimension plan');
+      for (const column of params.columns ?? []) if (!Number.isSafeInteger(column.column) || column.column < 0 || column.column >= sheet.columnCount || !Number.isFinite(column.widthPx) || column.widthPx <= 0 || (column.hidden !== undefined && typeof column.hidden !== 'boolean')) throw new Error('Invalid column dimension plan');
+      const affectedRanges: RangeRef[] = [
+        ...(params.rows ?? []).flatMap(row => rowAffectedRange({ sheetId: params.sheetId, row: row.row })),
+        ...(params.columns ?? []).flatMap(column => columnAffectedRange({ sheetId: params.sheetId, column: column.column })),
+      ];
       let mutationCount = 0;
       for (const row of params.rows ?? []) {
         if (!Number.isSafeInteger(row.row) || row.row < 0 || !Number.isFinite(row.heightPx) || row.heightPx <= 0) throw new Error('Invalid row pixel size');
-        const mutationParams: ResizeRowParams = { sheetId: params.sheetId, ...row };
-        const previousHeightPx = sheet.rowHeightsPx[row.row] ?? sheet.defaultRowHeightPx;
+        const mutationParams: ResizeRowParams = { sheetId: params.sheetId, row: row.row, heightPx: row.heightPx };
+        if (row.hidden !== undefined) runtime.execute('sheet.rows.visibility.set', { sheetId: params.sheetId, rows: [row.row], hidden: row.hidden });
+        const previousHeightPx = sheet.rowHeightsPx[row.row] ?? null;
         context.applyMutation({
           id: 'row.resize', unitId: context.workbook.unitId, sheetId: params.sheetId, params: mutationParams, affectedRanges,
           inverse: [{ id: 'row.resize', unitId: context.workbook.unitId, sheetId: params.sheetId, params: { sheetId: params.sheetId, row: row.row, heightPx: previousHeightPx }, affectedRanges }],
@@ -2192,8 +2267,9 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       }
       for (const column of params.columns ?? []) {
         if (!Number.isSafeInteger(column.column) || column.column < 0 || !Number.isFinite(column.widthPx) || column.widthPx <= 0) throw new Error('Invalid column pixel size');
-        const mutationParams: ResizeColumnParams = { sheetId: params.sheetId, ...column };
-        const previousWidthPx = sheet.columnWidthsPx[column.column] ?? sheet.defaultColumnWidthPx;
+        const mutationParams: ResizeColumnParams = { sheetId: params.sheetId, column: column.column, widthPx: column.widthPx };
+        if (column.hidden !== undefined) runtime.execute('sheet.columns.visibility.set', { sheetId: params.sheetId, columns: [column.column], hidden: column.hidden });
+        const previousWidthPx = sheet.columnWidthsPx[column.column] ?? null;
         context.applyMutation({
             id: 'column.resize',
             unitId: context.workbook.unitId,
@@ -2244,6 +2320,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       return applyStructuralTransform(context, { kind: 'insert-rows', sheetId: params.sheetId, at: params.at, count: params.count });
     },
     metadata: {
+      calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
       schema: { name: 'RowsInserted', validate: isSheetAtCountMutation },
       permission: { capability: 'sheet.structure.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: structuralAffectedRanges, mode: 'declared' },
@@ -2259,6 +2336,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       return applyStructuralTransform(context, { kind: 'delete-rows', sheetId: params.sheetId, at: params.at, count: params.count });
     },
     metadata: {
+      calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
       schema: { name: 'RowsDeleted', validate: isSheetAtCountMutation },
       permission: { capability: 'sheet.structure.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: structuralAffectedRanges, mode: 'declared' },
@@ -2274,6 +2352,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       return applyStructuralTransform(context, { kind: 'insert-columns', sheetId: params.sheetId, at: params.at, count: params.count });
     },
     metadata: {
+      calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
       schema: { name: 'ColumnsInserted', validate: isSheetAtCountMutation },
       permission: { capability: 'sheet.structure.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: columnStructuralAffectedRanges, mode: 'declared' },
@@ -2289,6 +2368,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       return applyStructuralTransform(context, { kind: 'delete-columns', sheetId: params.sheetId, at: params.at, count: params.count });
     },
     metadata: {
+      calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
       schema: { name: 'ColumnsDeleted', validate: isSheetAtCountMutation },
       permission: { capability: 'sheet.structure.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: columnStructuralAffectedRanges, mode: 'declared' },
@@ -2304,6 +2384,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       context.workbook.getSheet(params.sheetId).hiddenRows.add(params.index);
     },
     metadata: {
+      calculation: { inputs: 'none' as const, visibility: true, spillBlockers: 'none' as const, mode: false },
       schema: { name: 'RowHidden', validate: isSheetIndexMutation },
       permission: { capability: 'sheet.visibility.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: (params) => rowAffectedRange({ sheetId: params.sheetId, row: params.index }), mode: 'declared' },
@@ -2321,6 +2402,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       }
     },
     metadata: {
+      calculation: { inputs: 'none' as const, visibility: true, spillBlockers: 'none' as const, mode: false },
       schema: { name: 'RowsVisibility', validate: isRowVisibilityMutation },
       permission: { capability: 'sheet.visibility.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: rowsVisibilityAffectedRanges, mode: 'declared' },
@@ -2338,6 +2420,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       }
     },
     metadata: {
+      calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
       schema: { name: 'ColumnsVisibility', validate: isColumnVisibilityMutation },
       permission: { capability: 'sheet.visibility.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: (params) => params.states.map((state) => columnAffectedRange({ sheetId: params.sheetId, column: state.column })[0]!), mode: 'declared' },
@@ -2352,6 +2435,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       context.workbook.getSheet(params.sheetId).hiddenRows.delete(params.index);
     },
     metadata: {
+      calculation: { inputs: 'none' as const, visibility: true, spillBlockers: 'none' as const, mode: false },
       schema: { name: 'RowUnhidden', validate: isSheetIndexMutation },
       permission: { capability: 'sheet.visibility.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: (params) => rowAffectedRange({ sheetId: params.sheetId, row: params.index }), mode: 'declared' },
@@ -2365,6 +2449,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       context.workbook.getSheet(item.params.sheetId).hiddenRows.clear();
     },
     metadata: {
+      calculation: { inputs: 'none' as const, visibility: true, spillBlockers: 'none' as const, mode: false },
       schema: { name: 'RowsUnhiddenAll', validate: (value: unknown) => isRecord(value) && typeof value.sheetId === 'string' },
       permission: { capability: 'sheet.visibility.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: sheetScopeRange, mode: 'declared' },
@@ -2381,6 +2466,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       for (const index of params.indices) hiddenRows.add(index);
     },
     metadata: {
+      calculation: { inputs: 'none' as const, visibility: true, spillBlockers: 'none' as const, mode: false },
       schema: { name: 'RowsHiddenRestore', validate: isSheetIndicesMutation },
       permission: { capability: 'sheet.visibility.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: sheetScopeRange, mode: 'declared' },
@@ -2395,6 +2481,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       context.workbook.getSheet(params.sheetId).hiddenColumns.add(params.index);
     },
     metadata: {
+      calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
       schema: { name: 'ColumnHidden', validate: isSheetIndexMutation },
       permission: { capability: 'sheet.visibility.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: (params) => columnAffectedRange({ sheetId: params.sheetId, column: params.index }), mode: 'declared' },
@@ -2409,6 +2496,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       context.workbook.getSheet(params.sheetId).hiddenColumns.delete(params.index);
     },
     metadata: {
+      calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
       schema: { name: 'ColumnUnhidden', validate: isSheetIndexMutation },
       permission: { capability: 'sheet.visibility.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: (params) => columnAffectedRange({ sheetId: params.sheetId, column: params.index }), mode: 'declared' },
@@ -2422,6 +2510,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       context.workbook.getSheet(item.params.sheetId).hiddenColumns.clear();
     },
     metadata: {
+      calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
       schema: { name: 'ColumnsUnhiddenAll', validate: (value: unknown) => isRecord(value) && typeof value.sheetId === 'string' },
       permission: { capability: 'sheet.visibility.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: sheetScopeRange, mode: 'declared' },
@@ -2438,6 +2527,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       for (const index of params.indices) hiddenColumns.add(index);
     },
     metadata: {
+      calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
       schema: { name: 'ColumnsHiddenRestore', validate: isSheetIndicesMutation },
       permission: { capability: 'sheet.visibility.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: sheetScopeRange, mode: 'declared' },
@@ -2767,6 +2857,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       sheet.autoFilter = validateFilterOwnership(sheet, params.autoFilter, { kind: 'worksheet' });
     },
     metadata: {
+      calculation: { inputs: 'none' as const, visibility: true, spillBlockers: 'none' as const, mode: false },
       schema: { name: 'AutoFilterSet', validate: isFilterMutation },
       permission: { capability: 'sheet.autoFilter.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: (params) => [structuredClone(params.autoFilter.range)], mode: 'exact' },
@@ -2780,6 +2871,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       context.workbook.getSheet(item.params.sheetId).autoFilter = undefined;
     },
     metadata: {
+      calculation: { inputs: 'none' as const, visibility: true, spillBlockers: 'none' as const, mode: false },
       schema: { name: 'AutoFilterRemove', validate: isFilterRemoveMutation },
       permission: { capability: 'sheet.autoFilter.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: (params) => params.range ? [structuredClone(params.range)] : [], mode: 'declared' },
@@ -2863,6 +2955,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       sheet.conditionalFormats.push(structuredClone(params.rule));
     },
     metadata: {
+      calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
       schema: { name: 'ConditionalFormatAdd', validate: isConditionalAddMutation },
       permission: { capability: 'sheet.conditional-format.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: ruleRanges, mode: 'exact' },
@@ -2883,6 +2976,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       sheet.conditionalFormats.splice(index, 1);
     },
     metadata: {
+      calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
       schema: { name: 'ConditionalFormatRemove', validate: isRuleRemoveMutation },
       permission: { capability: 'sheet.conditional-format.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: removeRuleRanges, mode: 'exact' },
@@ -2903,6 +2997,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       sheet.conditionalFormats.length = 0;
     },
     metadata: {
+      calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
       schema: { name: 'ConditionalFormatClear', validate: isSheetRangesMutation },
       permission: { capability: 'sheet.conditional-format.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: (params) => params.ranges.map((range) => structuredClone(range)), mode: 'exact' },
@@ -2964,6 +3059,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       sheet.conditionalFormats[index] = structuredClone(item.params.after);
     },
     metadata: {
+      calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
       schema: { name: 'ConditionalFormatUpdate', validate: isConditionalFormatUpdateMutation },
       permission: { capability: 'sheet.conditional-format.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: (params) => params.ranges.map((range) => structuredClone(range)), mode: 'exact' },
@@ -3071,6 +3167,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       sheet.dataValidations.push(structuredClone(params.rule));
     },
     metadata: {
+      calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
       schema: { name: 'DataValidationAdd', validate: isDataValidationAddMutation },
       permission: { capability: 'sheet.data-validation.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: ruleRanges, mode: 'exact' },
@@ -3091,6 +3188,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       sheet.dataValidations.splice(index, 1);
     },
     metadata: {
+      calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
       schema: { name: 'DataValidationRemove', validate: isRuleRemoveMutation },
       permission: { capability: 'sheet.data-validation.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: removeRuleRanges, mode: 'exact' },
@@ -3183,6 +3281,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       sheet.bandedRule = params.rule ? structuredClone(params.rule) : undefined;
     },
     metadata: {
+      calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
       schema: { name: 'BandedRuleSet', validate: isBandedMutation },
       permission: { capability: 'sheet.format.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: (params) => params.rule ? [structuredClone(params.rule.range)] : [], mode: 'declared' },
@@ -3225,11 +3324,28 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       context.workbook.setDefinedName(item.params.model);
     },
     metadata: {
+      calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false, context: CALCULATION_CONTEXT_EFFECTS.syncDefinedNames },
       schema: { name: 'DefinedNameSet', validate: isNameSetMutation },
       permission: { capability: 'workbook.defined-name.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: () => [], mode: 'exact' },
-      calculationContextEffect: CALCULATION_CONTEXT_EFFECTS.syncDefinedNames,
       inverseIds: ['name.set', 'name.remove'],
+    },
+  });
+  runtime.registry.registerMutation<{ model: DefinedNameModel; position: number }>({
+    id: 'name.restore',
+    handler: (item, context) => {
+      if (!isNameRestoreMutation(item.params)) throw new Error('Invalid name.restore mutation payload');
+      const model = item.params.model;
+      if (model.scope === 'sheet') context.workbook.getSheet(model.sheetId!);
+      if (model.anchor) context.workbook.getSheet(model.anchor.sheetId);
+      context.workbook.restoreDefinedName(model, item.params.position);
+    },
+    metadata: {
+      calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false, context: CALCULATION_CONTEXT_EFFECTS.syncDefinedNames },
+      schema: { name: 'DefinedNameRestore', validate: isNameRestoreMutation },
+      permission: { capability: 'workbook.defined-name.write', roles: ['owner', 'editor'] },
+      affectedRanges: { resolve: () => [], mode: 'exact' },
+      inverseIds: ['name.remove'],
     },
   });
   runtime.registry.registerMutation<{ name: string; scope?: 'workbook' | 'sheet'; sheetId?: string }>({
@@ -3240,35 +3356,22 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
       context.workbook.removeDefinedName(params.name, params.scope ?? 'workbook', params.sheetId);
     },
     metadata: {
+      calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false, context: CALCULATION_CONTEXT_EFFECTS.syncDefinedNames },
       schema: { name: 'DefinedNameRemove', validate: isNameRemoveMutation },
       permission: { capability: 'workbook.defined-name.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: () => [], mode: 'exact' },
-      calculationContextEffect: CALCULATION_CONTEXT_EFFECTS.syncDefinedNames,
-      inverseIds: ['name.set'],
+      inverseIds: ['name.restore'],
     },
   });
-  runtime.registry.registerCommand<{
-    name: string;
-    value?: string;
-    formula?: string;
-    scope?: 'workbook' | 'sheet';
-    sheetId?: string;
-    hidden?: boolean;
-    comment?: string;
-  }>({
+  runtime.registry.registerCommand<DefinedNameModel>({
     id: 'workbook.name.set',
     execute: (params, context) => {
-      const model: DefinedNameModel = {
-        name: params.name,
-        formula: params.formula ?? params.value ?? '',
-        scope: params.scope ?? 'workbook',
-        ...(params.sheetId ? { sheetId: params.sheetId } : {}),
-        ...(params.hidden === undefined ? {} : { hidden: params.hidden }),
-        ...(params.comment === undefined ? {} : { comment: params.comment }),
-      };
-      // Validate before opening a mutation so invalid scope/name input cannot
-      // create a history entry or leave the legacy formula view half updated.
+      if (!isRecord(params) || Object.keys(params).some(key => !['name', 'formula', 'scope', 'sheetId', 'anchor', 'hidden', 'comment'].includes(key))
+        || typeof params.name !== 'string' || typeof params.formula !== 'string' || (params.scope !== 'workbook' && params.scope !== 'sheet')) throw new Error('DEFINED_NAME_INVALID: canonical name, formula and explicit scope are required');
+      const model = structuredClone(params);
       const normalized = normalizeDefinedNameModel(model);
+      if (normalized.scope === 'sheet') context.workbook.getSheet(normalized.sheetId!);
+      if (normalized.anchor) context.workbook.getSheet(normalized.anchor.sheetId);
       const previous = context.workbook.getDefinedNameExact(normalized.name, normalized.scope, normalized.sheetId);
       const affectedRanges: RangeRef[] = [];
       context.applyMutation({
@@ -3292,6 +3395,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
     execute: (params, context) => {
       const previous = context.workbook.getDefinedNameExact(params.name, params.scope ?? 'workbook', params.sheetId);
       if (previous === undefined || previous.scope !== (params.scope ?? 'workbook') || previous.sheetId !== params.sheetId) return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
+      const position = context.workbook.definedNameModels.findIndex(model => model.name.toUpperCase() === previous.name.toUpperCase() && model.scope === previous.scope && model.sheetId === previous.sheetId);
       const affectedRanges: RangeRef[] = [];
       context.applyMutation({
         id: 'name.remove',
@@ -3300,7 +3404,7 @@ export function registerSheetCommands(runtime: CommandRuntime): void {
         params,
         affectedRanges,
         inverse: [
-          { id: 'name.set', unitId: context.workbook.unitId, sheetId: context.workbook.primarySheetId, params: { model: previous }, affectedRanges },
+          { id: 'name.restore', unitId: context.workbook.unitId, sheetId: context.workbook.primarySheetId, params: { model: previous, position }, affectedRanges },
         ],
         apply: () => {
           context.workbook.removeDefinedName(params.name, previous.scope, previous.sheetId);

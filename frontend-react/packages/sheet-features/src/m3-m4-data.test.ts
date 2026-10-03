@@ -680,7 +680,7 @@ test('Home, worksheet AutoFilter, and table sorting share the resolved-value own
 test('scoped defined names survive command undo and snapshot round-trip', () => {
   const { workbook, commands } = runtime();
   const local = workbook.addSheet('sheet-2', 'Local');
-  commands.execute('workbook.name.set', { name: 'Rate', value: '0.1' });
+  commands.execute('workbook.name.set', { name: 'Rate', formula: '0.1', scope: 'workbook' });
   commands.execute('workbook.name.set', { name: 'Rate', formula: '0.2', scope: 'sheet', sheetId: local.id });
   assert.equal(workbook.getDefinedName('Rate', local.id)?.formula, '0.2');
   commands.undo();

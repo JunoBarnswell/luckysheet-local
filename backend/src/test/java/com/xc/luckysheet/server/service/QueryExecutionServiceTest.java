@@ -5,7 +5,7 @@ import com.xc.luckysheet.server.config.QueryProperties;
 import com.xc.luckysheet.server.config.QuerySource;
 import com.xc.luckysheet.server.contract.QueryExecutionRequest;
 import com.xc.luckysheet.server.contract.QueryStep;
-import com.xc.luckysheet.server.contract.WorkbookAclRole;
+import com.xc.luckysheet.server.contract.WorkbookRole;
 import com.xc.luckysheet.server.contract.WorkbookLifecycle;
 import com.xc.luckysheet.server.store.WorkbookRow;
 import com.xc.luckysheet.server.store.WorkbookStore;
@@ -64,7 +64,7 @@ class QueryExecutionServiceTest {
             when(store.find("unit-1")).thenReturn(Optional.of(new WorkbookRow("unit-1", "test", "{}", 0, 4,
                     WorkbookLifecycle.ACTIVE, Instant.now(), Instant.now())));
             AccessControlService access = mock(AccessControlService.class);
-            when(access.require("unit-1", "editor", WorkbookAclRole.EDITOR)).thenReturn(WorkbookAclRole.EDITOR);
+            when(access.require("unit-1", "editor", WorkbookRole.EDITOR)).thenReturn(WorkbookRole.EDITOR);
             WorkbookLifecycleService lifecycle = mock(WorkbookLifecycleService.class);
             AuditRecorder audit = mock(AuditRecorder.class);
             QueryProperties properties = new QueryProperties(
@@ -112,7 +112,7 @@ class QueryExecutionServiceTest {
             when(store.find("unit-recipe")).thenReturn(Optional.of(new WorkbookRow("unit-recipe", "test", "{}", 0, 1,
                     WorkbookLifecycle.ACTIVE, Instant.now(), Instant.now())));
             AccessControlService access = mock(AccessControlService.class);
-            when(access.require("unit-recipe", "editor", WorkbookAclRole.EDITOR)).thenReturn(WorkbookAclRole.EDITOR);
+            when(access.require("unit-recipe", "editor", WorkbookRole.EDITOR)).thenReturn(WorkbookRole.EDITOR);
             WorkbookLifecycleService lifecycle = mock(WorkbookLifecycleService.class);
             AuditRecorder audit = mock(AuditRecorder.class);
             QueryProperties properties = new QueryProperties(
@@ -153,8 +153,8 @@ class QueryExecutionServiceTest {
             when(store.find("unit-blocks")).thenReturn(Optional.of(new WorkbookRow("unit-blocks", "test", "{}", 0, 2,
                     WorkbookLifecycle.ACTIVE, Instant.now(), Instant.now())));
             AccessControlService access = mock(AccessControlService.class);
-            when(access.require("unit-blocks", "editor", WorkbookAclRole.EDITOR)).thenReturn(WorkbookAclRole.EDITOR);
-            when(access.require("unit-blocks", "editor", WorkbookAclRole.VIEWER)).thenReturn(WorkbookAclRole.EDITOR);
+            when(access.require("unit-blocks", "editor", WorkbookRole.EDITOR)).thenReturn(WorkbookRole.EDITOR);
+            when(access.require("unit-blocks", "editor", WorkbookRole.VIEWER)).thenReturn(WorkbookRole.EDITOR);
             WorkbookLifecycleService lifecycle = mock(WorkbookLifecycleService.class);
             AuditRecorder audit = mock(AuditRecorder.class);
             QueryProperties properties = new QueryProperties(

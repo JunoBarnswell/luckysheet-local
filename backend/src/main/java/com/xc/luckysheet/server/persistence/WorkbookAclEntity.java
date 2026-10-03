@@ -1,6 +1,6 @@
 package com.xc.luckysheet.server.persistence;
 
-import com.xc.luckysheet.server.contract.WorkbookAclRole;
+import com.xc.luckysheet.server.contract.WorkbookRole;
 import jakarta.persistence.Column;
 import jakarta.persistence.Embeddable;
 import jakarta.persistence.EmbeddedId;
@@ -22,7 +22,7 @@ public class WorkbookAclEntity {
 
     @Enumerated(EnumType.STRING)
     @Column(name = "role", nullable = false, length = 16)
-    private WorkbookAclRole role;
+    private WorkbookRole role;
 
     @Column(name = "created_at", nullable = false)
     private Instant createdAt;
@@ -33,7 +33,7 @@ public class WorkbookAclEntity {
     protected WorkbookAclEntity() {
     }
 
-    public WorkbookAclEntity(String unitId, String subject, WorkbookAclRole role, Instant createdAt, Instant updatedAt) {
+    public WorkbookAclEntity(String unitId, String subject, WorkbookRole role, Instant createdAt, Instant updatedAt) {
         this.id = new Id(unitId, subject);
         this.role = role;
         this.createdAt = createdAt;
@@ -44,7 +44,7 @@ public class WorkbookAclEntity {
         return id;
     }
 
-    public WorkbookAclRole getRole() {
+    public WorkbookRole getRole() {
         return role;
     }
 
@@ -56,7 +56,7 @@ public class WorkbookAclEntity {
         return updatedAt;
     }
 
-    public void updateRole(WorkbookAclRole role, Instant updatedAt) {
+    public void updateRole(WorkbookRole role, Instant updatedAt) {
         this.role = role;
         this.updatedAt = updatedAt;
     }

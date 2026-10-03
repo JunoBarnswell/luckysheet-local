@@ -30,8 +30,9 @@ describe('collaboration helpers', () => {
 
   it('builds the single client operation contract without server-owned fields', () => {
     const operation = buildOperation('op-1', 'wb-1', 1, 0, [{ id: 'cell.set', sheetId: 'sheet-1', params: {} }], '2026-08-23T00:00:00.000Z');
+    assert.match(operation.clientSessionId, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
     assert.deepEqual(operation, {
-      schema: 'OperationEnvelope', clientSessionId: 'fixture-session',
+      schema: 'OperationEnvelope', clientSessionId: operation.clientSessionId,
       operationId: 'op-1',
       unitId: 'wb-1',
       clientSequence: 1,
@@ -202,6 +203,7 @@ describe('collaboration helpers', () => {
     assert.throws(() => new OfflineQueue({
       load: () => [{
         schema: 'WrongEnvelope',
+        clientSessionId: 'fixture-session',
         operationId: 'op-invalid',
         unitId: 'wb-1',
         clientSequence: 1,
@@ -210,6 +212,9 @@ describe('collaboration helpers', () => {
         createdAt: '2026-08-23T00:00:00.000Z',
       } as never],
     }), /Unsupported operation schema/);
+    assert.throws(() => new OfflineQueue({
+      load: () => [{ schema: 'OperationEnvelope', operationId: 'op-no-session', unitId: 'wb-1', clientSequence: 1, baseRevision: 0, mutations: [], createdAt: '2026-08-23T00:00:00.000Z' } as never],
+    }), /clientSessionId is required/);
 
     const workbook = new WorkbookModel('wb-remote-unknown', 'Collab');
     const runtime = new CommandRuntime(workbook);

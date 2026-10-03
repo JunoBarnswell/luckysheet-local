@@ -13,6 +13,7 @@
     "@react-sheets/spreadsheet-app": "file:../../packages/spreadsheet-app",
     "@react-sheets/ui-system": "file:../../packages/ui-system",
     "react": "19.2.8",
-    "react-dom": "19.2.8"
+    "react-dom": "19.2.8",
+    "@react-sheets/sdk": "file:../../packages/sdk"
   }
 }

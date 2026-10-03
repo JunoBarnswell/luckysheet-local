@@ -1,25 +1,24 @@
 import { useEffect, useState } from 'react';
-import { pixelsToPoints, pointsToPixels } from '@react-sheets/exchange-excel-ooxml';
 import { Button, Dialog, Inline, Stack, Text, TextInput } from '@react-sheets/ui-system';
-import { MAX_EXCEL_ROW_HEIGHT_POINTS } from '../../editor/column-dimension-controller';
+import { MAX_EXCEL_ROW_HEIGHT_POINTS, type DimensionsActions } from '@react-sheets/sdk';
 
 export interface RowHeightDialogProps {
   open: boolean;
   rowCount: number;
   initialHeightPx: number;
+  dimensions: DimensionsActions;
   onClose: () => void;
   onApply: (points: number) => void;
 }
 
 /** Excel points are a display/exchange unit; the worksheet stores CSS pixels. */
-export function RowHeightDialog({ open, rowCount, initialHeightPx, onClose, onApply }: RowHeightDialogProps) {
+export function RowHeightDialog({ open, rowCount, initialHeightPx, dimensions, onClose, onApply }: RowHeightDialogProps) {
   const [value, setValue] = useState('15');
   useEffect(() => {
-    if (open) setValue(pixelsToPoints(initialHeightPx).toFixed(2));
-  }, [initialHeightPx, open]);
+    if (open) setValue(dimensions.rowPoints(initialHeightPx).toFixed(2));
+  }, [initialHeightPx, dimensions, open]);
   const numeric = Number(value);
-  const valid = Number.isFinite(numeric) && numeric >= 0 && numeric <= MAX_EXCEL_ROW_HEIGHT_POINTS;
-  const pixels = valid ? Math.round(pointsToPixels(numeric)) : 0;
+  const { valid, pixels } = dimensions.previewRowHeight(numeric);
   return (
     <Dialog
       open={open}

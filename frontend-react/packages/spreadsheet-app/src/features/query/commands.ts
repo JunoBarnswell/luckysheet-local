@@ -191,6 +191,7 @@ function registerQueryMutations(registry: CommandRegistry): void {
       else context.workbook.setQueryDefinition(item.params.definition);
     },
     metadata: {
+      calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
       schema: { name: 'QueryDefinitionReplaceMutationParams', validate: isQueryDefinitionReplacePayload },
       permission: { capability: 'query.definition.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: () => [], mode: 'exact' },
@@ -202,6 +203,7 @@ function registerQueryMutations(registry: CommandRegistry): void {
     id: 'query.load.range',
     handler: queryLoadHandler,
     metadata: {
+      calculation: { inputs: 'cells' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
       schema: { name: 'QueryLoadDataSource', validate: isQueryLoadPayload },
       permission: { capability: 'query.load.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: queryMutationRanges, mode: 'declared' },
@@ -212,6 +214,7 @@ function registerQueryMutations(registry: CommandRegistry): void {
     id: 'query.load.sheet-table',
     handler: queryLoadHandler,
     metadata: {
+      calculation: { inputs: 'cells' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
       schema: { name: 'QueryLoadDataSource', validate: isQueryLoadPayload },
       permission: { capability: 'query.load.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: queryMutationRanges, mode: 'declared' },
@@ -222,6 +225,7 @@ function registerQueryMutations(registry: CommandRegistry): void {
     id: 'query.load.pivot-source',
     handler: queryLoadHandler,
     metadata: {
+      calculation: { inputs: 'cells' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
       schema: { name: 'QueryLoadDataSource', validate: isQueryLoadPayload },
       permission: { capability: 'query.load.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: queryMutationRanges, mode: 'declared' },
@@ -232,6 +236,7 @@ function registerQueryMutations(registry: CommandRegistry): void {
     id: 'query.load.workbook-table',
     handler: queryLoadHandler,
     metadata: {
+      calculation: { inputs: 'cells' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
       schema: { name: 'QueryLoadDataSource', validate: isQueryLoadPayload },
       permission: { capability: 'query.load.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: queryMutationRanges, mode: 'declared' },

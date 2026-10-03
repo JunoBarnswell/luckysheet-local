@@ -4,13 +4,13 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.xc.luckysheet.server.contract.OperationMutation;
 import com.xc.luckysheet.server.contract.RangeRef;
-import com.xc.luckysheet.server.contract.WorkbookAclRole;
+import com.xc.luckysheet.server.contract.WorkbookRole;
 import com.xc.luckysheet.server.service.ServiceException;
 import java.util.*;
 
 /** Exact preimage-checked replacement shared by forward commit and owned undo. */
 public final class FindReplacementDescriptor extends CanonicalJsonMutationDescriptor {
-    public FindReplacementDescriptor() { super("find.replaced", WorkbookAclRole.EDITOR); }
+    public FindReplacementDescriptor() { super("find.replaced", WorkbookRole.EDITOR); }
     @Override public List<RangeRef> affectedRanges(JsonNode snapshot, OperationMutation mutation) {
         ObjectNode root = SnapshotMutationSupport.root(snapshot);
         ObjectNode params = SnapshotMutationSupport.params(mutation);

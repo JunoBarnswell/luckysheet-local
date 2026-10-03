@@ -1,0 +1,18 @@
+export type SdkErrorCode = 'CIRCULAR_DEPENDENCY' | 'STALE_OPERATION' | 'INVALID_ARGUMENT' | 'UNAUTHENTICATED' | 'FORBIDDEN' | 'SERVICE_UNAVAILABLE' | 'CONTRACT_INVALID' | 'AUTH_CONFIGURATION_ERROR' | 'REQUEST_REJECTED' | 'RUNTIME_DISPOSED' | 'UNSUPPORTED_FEATURE';
+
+export class SdkError extends Error {
+  readonly code: SdkErrorCode;
+  readonly operation: string;
+  readonly recovery: string;
+  readonly status?: number;
+  readonly object?: Readonly<{ workbookId: string; sheetId?: string; address?: string }>;
+  constructor(code: SdkErrorCode, operation: string, message: string, recovery: string, options: { status?: number; cause?: unknown; object?: { workbookId: string; sheetId?: string; address?: string } } = {}) {
+    super(message, { cause: options.cause });
+    this.name = 'SdkError';
+    this.code = code;
+    this.operation = operation;
+    this.recovery = recovery;
+    this.status = options.status;
+    this.object = options.object ? Object.freeze({ ...options.object }) : undefined;
+  }
+}

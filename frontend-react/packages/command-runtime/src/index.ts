@@ -52,6 +52,15 @@ export interface MutationAffectedRangesMetadata<P = unknown> {
   readonly mode?: 'exact' | 'declared';
 }
 
+/** Owned by each mutation, including inverse handlers; never inferred from its id. */
+export interface MutationCalculationMetadata {
+  readonly inputs: 'none' | 'cells';
+  readonly visibility: boolean;
+  readonly spillBlockers: 'none' | 'ranges' | 'table-deltas';
+  readonly mode: boolean;
+  readonly context?: WorkbookCalculationContextEffect;
+}
+
 export interface MutationRegistrationMetadata<P = unknown> {
   /** Canonical parameter contract; every production mutation must provide it. */
   readonly schema: MutationParamsSchema<P>;
@@ -69,8 +78,8 @@ export interface MutationRegistrationMetadata<P = unknown> {
   readonly inverseIds?: readonly string[];
   /** How remote application transforms or invalidates existing local undo/redo entries. */
   readonly historyRebase?: MutationHistoryRebasePolicy;
-  /** Calculation context transition emitted when the handler has no more specific effect. */
-  readonly calculationContextEffect?: WorkbookCalculationContextEffect;
+  /** Required calculation semantics for command, undo, redo and remote application. */
+  readonly calculation: MutationCalculationMetadata;
 }
 
 /** Short public name for feature packages that expose a mutation contract. */
@@ -339,9 +348,15 @@ function validateRegistrationMetadata(
   if (!isValidHistoryRebasePolicy(metadata.historyRebase)) {
     issues.push(issue('invalid-registration', id, `Mutation ${id} declares an invalid history rebase policy`));
   }
-  if (metadata.calculationContextEffect !== undefined
-    && !isWorkbookCalculationContextEffect(metadata.calculationContextEffect)) {
-    issues.push(issue('invalid-registration', id, `Mutation ${id} declares an invalid calculation context effect`));
+  const calculation = metadata.calculation;
+  if (!isRecord(calculation)
+    || Object.keys(calculation).some((key) => !['inputs', 'visibility', 'spillBlockers', 'mode', 'context'].includes(key))
+    || (calculation.inputs !== 'none' && calculation.inputs !== 'cells')
+    || typeof calculation.visibility !== 'boolean'
+    || (calculation.spillBlockers !== 'none' && calculation.spillBlockers !== 'ranges' && calculation.spillBlockers !== 'table-deltas')
+    || typeof calculation.mode !== 'boolean'
+    || (calculation.context !== undefined && !isWorkbookCalculationContextEffect(calculation.context))) {
+    issues.push(issue('invalid-registration', id, `Mutation ${id} must declare valid calculation semantics`));
   }
   const inversePolicy = metadata.inversePolicy;
   const inverseIds = metadata.inverseIds;
@@ -1357,7 +1372,7 @@ export class CommandRuntime {
         }));
         let effect: unknown;
         try {
-          effect = mutation.apply(context) ?? this.registry.getMutationMetadata(mutation.id).calculationContextEffect;
+          effect = mutation.apply(context) ?? this.registry.getMutationMetadata(mutation.id).calculation.context;
         } catch (error) {
           if (error instanceof StructuralMutationApplyError) throw this.requireMutationRecovery(error);
           throw error;
@@ -1567,10 +1582,24 @@ export class CommandRuntime {
     }
   }
 
-  markOperationCommitted(operationId: string, revision: number): void {
+  /** Redo is a new durable operation; subsequent Undo must target that operation. */
+  bindRedoOperation(entry: HistoryEntry, operationId: string, baseRevision: number): void {
+    if (this.undoStack.at(-1) !== entry || entry.status !== 'active') throw new Error('Redo history entry is not active');
+    if (!operationId.trim() || operationId === entry.operationId
+      || !Number.isSafeInteger(baseRevision) || baseRevision < 0
+      || [...this.undoStack, ...this.redoStack].some(candidate => candidate !== entry && candidate.operationId === operationId)) {
+      throw new Error('Invalid redo operation identity');
+    }
+    entry.operationId = operationId;
+    entry.baseRevision = baseRevision;
+    delete entry.committedRevision;
+  }
+
+  markOperationCommitted(operationId: string, revision: number, baseRevision: number): void {
     if (!Number.isSafeInteger(revision) || revision < 1) throw new Error('Committed revision must be a positive safe integer');
+    if (!Number.isSafeInteger(baseRevision) || baseRevision < 0 || baseRevision >= revision) throw new Error('Committed base revision is invalid');
     for (const entry of [...this.undoStack, ...this.redoStack, ...this.invalidHistory]) {
-      if (entry.operationId === operationId) entry.committedRevision = revision;
+      if (entry.operationId === operationId) { entry.committedRevision = revision; entry.baseRevision = baseRevision; }
     }
     this.currentRevision = Math.max(this.currentRevision, revision);
   }
@@ -1790,7 +1819,7 @@ export class CommandRuntime {
         };
         const effect = handler(item, {
           ...replayContext,
-        }) ?? this.registry.getMutationMetadata(item.id).calculationContextEffect;
+        }) ?? this.registry.getMutationMetadata(item.id).calculation.context;
         if (source === 'remote') assertRemoteStructuralOwnerFacts(item, effect);
         let notificationEffect: unknown = effect;
         const replaysOwnerFacts = source === 'undo' || source === 'redo' || source === 'remote';

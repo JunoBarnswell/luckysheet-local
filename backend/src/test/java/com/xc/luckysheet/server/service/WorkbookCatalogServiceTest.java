@@ -3,7 +3,7 @@ package com.xc.luckysheet.server.service;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.xc.luckysheet.server.contract.CopyWorkbookRequest;
-import com.xc.luckysheet.server.contract.WorkbookAclRole;
+import com.xc.luckysheet.server.contract.WorkbookRole;
 import com.xc.luckysheet.server.contract.WorkbookLifecycle;
 import com.xc.luckysheet.server.contract.WorkbookSnapshotResponse;
 import com.xc.luckysheet.server.contract.WorkbookSource;
@@ -49,8 +49,8 @@ class WorkbookCatalogServiceTest {
         WorkspaceService workspace = mock(WorkspaceService.class);
         WorkbookAuthorizationService authorization = mock(WorkbookAuthorizationService.class);
         WorkbookOperationService operations = mock(WorkbookOperationService.class);
-        when(operations.accessProjection("book-1", "editor", java.util.List.of())).thenReturn(new com.xc.luckysheet.server.contract.WorkbookAccessProjection("book-1", WorkbookAclRole.EDITOR, 0, java.util.List.of()));
-        when(authorization.role("book-1", "editor")).thenReturn(Optional.of(com.xc.luckysheet.server.contract.WorkbookAclRole.EDITOR));
+        when(operations.accessProjection("book-1", "editor", java.util.List.of())).thenReturn(new com.xc.luckysheet.server.contract.WorkbookAccessProjection("book-1", WorkbookRole.EDITOR, 0, java.util.List.of()));
+        when(authorization.role("book-1", "editor")).thenReturn(Optional.of(com.xc.luckysheet.server.contract.WorkbookRole.EDITOR));
         when(workbooks.findById("book-1")).thenReturn(Optional.of(new WorkbookEntity("book-1", "Book", "{}", 0, 0,
                 Instant.now(), Instant.now(), "owner", "space-1", null, WorkbookStorageLocation.REMOTE,
                 WorkbookSource.NATIVE, WorkbookLifecycle.ACTIVE, null)));
@@ -85,10 +85,10 @@ class WorkbookCatalogServiceTest {
         stored.getValue().bindRevision(1);
         assertEquals("ARTIFACT_REVISION_CONFLICT", org.junit.jupiter.api.Assertions.assertThrows(ServiceException.class, () -> service.getArtifact("book-1", "editor", java.util.List.of())).code());
         for (var level : java.util.List.of(com.xc.luckysheet.server.contract.RangeAccessLevel.HIDDEN, com.xc.luckysheet.server.contract.RangeAccessLevel.READ)) {
-            when(operations.accessProjection("book-1", "editor", java.util.List.of("restricted"))).thenReturn(new com.xc.luckysheet.server.contract.WorkbookAccessProjection("book-1", WorkbookAclRole.EDITOR, 0, java.util.List.of(new com.xc.luckysheet.server.contract.EffectiveAccessRegion(new com.xc.luckysheet.server.contract.RangeRef("s", 0, 0, 0, 0), level))));
+            when(operations.accessProjection("book-1", "editor", java.util.List.of("restricted"))).thenReturn(new com.xc.luckysheet.server.contract.WorkbookAccessProjection("book-1", WorkbookRole.EDITOR, 0, java.util.List.of(new com.xc.luckysheet.server.contract.EffectiveAccessRegion(new com.xc.luckysheet.server.contract.RangeRef("s", 0, 0, 0, 0), level))));
             assertEquals("ACCESS_HIDDEN", org.junit.jupiter.api.Assertions.assertThrows(ServiceException.class, () -> service.putArtifact("book-1", "report.xlsx", null, checksum, content, 0, "editor", java.util.List.of("restricted"))).code());
         }
-        when(operations.accessProjection("book-1", "editor", java.util.List.of("restricted"))).thenReturn(new com.xc.luckysheet.server.contract.WorkbookAccessProjection("book-1", WorkbookAclRole.EDITOR, 0, java.util.List.of(new com.xc.luckysheet.server.contract.EffectiveAccessRegion(new com.xc.luckysheet.server.contract.RangeRef("s", 0, 0, 0, 0), com.xc.luckysheet.server.contract.RangeAccessLevel.HIDDEN))));
+        when(operations.accessProjection("book-1", "editor", java.util.List.of("restricted"))).thenReturn(new com.xc.luckysheet.server.contract.WorkbookAccessProjection("book-1", WorkbookRole.EDITOR, 0, java.util.List.of(new com.xc.luckysheet.server.contract.EffectiveAccessRegion(new com.xc.luckysheet.server.contract.RangeRef("s", 0, 0, 0, 0), com.xc.luckysheet.server.contract.RangeAccessLevel.HIDDEN))));
         assertEquals("ACCESS_HIDDEN", org.junit.jupiter.api.Assertions.assertThrows(ServiceException.class, () -> service.getArtifact("book-1", "editor", java.util.List.of("restricted"))).code());
 
     }
@@ -118,10 +118,10 @@ class WorkbookCatalogServiceTest {
         when(workbooks.findById("source-1")).thenReturn(Optional.of(source));
         when(workbooks.findForUpdate("source-1")).thenReturn(Optional.of(source));
         when(workbooks.existsById(any())).thenReturn(false);
-        when(authorization.role(any(), eq("actor"))).thenReturn(Optional.of(WorkbookAclRole.OWNER));
-        when(authorization.role("source-1", "actor")).thenReturn(Optional.of(WorkbookAclRole.VIEWER));
+        when(authorization.role(any(), eq("actor"))).thenReturn(Optional.of(WorkbookRole.OWNER));
+        when(authorization.role("source-1", "actor")).thenReturn(Optional.of(WorkbookRole.VIEWER));
         when(operations.readSnapshot("source-1", "actor", java.util.List.of("verified-group"))).thenReturn(new WorkbookSnapshotResponse("source-1", snapshot, 0, "checksum"));
-        when(workspace.require("space-1", "actor", WorkbookAclRole.EDITOR)).thenReturn(space);
+        when(workspace.require("space-1", "actor", WorkbookRole.EDITOR)).thenReturn(space);
         when(spaces.findById("space-1")).thenReturn(Optional.of(space));
         when(folders.findBySpaceIdOrderByName("space-1")).thenReturn(java.util.List.of());
         when(artifacts.findById(any())).thenReturn(Optional.empty());

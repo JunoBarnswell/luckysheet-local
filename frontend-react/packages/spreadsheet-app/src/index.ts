@@ -18,6 +18,7 @@ export {
   type UiSnapshot,
   type SheetTabSnapshot,
 } from './workbook-session';
+export { getWorkbookObjectPort, type WorkbookObjectPort } from './workbook-object-port';
 export { InsertCoordinator, type InsertIdentity, type InsertResult, type InsertRequest, type DrawingInsertRequest, type InsertMutationRequest } from './insert-coordinator';
 export { writeSystemClipboard, type BrowserClipboardPort, type SystemClipboardWriteOutcome } from './clipboard-browser';
 export { useCellEdit, useWorkbookSession, createWorkbookSessionFactory, type UseWorkbookSessionResult, type WorkbookSessionFactory } from './workbook-session-react';
@@ -119,7 +120,7 @@ export {
   type KeyTipTransition,
 } from './input/key-tip-state';
 export { canExecuteCommand, buildPermissionCapabilities, type PermissionAction } from './features/permission';
-export { buildCollaborationSnapshot, type CollaborationSnapshot } from './collaboration';
+export { buildOperation, buildCollaborationSnapshot, type CollaborationSnapshot } from './collaboration';
 export { buildRestoreParams, revisionToHistoryMeta } from './features/history';
 export {
   exchangeExportDocument,
@@ -151,6 +152,8 @@ export {
   type PersistenceSnapshotMeta,
   type WorkspaceRecord,
   type WorkspaceRecordInput,
+  type WorkspaceRecordMetadata,
+  type WorkspaceUserState,
   type PendingOperationJournal,
   type LocalWorkspaceSummary,
   type WorkspacePersistenceOptions,

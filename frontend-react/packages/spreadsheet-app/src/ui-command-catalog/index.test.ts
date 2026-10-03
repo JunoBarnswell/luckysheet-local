@@ -61,15 +61,15 @@ function context(overrides: Partial<RibbonCommandContext> = {}): RibbonCommandCo
     onConvertActiveTableToRange: () => undefined,
     onCreateDataSource: () => undefined,
     onToggleSheetTableTotalRow: () => descriptor('sheetTable.update'),
-    onApplyFilterSelection: () => descriptor('data.filter.apply'),
-    onClearFilter: () => descriptor('data.filter.clear'),
+    onApplyFilterSelection: () => undefined,
+    onClearFilter: () => undefined,
     onGroupRows: () => descriptor('outline.group'),
     onUngroupRows: () => descriptor('outline.ungroup'),
     onGroupColumns: () => descriptor('outline.group'),
     onUngroupColumns: () => descriptor('outline.ungroup'),
-    onSubtotal: () => descriptor('data.subtotal'),
-    onRemoveDuplicates: () => descriptor('data.removeDuplicates'),
-    onTextToColumns: () => descriptor('data.textToColumns'),
+    onSubtotal: () => undefined,
+    onRemoveDuplicates: () => undefined,
+    onTextToColumns: () => undefined,
     onResolveComment: () => undefined,
     onProtectSelection: () => undefined,
     onUnprotectSelection: () => undefined,
@@ -424,5 +424,24 @@ describe('Ribbon UI command catalog', () => {
     assert.deepEqual(getRibbonSurfaces('home', 'alignment', 'wide').filter((surface) => surface.menuId === 'control.alignment-menu').map((surface) => surface.commandId), [
       'alignGeneral', 'alignCenterContinuous', 'alignJustify', 'alignDistributed', 'alignFill', 'shrinkToFit', 'alignVerticalJustify', 'alignVerticalDistributed',
     ]);
+  });
+});
+
+
+describe('SDK Data actions', () => {
+  it('Data ribbon invokes named SDK actions without exposing command descriptors to the host', () => {
+    const calls: string[] = [];
+    const base = context({ onSort: ascending => { calls.push(ascending ? 'ascending' : 'descending'); } });
+    const dataContext = { ...base, actions: { ...base.actions,
+      onApplyFilterSelection: () => { calls.push('toggle'); }, onClearFilter: () => { calls.push('clear'); },
+      onSubtotal: () => { calls.push('subtotal'); }, onRemoveDuplicates: () => { calls.push('duplicates'); },
+      onTextToColumns: () => { calls.push('split'); },
+    } };
+    for (const id of ['sortAscending', 'sortDescending', 'filterSelection', 'clearFilter', 'subtotal', 'removeDuplicates', 'textToColumns'] as const) {
+      const action = buildRibbonCommand(id, dataContext);
+      assert.equal(action?.type, 'callback');
+      if (action?.type === 'callback') action.invoke();
+    }
+    assert.deepEqual(calls, ['ascending', 'descending', 'toggle', 'clear', 'subtotal', 'duplicates', 'split']);
   });
 });

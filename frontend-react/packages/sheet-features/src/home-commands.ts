@@ -856,6 +856,7 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
       applyFillMutation(item.params, context, true);
     },
     metadata: {
+      calculation: { inputs: 'cells' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
       schema: { name: 'FillApplied', validate: isValidFillMutationParams },
       permission: { capability: 'sheet.cell.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: fillAffectedRanges, mode: 'exact' },
@@ -869,6 +870,7 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
       applyFlashFillMutation(item.params, context, true);
     },
     metadata: {
+      calculation: { inputs: 'cells' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
       schema: { name: 'FlashFillApplied', validate: isValidFlashFillMutationParams },
       permission: { capability: 'sheet.cell.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: flashFillAffectedRanges, mode: 'exact' },
@@ -882,6 +884,7 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
       applyFlashFillMutation(item.params, context, false);
     },
     metadata: {
+      calculation: { inputs: 'cells' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
       schema: { name: 'FlashFillRestored', validate: isValidFlashFillMutationParams },
       permission: { capability: 'sheet.cell.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: flashFillAffectedRanges, mode: 'exact' },
@@ -946,6 +949,7 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
       applyFillMutation(item.params, context, false);
     },
     metadata: {
+      calculation: { inputs: 'cells' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
       schema: { name: 'FillRestored', validate: isValidFillMutationParams },
       permission: { capability: 'sheet.cell.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: fillAffectedRanges, mode: 'exact' },
@@ -959,6 +963,7 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
       applyDataRegionMaterialization(item.params, context);
     },
     metadata: {
+      calculation: { inputs: 'cells' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
       schema: { name: 'DataRegionMaterializeCommit', validate: isDataRegionMaterializeParams },
       permission: { capability: 'sheet.data-region.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: dataRegionMaterializeAffected, mode: 'exact' },
@@ -972,6 +977,7 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
       restoreDataRegionMaterialization(item.params, context);
     },
     metadata: {
+      calculation: { inputs: 'cells' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
       schema: { name: 'DataRegionMaterializeRestore', validate: isDataRegionMaterializeParams },
       permission: { capability: 'sheet.data-region.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: dataRegionMaterializeAffected, mode: 'exact' },
@@ -1562,6 +1568,7 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
       applyStylePresetMutation(item.params, context);
     },
     metadata: {
+      calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
       schema: { name: 'CellStylePreset', validate: isStylePresetMutation },
       permission: { capability: 'sheet.format.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: stylePresetMutationRanges, mode: 'exact' },
@@ -1616,6 +1623,7 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
       };
     },
     metadata: {
+      calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
       schema: { name: 'SheetTableStyleSet', validate: isTableStyleMutationParams },
       permission: { capability: 'sheet.table.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: tableStyleAffected, mode: 'exact' },
@@ -1674,6 +1682,7 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
       applyConditionalRuleOrder(sheet, item.params.ruleIds);
     },
     metadata: {
+      calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
       schema: { name: 'ConditionalFormatReorder', validate: (value) => isConditionalFormatReorder(value) && Array.isArray(value.ranges) },
       permission: { capability: 'sheet.conditional-format.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: (params) => params.ranges?.map((range) => structuredClone(range)) ?? [], mode: 'declared' },
@@ -1711,6 +1720,7 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
       drawing.visible = item.params.visible;
     },
     metadata: {
+      calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
       schema: { name: 'DrawingVisibilitySet', validate: isDrawingVisibilityParams },
       permission: { capability: 'drawing.edit', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: (params) => drawingAffected(params.sheetId), mode: 'exact' },
@@ -1748,6 +1758,7 @@ export function registerHomeCommands(runtime: CommandRuntime): void {
       else delete drawing.name;
     },
     metadata: {
+      calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
       schema: { name: 'DrawingRename', validate: isDrawingRenameMutation },
       permission: { capability: 'drawing.edit', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: (params) => drawingAffected(params.sheetId), mode: 'exact' },

@@ -7,6 +7,7 @@ import { textFunctions } from './text';
 import { lookupFunctions } from './lookup';
 import { datetimeFunctions } from './datetime';
 import { informationFunctions } from './information';
+import { financialFunctions } from './financial';
 import { extendedMatrixFunctions } from './extended-matrix';
 import { dynamicArrayFunctions } from './dynamic-array';
 import { ADVANCED_FUNCTIONS } from './advanced';
@@ -24,6 +25,7 @@ export const BUILTIN_FUNCTIONS: Record<string, BuiltinFunction> = {
   ...lookupFunctions,
   ...datetimeFunctions,
   ...informationFunctions,
+  ...financialFunctions,
   ...extendedMatrixFunctions,
   ...dynamicArrayFunctions,
 };

@@ -12,7 +12,7 @@ import com.xc.luckysheet.server.contract.OperationMutation;
 import com.xc.luckysheet.server.contract.RestoreRequest;
 import com.xc.luckysheet.server.contract.CreateWorkbookRequest;
 import com.xc.luckysheet.server.contract.ShareCreateRequest;
-import com.xc.luckysheet.server.contract.WorkbookAclRole;
+import com.xc.luckysheet.server.contract.WorkbookRole;
 import com.xc.luckysheet.server.store.DataBlockRow;
 import com.xc.luckysheet.server.store.WorkbookDataBlockStore;
 import com.xc.luckysheet.server.store.WorkbookStore;

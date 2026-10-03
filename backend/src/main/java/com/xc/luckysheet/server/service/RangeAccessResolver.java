@@ -6,7 +6,7 @@ import com.xc.luckysheet.server.contract.RangeAccessGrant;
 import com.xc.luckysheet.server.contract.RangeAccessLevel;
 import com.xc.luckysheet.server.contract.RangeAccessRegion;
 import com.xc.luckysheet.server.contract.RangeRef;
-import com.xc.luckysheet.server.contract.WorkbookAclRole;
+import com.xc.luckysheet.server.contract.WorkbookRole;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -44,7 +44,7 @@ public final class RangeAccessResolver {
     }
 
     public boolean canRead(RangeRef range) {
-        if (context.workbookRole() == WorkbookAclRole.OWNER) return true;
+        if (context.workbookRole() == WorkbookRole.OWNER) return true;
         for (RangeAccessRegion region : index.intersecting(range)) {
             if (restrict(resolveRegion(region), roleCeiling(context.workbookRole())) == RangeAccessLevel.HIDDEN) return false;
         }
@@ -75,7 +75,7 @@ public final class RangeAccessResolver {
     }
 
     public List<RangeAccessRegion> hiddenRegions() {
-        if (context.workbookRole() == WorkbookAclRole.OWNER) return List.of();
+        if (context.workbookRole() == WorkbookRole.OWNER) return List.of();
         return regions.stream().filter(region -> resolveRegion(region) == RangeAccessLevel.HIDDEN
                         || restrict(resolveRegion(region), roleCeiling(context.workbookRole())) == RangeAccessLevel.HIDDEN)
                 .toList();
@@ -87,7 +87,7 @@ public final class RangeAccessResolver {
     }
 
     private RangeAccessLevel resolveRegion(RangeAccessRegion region) {
-        if (context.workbookRole() == WorkbookAclRole.OWNER) return RangeAccessLevel.EDIT;
+        if (context.workbookRole() == WorkbookRole.OWNER) return RangeAccessLevel.EDIT;
         RangeAccessLevel subject = null;
         List<RangeAccessLevel> groups = new ArrayList<>();
         RangeAccessLevel everyone = null;
@@ -107,8 +107,8 @@ public final class RangeAccessResolver {
         return everyone == null ? region.defaultAccess() : everyone;
     }
 
-    private static RangeAccessLevel roleCeiling(WorkbookAclRole role) {
-        return role == WorkbookAclRole.OWNER || role == WorkbookAclRole.EDITOR
+    private static RangeAccessLevel roleCeiling(WorkbookRole role) {
+        return role == WorkbookRole.OWNER || role == WorkbookRole.EDITOR
                 ? RangeAccessLevel.EDIT : RangeAccessLevel.READ;
     }
 

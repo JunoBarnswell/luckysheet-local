@@ -10,6 +10,7 @@ import org.springframework.security.oauth2.server.resource.authentication.JwtAut
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Component;
+import org.springframework.web.util.UriComponentsBuilder;
 import org.springframework.web.socket.WebSocketHandler;
 import org.springframework.web.socket.server.HandshakeFailureException;
 import org.springframework.web.socket.server.support.DefaultHandshakeHandler;
@@ -34,15 +35,24 @@ public final class WebSocketAuthenticationHandshakeHandler extends DefaultHandsh
 
     private final JwtDecoder jwtDecoder;
     private final GuestShareService shares;
+    private final VerifiedIdentityService identities;
 
-    public WebSocketAuthenticationHandshakeHandler(JwtDecoder jwtDecoder, GuestShareService shares) {
+    public WebSocketAuthenticationHandshakeHandler(JwtDecoder jwtDecoder, GuestShareService shares, VerifiedIdentityService identities) {
         this.jwtDecoder = jwtDecoder;
-        this.shares = shares;
+        this.shares = shares; this.identities = identities;
     }
 
     @Override
     protected Principal determineUser(ServerHttpRequest request, WebSocketHandler handler, Map<String, Object> attributes) {
         Principal principal = authenticatedPrincipal(request);
+        VerifiedAuthContext context = principal instanceof JwtAuthenticationToken jwt ? identities.jwtContext(jwt.getToken())
+                : principal instanceof LocalUserAuthentication local && request instanceof org.springframework.http.server.ServletServerHttpRequest servlet
+                ? identities.context(local, servlet.getServletRequest()) : null;
+        String expected = UriComponentsBuilder.fromUri(request.getURI()).build().getQueryParams().getFirst("context");
+        if (expected != null && (context == null || !expected.equals(context.contextId()))) {
+            throw new HandshakeFailureException("Verified identity context changed");
+        }
+        if (context != null) attributes.put("verifiedContext", context);
         if (principal instanceof LocalUserAuthentication) {
             if (!(request instanceof org.springframework.http.server.ServletServerHttpRequest servlet)
                     || servlet.getServletRequest().getSession(false) == null) throw new HandshakeFailureException("Local authentication session is required");
@@ -76,7 +86,7 @@ public final class WebSocketAuthenticationHandshakeHandler extends DefaultHandsh
             try {
                 Jwt jwt = jwtDecoder.decode(bearer);
                 if (jwt.getSubject() == null || jwt.getSubject().isBlank()) throw new HandshakeFailureException("Authenticated subject is required");
-                return new JwtAuthenticationToken(jwt);
+                return identities.authentication(jwt);
             } catch (JwtException error) {
                 throw new HandshakeFailureException("Authentication failed", error);
             }

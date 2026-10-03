@@ -54,6 +54,9 @@ public class WorkbookEntity {
     @Column(name = "owner_subject", nullable = false, length = 500)
     private String ownerSubject;
 
+    @Column(name = "identity_scope", nullable = false, length = 64)
+    private String identityScope;
+
     @Column(name = "space_id", length = 200)
     private String spaceId;
 
@@ -96,6 +99,7 @@ public class WorkbookEntity {
         this.createdAt = createdAt;
         this.updatedAt = updatedAt;
         this.ownerSubject = ownerSubject == null ? "" : ownerSubject;
+        this.identityScope = com.xc.luckysheet.server.security.VerifiedIdentityService.scopeForActor(this.ownerSubject);
         this.spaceId = spaceId;
         this.folderId = folderId;
         this.storageLocation = storageLocation == null ? WorkbookStorageLocation.REMOTE : storageLocation;
@@ -132,6 +136,7 @@ public class WorkbookEntity {
         return updatedAt;
     }
 
+    public String getIdentityScope() { return identityScope; }
     public String getOwnerSubject() { return ownerSubject; }
     public String getSpaceId() { return spaceId; }
     public String getFolderId() { return folderId; }

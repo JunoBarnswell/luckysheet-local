@@ -244,6 +244,7 @@ export function registerFormulaAuditCommands(
       context.workbook.setCalculationSettings({ mode: item.params.mode });
     },
     metadata: {
+      calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: true },
       schema: { name: 'WorkbookCalculationModeMutation', validate: isFormulaCalculationModeParams },
       permission: { capability: 'formula.calculation.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: () => [], mode: 'exact' },

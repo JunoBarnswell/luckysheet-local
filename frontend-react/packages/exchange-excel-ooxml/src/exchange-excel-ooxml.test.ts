@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { describe, it } from 'node:test';
 import { createPivotMemberKey, defaultChartSubtype, planConnectorRoute, planSheetIdentityTransform, WorkbookModel } from '@react-sheets/core-model';
 import { assertNativeArtifactAllowsStructuralMutation, exportOoxmlDocument } from './export';
@@ -8,15 +9,34 @@ import { exportSnapshotToOoxmlBuffer } from './archive';
 import { loadOpcPackageGraph, parseLoadedOoxml, zipOpcPartsBuffer } from './archive';
 import { readNativeChartGraph } from './native-chart';
 import { mapNativePivotDefinition, readNativePivotGraph } from './native-pivot';
+import { NativeDocumentError } from './native-document-error';
 import type { NativePivotCacheDefinition, NativePivotTableDefinition } from './types';
 import { strFromU8, strToU8 } from 'fflate';
+import { FormulaEngine } from '@react-sheets/formula-engine';
+import { descendants, parseXml } from './xml';
+
+it('OOXML round-trip preserves an omitted activePane without adding a default', async () => {
+  const workbook = new WorkbookModel('pane-ooxml', 'Pane');
+  const sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.pane = { kind: 'frozen', state: 'frozen', xSplit: 1, ySplit: 2, startRow: 2, startColumn: 1 };
+  const before = structuredClone(sheet.pane);
+  const imported = await importOoxmlDocument({ fileName: 'pane.xlsx', buffer: exportSnapshotToOoxmlBuffer(workbook.snapshot()), options: { compatibilityTarget: 'B' } });
+  assert.deepEqual(imported.snapshot.sheets[0]!.pane, before);
+  assert.equal(Object.hasOwn(imported.snapshot.sheets[0]!.pane, 'activePane'), false);
+  sheet.pane = { ...before, activePane: 'bottomRight' };
+  const explicit = await importOoxmlDocument({ fileName: 'pane-explicit.xlsx', buffer: exportSnapshotToOoxmlBuffer(workbook.snapshot()), options: { compatibilityTarget: 'B' } });
+  assert.deepEqual(explicit.snapshot.sheets[0]!.pane, sheet.pane);
+});
+
+const imagePng = Uint8Array.from(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAADAAAAAgCAIAAADbtmxLAAAAN0lEQVR4nO3OQQ0AMAgEMFRgFNOTMRccjyYV0Op5p1R8ICQkJJQeCAkJCaUHQkJCQumBkJDQsg8dwKZ5fgcr3gAAAABJRU5ErkJggg==', 'base64'));
+const imageAsset = { schema: 'AssetRef' as const, assetId: 'asset-test', contentHash: createHash('sha256').update(imagePng).digest('hex'), mimeType: 'image/png', byteLength: imagePng.byteLength };
 
 describe('exchange-excel-ooxml', () => {
   it('preserves supported pie subtypes and fails closed on unmodeled native splits and rotations', () => {
-    const chartFrom = (plotChart: string) => readNativeChartGraph({
+    const chartFrom = (plotChart: string, chartSettings = '') => readNativeChartGraph({
       files: {
         'xl/drawings/drawing1.xml': strToU8('<xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><xdr:twoCellAnchor><xdr:graphicFrame><xdr:nvGraphicFramePr><xdr:cNvPr name="pie-chart"/></xdr:nvGraphicFramePr><a:graphic><a:graphicData><c:chart r:id="rIdChart"/></a:graphicData></a:graphic></xdr:graphicFrame></xdr:twoCellAnchor></xdr:wsDr>'),
-        'xl/charts/chart1.xml': strToU8(`<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart"><c:chart><c:plotArea>${plotChart}</c:plotArea></c:chart></c:chartSpace>`),
+        'xl/charts/chart1.xml': strToU8(`<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart"><c:chart>${chartSettings}<c:plotArea>${plotChart}</c:plotArea></c:chart></c:chartSpace>`),
       },
       relationships: {
         'xl/worksheets/sheet1.xml': [{ id: 'rIdDrawing', type: 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing', target: '../drawings/drawing1.xml' }],
@@ -35,7 +55,7 @@ describe('exchange-excel-ooxml', () => {
     const threeDimensional = chartFrom('<c:pie3DChart/>');
     assert.equal(threeDimensional.subtype, 'three-dimensional');
     assert.equal(threeDimensional.editable, true);
-    const custom3dView = chartFrom('<c:view3D><c:rotX val="15"/></c:view3D><c:pie3DChart/>');
+    const custom3dView = chartFrom('<c:pie3DChart/>', '<c:view3D><c:rotX val="15"/></c:view3D>');
     assert.equal(custom3dView.editable, false);
     assert.match(custom3dView.reason ?? '', /3-D pie view settings/);
     const customSplit = chartFrom('<c:ofPieChart><c:ofPieType val="pie"/><c:splitType val="pos"/></c:ofPieChart>');
@@ -44,6 +64,45 @@ describe('exchange-excel-ooxml', () => {
     const rotatedPie = chartFrom('<c:pieChart><c:firstSliceAng val="90"/></c:pieChart>');
     assert.equal(rotatedPie.editable, false);
     assert.match(rotatedPie.reason ?? '', /pie rotation/);
+  });
+
+  it('preserves custom native 3D pie view bytes and refuses regeneration without a canonical view owner', async () => {
+    const workbook = new WorkbookModel('native-pie-view', 'Native pie');
+    const sheet = workbook.getSheet(workbook.primarySheetId);
+    [['Category', 'Amount'], ['A', 10], ['B', 20]].forEach((row, rowIndex) => row.forEach((value, columnIndex) => sheet.cells.set(rowIndex, columnIndex, { value })));
+    sheet.drawings.push({ id: 'native-pie', sheetId: sheet.id, kind: 'chart', payloadId: 'native-pie-payload',
+      anchor: { kind: 'one-cell', row: 4, column: 3 }, transform: { x: 0, y: 0, width: 320, height: 200 }, zIndex: 0 });
+    const source = { sheetId: sheet.id, startRow: 0, endRow: 2, startColumn: 0, endColumn: 1 };
+    sheet.drawingPayloads.set('native-pie-payload', { kind: 'chart', chartId: 'native-pie-payload', chartType: 'pie', subtype: 'three-dimensional',
+      source: { kind: 'worksheet-ranges', ranges: [source] },
+      categoryRange: { ...source, startRow: 1, endColumn: 0 },
+      series: [{ id: 'amount', name: 'Amount', range: { ...source, startRow: 1, startColumn: 1 } }],
+      elements: { hiddenData: 'show', title: 'Native pie' } });
+    const native = loadOpcPackageGraph(exportSnapshotToOoxmlBuffer(workbook.snapshot()));
+    const chartPart = native.packageGraph.nativeChartGraph!.charts[0]!.chartPart;
+    assert.equal(native.packageGraph.nativeChartGraph!.charts[0]!.editable, true);
+    const originalChart = strFromU8(native.files[chartPart]!);
+    assert.match(originalChart, /<c:pie3DChart>/);
+    native.packageGraph.parts[chartPart] = strToU8(originalChart.replace('<c:plotArea>', '<c:view3D><c:rotX val="15"/><c:rotY val="30"/></c:view3D><c:plotArea>'));
+    const buffer = zipOpcPartsBuffer(native.packageGraph.parts);
+    const inputBefore = buffer.slice(0);
+    const imported = await importOoxmlDocument({ fileName: 'custom-pie.xlsx', buffer, options: { compatibilityTarget: 'B' } });
+    const graph = imported.artifact.nativeGraph.kind === 'opc' ? imported.artifact.nativeGraph.package : undefined;
+    assert.equal(graph?.nativeChartGraph?.charts[0]?.editable, false);
+    assert.match(graph?.nativeChartGraph?.charts[0]?.reason ?? '', /3-D pie view settings/);
+    assert.ok(imported.report.issues.some(issue => issue.feature === 'preserved-native-chart' && issue.preserved));
+    const unchanged = await exportOoxmlDocument({ snapshot: imported.snapshot, artifact: imported.artifact, fileName: 'custom-pie.xlsx', options: { compatibilityTarget: 'B' } });
+    assert.deepEqual(new Uint8Array(unchanged.buffer), new Uint8Array(inputBefore));
+    const edited = structuredClone(imported.snapshot);
+    edited.name = 'Edited native pie';
+    const before = structuredClone(edited);
+    const beforeGraph = structuredClone(graph);
+    await assert.rejects(exportOoxmlDocument({ snapshot: edited, artifact: imported.artifact, fileName: 'custom-pie.xlsx', options: { compatibilityTarget: 'B' } }),
+      (error: unknown) => error instanceof NativeDocumentError && error.code === 'NATIVE_DOCUMENT_UNCHANGED_SAVE_REQUIRED'
+        && error.location === chartPart && Boolean(error.recovery));
+    assert.deepEqual(edited, before);
+    assert.deepEqual(graph, beforeGraph);
+    assert.deepEqual(new Uint8Array(buffer), new Uint8Array(inputBefore));
   });
 
   it('preserves native Pivot error cache items as typed error members', () => {
@@ -134,7 +193,7 @@ describe('exchange-excel-ooxml', () => {
     });
     sheet.drawingPayloads.set('image-payload', {
       kind: 'image',
-      asset: { schema: 'AssetRef', assetId: 'asset-test', contentHash: 'a'.repeat(64), mimeType: 'image/png', byteLength: 2 },
+      asset: imageAsset,
     });
 
     const features = scanSnapshotFeatures(workbook.snapshot());
@@ -396,7 +455,8 @@ describe('exchange-excel-ooxml', () => {
 
     await assert.rejects(
       importOoxmlDocument({ fileName: 'malicious.xlsx', buffer, options: { compatibilityTarget: 'B' } }),
-      /Camera source range/,
+      (error: unknown) => error instanceof NativeDocumentError && error.code === 'NATIVE_DOCUMENT_INVALID'
+        && error.location === sheet.id && error.message.includes('camera source range') && Boolean(error.recovery),
     );
   });
 
@@ -470,7 +530,7 @@ describe('exchange-excel-ooxml', () => {
   it('writes hyperlinks from the canonical worksheet hyperlink collection', async () => {
     const workbook = new WorkbookModel('wb-links', 'Links');
     const sheet = workbook.getSheet(workbook.primarySheetId);
-    const targetSheet = workbook.addSheet('sheet-target', 'Target', 20, 20);
+    const targetSheet = workbook.addSheet('target-native', 'Target', 20, 20);
     workbook.setDefinedName({ name: 'SalesTotal', formula: '=Sheet1!A1', scope: 'workbook' });
     sheet.cells.set(0, 0, { value: 'OpenAI' });
     sheet.hyperlinks.set('0:0', { id: 'link-1', target: { kind: 'url', url: 'https://openai.com/' }, tooltip: 'Open' });
@@ -486,8 +546,84 @@ describe('exchange-excel-ooxml', () => {
     const imported = await importOoxmlDocument({ fileName: 'links.xlsx', buffer: zipOpcPartsBuffer(emitted.packageGraph.parts), options: { compatibilityTarget: 'B' } });
     assert.equal(imported.snapshot.sheets[0]?.hyperlinks?.[0]?.hyperlink.target.kind, 'url');
     assert.deepEqual(imported.snapshot.sheets[0]?.hyperlinks?.[1]?.hyperlink.target, { kind: 'email', address: 'team@example.com', subject: 'Review' });
-    assert.deepEqual(imported.snapshot.sheets[0]?.hyperlinks?.[2]?.hyperlink.target, { kind: 'sheet', sheetId: 'sheet-target', address: 'B2' });
+    assert.deepEqual(imported.snapshot.sheets[0]?.hyperlinks?.[2]?.hyperlink.target, { kind: 'sheet', sheetId: 'target-native', address: 'B2' });
     assert.deepEqual(imported.snapshot.sheets[0]?.hyperlinks?.[3]?.hyperlink.target, { kind: 'name', name: 'SalesTotal' });
+    const importedSheet = imported.snapshot.sheets[0]!;
+    assert.equal(importedSheet.rowCount, 4);
+    assert.equal(imported.snapshot.sheets[1]!.rowCount, 2);
+    assert.equal(imported.snapshot.sheets[1]!.columnCount, 2);
+    assert.equal(importedSheet.cells['1'], undefined);
+    const edited = structuredClone(imported.snapshot);
+    edited.sheets[0]!.cells['0']!['0']!.value = 'Edited after native import';
+    const again = await importOoxmlDocument({ fileName: 'links-edited.xlsx',
+      buffer: exportSnapshotToOoxmlBuffer(edited), options: { compatibilityTarget: 'B' } });
+    assert.deepEqual(again.snapshot.sheets[0]!.hyperlinks, importedSheet.hyperlinks);
+    assert.equal(again.snapshot.sheets[0]!.cells['0']!['0']!.value, 'Edited after native import');
+    for (const xml of [worksheetXml.replace('ref="A2"', 'ref="A1048577"'),
+      worksheetXml.replace('ref="A2"', 'ref="XFE1"'),
+      worksheetXml.replace('location="Target!B2"', 'location="Target!A1048577"')]) {
+      const parts = structuredClone(emitted.packageGraph.parts);
+      parts['xl/worksheets/sheet1.xml'] = strToU8(xml);
+      const malformed = zipOpcPartsBuffer(parts);
+      const before = malformed.slice(0);
+      await assert.rejects(importOoxmlDocument({ fileName: 'links-outside.xlsx', buffer: malformed,
+        options: { compatibilityTarget: 'B' } }), (error: unknown) => error instanceof NativeDocumentError
+          && error.code === 'NATIVE_DOCUMENT_INVALID' && Boolean(error.location) && Boolean(error.recovery));
+      assert.deepEqual(new Uint8Array(malformed), new Uint8Array(before));
+    }
+  });
+
+  it('maps native sheet identities simultaneously and rejects ambiguous metadata before import', async () => {
+    const workbook = new WorkbookModel('wb-id-map', 'Identity map');
+    const first = workbook.getSheet(workbook.primarySheetId);
+    const second = workbook.addSheet('second-business-id', 'Second', 20, 20);
+    first.cells.set(0, 0, { value: 'First' });
+    second.cells.set(0, 0, { value: 'Second' });
+    first.hyperlinks.set('0:0', { id: 'across', target: { kind: 'sheet', sheetId: second.id, address: 'A1' } });
+    workbook.setDefinedName({ name: 'LocalFirst', formula: '=Sheet1!A1', scope: 'sheet', sheetId: first.id });
+    const snapshot = workbook.snapshot();
+    snapshot.sheets[0]!.id = 'sheet-2';
+    snapshot.sheets[1]!.id = 'sheet-1';
+    snapshot.sheets[0]!.hyperlinks[0]!.hyperlink.target = { kind: 'sheet', sheetId: 'sheet-1', address: 'A1' };
+    snapshot.definedNameModels![0]!.sheetId = 'sheet-2';
+    const duplicate = structuredClone(snapshot);
+    duplicate.sheets[1]!.id = duplicate.sheets[0]!.id;
+    assert.throws(() => exportSnapshotToOoxmlBuffer(duplicate), (error: unknown) => error instanceof NativeDocumentError && error.code === 'NATIVE_DOCUMENT_INVALID');
+    const generated = loadOpcPackageGraph(exportSnapshotToOoxmlBuffer(snapshot));
+    const nativeXml = strFromU8(generated.files['xl/workbook.xml']!);
+    assert.match(nativeXml, /name="Sheet1" sheetId="1"/);
+    assert.match(nativeXml, /name="Second" sheetId="2"/);
+    const imported = await importOoxmlDocument({ fileName: 'identity.xlsx', buffer: zipOpcPartsBuffer(generated.files), options: { compatibilityTarget: 'B' } });
+    assert.deepEqual(imported.snapshot.sheets.map(sheet => sheet.id), ['sheet-2', 'sheet-1']);
+    assert.deepEqual(imported.snapshot.sheets[0]!.hyperlinks[0]!.hyperlink.target, { kind: 'sheet', sheetId: 'sheet-1', address: 'A1' });
+    assert.equal(imported.snapshot.definedNameModels![0]!.sheetId, 'sheet-2');
+    // Native reordering retains identity through numeric sheetId, not array position.
+    const reordered = structuredClone(generated.files);
+    reordered['xl/workbook.xml'] = strToU8(nativeXml.replace(/(<sheet name="Sheet1"[^>]+\/>)(<sheet name="Second"[^>]+\/>)/, '$2$1'));
+    const reorderedImport = await importOoxmlDocument({ fileName: 'reordered.xlsx', buffer: zipOpcPartsBuffer(reordered), options: { compatibilityTarget: 'B' } });
+    assert.deepEqual(reorderedImport.snapshot.sheets.map(sheet => sheet.id), ['sheet-1', 'sheet-2']);
+    assert.equal(reorderedImport.snapshot.sheets[0]!.cells['0']!['0']!.value, 'Second');
+    const actualPart = Object.keys(generated.files).find(part => strFromU8(generated.files[part]!).includes('ReactSheetsWorkbookMetadata'))!;
+    assert.ok(actualPart);
+    const regenerated = loadOpcPackageGraph((await exportOoxmlDocument({ snapshot: reorderedImport.snapshot,
+      artifact: reorderedImport.artifact, fileName: 'reordered-edited.xlsx', options: { compatibilityTarget: 'B' }, mode: 'save-as' })).buffer);
+    assert.match(strFromU8(regenerated.files['xl/workbook.xml']!), /name="Second" sheetId="2"[^>]+\/><sheet name="Sheet1" sheetId="1"/);
+    const legacy = structuredClone(generated.files);
+    legacy['xl/workbook.xml'] = strToU8(nativeXml.replace('name="Sheet1" sheetId="1"', 'name="Sheet1" sheetId="2"').replace('name="Second" sheetId="2"', 'name="Second" sheetId="1"'));
+    legacy[actualPart] = strToU8(strFromU8(legacy[actualPart]!).replace('&quot;version&quot;:5', '&quot;version&quot;:3').replace(/,&quot;nativeSheetId&quot;:[12]/g, ''));
+    const legacyImport = await importOoxmlDocument({ fileName: 'old-metadata.xlsx', buffer: zipOpcPartsBuffer(legacy), options: { compatibilityTarget: 'B' } });
+    assert.deepEqual(legacyImport.snapshot.sheets.map(sheet => sheet.id), ['sheet-2', 'sheet-1']);
+    assert.deepEqual(legacyImport.snapshot.sheets[0]!.hyperlinks[0]!.hyperlink.target, { kind: 'sheet', sheetId: 'sheet-1', address: 'A1' });
+
+    for (const mutate of [(text: string) => text.replace('&quot;id&quot;:&quot;sheet-2&quot;', '&quot;id&quot;:&quot;sheet-1&quot;'),
+      (text: string) => text.replace('&quot;nativeSheetId&quot;:2', '&quot;nativeSheetId&quot;:1')]) {
+      const malformed = structuredClone(generated.files);
+      const xml = strFromU8(malformed[actualPart]!);
+      const changed = mutate(xml); assert.notEqual(changed, xml);
+      malformed[actualPart] = strToU8(changed);
+      await assert.rejects(importOoxmlDocument({ fileName: 'ambiguous.xlsx', buffer: zipOpcPartsBuffer(malformed), options: { compatibilityTarget: 'B' } }),
+        (error: unknown) => error instanceof NativeDocumentError && error.code === 'NATIVE_DOCUMENT_INVALID' && Boolean(error.location));
+    }
   });
 
   it('writes a canonical table Pivot as a native cache and table graph', async () => {
@@ -1100,6 +1236,10 @@ describe('exchange-excel-ooxml', () => {
     parts['xl/worksheets/sheet1.xml'] = strToU8(strFromU8(parts['xl/worksheets/sheet1.xml']!).replace('</worksheet>', '<pivotTableParts count="1"><pivotTablePart r:id="rIdPivotTable"/></pivotTableParts></worksheet>'));
     parts['xl/worksheets/_rels/sheet1.xml.rels'] = strToU8(strFromU8(parts['xl/worksheets/_rels/sheet1.xml.rels']!).replace('</Relationships>', '<Relationship Id="rIdPivotTable" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/pivotTable" Target="../pivotTables/pivotTable1.xml"/></Relationships>'));
     parts['xl/pivotTables/pivotTable1.xml'] = strToU8('<?xml version="1.0"?><pivotTableDefinition xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" name="PivotTable1" cacheId="1" rowGrandTotals="0" colGrandTotals="1" subtotalTop="1"><location ref="D1:E3"/><pivotFields count="2"><pivotField axis="axisRow" defaultSubtotal="0" sortType="descending"><autoSortScope><pivotArea dataOnly="0" fieldPosition="0"><references count="1"><reference field="4294967294" count="1" selected="0"><x v="0"/></reference></references></pivotArea></autoSortScope></pivotField><pivotField/></pivotFields><rowFields count="1"><field x="0"/></rowFields><dataFields count="1"><dataField fld="1" name="Sum of Amount" subtotal="sum" showDataAs="difference" baseField="0" baseItem="0" numFmtId="2"/></dataFields><pivotFilters count="4"><filter fld="0" type="captionEqual" stringValue1="A"/><filter fld="0" type="valueGreaterThan" iMeasureFld="0" val="10"/><filter fld="0" type="valueTop10" iMeasureFld="0" val="3" top="1"/><filter fld="1" type="futureFilter" id="7" stringValue1="preserve"/></pivotFilters></pivotTableDefinition>');
+    parts['[Content_Types].xml'] = strToU8(strFromU8(parts['[Content_Types].xml']!).replace('</Types>',
+      '<Override PartName="/xl/pivotCache/pivotCacheDefinition1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.pivotCacheDefinition+xml"/>'
+      + '<Override PartName="/xl/pivotCache/pivotCacheRecords1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.pivotCacheRecords+xml"/>'
+      + '<Override PartName="/xl/pivotTables/pivotTable1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.pivotTable+xml"/></Types>'));
     const imported = await importOoxmlDocument({ fileName: 'native-pivot.xlsx', buffer: zipOpcPartsBuffer(parts), options: { compatibilityTarget: 'B' } });
     assert.equal(imported.artifact.nativeGraph.kind === 'opc' ? imported.artifact.nativeGraph.package.nativePivotGraph?.caches[0]?.source.kind : undefined, 'worksheet-range');
     assert.equal(imported.artifact.nativeGraph.kind === 'opc' ? imported.artifact.nativeGraph.package.nativePivotGraph?.caches[0]?.fields[1]?.name : undefined, 'Amount');
@@ -1861,6 +2001,70 @@ describe('exchange-excel-ooxml', () => {
     );
   });
 
+  it('exports the first real image into empty native drawings and rejects invalid drawing roots atomically', () => {
+    const workbook = new WorkbookModel('wb-first-image', 'First image');
+    const sheet = workbook.getSheet(workbook.primarySheetId);
+    sheet.drawings.push({ id: 'first-image', sheetId: sheet.id, kind: 'image',
+      anchor: { kind: 'one-cell', row: 1, column: 2 },
+      transform: { x: 0, y: 0, width: 96, height: 24 }, zIndex: 0, payloadId: 'first-image-payload' });
+    sheet.drawingPayloads.set('first-image-payload', { kind: 'image', asset: imageAsset });
+    const snapshot = workbook.snapshot();
+    const beforeSnapshot = structuredClone(snapshot);
+    const beforeBytes = imagePng.slice();
+    const options = { assetBytes: { 'asset-test': imagePng } };
+    const fresh = loadOpcPackageGraph(exportSnapshotToOoxmlBuffer(snapshot, undefined, options));
+    const sheetPart = fresh.packageGraph.sheetPartById[sheet.id]!;
+    const relation = fresh.packageGraph.relationships[sheetPart]!.find(item => item.type.endsWith('/drawing'))!;
+    assert.ok(relation);
+    const drawingPart = 'xl/drawings/drawing1.xml';
+    const assertPicture = (files: Record<string, Uint8Array>) => {
+      const xml = parseXml(strFromU8(files[drawingPart]!));
+      assert.equal(descendants(xml, 'pic').length, 1);
+      assert.equal(descendants(xml, 'col')[0]?.text, '2');
+      assert.equal(descendants(xml, 'row')[0]?.text, '1');
+      assert.equal(descendants(xml, 'cNvPr')[0]?.attrs.name, 'first-image');
+      assert.deepEqual(files['xl/media/asset-test.png'], imagePng);
+      assert.match(strFromU8(files['[Content_Types].xml']!), /image\/png/);
+    };
+    assertPicture(fresh.files);
+    const imported = parseLoadedOoxml(fresh);
+    assert.equal(imported.snapshot.sheets[0]!.drawings[0]!.id, 'first-image');
+    assert.deepEqual(imported.snapshot.sheets[0]!.drawingPayloads['first-image-payload'], { kind: 'image', asset: imageAsset });
+
+    const ns = 'http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing';
+    for (const root of [
+      `<xdr:wsDr xmlns:xdr="${ns}"/>`,
+      `<d:wsDr xmlns:d="${ns}" xmlns:xdr="urn:opaque" vendor="retained"><xdr:future flag="yes"/></d:wsDr>`,
+      `<wsDr xmlns="${ns}"/>`,
+    ]) {
+      const preserved = structuredClone(fresh.packageGraph);
+      preserved.parts[drawingPart] = strToU8(root);
+      const before = structuredClone(preserved);
+      const output = loadOpcPackageGraph(exportSnapshotToOoxmlBuffer(snapshot, preserved, options));
+      assertPicture(output.files);
+      if (root.includes('future')) {
+        assert.match(strFromU8(output.files[drawingPart]!), /xmlns:xdr="urn:opaque" vendor="retained"/);
+        assert.equal(descendants(parseXml(strFromU8(output.files[drawingPart]!)), 'future')[0]?.attrs.flag, 'yes');
+      }
+      assert.deepEqual(preserved, before);
+    }
+    for (const root of [
+      '<xdr:wsDr xmlns:xdr="urn:wrong"/>',
+      `<xdr:wsDr xmlns:xdr="${ns}">`,
+      `<d:wsDr xmlns:d="${ns}"/><d:wsDr xmlns:d="${ns}"/>`,
+    ]) {
+      const preserved = structuredClone(fresh.packageGraph);
+      preserved.parts[drawingPart] = strToU8(root);
+      const before = structuredClone(preserved);
+      assert.throws(() => exportSnapshotToOoxmlBuffer(snapshot, preserved, options), (error: unknown) =>
+        error instanceof NativeDocumentError && error.code === 'NATIVE_DOCUMENT_INVALID'
+        && error.location === drawingPart && Boolean(error.recovery) && error.cause instanceof Error);
+      assert.deepEqual(preserved, before);
+      assert.deepEqual(snapshot, beforeSnapshot);
+      assert.deepEqual(imagePng, beforeBytes);
+    }
+  });
+
   it('honors explicit OOXML export options before reusing untouched source bytes', async () => {
     const workbook = new WorkbookModel('wb-export-options', 'Export options');
     const sheet = workbook.getSheet(workbook.primarySheetId);
@@ -1876,10 +2080,10 @@ describe('exchange-excel-ooxml', () => {
     });
     sheet.drawingPayloads.set('image-payload', {
       kind: 'image',
-      asset: { schema: 'AssetRef', assetId: 'asset-test', contentHash: 'a'.repeat(64), mimeType: 'image/png', byteLength: 2 },
+      asset: imageAsset,
     });
     const original = loadOpcPackageGraph(exportSnapshotToOoxmlBuffer(workbook.snapshot(), undefined, {
-      assetBytes: { 'asset-test': Uint8Array.from([1, 2]) },
+      assetBytes: { 'asset-test': imagePng },
     }));
     original.packageGraph.parts['xl/vbaProject.bin'] = Uint8Array.from([7, 8]);
     const imported = await importOoxmlDocument({
@@ -1897,14 +2101,14 @@ describe('exchange-excel-ooxml', () => {
         dateSystem: '1904',
         includeCachedValues: false,
         preserveMacros: false,
-        assetBytes: { 'asset-test': Uint8Array.from([4, 5]) },
+        assetBytes: { 'asset-test': imagePng },
       },
     });
     const output = loadOpcPackageGraph(exported.buffer);
     assert.equal(output.files['xl/vbaProject.bin'], undefined);
     assert.match(strFromU8(output.files['xl/workbook.xml']!), /date1904="1"/);
     assert.equal(strFromU8(output.files['xl/worksheets/sheet1.xml']!).includes('<v>2</v>'), false);
-    assert.deepEqual([...output.files['xl/media/asset-test.png']!], [4, 5]);
+    assert.deepEqual(output.files['xl/media/asset-test.png'], imagePng);
     assert.equal(exported.report.exportLevel, 'C');
     assert.equal(exported.report.dateSystem, '1904');
   });
@@ -2068,4 +2272,49 @@ describe('exchange-excel-ooxml', () => {
     assert.deepEqual(cell?.phonetic?.runs, [{ text: 'とうきょう', start: 0, end: 2 }]);
     assert.equal(cell?.phonetic?.type, 'hiragana');
   });
+});
+
+
+it('native name anchors augment unchanged owners, preserve comments and reject invalid metadata', async () => {
+  const workbook = new WorkbookModel('native-name-anchor', 'Name anchor'), sheet = workbook.getSheet(workbook.primarySheetId);
+  workbook.setDefinedName({ name: 'Relative', formula: '=A1', scope: 'workbook', anchor: { sheetId: sheet.id, row: 3, column: 3 }, comment: 'Anchored & visible', hidden: true });
+  const graph = loadOpcPackageGraph(exportSnapshotToOoxmlBuffer(workbook.snapshot()));
+  const importParts = () => importOoxmlDocument({ fileName: 'names.xlsx', buffer: zipOpcPartsBuffer(graph.packageGraph.parts), options: { compatibilityTarget: 'B' } });
+  const imported = await importParts(), name = imported.snapshot.definedNameModels![0]!;
+  assert.deepEqual(name, workbook.snapshot().definedNameModels![0]);
+  const saved = await exportOoxmlDocument({ snapshot: { ...imported.snapshot, name: 'Edited names' }, artifact: imported.artifact, fileName: 'edited-names.xlsx', options: { compatibilityTarget: 'B' } });
+  const reopened = await importOoxmlDocument({ fileName: 'edited-names.xlsx', buffer: saved.buffer, options: { compatibilityTarget: 'B' } });
+  assert.deepEqual(reopened.snapshot.definedNameModels![0], name);
+  const unknownParts = structuredClone(graph.packageGraph.parts);
+  unknownParts['xl/workbook.xml'] = strToU8(strFromU8(unknownParts['xl/workbook.xml']!).replace('<definedName name=', '<definedName futureAttribute="preserve-me" name='));
+  const unknown = await importOoxmlDocument({ fileName: 'unknown-name.xlsx', buffer: zipOpcPartsBuffer(unknownParts), options: { compatibilityTarget: 'B' } });
+  const unknownBytes = unknown.artifact.sourceBytes.slice(0);
+  await assert.rejects(exportOoxmlDocument({ snapshot: { ...unknown.snapshot, name: 'Reject edit' }, artifact: unknown.artifact, fileName: 'unknown-name-edited.xlsx', options: { compatibilityTarget: 'B' } }), cause => cause instanceof NativeDocumentError && cause.code === 'NATIVE_DOCUMENT_UNCHANGED_SAVE_REQUIRED');
+  assert.deepEqual(unknown.artifact.sourceBytes, unknownBytes);
+
+  const engine = new FormulaEngine({ defaultSheetId: sheet.id, sheetOrder: [{ id: sheet.id, name: sheet.name }] });
+  engine.setDefinedNameModels(imported.snapshot.definedNameModels!); engine.setValue('A1', 2); engine.setValue('B1', 3);
+  engine.setFormula('D4', '=Relative'); engine.setFormula('E4', '=Relative');
+  assert.equal(engine.getCellValue('D4'), 2); assert.equal(engine.getCellValue('E4'), 3);
+  const originalNative = graph.packageGraph.parts['xl/workbook.xml']!, metadata = graph.packageGraph.parts['customXml/react-sheets-workbook.xml']!;
+  graph.packageGraph.parts['xl/workbook.xml'] = strToU8(strFromU8(originalNative).replace('>A1</definedName>', '>99</definedName>'));
+  const changed = await importParts(); assert.equal(changed.snapshot.definedNameModels![0]!.formula, '=99'); assert.equal(changed.snapshot.definedNameModels![0]!.anchor, undefined);
+  graph.packageGraph.parts['xl/workbook.xml'] = originalNative;
+  graph.packageGraph.parts['customXml/react-sheets-workbook.xml'] = strToU8(strFromU8(metadata).replace('&quot;row&quot;:3', '&quot;row&quot;:-1'));
+  await assert.rejects(importParts(), cause => cause instanceof NativeDocumentError && cause.code === 'NATIVE_DOCUMENT_INVALID' && /anchor/.test(cause.message));
+  graph.packageGraph.parts['customXml/react-sheets-workbook.xml'] = strToU8(strFromU8(metadata).replace('&quot;version&quot;:5', '&quot;version&quot;:4'));
+  const old = await importParts(); assert.equal(old.snapshot.definedNameModels![0]!.anchor, undefined); assert.equal(old.snapshot.definedNameModels![0]!.comment, name.comment);
+});
+
+it('native protection export rejects unrepresentable owners and does not activate an inactive rule', () => {
+  const workbook = new WorkbookModel('native-protection-owner', 'Protection'), sheet = workbook.getSheet(workbook.primarySheetId);
+  sheet.protectionRules.push({ id: 'range', scope: 'range', range: { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }, locked: true, allow: {} });
+  const before = workbook.snapshot();
+  assert.throws(() => exportSnapshotToOoxmlBuffer(before), cause => cause instanceof NativeDocumentError && cause.code === 'NATIVE_DOCUMENT_UNSUPPORTED');
+  assert.deepEqual(workbook.snapshot(), before);
+  sheet.protectionRules.splice(0, sheet.protectionRules.length, { id: 'first', scope: 'sheet', sheetId: sheet.id, locked: true, allow: {} }, { id: 'second', scope: 'sheet', sheetId: sheet.id, locked: true, allow: {} });
+  assert.throws(() => exportSnapshotToOoxmlBuffer(workbook.snapshot()), cause => cause instanceof NativeDocumentError && cause.code === 'NATIVE_DOCUMENT_UNSUPPORTED');
+  sheet.protectionRules.splice(0, sheet.protectionRules.length, { id: 'inactive', scope: 'sheet', sheetId: sheet.id, locked: false, allow: {} });
+  const output = loadOpcPackageGraph(exportSnapshotToOoxmlBuffer(workbook.snapshot()));
+  assert.doesNotMatch(strFromU8(output.files['xl/worksheets/sheet1.xml']!), /<sheetProtection/);
 });

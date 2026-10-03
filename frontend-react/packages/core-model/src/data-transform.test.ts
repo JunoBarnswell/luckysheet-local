@@ -496,6 +496,9 @@ describe('canonical row permutation metadata plan', () => {
     const changes = applyPermutation(workbook, range(sheet.id, 0, 1, 0, 0), [1, 0]);
 
     assert.deepEqual(changes.formulaOwnerDeltas, [{
+      kind: 'formula-rule-anchor', sheetId: sheet.id, ruleKind: 'conditional-format', ruleId: 'cf-range-only',
+      beforeAddress: undefined, afterAddress: { sheetId: sheet.id, row: 1, column: 4 },
+    }, {
       kind: 'formula-rule',
       sheetId: sheet.id,
       ruleKind: 'conditional-format',
@@ -751,6 +754,19 @@ describe('canonical row permutation metadata plan', () => {
 
     assert.equal(sheet.conditionalFormats[0]?.formulaAnchor?.row, 2);
     assert.equal(sheet.conditionalFormats[0]?.value1, '=A1>0');
+  });
+
+  it('rejects ambiguous formula-rule owners without moving cells or anchors', () => {
+    const workbook = new WorkbookModel('ambiguous-rule-permutation', 'Ambiguous rule permutation');
+    const sheet = workbook.getSheet('sheet-1');
+    sheet.cells.set(0, 0, { value: 'first' }); sheet.cells.set(1, 0, { value: 'second' });
+    for (let index = 0; index < 2; index++) sheet.conditionalFormats.push({
+      id: 'same-rule', sheetId: sheet.id, ranges: [range(sheet.id, 0, 1, 1, 1)],
+      type: 'highlight', operator: 'formula', value1: '=A1>0',
+    });
+    const before = sheet.snapshot();
+    assert.throws(() => applyPermutation(workbook, range(sheet.id, 0, 1, 0, 0), [1, 0]), /identity|unique|duplicate/i);
+    assert.deepEqual(sheet.snapshot(), before);
   });
 
   it('rejects formula groups and references whose row semantics cannot be remapped before changing cells', () => {

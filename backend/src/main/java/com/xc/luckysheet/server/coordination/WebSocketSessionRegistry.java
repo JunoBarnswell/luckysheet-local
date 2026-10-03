@@ -3,7 +3,7 @@ package com.xc.luckysheet.server.coordination;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.xc.luckysheet.server.contract.CommittedOperationEnvelope;
-import com.xc.luckysheet.server.contract.WorkbookAclRole;
+import com.xc.luckysheet.server.contract.WorkbookRole;
 import com.xc.luckysheet.server.service.AccessControlService;
 import com.xc.luckysheet.server.service.ActorIdentity;
 import com.xc.luckysheet.server.service.ServiceException;
@@ -37,6 +37,7 @@ public class WebSocketSessionRegistry {
     private final RangeAccessService rangeAccess;
     private final AccessProjectionService accessProjection;
     private final Map<String, Set<WebSocketSession>> sessionsByUnit = new ConcurrentHashMap<>();
+    private final Map<String, Map<WebSocketSession, String>> calculationBySource = new ConcurrentHashMap<>();
     private final Map<String, Instant> seenRevisionOperations = new java.util.LinkedHashMap<>();
     private final Map<String, Instant> seenEphemeralEvents = new java.util.LinkedHashMap<>();
 
@@ -47,6 +48,38 @@ public class WebSocketSessionRegistry {
         this.access = access;
         this.rangeAccess = rangeAccess;
         this.accessProjection = accessProjection;
+    }
+
+    public void subscribeCalculation(String rootId, java.util.Set<String> sources, WebSocketSession session) {
+        unsubscribeCalculation(session);
+        for (String source : sources) calculationBySource.computeIfAbsent(source, ignored -> new ConcurrentHashMap<>()).put(session, rootId);
+    }
+
+    public void unsubscribeCalculation(WebSocketSession session) {
+        calculationBySource.forEach((source, peers) -> {
+            peers.remove(session);
+            if (peers.isEmpty()) calculationBySource.remove(source, peers);
+        });
+    }
+
+    private void broadcastCalculationChanged(String source) {
+        calculationBySource.getOrDefault(source, Map.of()).forEach((peer, root) -> {
+            if (!peer.isOpen()) { unsubscribeCalculation(peer); return; }
+            if (!sessionCanRead(root, peer)) { closeRevokedSession(peer); unsubscribeCalculation(peer); return; }
+            sendJson(peer, mapper.createObjectNode().put("type", "calculation.changed").put("unitId", root).put("sourceUnitId", source));
+        });
+    }
+
+    public void broadcastLifecycleChanged(String unitId, String lifecycle) {
+        if (!Set.of("active", "trashed", "purged").contains(lifecycle)) throw new IllegalArgumentException("Unknown workbook lifecycle");
+        broadcastCalculationChanged(unitId);
+        for (WebSocketSession peer : sessionsByUnit.getOrDefault(unitId, Set.of())) {
+            if (!peer.isOpen()) continue;
+            sendJson(peer, mapper.createObjectNode().put("type", "workbook.lifecycle.changed").put("unitId", unitId).put("lifecycle", lifecycle));
+            if (lifecycle.equals("active")) continue;
+            unsubscribeCalculation(peer);
+            closeRevokedSession(peer);
+        }
     }
 
     public void join(String unitId, WebSocketSession session) {
@@ -76,6 +109,7 @@ public class WebSocketSessionRegistry {
 
     public void broadcastRevision(CommittedOperationEnvelope operation, WebSocketSession origin) {
         if (operation == null || !markSeen(seenRevisionOperations, operation.operationId())) return;
+        broadcastCalculationChanged(operation.unitId());
         Set<WebSocketSession> sessions = sessionsByUnit.getOrDefault(operation.unitId(), Set.of());
         for (WebSocketSession peer : sessions) {
             if (peer == origin || !peer.isOpen()) continue;
@@ -130,6 +164,7 @@ public class WebSocketSessionRegistry {
     }
 
     public void broadcastAccessChanged(String unitId, long accessRevision) {
+        broadcastCalculationChanged(unitId);
         ObjectNode message = mapper.createObjectNode().put("type", "access.changed")
                 .put("unitId", unitId).put("accessRevision", accessRevision);
         broadcast(unitId, null, message);
@@ -179,7 +214,7 @@ public class WebSocketSessionRegistry {
     private boolean sessionCanRead(String unitId, WebSocketSession session) {
         try {
             if (!com.xc.luckysheet.server.security.LocalAuthSessionRegistry.isValid(session)) return false;
-            access.require(unitId, ActorIdentity.subject(session.getPrincipal()), WorkbookAclRole.VIEWER);
+            access.require(unitId, ActorIdentity.subject(session.getPrincipal()), WorkbookRole.VIEWER);
             return true;
         } catch (ServiceException error) {
             return false;

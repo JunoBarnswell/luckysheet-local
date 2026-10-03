@@ -583,6 +583,7 @@ export function registerSparklineCommands(runtime: CommandRuntime): string[] {
     applySparklineAdd(context, item.params);
   },
       metadata: {
+        calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
     schema: { name: 'SparklineInsertParams', validate: isSparklineInsert },
     permission: { capability: 'sparkline.edit' },
     affectedRanges: { resolve: sparklineAffectedRanges, mode: 'declared' },
@@ -595,6 +596,7 @@ export function registerSparklineCommands(runtime: CommandRuntime): string[] {
     applySparklineRemove(context, item.params);
   },
       metadata: {
+        calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
     schema: { name: 'SparklineRemoveParams', validate: isSparklineRemove },
     permission: { capability: 'sparkline.edit' },
     affectedRanges: { resolve: sparklineAffectedRanges, mode: 'declared' },
@@ -607,6 +609,7 @@ export function registerSparklineCommands(runtime: CommandRuntime): string[] {
     applySparklineUpdate(context, item.params);
   },
       metadata: {
+        calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
     schema: { name: 'SparklineUpdateParams', validate: isSparklineUpdate },
     permission: { capability: 'sparkline.edit' },
     affectedRanges: { resolve: sparklineAffectedRanges, mode: 'declared' },
@@ -619,6 +622,7 @@ export function registerSparklineCommands(runtime: CommandRuntime): string[] {
     applyGroupState(item.params, context);
   },
       metadata: {
+        calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
     schema: { name: 'SparklineGroupStateParams', validate: isGroupStateParams },
     permission: { capability: 'sparkline.edit' },
     affectedRanges: { resolve: sparklineAffectedRanges, mode: 'declared' },
@@ -631,6 +635,7 @@ export function registerSparklineCommands(runtime: CommandRuntime): string[] {
     applyGroupState(item.params, context);
   },
       metadata: {
+        calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
     schema: { name: 'SparklineGroupStateParams', validate: isGroupStateParams },
     permission: { capability: 'sparkline.edit' },
     affectedRanges: { resolve: sparklineAffectedRanges, mode: 'declared' },
@@ -643,6 +648,7 @@ export function registerSparklineCommands(runtime: CommandRuntime): string[] {
     applyGroupState(item.params, context);
   },
       metadata: {
+        calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
     schema: { name: 'SparklineGroupStateParams', validate: isGroupStateParams },
     permission: { capability: 'sparkline.edit' },
     affectedRanges: { resolve: sparklineAffectedRanges, mode: 'declared' },

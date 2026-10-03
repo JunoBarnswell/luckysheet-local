@@ -4,7 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.xc.luckysheet.server.contract.AclEntry;
 import com.xc.luckysheet.server.contract.AuditRecord;
-import com.xc.luckysheet.server.contract.WorkbookAclRole;
+import com.xc.luckysheet.server.contract.WorkbookRole;
 import com.xc.luckysheet.server.persistence.AuditEntity;
 import com.xc.luckysheet.server.persistence.AuditEntityRepository;
 import com.xc.luckysheet.server.persistence.CheckpointEntity;
@@ -115,7 +115,7 @@ public class WorkbookStore {
                 .toList();
     }
 
-    public Optional<WorkbookAclRole> findRole(String unitId, String subject) {
+    public Optional<WorkbookRole> findRole(String unitId, String subject) {
         return acl.findForSubject(unitId, subject).map(WorkbookAclEntity::getRole);
     }
 
@@ -151,7 +151,7 @@ public class WorkbookStore {
     }
 
     @Transactional
-    public void upsertAcl(String unitId, String subject, WorkbookAclRole role, Instant now) {
+    public void upsertAcl(String unitId, String subject, WorkbookRole role, Instant now) {
         WorkbookAclEntity entity = acl.findForSubject(unitId, subject)
                 .orElseGet(() -> new WorkbookAclEntity(unitId, subject, role, now, now));
         entity.updateRole(role, now);

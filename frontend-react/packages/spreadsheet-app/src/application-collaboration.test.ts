@@ -824,3 +824,36 @@ describe('WorkbookSession collaboration integration', () => {
     assert.equal(runtime.model.getSheet(sheetId).cells.get(0, 0), undefined);
   });
 });
+
+
+it('collaborative redo binds the new operation identity for repeated undo and rejects stale bindings', () => {
+  const runtime = createSpreadsheetRuntime();
+  try {
+    const sheetId = runtime.model.primarySheetId;
+    const collaboration = runtime.collaboration!;
+    runtime.commands.execute('sheet.cell.set', { sheetId, row: 0, column: 0, value: { value: 'cycle' } });
+    const original = collaboration.getPendingOperations()[0]!;
+    collaboration.acknowledge(original.operationId, 1);
+    assert.equal(runtime.commands.undo(), true);
+    const undo = collaboration.getPendingOperations()[0]!;
+    assert.equal(undo.intent?.targetOperationId, original.operationId);
+    collaboration.acknowledge(undo.operationId, 2);
+    assert.equal(runtime.commands.redo(), true);
+    const redo = collaboration.getPendingOperations()[0]!;
+    const entry = runtime.commands.getUndoEntries().at(-1)!;
+    assert.equal(entry.operationId, redo.operationId);
+    assert.equal(entry.baseRevision, 2);
+    assert.equal(entry.committedRevision, undefined);
+    assert.throws(() => runtime.commands.bindRedoOperation(entry, redo.operationId, 2), /Invalid redo operation identity/);
+    assert.throws(() => runtime.commands.bindRedoOperation({ ...entry }, 'unowned', 2), /not active/);
+    assert.equal(entry.operationId, redo.operationId);
+    collaboration.acknowledge(redo.operationId, 3);
+    assert.equal(entry.committedRevision, 3);
+    assert.equal(runtime.commands.undo(), true);
+    const repeatedUndo = collaboration.getPendingOperations()[0]!;
+    assert.equal(repeatedUndo.intent?.targetOperationId, redo.operationId);
+    assert.equal(repeatedUndo.intent?.targetBaseRevision, 2);
+    assert.equal(repeatedUndo.baseRevision, 3);
+    assert.equal(runtime.model.getSheet(sheetId).cells.get(0, 0), undefined);
+  } finally { disposeSpreadsheetRuntime(runtime); }
+});

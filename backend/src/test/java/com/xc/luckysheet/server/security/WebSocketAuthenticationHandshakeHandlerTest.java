@@ -1,6 +1,6 @@
 package com.xc.luckysheet.server.security;
 
-import com.xc.luckysheet.server.contract.WorkbookAclRole;
+import com.xc.luckysheet.server.contract.WorkbookRole;
 import com.xc.luckysheet.server.persistence.LocalUserEntity;
 import com.xc.luckysheet.server.service.GuestShareService;
 import org.junit.jupiter.api.Test;
@@ -28,14 +28,14 @@ class WebSocketAuthenticationHandshakeHandlerTest {
     void bearerSubprotocolIsDecodedAndVerifiedBeforeTheSocketGetsAPrincipal() {
         JwtDecoder decoder = mock(JwtDecoder.class);
         GuestShareService shares = mock(GuestShareService.class);
-        Jwt jwt = Jwt.withTokenValue("token").header("alg", "none").subject("owner-1").issuedAt(Instant.now()).expiresAt(Instant.now().plusSeconds(60)).build();
+        Jwt jwt = Jwt.withTokenValue("token").header("alg", "none").subject("owner-1").issuer("https://issuer.test").claim("sid", "sso-session").issuedAt(Instant.now()).expiresAt(Instant.now().plusSeconds(60)).build();
         when(decoder.decode("token")).thenReturn(jwt);
-        WebSocketAuthenticationHandshakeHandler handler = new WebSocketAuthenticationHandshakeHandler(decoder, shares);
+        WebSocketAuthenticationHandshakeHandler handler = new WebSocketAuthenticationHandshakeHandler(decoder, shares, identities());
         String encoded = Base64.getUrlEncoder().withoutPadding().encodeToString("token".getBytes(StandardCharsets.UTF_8));
 
         var principal = handler.authenticatedPrincipal(request("/ws", "bearer." + encoded));
 
-        assertEquals("owner-1", principal.getName());
+        assertEquals(identities().jwtContext(jwt).principal(), principal.getName());
         assertInstanceOf(JwtAuthenticationToken.class, principal);
     }
 
@@ -44,10 +44,10 @@ class WebSocketAuthenticationHandshakeHandlerTest {
         JwtDecoder decoder = mock(JwtDecoder.class);
         GuestShareService shares = mock(GuestShareService.class);
         GuestShareService.GuestIdentity identity = new GuestShareService.GuestIdentity(
-                "guest:share-1", UUID.randomUUID(), "book-1", WorkbookAclRole.COMMENTER, Instant.now().plusSeconds(60)
+                "guest:share-1", UUID.randomUUID(), "book-1", WorkbookRole.COMMENTER, Instant.now().plusSeconds(60)
         );
         when(shares.authenticate("share-token")).thenReturn(identity);
-        WebSocketAuthenticationHandshakeHandler handler = new WebSocketAuthenticationHandshakeHandler(decoder, shares);
+        WebSocketAuthenticationHandshakeHandler handler = new WebSocketAuthenticationHandshakeHandler(decoder, shares, identities());
 
         var principal = handler.authenticatedPrincipal(request("/ws", "share." + Base64.getUrlEncoder().withoutPadding().encodeToString("share-token".getBytes(StandardCharsets.UTF_8))));
 
@@ -57,19 +57,19 @@ class WebSocketAuthenticationHandshakeHandlerTest {
 
     @Test
     void queryCredentialsAreNotAccepted() {
-        var handler = new WebSocketAuthenticationHandshakeHandler(mock(JwtDecoder.class), mock(GuestShareService.class));
+        var handler = new WebSocketAuthenticationHandshakeHandler(mock(JwtDecoder.class), mock(GuestShareService.class), identities());
         assertThrows(HandshakeFailureException.class, () -> handler.authenticatedPrincipal(request("/ws?shareToken=share-token", null)));
     }
 
     @Test
     void missingCredentialsCannotOpenSocket() {
-        WebSocketAuthenticationHandshakeHandler handler = new WebSocketAuthenticationHandshakeHandler(mock(JwtDecoder.class), mock(GuestShareService.class));
+        WebSocketAuthenticationHandshakeHandler handler = new WebSocketAuthenticationHandshakeHandler(mock(JwtDecoder.class), mock(GuestShareService.class), identities());
         assertThrows(HandshakeFailureException.class, () -> handler.authenticatedPrincipal(request("/ws", null)));
     }
 
     @Test
     void arbitraryOrAnonymousPrincipalCannotBypassHandshakeAuthentication() {
-        WebSocketAuthenticationHandshakeHandler handler = new WebSocketAuthenticationHandshakeHandler(mock(JwtDecoder.class), mock(GuestShareService.class));
+        WebSocketAuthenticationHandshakeHandler handler = new WebSocketAuthenticationHandshakeHandler(mock(JwtDecoder.class), mock(GuestShareService.class), identities());
         ServerHttpRequest request = request("/ws", null);
         when(request.getPrincipal()).thenReturn(() -> "anonymousUser");
 
@@ -84,7 +84,7 @@ class WebSocketAuthenticationHandshakeHandlerTest {
                 "user-1", "owner", "hash", "Owner", true, true,
                 Instant.now(), Instant.now()
         );
-        WebSocketAuthenticationHandshakeHandler handler = new WebSocketAuthenticationHandshakeHandler(decoder, shares);
+        WebSocketAuthenticationHandshakeHandler handler = new WebSocketAuthenticationHandshakeHandler(decoder, shares, identities());
         ServerHttpRequest request = request("/ws", null);
         when(request.getPrincipal()).thenReturn(LocalUserAuthentication.from(user));
 
@@ -92,6 +92,10 @@ class WebSocketAuthenticationHandshakeHandlerTest {
 
         assertEquals("local:user-1", principal.getName());
         assertInstanceOf(LocalUserAuthentication.class, principal);
+    }
+
+    private VerifiedIdentityService identities() {
+        return new VerifiedIdentityService(new com.xc.luckysheet.server.config.IdentityProperties(null, null, null, null, null, null, null));
     }
 
     private ServerHttpRequest request(String path, String protocol) {

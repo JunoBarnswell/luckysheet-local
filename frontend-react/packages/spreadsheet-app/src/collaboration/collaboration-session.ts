@@ -277,7 +277,9 @@ export class CollaborationSession {
       return false;
     }
     const local = this.localClassified.get(operationId);
-    this.runtime.markOperationCommitted(operationId, revision);
+    const pending = this.offlineQueue.getPendingOperation(operationId);
+    if (!pending) throw new Error('ACK operation lacks its durable base revision');
+    this.runtime.markOperationCommitted(operationId, revision, pending.baseRevision);
     if (local) this.committedMutations.push(...local);
     this.committedOperationIds.add(operationId);
     this.localClassified.delete(operationId);

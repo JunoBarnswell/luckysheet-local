@@ -162,11 +162,16 @@ describe('prepared structural formula writes', () => {
       const sheetOrder = workbook.sheetOrder.map((id) => ({ id, name: workbook.getSheet(id).name }));
       const index = new RangeIndex(sheetOrder);
       index.set(owner, collectFormulaDependencies(parseFormula(formula), owner, { sheetOrder }));
-      const before = workbook.snapshot();
+      const capture = () => {
+        const remoteCells: Array<{ row: number; column: number; cell: CellData }> = [];
+        remote.cells.forEachWithoutHydration((cell, row, column) => remoteCells.push({ row, column, cell: structuredClone(cell) }));
+        return { target: target.snapshot(), remoteCells, rowCount: remote.rowCount, columnCount: remote.columnCount };
+      };
+      const before = capture();
 
       assert.throws(() => StructuralTransform.apply(workbook, params, index), /Font family contains control characters/);
 
-      assert.deepEqual(workbook.snapshot(), before);
+      assert.deepEqual(capture(), before);
       assert.equal(remote.cells.isHydrated, false);
     }
   });

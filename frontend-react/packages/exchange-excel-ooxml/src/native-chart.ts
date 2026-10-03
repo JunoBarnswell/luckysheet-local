@@ -518,7 +518,7 @@ function chartIdentity(xml: string): { family: string; subtype: string; xlChartT
   } else if (family === 'pie' || family === 'doughnut') {
     const firstSliceAngle = Number(nodeValue(node, 'firstSliceAng') ?? 0);
     const hasExplosion = descendants(node, 'explosion').some((entry) => Number(entry.attrs.val ?? 0) !== 0);
-    const view3d = descendants(child(root, 'chart'), 'view3D')[0];
+    const view3d = child(child(child(root, 'chartSpace'), 'chart'), 'view3D');
     const hasExplicit3dView = name === 'pie3DChart' && view3d !== undefined;
     if (!Number.isFinite(firstSliceAngle) || firstSliceAngle !== 0) piePresentationIssue = `UNSUPPORTED_FEATURE: pie rotation ${String(firstSliceAngle)} is not supported`;
     else if (hasExplosion) piePresentationIssue = 'UNSUPPORTED_FEATURE: pie explosion settings are not supported';

@@ -1,3 +1,4 @@
+import { requestExternalRecalculation } from './features/linked-data/external-link-host';
 import { synchronizeRecordCalculations } from './features/linked-data/record-calculation';
 import { refreshExternalLinks } from './features/linked-data/external-link-host';
 import { RecoveryJournal } from './features/persistence/recovery-journal';
@@ -11,7 +12,6 @@ import {
   WorkbookApiClient,
   type AuthTokenProvider,
   type ShareTokenProvider,
-  type WorkbookAclRole,
   type WorkbookAccessResponse,
   type OperationMessage,
   type SnapshotResponse,
@@ -53,6 +53,7 @@ export interface RuntimeHandlers {
   onMutationsApplied?: () => void;
   onCalculationApplied?: (addresses: readonly { readonly sheetId: string; readonly row: number; readonly column: number }[]) => void;
   onPhaseChange?: (phase: import('./types').AppPhase) => void;
+  onWorkbookLifecycle?: (lifecycle: 'active' | 'trashed' | 'purged') => void;
   onActiveSheetChange?: (sheetId: string) => void;
   onRemoteRevisions?: (revisions: import('@react-sheets/protocol').RevisionRecord[]) => void;
   onCollabStatus?: (status: 'connecting' | 'open' | 'closed') => void;
@@ -313,84 +314,6 @@ function installCommandCellValueResolver(runtime: SpreadsheetRuntime): void {
     return cell?.formulaValue ?? cell?.value ?? null;
   });
 }
-
-const FORMULA_SYNC_MUTATIONS = new Set([
-  'record.set',
-  'record.restore',
-  'cell.set',
-  'cell.restore',
-  'range.set',
-  'fill.applied',
-  'fill.restored',
-  'flashFill.applied',
-  'flashFill.restored',
-  'range.clear',
-  'range.paste',
-  'range.move',
-  'dataRegion.materialize.commit',
-  'dataRegion.materialize.restore',
-  'query.load.range',
-  'query.load.sheet-table',
-  'query.load.pivot-source',
-  'query.load.workbook-table',
-  'cells.inserted',
-  'cells.deleted',
-  'cells.inserted.restore',
-  'rows.permuted',
-  'cells.deleted.restore',
-  'rows.inserted',
-  'rows.deleted',
-  'columns.inserted',
-  'columns.deleted',
-  'sheet.rename',
-  'workbook.calculation.mode.set',
-  'row.hidden',
-  'row.unhidden',
-  'rows.unhidden.all',
-  'rows.hidden.restore',
-  'sheet.rows.visibility.set',
-  'sheet.rows.unhide.all',
-  'autoFilter.set',
-  'autoFilter.remove',
-  'sheet.autoFilter.set',
-  'sheet.autoFilter.remove',
-  'sheetTable.autoFilter.set',
-  'outline.group.toggle',
-  'outline.showLevel',
-]);
-
-const VISIBILITY_MUTATIONS = new Set([
-  'row.hidden', 'row.unhidden', 'rows.unhidden.all', 'rows.hidden.restore',
-  'sheet.rows.visibility.set', 'sheet.rows.unhide.all',
-  'autoFilter.set', 'autoFilter.remove', 'sheet.autoFilter.set', 'sheet.autoFilter.remove',
-  'sheetTable.autoFilter.set', 'sheetTable.add', 'sheetTable.remove', 'sheetTable.update',
-  'outline.group.toggle', 'outline.showLevel',
-]);
-
-const DIRECT_CELL_WRITE_MUTATIONS = new Set([
-  'record.set',
-  'record.restore',
-  'cell.set',
-  'cell.restore',
-  'range.set',
-  'fill.applied',
-  'fill.restored',
-  'flashFill.applied',
-  'flashFill.restored',
-  'range.clear',
-  'range.paste',
-  'range.move',
-  'cells.inserted',
-  'cells.deleted',
-  'cells.inserted.restore',
-  'cells.deleted.restore',
-  'dataRegion.materialize.commit',
-  'dataRegion.materialize.restore',
-  'query.load.range',
-  'query.load.sheet-table',
-  'query.load.pivot-source',
-  'query.load.workbook-table',
-]);
 
 function calculationInputUpdate(
   sheetId: string,
@@ -967,19 +890,21 @@ export function attachCoreListeners(runtime: SpreadsheetRuntime): void {
   runtime.detachers.push(
     runtime.commands.onMutation((mutation, source, appliedEffect) => {
       if (runtime.disposed) return;
+      const calculation = runtime.commands.registry.getMutationMetadata(mutation.id).calculation;
+      const isDirectCellWrite = calculation.inputs === 'cells';
       let structuralRoots: readonly CellAddressInput[] | undefined;
       const structuralEffect = isStructuralTransformResult(appliedEffect) ? appliedEffect : undefined;
       const calculationContextEffect = isWorkbookCalculationContextEffect(appliedEffect)
         ? appliedEffect
-        : structuralEffect?.calculationContextEffect ?? runtime.commands.registry.getMutationMetadata(mutation.id)?.calculationContextEffect;
+        : structuralEffect?.calculationContextEffect ?? calculation.context;
       const rebuildsCalculationContext = calculationContextEffect?.action === 'rebuild' || Boolean(structuralEffect && [...runtime.model.dataModel.tables.values()].some(table => table.recordIdFieldId));
-      const changesVisibilityProjection = VISIBILITY_MUTATIONS.has(mutation.id)
+      const changesVisibilityProjection = calculation.visibility
         || rebuildsCalculationContext
         || structuralEffect !== undefined
         || mutationTouchesFilterCriteria(runtime.model, mutation.affectedRanges);
       if (changesVisibilityProjection) runtime.rowVisibilityResolver.invalidate();
-      if (mutation.id === 'workbook.calculation.mode.set') {
-        const mode = (mutation.params as { mode?: unknown } | undefined)?.mode;
+      if (calculation.mode) {
+        const mode = runtime.model.calculationSettings.mode;
         if (mode !== 'automatic' && mode !== 'manual' && mode !== 'partial') throw new Error('Workbook calculation mode mutation is invalid');
         runtime.formula.setRecalculationMode(mode);
       }
@@ -1011,10 +936,9 @@ export function attachCoreListeners(runtime: SpreadsheetRuntime): void {
         );
       }
       // Geometry can change directly (merge/table) or as a side effect of a structural transform.
-      const spillBlockerGeometryRanges = mutation.id === 'merge.set' || mutation.id === 'merge.remove'
-        || mutation.id === 'sheetTable.add' || mutation.id === 'sheetTable.remove'
+      const spillBlockerGeometryRanges = calculation.spillBlockers === 'ranges'
         ? mutation.affectedRanges.filter((range) => range.sheetId === mutation.sheetId)
-        : mutation.id === 'sheetTable.update'
+        : calculation.spillBlockers === 'table-deltas'
           ? (structuralEffect?.rangeOwnerDeltas ?? [])
             .flatMap((delta) => delta.ownerKind === 'sheet-table' && delta.sheetId === mutation.sheetId
               ? [delta.before, delta.after]
@@ -1048,7 +972,7 @@ export function attachCoreListeners(runtime: SpreadsheetRuntime): void {
       // direct write into a dynamic-array child cannot leave partial model or
       // formula state behind.  Undo/redo replay is allowed to restore the
       // exact prior snapshot.
-      if (source === 'command' && DIRECT_CELL_WRITE_MUTATIONS.has(mutation.id)) {
+      if (source === 'command' && isDirectCellWrite) {
         assertNoSpillChildWrite(runtime.model, mutation);
       }
 
@@ -1058,6 +982,9 @@ export function attachCoreListeners(runtime: SpreadsheetRuntime): void {
         const column = range.startColumn + field.ordinal;
         return mutation.affectedRanges.some(affected => affected.sheetId === range.sheetId && affected.startRow <= range.endRow && affected.endRow > range.startRow && affected.startColumn <= column && affected.endColumn >= column);
       });
+      if (!rebuildsCalculationContext && !structuralEffect && isDirectCellWrite) {
+        structuralRoots = [...(structuralRoots ?? []), ...synchronizeCellMutation(runtime.formula, runtime.model, mutation)];
+      }
       if (relationMembershipChanged) structuralRoots = [...(structuralRoots ?? []), ...synchronizeRecordCalculations(runtime.formula, runtime.model)];
       const formulaOwnerDeltas = structuralEffect?.formulaOwnerDeltas ?? [];
       const definedNameOwnerDeltas = structuralEffect?.definedNameOwnerDeltas ?? [];
@@ -1077,28 +1004,19 @@ export function attachCoreListeners(runtime: SpreadsheetRuntime): void {
         || mutation.id === 'pivot.drilldown.add' || mutation.id === 'pivot.drilldown.remove') {
         initializeDataContent(runtime);
       }
-      if (FORMULA_SYNC_MUTATIONS.has(mutation.id) || calculationContextEffect !== undefined || spillBlockerGeometryChanged) {
-        const isDirectCellWrite = DIRECT_CELL_WRITE_MUTATIONS.has(mutation.id);
+      const needsCalculation = isDirectCellWrite || calculation.mode || calculationContextEffect !== undefined
+        || structuralEffect !== undefined || spillBlockerGeometryChanged || changesVisibilityProjection;
+      if (needsCalculation) {
         const roots = rebuildsCalculationContext
           ? undefined
-          : structuralRoots
-            ?? (isDirectCellWrite ? synchronizeCellMutation(runtime.formula, runtime.model, mutation) : undefined)
-            ?? (changesVisibilityProjection ? runtime.formula.getPendingRecalculationRoots() : undefined);
+          : [...new Map([
+            ...(structuralRoots ?? []),
+            ...runtime.formula.getPendingRecalculationRoots(),
+          ].map((address) => [typeof address === 'string' ? address : `${address.sheetId}:${address.row}:${address.column}`, address])).values()];
         const automatic = runtime.formula.getRecalculationMode() === 'automatic';
         if (automatic || changesVisibilityProjection || !isDirectCellWrite || rebuildsCalculationContext) {
-          void scheduleFormulaRecalculation(
-            runtime,
-            VISIBILITY_MUTATIONS.has(mutation.id),
-            isDirectCellWrite ? undefined : roots,
-            false,
-          );
+          void scheduleFormulaRecalculation(runtime, calculation.visibility, roots, false);
         }
-      } else if (changesVisibilityProjection) {
-        void scheduleFormulaRecalculation(
-          runtime,
-          VISIBILITY_MUTATIONS.has(mutation.id),
-          runtime.formula.getPendingRecalculationRoots(),
-        );
       }
     }),
   );
@@ -1169,6 +1087,7 @@ export function attachCoreListeners(runtime: SpreadsheetRuntime): void {
           entry.baseRevision,
         )
         : runtime.collaboration.enqueueLocalMutations(replayMutations, runtime.model.unitId);
+      if (source === 'redo') runtime.commands.bindRedoOperation(entry, operation.operationId, operation.baseRevision);
       scheduleOperation(runtime, operation);
       void runtime.checkpointWorkspace();
     }),
@@ -1589,8 +1508,13 @@ export function startCollaborationSession(
       }
     };
     const applyRemote = (message: OperationMessage) => {
-      if (synchronizing) { deferredMessages.push(message); return; }
       if (runtime.disposed) return;
+      // Retirement fences even an in-flight initial snapshot synchronization.
+      if (message.type === 'workbook.lifecycle.changed') {
+        if (message.unitId === runtime.model.unitId) runtime.handlers.onWorkbookLifecycle?.(message.lifecycle);
+        return;
+      }
+      if (synchronizing) { deferredMessages.push(message); return; }
       if (message.type === 'access.changed') {
         if (message.unitId !== runtime.model.unitId) return;
         void resynchronizeForAccessChange(message.accessRevision);
@@ -1635,6 +1559,9 @@ export function startCollaborationSession(
         void checkpointWorkspace(runtime, false);
         runtime.handlers.onMutationsApplied?.();
         void runtime.api.listRevisions(runtime.model.unitId).then((revs) => runtime.handlers.onRemoteRevisions?.(revs)).catch(() => undefined);
+      } else if (message.type === 'calculation.changed') {
+        if (message.unitId !== runtime.model.unitId) return;
+        void requestExternalRecalculation(runtime).catch(error => { if (!runtime.disposed) runtime.handlers.onNotice?.(error instanceof Error ? error.message : String(error)); });
       } else if (message.type === 'cursor.broadcast' || message.type === 'presence.broadcast') {
         if (!message.unitId || message.unitId !== runtime.model.unitId) return;
         if (message.type === 'presence.broadcast' && (message.state as { status?: string } | null)?.status === 'offline') {
@@ -1662,6 +1589,8 @@ export function startCollaborationSession(
       runtime.remoteConnected = false;
       runtime.collaboration?.offlineQueue.setOnline(false);
       runtime.handlers.onCollabStatus?.(status);
+      // Editing is available only after the server snapshot/access/history synchronization.
+      runtime.handlers.onPhaseChange?.('loading');
       if (status === 'closed') {
         runtime.collaboration?.transportClosed();
         runtime.handlers.onSaveState?.('offline');
@@ -1670,6 +1599,7 @@ export function startCollaborationSession(
       synchronizing = true;
       synchronizationFailed = false;
       client.send({ type: 'cursor.updated', unitId: runtime.model.unitId, state: { sheetId: runtime.model.primarySheetId, row: 0, column: 0 } });
+      if (runtime.model.dataModel.externalLinks.size) client.send({ type: 'calculation.subscribe', unitId: runtime.model.unitId });
       void (async () => {
         const [snapshot, access] = await Promise.all([runtime.api.getSnapshot(runtime.model.unitId), runtime.api.getAccess(runtime.model.unitId)]);
         if (!active || runtime.disposed) return;
@@ -1692,6 +1622,7 @@ export function startCollaborationSession(
         client.markSynchronized();
         runtime.remoteConnected = true;
         runtime.collaboration?.offlineQueue.setOnline(true);
+        runtime.handlers.onPhaseChange?.('ready');
         runtime.handlers.onMutationsApplied?.();
         runtime.handlers.onSaveState?.(runtime.collaboration?.getPendingOperations().length ? 'saving' : 'saved');
         if (runtime.model.dataModel.externalLinks.size) await refreshExternalLinks(runtime);
@@ -1702,6 +1633,7 @@ export function startCollaborationSession(
         runtime.remoteConnected = false;
         runtime.handlers.onSaveState?.('conflict');
         runtime.handlers.onNotice?.(error.message);
+        runtime.handlers.onPhaseChange?.('error');
         if (error instanceof MutationRecoveryRequiredError) client.requestResynchronization();
       });
     });
@@ -1891,9 +1823,8 @@ async function initializePersistence(runtime: SpreadsheetRuntime, isActive: () =
         runtime.handlers.onSaveState?.('saved');
         runtime.handlers.onNotice?.('Workbook restored from server');
         runtime.handlers.onActiveSheetChange?.(runtime.model.primarySheetId);
-        // Keep the visible ready boundary after the authoritative active-sheet
-        // callback so immediate tab interaction cannot be reverted by startup.
-        runtime.handlers.onPhaseChange?.('ready');
+        // Server state is loaded, but the collaboration writer is not synchronized yet.
+        runtime.handlers.onPhaseChange?.('loading');
         runtime.handlers.onWorkspacePersisted?.();
         if (runtime.model.dataModel.externalLinks.size) await refreshExternalLinks(runtime);
       }

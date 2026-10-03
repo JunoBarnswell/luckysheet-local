@@ -6,7 +6,7 @@ import com.xc.luckysheet.server.contract.FolderResponse;
 import com.xc.luckysheet.server.contract.SpaceMemberRequest;
 import com.xc.luckysheet.server.contract.SpaceMemberResponse;
 import com.xc.luckysheet.server.contract.SpaceResponse;
-import com.xc.luckysheet.server.contract.WorkbookAclRole;
+import com.xc.luckysheet.server.contract.WorkbookRole;
 import com.xc.luckysheet.server.contract.WorkspaceSpaceType;
 import com.xc.luckysheet.server.persistence.SpaceMemberEntity;
 import com.xc.luckysheet.server.persistence.SpaceMemberEntityRepository;
@@ -46,14 +46,14 @@ public class WorkspaceService {
         if (existing != null) {
             Instant now = Instant.now();
             if (members.findByIdSpaceIdAndIdSubject(existing.getSpaceId(), subject).isEmpty()) {
-                members.save(new SpaceMemberEntity(existing.getSpaceId(), subject, WorkbookAclRole.OWNER, now, now));
+                members.save(new SpaceMemberEntity(existing.getSpaceId(), subject, WorkbookRole.OWNER, now, now));
             }
             return existing;
         }
         Instant now = Instant.now();
         WorkspaceSpaceEntity space = spaces.save(new WorkspaceSpaceEntity(UUID.randomUUID().toString(), "我的云文档",
                 WorkspaceSpaceType.PERSONAL, subject, now, now));
-        members.save(new SpaceMemberEntity(space.getSpaceId(), subject, WorkbookAclRole.OWNER, now, now));
+        members.save(new SpaceMemberEntity(space.getSpaceId(), subject, WorkbookRole.OWNER, now, now));
         return space;
     }
 
@@ -66,32 +66,32 @@ public class WorkspaceService {
         WorkspaceSpaceEntity space = new WorkspaceSpaceEntity(UUID.randomUUID().toString(), request.name().trim(),
             request.kind(), subject, now, now);
         spaces.save(space);
-        members.save(new SpaceMemberEntity(space.getSpaceId(), subject, WorkbookAclRole.OWNER, now, now));
-        return response(space, WorkbookAclRole.OWNER);
+        members.save(new SpaceMemberEntity(space.getSpaceId(), subject, WorkbookRole.OWNER, now, now));
+        return response(space, WorkbookRole.OWNER);
     }
 
     @Transactional
     public List<SpaceResponse> list(String subject) {
         ensurePersonalSpace(subject);
-        return spaces.findAccessibleTo(subject).stream().map(space -> response(space, effectiveRole(space, subject))).toList();
+        return spaces.findAccessibleTo(subject).stream().filter(space -> effectiveRole(space, subject) != null).map(space -> response(space, effectiveRole(space, subject))).toList();
     }
 
-    public WorkspaceSpaceEntity require(String spaceId, String subject, WorkbookAclRole required) {
+    public WorkspaceSpaceEntity require(String spaceId, String subject, WorkbookRole required) {
         if (spaceId == null || spaceId.isBlank()) throw ServiceException.validation("spaceId is required");
         WorkspaceSpaceEntity space = spaces.findById(spaceId).orElseThrow(() -> ServiceException.notFound("Space not found: " + spaceId));
-        WorkbookAclRole role = effectiveRole(space, subject);
+        WorkbookRole role = effectiveRole(space, subject);
         if (role == null || !role.includes(required)) throw ServiceException.forbidden("Space access denied");
         return space;
     }
 
     public List<FolderResponse> listFolders(String spaceId, String subject) {
-        require(spaceId, subject, WorkbookAclRole.VIEWER);
+        require(spaceId, subject, WorkbookRole.VIEWER);
         return folders.findBySpaceIdOrderByName(spaceId).stream().map(this::folderResponse).toList();
     }
 
     @Transactional
     public FolderResponse createFolder(String spaceId, FolderRequest request, String subject) {
-        require(spaceId, subject, WorkbookAclRole.EDITOR);
+        require(spaceId, subject, WorkbookRole.EDITOR);
         if (request.parentFolderId() != null && !request.parentFolderId().isBlank()) {
             WorkspaceFolderEntity parent = folders.findByFolderIdAndSpaceId(request.parentFolderId(), spaceId)
                     .orElseThrow(() -> ServiceException.notFound("Parent folder not found"));
@@ -105,7 +105,7 @@ public class WorkspaceService {
 
     @Transactional
     public void deleteFolder(String spaceId, String folderId, String subject) {
-        require(spaceId, subject, WorkbookAclRole.EDITOR);
+        require(spaceId, subject, WorkbookRole.EDITOR);
         WorkspaceFolderEntity folder = folders.findByFolderIdAndSpaceId(folderId, spaceId)
                 .orElseThrow(() -> ServiceException.notFound("Folder not found"));
         if (folders.existsBySpaceIdAndParentId(spaceId, folderId)) {
@@ -119,7 +119,7 @@ public class WorkspaceService {
     public FolderResponse updateFolder(String folderId, FolderRequest request, String subject) {
         WorkspaceFolderEntity folder = folders.findById(folderId)
                 .orElseThrow(() -> ServiceException.notFound("Folder not found"));
-        require(folder.getSpaceId(), subject, WorkbookAclRole.EDITOR);
+        require(folder.getSpaceId(), subject, WorkbookRole.EDITOR);
         String parentId = blankToNull(request.parentFolderId());
         if (parentId != null) {
             if (parentId.equals(folderId)) throw ServiceException.validation("Folder cannot contain itself");
@@ -142,15 +142,16 @@ public class WorkspaceService {
     }
 
     public List<SpaceMemberResponse> listMembers(String spaceId, String subject) {
-        require(spaceId, subject, WorkbookAclRole.VIEWER);
+        require(spaceId, subject, WorkbookRole.VIEWER);
         return members.findByIdSpaceIdOrderByIdSubject(spaceId).stream().map(member ->
                 new SpaceMemberResponse(spaceId, member.getId().getSubject(), member.getRole(), member.getCreatedAt(), member.getUpdatedAt())).toList();
     }
 
     @Transactional
     public SpaceMemberResponse upsertMember(String spaceId, String target, SpaceMemberRequest request, String subject) {
-        WorkspaceSpaceEntity space = require(spaceId, subject, WorkbookAclRole.OWNER);
+        WorkspaceSpaceEntity space = require(spaceId, subject, WorkbookRole.OWNER);
         if (target == null || target.isBlank()) throw ServiceException.validation("Member subject is required");
+        if (!sameScope(subject, target)) throw ServiceException.forbidden("Cross-workspace membership is forbidden");
         if (target.equals(space.getOwnerSubject())) throw ServiceException.validation("The space owner cannot be changed");
         Instant now = Instant.now();
         SpaceMemberEntity member = members.findByIdSpaceIdAndIdSubject(spaceId, target)
@@ -162,24 +163,30 @@ public class WorkspaceService {
 
     @Transactional
     public void removeMember(String spaceId, String target, String subject) {
-        WorkspaceSpaceEntity space = require(spaceId, subject, WorkbookAclRole.OWNER);
+        WorkspaceSpaceEntity space = require(spaceId, subject, WorkbookRole.OWNER);
         if (target.equals(space.getOwnerSubject())) throw ServiceException.validation("The space owner cannot be removed");
         members.deleteById(new SpaceMemberEntity.Id(spaceId, target));
     }
 
-    public WorkspaceFolderEntity requireFolder(String spaceId, String folderId, String subject, WorkbookAclRole required) {
+    public WorkspaceFolderEntity requireFolder(String spaceId, String folderId, String subject, WorkbookRole required) {
         require(spaceId, subject, required);
         if (folderId == null || folderId.isBlank()) return null;
         return folders.findByFolderIdAndSpaceId(folderId, spaceId)
                 .orElseThrow(() -> ServiceException.notFound("Folder not found: " + folderId));
     }
 
-    private WorkbookAclRole effectiveRole(WorkspaceSpaceEntity space, String subject) {
-        if (space.getOwnerSubject().equals(subject)) return WorkbookAclRole.OWNER;
+    private WorkbookRole effectiveRole(WorkspaceSpaceEntity space, String subject) {
+        if (!sameScope(space.getOwnerSubject(), subject)) return null;
+        if (space.getOwnerSubject().equals(subject)) return WorkbookRole.OWNER;
         return members.findByIdSpaceIdAndIdSubject(space.getSpaceId(), subject).map(SpaceMemberEntity::getRole).orElse(null);
     }
 
-    private SpaceResponse response(WorkspaceSpaceEntity space, WorkbookAclRole role) {
+    private boolean sameScope(String left, String right) {
+        return com.xc.luckysheet.server.security.VerifiedIdentityService.scopeForActor(left)
+                .equals(com.xc.luckysheet.server.security.VerifiedIdentityService.scopeForActor(right));
+    }
+
+    private SpaceResponse response(WorkspaceSpaceEntity space, WorkbookRole role) {
         return new SpaceResponse(space.getSpaceId(), space.getName(), space.getType(), space.getOwnerSubject(), role,
                 space.getCreatedAt(), space.getUpdatedAt());
     }

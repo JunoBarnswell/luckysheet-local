@@ -310,6 +310,7 @@ export class DataSourceContentQuery {
     return { state: current ?? state(this.source.id, ref.id, 'loading') };
   }
 
+  /** Viewport prefetch starts unseen blocks; terminal failures require an explicit read. */
   prefetchRows(startRow: number, rowCount: number): void {
     const error = this.validateRange(startRow, rowCount);
     if (error || rowCount === 0) return;
@@ -323,7 +324,7 @@ export class DataSourceContentQuery {
       if (firstIndex === undefined || lastIndex === undefined) return;
       for (let index = firstIndex; index <= lastIndex; index += 1) {
         const ref = this.source.blocks[index]!;
-        if (!this.loadedBlocks.has(ref.id) && !this.loadPromises.has(ref.id)) refs.push(ref);
+        if (!this.loadedBlocks.has(ref.id) && !this.loadPromises.has(ref.id) && !this.loadStates.has(ref.id)) refs.push(ref);
       }
     } else {
       const scheduled = new Set<string>();
@@ -331,7 +332,7 @@ export class DataSourceContentQuery {
         const ref = this.findBlock(this.physicalRow(row));
         if (ref && !scheduled.has(ref.id)) {
           scheduled.add(ref.id);
-          if (!this.loadedBlocks.has(ref.id) && !this.loadPromises.has(ref.id)) refs.push(ref);
+          if (!this.loadedBlocks.has(ref.id) && !this.loadPromises.has(ref.id) && !this.loadStates.has(ref.id)) refs.push(ref);
         }
       }
     }

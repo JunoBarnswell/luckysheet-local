@@ -29,10 +29,10 @@ import org.springframework.security.web.csrf.HttpSessionCsrfTokenRepository;
 
 @Configuration
 @EnableMethodSecurity
-@org.springframework.boot.context.properties.EnableConfigurationProperties(AuthProperties.class)
+@org.springframework.boot.context.properties.EnableConfigurationProperties({AuthProperties.class, IdentityProperties.class})
 public class SecurityConfig {
     @Bean
-    public JwtDecoder jwtDecoder(AuthProperties properties) {
+    public JwtDecoder jwtDecoder(AuthProperties properties, com.xc.luckysheet.server.security.VerifiedIdentityService identities) {
         validateModeConfiguration(properties);
         if (properties.authMode() == AuthProperties.AuthMode.LOCAL) {
             return token -> {
@@ -44,7 +44,11 @@ public class SecurityConfig {
         OAuth2TokenValidator<Jwt> audience = jwt -> jwt.getAudience().stream().anyMatch(properties.audiences()::contains)
                 ? OAuth2TokenValidatorResult.success()
                 : OAuth2TokenValidatorResult.failure(new OAuth2Error("invalid_token", "Required audience is missing", null));
-        decoder.setJwtValidator(new org.springframework.security.oauth2.core.DelegatingOAuth2TokenValidator<>(issuer, audience));
+        OAuth2TokenValidator<Jwt> identity = jwt -> {
+            try { identities.jwtContext(jwt); return OAuth2TokenValidatorResult.success(); }
+            catch (JwtException error) { return OAuth2TokenValidatorResult.failure(new OAuth2Error("invalid_token", error.getMessage(), null)); }
+        };
+        decoder.setJwtValidator(new org.springframework.security.oauth2.core.DelegatingOAuth2TokenValidator<>(issuer, audience, identity));
         return decoder;
     }
 
@@ -75,7 +79,9 @@ public class SecurityConfig {
             GuestShareService shares,
             ApiSecurityErrorHandlers errors,
             SecurityContextRepository securityContextRepository,
-            CsrfTokenRepository csrfTokenRepository
+            CsrfTokenRepository csrfTokenRepository,
+            com.xc.luckysheet.server.security.VerifiedIdentityService identities,
+            com.fasterxml.jackson.databind.ObjectMapper mapper
     ) throws Exception {
         boolean oidc = properties.authMode() == AuthProperties.AuthMode.OIDC;
         http
@@ -102,7 +108,8 @@ public class SecurityConfig {
                         .authenticationEntryPoint(errors)
                         .accessDeniedHandler(errors));
         http.addFilterBefore(new GuestShareAuthenticationFilter(shares), BearerTokenAuthenticationFilter.class);
-        if (oidc) http.oauth2ResourceServer(oauth -> oauth.jwt(jwt -> { }));
+        if (oidc) http.oauth2ResourceServer(oauth -> oauth.jwt(jwt -> jwt.jwtAuthenticationConverter(identities::authentication)));
+        http.addFilterAfter(new com.xc.luckysheet.server.security.IdentityContextFilter(identities, mapper), BearerTokenAuthenticationFilter.class);
         return http.build();
     }
 

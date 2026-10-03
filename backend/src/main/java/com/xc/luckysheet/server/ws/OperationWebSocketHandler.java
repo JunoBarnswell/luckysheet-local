@@ -2,7 +2,7 @@ package com.xc.luckysheet.server.ws;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.xc.luckysheet.server.contract.WorkbookAclRole;
+import com.xc.luckysheet.server.contract.WorkbookRole;
 import com.xc.luckysheet.server.coordination.EphemeralCoordinationService;
 import com.xc.luckysheet.server.coordination.EphemeralEvent;
 import com.xc.luckysheet.server.coordination.WebSocketSessionRegistry;
@@ -24,17 +24,19 @@ public class OperationWebSocketHandler extends TextWebSocketHandler {
     private final AccessControlService access;
     private final WebSocketSessionRegistry sessions;
     private final EphemeralCoordinationService ephemeral;
+    private final com.xc.luckysheet.server.service.WorkbookOperationService operations;
 
     public OperationWebSocketHandler(
             ObjectMapper mapper,
             AccessControlService access,
             WebSocketSessionRegistry sessions,
-            EphemeralCoordinationService ephemeral
+            EphemeralCoordinationService ephemeral,
+            com.xc.luckysheet.server.service.WorkbookOperationService operations
     ) {
         this.mapper = mapper;
         this.access = access;
         this.sessions = sessions;
-        this.ephemeral = ephemeral;
+        this.ephemeral = ephemeral; this.operations = operations;
     }
 
     @Override
@@ -47,6 +49,15 @@ public class OperationWebSocketHandler extends TextWebSocketHandler {
             if (!root.isObject() || root.path("type").asText("").isBlank()) throw ServiceException.validation("Message type is required");
             String type = root.path("type").asText();
             switch (type) {
+                case "calculation.subscribe" -> {
+                    if (root.size() != 2 || root.has("actorId")) throw ServiceException.validation("Calculation subscription accepts root identity only");
+                    String id = parseUnitId(root.path("unitId").asText(""));
+                    if (sessions.unitId(session) != null && !sessions.unitId(session).equals(id)) throw ServiceException.validation("Calculation root differs from the owned session");
+                    JsonNode graph = operations.readExternalCalculationGraph(id, actor, ActorIdentity.groups(principal));
+                    var sources = new java.util.HashSet<String>();
+                    for (JsonNode node : graph.path("nodes")) if (!node.path("unitId").asText().equals(id)) sources.add(node.path("unitId").asText());
+                    sessions.subscribeCalculation(id, sources, session);
+                }
                 case "presence.updated", "cursor.updated" -> handleTransient(session, actor, root, type);
                 default -> throw ServiceException.validation("WebSocket accepts presence/cursor updates only; use REST for workbook operations");
             }
@@ -57,6 +68,7 @@ public class OperationWebSocketHandler extends TextWebSocketHandler {
 
     @Override
     public void afterConnectionClosed(WebSocketSession session, CloseStatus status) {
+        sessions.unsubscribeCalculation(session);
         String unitId = unitId(session);
         if (unitId != null) {
             sessions.leave(unitId, session);
@@ -72,7 +84,7 @@ public class OperationWebSocketHandler extends TextWebSocketHandler {
     private void handleTransient(WebSocketSession session, String actor, JsonNode root, String type) {
         if (root.has("actorId")) throw ServiceException.validation("actorId is server-owned");
         String unitId = parseUnitId(root.path("unitId").asText(""));
-        access.require(unitId, actor, WorkbookAclRole.VIEWER);
+        access.require(unitId, actor, WorkbookRole.VIEWER);
         sessions.join(unitId, session);
         EphemeralEvent event = ephemeral.updated(type, unitId, actor, session.getId(), root.get("state"));
         sessions.broadcastEphemeral(event, session);

@@ -37,16 +37,17 @@ public class AuthController {
     private final SecurityContextRepository securityContextRepository;
     private final CsrfTokenRepository csrfTokenRepository;
     private final LocalAuthSessionRegistry sessions;
+    private final com.xc.luckysheet.server.security.VerifiedIdentityService identities;
 
     public AuthController(AuthProperties properties, LocalAuthService auth,
                           SecurityContextRepository securityContextRepository,
                           CsrfTokenRepository csrfTokenRepository,
-                          LocalAuthSessionRegistry sessions) {
+                          LocalAuthSessionRegistry sessions, com.xc.luckysheet.server.security.VerifiedIdentityService identities) {
         this.properties = properties;
         this.auth = auth;
         this.securityContextRepository = securityContextRepository;
         this.csrfTokenRepository = csrfTokenRepository;
-        this.sessions = sessions;
+        this.sessions = sessions; this.identities = identities;
     }
 
     @GetMapping("/config")
@@ -74,8 +75,9 @@ public class AuthController {
         String csrf = properties.authMode() == AuthProperties.AuthMode.LOCAL
                 ? csrfToken(request, response).getToken()
                 : "";
-        return new AuthSessionResponse(authenticated, subject, displayName, admin, bootstrapRequired,
-                csrf);
+        com.xc.luckysheet.server.security.VerifiedAuthContext context = authenticated && !(authentication instanceof com.xc.luckysheet.server.security.GuestShareAuthentication)
+                ? identities.context(authentication, request) : null;
+        return new AuthSessionResponse(authenticated, subject, displayName, admin, bootstrapRequired, csrf, context);
     }
 
     @PostMapping("/bootstrap")
@@ -103,6 +105,7 @@ public class AuthController {
     public ResponseEntity<Void> logout(HttpServletRequest request, HttpServletResponse response,
                                        Authentication authentication) {
         if (authentication instanceof LocalUserAuthentication local) {
+            sessions.closeContext(identities.context(local, request).contextId());
             sessions.unregisterHttpSession(local.getName(), request.getSession(false));
         }
         SecurityContext empty = SecurityContextHolder.createEmptyContext();
@@ -136,6 +139,7 @@ public class AuthController {
         securityContextRepository.saveContext(context, request, response);
         HttpSession session = request.getSession(false);
         if (session == null) throw new IllegalStateException("Unable to create an authentication session");
+        identities.rotateLocalContext(session);
         sessions.registerHttpSession(authentication.getName(), session);
     }
 
@@ -164,7 +168,8 @@ public class AuthController {
     }
 
     public record AuthSessionResponse(boolean authenticated, String subject, String displayName,
-                                      boolean admin, boolean bootstrapRequired, String csrfToken) {
+                                      boolean admin, boolean bootstrapRequired, String csrfToken,
+                                      com.xc.luckysheet.server.security.VerifiedAuthContext context) {
     }
 
     public record BootstrapRequest(

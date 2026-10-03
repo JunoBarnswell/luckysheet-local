@@ -28,7 +28,7 @@ class CanonicalFlywayMigrationIntegrationTest {
         String url = database();
         Flyway flyway = canonical(url);
         CanonicalFlywayMigrationConfiguration.migrate(flyway);
-        assertEquals("15", flyway.info().current().getVersion().getVersion());
+        assertEquals("17", flyway.info().current().getVersion().getVersion());
         int historyCount = flyway.info().applied().length;
         CanonicalFlywayMigrationConfiguration.migrate(canonical(url));
         assertEquals(historyCount, flyway.info().applied().length);
@@ -37,6 +37,27 @@ class CanonicalFlywayMigrationIntegrationTest {
              var rows = statement.executeQuery("select source_revision from workbook_source_artifact")) {
             assertFalse(rows.next());
         }
+    }
+
+    @Test
+    void identityScopeUpgradePreservesExistingOwnersWithoutInventingOidcMappings() throws Exception {
+        String url = database();
+        Flyway.configure().dataSource(url, "sa", "").locations("classpath:db/migration/h2").target("15").load().migrate();
+        try (var connection = DriverManager.getConnection(url, "sa", ""); var statement = connection.createStatement()) {
+            statement.executeUpdate("insert into workbooks(unit_id, name, snapshot_json, snapshot_revision, revision, entity_version, created_at, updated_at, owner_subject) "
+                    + "values('local-book', 'Local', '{}', 0, 0, 0, current_timestamp, current_timestamp, 'local:user'), "
+                    + "('old-oidc-book', 'OIDC', '{}', 0, 0, 0, current_timestamp, current_timestamp, 'unqualified-old-user')");
+        }
+        CanonicalFlywayMigrationConfiguration.migrate(canonical(url));
+        try (var connection = DriverManager.getConnection(url, "sa", ""); var statement = connection.createStatement();
+             var rows = statement.executeQuery("select owner_subject, identity_scope from workbooks order by unit_id")) {
+            assertTrue(rows.next()); assertEquals("local:user", rows.getString(1)); assertEquals("local", rows.getString(2));
+            assertTrue(rows.next()); assertEquals("unqualified-old-user", rows.getString(1)); assertEquals("local", rows.getString(2));
+            assertFalse(rows.next());
+        }
+        int historyCount = canonical(url).info().applied().length;
+        CanonicalFlywayMigrationConfiguration.migrate(canonical(url));
+        assertEquals(historyCount, canonical(url).info().applied().length);
     }
 
     @Test

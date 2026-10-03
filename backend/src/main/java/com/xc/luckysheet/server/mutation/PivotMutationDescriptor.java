@@ -5,7 +5,7 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.xc.luckysheet.server.contract.OperationMutation;
 import com.xc.luckysheet.server.contract.RangeRef;
-import com.xc.luckysheet.server.contract.WorkbookAclRole;
+import com.xc.luckysheet.server.contract.WorkbookRole;
 import com.xc.luckysheet.server.service.ServiceException;
 import com.xc.luckysheet.server.mutation.SnapshotMutationSupport.CellCoordinate;
 
@@ -95,7 +95,7 @@ final class PivotMutationDescriptor extends CanonicalJsonMutationDescriptor {
     static final Set<String> IDS = Set.of("pivot.add", "pivot.remove", "pivot.update", "pivot.refresh");
 
     PivotMutationDescriptor(String id) {
-        super(id, WorkbookAclRole.EDITOR);
+        super(id, WorkbookRole.EDITOR);
         if (!IDS.contains(id)) throw new IllegalArgumentException("Unsupported pivot mutation: " + id);
     }
 

@@ -1,6 +1,7 @@
+import type { WorkbookRole } from '@react-sheets/protocol';
 import type { ProtectionRule, RangeRef, WorkbookModel } from '@react-sheets/core-model';
 import { commandPermission, type PermissionCapability, type PermissionPolicy } from '@react-sheets/protocol';
-import type { PermissionService, ShareRole } from '../../permission-service';
+import type { PermissionService } from '../../permission-service';
 
 export type PermissionAction = PermissionCapability;
 
@@ -119,7 +120,7 @@ export function inferAffectedRanges(commandId: string, params: unknown, sheetId:
   return [{ sheetId, startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }];
 }
 
-const ROLE_CAPABILITIES: Readonly<Record<ShareRole, ReadonlySet<PermissionAction>>> = {
+const ROLE_CAPABILITIES: Readonly<Record<WorkbookRole, ReadonlySet<PermissionAction>>> = {
   owner: new Set(['navigate', 'edit-cell', 'format', 'structure', 'drawing', 'protect', 'share', 'comment', 'restore', 'query', 'script']),
   editor: new Set(['navigate', 'edit-cell', 'format', 'structure', 'drawing', 'comment', 'query', 'script']),
   commenter: new Set(['navigate', 'comment']),
@@ -145,7 +146,7 @@ export function resolveCommandAction(commandId: string): PermissionAction | unde
   return resolveCommandPermission(commandId)?.capability;
 }
 
-export function buildPermissionCapabilities(role: ShareRole): PermissionCapabilities {
+export function buildPermissionCapabilities(role: WorkbookRole): PermissionCapabilities {
   const capabilities = ROLE_CAPABILITIES[role];
   return {
     navigate: capabilities.has('navigate'),

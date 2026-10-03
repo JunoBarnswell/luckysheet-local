@@ -1,6 +1,6 @@
 package com.xc.luckysheet.server.persistence;
 
-import com.xc.luckysheet.server.contract.WorkbookAclRole;
+import com.xc.luckysheet.server.contract.WorkbookRole;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
@@ -33,7 +33,7 @@ public class ShareEntity {
 
     @Enumerated(EnumType.STRING)
     @Column(name = "role", nullable = false, length = 16)
-    private WorkbookAclRole role;
+    private WorkbookRole role;
 
     @Column(name = "expires_at", nullable = false)
     private Instant expiresAt;
@@ -50,7 +50,7 @@ public class ShareEntity {
     protected ShareEntity() {
     }
 
-    public ShareEntity(UUID shareId, String unitId, String tokenHash, WorkbookAclRole role, Instant expiresAt,
+    public ShareEntity(UUID shareId, String unitId, String tokenHash, WorkbookRole role, Instant expiresAt,
                        Instant revokedAt, String createdBy, Instant createdAt) {
         this.shareId = shareId;
         this.unitId = unitId;
@@ -65,7 +65,7 @@ public class ShareEntity {
     public UUID getShareId() { return shareId; }
     public String getUnitId() { return unitId; }
     public String getTokenHash() { return tokenHash; }
-    public WorkbookAclRole getRole() { return role; }
+    public WorkbookRole getRole() { return role; }
     public Instant getExpiresAt() { return expiresAt; }
     public Instant getRevokedAt() { return revokedAt; }
     public String getCreatedBy() { return createdBy; }

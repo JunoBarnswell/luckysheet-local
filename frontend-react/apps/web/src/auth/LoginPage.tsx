@@ -1,7 +1,7 @@
 import { Box, Button, Text, TextInput, DataTable } from '@react-sheets/ui-system';
 import { useState, type FormEvent } from 'react';
-import { getAuthSession } from './session';
-import type { AuthSnapshot } from './oidc';
+import { sdk } from '../sdk';
+import type { AuthSnapshot } from '@react-sheets/sdk';
 
 export function LoginPage({ snapshot }: { snapshot: AuthSnapshot }) {
   const [username, setUsername] = useState('');
@@ -14,8 +14,8 @@ export function LoginPage({ snapshot }: { snapshot: AuthSnapshot }) {
   async function submit(event: FormEvent<HTMLElement>) {
     event.preventDefault(); setBusy(true); setError('');
     try {
-      if (bootstrap) await getAuthSession().bootstrap(token, username, password, displayName);
-      else await getAuthSession().authenticate(username, password);
+      if (bootstrap) await sdk.auth.bootstrap(token, username, password, displayName);
+      else await sdk.auth.authenticate(username, password);
       setPassword(''); setToken('');
     } catch (cause) { setError(cause instanceof Error ? cause.message : '登录失败'); }
     finally { setBusy(false); }

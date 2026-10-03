@@ -1,7 +1,7 @@
 package com.xc.luckysheet.server.service;
 
 import com.xc.luckysheet.server.contract.AssetMetadata;
-import com.xc.luckysheet.server.contract.WorkbookAclRole;
+import com.xc.luckysheet.server.contract.WorkbookRole;
 import com.xc.luckysheet.server.persistence.AssetEntity;
 import com.xc.luckysheet.server.persistence.AssetEntityRepository;
 import com.xc.luckysheet.server.persistence.WorkbookEntityRepository;
@@ -47,13 +47,13 @@ public class WorkbookAssetService {
     @Transactional
     public AssetMetadata put(String unitId, String assetId, String checksum, String mimeType,
                              Integer width, Integer height, long contentLength, InputStreamSource source, String actor) {
-        authorize(unitId, actor, WorkbookAclRole.EDITOR);
+        authorize(unitId, actor, WorkbookRole.EDITOR);
         validateIdentity(assetId, "assetId");
         validateImageMime(mimeType);
         validateDimension(width, "width");
         validateDimension(height, "height");
         workbooks.findForUpdate(unitId).orElseThrow(() -> ServiceException.notFound("Workbook not found"));
-        authorize(unitId, actor, WorkbookAclRole.EDITOR);
+        authorize(unitId, actor, WorkbookRole.EDITOR);
         if (contentLength == 0 || contentLength > MAX_ASSET_BYTES) throw ServiceException.validation("Asset size is invalid");
         // Reserve the bounded maximum for unknown-length streams before reading.
         if (!assets.existsById(new AssetEntity.Id(unitId, assetId))) quota.requireCapacity(unitId, contentLength >= 0 ? contentLength : MAX_ASSET_BYTES, 1);
@@ -78,14 +78,14 @@ public class WorkbookAssetService {
 
     @Transactional(readOnly = true)
     public AssetEntity get(String unitId, String assetId, String actor) {
-        authorize(unitId, actor, WorkbookAclRole.VIEWER);
+        authorize(unitId, actor, WorkbookRole.VIEWER);
         validateIdentity(assetId, "assetId");
         return assets.findById(new AssetEntity.Id(unitId, assetId)).orElseThrow(() -> ServiceException.notFound("Asset not found"));
     }
 
     @Transactional
     public void release(String unitId, String assetId, String actor) {
-        authorize(unitId, actor, WorkbookAclRole.EDITOR);
+        authorize(unitId, actor, WorkbookRole.EDITOR);
         validateIdentity(assetId, "assetId");
         workbooks.findForUpdate(unitId).orElseThrow(() -> ServiceException.notFound("Workbook not found"));
         if (retainedReferences(unitId).contains(assetId)) throw new ServiceException("ASSET_REFERENCED", 409,
@@ -95,7 +95,7 @@ public class WorkbookAssetService {
 
     @Transactional
     public void reconcile(String unitId, Set<String> referencedAssetIds, String actor) {
-        authorize(unitId, actor, WorkbookAclRole.EDITOR);
+        authorize(unitId, actor, WorkbookRole.EDITOR);
         if (referencedAssetIds == null) throw ServiceException.validation("Referenced asset set is required");
         workbooks.findForUpdate(unitId).orElseThrow(() -> ServiceException.notFound("Workbook not found"));
         Set<String> retained = retainedReferences(unitId);
@@ -136,7 +136,7 @@ public class WorkbookAssetService {
                 entity.getMimeType(), entity.getByteLength(), entity.getWidth(), entity.getHeight(), entity.getUpdatedAt());
     }
 
-    private void authorize(String unitId, String actor, WorkbookAclRole role) {
+    private void authorize(String unitId, String actor, WorkbookRole role) {
         workbooks.findById(unitId).orElseThrow(() -> ServiceException.notFound("Workbook not found"));
         lifecycle.requireActive(unitId);
         access.require(unitId, actor, role);

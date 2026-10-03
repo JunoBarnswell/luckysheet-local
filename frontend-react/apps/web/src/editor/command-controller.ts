@@ -1,3 +1,4 @@
+import type { DataActions } from '@react-sheets/sdk';
 import { useMemo, useState } from "react";
 import type { CommandDescriptor } from "@react-sheets/command-runtime";
 import type {
@@ -31,6 +32,7 @@ import { pivotDefinedNameScopeText, pivotText } from '../components/pivot/pivot-
 
 export interface EditorCommandControllerOptions {
   session: WorkbookSession;
+  data: DataActions;
   state: UiSnapshot;
   locale: Locale;
   dispatchCommand: (descriptor: CommandDescriptor) => void;
@@ -38,6 +40,7 @@ export interface EditorCommandControllerOptions {
 }
 
 export interface EditorCommandController {
+  data: DataActions;
   selectedRange: SelectionState["ranges"][number] | undefined;
   currentDataRange: ReturnType<WorkbookSession["getCurrentRegion"]>;
   sortColumns: UiSnapshot["selectedSheet"]["columns"];
@@ -57,13 +60,7 @@ export interface EditorCommandController {
   pivotSourceOptions: PivotSourceOption[];
   selectedDrawing: UiSnapshot["selectedSheet"]["drawings"][number] | undefined;
   buildTotalRowCommand: () => CommandDescriptor | undefined;
-  buildSubtotalCommand: () => CommandDescriptor;
-  buildRemoveDuplicatesCommand: () => CommandDescriptor;
-  buildTextToColumnsCommand: () => CommandDescriptor;
   buildOutlineCommand: (axis: "row" | "column", action: "add" | "remove") => CommandDescriptor | undefined;
-  buildFilterSelectionCommand: () => CommandDescriptor;
-  buildClearFilterCommand: () => CommandDescriptor;
-  buildSortDescriptor: (ascending: boolean) => CommandDescriptor | undefined;
   createPivotFromDialog: (request: { sourceId: string; destination: "new-sheet" | "existing-sheet"; targetReference?: string }) => Promise<void>;
   executeShortcut: (id: string) => boolean;
   selectPanel: (panel: SidebarPanelId) => void;
@@ -150,6 +147,7 @@ function cloneLayout(layout: PivotLayout): PivotLayout {
 export function useEditorCommandController({
   session,
   state,
+  data,
   locale,
   dispatchCommand,
   dispatchSessionIntent,
@@ -195,18 +193,6 @@ export function useEditorCommandController({
       && pivotSourceRange.startColumn <= entry.range.endColumn);
     return table ? { commandId: "sheetTable.toggleTotalRow", params: { sheetId: state.activeSheetId, tableId: table.id, enabled: !table.hasTotalRow } } : undefined;
   };
-  const buildSubtotalCommand = (): CommandDescriptor => ({
-    commandId: "data.subtotal",
-    params: { sheetId: state.activeSheetId, range: pivotSourceRange, groupColumn: pivotSourceRange.startColumn, valueColumn: pivotSourceRange.startColumn + 1, functionName: "SUM" },
-  });
-  const buildRemoveDuplicatesCommand = (): CommandDescriptor => ({
-    commandId: "data.removeDuplicates",
-    params: { sheetId: state.activeSheetId, range: pivotSourceRange, columns: Array.from({ length: pivotSourceRange.endColumn - pivotSourceRange.startColumn + 1 }, (_, index) => pivotSourceRange.startColumn + index), hasHeader: true },
-  });
-  const buildTextToColumnsCommand = (): CommandDescriptor => ({
-    commandId: "data.textToColumns",
-    params: { sheetId: state.activeSheetId, range: { ...pivotSourceRange, endColumn: pivotSourceRange.startColumn }, delimiter: ",", maxColumns: 8 },
-  });
   const buildOutlineCommand = (axis: "row" | "column", action: "add" | "remove"): CommandDescriptor | undefined => {
     const start = axis === "row" ? pivotSourceRange.startRow : pivotSourceRange.startColumn;
     const end = axis === "row" ? pivotSourceRange.endRow : pivotSourceRange.endColumn;
@@ -217,23 +203,6 @@ export function useEditorCommandController({
     const group = state.selectedSheet.outlineGroups.find((entry) => entry.axis === axis && entry.start >= start && entry.end <= end);
     return group ? { commandId: "outline.group.remove", params: { sheetId: state.activeSheetId, groupId: group.id } } : undefined;
   };
-  const activeFilterOwner = dataRegionContext.owner.kind === 'sheet-table'
-    ? { kind: 'table' as const, tableId: dataRegionContext.owner.tableId }
-    : { kind: 'worksheet' as const };
-  const activeAutoFilter = state.selectedSheet.getActiveAutoFilter(state.selection.activeCell.column);
-  const buildFilterSelectionCommand = (): CommandDescriptor => activeFilterOwner?.kind === 'table'
-    ? { commandId: 'sheetTable.autoFilter.set', params: { sheetId: state.activeSheetId, tableId: activeFilterOwner.tableId, dataRegionContext } }
-    : { commandId: "sheet.autoFilter.toggle", params: { sheetId: state.activeSheetId, range: currentDataRange, dataRegionContext } };
-  const filterRange = activeAutoFilter?.range ?? currentDataRange;
-  const buildClearFilterCommand = (): CommandDescriptor => activeFilterOwner?.kind === 'table'
-    ? { commandId: 'sheetTable.autoFilter.set', params: { sheetId: state.activeSheetId, tableId: activeFilterOwner.tableId, dataRegionContext } }
-    : { commandId: "sheet.autoFilter.clearCriteria", params: { sheetId: state.activeSheetId, range: filterRange, dataRegionContext } };
-  const buildSortDescriptor = (ascending: boolean): CommandDescriptor | undefined => {
-    const range = dataRegionContext.range;
-    if (range.endRow <= range.startRow) return undefined;
-    return { commandId: "data.sort.quick", params: { sheetId: state.activeSheetId, range, sortColumn: state.selection.activeCell.column, ascending, hasHeader: dataRegionContext.header.kind === 'present', dataRegionContext } };
-  };
-
   const sheetNames = useMemo(() => new Map(state.sheets.map((sheet) => [sheet.id, sheet.name] as const)), [state.sheets]);
   const pivotSourceOptions = useMemo(() => buildPivotSourceOptions({
     currentDataRange,
@@ -397,7 +366,7 @@ export function useEditorCommandController({
       case "range.clearContents": session.clearSelection("contents"); return true;
       case "cells.insert": dispatchSessionIntent({ type: "dialog.open", dialog: "shift-cells", operation: "insert" }); return true;
       case "cells.delete": dispatchSessionIntent({ type: "dialog.open", dialog: "shift-cells", operation: "delete" }); return true;
-      case "filter.toggle": session.applyFilterSelection(); return true;
+      case "filter.toggle": void data.toggleFilter(); return true;
       case "find.open": dispatchSessionIntent({ type: "dialog.open", dialog: "find-replace", findMode: "find" }); return true;
       case "replace.open": dispatchSessionIntent({ type: "dialog.open", dialog: "find-replace", findMode: "replace" }); return true;
       case "commandPalette.open": dispatchSessionIntent({ type: "command-palette.open" }); return true;
@@ -480,6 +449,7 @@ export function useEditorCommandController({
   };
 
   return {
+    data,
     selectedRange,
     currentDataRange,
     sortColumns,
@@ -499,13 +469,7 @@ export function useEditorCommandController({
     pivotSourceOptions,
     selectedDrawing,
     buildTotalRowCommand,
-    buildSubtotalCommand,
-    buildRemoveDuplicatesCommand,
-    buildTextToColumnsCommand,
     buildOutlineCommand,
-    buildFilterSelectionCommand,
-    buildClearFilterCommand,
-    buildSortDescriptor,
     createPivotFromDialog,
     executeShortcut,
     selectPanel,

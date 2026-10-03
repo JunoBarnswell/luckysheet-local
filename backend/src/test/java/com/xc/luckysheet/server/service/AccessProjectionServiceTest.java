@@ -9,7 +9,7 @@ import com.xc.luckysheet.server.contract.OperationOrigin;
 import com.xc.luckysheet.server.contract.RangeAccessLevel;
 import com.xc.luckysheet.server.contract.RangeAccessRegion;
 import com.xc.luckysheet.server.contract.RangeRef;
-import com.xc.luckysheet.server.contract.WorkbookAclRole;
+import com.xc.luckysheet.server.contract.WorkbookRole;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
@@ -128,6 +128,6 @@ class AccessProjectionServiceTest {
     private RangeAccessResolver resolver(RangeAccessRegion region) {
         List<RangeAccessRegion> regions = List.of(region);
         return new RangeAccessResolver(new RangeAccessIndex(regions), regions,
-                new RangeAccessContext("guest", WorkbookAclRole.EDITOR, List.of(), 3));
+                new RangeAccessContext("guest", WorkbookRole.EDITOR, List.of(), 3));
     }
 }

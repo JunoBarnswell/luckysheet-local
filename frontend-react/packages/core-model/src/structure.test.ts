@@ -90,7 +90,7 @@ const StructuralTransform = {
 
 function seedWorkbook(): { workbook: WorkbookModel; sheetId: string } {
   const workbook = new WorkbookModel('unit-test', 'Structural');
-  const sheet = workbook.addSheet('s1', 'Sheet1');
+  const sheet = workbook.addSheet('s1', 'Structural Sheet');
   sheet.cells.set(0, 0, { value: 'A0' });
   sheet.cells.set(1, 0, { value: 'A1' });
   sheet.cells.set(2, 0, { value: 'A2' });
@@ -213,16 +213,21 @@ describe('structural operations', () => {
 
     const invalidOtherAxis = seedWorkbook();
     const invalidSheet = invalidOtherAxis.workbook.getSheet('s1');
+    const invalidBefore = invalidOtherAxis.workbook.snapshot();
     invalidSheet.pane = {
       kind: 'frozen', xSplit: 0, ySplit: 1.5, startRow: 0, startColumn: 0, state: 'frozen',
     };
-    const invalidBefore = invalidOtherAxis.workbook.snapshot();
+    const invalidPane = structuredClone(invalidSheet.pane);
+    assert.throws(() => invalidOtherAxis.workbook.snapshot(), /Workbook snapshot pane ySplit is invalid/);
     assert.throws(
       () => StructuralTransform.apply(invalidOtherAxis.workbook, {
         kind: 'insert-columns', sheetId: invalidSheet.id, at: 0, count: 1,
       }),
       /UNSUPPORTED_STRUCTURAL_REFERENCE: pane ySplit is invalid/,
     );
+    assert.deepEqual(invalidSheet.pane, invalidPane);
+    assert.throws(() => invalidOtherAxis.workbook.snapshot(), /Workbook snapshot pane ySplit is invalid/);
+    invalidSheet.pane = structuredClone(invalidBefore.sheets.find(sheet => sheet.id === invalidSheet.id)!.pane);
     assert.deepEqual(invalidOtherAxis.workbook.snapshot(), invalidBefore);
   });
 
@@ -747,7 +752,7 @@ describe('structural operations', () => {
     assert.equal(sheet.cells.get(2, 1)?.formulaMetadata?.sourceFormula, '=_XLFN.SUM(A2:A2)');
   });
 
-  it('preserves moved formula provenance and rewrites external formula owners', () => {
+  it('rewrites moved and external formula provenance to moved inputs', () => {
     const workbook = new WorkbookModel('unit-move-formula-provenance', 'Move Formula Provenance');
     const sheet = workbook.getSheet('sheet-1');
     sheet.cells.set(0, 0, { value: 7 });
@@ -769,8 +774,8 @@ describe('structural operations', () => {
       targetOrigin: { row: 2, column: 2 },
     });
 
-    assert.equal(sheet.cells.get(2, 3)?.formula, '=SUM(A1:A1)');
-    assert.equal(sheet.cells.get(2, 3)?.formulaMetadata?.sourceFormula, '=_xlfn.SUM(A1:A1)');
+    assert.equal(sheet.cells.get(2, 3)?.formula, '=SUM(C3:C3)');
+    assert.equal(sheet.cells.get(2, 3)?.formulaMetadata?.sourceFormula, '=_XLFN.SUM(C3:C3)');
     assert.equal(sheet.cells.get(4, 3)?.formula, '=SUM(C3:C3)');
     assert.equal(sheet.cells.get(4, 3)?.formulaMetadata?.sourceFormula, '=_XLFN.SUM(C3:C3)');
   });
@@ -1057,7 +1062,7 @@ describe('structural operations', () => {
     }
   });
 
-  it('move-range clears stale destinations, preserves moved formulas, and rewrites external references', () => {
+  it('move-range clears stale destinations and rewrites moved and external references', () => {
     const workbook = new WorkbookModel('unit-move-range', 'Move Range');
     const sheet = workbook.getSheet('sheet-1');
     sheet.cells.set(0, 0, { value: 7 });
@@ -1088,7 +1093,7 @@ describe('structural operations', () => {
     });
 
     assert.equal(sheet.cells.get(2, 2)?.value, 7);
-    assert.equal(sheet.cells.get(2, 3)?.formula, '=A1');
+    assert.equal(sheet.cells.get(2, 3)?.formula, '=C3');
     assert.equal(sheet.cells.get(2, 3)?.formulaValue, undefined);
     assert.equal(sheet.cells.get(0, 0), undefined);
     assert.equal(sheet.cells.get(0, 3)?.formula, '=C3');
@@ -1097,6 +1102,10 @@ describe('structural operations', () => {
     if (chart?.kind !== 'chart') throw new Error('Expected chart payload after move');
     assert.equal(chart.elements.titleText?.linkedFormula, '=C3');
     assert.equal(result.formulaOwnerDeltas?.some((delta) => delta.kind === 'formula-object'), true);
+    assert.ok(result.formulaOwnerDeltas?.some(delta => delta.kind === 'formula-cell'
+      && delta.beforeAddress.row === 0 && delta.beforeAddress.column === 1
+      && delta.afterAddress.row === 2 && delta.afterAddress.column === 3
+      && delta.before.formula === '=A1' && delta.after.formula === '=C3'));
     assert.deepEqual(result.rangeOwnerDeltas, [{
       ownerKind: 'sheet-table', sheetId: sheet.id, ownerId: 'move-table',
       before: { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 1 },
@@ -1763,7 +1772,7 @@ describe('structural operations', () => {
       sourceSheetId: sheet.id,
       sourceRange: { sheetId: sheet.id, startRow: 2, endRow: 4, startColumn: 0, endColumn: 1 },
       rowCount: 2,
-      fields: [{ id: 'f0', name: 'Code', ordinal: 0, type: 'text' }],
+      fields: [{ id: 'f0', name: 'Code', ordinal: 0, type: 'text' }, { id: 'f1', name: 'Value', ordinal: 1, type: 'number' }],
       blockRowCount: 65_536,
       blocks: [{ id: 'move-block', dataSourceId: sourceId, startRow: 0, rowCount: 2, storageKey: 'move-block', checksum: 'b'.repeat(64), byteLength: 1, encoding: 'columnar-v1', revision: 0 }],
       revision: 0,
@@ -1788,5 +1797,35 @@ describe('structural operations', () => {
       sheetId: sheet.id, startRow: 10, endRow: 12, startColumn: 2, endColumn: 3,
     });
     assert.equal(sheet.cells.get(11, 2)?.style?.italic, true);
+  });
+});
+
+
+describe('range cut reference ownership', () => {
+  it('rewrites absolute moved inputs, retains unmoved inputs and records original owner addresses', () => {
+    const workbook = new WorkbookModel('cut-reference-owners', 'Cut');
+    const sheet = workbook.getSheet('sheet-1');
+    sheet.cells.set(0, 0, { value: 7 }); sheet.cells.set(0, 5, { value: 11 });
+    sheet.cells.set(0, 1, { value: null, formula: '=$A$1+F1', formulaValue: 18 });
+    const result = StructuralTransform.apply(workbook, { kind: 'move-range', sheetId: sheet.id,
+      sourceRange: { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 1 }, targetOrigin: { row: 2, column: 2 } });
+    assert.equal(sheet.cells.get(2, 3)?.formula, '=$C$3+F1');
+    assert.equal(sheet.cells.get(2, 3)?.formulaValue, undefined);
+    assert.ok(result.formulaOwnerDeltas?.some(delta => delta.kind === 'formula-cell'
+      && delta.beforeAddress.row === 0 && delta.beforeAddress.column === 1
+      && delta.afterAddress.row === 2 && delta.afterAddress.column === 3));
+    assert.equal(sheet.cells.get(0, 5)?.value, 11);
+  });
+  it('moving only a formula keeps its unmoved input and rejects ambiguous inverse references before changing state', () => {
+    const workbook = new WorkbookModel('cut-unmoved-input', 'Cut'); const sheet = workbook.getSheet('sheet-1');
+    sheet.cells.set(0, 0, { value: 7 }); sheet.cells.set(0, 1, { value: null, formula: '=A1', formulaValue: 7 });
+    StructuralTransform.apply(workbook, { kind: 'move-range', sheetId: sheet.id,
+      sourceRange: { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 1, endColumn: 1 }, targetOrigin: { row: 2, column: 2 } });
+    assert.equal(sheet.cells.get(2, 2)?.formula, '=A1'); assert.equal(sheet.cells.get(2, 2)?.formulaValue, undefined);
+    assert.equal(sheet.cells.get(0, 0)?.value, 7);
+    sheet.cells.set(0, 1, { value: null, formula: '=A1+E5' }); const before = workbook.snapshot();
+    assert.throws(() => StructuralTransform.apply(workbook, { kind: 'move-range', sheetId: sheet.id,
+      sourceRange: { sheetId: sheet.id, startRow: 0, endRow: 0, startColumn: 0, endColumn: 1 }, targetOrigin: { row: 4, column: 4 } }), /UNSUPPORTED_STRUCTURAL_REFERENCE/);
+    assert.deepEqual(workbook.snapshot(), before);
   });
 });

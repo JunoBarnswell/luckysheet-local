@@ -1,7 +1,7 @@
 package com.xc.luckysheet.server.service;
 
 import com.xc.luckysheet.server.contract.DataBlockMetadata;
-import com.xc.luckysheet.server.contract.WorkbookAclRole;
+import com.xc.luckysheet.server.contract.WorkbookRole;
 import org.springframework.beans.factory.annotation.Autowired;
 import com.xc.luckysheet.server.store.DataBlockRow;
 import com.xc.luckysheet.server.store.WorkbookDataBlockStore;
@@ -40,7 +40,7 @@ public class WorkbookDataBlockService {
 
     public DataBlockMetadata put(String unitId, String sourceId, String blockId, String checksum, long contentLength,
                                  InputStreamSource contentSource, String actor) {
-        access.require(unitId, actor, WorkbookAclRole.EDITOR);
+        access.require(unitId, actor, WorkbookRole.EDITOR);
         lifecycle.requireActive(unitId);
         validateIdentity(sourceId, "sourceId");
         validateIdentity(blockId, "blockId");
@@ -60,7 +60,7 @@ public class WorkbookDataBlockService {
     }
 
     public DataBlockRow get(String unitId, String sourceId, String blockId, String actor, java.util.Collection<String> groups) {
-        WorkbookAclRole role = access.require(unitId, actor, WorkbookAclRole.VIEWER);
+        WorkbookRole role = access.require(unitId, actor, WorkbookRole.VIEWER);
         lifecycle.requireActive(unitId);
         validateIdentity(sourceId, "sourceId");
         validateIdentity(blockId, "blockId");

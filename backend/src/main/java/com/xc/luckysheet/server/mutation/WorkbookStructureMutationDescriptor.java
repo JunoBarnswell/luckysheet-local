@@ -7,7 +7,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.xc.luckysheet.server.contract.OperationMutation;
 import com.xc.luckysheet.server.contract.RangeRef;
 import com.xc.luckysheet.server.contract.StructuralPatch;
-import com.xc.luckysheet.server.contract.WorkbookAclRole;
+import com.xc.luckysheet.server.contract.WorkbookRole;
 import com.xc.luckysheet.server.contract.WorkbookSnapshotValidator;
 import com.xc.luckysheet.server.service.ServiceException;
 
@@ -33,7 +33,7 @@ final class WorkbookStructureMutationDescriptor extends CanonicalJsonMutationDes
     );
 
     WorkbookStructureMutationDescriptor(String id) {
-        super(id, WorkbookAclRole.EDITOR);
+        super(id, WorkbookRole.EDITOR);
     }
 
     @Override

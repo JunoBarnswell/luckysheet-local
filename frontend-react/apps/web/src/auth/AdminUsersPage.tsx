@@ -1,11 +1,12 @@
 import { Box, Button, Text, TextInput, DataTable } from '@react-sheets/ui-system';
 import { useEffect, useState, type FormEvent } from 'react';
-import { getAuthSession, type LocalUser } from './session';
+import type { LocalUser } from '@react-sheets/sdk';
+import { sdk } from '../sdk';
 import { navigate } from '../app-routing';
 
 /** Account administration container; passwords never enter workbook state. */
 export function AdminUsersPage() {
-  const [users, setUsers] = useState<LocalUser[]>([]);
+  const [users, setUsers] = useState<readonly LocalUser[]>([]);
   const [username, setUsername] = useState('');
   const [displayName, setDisplayName] = useState('');
   const [password, setPassword] = useState('');
@@ -13,12 +14,9 @@ export function AdminUsersPage() {
   const [resetPassword, setResetPassword] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
-  const auth = getAuthSession();
+  const auth = sdk.auth;
   async function load() {
-    const response = await auth.request('/api/admin/users', 'GET');
-    const result: LocalUser[] = await response.json();
-    if (!Array.isArray(result)) throw new Error('用户列表契约无效');
-    setUsers(result);
+    setUsers(await sdk.identity.listUsers());
   }
   useEffect(() => { void load().catch(cause => setError(cause instanceof Error ? cause.message : '无法加载用户')); }, []);
   async function run(action: () => Promise<void>) {
@@ -30,7 +28,7 @@ export function AdminUsersPage() {
   function create(event: FormEvent<HTMLElement>) {
     event.preventDefault();
     void run(async () => {
-      await auth.request('/api/admin/users', 'POST', { username, displayName, password, admin: false });
+      await sdk.identity.createUser({ username, displayName, password });
       setUsername(''); setDisplayName(''); setPassword('');
     });
   }
@@ -50,11 +48,11 @@ export function AdminUsersPage() {
       { key: 'id', header: '用户 ID', render: user => <Text className="select-all text-xs">{user.id}</Text> },
       { key: 'enabled', header: '状态', render: user => user.enabled ? '启用' : '禁用' },
       { key: 'actions', header: '操作', render: user => <Box className="flex gap-3">
-        <Button disabled={busy || user.id === auth.getSnapshot().subject} onClick={() => void run(async () => { await auth.request(`/api/admin/users/${encodeURIComponent(user.id)}`, 'PATCH', { enabled: !user.enabled }); })}>{user.enabled ? '禁用' : '启用'}</Button>
+        <Button disabled={busy || user.id === auth.getSnapshot().subject} onClick={() => void run(async () => { await sdk.identity.setUserEnabled(user.id, !user.enabled); })}>{user.enabled ? '禁用' : '启用'}</Button>
         <Button disabled={busy} onClick={() => { setSelected(user); setResetPassword(''); }}>重置密码</Button>
       </Box> },
     ]} />
-    {selected && <Box as="form" className="space-x-3 rounded border p-4" onSubmit={event => { event.preventDefault(); void run(async () => { await auth.request(`/api/admin/users/${encodeURIComponent(selected.id)}/password`, 'POST', { password: resetPassword }); setSelected(null); setResetPassword(''); }); }}>
+    {selected && <Box as="form" className="space-x-3 rounded border p-4" onSubmit={event => { event.preventDefault(); void run(async () => { await sdk.identity.resetPassword(selected.id, resetPassword); setSelected(null); setResetPassword(''); }); }}>
       <Text as="label">{selected.displayName} 的新密码 <TextInput required type="password" autoComplete="new-password" minLength={12} className="rounded border p-2" value={resetPassword} onChange={e => setResetPassword(e.target.value)} /></Text>
       <Button type="submit" disabled={busy}>确认重置</Button><Button type="button" onClick={() => setSelected(null)}>取消</Button>
     </Box>}

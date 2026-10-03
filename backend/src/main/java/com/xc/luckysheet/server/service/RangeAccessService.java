@@ -12,7 +12,7 @@ import com.xc.luckysheet.server.contract.RangeAccessRegion;
 import com.xc.luckysheet.server.contract.RangeAccessRegionRequest;
 import com.xc.luckysheet.server.contract.RangeRef;
 import com.xc.luckysheet.server.contract.WorkbookAccessProjection;
-import com.xc.luckysheet.server.contract.WorkbookAclRole;
+import com.xc.luckysheet.server.contract.WorkbookRole;
 import com.xc.luckysheet.server.contract.OperationMutation;
 import com.xc.luckysheet.server.mutation.MutationDescriptorRegistry;
 import com.xc.luckysheet.server.persistence.RangeAccessGrantEntity;
@@ -53,14 +53,14 @@ public class RangeAccessService {
     }
 
     public WorkbookAccessProjection projection(String unitId, String subject, Collection<String> groups) {
-        WorkbookAclRole role = access.currentRole(unitId, subject);
+        WorkbookRole role = access.currentRole(unitId, subject);
         RangeAccessResolver resolver = resolver(unitId, subject, role, groups);
         return new WorkbookAccessProjection(unitId, role, resolver.accessRevision(), resolver.effectiveRegions());
     }
 
     @Transactional(readOnly = true)
     public List<RangeAccessRegion> list(String unitId, String subject) {
-        access.require(unitId, subject, WorkbookAclRole.OWNER);
+        access.require(unitId, subject, WorkbookRole.OWNER);
         return loadRegions(unitId);
     }
 
@@ -105,11 +105,11 @@ public class RangeAccessService {
     }
 
     public RangeAccessResolver resolver(String unitId, String subject, Collection<String> groups) {
-        WorkbookAclRole role = access.currentRole(unitId, subject);
+        WorkbookRole role = access.currentRole(unitId, subject);
         return resolver(unitId, subject, role, groups);
     }
 
-    public RangeAccessResolver resolver(String unitId, String subject, WorkbookAclRole role, Collection<String> groups) {
+    public RangeAccessResolver resolver(String unitId, String subject, WorkbookRole role, Collection<String> groups) {
         long revision = store.accessRevision(unitId);
         IndexKey key = new IndexKey(unitId, revision);
         AccessIndexSnapshot snapshot = indexes.computeIfAbsent(key, ignored -> loadIndex(unitId, revision));
@@ -191,7 +191,7 @@ public class RangeAccessService {
 
     private void requireOwnerAndLockWorkbook(String unitId, String subject) {
         store.findForUpdate(unitId).orElseThrow(() -> ServiceException.notFound("Workbook not found: " + unitId));
-        access.require(unitId, subject, WorkbookAclRole.OWNER);
+        access.require(unitId, subject, WorkbookRole.OWNER);
     }
 
     private void validateRequest(String unitId, RangeAccessRegionRequest request) {

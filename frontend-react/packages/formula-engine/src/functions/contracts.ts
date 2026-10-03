@@ -37,6 +37,11 @@ for (const [names, minimum, maximum] of [
   ['ADDRESS', 2, 5],
   ['OFFSET', 3, 5],
   ['INDIRECT', 1, 2],
+  ['PV FV PMT NPER', 3, 5],
+  ['IPMT PPMT', 4, 6],
+  ['ISPMT', 4, 4],
+  ['EFFECT NOMINAL DOLLARDE DOLLARFR', 2, 2],
+  ['SLN', 3, 3],
 ] as const) for (const name of names.split(' ')) FUNCTION_ARGUMENT_CONTRACTS.set(name, { minimum, maximum });
 
 export function validateFunctionArguments(name: string, count: number): FormulaError | undefined {
@@ -44,4 +49,4 @@ export function validateFunctionArguments(name: string, count: number): FormulaE
   return contract && (count < contract.minimum || count > contract.maximum) ? createFormulaError('#VALUE!', `${name} requires ${contract.minimum}-${contract.maximum} arguments; received ${count}`) : undefined;
 }
 
-export const SCALAR_ARRAY_FUNCTIONS = new Set(('ABS EXP SQRT POWER MOD ROUND ROUNDUP ROUNDDOWN INT TRUNC CEILING FLOOR LN LOG LOG10 SIGN LEFT RIGHT MID LEN LOWER UPPER PROPER TRIM CLEAN EXACT FIND SEARCH REPLACE SUBSTITUTE REPT TEXT VALUE CHAR CODE DATE DATEVALUE DAY MONTH YEAR HOUR MINUTE SECOND WEEKDAY EDATE EOMONTH DAYS ISBLANK ISNUMBER ISTEXT ISNONTEXT ISLOGICAL ISERROR ISERR ISNA N T NOT').split(' '));
+export const SCALAR_ARRAY_FUNCTIONS = new Set(('ABS EXP SQRT POWER MOD ROUND ROUNDUP ROUNDDOWN INT TRUNC CEILING FLOOR LN LOG LOG10 SIGN LEFT RIGHT MID LEN LOWER UPPER PROPER TRIM CLEAN EXACT FIND SEARCH REPLACE SUBSTITUTE REPT TEXT VALUE CHAR CODE DATE DATEVALUE DAY MONTH YEAR HOUR MINUTE SECOND WEEKDAY EDATE EOMONTH DAYS ISBLANK ISNUMBER ISTEXT ISNONTEXT ISLOGICAL ISERROR ISERR ISNA N T NOT PV FV PMT NPER IPMT PPMT ISPMT EFFECT NOMINAL SLN DOLLARDE DOLLARFR').split(' '));

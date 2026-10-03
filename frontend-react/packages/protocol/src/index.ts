@@ -16,6 +16,8 @@ import type {
 import type { AssetRef } from '@react-sheets/core-model';
 import { isWorkbookCalculationSettings } from '@react-sheets/formula-engine';
 import {
+  WORKBOOK_ROLES,
+  isWorkbookRole,
   CONTRACT_ERROR_CODES,
   MAX_WORKBOOK_NAME_LENGTH,
   WORKBOOK_SNAPSHOT_SCHEMA,
@@ -33,10 +35,13 @@ import {
   STRUCTURAL_PATCH_MUTATIONS,
   requiresServerStructuralPlannerCommand,
   SERVER_STRUCTURAL_PLANNER_COMMANDS,
+  type WorkbookRole,
   type ContractErrorCode,
 } from './generated-contract';
 
 export {
+  WORKBOOK_ROLES,
+  isWorkbookRole,
   CONTRACT_ERROR_CODES,
   MAX_WORKBOOK_NAME_LENGTH,
   WORKBOOK_SNAPSHOT_SCHEMA,
@@ -51,7 +56,7 @@ export {
   SERVER_STRUCTURAL_PLANNER_COMMANDS,
 } from './generated-contract';
 
-export type { PermissionCapability, PermissionPolicy, ProtectionAction, RangeAccessLevel } from './generated-contract';
+export type { WorkbookRole, PermissionCapability, PermissionPolicy, ProtectionAction, RangeAccessLevel } from './generated-contract';
 
 export type ProtocolErrorCode = ContractErrorCode | 'AUTH_CONFIGURATION_ERROR';
 
@@ -157,12 +162,12 @@ export interface CommittedOperationEnvelope extends Omit<OperationEnvelope, 'mut
   mutations: CommittedOperationMutation[];
 }
 
-export type WorkbookAclRole = 'owner' | 'editor' | 'commenter' | 'viewer';
+
 
 export interface WorkbookAclRecord {
   unitId: string;
   subject: string;
-  role: WorkbookAclRole;
+  role: WorkbookRole;
   createdAt: string;
   updatedAt: string;
 }
@@ -170,7 +175,7 @@ export interface WorkbookAclRecord {
 /** Server-calculated access projection for the authenticated or guest session. */
 export interface WorkbookAccessResponse {
   unitId: string;
-  role: WorkbookAclRole;
+  role: WorkbookRole;
   accessRevision: number;
   regions: EffectiveAccessRegion[];
 }
@@ -269,6 +274,64 @@ export function normalizePageLimit(value: number | undefined): number {
     throw new Error(`limit must be an integer between 1 and ${MAX_PAGE_LIMIT}`);
   }
   return value;
+}
+
+export type ExternalCalculationNode =
+  | { unitId: string; state: 'connected'; snapshot: import('@react-sheets/core-model').WorkbookSnapshot; revision: number; accessRevision: number; blockedRanges: import('@react-sheets/core-model').RangeRef[] }
+  | { unitId: string; state: 'denied' | 'broken' | 'unavailable'; error: { code: string; message: string } };
+export interface ExternalCalculationGraph {
+  schema: 'ExternalCalculationGraph'; rootUnitId: string; subject: string; nodes: ExternalCalculationNode[];
+}
+export function validateExternalCalculationGraph(raw: unknown, unitId: string): ExternalCalculationGraph {
+  const value = requireRecord(raw, 'External calculation graph');
+  validateExactKeys(value, ['schema', 'rootUnitId', 'subject', 'nodes'], 'External calculation graph');
+  if (value.schema !== 'ExternalCalculationGraph' || value.rootUnitId !== unitId || !isNonEmptyString(value.subject)
+    || !Array.isArray(value.nodes) || !value.nodes.length || value.nodes.length > 64) throw new Error('EXTERNAL_CALCULATION_GRAPH_CONTEXT_INVALID');
+  const ids = new Set<string>();
+  const nodes: ExternalCalculationNode[] = value.nodes.map(rawNode => {
+    const node = requireRecord(rawNode, 'External calculation node');
+    if (!isNonEmptyString(node.unitId) || ids.has(node.unitId)) throw new Error('EXTERNAL_CALCULATION_GRAPH_NODE_INVALID');
+    ids.add(node.unitId);
+    if (node.state !== 'connected') {
+      validateExactKeys(node, ['unitId', 'state', 'error'], 'External calculation fault node');
+      const error = requireRecord(node.error, 'External calculation fault');
+      validateExactKeys(error, ['code', 'message'], 'External calculation fault');
+      if (!['denied', 'broken', 'unavailable'].includes(String(node.state)) || !isNonEmptyString(error.code) || !isNonEmptyString(error.message)) throw new Error('EXTERNAL_CALCULATION_GRAPH_FAULT_INVALID');
+      return { unitId: node.unitId, state: node.state as 'denied' | 'broken' | 'unavailable', error: { code: error.code, message: error.message } };
+    }
+    validateExactKeys(node, ['unitId', 'state', 'snapshot', 'revision', 'accessRevision', 'blockedRanges'], 'External calculation node');
+    const snapshot = validateWorkbookSnapshot(node.snapshot);
+    const count = snapshot.sheets.reduce((sum, sheet) => sum + Object.values(sheet.cells).reduce((rows, row) => rows + Object.keys(row).length, 0), 0);
+    if (count > 100_000) throw new Error('EXTERNAL_CALCULATION_GRAPH_INPUT_BUDGET');
+    if (snapshot.unitId !== node.unitId || !Number.isSafeInteger(node.revision) || Number(node.revision) < 0
+      || !Number.isSafeInteger(node.accessRevision) || Number(node.accessRevision) < 0 || !Array.isArray(node.blockedRanges)) throw new Error('EXTERNAL_CALCULATION_GRAPH_VERSION_INVALID');
+    const blockedRanges = node.blockedRanges.map(rawRange => {
+      const range = requireRecord(rawRange, 'External blocked range');
+      validateExactKeys(range, ['sheetId', 'startRow', 'endRow', 'startColumn', 'endColumn'], 'External blocked range');
+      if (!isRangeRef(range as unknown as import('@react-sheets/core-model').RangeRef)) throw new Error('EXTERNAL_CALCULATION_GRAPH_RANGE_INVALID');
+      const sheet = snapshot.sheets.find(candidate => candidate.id === range.sheetId);
+      if (!sheet) throw new Error('EXTERNAL_CALCULATION_GRAPH_RANGE_INVALID');
+      return range as unknown as import('@react-sheets/core-model').RangeRef;
+    });
+    return { unitId: node.unitId, state: 'connected', snapshot, revision: Number(node.revision), accessRevision: Number(node.accessRevision), blockedRanges };
+  });
+  const byId = new Map(nodes.map(node => [node.unitId, node]));
+  const total = nodes.reduce((sum, node) => sum + (node.state === 'connected' ? node.snapshot.sheets.reduce((sheets, sheet) => sheets + Object.values(sheet.cells).reduce((rows, row) => rows + Object.keys(row).length, 0), 0) : 0), 0);
+  if (total > 1_000_000) throw new Error('EXTERNAL_CALCULATION_GRAPH_INPUT_BUDGET');
+  if (byId.get(unitId)?.state !== 'connected') throw new Error('EXTERNAL_CALCULATION_GRAPH_ROOT_INVALID');
+  const visiting = new Set<string>(), visited = new Set<string>();
+  const visit = (id: string) => {
+    if (visiting.has(id)) throw new Error('CIRCULAR_DEPENDENCY: external calculation graph must be acyclic');
+    if (visited.has(id)) return;
+    const node = byId.get(id);
+    if (!node) throw new Error('EXTERNAL_CALCULATION_GRAPH_NODE_MISSING');
+    visiting.add(id);
+    if (node.state === 'connected') for (const binding of node.snapshot.dataModel.externalLinks) visit(binding.sourceUnitId);
+    visiting.delete(id); visited.add(id);
+  };
+  visit(unitId);
+  if (visited.size !== nodes.length) throw new Error('EXTERNAL_CALCULATION_GRAPH_UNREACHABLE_NODE');
+  return { schema: 'ExternalCalculationGraph', rootUnitId: unitId, subject: value.subject, nodes };
 }
 
 export interface WorkbookApiClientOptions {
@@ -1690,7 +1753,7 @@ function validateWorkbookSummary(value: unknown): WorkbookSummary {
   if (input.name.length > MAX_WORKBOOK_NAME_LENGTH) throw new Error('Workbook summary name is too long');
   if (!Number.isSafeInteger(input.revision) || Number(input.revision) < 0) throw new Error('Workbook summary revision is invalid');
   validateIsoTimestamp(input.updatedAt, 'Workbook summary updatedAt');
-  if (input.role !== undefined && !['owner', 'editor', 'commenter', 'viewer'].includes(String(input.role))) throw new Error('Workbook summary role is invalid');
+  if (input.role !== undefined && !isWorkbookRole(input.role)) throw new Error('Workbook summary role is invalid');
   if (input.storageLocation !== undefined && !['local', 'remote', 'mirrored'].includes(String(input.storageLocation))) throw new Error('Workbook summary storageLocation is invalid');
   if (input.syncStatus !== undefined && !['synced', 'syncing', 'pending', 'offline', 'conflict', 'error'].includes(String(input.syncStatus))) throw new Error('Workbook summary syncStatus is invalid');
   if (input.lifecycle !== undefined && !['active', 'trashed'].includes(String(input.lifecycle))) throw new Error('Workbook summary lifecycle is invalid');
@@ -1708,7 +1771,7 @@ function validateWorkbookSummary(value: unknown): WorkbookSummary {
     name,
     revision: Number(input.revision),
     updatedAt,
-    ...(input.role === undefined ? {} : { role: input.role as WorkbookAclRole }),
+    ...(input.role === undefined ? {} : { role: input.role as WorkbookRole }),
     ...(input.ownerSubject == null ? {} : { ownerSubject: input.ownerSubject as string }),
     ...(input.spaceId == null ? {} : { spaceId: input.spaceId as string }),
     ...(input.spaceName == null ? {} : { spaceName: input.spaceName as string }),
@@ -1809,7 +1872,7 @@ function validateWorkbookAccessResponse(value: unknown): WorkbookAccessResponse 
   }
   const input = value as Record<string, unknown>;
   if (!isNonEmptyString(input.unitId)) throw new Error('workbook access response requires unitId');
-  if (input.role !== 'owner' && input.role !== 'editor' && input.role !== 'commenter' && input.role !== 'viewer') {
+  if (!isWorkbookRole(input.role)) {
     throw new Error('workbook access response has an invalid role');
   }
   if (!Number.isSafeInteger(input.accessRevision) || Number(input.accessRevision) < 0 || !Array.isArray(input.regions)) {
@@ -2232,7 +2295,7 @@ function validateServerQueryBlockResponse(value: unknown): ServerQueryBlockRespo
   return { ...response, rows } as unknown as ServerQueryBlockResponse;
 }
 
-export type GuestShareRole = 'viewer' | 'commenter' | 'editor';
+export type GuestShareRole = Exclude<WorkbookRole, 'owner'>;
 
 export interface GuestShareRequest {
   role: GuestShareRole;
@@ -2256,7 +2319,7 @@ export interface WorkbookSummary {
   name: string;
   revision: number;
   updatedAt: string;
-  role?: WorkbookAclRole;
+  role?: WorkbookRole;
   ownerSubject?: string;
   spaceId?: string;
   spaceName?: string;
@@ -2338,7 +2401,7 @@ export interface WorkspaceSpace {
   createdBy: string;
   kind: WorkspaceSpaceKind;
   name: string;
-  role?: WorkbookAclRole;
+  role?: WorkbookRole;
   spaceId: string;
   updatedAt: string;
 }
@@ -2352,7 +2415,7 @@ export interface WorkspaceFolder {
 }
 
 export interface SpaceMember {
-  role: WorkbookAclRole;
+  role: WorkbookRole;
   spaceId: string;
   subject: string;
   updatedAt: string;
@@ -2453,7 +2516,14 @@ export class WorkbookApiClient {
     const csrf = this.csrfTokenProvider?.();
     if (csrf && !['GET', 'HEAD', 'OPTIONS'].includes(init.method ?? 'GET')) headers.set('X-CSRF-TOKEN', csrf);
     const response = await this.fetchImpl(`${this.baseUrl}${path}`, { ...init, headers, credentials: 'same-origin' });
-    if (response.ok) return response;
+    if (response.ok) {
+      // Settle no-content mutations before reporting their network completion.
+      if (response.status === 204) {
+        try { await response.arrayBuffer(); }
+        catch (cause) { throw new ApiRequestError(`Response completion failed for ${path}: ${cause instanceof Error ? cause.message : String(cause)}`, response.status, 'INTERNAL_ERROR'); }
+      }
+      return response;
+    }
 
     let payload: Partial<ApiError> | undefined;
     try {
@@ -2491,25 +2561,15 @@ export class WorkbookApiClient {
     ), unitId);
   }
 
-  async getExternalLinkInputs(unitId: string, linkId: string): Promise<{
-    binding: import('@react-sheets/core-model').ExternalLinkBinding;
-    snapshot: import('@react-sheets/core-model').WorkbookSnapshot;
-    subject: string; sourceRevision: number; accessRevision: number;
-    blockedRanges: import('@react-sheets/core-model').RangeRef[];
-  }> {
-    const raw = await this.json<unknown>(`/api/workbooks/${encodeURIComponent(unitId)}/external-links/${encodeURIComponent(linkId)}/inputs`);
-    const value = requireRecord(raw, 'External link inputs');
-    validateExactKeys(value, ['binding', 'snapshot', 'subject', 'sourceRevision', 'accessRevision', 'blockedRanges'], 'External link inputs');
-    const binding = value.binding as import('@react-sheets/core-model').ExternalLinkBinding;
+  async getExternalCalculationGraph(unitId: string): Promise<ExternalCalculationGraph> {
+    return validateExternalCalculationGraph(await this.json<unknown>(`/api/workbooks/${encodeURIComponent(unitId)}/external-calculation/inputs`), unitId);
+  }
+
+  async validateExternalLinkBinding(unitId: string, binding: import('@react-sheets/core-model').ExternalLinkBinding): Promise<void> {
     assertExternalLinkBinding(binding);
-    const snapshot = validateWorkbookSnapshot(value.snapshot);
-    if (binding.id !== linkId || snapshot.unitId !== binding.sourceUnitId || !isNonEmptyString(value.subject) || !Number.isSafeInteger(value.sourceRevision) || Number(value.sourceRevision) < 0 || !Number.isSafeInteger(value.accessRevision) || Number(value.accessRevision) < 0 || !Array.isArray(value.blockedRanges)) throw new Error('EXTERNAL_LINK_INPUT_CONTEXT_INVALID');
-    const blockedRanges = value.blockedRanges.map(range => {
-      const item = requireRecord(range, 'External blocked range');
-      if (!isNonEmptyString(item.sheetId) || !['startRow', 'endRow', 'startColumn', 'endColumn'].every(key => Number.isSafeInteger(item[key]) && Number(item[key]) >= 0) || Number(item.endRow) < Number(item.startRow) || Number(item.endColumn) < Number(item.startColumn)) throw new Error('EXTERNAL_LINK_BLOCKED_RANGE_INVALID');
-      return item as unknown as import('@react-sheets/core-model').RangeRef;
+    await this.request(`/api/workbooks/${encodeURIComponent(unitId)}/external-calculation/binding-validation`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(binding),
     });
-    return { binding, snapshot, subject: value.subject, sourceRevision: Number(value.sourceRevision), accessRevision: Number(value.accessRevision), blockedRanges };
   }
 
   async getAccess(unitId: string, options: ApiRequestOptions = {}): Promise<WorkbookAccessResponse> {
@@ -2543,7 +2603,7 @@ export class WorkbookApiClient {
     return this.json<WorkbookAclRecord[]>(`/api/workbooks/${encodeURIComponent(unitId)}/acl`, options);
   }
 
-  async putWorkbookAcl(unitId: string, subject: string, role: WorkbookAclRole): Promise<WorkbookAclRecord> {
+  async putWorkbookAcl(unitId: string, subject: string, role: WorkbookRole): Promise<WorkbookAclRecord> {
     return this.json<WorkbookAclRecord>(`/api/workbooks/${encodeURIComponent(unitId)}/acl/${encodeURIComponent(subject)}`, {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
@@ -2698,7 +2758,7 @@ export class WorkbookApiClient {
     return this.json<SpaceMember[]>(`/api/spaces/${encodeURIComponent(spaceId)}/members`, options);
   }
 
-  async putSpaceMember(spaceId: string, subject: string, role: WorkbookAclRole): Promise<SpaceMember> {
+  async putSpaceMember(spaceId: string, subject: string, role: WorkbookRole): Promise<SpaceMember> {
     return this.json<SpaceMember>(`/api/spaces/${encodeURIComponent(spaceId)}/members/${encodeURIComponent(subject)}`, {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
@@ -2954,7 +3014,7 @@ export class WorkbookApiClient {
       {
         method: 'PUT',
         headers: {
-          'content-type': asset.mimeType,
+          'content-type': 'application/octet-stream',
           'x-content-sha256': asset.contentHash,
           'x-asset-mime-type': asset.mimeType,
           ...(asset.width === undefined ? {} : { 'x-asset-width': String(asset.width) }),
@@ -3006,12 +3066,16 @@ export type OperationMessage =
   | { type: 'revision.created'; unitId: string; operationId: string; accessRevision: number; payload: CommittedOperationEnvelope; resyncRequired?: never; revision: number }
   | { type: 'revision.created'; unitId: string; operationId: string; accessRevision: number; payload?: never; resyncRequired: true; revision: number }
   | { type: 'access.changed'; unitId: string; accessRevision: number }
+  | { type: 'workbook.lifecycle.changed'; unitId: string; lifecycle: 'active' | 'trashed' | 'purged' }
+  | { type: 'calculation.changed'; unitId: string; sourceUnitId: string }
+  | { type: 'calculation.subscribe'; unitId: string }
   | { type: 'presence.updated'; unitId: string; state: unknown }
   | { type: 'cursor.updated'; unitId: string; state: unknown }
   | { type: 'presence.broadcast'; unitId: string; actorId: string; state: unknown }
   | { type: 'cursor.broadcast'; unitId: string; actorId: string; state: unknown };
 
 export type ClientOperationMessage =
+  | { type: 'calculation.subscribe'; unitId: string }
   | { type: 'presence.updated'; unitId: string; state: unknown }
   | { type: 'cursor.updated'; unitId: string; state: unknown };
 
@@ -3147,6 +3211,18 @@ export function decodeOperationMessage(input: string): OperationMessage {
           revision,
         };
       }
+    case 'calculation.changed':
+      validateExactKeys(message, ['type', 'unitId', 'sourceUnitId'], 'calculation.changed');
+      if (!isNonEmptyString(message.unitId) || !isNonEmptyString(message.sourceUnitId)) throw new Error('calculation.changed identities are invalid');
+      return { type: 'calculation.changed', unitId: message.unitId, sourceUnitId: message.sourceUnitId };
+    case 'workbook.lifecycle.changed':
+      validateExactKeys(message, ['type', 'unitId', 'lifecycle'], 'workbook.lifecycle.changed');
+      if (!isNonEmptyString(message.unitId) || !['active', 'trashed', 'purged'].includes(String(message.lifecycle))) throw new Error('workbook.lifecycle.changed identity or lifecycle is invalid');
+      return { type: 'workbook.lifecycle.changed', unitId: message.unitId, lifecycle: message.lifecycle as 'active' | 'trashed' | 'purged' };
+    case 'calculation.subscribe':
+      validateExactKeys(message, ['type', 'unitId'], 'calculation.subscribe');
+      if (!isNonEmptyString(message.unitId)) throw new Error('calculation.subscribe identity is invalid');
+      return { type: 'calculation.subscribe', unitId: message.unitId };
     case 'access.changed':
       if (!isNonEmptyString(message.unitId) || !Number.isSafeInteger(message.accessRevision) || Number(message.accessRevision) < 1) {
         throw new Error('access.changed metadata is invalid');
@@ -3170,7 +3246,7 @@ export function decodeOperationMessage(input: string): OperationMessage {
 
 export function decodeClientOperationMessage(input: string): ClientOperationMessage {
   const message = decodeOperationMessage(input);
-  if (message.type === 'presence.updated' || message.type === 'cursor.updated') return message;
+  if (message.type === 'presence.updated' || message.type === 'cursor.updated' || message.type === 'calculation.subscribe') return message;
   throw new Error(`Server-only collaboration message: ${message.type}`);
 }
 

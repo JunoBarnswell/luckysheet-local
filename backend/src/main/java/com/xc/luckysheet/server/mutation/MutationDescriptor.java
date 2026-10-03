@@ -3,7 +3,7 @@ package com.xc.luckysheet.server.mutation;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.xc.luckysheet.server.contract.OperationMutation;
 import com.xc.luckysheet.server.contract.RangeRef;
-import com.xc.luckysheet.server.contract.WorkbookAclRole;
+import com.xc.luckysheet.server.contract.WorkbookRole;
 
 import java.util.List;
 
@@ -17,7 +17,7 @@ public interface MutationDescriptor {
      * Roles and affected ranges are resolved by the server from the current
      * snapshot; clients never supply either as authority.
      */
-    WorkbookAclRole requiredRole();
+    WorkbookRole requiredRole();
 
     /** The server's concurrency rule for this concrete mutation. */
     MutationRebasePolicy rebasePolicy();

@@ -3,7 +3,7 @@ package com.xc.luckysheet.server.service;
 import com.xc.luckysheet.server.config.ShareProperties;
 import com.xc.luckysheet.server.contract.ShareCreateRequest;
 import com.xc.luckysheet.server.contract.ShareResponse;
-import com.xc.luckysheet.server.contract.WorkbookAclRole;
+import com.xc.luckysheet.server.contract.WorkbookRole;
 import com.xc.luckysheet.server.store.ShareRow;
 import com.xc.luckysheet.server.store.WorkbookStore;
 import org.springframework.stereotype.Service;
@@ -42,7 +42,7 @@ public class GuestShareService {
         // The owner check must use the persistent ACL, never a client role.
         requireOwner(unitId, actor);
         lifecycle.requireActive(unitId);
-        WorkbookAclRole role = parseRole(request.role());
+        WorkbookRole role = parseRole(request.role());
         Instant now = Instant.now();
         Instant expiresAt = request.expiresAt() == null ? now.plus(properties.defaultLifetime()) : request.expiresAt();
         if (!expiresAt.isAfter(now)) throw ServiceException.validation("Share expiry must be in the future");
@@ -88,7 +88,7 @@ public class GuestShareService {
         return new GuestIdentity("guest:" + row.shareId(), row.shareId(), row.unitId(), row.role(), row.expiresAt());
     }
 
-    public WorkbookAclRole roleFor(String unitId, String subject) {
+    public WorkbookRole roleFor(String unitId, String subject) {
         if (subject == null || !subject.startsWith("guest:")) return null;
         UUID shareId;
         try {
@@ -99,10 +99,10 @@ public class GuestShareService {
         return store.findActiveShare(unitId, shareId, Instant.now()).map(ShareRow::role).orElse(null);
     }
 
-    private WorkbookAclRole parseRole(String value) {
+    private WorkbookRole parseRole(String value) {
         try {
-            WorkbookAclRole role = WorkbookAclRole.valueOf(value.trim().toUpperCase());
-            if (role == WorkbookAclRole.OWNER) throw ServiceException.validation("Guest share role cannot be OWNER");
+            WorkbookRole role = WorkbookRole.valueOf(value.trim().toUpperCase());
+            if (role == WorkbookRole.OWNER) throw ServiceException.validation("Guest share role cannot be OWNER");
             return role;
         } catch (IllegalArgumentException error) {
             throw ServiceException.validation("Guest share role must be viewer, commenter or editor");
@@ -110,7 +110,7 @@ public class GuestShareService {
     }
 
     private void requireOwner(String unitId, String actor) {
-        if (authorization.role(unitId, actor).orElse(null) != WorkbookAclRole.OWNER) {
+        if (authorization.role(unitId, actor).orElse(null) != WorkbookRole.OWNER) {
             throw ServiceException.forbidden("Workbook role OWNER is required");
         }
     }
@@ -141,6 +141,6 @@ public class GuestShareService {
 
     public record ShareRevoked(UUID shareId) {}
 
-    public record GuestIdentity(String subject, UUID shareId, String unitId, WorkbookAclRole role, Instant expiresAt) {
+    public record GuestIdentity(String subject, UUID shareId, String unitId, WorkbookRole role, Instant expiresAt) {
     }
 }

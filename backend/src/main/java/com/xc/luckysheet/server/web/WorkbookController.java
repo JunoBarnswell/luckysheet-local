@@ -138,17 +138,21 @@ public class WorkbookController {
     @DeleteMapping("/{unitId}")
     public ResponseEntity<Void> moveToTrash(@PathVariable String unitId, Authentication authentication) {
         catalog.moveToTrash(unitId, ActorIdentity.subject(authentication));
+        sessions.broadcastLifecycleChanged(unitId, "trashed");
         return ResponseEntity.noContent().build();
     }
 
     @PostMapping("/{unitId}/restore-from-trash")
     public WorkbookSummary restoreFromTrash(@PathVariable String unitId, Authentication authentication) {
-        return catalog.restoreFromTrash(unitId, ActorIdentity.subject(authentication));
+        var summary = catalog.restoreFromTrash(unitId, ActorIdentity.subject(authentication));
+        sessions.broadcastLifecycleChanged(unitId, "active");
+        return summary;
     }
 
     @DeleteMapping("/{unitId}/purge")
     public ResponseEntity<Void> purge(@PathVariable String unitId, Authentication authentication) {
         catalog.purge(unitId, ActorIdentity.subject(authentication));
+        sessions.broadcastLifecycleChanged(unitId, "purged");
         return ResponseEntity.noContent().build();
     }
 
@@ -206,9 +210,15 @@ public class WorkbookController {
         return operations.readSnapshot(unitId, ActorIdentity.subject(authentication), ActorIdentity.groups(authentication));
     }
 
-    @GetMapping("/{unitId}/external-links/{linkId}/inputs")
-    public JsonNode externalLinkInputs(@PathVariable String unitId, @PathVariable String linkId, Authentication authentication) {
-        return operations.readExternalLink(unitId, linkId, ActorIdentity.subject(authentication), ActorIdentity.groups(authentication));
+    @GetMapping("/{unitId}/external-calculation/inputs")
+    public JsonNode externalCalculationGraph(@PathVariable String unitId, Authentication authentication) {
+        return operations.readExternalCalculationGraph(unitId, ActorIdentity.subject(authentication), ActorIdentity.groups(authentication));
+    }
+
+    @PostMapping("/{unitId}/external-calculation/binding-validation")
+    public ResponseEntity<Void> validateExternalBinding(@PathVariable String unitId, @RequestBody JsonNode binding, Authentication authentication) {
+        operations.validateExternalBinding(unitId, binding, ActorIdentity.subject(authentication), ActorIdentity.groups(authentication));
+        return ResponseEntity.noContent().build();
     }
 
     @PostMapping("/{unitId}/operations")
@@ -248,7 +258,7 @@ public class WorkbookController {
 
     @PostMapping("/{unitId}/restore")
     public WorkbookOperationService.RestoreResult restore(@PathVariable String unitId, @Valid @RequestBody RestoreRequest request, Authentication authentication) {
-        WorkbookOperationService.RestoreResult result = operations.restore(unitId, request, ActorIdentity.subject(authentication));
+        WorkbookOperationService.RestoreResult result = operations.restore(unitId, request, ActorIdentity.subject(authentication), ActorIdentity.groups(authentication));
         sessions.broadcastRevision(result.operation());
         return result;
     }
@@ -436,7 +446,7 @@ public class WorkbookController {
             @PathVariable String unitId,
             @PathVariable String assetId,
             @RequestHeader("X-Content-SHA256") String checksum,
-            @RequestHeader("X-Asset-MimeType") String mimeType,
+            @RequestHeader("X-Asset-Mime-Type") String mimeType,
             @RequestHeader(value = "X-Asset-Width", required = false) Integer width,
             @RequestHeader(value = "X-Asset-Height", required = false) Integer height,
             HttpServletRequest request,

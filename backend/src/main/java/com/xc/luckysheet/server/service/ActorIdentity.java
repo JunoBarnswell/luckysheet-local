@@ -14,8 +14,8 @@ public final class ActorIdentity {
     }
 
     public static String subject(Authentication authentication) {
-        if (authentication instanceof JwtAuthenticationToken token && token.getToken().getSubject() != null && !token.getToken().getSubject().isBlank()) {
-            return token.getToken().getSubject();
+        if (authentication instanceof JwtAuthenticationToken token && token.getName() != null && !token.getName().isBlank()) {
+            return token.getName();
         }
         if (authentication instanceof LocalUserAuthentication local && local.getName() != null && !local.getName().isBlank()) {
             return local.getName();
@@ -44,6 +44,7 @@ public final class ActorIdentity {
     }
 
     public static String subject(Principal principal) {
+        if (principal instanceof Authentication authentication) return subject(authentication);
         if (principal != null && principal.getName() != null && !principal.getName().isBlank()) return principal.getName();
         throw ServiceException.forbidden("Authenticated subject is required");
     }

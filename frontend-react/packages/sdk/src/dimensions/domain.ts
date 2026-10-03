@@ -1,7 +1,9 @@
-import { MAX_EXCEL_COLUMN_WIDTH, excelColumnWidthToPixels, pixelsToExcelColumnWidth, pointsToPixels } from '@react-sheets/exchange-excel-ooxml';
+import { MAX_EXCEL_COLUMN_WIDTH, excelColumnWidthToPixels, pixelsToExcelColumnWidth, pointsToPixels, pixelsToPoints } from '@react-sheets/exchange-excel-ooxml';
 import { DEFAULT_RENDER_THEME, hasMeasurableCellContent, measureCellAutoFit, type CellRenderData } from '@react-sheets/render-engine';
 import type { CanvasSheetSnapshot, WorkbookSession } from '@react-sheets/spreadsheet-app';
-import { autoFitBlockTransferables, createAutoFitBlock, type AutoFitCellInput } from './column-autofit-protocol';
+import { SdkError } from '../error';
+import type { DimensionsActions, DimensionResult } from './contract';
+import { autoFitBlockTransferables, createAutoFitBlock, type AutoFitCellInput } from './autofit-protocol';
 
 export interface ColumnWidthPreview {
   widthPx: number;
@@ -9,68 +11,119 @@ export interface ColumnWidthPreview {
 }
 
 export const MAX_EXCEL_ROW_HEIGHT_POINTS = 409;
+function invalidDimension(message: string): SdkError {
+  return new SdkError('INVALID_ARGUMENT', 'dimensions', message, '请提供当前工作表允许的有限行列尺寸。');
+}
 
-export class ColumnDimensionController {
+export class DimensionsDomain {
   private autoFitAbort: AbortController | null = null;
+  private disposed = false;
+  readonly actions: DimensionsActions;
+  private assertActive(): void {
+    if (this.disposed) throw new SdkError('RUNTIME_DISPOSED', 'dimensions', '行列尺寸会话已释放。', '请重新打开工作簿。');
+  }
+  dispose(): void { this.cancelAutoFit(); this.disposed = true; }
+  private reject(cause: unknown): DimensionResult {
+    if (cause instanceof DOMException && cause.name === 'AbortError') return { status: 'cancelled' };
+    const error = cause instanceof SdkError ? cause : new SdkError('REQUEST_REJECTED', 'dimensions.autofit', cause instanceof Error ? cause.message : 'AutoFit 失败。', '请检查工作簿权限和测量宿主后重试。', { cause });
+    if (!this.disposed) this.session.notify(`${error.code}: ${error.message} ${error.recovery}`);
+    return { status: 'rejected', error };
+  }
+  private validateIndices(indices: readonly number[], count: number): number[] {
+    this.assertActive();
+    if (indices.some(index => !Number.isSafeInteger(index) || index < 0 || index >= count)) throw new SdkError('INVALID_ARGUMENT', 'dimensions', '行列索引超出当前工作表。', '请重新选择有效的行列。');
+    return [...new Set(indices)];
+  }
+  private apply(sheet: CanvasSheetSnapshot, plan: { rows?: Array<{ row: number; heightPx: number; hidden?: boolean }>; columns?: Array<{ column: number; widthPx: number; hidden?: boolean }> }): void {
+    this.assertActive();
+    if (this.getSheet() !== sheet) throw new SdkError('STALE_OPERATION', 'dimensions.autofit', '测量期间工作表已发生变化，未提交尺寸。', '请在当前工作表重新执行 AutoFit。');
+    this.session.runCommand('sheet.dimensions.apply', { sheetId: sheet.id, ...plan });
+  }
 
   constructor(
     private readonly session: WorkbookSession,
     private readonly getSheet: () => CanvasSheetSnapshot,
-  ) {}
+  ) {
+    this.actions = Object.freeze({
+      previewExcelWidth: this.previewExcelWidth.bind(this), previewRowHeight: this.previewRowHeight.bind(this), rowPoints: this.rowPoints.bind(this),
+      previewPixels: this.previewPixels.bind(this), setExcelWidth: this.setExcelWidth.bind(this),
+      setPixels: this.setPixels.bind(this), setHidden: this.setHidden.bind(this),
+      setRowHeightPoints: this.setRowHeightPoints.bind(this), setRowPixels: this.setRowPixels.bind(this),
+      setRowsHidden: this.setRowsHidden.bind(this), setDefaultExcelWidth: this.setDefaultExcelWidth.bind(this),
+      cancelAutoFit: this.cancelAutoFit.bind(this), autoFit: this.autoFit.bind(this), autoFitRows: this.autoFitRows.bind(this),
+    });
+  }
 
+  previewExcelWidth(value: number, defaultMode = false) {
+    this.assertActive();
+    const valid = Number.isFinite(value) && value >= (defaultMode ? 1 / 256 : 0) && value <= MAX_EXCEL_COLUMN_WIDTH;
+    return { valid, pixels: valid ? excelColumnWidthToPixels(value, this.getSheet().maximumDigitWidthPx) : null };
+  }
+  previewRowHeight(points: number) {
+    this.assertActive();
+    const valid = Number.isFinite(points) && points >= 0 && points <= MAX_EXCEL_ROW_HEIGHT_POINTS;
+    return { valid, pixels: valid ? Math.round(pointsToPixels(points)) : null };
+  }
+  rowPoints(heightPx: number): number { this.assertActive(); return pixelsToPoints(heightPx); }
   previewPixels(widthPx: number): ColumnWidthPreview {
+    this.assertActive();
     const maximumDigitWidthPx = this.getSheet().maximumDigitWidthPx;
-    if (!Number.isFinite(widthPx) || widthPx < 0) throw new Error('Column width must be a finite non-negative pixel value');
+    if (!Number.isFinite(widthPx) || widthPx < 0) throw invalidDimension('Column width must be a finite non-negative pixel value');
     const bounded = Math.max(0, widthPx);
     return { widthPx: Math.round(bounded), excelWidth: pixelsToExcelColumnWidth(bounded, maximumDigitWidthPx) };
   }
 
   setExcelWidth(columns: readonly number[], excelWidth: number): void {
-    if (!Number.isFinite(excelWidth) || excelWidth < 0 || excelWidth > MAX_EXCEL_COLUMN_WIDTH) throw new Error('Excel column width must be between 0 and 255');
+    if (!Number.isFinite(excelWidth) || excelWidth < 0 || excelWidth > MAX_EXCEL_COLUMN_WIDTH) throw invalidDimension('Excel column width must be between 0 and 255');
     if (excelWidth === 0) {
       this.setHidden(columns, true);
       return;
     }
-    this.setHidden(columns, false);
-    this.setPixels(columns, excelColumnWidthToPixels(excelWidth, this.getSheet().maximumDigitWidthPx));
+    const sheet = this.getSheet();
+    const indices = this.validateIndices(columns, sheet.columnCount);
+    this.apply(sheet, { columns: indices.map(column => ({ column, widthPx: Math.max(1, Math.round(excelColumnWidthToPixels(excelWidth, sheet.maximumDigitWidthPx))), hidden: false })) });
   }
 
   setPixels(columns: readonly number[], widthPx: number): void {
-    if (!Number.isFinite(widthPx) || widthPx <= 0) throw new Error('Column width must be positive pixels');
-    this.session.resizeColumns(columns, Math.max(1, Math.round(widthPx)));
+    if (!Number.isFinite(widthPx) || widthPx <= 0) throw invalidDimension('Column width must be positive pixels');
+    const sheet = this.getSheet();
+    this.apply(sheet, { columns: this.validateIndices(columns, sheet.columnCount).map(column => ({ column, widthPx: Math.max(1, Math.round(widthPx)) })) });
   }
 
   setHidden(columns: readonly number[], hidden: boolean): void {
-    this.session.setColumnsHidden(columns, hidden);
+    const sheet = this.getSheet();
+    this.session.runCommand('sheet.columns.visibility.set', { sheetId: sheet.id, columns: this.validateIndices(columns, sheet.columnCount), hidden });
   }
 
   setRowHeightPoints(rows: readonly number[], points: number): void {
-    if (!Number.isFinite(points) || points < 0 || points > MAX_EXCEL_ROW_HEIGHT_POINTS) throw new Error(`Row height must be between 0 and ${MAX_EXCEL_ROW_HEIGHT_POINTS} points`);
+    if (!Number.isFinite(points) || points < 0 || points > MAX_EXCEL_ROW_HEIGHT_POINTS) throw invalidDimension(`Row height must be between 0 and ${MAX_EXCEL_ROW_HEIGHT_POINTS} points`);
     if (points === 0) {
       this.setRowsHidden(rows, true);
       return;
     }
-    this.setRowsHidden(rows, false);
-    this.session.resizeRows(rows, pointsToPixels(points));
+    this.setRowPixels(rows, pointsToPixels(points));
   }
 
   setRowPixels(rows: readonly number[], heightPx: number): void {
-    if (!Number.isFinite(heightPx) || heightPx < 0) throw new Error('Row height must be non-negative pixels');
+    if (!Number.isFinite(heightPx) || heightPx < 0) throw invalidDimension('Row height must be non-negative pixels');
     if (heightPx === 0) {
       this.setRowsHidden(rows, true);
       return;
     }
-    this.setRowsHidden(rows, false);
-    this.session.resizeRows(rows, heightPx);
+    const sheet = this.getSheet();
+    this.apply(sheet, { rows: this.validateIndices(rows, sheet.rowCount).map(row => ({ row, heightPx, hidden: false })) });
   }
 
   setRowsHidden(rows: readonly number[], hidden: boolean): void {
-    this.session.setRowsHidden(rows, hidden);
+    const sheet = this.getSheet();
+    this.session.runCommand('sheet.rows.visibility.set', { sheetId: sheet.id, rows: this.validateIndices(rows, sheet.rowCount), hidden });
   }
 
   setDefaultExcelWidth(excelWidth: number): void {
-    if (!Number.isFinite(excelWidth) || excelWidth <= 0 || excelWidth > MAX_EXCEL_COLUMN_WIDTH) throw new Error('Default Excel column width must be between 0 and 255');
-    this.session.setDefaultColumnWidth(excelColumnWidthToPixels(excelWidth, this.getSheet().maximumDigitWidthPx));
+    if (!Number.isFinite(excelWidth) || excelWidth <= 0 || excelWidth > MAX_EXCEL_COLUMN_WIDTH) throw invalidDimension('Default Excel column width must be between 0 and 255');
+    this.assertActive();
+    const sheet = this.getSheet();
+    this.session.runCommand('sheet.column.defaultWidth.set', { sheetId: sheet.id, widthPx: excelColumnWidthToPixels(excelWidth, sheet.maximumDigitWidthPx) });
   }
 
   cancelAutoFit(): void {
@@ -78,19 +131,22 @@ export class ColumnDimensionController {
     this.autoFitAbort = null;
   }
 
-  async autoFit(columns: readonly number[]): Promise<void> {
+  async autoFit(columns: readonly number[]): Promise<DimensionResult> {
     this.cancelAutoFit();
     const controller = new AbortController();
     this.autoFitAbort = controller;
     try {
-      const widths = await this.measureColumns([...new Set(columns)], controller.signal);
-      if (!controller.signal.aborted) this.session.applyColumnWidths(widths);
-    } finally {
+      const sheet = this.getSheet();
+      const widths = await this.measureColumns(sheet, this.validateIndices(columns, sheet.columnCount), controller.signal);
+      if (controller.signal.aborted) return { status: 'cancelled' };
+      this.apply(sheet, { columns: widths });
+      return { status: 'applied' };
+    } catch (cause) { return this.reject(cause); } finally {
       if (this.autoFitAbort === controller) this.autoFitAbort = null;
     }
   }
 
-  async autoFitRows(rows: readonly number[]): Promise<void> {
+  async autoFitRows(rows: readonly number[]): Promise<DimensionResult> {
     this.cancelAutoFit();
     const controller = new AbortController();
     this.autoFitAbort = controller;
@@ -100,7 +156,7 @@ export class ColumnDimensionController {
       const context = canvas.getContext('2d');
       if (!context) throw new Error('Canvas text measurement is unavailable');
       const heights: Array<{ row: number; heightPx: number }> = [];
-      const requestedRows = [...new Set(rows)].filter((row) => row >= 0 && row < sheet.rowCount);
+      const requestedRows = this.validateIndices(rows, sheet.rowCount);
       const occupiedByRow = occupiedCellsByRow(sheet, new Set(requestedRows));
       const mergeRows = new MultiColumnMergeSpatialIndex(sheet.merges).intervalsForRows(requestedRows);
       const filterButtons = new Set(sheet.filterButtons.map((button) => `${button.row}:${button.column}`));
@@ -117,18 +173,22 @@ export class ColumnDimensionController {
         heights.push({ row, heightPx });
         if (heights.length % 250 === 0) await yieldToBrowser();
       }
-      if (!controller.signal.aborted) this.session.applyRowHeights(heights);
-    } finally {
+      if (controller.signal.aborted) return { status: 'cancelled' };
+      this.apply(sheet, { rows: heights });
+      return { status: 'applied' };
+    } catch (cause) { return this.reject(cause); } finally {
       if (this.autoFitAbort === controller) this.autoFitAbort = null;
     }
   }
 
-  private async measureColumns(columns: number[], signal: AbortSignal): Promise<Array<{ column: number; widthPx: number }>> {
-    const sheet = this.getSheet();
+  private async measureColumns(sheet: CanvasSheetSnapshot, columns: number[], signal: AbortSignal): Promise<Array<{ column: number; widthPx: number }>> {
     const bounded = columns.filter((column) => column >= 0 && column < sheet.columnCount);
     if (!bounded.length) return [];
     const cells = occupiedCellsForColumns(sheet, new Set(bounded));
-    if (typeof Worker !== 'undefined' && cells.length > 5_000) return this.measureInWorker(sheet, bounded, cells, signal);
+    if (cells.length > 5_000) {
+      if (typeof Worker === 'undefined') throw new SdkError('UNSUPPORTED_FEATURE', 'dimensions.autofit', '大范围 AutoFit 需要 browser Worker。', '请使用支持 Worker 的宿主。');
+      return this.measureInWorker(sheet, bounded, cells, signal);
+    }
     const canvas = document.createElement('canvas');
     const context = canvas.getContext('2d');
     if (!context) throw new Error('Canvas text measurement is unavailable');
@@ -149,14 +209,17 @@ export class ColumnDimensionController {
   }
 
   private async measureInWorker(sheet: CanvasSheetSnapshot, columns: number[], occupiedCells: readonly OccupiedCellAddress[], signal: AbortSignal): Promise<Array<{ column: number; widthPx: number }>> {
-    const worker = new Worker(new URL('./column-autofit-worker.ts', import.meta.url), { type: 'module' });
+    const worker = new Worker(new URL('./autofit-worker.ts', import.meta.url), { type: 'module' });
     const taskId = `autofit-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    const result = new Promise<Array<{ column: number; widthPx: number }>>((resolve, reject) => {
+    let cancelTask: () => void = () => {};
+    const result = new Promise<{ widths: Array<{ column: number; widthPx: number }> } | { error: Error }>(resolve => {
       worker.onmessage = (event: MessageEvent<{ kind: string; taskId: string; widths: Array<{ column: number; widthPx: number }> }>) => {
-        if (event.data.kind === 'complete' && event.data.taskId === taskId) resolve(event.data.widths);
+        if (event.data.kind === 'complete' && event.data.taskId === taskId) resolve({ widths: event.data.widths });
       };
-      worker.onerror = (event) => reject(new Error(event.message || 'AutoFit worker failed'));
-      signal.addEventListener('abort', () => { worker.postMessage({ kind: 'cancel', taskId }); reject(new DOMException('AutoFit cancelled', 'AbortError')); }, { once: true });
+      worker.onerror = event => resolve({ error: new Error(event.message || 'AutoFit worker failed') });
+      worker.onmessageerror = () => resolve({ error: new Error('AutoFit worker response cannot be decoded') });
+      cancelTask = () => { worker.postMessage({ kind: 'cancel', taskId }); resolve({ error: new DOMException('AutoFit cancelled', 'AbortError') }); };
+      signal.addEventListener('abort', cancelTask, { once: true });
     });
     worker.postMessage({ kind: 'start', taskId, columns });
     const filterButtons = new Set(sheet.filterButtons.map((cell) => `${cell.row}:${cell.column}`));
@@ -175,8 +238,11 @@ export class ColumnDimensionController {
         await yieldToBrowser();
       }
       worker.postMessage({ kind: 'finish', taskId });
-      return (await result).map((entry) => ({ ...entry, widthPx: Math.max(8, entry.widthPx) }));
+      const outcome = await result;
+      if ('error' in outcome) throw outcome.error;
+      return outcome.widths.map((entry) => ({ ...entry, widthPx: Math.max(8, entry.widthPx) }));
     } finally {
+      signal.removeEventListener('abort', cancelTask);
       worker.terminate();
     }
   }

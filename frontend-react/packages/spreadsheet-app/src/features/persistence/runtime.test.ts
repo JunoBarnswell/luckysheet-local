@@ -144,10 +144,12 @@ describe('local workspace runtime persistence', () => {
     });
     runtime.api = {
       getSnapshot: async () => ({ unitId: snapshot.unitId, snapshot, revision: 4 }),
-      getAccess: async () => ({ unitId: snapshot.unitId, role: 'editor' }),
+      getAccess: async () => ({ unitId: snapshot.unitId, role: 'editor', accessRevision: 0, regions: [] }),
       listRevisions: async () => [],
     } as unknown as typeof runtime.api;
 
+    const phases: string[] = [];
+    runtime.handlers.onPhaseChange = phase => phases.push(phase);
     const dispose = startPersistenceSession(runtime);
     await runtime.persistenceReady;
     dispose();
@@ -155,6 +157,7 @@ describe('local workspace runtime persistence', () => {
     assert.equal(runtime.localOnly, false);
     assert.equal(runtime.remoteDataAvailable, true);
     assert.equal(runtime.remoteConnected, false);
+    assert.deepEqual(phases, ['loading'], 'snapshot reads must not enable a disconnected editor');
   });
 
   it('starts a usable local workbook when the connected backend returns a server error', async () => {
@@ -181,4 +184,23 @@ describe('local workspace runtime persistence', () => {
     assert.deepEqual(phases, ['ready']);
     assert.equal(saveStates.at(-1), 'offline');
   });
+  it('an authoritative access rejection cannot publish ready or create a local workbook', async () => {
+    const snapshot = new WorkbookModel('remote-access-rejected', 'Rejected').snapshot();
+    const runtime = createSpreadsheetRuntime({ unitId: snapshot.unitId, authTokenProvider: () => 'verified-host-token' });
+    const phases: string[] = [];
+    runtime.handlers.onPhaseChange = phase => phases.push(phase);
+    runtime.api = {
+      getSnapshot: async () => ({ unitId: snapshot.unitId, snapshot, revision: 4 }),
+      getAccess: async () => { throw new ApiRequestError('Access revoked', 403, 'FORBIDDEN'); },
+      listRevisions: async () => [],
+    } as unknown as typeof runtime.api;
+    const dispose = startPersistenceSession(runtime);
+    await runtime.persistenceReady;
+    dispose();
+    assert.deepEqual(phases, ['error']);
+    assert.equal(runtime.localOnly, false);
+    assert.equal(runtime.remoteConnected, false);
+    assert.equal(runtime.workspaceRecord, null);
+  });
+
 });

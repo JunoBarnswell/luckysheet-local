@@ -23,6 +23,7 @@ public interface WorkbookEntityRepository extends JpaRepository<WorkbookEntity, 
             where (w.ownerSubject = :subject
                 or exists (select a from WorkbookAclEntity a where a.id.unitId = w.unitId and a.id.subject = :subject)
                 or sm.id.subject = :subject)
+              and w.identityScope = :identityScope
               and (:includeTrash = true or w.deletedAt is null)
               and (:trashOnly = false or w.deletedAt is not null)
               and (:sharedOnly = false or w.ownerSubject <> :subject)
@@ -34,6 +35,7 @@ public interface WorkbookEntityRepository extends JpaRepository<WorkbookEntity, 
             """)
     List<WorkbookEntity> findCatalogCandidates(
             @Param("subject") String subject,
+            @Param("identityScope") String identityScope,
             @Param("includeTrash") boolean includeTrash,
             @Param("trashOnly") boolean trashOnly,
             @Param("sharedOnly") boolean sharedOnly,

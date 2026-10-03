@@ -250,7 +250,13 @@ function applyRangeValues(
     endColumn: params.startColumn + Math.max(0, maxColumns - 1),
   };
   assertRangeWithinSheet(sheet, range, 'Range values');
-  const previous = snapshotOccupiedCells(sheet, range);
+  // Every written coordinate needs an inverse, including a previously empty
+  // destination. Occupied-cell snapshots cannot undo newly created values.
+  const previous = params.values.flatMap((rowValues, rowOffset) => rowValues.flatMap((value, columnOffset) => value ? [{
+    row: params.startRow + rowOffset,
+    column: params.startColumn + columnOffset,
+    previous: sheet.cells.getWithoutHydration(params.startRow + rowOffset, params.startColumn + columnOffset),
+  }] : []));
   const values = formulaProvenance === 'preserve'
     ? params.values
     : params.values.map((row) => row.map((value) => value ? clearFormulaProvenance(value) : value));
@@ -352,7 +358,7 @@ function applyRowsDelete(context: CommandContext, sheetId: string, at: number, c
   });
 }
 
-function applyOutline(context: CommandContext, sheetId: string, next: import('@react-sheets/core-model').OutlineModel, previous: import('@react-sheets/core-model').OutlineModel, affectedRanges: RangeRef[]): void {
+function applyOutline(context: CommandContext, sheetId: string, next: import('@react-sheets/core-model').OutlineModel, previous: import('@react-sheets/core-model').OutlineModel | null, affectedRanges: RangeRef[]): void {
   context.applyMutation({
     id: 'outline.set',
     unitId: context.workbook.unitId,
@@ -2157,6 +2163,7 @@ export function registerDataToolCommands(runtime: CommandRuntime): void {
       );
     },
     metadata: {
+      calculation: { inputs: 'cells' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
       schema: { name: 'RowsPermuted', validate: isRowsPermutedMutation },
       permission: { capability: 'sheet.sort.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: rowsPermutedAffectedRanges, mode: 'exact' },
@@ -2414,8 +2421,8 @@ export function registerDataToolCommands(runtime: CommandRuntime): void {
       });
       mutationCount += 1;
       const affectedRanges: RangeRef[] = [structuredClone(range), { sheetId: params.sheetId, startRow: targetRow, endRow: targetRow + groups.length, startColumn: range.startColumn, endColumn: range.endColumn }];
-      const sheetOutline = sheet.outline ? structuredClone(sheet.outline) : { groups: [] };
-      const nextOutline = structuredClone(sheetOutline);
+      const sheetOutline = sheet.outline ? structuredClone(sheet.outline) : null;
+      const nextOutline = sheetOutline === null ? { groups: [] } : structuredClone(sheetOutline);
       for (const group of groups) {
         nextOutline.groups.push({ id: `subtotal-${context.operationId}-${group.start}-${group.end}`, axis: 'row', start: group.start, end: group.end, level: 1, collapsed: false });
       }

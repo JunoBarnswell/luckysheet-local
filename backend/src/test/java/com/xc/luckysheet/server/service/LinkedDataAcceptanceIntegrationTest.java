@@ -47,6 +47,20 @@ class LinkedDataAcceptanceIntegrationTest {
     @Autowired private WorkbookOperationService operations;
     @Autowired private ObjectMapper mapper;
     @Autowired private AccessControlService acl;
+    @Autowired private com.xc.luckysheet.server.store.WorkbookStore store;
+    @Autowired private org.springframework.transaction.PlatformTransactionManager transactionManager;
+
+    @Test
+    void auditRemainsOwnerOnlyAfterSecurityAndSdkIntegration() throws Exception {
+        String owner = "audit-owner", viewer = "audit-viewer", unit = "audit-permissions";
+        catalog.create(new CreateWorkbookRequest(unit, "Range access", snapshot(unit)), owner);
+        acl.grant(unit, owner, viewer, com.xc.luckysheet.server.contract.WorkbookRole.VIEWER);
+        assertEquals(0, operations.readSnapshot(unit, viewer).revision());
+        assertTrue(operations.audit(unit, owner, 10).isEmpty());
+        ServiceException denied = assertThrows(ServiceException.class, () -> operations.audit(unit, viewer, 10));
+        assertEquals("FORBIDDEN", denied.code());
+        assertEquals(0, operations.readSnapshot(unit, owner).revision());
+    }
 
     @Test
     void externalInputsRequireSourceMembershipAndWithholdHiddenInputs() throws Exception {
@@ -59,11 +73,13 @@ class LinkedDataAcceptanceIntegrationTest {
         catalog.create(new CreateWorkbookRequest(targetId, "Range access", target), owner);
         var share = shares.create(targetId, new ShareCreateRequest("editor", Instant.now().plusSeconds(600)), owner);
         String guest = "guest:" + share.shareId();
-        assertThrows(ServiceException.class, () -> operations.readExternalLink(targetId, "link-1", guest, List.of()));
-        JsonNode input = operations.readExternalLink(targetId, "link-1", owner, List.of());
+        JsonNode denied = node(operations.readExternalCalculationGraph(targetId, guest, List.of()), sourceId);
+        assertEquals("denied", denied.path("state").asText()); assertFalse(denied.has("snapshot"));
+        JsonNode graph = operations.readExternalCalculationGraph(targetId, owner, List.of());
+        JsonNode input = node(graph, sourceId);
         com.xc.luckysheet.server.contract.WorkbookSnapshotValidator.requireCanonical(input.path("snapshot"), sourceId);
-        assertEquals(owner, input.path("subject").asText());
-        assertEquals(0, input.path("sourceRevision").asLong());
+        assertEquals(owner, graph.path("subject").asText());
+        assertEquals(0, input.path("revision").asLong());
         assertEquals(11, input.path("snapshot").path("version").asInt());
         assertTrue(input.path("snapshot").path("dataModel").path("externalLinks").isArray());
         assertEquals("SECRET-CELL-VALUE", input.path("snapshot").path("sheets").get(0).path("cells").path("0").path("1").path("value").asText());
@@ -121,13 +137,133 @@ class LinkedDataAcceptanceIntegrationTest {
           {"id":"record-link","token":"Records.xlsx","sourceUnitId":"record-input-source","sheets":[{"token":"Sales","sheetId":"sheet-1"}]}
           """));
         catalog.create(new CreateWorkbookRequest(targetId, "Range access", target), owner);
-        acl.grant(sourceId, owner, reader, com.xc.luckysheet.server.contract.WorkbookAclRole.VIEWER);
-        acl.grant(targetId, owner, reader, com.xc.luckysheet.server.contract.WorkbookAclRole.VIEWER);
-        assertEquals(0, operations.readExternalLink(targetId, "record-link", reader, List.of()).path("sourceRevision").asLong());
+        acl.grant(sourceId, owner, reader, com.xc.luckysheet.server.contract.WorkbookRole.VIEWER);
+        acl.grant(targetId, owner, reader, com.xc.luckysheet.server.contract.WorkbookRole.VIEWER);
+        assertEquals(0, node(operations.readExternalCalculationGraph(targetId, reader, List.of()), sourceId).path("revision").asLong());
         rangeAccess.create(sourceId, owner, new RangeAccessRegionRequest("sheet-1", new RangeRef("sheet-1", 1, 1, 1, 1), RangeAccessLevel.HIDDEN, List.of()));
-        ServiceException denied = assertThrows(ServiceException.class, () -> operations.readExternalLink(targetId, "record-link", reader, List.of()));
-        assertTrue(denied.getMessage().contains("unreadable inputs"));
-        assertEquals(0, operations.readExternalLink(targetId, "record-link", owner, List.of()).path("sourceRevision").asLong());
+        JsonNode denied = node(operations.readExternalCalculationGraph(targetId, reader, List.of()), sourceId);
+        assertEquals("denied", denied.path("state").asText()); assertFalse(denied.has("snapshot"));
+        assertTrue(denied.path("error").path("message").asText().contains("unreadable inputs"));
+        assertEquals(0, node(operations.readExternalCalculationGraph(targetId, owner, List.of()), sourceId).path("revision").asLong());
+    }
+
+    @Test
+    void multiWorkbookClosurePreservesVersionsAndRejectsCircularBindingsWithoutWrites() throws Exception {
+        String owner = "graph-owner", a = "graph-a", b = "graph-b", c = "graph-c";
+        catalog.create(new CreateWorkbookRequest(a, "Range access", snapshot(a)), owner);
+        ObjectNode middle = (ObjectNode) snapshot(b);
+        ((com.fasterxml.jackson.databind.node.ArrayNode) middle.path("dataModel").path("externalLinks")).add(binding(a, "A.xlsx"));
+        catalog.create(new CreateWorkbookRequest(b, "Range access", middle), owner);
+        ObjectNode target = (ObjectNode) snapshot(c);
+        ((com.fasterxml.jackson.databind.node.ArrayNode) target.path("dataModel").path("externalLinks")).add(binding(b, "B.xlsx"));
+        catalog.create(new CreateWorkbookRequest(c, "Range access", target), owner);
+        JsonNode graph = operations.readExternalCalculationGraph(c, owner, List.of());
+        assertEquals(3, graph.path("nodes").size());
+        for (String id : List.of(a, b, c)) { assertEquals("connected", node(graph, id).path("state").asText()); assertEquals(0, node(graph, id).path("revision").asLong()); }
+        JsonNode preimage = operations.readSnapshot(a, owner).snapshot();
+        ServiceException preflight = assertThrows(ServiceException.class, () -> operations.validateExternalBinding(a, binding(c, "C.xlsx"), owner, List.of()));
+        assertEquals("CIRCULAR_DEPENDENCY", preflight.code());
+        ObjectNode params = mapper.createObjectNode(); params.set("link", binding(c, "C.xlsx"));
+        var operation = new OperationEnvelope("graph-client", OperationEnvelope.SCHEMA, "graph-cycle-rejected", a, 1, 0,
+                List.of(new OperationMutation("externalLink.set", "sheet-1", params)), Instant.now());
+        ServiceException forged = assertThrows(ServiceException.class, () -> operations.commit(a, operation, owner));
+        assertEquals("CIRCULAR_DEPENDENCY", forged.code());
+        assertEquals(preimage, operations.readSnapshot(a, owner).snapshot());
+        for (String id : List.of(a, b, c)) assertEquals(0, operations.readSnapshot(id, owner).revision());
+        assertThrows(ServiceException.class, () -> operations.operationResult(a, operation.operationId(), owner));
+    }
+
+    private JsonNode binding(String source, String token) throws Exception {
+        return mapper.readTree("{\"id\":\"" + token + "\",\"token\":\"" + token + "\",\"sourceUnitId\":\"" + source
+                + "\",\"sheets\":[{\"token\":\"Sheet1\",\"sheetId\":\"sheet-1\"}]}");
+    }
+
+    @Test
+    void concurrentOppositeBindingsCommitOnlyOneDirectionAndKeepRejectedHistoryEmpty() throws Exception {
+        String owner = "concurrent-graph-owner", a = "concurrent-graph-a", b = "concurrent-graph-b";
+        catalog.create(new CreateWorkbookRequest(a, "Range access", snapshot(a)), owner);
+        catalog.create(new CreateWorkbookRequest(b, "Range access", snapshot(b)), owner);
+        var start = new java.util.concurrent.CountDownLatch(1);
+        try (var executor = java.util.concurrent.Executors.newFixedThreadPool(2)) {
+            var results = new java.util.ArrayList<java.util.concurrent.Future<String>>();
+            for (String target : List.of(a, b)) {
+                ObjectNode params = mapper.createObjectNode(); params.set("link", binding(target.equals(a) ? b : a, target + ".xlsx"));
+                var operation = new OperationEnvelope("concurrent-client-" + target, OperationEnvelope.SCHEMA, "concurrent-bind-" + target,
+                        target, 1, 0, List.of(new OperationMutation("externalLink.set", "sheet-1", params)), Instant.now());
+                results.add(executor.submit(() -> {
+                    if (!start.await(10, java.util.concurrent.TimeUnit.SECONDS)) throw new AssertionError("Concurrent start did not arrive");
+                    try { operations.commit(target, operation, owner); return "COMMITTED"; }
+                    catch (ServiceException error) { return error.code(); }
+                }));
+            }
+            start.countDown();
+            String first = results.get(0).get(30, java.util.concurrent.TimeUnit.SECONDS), second = results.get(1).get(30, java.util.concurrent.TimeUnit.SECONDS);
+            assertEquals(1, java.util.stream.Stream.of(first, second).filter("COMMITTED"::equals).count());
+            assertEquals(1, java.util.stream.Stream.of(first, second).filter("CIRCULAR_DEPENDENCY"::equals).count());
+            String accepted = first.equals("COMMITTED") ? a : b, rejected = accepted.equals(a) ? b : a;
+            assertEquals(1, operations.readSnapshot(accepted, owner).revision());
+            assertEquals(0, operations.readSnapshot(rejected, owner).revision());
+            assertTrue(operations.readSnapshot(rejected, owner).snapshot().path("dataModel").path("externalLinks").isEmpty());
+            assertThrows(ServiceException.class, () -> operations.operationResult(rejected, "concurrent-bind-" + rejected, owner));
+            assertEquals(2, operations.readExternalCalculationGraph(accepted, owner, List.of()).path("nodes").size());
+        }
+    }
+
+    private JsonNode node(JsonNode graph, String id) {
+        for (JsonNode node : graph.path("nodes")) if (node.path("unitId").asText().equals(id)) return node;
+        throw new AssertionError("Missing calculation node " + id);
+    }
+
+    @Test
+    void graphDiscardsAnUnlockedCachedEntityBeforeCapturingTheCommittedSourceVersion() throws Exception {
+        String owner = "cached-graph-owner", source = "cached-graph-source", target = "cached-graph-target";
+        catalog.create(new CreateWorkbookRequest(source, "Range access", snapshot(source)), owner);
+        ObjectNode root = (ObjectNode) snapshot(target);
+        ((com.fasterxml.jackson.databind.node.ArrayNode) root.path("dataModel").path("externalLinks")).add(binding(source, "Source.xlsx"));
+        catalog.create(new CreateWorkbookRequest(target, "Range access", root), owner);
+        ObjectNode params = mapper.createObjectNode().put("row", 0).put("column", 0); params.putObject("value").put("value", 40);
+        ObjectNode authority = params.putObject("writeAuthority").put("kind", "script");
+        authority.putObject("target").put("sheetId", "sheet-1").put("row", 0).put("column", 0);
+        authority.set("candidate", params.path("value").deepCopy()); authority.putObject("validationDecision").put("status", "accepted");
+        var write = new OperationEnvelope("cached-client", OperationEnvelope.SCHEMA, "cached-source-write", source, 1, 0,
+                List.of(new OperationMutation("cell.set", "sheet-1", params)), Instant.now());
+        try (var writer = java.util.concurrent.Executors.newSingleThreadExecutor()) {
+            new org.springframework.transaction.support.TransactionTemplate(transactionManager).executeWithoutResult(transaction -> {
+                assertEquals(0, store.find(source).orElseThrow().revision());
+                try { writer.submit(() -> operations.commit(source, write, owner)).get(15, java.util.concurrent.TimeUnit.SECONDS); }
+                catch (Exception error) { throw new AssertionError("Independent source write failed", error); }
+                JsonNode committed = node(operations.readExternalCalculationGraph(target, owner, List.of()), source);
+                assertEquals(1, committed.path("revision").asLong());
+                assertEquals(40, committed.path("snapshot").path("sheets").get(0).path("cells").path("0").path("0").path("value").asInt());
+            });
+        }
+    }
+
+    @Test
+    void historyRestoreRevalidatesCurrentTopologyAndLifecycleSourcesNeverExposeSnapshots() throws Exception {
+        String owner = "restore-graph-owner", a = "restore-graph-a", b = "restore-graph-b";
+        catalog.create(new CreateWorkbookRequest(a, "Range access", snapshot(a)), owner);
+        catalog.create(new CreateWorkbookRequest(b, "Range access", snapshot(b)), owner);
+        ObjectNode set = mapper.createObjectNode(); set.set("link", binding(b, "B.xlsx"));
+        operations.commit(a, new OperationEnvelope("restore-client", OperationEnvelope.SCHEMA, "restore-a-bind", a, 1, 0,
+                List.of(new OperationMutation("externalLink.set", "sheet-1", set)), Instant.now()), owner);
+        operations.commit(a, new OperationEnvelope("restore-client", OperationEnvelope.SCHEMA, "restore-a-unbind", a, 2, 1,
+                List.of(new OperationMutation("externalLink.remove", "sheet-1", mapper.createObjectNode().put("linkId", "B.xlsx"))), Instant.now()), owner);
+        ObjectNode opposite = mapper.createObjectNode(); opposite.set("link", binding(a, "A.xlsx"));
+        operations.commit(b, new OperationEnvelope("restore-client", OperationEnvelope.SCHEMA, "restore-b-bind", b, 1, 0,
+                List.of(new OperationMutation("externalLink.set", "sheet-1", opposite)), Instant.now()), owner);
+        JsonNode before = operations.readSnapshot(a, owner).snapshot();
+        ServiceException error = assertThrows(ServiceException.class, () -> operations.restore(a, new com.xc.luckysheet.server.contract.RestoreRequest(1, "Circular historical binding"), owner));
+        assertEquals("CIRCULAR_DEPENDENCY", error.code()); assertEquals(2, operations.readSnapshot(a, owner).revision());
+        assertEquals(before, operations.readSnapshot(a, owner).snapshot());
+        catalog.moveToTrash(a, owner);
+        JsonNode trashed = node(operations.readExternalCalculationGraph(b, owner, List.of()), a);
+        assertEquals("broken", trashed.path("state").asText()); assertFalse(trashed.has("snapshot"));
+        catalog.restoreFromTrash(a, owner);
+        assertEquals("connected", node(operations.readExternalCalculationGraph(b, owner, List.of()), a).path("state").asText());
+        catalog.moveToTrash(a, owner); catalog.purge(a, owner);
+        JsonNode purged = node(operations.readExternalCalculationGraph(b, owner, List.of()), a);
+        assertEquals("broken", purged.path("state").asText()); assertFalse(purged.has("snapshot"));
     }
 
     private JsonNode snapshot(String unitId) throws Exception {

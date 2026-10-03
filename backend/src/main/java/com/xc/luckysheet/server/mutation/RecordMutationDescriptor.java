@@ -8,7 +8,7 @@ import java.util.*;
 
 final class RecordMutationDescriptor extends CanonicalJsonMutationDescriptor {
     static final Set<String> IDS = Set.of("table.configure", "relationship.set", "relationship.remove", "record.set", "record.restore");
-    RecordMutationDescriptor(String id) { super(id, WorkbookAclRole.EDITOR); }
+    RecordMutationDescriptor(String id) { super(id, WorkbookRole.EDITOR); }
     public List<RangeRef> affectedRanges(JsonNode snapshot, OperationMutation mutation) {
         ObjectNode params = SnapshotMutationSupport.params(mutation);
         if (id().equals("record.set") || id().equals("record.restore")) {

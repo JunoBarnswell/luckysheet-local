@@ -11,7 +11,7 @@ public final class GeneratedWorkbookContract {
     public static final int MAX_WORKBOOK_NAME_LENGTH = 255;
     public static final int MAX_DRAWING_SOURCE_CELLS = 100000;
     public static final int MAX_CHANGED_CELLS = 100000;
-    public static final Set<String> ERROR_CODES = Set.of("UNAUTHENTICATED", "FORBIDDEN", "VALIDATION_ERROR", "NOT_FOUND", "CONFLICT", "OPERATION_ID_REUSED", "ARTIFACT_REVISION_CONFLICT", "WORKBOOK_TRASHED", "TIMEOUT", "SERVICE_UNAVAILABLE", "INTERNAL_ERROR", "STORAGE_CORRUPT", "UNSUPPORTED_FEATURE", "ACCESS_DENIED", "ACCESS_REGION_OVERLAP", "ACCESS_REGION_NOT_FOUND", "ACCESS_REVISION_CHANGED", "ACCESS_PRINCIPAL_INVALID", "ACCESS_HIDDEN");
+    public static final Set<String> ERROR_CODES = Set.of("UNAUTHENTICATED", "FORBIDDEN", "VALIDATION_ERROR", "NOT_FOUND", "CONFLICT", "OPERATION_ID_REUSED", "ARTIFACT_REVISION_CONFLICT", "WORKBOOK_TRASHED", "TIMEOUT", "SERVICE_UNAVAILABLE", "INTERNAL_ERROR", "STORAGE_CORRUPT", "UNSUPPORTED_FEATURE", "CIRCULAR_DEPENDENCY", "EXTERNAL_GRAPH_CHANGED", "ACCESS_DENIED", "ACCESS_REGION_OVERLAP", "ACCESS_REGION_NOT_FOUND", "ACCESS_REVISION_CHANGED", "ACCESS_PRINCIPAL_INVALID", "ACCESS_HIDDEN");
     public static final Set<String> SERVER_STRUCTURAL_PLANNER_MUTATIONS = Set.of(
         "rows.inserted",
         "rows.deleted",
@@ -61,6 +61,7 @@ public final class GeneratedWorkbookContract {
         "sheetTable.update"
     );
     public static final Map<String, MutationCapability> MUTATIONS = Map.ofEntries(
+        Map.entry("name.restore", new MutationCapability("remote", true, "DefinedNameRestore", "editor", "exact", true, "none", false, "none", "workbook")),
         Map.entry("cell.set", new MutationCapability("remote", true, "CellSet", "editor", "range", true, "edit-cell", true, "declared", "range")),
         Map.entry("workbook.editing.options.set", new MutationCapability("remote", true, "WorkbookEditingOptions", "editor", "exact", true, "none", false, "none", "workbook")),
         Map.entry("sheet.extent.grow", new MutationCapability("remote", true, "SheetExtentGrow", "editor", "exact", true, "none", false, "none", "worksheet")),
@@ -170,6 +171,7 @@ public final class GeneratedWorkbookContract {
         Map.entry("hyperlink.set", new PermissionPolicy("edit-cell", "edit-cell", true, "declared", "range")),
         Map.entry("merge.remove", new PermissionPolicy("format", "format", true, "declared", "range")),
         Map.entry("merge.set", new PermissionPolicy("format", "format", true, "declared", "range")),
+        Map.entry("name.restore", new PermissionPolicy("format", "none", false, "none", "workbook")),
         Map.entry("name.remove", new PermissionPolicy("format", "none", false, "none", "workbook")),
         Map.entry("name.set", new PermissionPolicy("format", "none", false, "none", "workbook")),
         Map.entry("workbook.calculation.mode.set", new PermissionPolicy("format", "none", false, "none", "workbook")),

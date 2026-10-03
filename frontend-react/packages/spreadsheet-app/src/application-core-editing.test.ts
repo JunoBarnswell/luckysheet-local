@@ -62,13 +62,15 @@ describe('WorkbookSession core editing integration', () => {
     assert.equal(sheet.rowHeightsPx[1], 42);
 
     app.undo();
-    assert.equal(sheet.rowHeightsPx[0], defaultHeight);
-    assert.equal(sheet.rowHeightsPx[1], defaultHeight);
+    assert.equal(sheet.rowHeightsPx[0], undefined);
+    assert.equal(sheet.rowHeightsPx[0] ?? sheet.defaultRowHeightPx, defaultHeight);
+    assert.equal(sheet.rowHeightsPx[1], undefined);
     assert.equal(sheet.columnWidthsPx[0], 140);
     assert.equal(sheet.columnWidthsPx[1], 160);
     app.undo();
-    assert.equal(sheet.columnWidthsPx[0], defaultWidth);
-    assert.equal(sheet.columnWidthsPx[1], defaultWidth);
+    assert.equal(sheet.columnWidthsPx[0], undefined);
+    assert.equal(sheet.columnWidthsPx[0] ?? sheet.defaultColumnWidthPx, defaultWidth);
+    assert.equal(sheet.columnWidthsPx[1], undefined);
     assert.equal(sheet.defaultColumnWidthPx, defaultWidth);
     assert.equal(sheet.defaultRowHeightPx, defaultHeight);
 
@@ -89,7 +91,8 @@ describe('WorkbookSession core editing integration', () => {
     app.resizeRows([1, 2], 36);
     assert.deepEqual([sheet.rowHeightsPx[1], sheet.rowHeightsPx[2]], [36, 36]);
     app.undo();
-    assert.deepEqual([sheet.rowHeightsPx[1], sheet.rowHeightsPx[2]], [defaultHeight, defaultHeight]);
+    assert.deepEqual([sheet.rowHeightsPx[1], sheet.rowHeightsPx[2]], [undefined, undefined]);
+    assert.equal(sheet.defaultRowHeightPx, defaultHeight);
     app.redo();
 
     app.setRowsHidden([1, 2], true);

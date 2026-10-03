@@ -18,6 +18,11 @@ export interface FormulaError {
   readonly code: FormulaErrorCode;
   readonly message: string;
   readonly position?: number;
+  /** A failed input prerequisite cannot be converted into an ordinary cell result. */
+  readonly inputFault?: Readonly<{
+    reason: 'access-denied' | 'source-unavailable' | 'source-missing' | 'runtime-unavailable';
+    source: string;
+  }>;
 }
 
 /**

@@ -1,3 +1,5 @@
+import { isFormulaError as isCanonicalFormulaError } from '@react-sheets/core-model';
+import type { WorkbookRole } from '@react-sheets/protocol';
 import { buildCellFromText } from '@react-sheets/sheet-features';
 import { refreshExternalLinks } from './features/linked-data/external-link-host';
 import type {
@@ -136,6 +138,7 @@ import {
   type FormatPainterStylePattern,
   isCellEntryError,
   preflightDataToolCommand,
+  MAX_OBJECT_RANGE_CELLS,
 } from '@react-sheets/sheet-features';
 import { compareWorkbookValues, isSpillChild, type CanonicalExcelDateParts, type ExcelDateSystem, type RecalculationMode } from '@react-sheets/formula-engine';
 import {
@@ -166,7 +169,7 @@ import {
   buildCollaborationSnapshot,
   type CollaborationSnapshot,
 } from './collaboration';
-import { PermissionService, type PermissionCapabilities, type ShareRole } from './permission-service';
+import { PermissionService, type PermissionCapabilities } from './permission-service';
 import {
   canExecuteCommand,
   findProtectionRuleCoveringRange,
@@ -356,7 +359,7 @@ import type {
   ChartElementSelection,
 } from './types';
 import type { FindReplaceParams } from './features/find-replace/commands';
-import type { AssetStore } from './features/persistence';
+import { AssetReferenceError, type AssetStore } from './features/persistence';
 import type { WorkbookResolution } from './features/workbook-catalog';
 import type { RangeDragMode } from './features/editing/range-drag';
 import { ProjectionRuntime } from './features/projection/projection-runtime';
@@ -385,7 +388,7 @@ export interface WorkbookSessionOptions {
   pivotExecution?: 'worker' | 'inline-test';
 }
 
-export type DispatchErrorCode = 'WORKBOOK_NOT_READY' | 'COMMAND_REJECTED' | 'MATERIALIZATION_FAILED';
+export type DispatchErrorCode = 'WORKBOOK_NOT_READY' | 'COMMAND_REJECTED' | 'MATERIALIZATION_FAILED' | 'PERMISSION_DENIED';
 
 export class CommandDispatchError extends Error {
   constructor(
@@ -464,7 +467,7 @@ export interface UiSnapshot extends DesignerState {
   pendingCommandCount: number;
   offlineQueueState: string;
   actorId: string;
-  shareRole: ShareRole | null;
+  shareRole: WorkbookRole | null;
   permissions: PermissionCapabilities;
   accessRevision: number;
   effectiveAccessRegions: readonly import('@react-sheets/protocol').EffectiveAccessRegion[];
@@ -623,6 +626,7 @@ export interface DefinedNameCommandInput {
   formula: string;
   scope?: DefinedNameModel['scope'];
   sheetId?: string;
+  anchor?: DefinedNameModel['anchor'];
   hidden?: boolean;
   comment?: string;
 }
@@ -737,6 +741,8 @@ export interface LocalObjectInsertInput {
   relationship?: EmbeddedObjectDrawingPayload['relationship'];
 }
 
+import { registerWorkbookObjectPort, type WorkbookCellRead } from './workbook-object-port';
+
 export class WorkbookSession {
   private readonly runtime: SpreadsheetRuntime;
   private readonly cellResolver: WorkbookCellResolver;
@@ -755,6 +761,7 @@ export class WorkbookSession {
     dispatch: (intent) => this.dispatchCellEditIntent(intent),
   };
   private readonly listeners = new Set<() => void>();
+  private readonly disposedListeners = new Set<() => void>();
   private readonly actorId: string;
   private readonly nativeDocumentExecution: 'worker' | 'inline-test';
   private readonly onReady?: () => void | Promise<unknown>;
@@ -939,6 +946,89 @@ export class WorkbookSession {
     this.rebuildFormulaAutocompleteIndex();
     this.wireRuntimeHandlers();
     this.syncPersistenceMeta();
+    registerWorkbookObjectPort(this, {
+      unitId: this.runtime.model.unitId,
+      state: () => ({ phase: this.phase, notice: this.notice, name: this.runtime.model.name, disposed: this.disposed || this.runtime.disposed }),
+      subscribeDisposed: (listener) => { this.disposedListeners.add(listener); return () => this.disposedListeners.delete(listener); },
+      sheets: () => this.runtime.model.getSheets().map(({ id, name, kind, rowCount, columnCount, hidden, pane }) => ({ id, name, kind, rowCount, columnCount, hidden, pane: structuredClone(pane) })),
+      readDefinedNames: () => {
+        if (this.disposed || this.runtime.disposed || this.phase !== 'ready') throw new CommandDispatchError('WORKBOOK_NOT_READY', 'Workbook is not ready');
+        return structuredClone(this.runtime.model.definedNameModels);
+      },
+      readWorksheet: (sheetId) => {
+        if (this.disposed || this.runtime.disposed || this.phase !== 'ready') throw new CommandDispatchError('WORKBOOK_NOT_READY', 'Workbook is not ready');
+        const sheet = this.runtime.model.getSheet(sheetId);
+        return structuredClone({ id: sheet.id, name: sheet.name, kind: sheet.kind, rowCount: sheet.rowCount, columnCount: sheet.columnCount, hidden: sheet.hidden,
+          pane: sheet.pane, defaultRowHeightPx: sheet.defaultRowHeightPx, defaultColumnWidthPx: sheet.defaultColumnWidthPx,
+          rowHeightsPx: sheet.rowHeightsPx, columnWidthsPx: sheet.columnWidthsPx, hiddenRows: [...sheet.hiddenRows], hiddenColumns: [...sheet.hiddenColumns], merges: sheet.merges, protectionRules: sheet.protectionRules });
+      },
+      readCell: async (sheetId, row, column) => (await this.readObjectCells({ sheetId, startRow: row, endRow: row, startColumn: column, endColumn: column }))[0]!,
+      readCells: (range) => this.readObjectCells(range),
+      history: (direction) => this.replayObjectHistory(direction),
+      dispatch: (descriptor) => this.dispatch(descriptor),
+      subscribe: this.subscribe,
+      flush: () => this.flushPendingChanges(),
+      save: () => this.saveWorkbook(),
+      bindExternalLink: (binding) => this.bindExternalLink(binding),
+      refreshExternalLinks: () => this.refreshWorkbookExternalLinks(),
+    });
+  }
+
+  /** One authorized, calculated range read; no data escapes before all sources pass. */
+  private async readObjectCells(range: RangeRef): Promise<readonly WorkbookCellRead[]> {
+    if (![range.startRow, range.endRow, range.startColumn, range.endColumn].every(Number.isSafeInteger)
+      || range.startRow < 0 || range.startColumn < 0 || range.endRow < range.startRow || range.endColumn < range.startColumn
+      || range.endRow >= MAX_SHEET_ROW_COUNT || range.endColumn >= MAX_SHEET_COLUMN_COUNT
+      || (range.endRow - range.startRow + 1) * (range.endColumn - range.startColumn + 1) > MAX_OBJECT_RANGE_CELLS) throw new CommandDispatchError('COMMAND_REJECTED', 'Object range exceeds the canonical bounds or cell budget');
+    const authorize = () => {
+      if (this.disposed || this.runtime.disposed) throw new Error('WORKBOOK_DISPOSED: 工作簿已关闭');
+      if (this.phase !== 'ready') throw new CommandDispatchError('WORKBOOK_NOT_READY', 'Workbook is not ready');
+      this.permission.syncFromWorkbook(this.runtime.model);
+      const result = this.permission.canSelectRange(range);
+      if (!result.allowed) throw new CommandDispatchError('PERMISSION_DENIED', result.reason ?? 'Range is hidden');
+    };
+    const resolve = (row: number, column: number) => {
+      const resolved = this.readWorkbookViewCell(this.runtime.model.getSheet(range.sheetId), row, column);
+      const access = this.permission.canSelectRange({ sheetId: resolved.owner.id, startRow: resolved.row, endRow: resolved.row, startColumn: resolved.column, endColumn: resolved.column });
+      if (!access.allowed) throw new CommandDispatchError('PERMISSION_DENIED', access.reason ?? 'Source cell is hidden');
+      return resolved;
+    };
+    authorize();
+    const pending: Array<() => Promise<void>> = [], initial: ReturnType<typeof resolve>[] = [];
+    for (let row = range.startRow; row <= range.endRow; row++) for (let column = range.startColumn; column <= range.endColumn; column++) initial.push(resolve(row, column));
+    for (const resolved of initial) {
+      const source = this.cellResolver.resolve(resolved.owner, resolved.row, resolved.column);
+      if (source?.region && source.state?.availability !== 'ready' && resolved.row !== source.region.headerRow) {
+        const region = source.region, query = this.runtime.dataContent.get(region.sourceId);
+        if (!query) throw new Error(`DATA_CONTENT_UNAVAILABLE: ${region.sourceId}`);
+        pending.push(() => query.getCellValue(resolved.row - region.range.startRow - (region.headerRow === undefined ? 0 : 1), resolved.column - region.range.startColumn).then(loaded => {
+          if (loaded.state.availability !== 'ready') throw new Error(`DATA_CONTENT_UNAVAILABLE: ${loaded.state.error ?? region.sourceId}`);
+        }));
+      }
+    }
+    await Promise.all(pending.map(load => load()));
+    if (this.runtime.model.dataModel.externalLinks.size) await refreshExternalLinks(this.runtime);
+    await this.waitForFormulaCalculation();
+    authorize();
+    const output: WorkbookCellRead[] = [];
+    for (let row = range.startRow; row <= range.endRow; row++) for (let column = range.startColumn; column <= range.endColumn; column++) {
+      const resolved = resolve(row, column), source = this.cellResolver.resolve(resolved.owner, resolved.row, resolved.column);
+      if (source?.region && source.state?.availability !== 'ready' && resolved.row !== source.region.headerRow) throw new Error(`DATA_CONTENT_UNAVAILABLE: ${source.region.sourceId}`);
+      const cell = resolved.cell ? structuredClone(resolved.cell) : undefined;
+      const formulaHidden = protectionResolver.isFormulaHidden(resolved.owner.protectionRules, resolved.owner.id, resolved.row, resolved.column, cell?.style);
+      const result = this.runtime.formula.getCellResult({ sheetId: resolved.owner.id, row: resolved.row, column: resolved.column });
+      const spill = this.runtime.formula.getSpillValueAt(resolved.owner.id, resolved.row, resolved.column);
+      const calculatedValue = spill !== undefined ? spill : result !== undefined ? result.value : cell?.formulaValue !== undefined ? cell.formulaValue : cell?.value ?? null;
+      if (calculatedValue !== null && typeof calculatedValue !== 'string' && typeof calculatedValue !== 'boolean'
+        && !(typeof calculatedValue === 'number' && Number.isFinite(calculatedValue)) && !isCanonicalFormulaError(calculatedValue)) throw new Error('CALCULATION_CELL_VALUE_INVALID: Object reads require canonical scalars or formula errors');
+      if (cell?.formula && result === undefined && cell.formulaValue === undefined) throw new Error('CALCULATION_RESULT_UNAVAILABLE: explicit calculation is required');
+      if (cell && formulaHidden) { delete cell.formula; delete cell.formulaMetadata; }
+      output.push({ sheetId: resolved.owner.id, row: resolved.row, column: resolved.column, cell,
+        calculatedValue: structuredClone(calculatedValue) as import('@react-sheets/core-model').FormulaValue,
+        writable: resolved.writable, formulaHidden, recordField: resolved.recordField,
+        inputContext: this.createInputContext('script-text', resolved.cell) });
+    }
+    return output;
   }
 
   private ensureActiveSheetSession(): void {
@@ -1157,6 +1247,11 @@ export class WorkbookSession {
       }
       this.emit();
     };
+    this.runtime.handlers.onWorkbookLifecycle = (lifecycle) => {
+      if (lifecycle === 'active') return;
+      this.notice = lifecycle === 'trashed' ? 'Workbook moved to trash' : 'Workbook permanently removed';
+      this.dispose();
+    };
     this.runtime.handlers.onPeersChange = (peer) => {
       if (peer.length === 0) {
         this.peers = [];
@@ -1224,6 +1319,7 @@ export class WorkbookSession {
     if (!this.started && this.disposed) return;
     this.formatPainter = null;
     this.disposed = true;
+    this.phase = 'error';
     this.started = false;
     this.pendingActiveSheetDerivedState = null;
     this.lifecycleGeneration += 1;
@@ -1252,6 +1348,9 @@ export class WorkbookSession {
     disposeSpreadsheetRuntime(this.runtime);
     this.projection.invalidateAllSheetProjections();
     this.cachedUiSnapshot = null;
+    for (const listener of [...this.disposedListeners]) listener();
+    this.disposedListeners.clear();
+    for (const listener of [...this.listeners]) listener();
   }
 
   subscribe = (listener: () => void): (() => void) => {
@@ -2386,7 +2485,7 @@ export class WorkbookSession {
     ).allowed;
   }
 
-  getShareRole(): ShareRole | null {
+  getShareRole(): WorkbookRole | null {
     return this.permission.getShareRole();
   }
 
@@ -2419,7 +2518,7 @@ export class WorkbookSession {
     this.permission.syncFromWorkbook(this.runtime.model);
     const result = this.permission.checkCommand(commandId, params, this.actorId, this.activeSheetId);
     if (!result.allowed) {
-      throw new Error(result.reason ?? 'Permission denied');
+      throw new CommandDispatchError('PERMISSION_DENIED', result.reason ?? 'Permission denied');
     }
   }
 
@@ -2871,11 +2970,18 @@ export class WorkbookSession {
   /** Commit edits before exporting without rewriting the original native format. */
   async flushPendingChanges(): Promise<void> {
     if (!this.canExecute('document.export')) throw new Error('You do not have permission to export the document');
+    await this.awaitCommittedChanges();
+  }
+
+  /** One commit barrier for native export and first asset reads. */
+  private async awaitCommittedChanges(): Promise<void> {
+    if (this.runtime.disposed) throw new Error('WORKBOOK_DISPOSED: 工作簿已关闭');
     if (this.runtime.localOnly || !this.runtime.remoteSyncRequested) return;
-    if (!this.runtime.remoteConnected) throw new Error('COLLABORATION_OFFLINE: 连接中断，草稿已保留；恢复连接后才能保存或导出');
+    if (!this.runtime.remoteConnected || !this.runtime.collaboration) throw new Error('COLLABORATION_OFFLINE: 连接中断，草稿已保留；恢复连接后才能保存或读取资产');
+    await this.runtime.recoveryJournal?.flushed();
     const result = await this.runtime.collaboration?.offlineQueue.flushAll();
     if (result && (result.failed > 0 || this.runtime.collaboration?.offlineQueue.getPendingCount())) {
-      throw new Error('Pending changes could not be committed before exporting');
+      throw new Error('Pending changes could not be committed');
     }
   }
 
@@ -2956,53 +3062,27 @@ export class WorkbookSession {
     return true;
   }
 
-  undo(): void {
-    const entry = this.runtime.commands.getUndoEntries().at(-1);
-    const hasStructuralMutation = entry?.forwardMutations.some((mutation) => (
-      mutation.id === 'rows.inserted' || mutation.id === 'rows.deleted'
-      || mutation.id === 'columns.inserted' || mutation.id === 'columns.deleted'
-      || mutation.id === 'cells.inserted' || mutation.id === 'cells.deleted'
-    )) ?? false;
-    if (entry?.committedRevision !== undefined
-      && this.runtime.collaboration
-      && hasStructuralMutation
-      && entry.committedRevision !== this.runtime.collaboration.getRevision()) {
-      this.notify('Structural Undo is no longer safe after a later workbook revision');
-      return;
-    }
-    if (entry && !this.canReplayHistory(entry.inversePlan)) {
-      this.notify('Undo is no longer allowed for the protected selection');
-      return;
-    }
+  private replayObjectHistory(direction: 'undo' | 'redo'): boolean {
+    if (this.disposed || this.runtime.disposed || this.phase !== 'ready') throw new CommandDispatchError('WORKBOOK_NOT_READY', 'Workbook is not ready for history replay');
+    this.permission.syncFromWorkbook(this.runtime.model);
+    const entry = (direction === 'undo' ? this.runtime.commands.getUndoEntries() : this.runtime.commands.getRedoEntries()).at(-1);
+    if (!entry) return false;
+    const structural = entry.forwardMutations.some(mutation => ['rows.inserted', 'rows.deleted', 'columns.inserted', 'columns.deleted', 'cells.inserted', 'cells.deleted'].includes(mutation.id));
+    if (entry.committedRevision !== undefined && this.runtime.collaboration && structural && entry.committedRevision !== this.runtime.collaboration.getRevision()) throw Object.assign(new Error('Structural history is no longer safe after a later workbook revision'), { code: 'STALE_OPERATION' });
+    if (!this.canReplayHistory(direction === 'undo' ? entry.inversePlan : entry.forwardMutations)) throw new CommandDispatchError('PERMISSION_DENIED', 'History replay is no longer permitted');
     try {
-      if (this.runtime.commands.undo()) {
-        this.ensureActiveSheetSession();
-        this.reconcileDrawingSessionState();
-        this.syncDraftFromPrimary();
-        this.notify('Undo applied');
-        this.refresh();
-      }
-    } catch (error) {
-      if (!this.handleMutationRecovery(error)) throw error;
-    }
+      const applied = direction === 'undo' ? this.runtime.commands.undo() : this.runtime.commands.redo();
+      if (applied) { this.ensureActiveSheetSession(); this.reconcileDrawingSessionState(); this.syncDraftFromPrimary(); this.notify(direction === 'undo' ? 'Undo applied' : 'Redo applied'); this.refresh(); }
+      return applied;
+    } catch (error) { this.handleMutationRecovery(error); throw error; }
   }
-
-  redo(): void {
-    const entry = this.runtime.commands.getRedoEntries().at(-1);
-    if (entry && !this.canReplayHistory(entry.forwardMutations)) {
-      this.notify('Redo is no longer allowed for the protected selection');
-      return;
-    }
-    try {
-      if (this.runtime.commands.redo()) {
-        this.ensureActiveSheetSession();
-        this.reconcileDrawingSessionState();
-        this.syncDraftFromPrimary();
-        this.notify('Redo applied');
-        this.refresh();
-      }
-    } catch (error) {
-      if (!this.handleMutationRecovery(error)) throw error;
+  undo(): void { this.replayUiHistory('undo'); }
+  redo(): void { this.replayUiHistory('redo'); }
+  private replayUiHistory(direction: 'undo' | 'redo'): void {
+    try { this.replayObjectHistory(direction); }
+    catch (error) {
+      if (error instanceof CommandDispatchError || error instanceof Error && 'code' in error && error.code === 'STALE_OPERATION') this.notify(error.message);
+      else if (!this.handleMutationRecovery(error)) throw error;
     }
   }
 
@@ -4212,6 +4292,7 @@ export class WorkbookSession {
       formula: input.formula,
       scope,
       ...(sheetId === undefined ? {} : { sheetId }),
+      ...(input.anchor === undefined ? {} : { anchor: structuredClone(input.anchor) }),
       ...(input.hidden === undefined ? {} : { hidden: input.hidden }),
       ...(input.comment === undefined ? {} : { comment: input.comment }),
     });
@@ -4471,6 +4552,7 @@ export class WorkbookSession {
       if (existing.sourceUnitId !== link.sourceUnitId) throw new Error('EXTERNAL_LINK_TOKEN_CONFLICT: link token already owns another source workbook');
       link = { ...existing, sheets: [...existing.sheets.filter(sheet => !link.sheets.some(next => next.token.toUpperCase() === sheet.token.toUpperCase())), ...link.sheets] };
     }
+    await this.runtime.api.validateExternalLinkBinding(this.runtime.model.unitId, link);
     this.runCommand('externalLink.set', { link });
     await this.flushPendingChanges();
     await refreshExternalLinks(this.runtime);
@@ -5900,7 +5982,10 @@ export class WorkbookSession {
     const existing = this.assetUrls.get(asset.assetId);
     if (existing) return existing;
     if (typeof URL === 'undefined' || typeof URL.createObjectURL !== 'function') throw new Error(`ASSET_URL_UNAVAILABLE: ${asset.assetId}`);
+    try { await this.awaitCommittedChanges(); }
+    catch (cause) { throw new AssetReferenceError(this.runtime.model.unitId, asset.assetId, cause); }
     const blob = await this.runtime.assetStore.get(asset);
+    if (this.runtime.disposed) throw new AssetReferenceError(this.runtime.model.unitId, asset.assetId, new Error('WORKBOOK_DISPOSED'));
     const url = URL.createObjectURL(blob);
     this.assetUrls.set(asset.assetId, url);
     return url;
@@ -6229,47 +6314,7 @@ export class WorkbookSession {
     this.dispatch({ commandId: 'sheet.autoFilter.sort', params: { sheetId: this.activeSheetId, column, ascending, dataRegionContext } });
   }
 
-  applyFilterSelection(): void {
-    const sheet = this.runtime.model.getSheet(this.activeSheetId);
-    const activeFilter = resolveActiveAutoFilter(sheet);
-    const owner = resolveFilterOwner(sheet);
-    if (activeFilter && owner) {
-      if (owner.kind === 'table') {
-        const table = sheet.sheetTables.find((entry) => entry.id === owner.tableId);
-        if (table) this.dispatch({ commandId: 'sheetTable.update', params: { ...structuredClone(table), showFilterButton: false, autoFilter: undefined } });
-      }
-      else this.dispatch({ commandId: 'sheet.autoFilter.toggle', params: { sheetId: this.activeSheetId, range: this.getCurrentRegion(), dataRegionContext: this.getDataRegionContext() } });
-      return;
-    }
-    const range = this.getCurrentRegion();
-    if (range.endRow <= range.startRow) {
-      this.notify('Select a data region with a header row before enabling Filter');
-      return;
-    }
-    this.dispatch({ commandId: 'sheet.autoFilter.toggle', params: {
-      sheetId: this.activeSheetId,
-      range,
-      dataRegionContext: this.getDataRegionContext(),
-    } });
-  }
 
-  clearFilter(): void {
-    const sheet = this.runtime.model.getSheet(this.activeSheetId);
-    const autoFilter = resolveActiveAutoFilter(sheet);
-    const owner = resolveFilterOwner(sheet);
-    if (!autoFilter || !owner) {
-      this.notify('No filter is active in the current region');
-      return;
-    }
-    if (!Object.values(autoFilter.columns).some((column) => Boolean(column.criterion))) {
-      this.notify('No filter criteria are active in the current region');
-      return;
-    }
-    const columns = Object.fromEntries(Object.entries(autoFilter.columns).map(([key, value]) => [key, { ...value, criterion: undefined }]));
-    const dataRegionContext = { ...this.getDataRegionContext(), range: structuredClone(autoFilter.range), currentRegion: structuredClone(autoFilter.range) };
-    if (owner.kind === 'table') this.dispatch({ commandId: 'sheetTable.autoFilter.set', params: { sheetId: this.activeSheetId, tableId: owner.tableId, autoFilter: { ...autoFilter, columns }, dataRegionContext } });
-    else this.dispatch({ commandId: 'sheet.autoFilter.clearCriteria', params: { sheetId: this.activeSheetId, range: autoFilter.range, dataRegionContext } });
-  }
 
   closeFilter(): void {
     const sheet = this.runtime.model.getSheet(this.activeSheetId);
@@ -7957,62 +8002,8 @@ export class WorkbookSession {
     this.refresh();
   }
 
-  async textToColumnsFromSelection(delimiter = ','): Promise<void> {
-    const range = normalizeRangeRef(this.getPrimaryRange());
-    const selection = this.selectionService.getState();
-    const sheet = this.runtime.model.getSheet(this.activeSheetId);
-    const column = selection.activeCell.column;
-    const targetRange: RangeRef = {
-      sheetId: this.activeSheetId,
-      startRow: range.startRow,
-      endRow: range.endRow,
-      startColumn: column,
-      endColumn: column,
-    };
-    await this.executeCommandAfterMaterialization('data.textToColumns', {
-      sheetId: this.activeSheetId,
-      range: targetRange,
-      delimiter,
-      maxColumns: Math.min(8, Math.max(2, sheet.columnCount - column)),
-    });
-    this.notify('Text split into columns');
-    this.refresh();
-  }
 
-  async applyDataSubtotal(): Promise<void> {
-    const range = normalizeRangeRef(this.getPrimaryRange());
-    if (range.endRow <= range.startRow || range.endColumn <= range.startColumn) {
-      this.notify('Select a data range with at least two columns');
-      return;
-    }
-    await this.executeCommandAfterMaterialization('data.subtotal', {
-      sheetId: this.activeSheetId,
-      range,
-      groupColumn: range.startColumn,
-      valueColumn: range.startColumn + 1,
-      functionName: 'SUM',
-    });
-    this.notify('Subtotal summary created below selection');
-    this.refresh();
-  }
 
-  async removeDuplicatesFromSelection(): Promise<void> {
-    const range = normalizeRangeRef(this.getPrimaryRange());
-    if (range.endRow <= range.startRow) {
-      this.notify('Select a multi-row range before removing duplicates');
-      return;
-    }
-    const columns: number[] = [];
-    for (let column = range.startColumn; column <= range.endColumn; column++) columns.push(column);
-    await this.executeCommandAfterMaterialization('data.removeDuplicates', {
-      sheetId: this.activeSheetId,
-      range,
-      columns,
-      hasHeader: true,
-    });
-    this.notify('Duplicate rows removed');
-    this.refresh();
-  }
 
   createDataTable(): void {
     const table = this.buildSelectionWorkbookTable('table');

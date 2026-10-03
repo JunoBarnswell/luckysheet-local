@@ -1415,6 +1415,7 @@ export function registerEditingCommands(runtime: CommandRuntime): void {
       }, context.structuralReferenceOwners);
     },
     metadata: {
+      calculation: { inputs: 'cells' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
       schema: { name: 'RangeMove', validate: isRangeMoveMutation },
       permission: { capability: 'sheet.cell.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: rangeMoveAffectedRanges, mode: 'exact' },
@@ -1437,6 +1438,7 @@ export function registerEditingCommands(runtime: CommandRuntime): void {
     applyPasteSnapshot(context.workbook, targetSheet, params.snapshot);
     },
     metadata: {
+      calculation: { inputs: 'cells' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
       schema: { name: 'PasteMutation', validate: isPasteMutation },
       permission: { capability: 'sheet.cell.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: pasteAffectedRanges, mode: 'exact' },
@@ -1728,6 +1730,7 @@ export function registerEditingCommands(runtime: CommandRuntime): void {
       if (params.zoom !== undefined) sheet.zoom = params.zoom;
     },
     metadata: {
+      calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
       schema: { name: 'SheetView', validate: isSheetViewMutation },
       permission: { capability: 'sheet.view.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: () => [], mode: 'exact' },
@@ -1774,8 +1777,8 @@ export function registerEditingCommands(runtime: CommandRuntime): void {
       validateCellShiftEnvelope(item.params, context);
       return StructuralTransform.apply(context.workbook, { kind: 'cell-shift', sheetId: item.params.sheetId, sourceRange: item.params.range, operation: item.params.operation, axis: item.params.axis }, context.structuralReferenceOwners);
     };
-  runtime.registry.registerMutation<CellShiftParams>({ id: 'cells.inserted', handler: cellShiftMutationHandler('insert', 'cells.inserted'), metadata: { schema: { name: 'CellShiftInsert', validate: (value: unknown): value is CellShiftParams => isCellShiftMutation(value) && value.operation === 'insert' }, permission: { capability: 'sheet.cell.write', roles: ['owner', 'editor'] }, affectedRanges: { resolve: (params) => [structuredClone(params.affectedBand)], mode: 'exact' }, historyRebase: { kind: 'invalidate', reason: 'cell shifts have no canonical history transform' }, inverseIds: ['cells.inserted.restore'] } });
-  runtime.registry.registerMutation<CellShiftParams>({ id: 'cells.deleted', handler: cellShiftMutationHandler('delete', 'cells.deleted'), metadata: { schema: { name: 'CellShiftDelete', validate: (value: unknown): value is CellShiftParams => isCellShiftMutation(value) && value.operation === 'delete' }, permission: { capability: 'sheet.cell.write', roles: ['owner', 'editor'] }, affectedRanges: { resolve: (params) => [structuredClone(params.affectedBand)], mode: 'exact' }, historyRebase: { kind: 'invalidate', reason: 'cell shifts have no canonical history transform' }, inverseIds: ['cells.deleted.restore'] } });
+  runtime.registry.registerMutation<CellShiftParams>({ id: 'cells.inserted', handler: cellShiftMutationHandler('insert', 'cells.inserted'), metadata: { calculation: { inputs: 'cells' as const, visibility: false, spillBlockers: 'none' as const, mode: false }, schema: { name: 'CellShiftInsert', validate: (value: unknown): value is CellShiftParams => isCellShiftMutation(value) && value.operation === 'insert' }, permission: { capability: 'sheet.cell.write', roles: ['owner', 'editor'] }, affectedRanges: { resolve: (params) => [structuredClone(params.affectedBand)], mode: 'exact' }, historyRebase: { kind: 'invalidate', reason: 'cell shifts have no canonical history transform' }, inverseIds: ['cells.inserted.restore'] } });
+  runtime.registry.registerMutation<CellShiftParams>({ id: 'cells.deleted', handler: cellShiftMutationHandler('delete', 'cells.deleted'), metadata: { calculation: { inputs: 'cells' as const, visibility: false, spillBlockers: 'none' as const, mode: false }, schema: { name: 'CellShiftDelete', validate: (value: unknown): value is CellShiftParams => isCellShiftMutation(value) && value.operation === 'delete' }, permission: { capability: 'sheet.cell.write', roles: ['owner', 'editor'] }, affectedRanges: { resolve: (params) => [structuredClone(params.affectedBand)], mode: 'exact' }, historyRebase: { kind: 'invalidate', reason: 'cell shifts have no canonical history transform' }, inverseIds: ['cells.deleted.restore'] } });
   const cellShiftRestoreMutationHandler = (operation: CellShiftParams['operation'], id: 'cells.inserted.restore' | 'cells.deleted.restore') => (item: { params: unknown }, context: CommandContext) => {
       if (!isCellShiftRestoreMutation(item.params) || item.params.spec.operation !== operation) throw new Error(`Invalid ${id} mutation payload`);
       const spec: CellShiftParams = { ...item.params.spec, operation: operation === 'insert' ? 'delete' : 'insert' };
@@ -1787,8 +1790,8 @@ export function registerEditingCommands(runtime: CommandRuntime): void {
       for (const entry of item.params.cells) sheet.cells.set(entry.row, entry.column, structuredClone(entry.cell));
       return effect;
     };
-  runtime.registry.registerMutation<CellShiftRestoreParams>({ id: 'cells.inserted.restore', handler: cellShiftRestoreMutationHandler('insert', 'cells.inserted.restore'), metadata: { schema: { name: 'CellShiftInsertRestore', validate: (value: unknown): value is CellShiftRestoreParams => isCellShiftRestoreMutation(value) && value.spec.operation === 'insert' }, permission: { capability: 'sheet.cell.write', roles: ['owner', 'editor'] }, affectedRanges: { resolve: (params) => [structuredClone(params.spec.affectedBand)], mode: 'exact' }, historyRebase: { kind: 'invalidate', reason: 'cell-shift restoration has no canonical history transform' }, inverseIds: ['cells.inserted'] } });
-  runtime.registry.registerMutation<CellShiftRestoreParams>({ id: 'cells.deleted.restore', handler: cellShiftRestoreMutationHandler('delete', 'cells.deleted.restore'), metadata: { schema: { name: 'CellShiftDeleteRestore', validate: (value: unknown): value is CellShiftRestoreParams => isCellShiftRestoreMutation(value) && value.spec.operation === 'delete' }, permission: { capability: 'sheet.cell.write', roles: ['owner', 'editor'] }, affectedRanges: { resolve: (params) => [structuredClone(params.spec.affectedBand)], mode: 'exact' }, historyRebase: { kind: 'invalidate', reason: 'cell-shift restoration has no canonical history transform' }, inverseIds: ['cells.deleted'] } });
+  runtime.registry.registerMutation<CellShiftRestoreParams>({ id: 'cells.inserted.restore', handler: cellShiftRestoreMutationHandler('insert', 'cells.inserted.restore'), metadata: { calculation: { inputs: 'cells' as const, visibility: false, spillBlockers: 'none' as const, mode: false }, schema: { name: 'CellShiftInsertRestore', validate: (value: unknown): value is CellShiftRestoreParams => isCellShiftRestoreMutation(value) && value.spec.operation === 'insert' }, permission: { capability: 'sheet.cell.write', roles: ['owner', 'editor'] }, affectedRanges: { resolve: (params) => [structuredClone(params.spec.affectedBand)], mode: 'exact' }, historyRebase: { kind: 'invalidate', reason: 'cell-shift restoration has no canonical history transform' }, inverseIds: ['cells.inserted'] } });
+  runtime.registry.registerMutation<CellShiftRestoreParams>({ id: 'cells.deleted.restore', handler: cellShiftRestoreMutationHandler('delete', 'cells.deleted.restore'), metadata: { calculation: { inputs: 'cells' as const, visibility: false, spillBlockers: 'none' as const, mode: false }, schema: { name: 'CellShiftDeleteRestore', validate: (value: unknown): value is CellShiftRestoreParams => isCellShiftRestoreMutation(value) && value.spec.operation === 'delete' }, permission: { capability: 'sheet.cell.write', roles: ['owner', 'editor'] }, affectedRanges: { resolve: (params) => [structuredClone(params.spec.affectedBand)], mode: 'exact' }, historyRebase: { kind: 'invalidate', reason: 'cell-shift restoration has no canonical history transform' }, inverseIds: ['cells.deleted'] } });
   const createCellShiftParams = (params: Omit<CellShiftParams, 'affectedBand'>, context: { workbook: WorkbookModel }) => {
     const plan = planCellShift(context.workbook, params);
     const canonicalParams: CellShiftParams = { ...params, affectedBand: plan.band };
@@ -1810,10 +1813,10 @@ export function registerEditingCommands(runtime: CommandRuntime): void {
       context.workbook.duplicateSheet(params.sourceSheetId, params.newId, params.newName);
     },
     metadata: {
+      calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false, context: CALCULATION_CONTEXT_EFFECTS.rebuild },
       schema: { name: 'DuplicateSheet', validate: isSheetDuplicateMutation },
       permission: { capability: 'sheet.structure.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: () => [], mode: 'declared' },
-      calculationContextEffect: CALCULATION_CONTEXT_EFFECTS.rebuild,
       inverseIds: ['sheet.remove'],
     },
   });
@@ -1843,6 +1846,7 @@ export function registerEditingCommands(runtime: CommandRuntime): void {
       context.workbook.getSheet(item.params.sheetId).hidden = true;
     },
     metadata: {
+      calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
       schema: { name: 'SheetHidden', validate: isSheetIdMutation },
       permission: { capability: 'sheet.visibility.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: () => [], mode: 'exact' },
@@ -1856,6 +1860,7 @@ export function registerEditingCommands(runtime: CommandRuntime): void {
       context.workbook.getSheet(item.params.sheetId).hidden = false;
     },
     metadata: {
+      calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
       schema: { name: 'SheetUnhidden', validate: isSheetIdMutation },
       permission: { capability: 'sheet.visibility.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: () => [], mode: 'exact' },
@@ -1909,10 +1914,10 @@ export function registerEditingCommands(runtime: CommandRuntime): void {
       return context.workbook.reorderSheet(params.sheetId, params.toIndex);
     },
     metadata: {
+      calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false, context: CALCULATION_CONTEXT_EFFECTS.syncSheetOrder },
       schema: { name: 'ReorderSheet', validate: isSheetReorderedMutation },
       permission: { capability: 'sheet.structure.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: () => [], mode: 'exact' },
-      calculationContextEffect: CALCULATION_CONTEXT_EFFECTS.syncSheetOrder,
       inverseIds: ['sheet.reordered'],
     },
   });
@@ -1944,6 +1949,7 @@ export function registerEditingCommands(runtime: CommandRuntime): void {
       context.workbook.getSheet(params.sheetId).tabColor = params.color;
     },
     metadata: {
+      calculation: { inputs: 'none' as const, visibility: false, spillBlockers: 'none' as const, mode: false },
       schema: { name: 'TabColor', validate: isTabColorMutation },
       permission: { capability: 'sheet.structure.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: () => [], mode: 'exact' },

@@ -5,8 +5,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
 
-function isOutlineMutation(value: unknown): value is { sheetId: string; outline: OutlineModel } {
-  if (!isRecord(value) || typeof value.sheetId !== 'string' || !isRecord(value.outline) || !Array.isArray(value.outline.groups)) return false;
+function isOutlineMutation(value: unknown): value is { sheetId: string; outline: OutlineModel | null } {
+  if (!isRecord(value) || typeof value.sheetId !== 'string') return false;
+  if (value.outline === null) return true;
+  if (!isRecord(value.outline) || !Array.isArray(value.outline.groups)) return false;
   return value.outline.groups.every((group) => isRecord(group)
     && typeof group.id === 'string'
     && (group.axis === 'row' || group.axis === 'column')
@@ -16,8 +18,8 @@ function isOutlineMutation(value: unknown): value is { sheetId: string; outline:
     && typeof group.collapsed === 'boolean');
 }
 
-function outlineAffectedRanges(value: { sheetId: string; outline: OutlineModel }): RangeRef[] {
-  return value.outline.groups.map((group) => group.axis === 'row'
+function outlineAffectedRanges(value: { sheetId: string; outline: OutlineModel | null }): RangeRef[] {
+  return (value.outline?.groups ?? []).map((group) => group.axis === 'row'
     ? { sheetId: value.sheetId, startRow: group.start, endRow: group.end, startColumn: 0, endColumn: 0 }
     : { sheetId: value.sheetId, startRow: 0, endRow: 0, startColumn: group.start, endColumn: group.end });
 }
@@ -84,10 +86,11 @@ export function registerOutlineCommands(runtime: CommandRuntime): void {
     if (!isOutlineMutation(item.params)) throw new Error('Invalid outline.set mutation payload');
     const params = item.params;
     const sheet = context.workbook.getSheet(params.sheetId);
-    validateOutline(params.outline, sheet);
-    sheet.outline = structuredClone(params.outline);
+    if (params.outline !== null) validateOutline(params.outline, sheet);
+    sheet.outline = params.outline === null ? undefined : structuredClone(params.outline);
     },
     metadata: {
+      calculation: { inputs: 'none' as const, visibility: true, spillBlockers: 'none' as const, mode: false },
       schema: { name: 'OutlineMutation', validate: isOutlineMutation },
       permission: { capability: 'sheet.outline.write', roles: ['owner', 'editor'] },
       affectedRanges: { resolve: outlineAffectedRanges, mode: 'declared' },
@@ -100,8 +103,8 @@ export function registerOutlineCommands(runtime: CommandRuntime): void {
     execute: (params, context) => {
       const sheet = context.workbook.getSheet(params.sheetId);
       validateGroup(params.group, sheet);
-      const previous = structuredClone(outlineOf(sheet));
-      if (previous.groups.some((group) => group.id === params.group.id)) throw new Error(`Outline group already exists: ${params.group.id}`);
+      const previous = sheet.outline === undefined ? null : structuredClone(sheet.outline);
+      if (previous?.groups.some((group) => group.id === params.group.id)) throw new Error(`Outline group already exists: ${params.group.id}`);
       const outline = structuredClone(outlineOf(sheet));
       outline.groups.push(structuredClone(params.group));
       const affectedRanges: RangeRef[] = [groupRange(params.group, sheet)];
@@ -122,8 +125,8 @@ export function registerOutlineCommands(runtime: CommandRuntime): void {
     id: 'outline.group.remove',
     execute: (params, context) => {
       const sheet = context.workbook.getSheet(params.sheetId);
-      const previous = structuredClone(outlineOf(sheet));
-      const removed = previous.groups.find((group) => group.id === params.groupId);
+      const previous = sheet.outline === undefined ? null : structuredClone(sheet.outline);
+      const removed = previous?.groups.find((group) => group.id === params.groupId);
       if (!removed) return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
       const outline = structuredClone(outlineOf(sheet));
       outline.groups = outline.groups.filter((group) => group.id !== params.groupId);
@@ -145,7 +148,7 @@ export function registerOutlineCommands(runtime: CommandRuntime): void {
     id: 'outline.group.toggle',
     execute: (params, context) => {
       const sheet = context.workbook.getSheet(params.sheetId);
-      const previous = structuredClone(outlineOf(sheet));
+      const previous = sheet.outline === undefined ? null : structuredClone(sheet.outline);
       const outline = structuredClone(outlineOf(sheet));
       const group = outline.groups.find((entry) => entry.id === params.groupId);
       if (!group) return { operationId: context.operationId, mutationCount: 0, affectedRanges: [] };
@@ -169,7 +172,7 @@ export function registerOutlineCommands(runtime: CommandRuntime): void {
     execute: (params, context) => {
       if (!Number.isInteger(params.level) || params.level < 1 || params.level > 3) throw new Error('Outline level must be 1, 2, or 3');
       const sheet = context.workbook.getSheet(params.sheetId);
-      const previous = structuredClone(outlineOf(sheet));
+      const previous = sheet.outline === undefined ? null : structuredClone(sheet.outline);
       const outline = structuredClone(outlineOf(sheet));
       for (const group of outline.groups) {
         group.collapsed = group.level > params.level;

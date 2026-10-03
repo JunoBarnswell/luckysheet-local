@@ -1,7 +1,7 @@
 package com.xc.luckysheet.server.service;
 
 import com.xc.luckysheet.server.contract.DataBlockMetadata;
-import com.xc.luckysheet.server.contract.WorkbookAclRole;
+import com.xc.luckysheet.server.contract.WorkbookRole;
 import com.xc.luckysheet.server.store.DataBlockRow;
 import com.xc.luckysheet.server.store.WorkbookDataBlockStore;
 import org.springframework.stereotype.Service;
@@ -31,7 +31,7 @@ public class WorkbookDataBlockCommitService {
     public DataBlockMetadata commit(DataBlockRow row, long maximumBytes, long maximumBlocks, String actor) {
         store.lockWorkbook(row.unitId());
         lifecycle.requireActive(row.unitId());
-        access.require(row.unitId(), actor, WorkbookAclRole.EDITOR);
+        access.require(row.unitId(), actor, WorkbookRole.EDITOR);
         return store.insertWithinQuota(row, maximumBytes, maximumBlocks);
     }
 
@@ -39,7 +39,7 @@ public class WorkbookDataBlockCommitService {
     public void delete(String unitId, String sourceId, String blockId, String actor) {
         store.lockWorkbook(unitId);
         lifecycle.requireActive(unitId);
-        access.require(unitId, actor, WorkbookAclRole.EDITOR);
+        access.require(unitId, actor, WorkbookRole.EDITOR);
         references.requireUnreferenced(unitId, sourceId, blockId);
         store.delete(unitId, sourceId, blockId);
     }
