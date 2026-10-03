@@ -342,3 +342,23 @@ O2.1-f 预验收：三项名称中移除中项，undo 完整快照与名字顺�
 属性契约同步统一检查：native66/66 Pass；build/typecheck、boundaries Pass；Java370/368 Pass/0 Fail/2 Skipped + package。日志 `/tmp/sdk-o21-comment-{native,build,boundaries,java}.log`。未知属性拒绝与sourcebytes不变测试通过，服务端guard未放宽。完整unit已记录52 Fail且未修改公式/应用运行时；干净提交后完整21项真实browser仍待执行。
 
 O2.1 干净产品head **68aec758** 完整真实 Java21/H2/Chromium **21/21 Pass**，retries0、无HTTP mocks。成功场景执行全部最后断言：名称中项remove→undo顺序/值恢复、相对anchor/comment/hidden保存重开与实际xlsx再import；富文本literal等号、undo/redo、范围矩阵；保护锁定格拒绝/解锁格写入、保护remove→undo/redo、关闭旧句柄退休；viewer和非法REST保护/name.restore整体零revision写入。console/network diagnostics全通过。证据 `/tmp/sdk-o21-comment-browser.log`、`/tmp/sdk-product-uat-tcJlxV/evidence/sdk-o21.xlsx`。O2.1-a..g声明范围通过，Theme/完整格式/多种保护原生输出仍待各自实施；原49父项、全量unit52 Fail、ERP/SSO/桌面Excel/外部SQL Blocked仍保留。该head两项canonical-build当前in_progress（run37122552603/37122547520），未声明CI通过。
+
+### F1.1 财务标量函数实施前契约
+
+首批12个：PV/FV/PMT/NPER/IPMT/PPMT/ISPMT/EFFECT/NOMINAL/SLN/DOLLARDE/DOLLARFR。只扩展唯一executable registry、参数契约、既有标量数组broadcast与共享语料，不新增SDK/Java计算服务、函数名别名或空实现。金额流入正/流出负；period/type和Excel文档一致；EFFECT/NOMINAL npery、DOLLAR fraction截整数，负fraction不能截成负零后接受。TVM零利率使用解析极限，log1p/expm1避免微小利率相消；PV/PMT在大正利率/长周期采用折现表达式；不可求实数/非有限结果明确Excel错误。NPER不做隐式迭代；输入fault继承现有根求值边界，不能IFERROR吞掉。
+
+Microsoft正式参数说明已复核：PMT、FV、NPER、IPMT、ISPMT、EFFECT、NOMINAL、DOLLARDE函数页面（support.microsoft.com/en-us/office）；本地只读记录 `/tmp/sdk-financial-*.txt`。黄金值为独立小整数现金流与手算分数，非实现输出生成。NPV的scalar/reference coercion、coupon/day-count/求根/折旧/累计尚需各自完整契约，未在这批发布；完整455目录仍Pending。
+
+| 细项 | 成功验收 | 拒绝/边界验收 | 初始状态 |
+| --- | --- | --- | --- |
+| F1.1-a | 每个函数独立黄金值、参数契约、registry发现、inline和实际Worker任务入口结果相等 | 每个函数不足/过量参数、字符串坏数、普通错误，报对应Excel错误 | Pending |
+| F1.1-b | 年金期初/期末、零/微小/负利率、长周期折现、IPMT+PPMT=PMT、NPER解析周期 | 坏type/per、无法求实数、零分母/溢出，不能返回NaN/Infinity或成功默认值 | Pending |
+| F1.1-c | EFFECT/NOMINAL季度互逆、fraction截整与负金额、SLN现金流、二维broadcast | 非正利率/无有效分期、负/零fraction、错array形状与SLN零life明确拒绝 | Pending |
+| F1.1-d | 隐藏数值/跨簿输入仍消费，来源更新重算，授权恢复inline/Worker同值 | 来源denied/unavailable/broken故障经全部12函数及IFERROR仍不可吞掉 | Pending |
+| F1.1-e | public SDK矩阵写12公式→真实Java提交→保存关闭重开→实际xlsx导出/再import→SDK重算黄金值 | 原始无关cell不变，运行时对象无越层API，console/network干净 | Pending |
+
+此批不把Java持久化快照中的formulaValue当新计算真相；导出缓存值投影另需唯一计算owner契约审查。原生公式保存/再import后SDK计算与桌面Excel实机缓存验收分别记录，不伪造缓存或宣称实机Pass。源码一次完成上述整批后统一checks，提交同一草稿PR，再干净head逐项真实验收。
+
+F1.1 首轮统一检查：calculation主套544/543 Pass/1 Fail，新增失败为数组普通错误fixture直接setValue(FormulaError)，违背ScalarValue持久化与Worker快照契约；改为真实错误公式=#N/A，不接受非法snapshot、不放宽守卫。build仅验收代码错误：readonly readValues传可变类型、非公开trash方法和同一ScalarValue类型错误。产品financial源冻结不变。完整unit1677/1624 Pass/53 Fail，新增唯一为上述fixture；旧52失败保留。boundary Pass。日志 `/tmp/sdk-f11-first-{calculation,build,boundaries,unit}.log` 与首次源码 `/tmp/sdk-f11-first-pass.patch`、`/tmp/sdk-f11-first-financial*.ts`保留；统一修正验收调用契约后重验，不能算首轮通过。
+
+F1.1 统一修正后：calculation **544+5=549/549 Pass**，全部12函数registry/语料/arity、零/微小/负rate与大正rate长期折现、期初/期末本金利息、标量二维broadcast/错形状、普通错误处理、隐藏读值与12函数三类跨簿fault/Worker恢复均通过。build/typecheck与boundary Pass。完整unit **1677/1625 Pass/52 Fail**，与O2失败清单新增0/消失0；不能算完整门禁通过。产品financial源与首轮一致，仅验收输入统一修正；日志 `/tmp/sdk-f11-final-{calculation,build,unit}.log`。实际registry148，其中12新增官方函数；官方455对齐仍缺308，F1整项Pending。真实SDK保存/重开/原生文件流程待干净提交后完整22项browser，无真实Excel环境仍Blocked。Java产品未变，沿用本轮已编译370/368 Pass/2 Skipped的Jar，不伪造服务端函数计算。

@@ -5,6 +5,7 @@ import path from 'node:path';
 import { importOoxmlDocument } from '@react-sheets/exchange-excel-ooxml';
 import type { SpreadsheetSdk } from '@react-sheets/sdk';
 import { installBrowserDiagnostics } from './support/workbook-fixtures';
+import { FINANCIAL_FUNCTION_CORPUS } from '../packages/formula-engine/src/fixtures/financial-corpus';
 
 test.use({ trace: 'retain-on-failure', screenshot: 'only-on-failure' });
 test.skip(!process.env.SDK_UAT_ENABLED, 'Requires the isolated real Java/H2 SDK UAT service');
@@ -40,6 +41,59 @@ async function calculations(sdk: JSHandle<SpreadsheetSdk>, id: string) {
     return { links, values: cells.map(cell => cell.calculatedValue), formulas: cells.map(cell => cell.formula) };
   }, id);
 }
+
+test('F1.1-e: twelve financial functions save, reopen, export and reimport through public SDK; source faults remain visible', async ({ page }) => {
+  const diagnostics = installBrowserDiagnostics(page), sdk = await ownerSdk(page);
+  const fixtures = Object.values(FINANCIAL_FUNCTION_CORPUS), formulas = fixtures.map(fixture => fixture.formula);
+  try {
+    const result = await sdk.evaluate(async (sdk, formulas) => {
+      const entry = await sdk.workbooks.create({ name: `Financial functions ${Date.now()}` });
+      let workbook = await sdk.workbooks.open(entry.unitId), sheet = workbook.worksheets.at(0);
+      await sheet.cells.get('C1').setValue(77); await workbook.flush();
+      await sheet.ranges.get(`A1:A${formulas.length}`).setFormulas(formulas.map(formula => [formula])); await workbook.flush();
+      const initial = await sheet.ranges.get(`A1:A${formulas.length}`).readValues();
+      await workbook.save(); workbook.close();
+      workbook = await sdk.workbooks.open(entry.unitId); sheet = workbook.worksheets.at(0);
+      const reopened = await sheet.ranges.get(`A1:A${formulas.length}`).readValues(), unaffected = (await sheet.cells.get('C1').read()).value;
+      const output = await sdk.workbooks.exportWorkbook(entry.unitId, { fileName: 'sdk-financial.xlsx' });
+      return { id: entry.unitId, initial, reopened, unaffected, bytes: Array.from(new Uint8Array(output.buffer)) };
+    }, formulas);
+    const assertNumbers = (values: readonly (readonly unknown[])[]) => {
+      expect(values).toHaveLength(fixtures.length);
+      values.forEach((row, index) => { expect(row).toHaveLength(1); expect(typeof row[0]).toBe('number'); expect(row[0] as number).toBeCloseTo(fixtures[index]!.expected, 10); });
+    };
+    assertNumbers(result.initial); assertNumbers(result.reopened); expect(result.unaffected).toBe(77);
+    const bytes = Uint8Array.from(result.bytes);
+    await writeFile(path.join(process.env.SDK_UAT_EVIDENCE_DIR!, 'sdk-financial.xlsx'), bytes);
+    const native = await importOoxmlDocument({ fileName: 'sdk-financial.xlsx', buffer: bytes.buffer, options: { compatibilityTarget: 'B' } });
+    for (let row = 0; row < formulas.length; row++) expect(native.snapshot.sheets[0]!.cells[String(row)]!['0']!.formula).toBe(formulas[row]);
+    const reimported = await sdk.evaluate(async (sdk, input) => {
+      const imported = await sdk.workbooks.importWorkbook({ fileName: 'sdk-financial.xlsx', buffer: Uint8Array.from(input.bytes).buffer, options: { compatibilityTarget: 'B' } });
+      const workbook = await sdk.workbooks.open(imported.entry.unitId);
+      return workbook.worksheets.at(0).ranges.get(`A1:A${input.count}`).readValues();
+    }, { bytes: result.bytes, count: fixtures.length });
+    assertNumbers(reimported);
+    const linked = await sdk.evaluate(async (sdk, id) => {
+      const entry = await sdk.workbooks.create({ name: `Rates ${Date.now()}` }), source = await sdk.workbooks.open(entry.unitId), rates = source.worksheets.at(0);
+      await rates.cells.get('A1').setValue(0.5); await source.flush();
+      const target = await sdk.workbooks.open(id); await target.externalLinks.bind(source, 'Rates.xlsx');
+      const formula = `=PMT('[Rates.xlsx]${rates.name}'!A1,2,250)`;
+      await target.worksheets.at(0).ranges.get('B1:B2').setFormulas([[formula], [`=IFERROR(${formula.slice(1)},7)`]]); await target.flush();
+      const initial = await target.worksheets.at(0).ranges.get('B1:B2').readValues();
+      await rates.cells.get('A1').setValue(0); await source.flush(); await target.externalLinks.refresh();
+      const updated = await target.worksheets.at(0).ranges.get('B1:B2').readValues();
+      await sdk.workbooks.moveToTrash(source.id); await target.externalLinks.refresh();
+      const unavailable = await target.worksheets.at(0).ranges.get('B1:B2').readValues();
+      await sdk.workbooks.restore(entry.unitId); await target.externalLinks.refresh();
+      const restored = await target.worksheets.at(0).ranges.get('B1:B2').readValues();
+      return { sourceId: entry.unitId, initial, updated, unavailable, restored };
+    }, result.id);
+    expect(linked.initial).toEqual([[-225], [-225]]); expect(linked.updated).toEqual([[-125], [-125]]);
+    for (const row of linked.unavailable) expect(row[0]).toMatchObject({ kind: 'error', code: '#REF!', inputFault: { source: linked.sourceId } });
+    expect(linked.restored).toEqual([[-125], [-125]]);
+    diagnostics.assertClean();
+  } finally { await sdk.evaluate(sdk => sdk.dispose()); }
+});
 
 test('MWB-02.c/d: five cross-workbook functions refresh real authorized versions, revoke and recover source access', async ({ page, browser }) => {
   const ownerDiagnostics = installBrowserDiagnostics(page);

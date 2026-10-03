@@ -32,7 +32,7 @@ ERP 浏览器会话 Cookie 是 HttpOnly，令牌由 Gateway 保存和续期。�
 | D1 | Table/filter/sort/DV/CF/数据源 | 明确范围、统一 owner、全部输入源与公式/引用一致 |
 | D2 | Pivot/PivotChart/slicer/timeline/what-if | 缓存与视图生命周期、计算字段、真实数据刷新 |
 | G1 | 图表/图片/形状/批注/控件/对象 | create/edit/delete、资产、锚点、引用与原生往返 |
-| F1 | 455 个官方函数目录对齐 | 逐函数参数/类型/精度/错误/日期/数组向量与 Worker；当前缺失 320 个，优先财务和现代数组 |
+| F1 | 455 个官方函数目录对齐 | 逐函数参数/类型/精度/错误/日期/数组向量与 Worker；本批新增12财务函数，executable共148（官方目录重合147+SJS.TABLE），当前缺失308个；其余财务和现代数组仍待实施 |
 | X1 | 全格式与转换 | 每格式独立检测/read/edit/write/preserve/render，实文件；不以保留计编辑 |
 | P1 | page setup/分页/打印/PDF/图片/矢量 | 同一布局 owner、字体/分页一致、真实输出 |
 | S1 | 加密/签名/属性/XML maps/VBA 项目 | 真实文件安全与文档语义；项目管理与执行能力分别声明 |
