@@ -1390,7 +1390,7 @@ function collectStructuralMetadataPlan(
   return {
     // Do not retain detached worksheets or unchanged payloads while cells move.
     sheets: sheets.filter((entry) => Object.keys(entry.values).length > 0 || entry.notes !== undefined || entry.threads !== undefined),
-    rangeOwners,
+    rangeOwners: Object.freeze(rangeOwners),
     formulaRuleDeltas,
     printDocument: !sameStructuralMetadata(workbook.printDocuments.get(targetSheetId), printDocument) ? printDocument : undefined,
   };
@@ -3165,18 +3165,16 @@ function stageMetadataFormulaRules(
         }
         const beforeAnchor = beforeRule.formulaAnchor;
         const afterAnchor = afterRule.formulaAnchor;
-        if ((beforeAnchor === undefined) !== (afterAnchor === undefined)) {
-          throw new Error(`STRUCTURAL_PATCH_INVARIANT: formula rule ${beforeSheet.id}:${beforeRule.id} added or removed its formula anchor during metadata planning`);
-        }
-        if (beforeAnchor && afterAnchor && (beforeAnchor.sheetId !== afterAnchor.sheetId
-          || beforeAnchor.row !== afterAnchor.row || beforeAnchor.column !== afterAnchor.column)) {
+        if ((beforeAnchor === undefined) !== (afterAnchor === undefined)
+          || beforeAnchor && afterAnchor && (beforeAnchor.sheetId !== afterAnchor.sheetId
+            || beforeAnchor.row !== afterAnchor.row || beforeAnchor.column !== afterAnchor.column)) {
           deltas.push({
             kind: 'formula-rule-anchor',
             sheetId: beforeSheet.id,
             ruleKind,
             ruleId: beforeRule.id,
-            beforeAddress: { ...beforeAnchor },
-            afterAddress: { ...afterAnchor },
+            beforeAddress: beforeAnchor ? { ...beforeAnchor } : undefined,
+            afterAddress: afterAnchor ? { ...afterAnchor } : undefined,
           });
         }
         const rangesChanged = JSON.stringify(beforeRule.ranges) !== JSON.stringify(afterRule.ranges);

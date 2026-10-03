@@ -90,7 +90,7 @@ const StructuralTransform = {
 
 function seedWorkbook(): { workbook: WorkbookModel; sheetId: string } {
   const workbook = new WorkbookModel('unit-test', 'Structural');
-  const sheet = workbook.addSheet('s1', 'Sheet1');
+  const sheet = workbook.addSheet('s1', 'Structural Sheet');
   sheet.cells.set(0, 0, { value: 'A0' });
   sheet.cells.set(1, 0, { value: 'A1' });
   sheet.cells.set(2, 0, { value: 'A2' });
@@ -1763,7 +1763,7 @@ describe('structural operations', () => {
       sourceSheetId: sheet.id,
       sourceRange: { sheetId: sheet.id, startRow: 2, endRow: 4, startColumn: 0, endColumn: 1 },
       rowCount: 2,
-      fields: [{ id: 'f0', name: 'Code', ordinal: 0, type: 'text' }],
+      fields: [{ id: 'f0', name: 'Code', ordinal: 0, type: 'text' }, { id: 'f1', name: 'Value', ordinal: 1, type: 'number' }],
       blockRowCount: 65_536,
       blocks: [{ id: 'move-block', dataSourceId: sourceId, startRow: 0, rowCount: 2, storageKey: 'move-block', checksum: 'b'.repeat(64), byteLength: 1, encoding: 'columnar-v1', revision: 0 }],
       revision: 0,
